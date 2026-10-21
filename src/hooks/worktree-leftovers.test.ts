@@ -27,7 +27,7 @@ function makeIdle(worktree: string): void {
 function project() {
   const { repo } = makeClone();
   writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-    worktrees: { base: "main", prefix: "app-wt-" },
+    worktrees: { base: "main" },
   });
   const add = (name: string) => {
     const folder = join(repo, "..", `app-wt-${name}`);

@@ -403,16 +403,12 @@ describe("autoMergeAllowed", () => {
 
   test("off: never, whatever the branches are", () => {
     const resolved = resolvedWith(false);
-    expect(
-      autoMergeAllowed(resolved, project({ base: "dev", prefix: "a-wt-" }), "dev", "main"),
-    ).toBe(false);
+    expect(autoMergeAllowed(resolved, project({ base: "dev" }), "dev", "main")).toBe(false);
   });
 
   test("on, into the integration base, nothing special about it: yes", () => {
     const resolved = resolvedWith(true);
-    expect(
-      autoMergeAllowed(resolved, project({ base: "dev", prefix: "a-wt-" }), "dev", "main"),
-    ).toBe(true);
+    expect(autoMergeAllowed(resolved, project({ base: "dev" }), "dev", "main")).toBe(true);
   });
 
   test("no worktrees, or no base: no integration base to merge into", () => {
@@ -425,20 +421,20 @@ describe("autoMergeAllowed", () => {
 
   test("a pull request into another branch is never merged by itself", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "dev", prefix: "a-wt-" });
+    const config = project({ base: "dev" });
     expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
     expect(autoMergeAllowed(resolved, config, "release/1.0", "main")).toBe(false);
   });
 
   test("the repository's default branch always asks the person", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "main", prefix: "a-wt-" });
+    const config = project({ base: "main" });
     expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
   });
 
   test("a base another family of branches feeds always asks the person", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "dev", prefix: "a-wt-", bases: { "release/": "dev" } });
+    const config = project({ base: "dev", bases: { "release/": "dev" } });
     expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(false);
   });
 
@@ -446,7 +442,6 @@ describe("autoMergeAllowed", () => {
     const resolved = resolvedWith(true);
     const config = project({
       base: "dev",
-      prefix: "a-wt-",
       bases: { "hotfix/": "main", "release/": "main" },
     });
     const withProtection = ccSmartDevKitConfigSchema.parse({

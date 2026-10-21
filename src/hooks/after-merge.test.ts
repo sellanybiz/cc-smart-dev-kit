@@ -283,7 +283,7 @@ describe("the hook", () => {
     const { repo } = makeClone();
     git(repo, "remote", "set-url", "origin", "git@github.com:example-org/app.git");
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", ...(bases === undefined ? {} : { bases }) },
+      worktrees: { base: "main", ...(bases === undefined ? {} : { bases }) },
     });
     const worktree = join(repo, "..", "app-wt-fix-a");
     git(repo, "worktree", "add", "-q", "-b", "fix/a", worktree);

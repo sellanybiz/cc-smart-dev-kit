@@ -3,13 +3,10 @@
  * the plugin relies on (`docs/claude-code-contract.md`). It never runs by default: it
  * starts real Claude Code sessions, which use the person's login and cost a few cents.
  *
- * In a temp folder it makes two throwaway repos: one without cc-smart-dev-kit.json, where Claude
- * Code makes its own worktrees (the default every project uses), and one that still wires the
- * plugin's deprecated worktree engine (`worktrees` in cc-smart-dev-kit.json, and the three
- * `cc-smart-dev-kit hook` lines in its `.claude/settings.json`, each running **the plugin being
- * checked**: this CLI's own `plugin/dist/cli.js` with the bun running it, never the installed
- * launcher). It clones the second from a local bare "origin". In each it runs one `claude -p`
- * session with this plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash tools, permission
+ * In a temp folder it makes one throwaway repo without cc-smart-dev-kit.json, where Claude Code
+ * makes its own worktrees (what every project uses: the plugin's own worktree engine retired in
+ * 1.0.0, so there is no second repo that wires it). In it it runs one `claude -p` session with
+ * this plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash tools, permission
  * for exactly those calls (no permission mode that skips the checks), and a tiny prompt:
  * enter a worktree, run `git status` there, leave it with "remove". Every hook run is logged
  * (`CC_SMART_DEV_KIT_HOOK_LOG`), with what the hook's own parser read (`logFacts`), and the check
@@ -17,10 +14,8 @@
  *
  * - the plugin's hooks fired: SessionStart, and the git guard before the Bash call;
  * - the git guard read the command (its log names the programs it parsed: `git`);
- * - without cc-smart-dev-kit.json: no WorktreeCreate hook ran, Claude Code made its own worktree,
- *   and the session worked in it (the git guard's `cwd`); ExitWorktree removed it;
- * - with the engine: its WorktreeCreate made the configured folder, through the plugin under
- *   test, and the session worked there; its WorktreeRemove removed the folder and the branch.
+ * - no WorktreeCreate hook ran, Claude Code made its own worktree, and the session worked in
+ *   it (the git guard's `cwd`); ExitWorktree removed it.
  *
  * When every check passes, the Claude Code version is recorded in the state folder
  * (`live-check.json`); plain `doctor` then shows it. The temp folder is removed at the end.
@@ -37,17 +32,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
-import { projectHookSettings } from "../hooks/project-wiring";
 import { HOOK_LOG_ENV } from "../hooks/run";
-import { bunConfigArg } from "../setup/bun-config";
-import { shellQuote } from "../setup/launcher";
 import { atomicWrite } from "../setup/write";
 import type { CliPaths } from "./paths";
 
 /** The worktree name the live sessions ask for. */
 export const LIVE_NAME = "cc-smart-dev-kit-live-check";
-/** The prefix of the configured repo's worktrees. */
-const LIVE_PREFIX = "live-wt-";
 /** One live session may take this long. */
 const SESSION_TIMEOUT_MS = 240_000;
 /** The only tools a live session has. */
@@ -74,28 +64,8 @@ export type LiveRunner = (
 export interface LiveDeps {
   /** The plugin folder to load: the one holding this CLI's `dist/`. */
   pluginDir: string;
-  /**
-   * How each project hook runs in the temp repo. The plugin under test, never the installed
-   * launcher `~/.local/bin/cc-smart-dev-kit`: a live check proves this plugin, whatever version is
-   * installed (`liveHookCommand`).
-   */
-  hookCommand: (name: string) => string;
   /** Runs `claude` (and git, to set up the repos). */
   run: LiveRunner;
-}
-
-/**
- * How a project's hooks run in the live check: the plugin folder this CLI belongs to, its
- * `dist/cli.js` run with `bunPath` (the bun running this CLI). The launcher is not used: it
- * always runs the *installed* version, which is not what `doctor --live` checks.
- *
- * `--no-env-file` and `--config`, like every other run of this plugin's own bundles: a hook
- * sees the environment it was given, never the working folder's `.env` files, and the working
- * folder's `bunfig.toml` (a project's `preload`) never runs inside it.
- */
-export function liveHookCommand(pluginDir: string, bunPath: string): (name: string) => string {
-  const command = `${shellQuote(bunPath)} --no-env-file ${shellQuote(bunConfigArg(pluginDir))} ${shellQuote(join(pluginDir, "dist", "cli.js"))}`;
-  return (name) => `${command} hook ${name}`;
 }
 
 export function liveRecordFile(stateDir: string): string {
@@ -123,10 +93,9 @@ export function parseClaudeVersion(output: string): string | null {
 }
 
 /**
- * The prompt each live session gets: three tool calls, nothing else. `discard_changes`:
- * Claude Code cannot check a worktree outside the repo (the deprecated engine's shape), and
- * refuses "remove" without it (seen live); the engine's WorktreeRemove is then the check, and
- * the worktree here holds no work. A worktree under `.claude/worktrees/` accepts it too.
+ * The prompt each live session gets: three tool calls, nothing else. `discard_changes`: the
+ * worktree here holds no work, and a worktree under `.claude/worktrees/` accepts it (Claude
+ * Code refused "remove" without it for a worktree outside the repo, seen live).
  */
 export const LIVE_PROMPT =
   `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` +
@@ -165,8 +134,6 @@ const GIT_ID = {
 };
 
 interface Expected {
-  /** Who makes the worktree: Claude Code itself, or the engine the project wired. */
-  maker: "claude-code" | "engine";
   folder: string;
   branch: string;
 }
@@ -200,7 +167,6 @@ function proveIn(
   const said = `claude exited ${session.exitCode}: ${session.output.trim().split("\n").slice(-3).join(" ")}`;
   const fired = (event: string) => runs.some((run) => run.event === event);
   const created = runs.find((run) => run.event === "WorktreeCreate");
-  const removed = runs.find((run) => run.event === "WorktreeRemove");
   const guarded = runs.filter((run) => run.hook === "git-guard" && run.event === "PreToolUse");
   const guardedThere = guarded.some((run) => run.cwd === expected.folder);
   // Firing is not answering: the guard logs the programs its own parser read in the command.
@@ -211,10 +177,7 @@ function proveIn(
   );
 
   const lines: LiveCheckLine[] = [];
-  const events =
-    expected.maker === "engine"
-      ? ["SessionStart", "WorktreeCreate", "PreToolUse", "WorktreeRemove"]
-      : ["SessionStart", "PreToolUse"];
+  const events = ["SessionStart", "PreToolUse"];
   const missing = events.filter((event) => !fired(event));
   lines.push(
     missing.length === 0
@@ -234,46 +197,30 @@ function proveIn(
           text: `${label}: the git guard ${guarded.length === 0 ? "never ran" : `ran in ${where} without parsing a command`}: its log names no git program. ${said}`,
         },
   );
-  if (expected.maker === "engine") {
-    lines.push(
-      created?.exitCode === 0 && created.stdout === expected.folder && guardedThere
-        ? {
-            ok: true,
-            text: `${label}: WorktreeCreate made ${expected.folder}, and the session worked there`,
-          }
-        : {
-            ok: false,
-            text: `${label}: WorktreeCreate gave ${created?.stdout || `no folder (exit ${created?.exitCode ?? "none"})`}, the git guard ran in ${where}; expected ${expected.folder}`,
-          },
-    );
-  } else {
-    lines.push(
-      created === undefined && guardedThere
-        ? {
-            ok: true,
-            text: `${label}: no WorktreeCreate hook ran; Claude Code made ${expected.folder}, and the session worked there`,
-          }
-        : {
-            ok: false,
-            text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`,
-          },
-    );
-  }
-
-  const gone = !existsSync(expected.folder) && branchLeft.exitCode !== 0;
-  const remover = expected.maker === "engine" ? "WorktreeRemove" : "ExitWorktree";
-  // Claude Code's own removal runs no hook: the worktree must have been there (the session
-  // worked in it), or "gone" proves nothing.
-  const removerOk = expected.maker === "engine" ? removed?.exitCode === 0 : guardedThere;
   lines.push(
-    gone && removerOk
+    created === undefined && guardedThere
       ? {
           ok: true,
-          text: `${label}: ${remover} removed the folder and the branch ${expected.branch}`,
+          text: `${label}: no WorktreeCreate hook ran; Claude Code made ${expected.folder}, and the session worked there`,
         }
       : {
           ok: false,
-          text: `${label}: after ${remover}${expected.maker === "engine" ? ` (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`})` : guardedThere ? "" : " (the session never worked in it)"} ${existsSync(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
+          text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`,
+        },
+  );
+
+  const gone = !existsSync(expected.folder) && branchLeft.exitCode !== 0;
+  // Claude Code's own removal runs no hook: the worktree must have been there (the session
+  // worked in it), or "gone" proves nothing.
+  lines.push(
+    gone && guardedThere
+      ? {
+          ok: true,
+          text: `${label}: ExitWorktree removed the folder and the branch ${expected.branch}`,
+        }
+      : {
+          ok: false,
+          text: `${label}: after ExitWorktree${guardedThere ? "" : " (the session never worked in it)"} ${existsSync(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
         },
   );
   return lines;
@@ -311,50 +258,16 @@ export function runLiveCheck(
     writeFileSync(join(plain, "README.md"), "live check\n");
     git(plain, "add", "README.md");
     git(plain, "commit", "-q", "-m", "first");
-    // The deprecated engine's old shape, still proved this release: a folder beside the repo,
-    // from origin/main.
-    const origin = join(root, "origin.git");
-    git(root, "init", "-q", "--bare", "-b", "main", origin);
-    const configured = join(root, "configured");
-    git(root, "clone", "-q", origin, configured);
-    writeFileSync(join(configured, "README.md"), "live check\n");
-    mkdirSync(join(configured, ".claude"));
-    writeFileSync(
-      join(configured, ".claude", "cc-smart-dev-kit.json"),
-      `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}\n`,
-    );
-    writeFileSync(
-      join(configured, ".claude", "settings.json"),
-      `${JSON.stringify(projectHookSettings(deps.hookCommand), null, 2)}\n`,
-    );
-    git(configured, "add", "README.md", ".claude/cc-smart-dev-kit.json", ".claude/settings.json");
-    git(configured, "commit", "-q", "-m", "first");
-    git(configured, "push", "-q", "origin", "main");
-
-    const lines = [
-      ...proveIn(
-        "Claude Code's worktrees",
-        plain,
-        {
-          maker: "claude-code",
-          folder: join(plain, ".claude", "worktrees", LIVE_NAME),
-          branch: `worktree-${LIVE_NAME}`,
-        },
-        deps,
-        env,
-      ),
-      ...proveIn(
-        "the worktree engine",
-        configured,
-        {
-          maker: "engine",
-          folder: join(root, `${LIVE_PREFIX}${LIVE_NAME}`),
-          branch: LIVE_NAME,
-        },
-        deps,
-        env,
-      ),
-    ].map((line) => ({ ...line, text: `live, ${line.text}` }));
+    const lines = proveIn(
+      "Claude Code's worktrees",
+      plain,
+      {
+        folder: join(plain, ".claude", "worktrees", LIVE_NAME),
+        branch: `worktree-${LIVE_NAME}`,
+      },
+      deps,
+      env,
+    ).map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
       mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
       const record: LiveRecord = {

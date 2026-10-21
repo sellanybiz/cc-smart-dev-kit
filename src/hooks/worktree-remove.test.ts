@@ -13,7 +13,7 @@ const SESSION = "11111111-2222-3333-4444-555555555555";
 function engineRepo(): string {
   const repo = makeRepo();
   writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-    worktrees: { base: "main", prefix: "app-wt-" },
+    worktrees: { base: "main" },
   });
   return repo;
 }

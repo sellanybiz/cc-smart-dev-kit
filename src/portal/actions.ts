@@ -914,6 +914,7 @@ function projectAnswers(
       /** The repo's default branch, which the plan compares the base with. */
       defaultBranch: string;
       existing: null | string;
+      existingLocalSettings: null | string;
       existingSettings: null | string;
       root: string;
     }
@@ -951,17 +952,15 @@ async function projectPreview(
       answers: built.answers,
       defaultBranch: built.defaultBranch,
       existing: built.existing,
+      existingLocalSettings: built.existingLocalSettings,
       existingSettings: built.existingSettings,
       root: built.root,
     });
     // The line under the settings box travels with the plan: the page draws the same sentence
     // from the same helper, so the two can never describe different plans.
     return {
-      filesHash: projectFilesHash({
-        existing: built.existing,
-        existingSettings: built.existingSettings,
-      }),
-      lines: [settingsLineNote(plan.settingsAdds.length)],
+      filesHash: projectFilesHash(built),
+      lines: [settingsLineNote(plan.settings)],
       ok: true,
       preview: plan,
     };
@@ -975,7 +974,7 @@ async function projectPreview(
  * write, and **never a commit**: both files belong to the project, and the person commits
  * them.
  *
- * **The plan is made again, and only while the two files are still the ones the page planned
+ * **The plan is made again, and only while the files are still the ones the page planned
  * against.** The form holds the whole file it would write — the protected branches, the
  * bases, the guards — so a field filled in from a plan made before someone else edited the
  * project's file would quietly write their change away. The page sends back the hash its
@@ -1002,6 +1001,7 @@ async function projectWrite(
       answers: built.answers,
       defaultBranch: built.defaultBranch,
       existing: built.existing,
+      existingLocalSettings: built.existingLocalSettings,
       existingSettings: built.existingSettings,
       root: built.root,
     });

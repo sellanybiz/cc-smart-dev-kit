@@ -586,7 +586,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
 | `cc-smart-dev-kit mcp status [--json]` | Read-only: the three MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
 | `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and both worktree shapes on the Claude Code installed here (below); it never runs without the flag. |
-| `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop\|notify>` | The plugin's **deprecated** worktree engine, for a project that still wires it in its own `.claude/settings.json` (§ Worktrees), and the notifier hook (below): `setup` wires `hook notify` in your user settings for agent view. It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
+| `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop\|notify>` | The notifier hook (below): `setup` wires `hook notify` in your user settings for agent view; it reads the hook's input on stdin and answers as Claude Code expects. The three worktree names belonged to the plugin's worktree engine, **retired in 1.0.0**: each one prints the fix on stderr and exits 2, reading nothing — `cc-smart-dev-kit project init` takes such a line out of the project's settings (§ Worktrees). |
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
 | `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| review-done [--sha <commit>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, and whether the commit here has a recorded review. `set` and `unset` write one value; `--project` writes the project's committed file. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
@@ -772,12 +772,16 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   "gateway.json kept; the gateway is not installed";
 - the project of the folder you run it in (nothing outside a git project; a `·` line
   when git is not on PATH):
-  - `!` warnings for the deprecated worktree engine: `worktrees.engine`, `worktrees.prefix`
-    or `worktrees.setup` still set, the engine's hook lines still wired, or both — each
-    names what to remove and says the engine retires in the next minor version (§ Worktrees);
-  - ✗ when the engine's hook lines are wired but there is no `worktrees`: each hook fails;
-  - ✗ for each other WorktreeCreate hook next to the engine's, in the project's settings
-    or yours: Claude Code runs both and makes two worktrees;
+  - ✗ when `.claude/cc-smart-dev-kit.json` cannot be used: it names the file and the field.
+    A field of the retired worktree engine (`worktrees.prefix`, `worktrees.setup`,
+    `worktrees.engine`) is one of them: the line names the field and
+    `cc-smart-dev-kit project init` as the fix (§ Worktrees);
+  - ✗ for each of the project's settings files (`.claude/settings.json`,
+    `.claude/settings.local.json`) that still runs the retired engine's
+    `cc-smart-dev-kit hook worktree-create`, `worktree-remove` or `subagent-stop`, known by its
+    command text: each such hook fails every time it runs, and the line names
+    `cc-smart-dev-kit project init`, which takes the lines out. It shows beside the ✗ for a
+    retired field, so one run of `project init` fixes both;
   - `!` when `.claude/worktrees/` is not git-ignored in the repo, so Claude Code's own
     worktrees would show up in `git status`;
   - `!` when `worktrees.base` is not the repo's default branch and the project's settings do
@@ -796,20 +800,16 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   before: the Claude Code version it passed on, and "run it again" when the installed
   Claude Code is another version.
 
-`doctor --live` makes two throwaway repos in a temp folder and runs one short `claude -p`
-session in each, with **the plugin being checked** (`--plugin-dir`; the engine's lines in
-the temp repo run that same plugin folder, never the installed launcher), only the
-EnterWorktree, ExitWorktree and Bash tools, permission for exactly the calls it makes
-(`--allowedTools`), and a three-step prompt: enter a worktree, run `git status` there,
-leave with "remove". It uses your Claude login and costs a few cents. In the repo without
-`cc-smart-dev-kit.json` it checks that the plugin's hooks fired (SessionStart, and the git guard
-before the Bash call), that the git guard read the command line (the hook log names the
-programs it parsed: `git`), that no WorktreeCreate hook ran and Claude Code made its own
-worktree, and that it removed it. In the repo that still wires the deprecated engine
-(`worktrees`, and the lines from the old § Worktrees setup), it checks that the engine's
-WorktreeCreate made the right folder and branch, the session worked there, and its
-WorktreeRemove removed both. When everything passes it records the Claude Code version in
-`~/.claude/cc-smart-dev-kit/live-check.json`. The temp folder is removed.
+`doctor --live` makes one throwaway repo in a temp folder and runs one short `claude -p`
+session in it, with **the plugin being checked** (`--plugin-dir`), only the EnterWorktree,
+ExitWorktree and Bash tools, permission for exactly the calls it makes (`--allowedTools`),
+and a three-step prompt: enter a worktree, run `git status` there, leave with "remove". It
+uses your Claude login and costs a few cents. It checks that the plugin's hooks fired
+(SessionStart, and the git guard before the Bash call), that the git guard read the command
+line (the hook log names the programs it parsed: `git`), that no WorktreeCreate hook ran and
+Claude Code made its own worktree, and that it removed it. When everything passes it records
+the Claude Code version in `~/.claude/cc-smart-dev-kit/live-check.json`. The temp folder is
+removed.
 
 Setup only changes the keys it owns. Before each change it makes a backup in
 `~/.claude/cc-smart-dev-kit/backups/` (a private folder, one subfolder per file), never beside
@@ -1539,8 +1539,8 @@ and optional shared folders for containers or users on one host, in
 The plugin's hooks run in every project. Most stay silent in a **project without
 `.claude/cc-smart-dev-kit.json`**; the ones that are about your machine, not a project —
 `agent-guard`, `fable-session`, `notify` and `playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
-every project uses Claude Code's own worktrees (§ Worktrees); the deprecated engine's three
-hooks run only where a project still wires them. Each hook runs through `bin/cc-smart-dev-kit-bun.sh`, which finds bun even when your
+every project uses Claude Code's own worktrees (§ Worktrees); the retired engine's three hook
+names only print the fix where a project still wires them. Each hook runs through `bin/cc-smart-dev-kit-bun.sh`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
 `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, and bun on PATH. It starts bun with
 `--no-env-file` and the plugin's own empty `bunfig.toml`, so a hook never reads the working
@@ -2033,56 +2033,26 @@ made no changes. After a merge, the
 after-merge note asks the session to clear the one it worked in. `cc-smart-dev-kit worktrees`
 finds the repo's finished ones (§ below).
 
-**The plugin's worktree engine is deprecated.** It still works in this release for a project
-that wired it into its own `.claude/settings.json`
-(`cc-smart-dev-kit hook worktree-create`, `worktree-remove`, `subagent-stop`, with
-`worktrees.prefix` and `worktrees.setup`), and it retires in the next minor version.
-`cc-smart-dev-kit doctor` warns and names the steps to move: take those three hook lines out,
-drop `worktrees.engine`, `worktrees.prefix` and `worktrees.setup` from
-`.claude/cc-smart-dev-kit.json`, and add `"worktree": {"baseRef": "head"}` to
-`.claude/settings.json` when the base branch is not the repo's default branch.
+**The plugin's own worktree engine was retired in 1.0.0.** A project that still has what it
+left fixes it with one run of `cc-smart-dev-kit project init` (`--dry-run` shows the `-` lines
+first, and writes nothing):
 
-For a project still on the engine, these are the exact lines `cc-smart-dev-kit hook` prints:
+- **Its fields are refused.** A `.claude/cc-smart-dev-kit.json` that still sets
+  `worktrees.prefix`, `worktrees.setup` or `worktrees.engine` does not load: every hook that
+  reads the file fails closed (a guard asks before every call in its domain), and the error
+  names each field — "`worktrees.prefix` is no longer supported: remove it — Claude Code's own
+  worktrees need none". `project init` removes them; `cc-smart-dev-kit doctor` names them.
+- **Its hook lines fail.** A line in `.claude/settings.json` or `.claude/settings.local.json`
+  that runs `cc-smart-dev-kit hook worktree-create`, `worktree-remove` or `subagent-stop` now
+  prints the fix and exits 2, so Claude Code cannot make a worktree while the
+  WorktreeCreate line is there. `project init` takes exactly those lines out — every other hook
+  in the same list stays — and `doctor` names each file that still has one.
+- **A base branch that is not the repo's default** needs `"worktree": {"baseRef": "head"}` in
+  `.claude/settings.json`; `project init` adds it.
 
-```json
-{
-  "hooks": {
-    "WorktreeCreate": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook worktree-create",
-            "timeout": 600
-          }
-        ]
-      }
-    ],
-    "WorktreeRemove": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook worktree-remove",
-            "timeout": 60
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook subagent-stop",
-            "timeout": 60
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+A committed file counts too: the merge guard reads the policy committed on the pull
+request's base, so until the fixed file is committed and pushed there, a merge asks and names
+the field.
 
 ### Clearing the finished ones: `cc-smart-dev-kit worktrees`
 
@@ -2142,9 +2112,12 @@ copy them from this page:
   the default branch gets no line.
 
 It writes no worktree hook: every project uses Claude Code's own worktrees (§ Worktrees).
-The deprecated engine fields (`worktrees.engine`, `worktrees.prefix`, `worktrees.setup`) are
-never asked for or added; a file that already has them keeps them, and `cc-smart-dev-kit doctor`
-names the steps to move.
+**It takes out what the retired worktree engine left:** the fields `worktrees.prefix`,
+`worktrees.setup` and `worktrees.engine` (a file that holds one no longer loads), and every
+`cc-smart-dev-kit hook worktree-create|worktree-remove|subagent-stop` line in
+`.claude/settings.json` and `.claude/settings.local.json`. Each is a `-` line in the plan
+before anything is written; every other hook stays. The engine's old flags (`--prefix`,
+`--setup`, `--no-setup`, `--engine`) are refused, exit 2.
 
 It asks first and shows every default, which it reads from the repo: the base branch from
 `origin/HEAD` — else the repo's only branch when it has one (a repo whose only branch is `dev`
@@ -2152,10 +2125,10 @@ works from `dev`, never from a `main` it does not have), else `main`, else `mast
 branch HEAD is on — the bases offered for `hotfix/` and `release/` from the default branch,
 and the protected branches from the default branch and the base plus, when `gh` is installed
 and answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
-quietly). Then it prints the file it will write with the changes line by line, the line it
-adds to (or takes out of) `.claude/settings.json`, and writes both — a backup first, in
+quietly). Then it prints the file it will write with the changes line by line, the lines it
+adds to (`+`) or takes out of (`-`) each settings file, and writes them — a backup first, in
 `~/.claude/cc-smart-dev-kit/backups/`. **Nothing is committed:** commit the two files with the
-project.
+project (`.claude/settings.local.json` is your own, and stays uncommitted).
 
 Every question has a flag, so it also runs without a terminal:
 
@@ -2164,7 +2137,9 @@ cc-smart-dev-kit project init --base dev --bases "hotfix/=main,release/=main" \
   --protected "main,dev" --guard-main-folder --session-names --workflow "openPr=draft"
 ```
 
-`cc-smart-dev-kit project init --help` lists them all. With no terminal it writes nothing unless
+`cc-smart-dev-kit project init --help` lists them all; each yes/no question has a `--no-` flag
+too (`--no-guard-main-folder`, `--no-session-names`, `--no-job-route`), so a run with no
+terminal can answer either way. With no terminal it writes nothing unless
 `--yes` is given: it prints the plan and the line to run instead. `--dry-run` prints the plan
 and writes nothing at all. Run it again on a project that has a file: it shows the diff and
 asks, and `--yes` keeps every field the flags do not set. A `requires` the file already has
@@ -2363,11 +2338,11 @@ every question it holds.
 | `requires` | The plugin versions this project needs, as a version range (npm syntax). Checked first: a project needing a newer plugin is told to update, not that a field is unknown. |
 | `worktrees` | Turns on the notes and guards that work with worktrees (the after-merge and leftovers notes, the stash question, the main-folder guard). Every project uses Claude Code's own worktrees (§ Worktrees). |
 | `worktrees.base` | The branch a new worktree starts from and pull requests go into; the base the after-merge and leftovers notes compare with. |
-| `worktrees.prefix` | **Deprecated** with the plugin's worktree engine: the folder-name prefix of a worktree beside the repo. Optional since 0.5.2; the engine retires in the next minor version. |
-| `worktrees.setup` | **Deprecated** with the plugin's worktree engine: a command it ran inside a new worktree, as a list of words (`["bun", "install"]`). A project on Claude Code's own worktrees runs its install itself. |
+| `worktrees.prefix` | **Retired in 1.0.0, and refused**: the folder-name prefix the plugin's worktree engine gave a worktree beside the repo. A file that still sets it does not load; `cc-smart-dev-kit project init` removes it (§ Worktrees). |
+| `worktrees.setup` | **Retired in 1.0.0, and refused**: a command the engine ran inside a new worktree. A project runs its own install itself; `cc-smart-dev-kit project init` removes the field. |
 | `worktrees.guardMainFolder` | `true`: refuse edits in the main checkout itself. Off when left out. |
 | `worktrees.bases` | A branch-name prefix (ending in `/`) to the base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch's requests go into `base`. Auto-merge and the after-merge note read it; to start a task from another base, switch the main checkout to it first with `baseRef: "head"`, or `git worktree add` it as Claude Code's docs say. |
-| `worktrees.engine` | **Deprecated**: `"plugin"` or `"own"` said who made the project's worktrees. Accepted and ignored until the engine retires in the next minor version; `doctor` names the steps to move. |
+| `worktrees.engine` | **Retired in 1.0.0, and refused**: it said who made the project's worktrees. Every project uses Claude Code's own; `cc-smart-dev-kit project init` removes the field. |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
 | `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). A retired hook name (`serena-root`, 0.6.0) is still accepted and silences nothing. |
@@ -2384,9 +2359,9 @@ plugin says so and asks you to run `claude plugin update cc-smart-dev-kit@cc-sma
 uses a field raises its `requires` to the release that brought the field: a file written
 without `worktrees.prefix` asks for at least `>=0.5.2`, the version that made it optional, so
 a teammate on an older plugin is told to update instead of failing the file's parse.
-`worktrees.prefix`, `worktrees.setup` and `worktrees.engine` stay accepted until the
-plugin's worktree engine retires in the next minor version; `cc-smart-dev-kit doctor` warns
-and names the steps to move.
+`worktrees.prefix`, `worktrees.setup` and `worktrees.engine` retired with the plugin's
+worktree engine in 1.0.0: a file that still sets one does not load, and the error names each
+field and the fix, `cc-smart-dev-kit project init`.
 
 ## Develop
 

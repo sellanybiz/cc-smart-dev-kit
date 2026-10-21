@@ -1,5 +1,5 @@
 /**
- * `cc-smart-dev-kit project init`: the two files a project opts in with.
+ * `cc-smart-dev-kit project init`: the files a project opts in with.
  *
  * - `.claude/cc-smart-dev-kit.json` — the project's settings: the worktrees, the protected
  *   branches, the guards, and (optionally) the workflow policy.
@@ -8,28 +8,35 @@
  *   the branch the session is on rather than from `origin`'s default branch, which is what a
  *   project whose work branches from another branch needs.
  *
- * Every project uses Claude Code's own worktrees (`<repo>/.claude/worktrees/<name>` on
- * `worktree-<name>`), so no WorktreeCreate or WorktreeRemove hook is written. The plugin's
- * old engine's fields (`worktrees.prefix`, `worktrees.setup`, `worktrees.engine`) are
- * deprecated: a file that already has them keeps them; this command neither asks for them
- * nor writes them.
+ * **It cleans up after the retired worktree engine.** Every project uses Claude Code's own
+ * worktrees (`<repo>/.claude/worktrees/<name>` on `worktree-<name>`), which need no hook. The
+ * plugin's old engine retired in `WORKTREE_ENGINE_RETIRED_IN`: a file that still holds one of
+ * its fields (`RETIRED_WORKTREE_FIELDS`) no longer loads, and a settings line that still runs
+ * `cc-smart-dev-kit hook worktree-create|worktree-remove|subagent-stop` fails every time it
+ * runs. So the plan takes those fields out of the project's file, and those lines out of
+ * `.claude/settings.json` and `.claude/settings.local.json`, shown as `-` lines before
+ * anything is written. Every other key, hook and handler stays exactly as it is.
  *
- * `planProjectInit` is pure: the two files as text (null: not there) and the answers go in;
- * the text each file will hold and the changes to show come back. The command asks its
- * questions first, prints the plan, and writes it with `applyProjectInit`. Nothing here
- * commits: both files belong to the project, and the person commits them.
+ * `planProjectInit` is pure: the files as text (null: not there) and the answers go in; the
+ * text each file will hold and the changes to show come back. The command asks its questions
+ * first, prints the plan, and writes it with `applyProjectInit`. Nothing here commits: the
+ * files belong to the project, and the person commits them.
  *
  * **Why not `writeManagedFile`:** that records a file in `<stateDir>/changed.json`, the list
  * `restore` undoes on this machine. A committed project file must never be reverted by a
- * later `restore`, so these two are written with a backup and an atomic write only.
+ * later `restore`, so these are written with a backup and an atomic write only.
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { VERSION } from "../build-info";
+import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
 import { detectIndent, isObject } from "../setup/managed-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import type { Workflow } from "../workflow/schema";
-import { WORKTREE_PREFIX_OPTIONAL_SINCE } from "./config";
+import {
+  RETIRED_WORKTREE_FIELDS,
+  WORKTREE_ENGINE_RETIRED_IN,
+  WORKTREE_PREFIX_OPTIONAL_SINCE,
+} from "./config";
 
 /** One question's answer, as the flags and the terminal gave it. */
 export interface ProjectInitAnswers {
@@ -52,15 +59,36 @@ export interface ProjectInitAnswers {
 }
 
 export interface ProjectInitInput {
-  /** The repo root: `<root>/.claude/` holds both files. */
+  /** The repo root: `<root>/.claude/` holds the files. */
   root: string;
   /** `.claude/cc-smart-dev-kit.json` as it is now, or null. */
   existing: string | null;
   /** `.claude/settings.json` as it is now, or null. */
   existingSettings: string | null;
+  /** `.claude/settings.local.json` as it is now, or null: only an engine line is taken out of it. */
+  existingLocalSettings: string | null;
   /** The repo's default branch, which `answers.base` is compared with. */
   defaultBranch: string;
   answers: ProjectInitAnswers;
+}
+
+/** What the plan does to one of the project's Claude Code settings files. */
+export interface SettingsFilePlan {
+  file: string;
+  /** What the file will hold; the file's own text when nothing changes. */
+  text: string;
+  /** True when the plan changes the file. */
+  changed: boolean;
+  /** The lines added, as the person reads them (`worktree.baseRef: "head"`). */
+  adds: string[];
+  /** The retired engine's lines taken out (`hooks.WorktreeCreate: <command>`). */
+  removes: string[];
+  /**
+   * Both, as every screen shows them: each removed line as `- <line>`, then each added one as
+   * `+ <line>`. One home for the shape: `project init` prints these, and the portal's preview
+   * box draws them (in the page and in the browser, from the plan's JSON).
+   */
+  lines: string[];
 }
 
 export interface ProjectInitPlan {
@@ -69,15 +97,12 @@ export interface ProjectInitPlan {
   text: string;
   /** True when it differs from the file now. */
   changed: boolean;
-  /** The changes, one line each: `+ <key>: <value>`, `~ <key>: <old> -> <new>`, `- <key>`. */
+  /** The changes, one line each: `+ <key>: <value>`, `~ <key>: <old> -> <new>`, `- <key>: <value>`. */
   diff: string[];
-  settingsFile: string;
-  /** What the settings file will hold (Claude Code's `worktree.baseRef` merged in). */
-  settingsText: string;
-  /** True when a line is added to the settings file. */
-  settingsChanged: boolean;
-  /** The settings lines added, as the person reads them. */
-  settingsAdds: string[];
+  /** `.claude/settings.json`: Claude Code's `worktree.baseRef` merged in, the engine's lines out. */
+  settings: SettingsFilePlan;
+  /** `.claude/settings.local.json`: the engine's lines out, nothing ever added. */
+  localSettings: SettingsFilePlan;
   /** What to know, printed with the plan. */
   notes: string[];
 }
@@ -95,19 +120,8 @@ const FILE_ORDER = [
   "workflow",
 ];
 
-/**
- * The order inside `worktrees`: the fields this command writes, and the deprecated engine's
- * fields a file may keep, so a file that does not change is not rewritten. Every project's
- * own extra keys stay after them.
- */
-const WORKTREE_ORDER = ["base", "prefix", "setup", "guardMainFolder", "bases", "engine"];
-
-/**
- * The deprecated engine fields a file may still carry. `project init` leaves them exactly as
- * they are: a project wired to the engine keeps working until the engine retires, and
- * `doctor` names the steps to move.
- */
-const DEPRECATED_WORKTREE_FIELDS = ["prefix", "setup", "engine"] as const;
+/** The order inside `worktrees`: the fields this command writes. Every other key stays after them. */
+const WORKTREE_ORDER = ["base", "guardMainFolder", "bases"];
 
 /** The known keys first, in their order; a key this command does not know keeps its place after them. */
 function orderKeys(
@@ -213,18 +227,91 @@ function withBaseRef(
   return { settings: { ...settings, worktree }, added: ['worktree.baseRef: "head"'] };
 }
 
-/** The project's two files, as the answers would leave them. */
+/**
+ * The settings file without a handler that runs a retired engine hook (`retiredEngineHookOf`).
+ * Only those handlers go: every other handler in the same group, every other group in the same
+ * event, and every other event stay exactly as they are. A group, an event list or the
+ * `hooks` object that held nothing but engine lines goes with its last one, so no empty
+ * `"hooks": {}` is left behind. Each removed handler is one line, `hooks.<Event>: <command>`.
+ */
+function withoutEngineHooks(settings: Record<string, unknown>): {
+  settings: Record<string, unknown>;
+  removed: string[];
+} {
+  if (!isObject(settings.hooks)) return { settings, removed: [] };
+  const removed: string[] = [];
+  const hooks: Record<string, unknown> = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    let touched = false;
+    const kept: unknown[] = [];
+    for (const group of groups) {
+      if (!isObject(group) || !Array.isArray(group.hooks)) {
+        kept.push(group);
+        continue;
+      }
+      const handlers = group.hooks.filter((handler: unknown) => {
+        const command = describeHandler(handler);
+        if (retiredEngineHookOf(command) === null) return true;
+        removed.push(`hooks.${event}: ${command}`);
+        return false;
+      });
+      if (handlers.length === group.hooks.length) {
+        kept.push(group);
+        continue;
+      }
+      touched = true;
+      if (handlers.length > 0) kept.push({ ...group, hooks: handlers });
+    }
+    if (!touched) hooks[event] = groups;
+    else if (kept.length > 0) hooks[event] = kept;
+  }
+  if (removed.length === 0) return { settings, removed };
+  const next: Record<string, unknown> = { ...settings, hooks };
+  if (Object.keys(hooks).length === 0) delete next.hooks;
+  return { settings: next, removed };
+}
+
+/**
+ * One settings file as the plan leaves it: the engine's lines out, then (for
+ * `.claude/settings.json` only) the `baseRef` line in. Unchanged, `text` is the file's own.
+ */
+function settingsPlan(file: string, existing: string | null, head: boolean): SettingsFilePlan {
+  const cleaned = withoutEngineHooks(parseObject(existing, file));
+  const merged = withBaseRef(cleaned.settings, head);
+  const changed = cleaned.removed.length > 0 || merged.added.length > 0;
+  return {
+    file,
+    // Nothing changed: the file's own text, so `text` is what the file would hold (a caller
+    // that writes it anyway writes what is already there).
+    text:
+      !changed && existing !== null
+        ? existing
+        : `${JSON.stringify(merged.settings, null, detectIndent(existing ?? ""))}\n`,
+    changed,
+    adds: merged.added,
+    removes: cleaned.removed,
+    lines: [
+      ...cleaned.removed.map((line) => `- ${line}`),
+      ...merged.added.map((line) => `+ ${line}`),
+    ],
+  };
+}
+
+/** The project's files, as the answers would leave them. */
 export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
-  const { root, existing, existingSettings, defaultBranch, answers } = input;
+  const { root, existing, existingSettings, existingLocalSettings, defaultBranch, answers } = input;
   const file = join(root, ".claude", "cc-smart-dev-kit.json");
-  const settingsFile = join(root, ".claude", "settings.json");
   const before = parseObject(existing, file);
   const beforeWorktrees = isObject(before.worktrees) ? before.worktrees : {};
   const beforeJobs = isObject(before.jobs) ? before.jobs : {};
 
-  // The fields every project has; a deprecated engine field the file already carries stays
-  // exactly as it is, so a project wired to the engine keeps working until it retires.
+  // The fields every project has; a retired engine field goes, so the file loads again.
   const worktrees: Record<string, unknown> = { ...beforeWorktrees };
+  for (const field of RETIRED_WORKTREE_FIELDS) delete worktrees[field];
   worktrees.base = answers.base;
   if (answers.guards.guardMainFolder) worktrees.guardMainFolder = true;
   else delete worktrees.guardMainFolder;
@@ -232,16 +319,13 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   else delete worktrees.bases;
 
   const next: Record<string, unknown> = { ...before };
-  // A file this command writes without `worktrees.prefix` needs at least the plugin version
-  // that made it optional; a file that keeps a prefix needs only this plugin's own minor.
-  next.requires =
-    worktrees.prefix === undefined
-      ? raisedRequires(
-          before.requires,
-          `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
-          WORKTREE_PREFIX_OPTIONAL_SINCE,
-        )
-      : raisedRequires(before.requires, requiresFor(VERSION), VERSION);
+  // A file without `worktrees.prefix` needs at least the plugin version that made it
+  // optional: an older plugin still requires the field and refuses the whole file.
+  next.requires = raisedRequires(
+    before.requires,
+    `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+    WORKTREE_PREFIX_OPTIONAL_SINCE,
+  );
   next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
   if (answers.protectedBranches.length > 0) next.protectedBranches = answers.protectedBranches;
   else delete next.protectedBranches;
@@ -260,15 +344,16 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   // Claude Code cuts a new worktree from origin's default branch. A project whose base branch
   // is another one sets `baseRef: "head"`, so a worktree starts from the branch the session
   // is on; with the default branch as its base it needs nothing.
-  const settingsNow = parseObject(existingSettings, settingsFile);
-  const merged = withBaseRef(settingsNow, answers.base !== defaultBranch);
-  const settingsChanged = merged.added.length > 0;
-  // Nothing changed: the file's own text, so `settingsText` is what the file would hold (a
-  // caller that writes it anyway writes what is already there).
-  const settingsText =
-    !settingsChanged && existingSettings !== null
-      ? existingSettings
-      : `${JSON.stringify(merged.settings, null, detectIndent(existingSettings ?? ""))}\n`;
+  const settings = settingsPlan(
+    join(root, ".claude", "settings.json"),
+    existingSettings,
+    answers.base !== defaultBranch,
+  );
+  const localSettings = settingsPlan(
+    join(root, ".claude", "settings.local.json"),
+    existingLocalSettings,
+    false,
+  );
 
   const notes: string[] = [];
   if (answers.base !== defaultBranch) {
@@ -276,12 +361,15 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       `base ${answers.base} is not the repo's default branch ${defaultBranch}: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`,
     );
   }
-  const deprecated = DEPRECATED_WORKTREE_FIELDS.filter((field) =>
-    Object.hasOwn(beforeWorktrees, field),
-  );
-  if (deprecated.length > 0) {
+  const retired = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(beforeWorktrees, field));
+  const engineLines = settings.removes.length + localSettings.removes.length;
+  if (retired.length > 0 || engineLines > 0) {
+    const what = [
+      ...(retired.length > 0 ? [retired.map((field) => `worktrees.${field}`).join(", ")] : []),
+      ...(engineLines > 0 ? [`its hook line${engineLines === 1 ? "" : "s"}`] : []),
+    ].join(" and ");
     notes.push(
-      `the project's file still sets ${deprecated.map((field) => `worktrees.${field}`).join(", ")}: the worktree engine is deprecated and retires in the next minor version; \`cc-smart-dev-kit doctor\` names the steps to move`,
+      `the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}: ${what} ${retired.length + engineLines === 1 ? "goes" : "go"}, because Claude Code's own worktrees need none`,
     );
   }
   return {
@@ -289,10 +377,8 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     text,
     changed: text !== existing,
     diff: diffOf(before, after),
-    settingsFile,
-    settingsText,
-    settingsChanged,
-    settingsAdds: merged.added,
+    settings,
+    localSettings,
     notes,
   };
 }
@@ -317,7 +403,9 @@ export function applyProjectInit(
 ): ProjectInitWrite[] {
   const wanted: Array<[string, string]> = [];
   if (plan.changed) wanted.push([plan.file, plan.text]);
-  if (plan.settingsChanged) wanted.push([plan.settingsFile, plan.settingsText]);
+  for (const settings of [plan.settings, plan.localSettings]) {
+    if (settings.changed) wanted.push([settings.file, settings.text]);
+  }
   return wanted.map(([file, text]) => {
     const created = !existsSync(file);
     if (options.dryRun === true) return { file, created, backup: null };

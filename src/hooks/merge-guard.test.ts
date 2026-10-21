@@ -29,7 +29,7 @@ const HEAD = "a".repeat(40);
 
 const CONFIG = {
   requires: ">=0.4",
-  worktrees: { base: "dev", prefix: "app-wt-" },
+  worktrees: { base: "dev" },
   workflow: { autoMerge: true },
 };
 
@@ -358,7 +358,7 @@ describe("every condition that asks", () => {
   test("no workflow at all: autoMerge is off by default", async () => {
     const { env, repo } = ready({
       requires: ">=0.4",
-      worktrees: { base: "dev", prefix: "app-wt-" },
+      worktrees: { base: "dev" },
     });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
       stdout: willNotMerge("this pull request", OFF_BY_DEFAULT),
@@ -405,7 +405,7 @@ describe("every condition that asks", () => {
 
   test("the base is the repository's default branch: asking is a release decision", async () => {
     const { env, repo } = ready(
-      { ...CONFIG, worktrees: { base: "main", prefix: "app-wt-" } },
+      { ...CONFIG, worktrees: { base: "main" } },
       {
         repo: JSON.stringify({ defaultBranchRef: { name: "main" } }),
         view: JSON.stringify({ baseRefName: "main", headRefOid: HEAD, number: 7 }),
@@ -422,7 +422,7 @@ describe("every condition that asks", () => {
   test("the base feeds another branch family (worktrees.bases): asks", async () => {
     const { env, repo } = ready({
       ...CONFIG,
-      worktrees: { base: "dev", prefix: "app-wt-", bases: { "release/": "dev" } },
+      worktrees: { base: "dev", bases: { "release/": "dev" } },
     });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
       stdout: willNotMerge(
@@ -1336,6 +1336,15 @@ describe("the review gate is read as committed on the pull request's base (CM-1)
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
     expect(await reasonFor(env, repo)).toStartWith(
       "cc-smart-dev-kit will not merge this pull request by itself: the merge policy committed on dev cannot be read: origin/dev:.claude/cc-smart-dev-kit.json: this project needs cc-smart-dev-kit >=99",
+    );
+  });
+
+  test("D20: a committed base file that still holds a retired engine field: asks, naming the field", async () => {
+    const { env, repo } = ready({ ...CONFIG, worktrees: { base: "dev", prefix: "app-wt-" } });
+    // The working copy is clean; only the committed policy still holds the field.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    expect(await reasonFor(env, repo)).toStartWith(
+      "cc-smart-dev-kit will not merge this pull request by itself: the merge policy committed on dev cannot be read: Invalid origin/dev:.claude/cc-smart-dev-kit.json: worktrees.prefix is no longer supported: remove it — Claude Code's own worktrees need none. `cc-smart-dev-kit project init` removes it (README § Worktrees).",
     );
   });
 

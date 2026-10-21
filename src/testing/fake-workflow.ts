@@ -133,11 +133,24 @@ function fakePlan(input: ProjectInitInput): ProjectInitPlan {
     changed: text !== input.existing,
     diff: [`+ worktrees.base: ${JSON.stringify(input.answers.base)}`],
     file,
+    // The personal settings file changes only for an engine line, which no fake plan has.
+    localSettings: {
+      adds: [],
+      changed: false,
+      file: `${input.root}/.claude/settings.local.json`,
+      lines: [],
+      removes: [],
+      text: input.existingLocalSettings ?? "{}\n",
+    },
     notes: [],
-    settingsAdds,
-    settingsChanged: settingsAdds.length > 0,
-    settingsFile,
-    settingsText,
+    settings: {
+      adds: settingsAdds,
+      changed: settingsAdds.length > 0,
+      file: settingsFile,
+      lines: settingsAdds.map((line) => `+ ${line}`),
+      removes: [],
+      text: settingsText,
+    },
     text,
   };
 }
@@ -173,7 +186,9 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
       if (opts.dryRun === true) return [];
       const wanted: Array<[string, string]> = [];
       if (plan.changed) wanted.push([plan.file, plan.text]);
-      if (plan.settingsChanged) wanted.push([plan.settingsFile, plan.settingsText]);
+      for (const settings of [plan.settings, plan.localSettings]) {
+        if (settings.changed) wanted.push([settings.file, settings.text]);
+      }
       return wanted.map(([file, text]) => {
         written.set(file, text);
         return { backup: null, created: true, file };

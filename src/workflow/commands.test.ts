@@ -32,7 +32,7 @@ function context(
 
 const SETTINGS = {
   requires: ">=0.1",
-  worktrees: { base: "main", prefix: "app-wt-", setup: ["bun", "install"] },
+  worktrees: { base: "main" },
   protectedBranches: ["main"],
   sessionNames: true,
 };
@@ -180,7 +180,7 @@ describe("workflow set and unset", () => {
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
     writeFileSync(
       file,
-      `{\n    "worktrees": { "base": "main", "prefix": "app-wt-" },\n    "autoMode": ["one rule"]\n}\n`,
+      `{\n    "worktrees": { "base": "main", "guardMainFolder": true },\n    "autoMode": ["one rule"]\n}\n`,
     );
     const run = context(repo, env);
     expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
@@ -191,7 +191,7 @@ describe("workflow set and unset", () => {
         "{",
         '    "worktrees": {',
         '        "base": "main",',
-        '        "prefix": "app-wt-"',
+        '        "guardMainFolder": true',
         "    },",
         '    "autoMode": [',
         '        "one rule"',
@@ -203,6 +203,21 @@ describe("workflow set and unset", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("D20: --project on a file that still holds a retired engine field: refused, naming it, nothing written", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", setup: ["bun", "install"] },
+    });
+    const before = readFileSync(file, "utf8");
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `Invalid ${file}: worktrees.setup is no longer supported: remove it — Claude Code's own worktrees need none. \`cc-smart-dev-kit project init\` removes it (README § Worktrees).`,
+    ]);
+    expect(readFileSync(file, "utf8")).toBe(before);
   });
 
   test("a project switch is written as the field the project already reads", async () => {

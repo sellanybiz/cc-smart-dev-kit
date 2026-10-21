@@ -8,7 +8,6 @@ import {
   runHook,
   wireProjectHook,
   writeClaudeFile,
-  writeSessionRecord,
 } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir, withSlowGit } from "../testing/temp";
 import { createLockFile } from "./create-lock";
@@ -23,7 +22,6 @@ import {
   isSubagentName,
   readBaseRef,
   reuseDecision,
-  SETUP_MARKER,
   subagentShape,
 } from "./worktree-create";
 
@@ -41,10 +39,8 @@ const head = (folder: string, ref = "HEAD") => git(folder, "rev-parse", ref).tri
 const branchOf = (folder: string) => git(folder, "symbolic-ref", "--short", "HEAD").trim();
 
 /** Turns the worktree engine on in `repo`: `worktrees` in its cc-smart-dev-kit.json. */
-function optIn(repo: string, setup?: string[]): void {
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-    worktrees: { base: "main", prefix: "app-wt-", ...(setup === undefined ? {} : { setup }) },
-  });
+function optIn(repo: string): void {
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
 }
 
 const AGENT = "agent-0a1b2c3d4e5f60718";
@@ -157,21 +153,11 @@ describe("a subagent's worktree: Claude Code's shape, no setup", () => {
     const { repo } = makeClone();
     optIn(repo);
     const env = hookEnv();
-    const session = (await create(repo, "fix/session", env)).stdout ?? "";
-    expect(session).toBe(join(dirname(repo), "app-wt-fix-session"));
+    const session = join(dirname(repo), "my-app-session");
+    git(repo, "worktree", "add", "-q", "-b", "fix/session", session);
     expect(await create(session, AGENT, env)).toEqual({
       stdout: join(repo, ".claude", "worktrees", AGENT),
     });
-  });
-
-  test("the project's setup does not run for a subagent", async () => {
-    const log = join(tempDir("setup"), "calls.log");
-    const repo = makeRepo();
-    optIn(repo, ["sh", "-c", `echo ran >> "${log}"`]);
-    expect(await create(repo, AGENT)).toEqual({
-      stdout: join(repo, ".claude", "worktrees", AGENT),
-    });
-    expect(existsSync(log)).toBe(false);
   });
 
   test("outside git: refused, exit 1", async () => {
@@ -201,12 +187,9 @@ describe(".worktreeinclude", () => {
     return repo;
   }
 
-  test.each([
-    ["a session's worktree", "fix/inc"],
-    ["a subagent's worktree", AGENT],
-  ])("%s: copies the gitignored files it names, never a tracked one", async (_kind, name) => {
+  test("a subagent's worktree: copies the gitignored files it names, never a tracked one", async () => {
     const repo = withIncludes();
-    const folder = (await create(repo, name)).stdout ?? "";
+    const folder = (await create(repo, AGENT)).stdout ?? "";
     expect(folder).not.toBe("");
     expect(readFileSync(join(folder, ".env"), "utf8")).toBe("A=1\n");
     expect(readFileSync(join(folder, "secrets", "key.txt"), "utf8")).toBe("k\n");
@@ -217,197 +200,26 @@ describe(".worktreeinclude", () => {
 });
 
 describe("a session's worktree", () => {
-  function configured(setup?: string[]) {
-    const { origin, repo } = makeClone();
-    optIn(repo, setup);
-    return { origin, repo, beside: dirname(repo) };
-  }
-
-  /** A commit on origin/main that the clone has not fetched yet. */
-  function advanceOrigin(origin: string): string {
-    const other = join(tempDir("other"), "other");
-    git(dirname(other), "clone", "-q", origin, other);
-    writeFileSync(join(other, "new.txt"), "new\n");
-    git(other, "add", "new.txt");
-    git(other, "commit", "-q", "-m", "newer");
-    git(other, "push", "-q", "origin", "main");
-    return head(other);
-  }
-
-  test("a new branch, beside the repo, from the freshly fetched origin/<base>", async () => {
-    const { origin, repo, beside } = configured();
-    const newest = advanceOrigin(origin);
-    const result = await create(repo, "fix/login");
-    const folder = join(beside, "app-wt-fix-login");
-    expect(result).toEqual({ stdout: folder });
-    expect(branchOf(folder)).toBe("fix/login");
-    expect(head(folder)).toBe(newest);
-    // It does not track the base: a plain push must not go to main.
-    expect(() => git(folder, "rev-parse", "--abbrev-ref", "@{upstream}")).toThrow();
-  });
-
-  test("a branch under a `worktrees.bases` prefix is cut from that prefix's base", async () => {
-    const { repo, beside } = configured();
-    // A `dev` branch on origin, ahead of main: a release branch must start from it.
-    git(repo, "checkout", "-q", "-b", "dev");
-    writeFileSync(join(repo, "release.txt"), "release work\n");
-    git(repo, "add", "release.txt");
-    git(repo, "commit", "-q", "-m", "release base");
-    const devHead = head(repo);
-    git(repo, "push", "-q", "origin", "dev");
-    git(repo, "checkout", "-q", "main");
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", bases: { "release/": "dev" } },
+  test("D20: refused: the engine that named its folder from worktrees.prefix was retired", async () => {
+    const { repo } = makeClone();
+    optIn(repo);
+    expect(await create(repo, "fix/login")).toEqual({
+      exitCode: 1,
+      stderr:
+        "worktree not created: the plugin's worktree engine was retired in 1.0.0, and with it the worktrees.prefix it named this folder with: take the \"cc-smart-dev-kit hook worktree-create\" line out of the project's settings (`cc-smart-dev-kit project init` does it), and Claude Code makes its own worktrees",
     });
-    const result = await create(repo, "release/1.0");
-    const folder = join(beside, "app-wt-release-1.0");
-    expect(result).toEqual({ stdout: folder });
-    expect(head(folder)).toBe(devHead);
-    expect(head(folder)).not.toBe(head(repo, "origin/main"));
-    // Every other branch still starts from `worktrees.base`.
-    await create(repo, "fix/plain");
-    expect(head(join(beside, "app-wt-fix-plain"))).toBe(head(repo, "origin/main"));
+    expect(git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)).toHaveLength(1);
   });
 
   test("a prefix that matches nothing, and the longest prefix", () => {
     const worktrees = {
       base: "main",
-      prefix: "app-wt-",
       bases: { "release/": "dev", "release/hotfix/": "stable" },
     };
     expect(baseForBranch(worktrees, "release/1.0")).toBe("dev");
     expect(baseForBranch(worktrees, "release/hotfix/urgent")).toBe("stable");
     expect(baseForBranch(worktrees, "fix/login")).toBe("main");
-    expect(baseForBranch({ base: "main", prefix: "app-wt-" }, "release/1.0")).toBe("main");
-  });
-
-  test("an existing local branch is checked out, not cut again", async () => {
-    const { repo, beside } = configured();
-    git(repo, "branch", "fix/old");
-    writeFileSync(join(repo, "x.txt"), "x\n");
-    git(repo, "add", "x.txt");
-    git(repo, "commit", "-q", "-m", "on main");
-    git(repo, "branch", "-f", "fix/old", "HEAD");
-    await create(repo, "fix/old");
-    expect(head(join(beside, "app-wt-fix-old"))).toBe(head(repo, "fix/old"));
-  });
-
-  test("a failed fetch refuses a new branch: it starts only from the latest base", async () => {
-    const { repo } = configured();
-    git(repo, "remote", "set-url", "origin", join(tempDir("gone"), "missing.git"));
-    const result = await create(repo, "fix/new");
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toStartWith("worktree not created: `git fetch origin main` failed (");
-    expect(result.stderr).toEndWith("): a new branch starts only from the latest main");
-  });
-
-  test("the setup command runs inside, once; its output never reaches stdout", async () => {
-    const log = join(tempDir("setup"), "calls.log");
-    const { repo, beside } = configured([
-      "sh",
-      "-c",
-      `echo ran >> "${log}"; pwd >> "${log}"; echo noise`,
-    ]);
-    const env = hookEnv();
-    const result = await create(repo, "fix/a", env);
-    const folder = join(beside, "app-wt-fix-a");
-    expect(result).toEqual({ stdout: folder });
-    expect(readFileSync(log, "utf8")).toBe(`ran\n${folder}\n`);
-    expect(
-      existsSync(join(git(folder, "rev-parse", "--absolute-git-dir").trim(), SETUP_MARKER)),
-    ).toBe(true);
-    // Entered again: setup does not run again.
-    expect(await create(repo, "fix/a", env)).toEqual({ stdout: folder });
-    expect(readFileSync(log, "utf8")).toBe(`ran\n${folder}\n`);
-  });
-
-  test("a failed setup: exit 1, the worktree stays, and entering it again runs setup again", async () => {
-    const flag = join(tempDir("flag"), "ok");
-    const { repo, beside } = configured([
-      "sh",
-      "-c",
-      `test -f "${flag}" || { echo broke >&2; exit 3; }`,
-    ]);
-    const env = hookEnv();
-    const folder = join(beside, "app-wt-fix-b");
-    const failed = await create(repo, "fix/b", env);
-    expect(failed.exitCode).toBe(1);
-    expect(failed.stderr).toBe(
-      `worktree not created: the setup command \`sh -c test -f "${flag}" || { echo broke >&2; exit 3; }\` exited 3 in ${folder}; the worktree stays, and entering it again runs setup again\nbroke`,
-    );
-    expect(existsSync(folder)).toBe(true);
-    writeFileSync(flag, "");
-    expect(await create(repo, "fix/b", env)).toEqual({ stdout: folder });
-  });
-
-  test("a setup command that does not exist: exit 1 with the reason", async () => {
-    const { repo } = configured(["no-such-command-cc-smart-dev-kit"]);
-    const result = await create(repo, "fix/c");
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toStartWith(
-      "worktree not created: the setup command `no-such-command-cc-smart-dev-kit` could not start:",
-    );
-  });
-
-  test("another running session works in the worktree: refused", async () => {
-    const { repo, beside } = configured();
-    const env = hookEnv();
-    await create(repo, "fix/shared", env);
-    writeSessionRecord(env, {
-      sessionId: "99999999-2222-3333-4444-555555555555",
-      cwd: join(beside, "app-wt-fix-shared"),
-      name: "other work",
-    });
-    const result = await create(repo, "fix/shared", env);
-    expect(result).toEqual({
-      exitCode: 1,
-      stderr: `worktree not created: the running session "other work" (process ${process.pid}) works in ${join(beside, "app-wt-fix-shared")}; two sessions must not share a folder`,
-    });
-  });
-
-  test("the asking session itself in it: entered again", async () => {
-    const { repo, beside } = configured();
-    const env = hookEnv();
-    await create(repo, "fix/mine", env);
-    writeSessionRecord(env, {
-      sessionId: SESSION,
-      cwd: join(beside, "app-wt-fix-mine"),
-      name: "me",
-    });
-    expect(await create(repo, "fix/mine", env)).toEqual({
-      stdout: join(beside, "app-wt-fix-mine"),
-    });
-  });
-
-  test("the main checkout's own branch: refused", async () => {
-    const { repo } = configured();
-    expect(await create(repo, "main")).toEqual({
-      exitCode: 1,
-      stderr:
-        "worktree not created: main is the main checkout's branch; name a branch of its own for this work",
-    });
-  });
-
-  test("a prefix with a / is refused", async () => {
-    const { repo } = makeClone();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "../x-" },
-    });
-    expect((await create(repo, "fix/d")).stderr).toBe(
-      'worktree not created: worktrees.prefix "../x-" must be part of a folder name, with no "/" or "\\"',
-    );
-  });
-
-  test("no worktrees.prefix: the deprecated engine fails closed and names the fix", async () => {
-    // The field is optional in the schema now, so a project wired to the engine can be
-    // missing it: there is no folder to make, and the message says how to move on.
-    const { repo } = makeClone();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
-    const result = await create(repo, "fix/d");
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain(
-      "worktrees.prefix is not set in .claude/cc-smart-dev-kit.json, and the deprecated worktree engine needs it to name its folder",
-    );
+    expect(baseForBranch({ base: "main" }, "release/1.0")).toBe("main");
   });
 });
 
@@ -460,15 +272,15 @@ describe("the create lock: one creation of a branch at a time", () => {
   test("a live holder refuses the create, naming its process and the file", async () => {
     const repo = makeRepo();
     optIn(repo);
-    const file = hold(join(repo, ".git"), "fix/busy");
-    const result = await create(repo, "fix/busy");
+    const file = hold(join(repo, ".git"), `worktree-${AGENT}`);
+    const result = await create(repo, AGENT);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toStartWith(
       "worktree not created: another cc-smart-dev-kit process (pid ",
     );
     expect(result.stderr).toContain("is making the worktree for this branch right now.");
     expect(result.stderr).toContain(`if that process is gone, remove ${file}`);
-    expect(existsSync(join(dirname(repo), "app-wt-fix-busy"))).toBe(false);
+    expect(existsSync(join(repo, ".claude", "worktrees", AGENT))).toBe(false);
     rmSync(file);
   });
 
@@ -485,9 +297,9 @@ describe("the create lock: one creation of a branch at a time", () => {
       }
     }
     expect(dead).toBeGreaterThan(0);
-    const file = hold(join(repo, ".git"), "fix/gone", dead);
-    const result = await create(repo, "fix/gone");
-    expect(result).toEqual({ stdout: join(dirname(repo), "app-wt-fix-gone") });
+    const file = hold(join(repo, ".git"), `worktree-${AGENT}`, dead);
+    const result = await create(repo, AGENT);
+    expect(result).toEqual({ stdout: join(repo, ".claude", "worktrees", AGENT) });
     // Released once the create is done.
     expect(existsSync(file)).toBe(false);
   });
@@ -495,9 +307,10 @@ describe("the create lock: one creation of a branch at a time", () => {
   test("the lock is released when the create fails too", async () => {
     const { repo } = makeClone();
     optIn(repo);
-    git(repo, "remote", "set-url", "origin", join(tempDir("gone"), "missing.git"));
-    const file = createLockFile(join(repo, ".git"), "fix/new");
-    expect((await create(repo, "fix/new")).exitCode).toBe(1); // the fetch fails: refused
+    // A folder there that is no worktree: refused.
+    mkdirSync(join(repo, ".claude", "worktrees", AGENT), { recursive: true });
+    const file = createLockFile(join(repo, ".git"), `worktree-${AGENT}`);
+    expect((await create(repo, AGENT)).exitCode).toBe(1);
     expect(existsSync(file)).toBe(false);
   });
 });

@@ -17585,19 +17585,1104 @@ function checkGitBash(platform, env, facts) {
 
 // src/cli/live-check.ts
 import {
-  existsSync as existsSync44,
-  mkdirSync as mkdirSync16,
+  existsSync as existsSync35,
+  mkdirSync as mkdirSync10,
   mkdtempSync as mkdtempSync4,
-  readFileSync as readFileSync45,
-  realpathSync as realpathSync5,
+  readFileSync as readFileSync36,
+  realpathSync as realpathSync4,
   rmSync as rmSync10,
-  writeFileSync as writeFileSync10
+  writeFileSync as writeFileSync6
 } from "fs";
-import { tmpdir as tmpdir6 } from "os";
-import { dirname as dirname14, join as join42 } from "path";
+import { tmpdir as tmpdir4 } from "os";
+import { dirname as dirname9, join as join29 } from "path";
+
+// src/hooks/run.ts
+import { appendFileSync as appendFileSync2 } from "fs";
+
+// src/project/config.ts
+import { existsSync as existsSync33, readFileSync as readFileSync35 } from "fs";
+
+// src/jobs/kinds.ts
+var matchRuleSchema = union([
+  strictObject({
+    tool: string2().min(1),
+    sub: array(string2().min(1)).optional(),
+    flags: array(string2().min(1)).optional(),
+    argIncludes: string2().min(1).optional(),
+    valued: array(string2().min(1)).optional()
+  }),
+  strictObject({
+    script: string2().min(1)
+  })
+]);
+var kindSpecSchema = strictObject({
+  gb: number2().int().min(0).max(1024),
+  filesGb: number2().int().min(0).max(1024).optional(),
+  maxFiles: number2().int().min(1).optional(),
+  printOnly: array(string2().min(1)).optional(),
+  skipWords: array(string2().min(1)).optional(),
+  valuedFlags: array(string2().min(1)).optional(),
+  workers: strictObject({
+    flag: string2().min(1),
+    aliases: array(string2().min(1)).optional(),
+    gbEach: number2().positive()
+  }).optional(),
+  match: array(matchRuleSchema).optional(),
+  about: string2().min(1).optional()
+});
+var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
+var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
+var TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
+var TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
+var VALUED = ["--config", "-c", "--max-warnings", "--reporter", "--project", "--root"];
+var TEST_WORKERS = { flag: "--maxWorkers", aliases: ["--max-workers"], gbEach: 0.5 };
+var DEFAULT_KINDS = {
+  tsc: {
+    about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
+    gb: 8,
+    printOnly: TSC_PRINT_ONLY,
+    match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
+  },
+  "lint:typed": {
+    about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
+    gb: 12,
+    filesGb: 6,
+    valuedFlags: VALUED,
+    printOnly: TEST_PRINT_ONLY,
+    match: [
+      { tool: "eslint", argIncludes: "typed" },
+      { tool: "eslint", argIncludes: "type-checked" },
+      { tool: "oxlint", flags: ["--type-aware"] }
+    ]
+  },
+  "test:coverage": {
+    about: "A test run with coverage (vitest or jest with --coverage).",
+    gb: 12,
+    printOnly: TEST_PRINT_ONLY,
+    workers: TEST_WORKERS,
+    match: [
+      { tool: "vitest", argIncludes: "--coverage" },
+      { tool: "jest", argIncludes: "--coverage" }
+    ]
+  },
+  "test:run": {
+    about: "A test run (vitest, jest). Up to 3 existing files: the small size.",
+    gb: 8,
+    filesGb: 2,
+    maxFiles: 3,
+    skipWords: ["run"],
+    valuedFlags: VALUED,
+    printOnly: TEST_PRINT_ONLY,
+    workers: TEST_WORKERS,
+    match: [{ tool: "vitest" }, { tool: "jest" }]
+  },
+  build: {
+    about: "A framework production build (next build).",
+    gb: 14,
+    match: [{ tool: "next", sub: ["build"] }]
+  },
+  "image:build": {
+    about: "A container image build (docker, podman, compose).",
+    gb: 14,
+    match: [
+      { tool: "docker", sub: ["build"] },
+      { tool: "docker", sub: ["image", "build"] },
+      { tool: "docker", sub: ["builder", "build"] },
+      { tool: "docker", sub: ["buildx", "build"] },
+      { tool: "docker", sub: ["buildx", "b"] },
+      { tool: "docker", sub: ["buildx", "bake"] },
+      { tool: "docker", sub: ["compose", "build"] },
+      { tool: "docker", sub: ["compose", "up"], flags: ["--build"] },
+      { tool: "docker", sub: ["compose", "run"], flags: ["--build"] },
+      { tool: "docker", sub: ["compose", "create"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["build"] },
+      { tool: "docker-compose", sub: ["up"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["run"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["create"], flags: ["--build"] },
+      { tool: "podman", sub: ["build"] },
+      { tool: "podman", sub: ["image", "build"] },
+      { tool: "buildah", sub: ["build"] }
+    ]
+  }
+};
+function mergeKinds(projectKinds) {
+  return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
+}
+function largestJobGb(kinds) {
+  return Math.max(0, ...Object.values(kinds).map((kind) => Math.max(kind.gb, kind.filesGb ?? 0)));
+}
+function positionals(kind, args) {
+  const valued = new Set(kind.valuedFlags ?? []);
+  const found = [];
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (valued.has(arg))
+      i++;
+    else if (!arg.startsWith("-"))
+      found.push(arg);
+  }
+  return found;
+}
+function reservedGb(kind, args, isFile) {
+  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
+  if (args.some((arg) => printOnly.has(arg.toLowerCase())))
+    return 0;
+  if (kind.filesGb === undefined)
+    return kind.gb;
+  const skip = new Set(kind.skipWords ?? []);
+  const given = positionals(kind, args);
+  const files = given.length > 0 && skip.has(given[0] ?? "") ? given.slice(1) : given;
+  const few = kind.maxFiles === undefined || files.length <= kind.maxFiles;
+  return few && files.length > 0 && files.every((path) => isFile(path)) ? kind.filesGb : kind.gb;
+}
+function workerCount(gb, gbEach, cores) {
+  return Math.max(1, Math.min(Math.floor(gb / gbEach), cores - 1));
+}
+function withWorkers(kind, command, workers) {
+  const [program, ...args] = command;
+  const spec = kind.workers;
+  if (spec === undefined)
+    return [program, ...args];
+  const names = [spec.flag, ...spec.aliases ?? []];
+  const chosen = args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
+  if (chosen)
+    return [program, ...args];
+  const flag = `${spec.flag}=${String(workers)}`;
+  const end = args.indexOf("--");
+  return end === -1 ? [program, ...args, flag] : [program, ...args.slice(0, end), flag, ...args.slice(end)];
+}
+
+// src/workers/names.ts
+var MAX_SESSION_NAME = 60;
+var MAX_TAG = 12;
+var LEAD_ROLE = "LEAD";
+var WORKER_ROLE = "W";
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
+function namePart(raw, max) {
+  const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
+  return plain.slice(0, Math.max(0, max)).replace(EDGE_SEPARATORS, "");
+}
+function partRule(max) {
+  return `1-${max} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+}
+var TAG_RULE = partRule(MAX_TAG);
+function isNameTag(value) {
+  return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
+}
+function withoutListRef(name) {
+  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+}
+var PART = "[A-Za-z0-9._-]+";
+var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
+var WORKER_SHAPE = new RegExp(`^${WORKER_ROLE}( ${PART}){2,4}$`);
+
+// src/workflow/schema.ts
+var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
+var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
+var PERCENT = { kind: "whole", max: 100, min: 1 };
+var AT_LEAST_ONE = { kind: "whole", min: 1 };
+var AT_LEAST_ZERO = { kind: "whole", min: 0 };
+var ABOVE_ZERO = { kind: "positive" };
+function numberSchema(rule) {
+  if (rule.kind === "positive")
+    return number2().positive();
+  const whole = number2().int().min(rule.min);
+  return rule.max === undefined ? whole : whole.max(rule.max);
+}
+var NUMBER_RULES = {
+  "alerts.usagePercent": PERCENT,
+  "workers.idleStopMinutes": AT_LEAST_ONE,
+  "workers.max": AT_LEAST_ONE,
+  "workers.memoryGb": ABOVE_ZERO,
+  "workers.quietMinutes": AT_LEAST_ONE,
+  "workers.handoffPercent": PERCENT,
+  "workers.softHours": ABOVE_ZERO,
+  "workers.maxHours": ABOVE_ZERO,
+  "fixesAfterReview.lines": AT_LEAST_ZERO,
+  "fixesAfterReview.files": AT_LEAST_ZERO,
+  "fixesAfterReview.percent": AT_LEAST_ZERO
+};
+function numberField(key) {
+  return numberSchema(NUMBER_RULES[key]).optional();
+}
+var tagSchema = string2().refine(isNameTag, TAG_RULE);
+var workflowSchema = strictObject({
+  autoCommit: boolean2().optional(),
+  autoPush: boolean2().optional(),
+  openPr: _enum(["off", "draft", "ready"]).optional(),
+  autoMerge: boolean2().optional(),
+  mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
+  deleteBranch: boolean2().optional(),
+  reviewBeforePush: boolean2().optional(),
+  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
+  fixesAfterReview: strictObject({
+    lines: numberField("fixesAfterReview.lines"),
+    files: numberField("fixesAfterReview.files"),
+    percent: numberField("fixesAfterReview.percent")
+  }).optional(),
+  clearWorktreeAfterMerge: boolean2().optional(),
+  alerts: strictObject({
+    events: alertEventsSchema.optional(),
+    sound: boolean2().optional(),
+    usagePercent: numberField("alerts.usagePercent")
+  }).optional(),
+  workers: strictObject({
+    enabled: boolean2().optional(),
+    idleStopMinutes: numberField("workers.idleStopMinutes"),
+    max: numberField("workers.max"),
+    memoryGb: numberField("workers.memoryGb"),
+    quietMinutes: numberField("workers.quietMinutes"),
+    handoffPercent: numberField("workers.handoffPercent"),
+    softHours: numberField("workers.softHours"),
+    maxHours: numberField("workers.maxHours"),
+    tag: tagSchema.optional()
+  }).optional()
+});
+var workflowDefaults = {
+  autoCommit: false,
+  autoPush: false,
+  openPr: "off",
+  autoMerge: false,
+  mergeMethod: "merge",
+  deleteBranch: false,
+  reviewBeforePush: true,
+  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  fixesAfterReview: {
+    lines: 200,
+    files: 10,
+    percent: 20
+  },
+  clearWorktreeAfterMerge: false,
+  alerts: {
+    events: [...ALERT_EVENTS],
+    sound: false,
+    usagePercent: 85
+  },
+  workers: {
+    enabled: false,
+    idleStopMinutes: 10,
+    max: 4,
+    memoryGb: 2,
+    quietMinutes: 20,
+    handoffPercent: 70,
+    softHours: 2,
+    maxHours: 4,
+    tag: null
+  }
+};
+var WORKERS_TAG_UNSET = "the main checkout's folder name";
+var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
+var POLICY_KEYS = [
+  "autoCommit",
+  "autoPush",
+  "openPr",
+  "autoMerge",
+  "mergeMethod",
+  "deleteBranch",
+  "reviewBeforePush",
+  "reviewAgents",
+  "fixesAfterReview.lines",
+  "fixesAfterReview.files",
+  "fixesAfterReview.percent",
+  "clearWorktreeAfterMerge",
+  "alerts.events",
+  "alerts.sound",
+  "alerts.usagePercent",
+  "workers.enabled",
+  "workers.idleStopMinutes",
+  "workers.max",
+  "workers.memoryGb",
+  "workers.quietMinutes",
+  "workers.handoffPercent",
+  "workers.softHours",
+  "workers.maxHours",
+  "workers.tag"
+];
+var REVIEW_GATE_KEYS = [
+  "autoMerge",
+  "reviewBeforePush",
+  "reviewAgents",
+  "fixesAfterReview.lines",
+  "fixesAfterReview.files",
+  "fixesAfterReview.percent"
+];
+var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
+var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+function isSwitchKey(key) {
+  return SWITCH_KEYS.includes(key);
+}
+function switchOf(key) {
+  return key.slice("switches.".length);
+}
+function workflowValue(workflow, key) {
+  const [head, tail] = key.split(".");
+  if (head === undefined || tail === undefined)
+    return workflow[head ?? ""];
+  const group = workflow[head];
+  if (typeof group !== "object" || group === null)
+    return;
+  return group[tail];
+}
+function isNumberKey(key) {
+  return Object.hasOwn(NUMBER_RULES, key);
+}
+function numberRuleText(key) {
+  const rule = NUMBER_RULES[key];
+  if (rule.kind === "positive")
+    return `${key} is a number above 0`;
+  return rule.max === undefined ? `${key} is a whole number, ${rule.min} or more` : `${key} is a whole number ${rule.min}-${rule.max}`;
+}
+function parseNumber(key, value) {
+  const rule = NUMBER_RULES[key];
+  const shape = rule.kind === "whole" ? /^\d+$/ : /^\d+(?:\.\d+)?$/;
+  const number = Number(value);
+  return shape.test(value) && numberSchema(rule).safeParse(number).success ? { ok: true, value: number } : { ok: false, why: numberRuleText(key) };
+}
+function parseWorkflowValue(key, text) {
+  const value = text.trim();
+  if (key === "openPr" || key === "mergeMethod") {
+    const words = key === "openPr" ? ["off", "draft", "ready"] : ["merge", "squash", "rebase"];
+    return words.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${words.join(", ")}` };
+  }
+  if (isNumberKey(key))
+    return parseNumber(key, value);
+  if (key === "workers.tag") {
+    return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
+  }
+  if (key === "reviewAgents") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0) {
+      return {
+        ok: false,
+        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:reviewer"
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
+  }
+  if (key === "alerts.events") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0)
+      return { ok: false, why: `alerts.events is a list of ${ALERT_EVENTS.join(", ")}` };
+    const unknown = named.filter((word) => !ALERT_EVENTS.includes(word));
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        why: `alerts.events: unknown ${unknown.join(", ")} (one of ${ALERT_EVENTS.join(", ")})`
+      };
+    }
+    const events = [...new Set(named)];
+    return { ok: true, value: events };
+  }
+  if (value === "true" || value === "false")
+    return { ok: true, value: value === "true" };
+  return { ok: false, why: `${key} is true or false` };
+}
+function showValue(key, value) {
+  if (key === "workers.tag" && value === null)
+    return `(${WORKERS_TAG_UNSET})`;
+  if (Array.isArray(value))
+    return value.join(", ");
+  return String(value);
+}
+
+// src/project/config.ts
+var PLUGIN_HOOK_NAMES = [
+  "git-guard",
+  "merge-guard",
+  "main-folder-guard",
+  "message-guard",
+  "agent-guard",
+  "fable-session",
+  "job-route",
+  "after-merge",
+  "review-record",
+  "worktree-leftovers",
+  "session-name"
+];
+var RETIRED_HOOK_NAMES = ["serena-root"];
+var WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2";
+var WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
+var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var ccSmartDevKitConfigSchema = strictObject({
+  requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
+  worktrees: strictObject({
+    base: string2().min(1),
+    guardMainFolder: boolean2().optional(),
+    bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
+      error: (issue) => {
+        const given = issue.input;
+        const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
+        return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
+      }
+    }).optional()
+  }).optional(),
+  protectedBranches: array(string2().min(1)).min(1).optional(),
+  sessionNames: boolean2().optional(),
+  instructions: boolean2().optional(),
+  autoMode: array(string2().min(1)).optional(),
+  jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+  workflow: workflowSchema.optional(),
+  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional()
+});
+
+class CcSmartDevKitConfigError extends Error {
+  name = "CcSmartDevKitConfigError";
+}
+
+class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitVersionError";
+}
+
+class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitRetiredFieldError";
+}
+function describeIssue(issue) {
+  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+  if (issue.code === "unrecognized_keys") {
+    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
+    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
+  }
+  return `${field}: ${issue.message}`;
+}
+function checkRequires(file, raw, pluginVersion) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return;
+  const requires = raw.requires;
+  if (typeof requires !== "string" || !isValidRange(requires))
+    return;
+  if (!satisfiesRange(pluginVersion, requires)) {
+    throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+  }
+}
+function retiredFieldMessage(field) {
+  return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
+}
+function checkRetiredFields(where, raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return;
+  const worktrees = raw.worktrees;
+  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
+    return;
+  const found = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+  if (found.length === 0)
+    return;
+  throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
+}
+function readOwnHooks(file) {
+  if (!existsSync33(file))
+    return null;
+  try {
+    const raw = JSON.parse(readFileSync35(file, "utf8"));
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
+  if (!existsSync33(file))
+    return null;
+  return parseCcSmartDevKitConfig(readFileSync35(file, "utf8"), file, pluginVersion);
+}
+function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
+  }
+  return checkCcSmartDevKitConfig(raw, where, pluginVersion);
+}
+function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
+  checkRequires(where, raw, pluginVersion);
+  checkRetiredFields(where, raw);
+  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(describeIssue).join("; ");
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
+  }
+  return parsed.data;
+}
+
+// src/project/resolve.ts
+import { existsSync as existsSync34, realpathSync as realpathSync3, statSync as statSync9 } from "fs";
+import { join as join28 } from "path";
+var MIN_GIT_VERSION = "2.31.0";
+var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+  return (args) => {
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: timeoutMs
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString()
+      };
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+    }
+  };
+}
+function requireGitVersion(git) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
+  if (!match)
+    return;
+  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
+    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
+  }
+}
+function findMainCheckout(git, cwd) {
+  const list = git(["worktree", "list", "--porcelain"]);
+  if (!list.ok)
+    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
+  const [firstEntry = ""] = list.stdout.split(`
+
+`);
+  const lines = firstEntry.split(`
+`);
+  if (lines.includes("bare"))
+    return null;
+  const pathLine = lines.find((line) => line.startsWith("worktree "));
+  if (!pathLine)
+    return null;
+  const path = pathLine.slice("worktree ".length);
+  if (!existsSync34(path) || lines.some((line) => line.startsWith("prunable"))) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  }
+  return realpathSync3(path);
+}
+function locateCheckout(cwd, options = {}) {
+  if (!existsSync34(cwd) || !statSync9(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
+  const revParse = git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--")) {
+    requireGitVersion(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (!top || !gitDir || !common)
+    return null;
+  const root = realpathSync3(top);
+  const commonDir = realpathSync3(common);
+  const isWorktree = realpathSync3(gitDir) !== commonDir;
+  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
+  return { root, commonDir, isWorktree, mainCheckout };
+}
+function ownHooksOf(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = readOwnHooks(join28(root, ".claude", "cc-smart-dev-kit.json"));
+  if (own !== null)
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return [];
+  return readOwnHooks(join28(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
+}
+function loadProjectConfig(checkout, pluginVersion) {
+  const { root, mainCheckout } = checkout;
+  const own = join28(root, ".claude", "cc-smart-dev-kit.json");
+  let config = loadCcSmartDevKitConfig(own, pluginVersion);
+  let configFile = config === null ? null : own;
+  if (config === null && mainCheckout !== null && mainCheckout !== root) {
+    const main = join28(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    config = loadCcSmartDevKitConfig(main, pluginVersion);
+    configFile = config === null ? null : main;
+  }
+  return { ...checkout, config, configFile };
+}
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+function readCommittedConfig(checkout, branch, options = {}) {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok) {
+    return {
+      found: false,
+      where,
+      why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
+    };
+  }
+  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
+  if (!blob.ok)
+    return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
+  const text = git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok)
+    return { found: false, where, why: `git could not read ${where}` };
+  return {
+    found: true,
+    where,
+    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
+  };
+}
+function resolveProject(cwd, options = {}) {
+  const checkout = locateCheckout(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
+}
+
+// src/hooks/io.ts
+var SILENT = {};
+function parseHookInput(text) {
+  try {
+    const value = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function stringField(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+function toolInput(input) {
+  const value = input.tool_input;
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+}
+function toolDecision(decision, reason) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: decision,
+        permissionDecisionReason: reason
+      }
+    })
+  };
+}
+function addContext(event, text) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: { hookEventName: event, additionalContext: text }
+    })
+  };
+}
+function systemMessage(text) {
+  return { stdout: JSON.stringify({ systemMessage: text }) };
+}
+
+// src/hooks/run.ts
+var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function handleHook(spec, text, env) {
+  try {
+    const input = parseHookInput(text);
+    if (input === null) {
+      return {
+        exitCode: spec.crashExitCode ?? 0,
+        stderr: `cc-smart-dev-kit ${spec.name}: the hook input is not JSON`
+      };
+    }
+    const event = stringField(input.hook_event_name);
+    if (event === null || !spec.events.includes(event))
+      return SILENT;
+    const cwd = stringField(input.cwd);
+    const context = { env, paths: cliPaths(env) };
+    const outside = spec.outsideGit ?? (() => SILENT);
+    if (cwd === null)
+      return outside(input, event, "the hook input has no cwd", context);
+    let checkout;
+    try {
+      checkout = locateCheckout(cwd, { env });
+    } catch (error) {
+      return outside(input, event, errorMessage(error), context);
+    }
+    if (checkout === null)
+      return outside(input, event, `${cwd} is not in a git checkout`, context);
+    if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name))
+      return SILENT;
+    let project;
+    try {
+      project = loadProjectConfig(checkout);
+    } catch (error) {
+      if (error instanceof CcSmartDevKitConfigError) {
+        return spec.onConfigProblem(error.message, input, event, checkout, context);
+      }
+      throw error;
+    }
+    const missing = spec.needs?.(project.config) ?? null;
+    if (missing !== null)
+      return spec.onConfigProblem(missing, input, event, checkout, context);
+    return await spec.run({ input, event, cwd, project, env, paths: context.paths });
+  } catch (error) {
+    return {
+      exitCode: spec.crashExitCode ?? 0,
+      stderr: `cc-smart-dev-kit ${spec.name}: ${errorMessage(error)}`
+    };
+  }
+}
+function logRun(spec, text, result, env) {
+  const file = env[HOOK_LOG_ENV];
+  if (file === undefined || file === "")
+    return;
+  try {
+    const input = parseHookInput(text);
+    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env) }) ?? {};
+    appendFileSync2(file, `${JSON.stringify({
+      hook: spec.name,
+      event: stringField(input?.hook_event_name),
+      cwd: stringField(input?.cwd),
+      exitCode: result.exitCode ?? 0,
+      stdout: (result.stdout ?? "").slice(0, 2000),
+      ...Object.keys(facts).length === 0 ? {} : { facts }
+    })}
+`);
+  } catch {}
+}
+async function runHookEntry(spec) {
+  const text = await Bun.stdin.text();
+  const result = await handleHook(spec, text, process.env);
+  logRun(spec, text, result, process.env);
+  if (result.stdout !== undefined)
+    await Bun.write(Bun.stdout, result.stdout);
+  if (result.stderr !== undefined)
+    await Bun.write(Bun.stderr, `${result.stderr}
+`);
+  process.exit(result.exitCode ?? 0);
+}
+
+// src/cli/live-check.ts
+var LIVE_NAME = "cc-smart-dev-kit-live-check";
+var SESSION_TIMEOUT_MS = 240000;
+var LIVE_TOOLS = "EnterWorktree,ExitWorktree,Bash";
+var LIVE_ALLOWED = "EnterWorktree,ExitWorktree,Bash(git status:*)";
+function liveRecordFile(stateDir) {
+  return join29(stateDir, "live-check.json");
+}
+function readLiveRecord(stateDir) {
+  try {
+    const parsed = JSON.parse(readFileSync36(liveRecordFile(stateDir), "utf8"));
+    return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
+  } catch {
+    return null;
+  }
+}
+function parseClaudeVersion(output) {
+  return /(\d+\.\d+\.\d+)/.exec(output)?.[1] ?? null;
+}
+var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` + '`git status`. Then call the ExitWorktree tool with action "remove" and discard_changes ' + "true. Then reply with the single word done. Do nothing else.";
+function readLog(file) {
+  if (!existsSync35(file))
+    return [];
+  return readFileSync36(file, "utf8").split(`
+`).filter((line) => line.trim() !== "").flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+}
+var GIT_ID = {
+  GIT_AUTHOR_NAME: "cc-smart-dev-kit live check",
+  GIT_AUTHOR_EMAIL: "live-check@example.com",
+  GIT_COMMITTER_NAME: "cc-smart-dev-kit live check",
+  GIT_COMMITTER_EMAIL: "live-check@example.com"
+};
+function proveIn(label, repo, expected, deps, env) {
+  const log = join29(dirname9(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const session = deps.run([
+    "claude",
+    "-p",
+    "--plugin-dir",
+    deps.pluginDir,
+    "--tools",
+    LIVE_TOOLS,
+    "--allowedTools",
+    LIVE_ALLOWED,
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    LIVE_PROMPT
+  ], { cwd: repo, env: { ...env, [HOOK_LOG_ENV]: log }, timeoutMs: SESSION_TIMEOUT_MS });
+  const runs = readLog(log);
+  const said = `claude exited ${session.exitCode}: ${session.output.trim().split(`
+`).slice(-3).join(" ")}`;
+  const fired = (event) => runs.some((run) => run.event === event);
+  const created = runs.find((run) => run.event === "WorktreeCreate");
+  const guarded = runs.filter((run) => run.hook === "git-guard" && run.event === "PreToolUse");
+  const guardedThere = guarded.some((run) => run.cwd === expected.folder);
+  const guardParsed = guarded.some((run) => run.facts?.programs?.includes("git") === true);
+  const branchLeft = deps.run(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`], { cwd: repo, env, timeoutMs: 1e4 });
+  const lines = [];
+  const events = ["SessionStart", "PreToolUse"];
+  const missing = events.filter((event) => !fired(event));
+  lines.push(missing.length === 0 ? { ok: true, text: `${label}: the hooks fired (${events.join(", ")})` } : { ok: false, text: `${label}: no ${missing.join(", ")} hook ran. ${said}` });
+  const where = guarded.length === 0 ? "no Bash call" : guarded.map((run) => run.cwd).join(", ");
+  lines.push(guardParsed ? {
+    ok: true,
+    text: `${label}: the git guard read the command line (it parsed git) before the Bash call`
+  } : {
+    ok: false,
+    text: `${label}: the git guard ${guarded.length === 0 ? "never ran" : `ran in ${where} without parsing a command`}: its log names no git program. ${said}`
+  });
+  lines.push(created === undefined && guardedThere ? {
+    ok: true,
+    text: `${label}: no WorktreeCreate hook ran; Claude Code made ${expected.folder}, and the session worked there`
+  } : {
+    ok: false,
+    text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`
+  });
+  const gone = !existsSync35(expected.folder) && branchLeft.exitCode !== 0;
+  lines.push(gone && guardedThere ? {
+    ok: true,
+    text: `${label}: ExitWorktree removed the folder and the branch ${expected.branch}`
+  } : {
+    ok: false,
+    text: `${label}: after ExitWorktree${guardedThere ? "" : " (the session never worked in it)"} ${existsSync35(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`
+  });
+  return lines;
+}
+function runLiveCheck(paths, env, deps) {
+  const version = parseClaudeVersion(deps.run(["claude", "--version"], { cwd: tmpdir4(), env, timeoutMs: 20000 }).output);
+  if (version === null) {
+    return [
+      { ok: false, text: "live: `claude --version` gave no version: is Claude Code installed?" }
+    ];
+  }
+  const root = realpathSync4(mkdtempSync4(join29(tmpdir4(), "cc-smart-dev-kit-live-")));
+  try {
+    const gitEnv = { ...env, ...GIT_ID };
+    const git = (cwd, ...args) => {
+      const result = deps.run(["git", ...args], { cwd, env: gitEnv, timeoutMs: 20000 });
+      if (result.exitCode !== 0)
+        throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
+    };
+    const plain = join29(root, "plain");
+    mkdirSync10(plain);
+    git(plain, "init", "-q", "-b", "main");
+    writeFileSync6(join29(plain, "README.md"), `live check
+`);
+    git(plain, "add", "README.md");
+    git(plain, "commit", "-q", "-m", "first");
+    const lines = proveIn("Claude Code's worktrees", plain, {
+      folder: join29(plain, ".claude", "worktrees", LIVE_NAME),
+      branch: `worktree-${LIVE_NAME}`
+    }, deps, env).map((line) => ({ ...line, text: `live, ${line.text}` }));
+    if (lines.every((line) => line.ok)) {
+      mkdirSync10(paths.stateDir, { recursive: true, mode: 448 });
+      const record = {
+        claudeCode: version,
+        plugin: VERSION,
+        passedAt: new Date().toISOString()
+      };
+      atomicWrite(liveRecordFile(paths.stateDir), `${JSON.stringify(record, null, 2)}
+`, 384);
+      lines.push({ ok: true, text: `live: passed on Claude Code ${version}; recorded` });
+    }
+    return lines;
+  } finally {
+    rmSync10(root, { recursive: true, force: true });
+  }
+}
+
+// src/cli/project-checks.ts
+import { existsSync as existsSync48, readFileSync as readFileSync48 } from "fs";
+import { join as join46 } from "path";
+
+// src/hooks/git.ts
+import { realpathSync as realpathSync5 } from "fs";
+import { basename as basename5, dirname as dirname10, join as join30, resolve as resolve4 } from "path";
+var GUARD_GIT_TIMEOUT_MS = 5000;
+function runGit(cwd, args, env, timeoutMs = 15000) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: gitEnv(env),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs
+    });
+    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
+  }
+}
+function noPromptEnv(env) {
+  const quiet = { ...env, GIT_TERMINAL_PROMPT: "0" };
+  if (!hasOwnSshCommand(quiet))
+    quiet.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
+  return quiet;
+}
+function realPath(path) {
+  const rest = [];
+  let at = resolve4(path);
+  for (;; ) {
+    try {
+      return join30(realpathSync5(at), ...rest);
+    } catch {
+      const parent = dirname10(at);
+      if (parent === at)
+        return resolve4(path);
+      rest.unshift(basename5(at));
+      at = parent;
+    }
+  }
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      prunable: flag("prunable")
+    });
+  }
+  return worktrees;
+}
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
+  if (!listed.ok)
+    throw new Error(`git worktree list failed: ${listed.err}`);
+  return parseWorktreeList(listed.out);
+}
+function innermostWorktree(path, worktrees) {
+  let deepest = null;
+  for (const worktree of worktrees) {
+    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
+      deepest = worktree;
+    }
+  }
+  return deepest;
+}
+function hasChanges(folder, env) {
+  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
+  return !status.ok || status.out !== "";
+}
+function ownCommits(repo, branch, env) {
+  const own = runGit(repo, [
+    "rev-list",
+    "--count",
+    `refs/heads/${branch}`,
+    "--not",
+    `--exclude=${branch}`,
+    "--branches",
+    "--remotes"
+  ], env);
+  return own.ok && /^\d+$/.test(own.out) ? Number(own.out) : null;
+}
+function hasRef(repo, ref, env) {
+  return runGit(repo, ["rev-parse", "--verify", "--quiet", ref], env).ok;
+}
+
+// src/hooks/settings-hooks.ts
+import { existsSync as existsSync36, readFileSync as readFileSync37 } from "fs";
+import { join as join31 } from "path";
+var RETIRED_ENGINE_HOOKS = [
+  "worktree-create",
+  "worktree-remove",
+  "subagent-stop"
+];
+var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
+function retiredEngineHookOf(command) {
+  return RETIRED_ENGINE_LINE.exec(command)?.[3] ?? null;
+}
+function matcherSelects(matcher, subject) {
+  if (matcher === undefined || matcher === null || matcher === "" || matcher === "*")
+    return true;
+  if (typeof matcher !== "string")
+    return false;
+  if (subject === null)
+    return true;
+  if (/^[A-Za-z0-9_\- ,|]*$/.test(matcher)) {
+    return matcher.split(/[|,]/).map((part) => part.trim()).includes(subject);
+  }
+  try {
+    return new RegExp(matcher).test(subject);
+  } catch {
+    return false;
+  }
+}
+function hooksOf(file) {
+  if (!existsSync36(file))
+    return null;
+  try {
+    const parsed = JSON.parse(readFileSync37(file, "utf8"));
+    if (typeof parsed !== "object" || parsed === null)
+      return null;
+    const hooks = parsed.hooks;
+    return typeof hooks === "object" && hooks !== null && !Array.isArray(hooks) ? hooks : null;
+  } catch {
+    return null;
+  }
+}
+function describeHandler(handler) {
+  if (typeof handler !== "object" || handler === null)
+    return "(a hook)";
+  const { type, command, args } = handler;
+  if (typeof command !== "string")
+    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
+  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
+  return [command, ...rest].join(" ");
+}
+function wiredHandlers(file, event, subject) {
+  const groups = hooksOf(file)?.[event];
+  if (!Array.isArray(groups))
+    return [];
+  return groups.flatMap((group) => {
+    if (typeof group !== "object" || group === null)
+      return [];
+    const { matcher, hooks } = group;
+    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject))
+      return [];
+    return hooks.map((handler) => ({ file, command: describeHandler(handler) }));
+  });
+}
+function projectSettingsFiles(projectDir) {
+  return [
+    join31(projectDir, ".claude", "settings.json"),
+    join31(projectDir, ".claude", "settings.local.json")
+  ];
+}
+function allWiredHandlers(file) {
+  const hooks = hooksOf(file);
+  if (hooks === null)
+    return [];
+  return Object.keys(hooks).flatMap((event) => wiredHandlers(file, event, null));
+}
 
 // src/hooks/specs.ts
-import { existsSync as existsSync43 } from "fs";
+import { existsSync as existsSync45 } from "fs";
 
 // src/shell/command.ts
 var MAX_NESTING = 3;
@@ -18088,160 +19173,10 @@ function toolCallOfArgv(argv) {
   };
 }
 
-// src/jobs/kinds.ts
-var matchRuleSchema = union([
-  strictObject({
-    tool: string2().min(1),
-    sub: array(string2().min(1)).optional(),
-    flags: array(string2().min(1)).optional(),
-    argIncludes: string2().min(1).optional(),
-    valued: array(string2().min(1)).optional()
-  }),
-  strictObject({
-    script: string2().min(1)
-  })
-]);
-var kindSpecSchema = strictObject({
-  gb: number2().int().min(0).max(1024),
-  filesGb: number2().int().min(0).max(1024).optional(),
-  maxFiles: number2().int().min(1).optional(),
-  printOnly: array(string2().min(1)).optional(),
-  skipWords: array(string2().min(1)).optional(),
-  valuedFlags: array(string2().min(1)).optional(),
-  workers: strictObject({
-    flag: string2().min(1),
-    aliases: array(string2().min(1)).optional(),
-    gbEach: number2().positive()
-  }).optional(),
-  match: array(matchRuleSchema).optional(),
-  about: string2().min(1).optional()
-});
-var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
-var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
-var TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
-var TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
-var VALUED = ["--config", "-c", "--max-warnings", "--reporter", "--project", "--root"];
-var TEST_WORKERS = { flag: "--maxWorkers", aliases: ["--max-workers"], gbEach: 0.5 };
-var DEFAULT_KINDS = {
-  tsc: {
-    about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
-    gb: 8,
-    printOnly: TSC_PRINT_ONLY,
-    match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
-  },
-  "lint:typed": {
-    about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
-    gb: 12,
-    filesGb: 6,
-    valuedFlags: VALUED,
-    printOnly: TEST_PRINT_ONLY,
-    match: [
-      { tool: "eslint", argIncludes: "typed" },
-      { tool: "eslint", argIncludes: "type-checked" },
-      { tool: "oxlint", flags: ["--type-aware"] }
-    ]
-  },
-  "test:coverage": {
-    about: "A test run with coverage (vitest or jest with --coverage).",
-    gb: 12,
-    printOnly: TEST_PRINT_ONLY,
-    workers: TEST_WORKERS,
-    match: [
-      { tool: "vitest", argIncludes: "--coverage" },
-      { tool: "jest", argIncludes: "--coverage" }
-    ]
-  },
-  "test:run": {
-    about: "A test run (vitest, jest). Up to 3 existing files: the small size.",
-    gb: 8,
-    filesGb: 2,
-    maxFiles: 3,
-    skipWords: ["run"],
-    valuedFlags: VALUED,
-    printOnly: TEST_PRINT_ONLY,
-    workers: TEST_WORKERS,
-    match: [{ tool: "vitest" }, { tool: "jest" }]
-  },
-  build: {
-    about: "A framework production build (next build).",
-    gb: 14,
-    match: [{ tool: "next", sub: ["build"] }]
-  },
-  "image:build": {
-    about: "A container image build (docker, podman, compose).",
-    gb: 14,
-    match: [
-      { tool: "docker", sub: ["build"] },
-      { tool: "docker", sub: ["image", "build"] },
-      { tool: "docker", sub: ["builder", "build"] },
-      { tool: "docker", sub: ["buildx", "build"] },
-      { tool: "docker", sub: ["buildx", "b"] },
-      { tool: "docker", sub: ["buildx", "bake"] },
-      { tool: "docker", sub: ["compose", "build"] },
-      { tool: "docker", sub: ["compose", "up"], flags: ["--build"] },
-      { tool: "docker", sub: ["compose", "run"], flags: ["--build"] },
-      { tool: "docker", sub: ["compose", "create"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["build"] },
-      { tool: "docker-compose", sub: ["up"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["run"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["create"], flags: ["--build"] },
-      { tool: "podman", sub: ["build"] },
-      { tool: "podman", sub: ["image", "build"] },
-      { tool: "buildah", sub: ["build"] }
-    ]
-  }
-};
-function mergeKinds(projectKinds) {
-  return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
-}
-function largestJobGb(kinds) {
-  return Math.max(0, ...Object.values(kinds).map((kind) => Math.max(kind.gb, kind.filesGb ?? 0)));
-}
-function positionals(kind, args) {
-  const valued = new Set(kind.valuedFlags ?? []);
-  const found = [];
-  for (let i = 0;i < args.length; i++) {
-    const arg = args[i] ?? "";
-    if (valued.has(arg))
-      i++;
-    else if (!arg.startsWith("-"))
-      found.push(arg);
-  }
-  return found;
-}
-function reservedGb(kind, args, isFile) {
-  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
-  if (args.some((arg) => printOnly.has(arg.toLowerCase())))
-    return 0;
-  if (kind.filesGb === undefined)
-    return kind.gb;
-  const skip = new Set(kind.skipWords ?? []);
-  const given = positionals(kind, args);
-  const files = given.length > 0 && skip.has(given[0] ?? "") ? given.slice(1) : given;
-  const few = kind.maxFiles === undefined || files.length <= kind.maxFiles;
-  return few && files.length > 0 && files.every((path) => isFile(path)) ? kind.filesGb : kind.gb;
-}
-function workerCount(gb, gbEach, cores) {
-  return Math.max(1, Math.min(Math.floor(gb / gbEach), cores - 1));
-}
-function withWorkers(kind, command, workers) {
-  const [program, ...args] = command;
-  const spec = kind.workers;
-  if (spec === undefined)
-    return [program, ...args];
-  const names = [spec.flag, ...spec.aliases ?? []];
-  const chosen = args.some((arg) => names.some((name) => arg === name || arg.startsWith(`${name}=`)));
-  if (chosen)
-    return [program, ...args];
-  const flag = `${spec.flag}=${String(workers)}`;
-  const end = args.indexOf("--");
-  return end === -1 ? [program, ...args, flag] : [program, ...args.slice(0, end), flag, ...args.slice(end)];
-}
-
 // src/workflow/reviews.ts
 import { createHash as createHash4 } from "crypto";
-import { mkdirSync as mkdirSync10, readFileSync as readFileSync35 } from "fs";
-import { dirname as dirname9, join as join28 } from "path";
+import { mkdirSync as mkdirSync11, readFileSync as readFileSync38 } from "fs";
+import { dirname as dirname11, join as join32 } from "path";
 var REVIEWS_KEPT = 50;
 var REVIEWS_LOCK_WAIT_MS = 3000;
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
@@ -18254,14 +19189,14 @@ function repoKey(repo) {
   return createHash4("sha256").update(repo).digest("hex").slice(0, 16);
 }
 function reviewsFile(stateDir, repo) {
-  return join28(stateDir, "reviews", `${repoKey(repo)}.json`);
+  return join32(stateDir, "reviews", `${repoKey(repo)}.json`);
 }
 function reviewStartsFile(stateDir, repo) {
-  return join28(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
+  return join32(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
 }
 function readObject(file) {
   try {
-    const parsed = JSON.parse(readFileSync35(file, "utf8"));
+    const parsed = JSON.parse(readFileSync38(file, "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
@@ -18289,8 +19224,8 @@ function hasReview(file, sha, agents) {
   return entry?.by.some((by) => by === BY_HAND || recordsReview(by, agents)) ?? false;
 }
 async function underRecordLock(file, write) {
-  const folder = dirname9(file);
-  mkdirSync10(folder, { mode: 448, recursive: true });
+  const folder = dirname11(file);
+  mkdirSync11(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
 }
 async function recordReview(file, sha, by, atMs) {
@@ -18360,385 +19295,11 @@ async function takeReviewStart(file, agentId) {
   });
 }
 
-// src/workers/names.ts
-var MAX_SESSION_NAME = 60;
-var MAX_TAG = 12;
-var LEAD_ROLE = "LEAD";
-var WORKER_ROLE = "W";
-function cleanSessionName(raw) {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (plain === "")
-    return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
-}
-var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
-function namePart(raw, max) {
-  const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
-  return plain.slice(0, Math.max(0, max)).replace(EDGE_SEPARATORS, "");
-}
-function partRule(max) {
-  return `1-${max} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
-}
-var TAG_RULE = partRule(MAX_TAG);
-function isNameTag(value) {
-  return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
-}
-function withoutListRef(name) {
-  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
-}
-var PART = "[A-Za-z0-9._-]+";
-var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var WORKER_SHAPE = new RegExp(`^${WORKER_ROLE}( ${PART}){2,4}$`);
-
-// src/workflow/schema.ts
-var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
-var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
-var PERCENT = { kind: "whole", max: 100, min: 1 };
-var AT_LEAST_ONE = { kind: "whole", min: 1 };
-var AT_LEAST_ZERO = { kind: "whole", min: 0 };
-var ABOVE_ZERO = { kind: "positive" };
-function numberSchema(rule) {
-  if (rule.kind === "positive")
-    return number2().positive();
-  const whole = number2().int().min(rule.min);
-  return rule.max === undefined ? whole : whole.max(rule.max);
-}
-var NUMBER_RULES = {
-  "alerts.usagePercent": PERCENT,
-  "workers.idleStopMinutes": AT_LEAST_ONE,
-  "workers.max": AT_LEAST_ONE,
-  "workers.memoryGb": ABOVE_ZERO,
-  "workers.quietMinutes": AT_LEAST_ONE,
-  "workers.handoffPercent": PERCENT,
-  "workers.softHours": ABOVE_ZERO,
-  "workers.maxHours": ABOVE_ZERO,
-  "fixesAfterReview.lines": AT_LEAST_ZERO,
-  "fixesAfterReview.files": AT_LEAST_ZERO,
-  "fixesAfterReview.percent": AT_LEAST_ZERO
-};
-function numberField(key) {
-  return numberSchema(NUMBER_RULES[key]).optional();
-}
-var tagSchema = string2().refine(isNameTag, TAG_RULE);
-var workflowSchema = strictObject({
-  autoCommit: boolean2().optional(),
-  autoPush: boolean2().optional(),
-  openPr: _enum(["off", "draft", "ready"]).optional(),
-  autoMerge: boolean2().optional(),
-  mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
-  deleteBranch: boolean2().optional(),
-  reviewBeforePush: boolean2().optional(),
-  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
-  fixesAfterReview: strictObject({
-    lines: numberField("fixesAfterReview.lines"),
-    files: numberField("fixesAfterReview.files"),
-    percent: numberField("fixesAfterReview.percent")
-  }).optional(),
-  clearWorktreeAfterMerge: boolean2().optional(),
-  alerts: strictObject({
-    events: alertEventsSchema.optional(),
-    sound: boolean2().optional(),
-    usagePercent: numberField("alerts.usagePercent")
-  }).optional(),
-  workers: strictObject({
-    enabled: boolean2().optional(),
-    idleStopMinutes: numberField("workers.idleStopMinutes"),
-    max: numberField("workers.max"),
-    memoryGb: numberField("workers.memoryGb"),
-    quietMinutes: numberField("workers.quietMinutes"),
-    handoffPercent: numberField("workers.handoffPercent"),
-    softHours: numberField("workers.softHours"),
-    maxHours: numberField("workers.maxHours"),
-    tag: tagSchema.optional()
-  }).optional()
-});
-var workflowDefaults = {
-  autoCommit: false,
-  autoPush: false,
-  openPr: "off",
-  autoMerge: false,
-  mergeMethod: "merge",
-  deleteBranch: false,
-  reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:reviewer"],
-  fixesAfterReview: {
-    lines: 200,
-    files: 10,
-    percent: 20
-  },
-  clearWorktreeAfterMerge: false,
-  alerts: {
-    events: [...ALERT_EVENTS],
-    sound: false,
-    usagePercent: 85
-  },
-  workers: {
-    enabled: false,
-    idleStopMinutes: 10,
-    max: 4,
-    memoryGb: 2,
-    quietMinutes: 20,
-    handoffPercent: 70,
-    softHours: 2,
-    maxHours: 4,
-    tag: null
-  }
-};
-var WORKERS_TAG_UNSET = "the main checkout's folder name";
-var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
-var POLICY_KEYS = [
-  "autoCommit",
-  "autoPush",
-  "openPr",
-  "autoMerge",
-  "mergeMethod",
-  "deleteBranch",
-  "reviewBeforePush",
-  "reviewAgents",
-  "fixesAfterReview.lines",
-  "fixesAfterReview.files",
-  "fixesAfterReview.percent",
-  "clearWorktreeAfterMerge",
-  "alerts.events",
-  "alerts.sound",
-  "alerts.usagePercent",
-  "workers.enabled",
-  "workers.idleStopMinutes",
-  "workers.max",
-  "workers.memoryGb",
-  "workers.quietMinutes",
-  "workers.handoffPercent",
-  "workers.softHours",
-  "workers.maxHours",
-  "workers.tag"
-];
-var REVIEW_GATE_KEYS = [
-  "autoMerge",
-  "reviewBeforePush",
-  "reviewAgents",
-  "fixesAfterReview.lines",
-  "fixesAfterReview.files",
-  "fixesAfterReview.percent"
-];
-var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
-var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
-function isSwitchKey(key) {
-  return SWITCH_KEYS.includes(key);
-}
-function switchOf(key) {
-  return key.slice("switches.".length);
-}
-function workflowValue(workflow, key) {
-  const [head, tail] = key.split(".");
-  if (head === undefined || tail === undefined)
-    return workflow[head ?? ""];
-  const group = workflow[head];
-  if (typeof group !== "object" || group === null)
-    return;
-  return group[tail];
-}
-function isNumberKey(key) {
-  return Object.hasOwn(NUMBER_RULES, key);
-}
-function numberRuleText(key) {
-  const rule = NUMBER_RULES[key];
-  if (rule.kind === "positive")
-    return `${key} is a number above 0`;
-  return rule.max === undefined ? `${key} is a whole number, ${rule.min} or more` : `${key} is a whole number ${rule.min}-${rule.max}`;
-}
-function parseNumber(key, value) {
-  const rule = NUMBER_RULES[key];
-  const shape = rule.kind === "whole" ? /^\d+$/ : /^\d+(?:\.\d+)?$/;
-  const number = Number(value);
-  return shape.test(value) && numberSchema(rule).safeParse(number).success ? { ok: true, value: number } : { ok: false, why: numberRuleText(key) };
-}
-function parseWorkflowValue(key, text) {
-  const value = text.trim();
-  if (key === "openPr" || key === "mergeMethod") {
-    const words = key === "openPr" ? ["off", "draft", "ready"] : ["merge", "squash", "rebase"];
-    return words.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${words.join(", ")}` };
-  }
-  if (isNumberKey(key))
-    return parseNumber(key, value);
-  if (key === "workers.tag") {
-    return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
-  }
-  if (key === "reviewAgents") {
-    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
-    if (named.length === 0) {
-      return {
-        ok: false,
-        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:reviewer"
-      };
-    }
-    return { ok: true, value: [...new Set(named)] };
-  }
-  if (key === "alerts.events") {
-    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
-    if (named.length === 0)
-      return { ok: false, why: `alerts.events is a list of ${ALERT_EVENTS.join(", ")}` };
-    const unknown = named.filter((word) => !ALERT_EVENTS.includes(word));
-    if (unknown.length > 0) {
-      return {
-        ok: false,
-        why: `alerts.events: unknown ${unknown.join(", ")} (one of ${ALERT_EVENTS.join(", ")})`
-      };
-    }
-    const events = [...new Set(named)];
-    return { ok: true, value: events };
-  }
-  if (value === "true" || value === "false")
-    return { ok: true, value: value === "true" };
-  return { ok: false, why: `${key} is true or false` };
-}
-function showValue(key, value) {
-  if (key === "workers.tag" && value === null)
-    return `(${WORKERS_TAG_UNSET})`;
-  if (Array.isArray(value))
-    return value.join(", ");
-  return String(value);
-}
-
 // src/hooks/after-merge.ts
 import { createHash as createHash5 } from "crypto";
-import { existsSync as existsSync33, mkdirSync as mkdirSync11, writeFileSync as writeFileSync6 } from "fs";
-import { tmpdir as tmpdir4 } from "os";
-import { join as join30 } from "path";
-
-// src/hooks/git.ts
-import { realpathSync as realpathSync3 } from "fs";
-import { basename as basename5, dirname as dirname10, join as join29, resolve as resolve4 } from "path";
-var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000) {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env: gitEnv(env),
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs
-    });
-    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err };
-  } catch (error) {
-    return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
-  }
-}
-function noPromptEnv(env) {
-  const quiet = { ...env, GIT_TERMINAL_PROMPT: "0" };
-  if (!hasOwnSshCommand(quiet))
-    quiet.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
-  return quiet;
-}
-function realPath(path) {
-  const rest = [];
-  let at = resolve4(path);
-  for (;; ) {
-    try {
-      return join29(realpathSync3(at), ...rest);
-    } catch {
-      const parent = dirname10(at);
-      if (parent === at)
-        return resolve4(path);
-      rest.unshift(basename5(at));
-      at = parent;
-    }
-  }
-}
-function parseWorktreeList(porcelain) {
-  const worktrees = [];
-  for (const block of porcelain.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/).filter((line) => line !== "");
-    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
-    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
-    const path = value("worktree");
-    if (path === undefined)
-      continue;
-    worktrees.push({
-      path,
-      head: value("HEAD") ?? "",
-      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
-      locked: flag("locked"),
-      prunable: flag("prunable")
-    });
-  }
-  return worktrees;
-}
-function listWorktrees(cwd, env, timeoutMs = 15000) {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
-  if (!listed.ok)
-    throw new Error(`git worktree list failed: ${listed.err}`);
-  return parseWorktreeList(listed.out);
-}
-function innermostWorktree(path, worktrees) {
-  let deepest = null;
-  for (const worktree of worktrees) {
-    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
-      deepest = worktree;
-    }
-  }
-  return deepest;
-}
-function hasChanges(folder, env) {
-  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
-  return !status.ok || status.out !== "";
-}
-function ownCommits(repo, branch, env) {
-  const own = runGit(repo, [
-    "rev-list",
-    "--count",
-    `refs/heads/${branch}`,
-    "--not",
-    `--exclude=${branch}`,
-    "--branches",
-    "--remotes"
-  ], env);
-  return own.ok && /^\d+$/.test(own.out) ? Number(own.out) : null;
-}
-function hasRef(repo, ref, env) {
-  return runGit(repo, ["rev-parse", "--verify", "--quiet", ref], env).ok;
-}
-
-// src/hooks/io.ts
-var SILENT = {};
-function parseHookInput(text) {
-  try {
-    const value = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-function stringField(value) {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-function toolInput(input) {
-  const value = input.tool_input;
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
-}
-function toolDecision(decision, reason) {
-  return {
-    stdout: JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: decision,
-        permissionDecisionReason: reason
-      }
-    })
-  };
-}
-function addContext(event, text) {
-  return {
-    stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: event, additionalContext: text }
-    })
-  };
-}
-function systemMessage(text) {
-  return { stdout: JSON.stringify({ systemMessage: text }) };
-}
+import { existsSync as existsSync37, mkdirSync as mkdirSync12, writeFileSync as writeFileSync7 } from "fs";
+import { tmpdir as tmpdir5 } from "os";
+import { join as join33 } from "path";
 
 // src/hooks/shell-command.ts
 var MAX_NESTING2 = 3;
@@ -19869,7 +20430,7 @@ function viewPullRequest(ref, repo, folder, env) {
 }
 function announcedFile(repo, number, env) {
   const key = createHash5("sha256").update(repo).digest("hex").slice(0, 16);
-  return join30(env.TMPDIR || tmpdir4(), "cc-smart-dev-kit-merges", `${key}-${number}`);
+  return join33(env.TMPDIR || tmpdir5(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -19897,7 +20458,7 @@ function afterMerge(context) {
   const origin = runGit(repo, ["remote", "get-url", "origin"], env);
   const record = pr === null ? null : announcedFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync33(record),
+    announced: record !== null && existsSync37(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
@@ -19911,8 +20472,8 @@ function afterMerge(context) {
     notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
     notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
-    mkdirSync11(join30(record, ".."), { recursive: true });
-    writeFileSync6(record, "");
+    mkdirSync12(join33(record, ".."), { recursive: true });
+    writeFileSync7(record, "");
   }
   return notes.length === 0 ? SILENT : addContext(event, notes.join(`
 
@@ -20068,15 +20629,15 @@ var WORKER_KINDS = {
 var WORKER_KIND_NAMES = Object.keys(WORKER_KINDS);
 
 // src/hooks/agent-launches.ts
-import { appendFileSync as appendFileSync2, readFileSync as readFileSync36 } from "fs";
-import { join as join31 } from "path";
+import { appendFileSync as appendFileSync3, readFileSync as readFileSync39 } from "fs";
+import { join as join34 } from "path";
 function agentLaunchesFile(stateDir) {
-  return join31(stateDir, "agent-launches.jsonl");
+  return join34(stateDir, "agent-launches.jsonl");
 }
 function lastAgentLaunch(file) {
   let text;
   try {
-    text = readFileSync36(file, "utf8");
+    text = readFileSync39(file, "utf8");
   } catch {
     return null;
   }
@@ -20090,7 +20651,7 @@ function appendAgentLaunch(file, launch) {
     return;
   }
   try {
-    appendFileSync2(file, `${JSON.stringify(launch)}
+    appendFileSync3(file, `${JSON.stringify(launch)}
 `);
   } catch {}
 }
@@ -20124,7 +20685,7 @@ function parseAgentLaunch(line) {
 function readAgentLaunches(file, sinceMs) {
   let text;
   try {
-    text = readFileSync36(file, "utf8");
+    text = readFileSync39(file, "utf8");
   } catch {
     return [];
   }
@@ -20943,29 +21504,29 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync35, mkdirSync as mkdirSync13, writeFileSync as writeFileSync8 } from "fs";
-import { dirname as dirname11, join as join33 } from "path";
+import { existsSync as existsSync39, mkdirSync as mkdirSync14, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname12, join as join36 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync34, mkdirSync as mkdirSync12, readFileSync as readFileSync37, renameSync as renameSync2, writeFileSync as writeFileSync7 } from "fs";
-import { tmpdir as tmpdir5 } from "os";
-import { join as join32 } from "path";
+import { existsSync as existsSync38, mkdirSync as mkdirSync13, readFileSync as readFileSync40, renameSync as renameSync2, writeFileSync as writeFileSync8 } from "fs";
+import { tmpdir as tmpdir6 } from "os";
+import { join as join35 } from "path";
 function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 }
 function namesDir(env) {
-  return join32(env.TMPDIR || tmpdir5(), "cc-smart-dev-kit-session-names");
+  return join35(env.TMPDIR || tmpdir6(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync34(file) ? cleanSessionName(readFileSync37(file, "utf8")) : null;
+    return existsSync38(file) ? cleanSessionName(readFileSync40(file, "utf8")) : null;
   } catch {
     return null;
   }
 }
 function writeAtomic(file, text) {
   const partial = `${file}.${process.pid}.tmp`;
-  writeFileSync7(partial, text);
+  writeFileSync8(partial, text);
   renameSync2(partial, file);
 }
 function recordSessionName(sessionId, raw, env) {
@@ -20974,8 +21535,8 @@ function recordSessionName(sessionId, raw, env) {
   const name = cleanSessionName(raw);
   if (name === null)
     throw new Error("the name is empty");
-  mkdirSync12(namesDir(env), { recursive: true });
-  writeAtomic(join32(namesDir(env), `${sessionId}.name`), name);
+  mkdirSync13(namesDir(env), { recursive: true });
+  writeAtomic(join35(namesDir(env), `${sessionId}.name`), name);
   return name;
 }
 function namingNote(sessionId, current) {
@@ -20990,7 +21551,7 @@ function sessionName(context) {
   if (!isSessionId(sessionId))
     return SILENT;
   const dir = namesDir(env);
-  const wanted = readName(join32(dir, `${sessionId}.name`));
+  const wanted = readName(join35(dir, `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
   if (event === "SessionStart") {
     return {
@@ -20999,10 +21560,10 @@ function sessionName(context) {
       })
     };
   }
-  const appliedFile = join32(dir, sessionId);
+  const appliedFile = join35(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
-    mkdirSync12(dir, { recursive: true });
+    mkdirSync13(dir, { recursive: true });
     writeAtomic(appliedFile, title);
     return {
       stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
@@ -21023,12 +21584,12 @@ function fableSessionModelName(real) {
   return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
 }
 function fableSessionMark(env, sessionId) {
-  return join33(namesDir(env), `${sessionId}.fable`);
+  return join36(namesDir(env), `${sessionId}.fable`);
 }
 function firstTime(mark) {
   try {
-    mkdirSync13(dirname11(mark), { recursive: true });
-    writeFileSync8(mark, "", { flag: "wx" });
+    mkdirSync14(dirname12(mark), { recursive: true });
+    writeFileSync9(mark, "", { flag: "wx" });
     return true;
   } catch {
     return false;
@@ -21051,7 +21612,7 @@ function fableSession(input, env, paths) {
   if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
     return SILENT;
   const mark = fableSessionMark(env, sessionId);
-  if (existsSync35(mark))
+  if (existsSync39(mark))
     return SILENT;
   let model;
   if (event === "SessionStart")
@@ -21439,256 +22000,15 @@ function mainFolderGuard(context) {
   return toolDecision("deny", mainFolderRefusal(main));
 }
 
-// src/project/resolve.ts
-import { existsSync as existsSync37, realpathSync as realpathSync4, statSync as statSync9 } from "fs";
-import { join as join34 } from "path";
-
-// src/project/config.ts
-import { existsSync as existsSync36, readFileSync as readFileSync38 } from "fs";
-var PLUGIN_HOOK_NAMES = [
-  "git-guard",
-  "merge-guard",
-  "main-folder-guard",
-  "message-guard",
-  "agent-guard",
-  "fable-session",
-  "job-route",
-  "after-merge",
-  "review-record",
-  "worktree-leftovers",
-  "session-name"
-];
-var RETIRED_HOOK_NAMES = ["serena-root"];
-var WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2";
-var ccSmartDevKitConfigSchema = strictObject({
-  requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
-  worktrees: strictObject({
-    base: string2().min(1),
-    prefix: string2().min(1).optional(),
-    setup: array(string2().min(1)).min(1).optional(),
-    guardMainFolder: boolean2().optional(),
-    bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
-      error: (issue) => {
-        const given = issue.input;
-        const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
-        return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
-      }
-    }).optional(),
-    engine: _enum(["plugin", "own"]).optional()
-  }).optional(),
-  protectedBranches: array(string2().min(1)).min(1).optional(),
-  sessionNames: boolean2().optional(),
-  instructions: boolean2().optional(),
-  autoMode: array(string2().min(1)).optional(),
-  jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
-  workflow: workflowSchema.optional(),
-  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional()
-});
-
-class CcSmartDevKitConfigError extends Error {
-  name = "CcSmartDevKitConfigError";
-}
-
-class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitVersionError";
-}
-function describeIssue(issue) {
-  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-  if (issue.code === "unrecognized_keys") {
-    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
-    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
-  }
-  return `${field}: ${issue.message}`;
-}
-function checkRequires(file, raw, pluginVersion) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return;
-  const requires = raw.requires;
-  if (typeof requires !== "string" || !isValidRange(requires))
-    return;
-  if (!satisfiesRange(pluginVersion, requires)) {
-    throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
-  }
-}
-function readOwnHooks(file) {
-  if (!existsSync36(file))
-    return null;
-  try {
-    const raw = JSON.parse(readFileSync38(file, "utf8"));
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      return [];
-    const listed = raw.ownHooks;
-    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
-  } catch {
-    return [];
-  }
-}
-function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
-  if (!existsSync36(file))
-    return null;
-  return parseCcSmartDevKitConfig(readFileSync38(file, "utf8"), file, pluginVersion);
-}
-function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
-  }
-  checkRequires(where, raw, pluginVersion);
-  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
-  }
-  return parsed.data;
-}
-
-// src/project/resolve.ts
-var MIN_GIT_VERSION = "2.31.0";
-var RESOLVE_GIT_TIMEOUT_MS = 5000;
-var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
-  return (args) => {
-    try {
-      const result = Bun.spawnSync(["git", ...args], {
-        cwd,
-        env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: timeoutMs
-      });
-      return {
-        ok: result.exitCode === 0,
-        stdout: result.stdout.toString(),
-        stderr: result.stderr.toString()
-      };
-    } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
-    }
-  };
-}
-function requireGitVersion(git) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
-  if (!match)
-    return;
-  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
-    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
-  }
-}
-function findMainCheckout(git, cwd) {
-  const list = git(["worktree", "list", "--porcelain"]);
-  if (!list.ok)
-    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
-    return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync37(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
-  }
-  return realpathSync4(path);
-}
-function locateCheckout(cwd, options = {}) {
-  if (!existsSync37(cwd) || !statSync9(cwd).isDirectory()) {
-    throw new Error(`resolveProject: ${cwd} is not a folder`);
-  }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env));
-  const revParse = git([
-    "rev-parse",
-    "--path-format=absolute",
-    "--show-toplevel",
-    "--absolute-git-dir",
-    "--git-common-dir"
-  ]);
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--")) {
-    requireGitVersion(git);
-    if (revParse.ok) {
-      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
-    }
-    return null;
-  }
-  if (!top || !gitDir || !common)
-    return null;
-  const root = realpathSync4(top);
-  const commonDir = realpathSync4(common);
-  const isWorktree = realpathSync4(gitDir) !== commonDir;
-  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
-  return { root, commonDir, isWorktree, mainCheckout };
-}
-function ownHooksOf(checkout) {
-  const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join34(root, ".claude", "cc-smart-dev-kit.json"));
-  if (own !== null)
-    return own;
-  if (mainCheckout === null || mainCheckout === root)
-    return [];
-  return readOwnHooks(join34(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
-}
-function loadProjectConfig(checkout, pluginVersion) {
-  const { root, mainCheckout } = checkout;
-  const own = join34(root, ".claude", "cc-smart-dev-kit.json");
-  let config = loadCcSmartDevKitConfig(own, pluginVersion);
-  let configFile = config === null ? null : own;
-  if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join34(mainCheckout, ".claude", "cc-smart-dev-kit.json");
-    config = loadCcSmartDevKitConfig(main, pluginVersion);
-    configFile = config === null ? null : main;
-  }
-  return { ...checkout, config, configFile };
-}
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function readCommittedConfig(checkout, branch, options = {}) {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
-  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) {
-    return {
-      found: false,
-      where,
-      why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
-    };
-  }
-  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
-  if (!blob.ok)
-    return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
-  const text = git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok)
-    return { found: false, where, why: `git could not read ${where}` };
-  return {
-    found: true,
-    where,
-    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
-  };
-}
-function resolveProject(cwd, options = {}) {
-  const checkout = locateCheckout(cwd, options);
-  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
-}
-
 // src/workflow/resolve.ts
-import { existsSync as existsSync39, readFileSync as readFileSync39 } from "fs";
+import { existsSync as existsSync41, readFileSync as readFileSync41 } from "fs";
 
 // src/cli/setup.ts
-import { existsSync as existsSync38, mkdirSync as mkdirSync14 } from "fs";
-import { delimiter, dirname as dirname12, join as join36 } from "path";
+import { existsSync as existsSync40, mkdirSync as mkdirSync15 } from "fs";
+import { delimiter, dirname as dirname13, join as join38 } from "path";
 
 // src/setup/auto-mode.ts
-import { join as join35 } from "path";
+import { join as join37 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -21700,9 +22020,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join35(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join37(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join35(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join37(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -21737,7 +22057,7 @@ function shownValue2(path, value) {
   return value === undefined ? "(none)" : "(a secret)";
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync38(settingsFile))
+  if (!existsSync40(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -21749,16 +22069,16 @@ function marketplaceKnown(settingsFile) {
 }
 var STATUSLINE_KEY = ["statusLine"];
 function statuslineDeclinedFile(stateDir) {
-  return join36(stateDir, "statusline-declined");
+  return join38(stateDir, "statusline-declined");
 }
 function shellWord2(path) {
   return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
 }
 function statuslineSetting(paths) {
-  return { command: `${shellWord2(join36(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord2(join38(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 function hasStatusline(settingsFile) {
-  if (!existsSync38(settingsFile))
+  if (!existsSync40(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -21792,9 +22112,9 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     }
   }
   if (managed.tavilyKeyFile !== null) {
-    const mark = existsSync38(paths.tavilyKeyFile) ? "~" : "+";
+    const mark = existsSync40(paths.tavilyKeyFile) ? "~" : "+";
     if (!dryRun) {
-      mkdirSync14(dirname12(paths.tavilyKeyFile), { mode: 448, recursive: true });
+      mkdirSync15(dirname13(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
 `, 384);
     }
@@ -21949,7 +22269,7 @@ function askAutoMode(paths, options, planned, notes) {
   return wanted;
 }
 function askStatusline(paths, machine, managed) {
-  if (managed.statusline || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync38(statuslineDeclinedFile(paths.stateDir))) {
+  if (managed.statusline || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync40(statuslineDeclinedFile(paths.stateDir))) {
     return false;
   }
   managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
@@ -22222,11 +22542,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync39(file))
+  if (!existsSync41(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync39(file, "utf8"));
+    raw = JSON.parse(readFileSync41(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -22288,7 +22608,7 @@ function defaultAlerts() {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync39(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync41(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -22726,9 +23046,9 @@ function mergeGuard(context) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync40, readdirSync as readdirSync13, readFileSync as readFileSync40, statSync as statSync10 } from "fs";
+import { existsSync as existsSync42, readdirSync as readdirSync13, readFileSync as readFileSync42, statSync as statSync10 } from "fs";
 import { uptime } from "os";
-import { join as join37 } from "path";
+import { join as join39 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -22753,8 +23073,8 @@ function isRunning2(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join37(claudeConfigDir, "sessions");
-  if (!existsSync40(dir))
+  const dir = join39(claudeConfigDir, "sessions");
+  if (!existsSync42(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
@@ -22764,9 +23084,9 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync10(join37(dir, file)).mtimeMs < bootedAt)
+      if (statSync10(join39(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync40(join37(dir, file), "utf8");
+      text = readFileSync42(join39(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -22813,11 +23133,11 @@ function messageGuard(context) {
 }
 
 // src/hooks/worktree-remove.ts
-import { existsSync as existsSync41 } from "fs";
+import { existsSync as existsSync43 } from "fs";
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync3, readdirSync as readdirSync14, readFileSync as readFileSync41, readlinkSync as readlinkSync4 } from "fs";
-import { join as join38 } from "path";
+import { lstatSync as lstatSync3, readdirSync as readdirSync14, readFileSync as readFileSync43, readlinkSync as readlinkSync4 } from "fs";
+import { join as join40 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -22836,8 +23156,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join38(worktree, relative);
-    const there = join38(mainCheckout, relative);
+    const here = join40(worktree, relative);
+    const there = join40(mainCheckout, relative);
     try {
       const a = lstatSync3(here);
       const b = lstatSync3(there);
@@ -22845,9 +23165,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync4(here) === readlinkSync4(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync14(here).every((entry) => same(join38(relative, entry)));
+        return b.isDirectory() && readdirSync14(here).every((entry) => same(join40(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync41(here).equals(readFileSync41(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync43(here).equals(readFileSync43(there));
     } catch {
       return false;
     }
@@ -22939,12 +23259,12 @@ function worktreeRemove(context) {
   }
   const found = others.find((worktree) => samePath3(worktree.path, path));
   if (found === undefined) {
-    if (existsSync41(path)) {
+    if (existsSync43(path)) {
       return { exitCode: 1, stderr: `worktree kept: ${path} is not a worktree of this repo` };
     }
     return SILENT;
   }
-  if (found.prunable || !existsSync41(found.path)) {
+  if (found.prunable || !existsSync43(found.path)) {
     runGit(repo, ["worktree", "prune"], env);
     const said = found.branch === null ? "" : `; ${deleteBranchIfCopied(repo, found.branch, env)}`;
     return { stderr: `forgot ${found.path}: its folder was gone${said}` };
@@ -23038,24 +23358,16 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/worktree-create.ts
-import {
-  copyFileSync,
-  existsSync as existsSync42,
-  mkdirSync as mkdirSync15,
-  readdirSync as readdirSync15,
-  readFileSync as readFileSync43,
-  statSync as statSync11,
-  writeFileSync as writeFileSync9
-} from "fs";
-import { dirname as dirname13, join as join40 } from "path";
+import { copyFileSync, existsSync as existsSync44, mkdirSync as mkdirSync16, readdirSync as readdirSync15, readFileSync as readFileSync45, statSync as statSync11 } from "fs";
+import { dirname as dirname14, join as join42 } from "path";
 
 // src/hooks/create-lock.ts
 import { createHash as createHash6 } from "crypto";
-import { closeSync as closeSync5, openSync as openSync5, readFileSync as readFileSync42, unlinkSync as unlinkSync4, writeSync as writeSync2 } from "fs";
-import { join as join39 } from "path";
+import { closeSync as closeSync5, openSync as openSync5, readFileSync as readFileSync44, unlinkSync as unlinkSync4, writeSync as writeSync2 } from "fs";
+import { join as join41 } from "path";
 function createLockFile(commonDir, branch) {
   const key = createHash6("sha256").update(branch).digest("hex").slice(0, 16);
-  return join39(commonDir, `cc-smart-dev-kit-create-${key}.lock`);
+  return join41(commonDir, `cc-smart-dev-kit-create-${key}.lock`);
 }
 
 class CreateBusyError extends Error {
@@ -23071,7 +23383,7 @@ function isAlive3(pid) {
 }
 function readHeld2(file) {
   try {
-    const parsed = JSON.parse(readFileSync42(file, "utf8"));
+    const parsed = JSON.parse(readFileSync44(file, "utf8"));
     return typeof parsed.pid === "number" && typeof parsed.token === "string" ? {
       pid: parsed.pid,
       startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
@@ -23139,21 +23451,18 @@ function withCreateLock(commonDir, branch, session, fn) {
 }
 
 // src/hooks/worktree-create.ts
-var SETUP_TIMEOUT_MS = 540000;
 var ADD_TIMEOUT_MS = 500000;
-var BASE_FETCH_TIMEOUT_MS = 30000;
 var DEFAULT_FETCH_TIMEOUT_MS = 5000;
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
-var SETUP_MARKER = "cc-smart-dev-kit-setup-done";
 function isSubagentName(name) {
   return /^agent-[0-9a-f]+$/.test(name);
 }
 function readBaseRef(files) {
   for (const file of files) {
-    if (!existsSync42(file))
+    if (!existsSync44(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync43(file, "utf8"));
+      const parsed = JSON.parse(readFileSync45(file, "utf8"));
       const value = parsed?.worktree?.baseRef;
       if (value === "head" || value === "fresh")
         return value;
@@ -23173,19 +23482,8 @@ function badName(name) {
   }
   return null;
 }
-function badPrefix(prefix) {
-  return /[\\/]/.test(prefix) || prefix === "." || prefix === ".." ? `worktrees.prefix "${prefix}" must be part of a folder name, with no "/" or "\\"` : null;
-}
-function configuredFolder(mainCheckout, prefix, name) {
-  return join40(dirname13(mainCheckout), `${prefix}${name.replace(/[\\/]/g, "-")}`);
-}
-function baseForBranch(worktrees, branch) {
-  const bases = worktrees.bases ?? {};
-  const matched = Object.keys(bases).filter((prefix) => branch.startsWith(prefix)).sort((a, b) => b.length - a.length)[0];
-  return matched === undefined ? worktrees.base : bases[matched] ?? worktrees.base;
-}
 function subagentShape(repoRoot, name) {
-  return { folder: join40(repoRoot, ".claude", "worktrees", name), branch: `worktree-${name}` };
+  return { folder: join42(repoRoot, ".claude", "worktrees", name), branch: `worktree-${name}` };
 }
 
 class Refusal extends Error {
@@ -23217,12 +23515,12 @@ function checkBranchName(repo, branch, env) {
   }
 }
 function fetchedRecently(commonDir) {
-  const worktreesDir = join40(commonDir, "worktrees");
+  const worktreesDir = join42(commonDir, "worktrees");
   let linked = [];
   try {
-    linked = readdirSync15(worktreesDir).map((name) => join40(worktreesDir, name, "FETCH_HEAD"));
+    linked = readdirSync15(worktreesDir).map((name) => join42(worktreesDir, name, "FETCH_HEAD"));
   } catch {}
-  return [join40(commonDir, "FETCH_HEAD"), ...linked].some((file) => {
+  return [join42(commonDir, "FETCH_HEAD"), ...linked].some((file) => {
     try {
       return Date.now() - statSync11(file).mtimeMs < FETCH_AGE_MS;
     } catch {
@@ -23251,8 +23549,8 @@ function subagentBase(repo, commonDir, askingCheckout, baseRef, env) {
   return hasRef(repo, ref, env) ? git(repo, ["rev-parse", "--verify", `${ref}^{commit}`], env) : head();
 }
 function copyWorktreeInclude(source, target, env) {
-  const includeFile = join40(source, ".worktreeinclude");
-  if (!existsSync42(includeFile))
+  const includeFile = join42(source, ".worktreeinclude");
+  if (!existsSync44(includeFile))
     return [];
   const listed = runGit(source, ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`], env, 60000);
   if (!listed.ok || listed.out === "")
@@ -23268,141 +23566,13 @@ function copyWorktreeInclude(source, target, env) {
   });
   const copied = [];
   for (const path of ignored.stdout.toString().split("\x00")) {
-    if (path === "" || existsSync42(join40(target, path)))
+    if (path === "" || existsSync44(join42(target, path)))
       continue;
-    mkdirSync15(dirname13(join40(target, path)), { recursive: true });
-    copyFileSync(join40(source, path), join40(target, path));
+    mkdirSync16(dirname14(join42(target, path)), { recursive: true });
+    copyFileSync(join42(source, path), join42(target, path));
     copied.push(path);
   }
   return copied;
-}
-function runSetup2(folder, setup, env) {
-  let result;
-  try {
-    result = Bun.spawnSync(setup, {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: SETUP_TIMEOUT_MS
-    });
-  } catch (error) {
-    throw new Refusal(`the setup command \`${setup.join(" ")}\` could not start: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (result.exitCode === 0)
-    return;
-  const said = `${result.stdout?.toString() ?? ""}${result.stderr?.toString() ?? ""}`.trim().split(`
-`).slice(-15).join(`
-`);
-  const how = result.signalCode ? `timed out after ${SETUP_TIMEOUT_MS / 1000} s` : `exited ${result.exitCode}`;
-  throw new Refusal(`the setup command \`${setup.join(" ")}\` ${how} in ${folder}; the worktree stays, and entering it again runs setup again${said === "" ? "" : `
-${said}`}`);
-}
-function setupMarker(folder, env) {
-  return join40(git(folder, ["rev-parse", "--absolute-git-dir"], env), SETUP_MARKER);
-}
-function reuseDecision(params) {
-  const { worktrees, branch, folder, sessions, askingSession, folderExists } = params;
-  const [main, ...others] = worktrees;
-  if (main?.branch === branch) {
-    return {
-      kind: "refuse",
-      why: `${branch} is the main checkout's branch; name a branch of its own for this work`
-    };
-  }
-  const found = others.find((worktree) => worktree.branch === branch) ?? others.find((worktree) => samePath3(worktree.path, folder));
-  if (found === undefined)
-    return { kind: "create" };
-  if (found.branch !== null && found.branch !== branch) {
-    return { kind: "refuse", why: `${found.path} is on ${found.branch}, not ${branch}` };
-  }
-  if (found.locked) {
-    return {
-      kind: "refuse",
-      why: `${found.path} is locked (\`git worktree unlock ${found.path}\` once it is safe)`
-    };
-  }
-  if (found.prunable || !folderExists(found.path)) {
-    return {
-      kind: "refuse",
-      why: `${found.path} is still listed but its folder is gone: run \`git worktree prune\`, then ask again`
-    };
-  }
-  if (sessions === null) {
-    return {
-      kind: "refuse",
-      why: `the running sessions' records cannot be read, so it is unknown whether another session works in ${found.path}`
-    };
-  }
-  const other = sessions.find((session) => session.sessionId !== askingSession && isInside(session.cwd, found.path));
-  if (other !== undefined) {
-    return {
-      kind: "refuse",
-      why: `the running session "${other.name}" (process ${other.pid}) works in ${found.path}; two sessions must not share a folder`
-    };
-  }
-  return { kind: "reuse", folder: found.path };
-}
-function createConfigured(context, name, worktrees) {
-  const { env, paths, project, input } = context;
-  const main = project.mainCheckout;
-  if (main === null)
-    throw new Refusal("the repo has no main checkout (a bare repo)");
-  const prefix = worktrees.prefix;
-  if (prefix === undefined) {
-    throw new Refusal('worktrees.prefix is not set in .claude/cc-smart-dev-kit.json, and the deprecated worktree engine needs it to name its folder: add it, or take the "cc-smart-dev-kit hook worktree-create" line out and use Claude Code\'s own worktrees (`.claude/worktrees/<name>`)');
-  }
-  const prefixProblem = badPrefix(prefix);
-  if (prefixProblem !== null)
-    throw new Refusal(prefixProblem);
-  const branch = name;
-  const base = baseForBranch(worktrees, branch);
-  checkBranchName(main, branch, env);
-  const folder = configuredFolder(main, prefix, name);
-  const session = typeof input.session_id === "string" ? input.session_id : null;
-  return withCreateLock(project.commonDir, branch, session, () => {
-    let sessions;
-    try {
-      sessions = liveSessions(paths.claudeConfigDir);
-    } catch {
-      sessions = null;
-    }
-    const decision = reuseDecision({
-      worktrees: listWorktrees(main, env),
-      branch,
-      folder,
-      sessions,
-      askingSession: session,
-      folderExists: existsSync42
-    });
-    if (decision.kind === "refuse")
-      throw new Refusal(decision.why);
-    let target = folder;
-    if (decision.kind === "reuse") {
-      target = decision.folder;
-    } else {
-      if (existsSync42(folder))
-        throw new Refusal(`${folder} exists and is not a worktree of this repo`);
-      const fetched = runGit(main, ["fetch", "--quiet", "origin", base], noPromptEnv(env), BASE_FETCH_TIMEOUT_MS);
-      if (hasRef(main, `refs/heads/${branch}`, env)) {
-        addWorktree(main, ["worktree", "add", "--quiet", folder, branch], env, folder);
-      } else if (hasRef(main, `refs/remotes/origin/${branch}`, env)) {
-        addWorktree(main, ["worktree", "add", "--quiet", "--track", "-b", branch, folder, `origin/${branch}`], env, folder);
-      } else if (fetched.ok) {
-        addWorktree(main, ["worktree", "add", "--quiet", "--no-track", "-b", branch, folder, `origin/${base}`], env, folder);
-      } else {
-        throw new Refusal(`\`git fetch origin ${base}\` failed (${fetched.err || "no reason given"}): a new branch starts only from the latest ${base}`);
-      }
-      copyWorktreeInclude(main, folder, env);
-    }
-    const marker = setupMarker(target, env);
-    if (worktrees.setup !== undefined && !existsSync42(marker)) {
-      runSetup2(target, worktrees.setup, env);
-      writeFileSync9(marker, "");
-    }
-    return target;
-  });
 }
 function createForSubagent(context, name) {
   const { env, paths, project, input } = context;
@@ -23412,7 +23582,7 @@ function createForSubagent(context, name) {
   const session = typeof input.session_id === "string" ? input.session_id : null;
   return withCreateLock(project.commonDir, branch, session, () => {
     const listed = listWorktrees(repo, env);
-    if (existsSync42(folder)) {
+    if (existsSync44(folder)) {
       if (listed.some((worktree) => samePath3(worktree.path, folder)))
         return folder;
       throw new Refusal(`${folder} exists and is not a worktree of this repo`);
@@ -23421,8 +23591,8 @@ function createForSubagent(context, name) {
       addWorktree(repo, ["worktree", "add", "--quiet", folder, branch], env, folder);
     } else {
       const settings = [project.root, ...repo === project.root ? [] : [repo]].flatMap((root) => [
-        join40(root, ".claude", "settings.local.json"),
-        join40(root, ".claude", "settings.json")
+        join42(root, ".claude", "settings.local.json"),
+        join42(root, ".claude", "settings.json")
       ]);
       const base = subagentBase(repo, project.commonDir, project.root, readBaseRef([...settings, paths.settingsFile]), env);
       addWorktree(repo, ["worktree", "add", "--quiet", "--no-track", "-b", branch, folder, base], env, folder);
@@ -23437,11 +23607,10 @@ function worktreeCreate(context) {
     const problem = badName(name);
     if (problem !== null)
       throw new Refusal(problem);
-    const worktrees = context.project.config?.worktrees;
-    if (worktrees === undefined)
-      throw new Refusal("no worktrees in .claude/cc-smart-dev-kit.json");
-    const folder = isSubagentName(name) ? createForSubagent(context, name) : createConfigured(context, name, worktrees);
-    return { stdout: folder };
+    if (!isSubagentName(name)) {
+      throw new Refusal(`the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}, and with it the worktrees.prefix it named this folder with: take the "${COMMAND} hook worktree-create" line out of the project's settings (\`${COMMAND} project init\` does it), and Claude Code makes its own worktrees`);
+    }
+    return { stdout: createForSubagent(context, name) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return { exitCode: 1, stderr: `worktree not created: ${reason}` };
@@ -23449,22 +23618,22 @@ function worktreeCreate(context) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync44, statSync as statSync12 } from "fs";
-import { basename as basename6, isAbsolute as isAbsolute3, join as join41, resolve as resolve7 } from "path";
+import { readFileSync as readFileSync46, statSync as statSync12 } from "fs";
+import { basename as basename6, isAbsolute as isAbsolute3, join as join43, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync44(join41(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync46(join43(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
   if (!isAbsolute3(admin))
     admin = resolve7(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join41("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join43("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync12(join41(admin, file)).mtimeMs);
+      last = Math.max(last, statSync12(join43(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -23563,7 +23732,7 @@ var worktreeRemoveHook = {
   onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree kept: ${message}` }),
   outsideGit: (input, _event, why) => {
     const path = stringField(input.worktree_path);
-    return path !== null && !existsSync43(path) ? SILENT : { exitCode: 1, stderr: `worktree kept: ${why}` };
+    return path !== null && !existsSync45(path) ? SILENT : { exitCode: 1, stderr: `worktree kept: ${why}` };
   },
   run: worktreeRemove,
   crashExitCode: 1
@@ -23733,360 +23902,6 @@ var PROJECT_HOOKS = [
   subagentStopHook
 ];
 
-// src/hooks/project-wiring.ts
-var TIMEOUTS = {
-  "worktree-create": 600,
-  "worktree-remove": 60,
-  "subagent-stop": 60
-};
-function projectHookCommand(name) {
-  return `${LAUNCHER_IN_SHELL} hook ${name}`;
-}
-function projectHookSettings(commandFor = projectHookCommand) {
-  const hooks = {};
-  for (const spec of PROJECT_HOOKS) {
-    const timeout = TIMEOUTS[spec.name];
-    if (timeout === undefined)
-      throw new Error(`no timeout for the project hook ${spec.name}`);
-    for (const event of spec.events) {
-      hooks[event] = [{ hooks: [{ type: "command", command: commandFor(spec.name), timeout }] }];
-    }
-  }
-  return { hooks };
-}
-function runsProjectHook(command, name) {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(String.raw`(^|[\s/"'])${LAUNCHER_NAME}["']?\s+hook\s+["']?${escaped}["']?(\s|;|$)`).test(command);
-}
-
-// src/hooks/run.ts
-import { appendFileSync as appendFileSync3 } from "fs";
-var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-async function handleHook(spec, text, env) {
-  try {
-    const input = parseHookInput(text);
-    if (input === null) {
-      return {
-        exitCode: spec.crashExitCode ?? 0,
-        stderr: `cc-smart-dev-kit ${spec.name}: the hook input is not JSON`
-      };
-    }
-    const event = stringField(input.hook_event_name);
-    if (event === null || !spec.events.includes(event))
-      return SILENT;
-    const cwd = stringField(input.cwd);
-    const context = { env, paths: cliPaths(env) };
-    const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null)
-      return outside(input, event, "the hook input has no cwd", context);
-    let checkout;
-    try {
-      checkout = locateCheckout(cwd, { env });
-    } catch (error) {
-      return outside(input, event, errorMessage(error), context);
-    }
-    if (checkout === null)
-      return outside(input, event, `${cwd} is not in a git checkout`, context);
-    if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name))
-      return SILENT;
-    let project;
-    try {
-      project = loadProjectConfig(checkout);
-    } catch (error) {
-      if (error instanceof CcSmartDevKitConfigError) {
-        return spec.onConfigProblem(error.message, input, event, checkout, context);
-      }
-      throw error;
-    }
-    const missing = spec.needs?.(project.config) ?? null;
-    if (missing !== null)
-      return spec.onConfigProblem(missing, input, event, checkout, context);
-    return await spec.run({ input, event, cwd, project, env, paths: context.paths });
-  } catch (error) {
-    return {
-      exitCode: spec.crashExitCode ?? 0,
-      stderr: `cc-smart-dev-kit ${spec.name}: ${errorMessage(error)}`
-    };
-  }
-}
-function logRun(spec, text, result, env) {
-  const file = env[HOOK_LOG_ENV];
-  if (file === undefined || file === "")
-    return;
-  try {
-    const input = parseHookInput(text);
-    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env) }) ?? {};
-    appendFileSync3(file, `${JSON.stringify({
-      hook: spec.name,
-      event: stringField(input?.hook_event_name),
-      cwd: stringField(input?.cwd),
-      exitCode: result.exitCode ?? 0,
-      stdout: (result.stdout ?? "").slice(0, 2000),
-      ...Object.keys(facts).length === 0 ? {} : { facts }
-    })}
-`);
-  } catch {}
-}
-async function runHookEntry(spec) {
-  const text = await Bun.stdin.text();
-  const result = await handleHook(spec, text, process.env);
-  logRun(spec, text, result, process.env);
-  if (result.stdout !== undefined)
-    await Bun.write(Bun.stdout, result.stdout);
-  if (result.stderr !== undefined)
-    await Bun.write(Bun.stderr, `${result.stderr}
-`);
-  process.exit(result.exitCode ?? 0);
-}
-
-// src/cli/live-check.ts
-var LIVE_NAME = "cc-smart-dev-kit-live-check";
-var LIVE_PREFIX = "live-wt-";
-var SESSION_TIMEOUT_MS = 240000;
-var LIVE_TOOLS = "EnterWorktree,ExitWorktree,Bash";
-var LIVE_ALLOWED = "EnterWorktree,ExitWorktree,Bash(git status:*)";
-function liveHookCommand(pluginDir, bunPath) {
-  const command = `${shellQuote(bunPath)} --no-env-file ${shellQuote(bunConfigArg(pluginDir))} ${shellQuote(join42(pluginDir, "dist", "cli.js"))}`;
-  return (name) => `${command} hook ${name}`;
-}
-function liveRecordFile(stateDir) {
-  return join42(stateDir, "live-check.json");
-}
-function readLiveRecord(stateDir) {
-  try {
-    const parsed = JSON.parse(readFileSync45(liveRecordFile(stateDir), "utf8"));
-    return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
-  } catch {
-    return null;
-  }
-}
-function parseClaudeVersion(output) {
-  return /(\d+\.\d+\.\d+)/.exec(output)?.[1] ?? null;
-}
-var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` + '`git status`. Then call the ExitWorktree tool with action "remove" and discard_changes ' + "true. Then reply with the single word done. Do nothing else.";
-function readLog(file) {
-  if (!existsSync44(file))
-    return [];
-  return readFileSync45(file, "utf8").split(`
-`).filter((line) => line.trim() !== "").flatMap((line) => {
-    try {
-      return [JSON.parse(line)];
-    } catch {
-      return [];
-    }
-  });
-}
-var GIT_ID = {
-  GIT_AUTHOR_NAME: "cc-smart-dev-kit live check",
-  GIT_AUTHOR_EMAIL: "live-check@example.com",
-  GIT_COMMITTER_NAME: "cc-smart-dev-kit live check",
-  GIT_COMMITTER_EMAIL: "live-check@example.com"
-};
-function proveIn(label, repo, expected, deps, env) {
-  const log = join42(dirname14(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
-  const session = deps.run([
-    "claude",
-    "-p",
-    "--plugin-dir",
-    deps.pluginDir,
-    "--tools",
-    LIVE_TOOLS,
-    "--allowedTools",
-    LIVE_ALLOWED,
-    "--strict-mcp-config",
-    "--no-session-persistence",
-    LIVE_PROMPT
-  ], { cwd: repo, env: { ...env, [HOOK_LOG_ENV]: log }, timeoutMs: SESSION_TIMEOUT_MS });
-  const runs = readLog(log);
-  const said = `claude exited ${session.exitCode}: ${session.output.trim().split(`
-`).slice(-3).join(" ")}`;
-  const fired = (event) => runs.some((run) => run.event === event);
-  const created = runs.find((run) => run.event === "WorktreeCreate");
-  const removed = runs.find((run) => run.event === "WorktreeRemove");
-  const guarded = runs.filter((run) => run.hook === "git-guard" && run.event === "PreToolUse");
-  const guardedThere = guarded.some((run) => run.cwd === expected.folder);
-  const guardParsed = guarded.some((run) => run.facts?.programs?.includes("git") === true);
-  const branchLeft = deps.run(["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`], { cwd: repo, env, timeoutMs: 1e4 });
-  const lines = [];
-  const events = expected.maker === "engine" ? ["SessionStart", "WorktreeCreate", "PreToolUse", "WorktreeRemove"] : ["SessionStart", "PreToolUse"];
-  const missing = events.filter((event) => !fired(event));
-  lines.push(missing.length === 0 ? { ok: true, text: `${label}: the hooks fired (${events.join(", ")})` } : { ok: false, text: `${label}: no ${missing.join(", ")} hook ran. ${said}` });
-  const where = guarded.length === 0 ? "no Bash call" : guarded.map((run) => run.cwd).join(", ");
-  lines.push(guardParsed ? {
-    ok: true,
-    text: `${label}: the git guard read the command line (it parsed git) before the Bash call`
-  } : {
-    ok: false,
-    text: `${label}: the git guard ${guarded.length === 0 ? "never ran" : `ran in ${where} without parsing a command`}: its log names no git program. ${said}`
-  });
-  if (expected.maker === "engine") {
-    lines.push(created?.exitCode === 0 && created.stdout === expected.folder && guardedThere ? {
-      ok: true,
-      text: `${label}: WorktreeCreate made ${expected.folder}, and the session worked there`
-    } : {
-      ok: false,
-      text: `${label}: WorktreeCreate gave ${created?.stdout || `no folder (exit ${created?.exitCode ?? "none"})`}, the git guard ran in ${where}; expected ${expected.folder}`
-    });
-  } else {
-    lines.push(created === undefined && guardedThere ? {
-      ok: true,
-      text: `${label}: no WorktreeCreate hook ran; Claude Code made ${expected.folder}, and the session worked there`
-    } : {
-      ok: false,
-      text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`
-    });
-  }
-  const gone = !existsSync44(expected.folder) && branchLeft.exitCode !== 0;
-  const remover = expected.maker === "engine" ? "WorktreeRemove" : "ExitWorktree";
-  const removerOk = expected.maker === "engine" ? removed?.exitCode === 0 : guardedThere;
-  lines.push(gone && removerOk ? {
-    ok: true,
-    text: `${label}: ${remover} removed the folder and the branch ${expected.branch}`
-  } : {
-    ok: false,
-    text: `${label}: after ${remover}${expected.maker === "engine" ? ` (${removed === undefined ? "did not run" : `exit ${removed.exitCode}`})` : guardedThere ? "" : " (the session never worked in it)"} ${existsSync44(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`
-  });
-  return lines;
-}
-function runLiveCheck(paths, env, deps) {
-  const version = parseClaudeVersion(deps.run(["claude", "--version"], { cwd: tmpdir6(), env, timeoutMs: 20000 }).output);
-  if (version === null) {
-    return [
-      { ok: false, text: "live: `claude --version` gave no version: is Claude Code installed?" }
-    ];
-  }
-  const root = realpathSync5(mkdtempSync4(join42(tmpdir6(), "cc-smart-dev-kit-live-")));
-  try {
-    const gitEnv = { ...env, ...GIT_ID };
-    const git = (cwd, ...args) => {
-      const result = deps.run(["git", ...args], { cwd, env: gitEnv, timeoutMs: 20000 });
-      if (result.exitCode !== 0)
-        throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
-    };
-    const plain = join42(root, "plain");
-    mkdirSync16(plain);
-    git(plain, "init", "-q", "-b", "main");
-    writeFileSync10(join42(plain, "README.md"), `live check
-`);
-    git(plain, "add", "README.md");
-    git(plain, "commit", "-q", "-m", "first");
-    const origin = join42(root, "origin.git");
-    git(root, "init", "-q", "--bare", "-b", "main", origin);
-    const configured = join42(root, "configured");
-    git(root, "clone", "-q", origin, configured);
-    writeFileSync10(join42(configured, "README.md"), `live check
-`);
-    mkdirSync16(join42(configured, ".claude"));
-    writeFileSync10(join42(configured, ".claude", "cc-smart-dev-kit.json"), `${JSON.stringify({ worktrees: { base: "main", prefix: LIVE_PREFIX } })}
-`);
-    writeFileSync10(join42(configured, ".claude", "settings.json"), `${JSON.stringify(projectHookSettings(deps.hookCommand), null, 2)}
-`);
-    git(configured, "add", "README.md", ".claude/cc-smart-dev-kit.json", ".claude/settings.json");
-    git(configured, "commit", "-q", "-m", "first");
-    git(configured, "push", "-q", "origin", "main");
-    const lines = [
-      ...proveIn("Claude Code's worktrees", plain, {
-        maker: "claude-code",
-        folder: join42(plain, ".claude", "worktrees", LIVE_NAME),
-        branch: `worktree-${LIVE_NAME}`
-      }, deps, env),
-      ...proveIn("the worktree engine", configured, {
-        maker: "engine",
-        folder: join42(root, `${LIVE_PREFIX}${LIVE_NAME}`),
-        branch: LIVE_NAME
-      }, deps, env)
-    ].map((line) => ({ ...line, text: `live, ${line.text}` }));
-    if (lines.every((line) => line.ok)) {
-      mkdirSync16(paths.stateDir, { recursive: true, mode: 448 });
-      const record = {
-        claudeCode: version,
-        plugin: VERSION,
-        passedAt: new Date().toISOString()
-      };
-      atomicWrite(liveRecordFile(paths.stateDir), `${JSON.stringify(record, null, 2)}
-`, 384);
-      lines.push({ ok: true, text: `live: passed on Claude Code ${version}; recorded` });
-    }
-    return lines;
-  } finally {
-    rmSync10(root, { recursive: true, force: true });
-  }
-}
-
-// src/cli/project-checks.ts
-import { existsSync as existsSync48, readFileSync as readFileSync48 } from "fs";
-import { join as join46 } from "path";
-
-// src/hooks/settings-hooks.ts
-import { existsSync as existsSync45, readFileSync as readFileSync46 } from "fs";
-import { join as join43 } from "path";
-function matcherSelects(matcher, subject) {
-  if (matcher === undefined || matcher === null || matcher === "" || matcher === "*")
-    return true;
-  if (typeof matcher !== "string")
-    return false;
-  if (subject === null)
-    return true;
-  if (/^[A-Za-z0-9_\- ,|]*$/.test(matcher)) {
-    return matcher.split(/[|,]/).map((part) => part.trim()).includes(subject);
-  }
-  try {
-    return new RegExp(matcher).test(subject);
-  } catch {
-    return false;
-  }
-}
-function hooksOf(file) {
-  if (!existsSync45(file))
-    return null;
-  try {
-    const parsed = JSON.parse(readFileSync46(file, "utf8"));
-    if (typeof parsed !== "object" || parsed === null)
-      return null;
-    const hooks = parsed.hooks;
-    return typeof hooks === "object" && hooks !== null && !Array.isArray(hooks) ? hooks : null;
-  } catch {
-    return null;
-  }
-}
-function describeHandler(handler) {
-  if (typeof handler !== "object" || handler === null)
-    return "(a hook)";
-  const { type, command, args } = handler;
-  if (typeof command !== "string")
-    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
-  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
-  return [command, ...rest].join(" ");
-}
-function wiredHandlers(file, event, subject) {
-  const groups = hooksOf(file)?.[event];
-  if (!Array.isArray(groups))
-    return [];
-  return groups.flatMap((group) => {
-    if (typeof group !== "object" || group === null)
-      return [];
-    const { matcher, hooks } = group;
-    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject))
-      return [];
-    return hooks.map((handler) => ({ file, command: describeHandler(handler) }));
-  });
-}
-function projectSettingsFiles(projectDir) {
-  return [
-    join43(projectDir, ".claude", "settings.json"),
-    join43(projectDir, ".claude", "settings.local.json")
-  ];
-}
-function allWiredHandlers(file) {
-  const hooks = hooksOf(file);
-  if (hooks === null)
-    return [];
-  return Object.keys(hooks).flatMap((event) => wiredHandlers(file, event, null));
-}
-
 // src/cli/project-init.ts
 import { existsSync as existsSync47, readFileSync as readFileSync47 } from "fs";
 import { join as join45 } from "path";
@@ -24105,8 +23920,7 @@ var FILE_ORDER = [
   "ownHooks",
   "workflow"
 ];
-var WORKTREE_ORDER = ["base", "prefix", "setup", "guardMainFolder", "bases", "engine"];
-var DEPRECATED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var WORKTREE_ORDER = ["base", "guardMainFolder", "bases"];
 function orderKeys(data, order) {
   const ordered = {};
   for (const key of order) {
@@ -24191,14 +24005,76 @@ function withBaseRef(settings, head) {
   const worktree = { ...now ?? {}, baseRef: "head" };
   return { settings: { ...settings, worktree }, added: ['worktree.baseRef: "head"'] };
 }
+function withoutEngineHooks(settings) {
+  if (!isObject(settings.hooks))
+    return { settings, removed: [] };
+  const removed = [];
+  const hooks = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    let touched = false;
+    const kept = [];
+    for (const group of groups) {
+      if (!isObject(group) || !Array.isArray(group.hooks)) {
+        kept.push(group);
+        continue;
+      }
+      const handlers = group.hooks.filter((handler) => {
+        const command = describeHandler(handler);
+        if (retiredEngineHookOf(command) === null)
+          return true;
+        removed.push(`hooks.${event}: ${command}`);
+        return false;
+      });
+      if (handlers.length === group.hooks.length) {
+        kept.push(group);
+        continue;
+      }
+      touched = true;
+      if (handlers.length > 0)
+        kept.push({ ...group, hooks: handlers });
+    }
+    if (!touched)
+      hooks[event] = groups;
+    else if (kept.length > 0)
+      hooks[event] = kept;
+  }
+  if (removed.length === 0)
+    return { settings, removed };
+  const next = { ...settings, hooks };
+  if (Object.keys(hooks).length === 0)
+    delete next.hooks;
+  return { settings: next, removed };
+}
+function settingsPlan(file, existing, head) {
+  const cleaned = withoutEngineHooks(parseObject(existing, file));
+  const merged = withBaseRef(cleaned.settings, head);
+  const changed = cleaned.removed.length > 0 || merged.added.length > 0;
+  return {
+    file,
+    text: !changed && existing !== null ? existing : `${JSON.stringify(merged.settings, null, detectIndent(existing ?? ""))}
+`,
+    changed,
+    adds: merged.added,
+    removes: cleaned.removed,
+    lines: [
+      ...cleaned.removed.map((line) => `- ${line}`),
+      ...merged.added.map((line) => `+ ${line}`)
+    ]
+  };
+}
 function planProjectInit(input) {
-  const { root, existing, existingSettings, defaultBranch, answers } = input;
+  const { root, existing, existingSettings, existingLocalSettings, defaultBranch, answers } = input;
   const file = join44(root, ".claude", "cc-smart-dev-kit.json");
-  const settingsFile = join44(root, ".claude", "settings.json");
   const before = parseObject(existing, file);
   const beforeWorktrees = isObject(before.worktrees) ? before.worktrees : {};
   const beforeJobs = isObject(before.jobs) ? before.jobs : {};
   const worktrees = { ...beforeWorktrees };
+  for (const field of RETIRED_WORKTREE_FIELDS)
+    delete worktrees[field];
   worktrees.base = answers.base;
   if (answers.guards.guardMainFolder)
     worktrees.guardMainFolder = true;
@@ -24209,7 +24085,7 @@ function planProjectInit(input) {
   else
     delete worktrees.bases;
   const next = { ...before };
-  next.requires = worktrees.prefix === undefined ? raisedRequires(before.requires, `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`, WORKTREE_PREFIX_OPTIONAL_SINCE) : raisedRequires(before.requires, requiresFor(VERSION), VERSION);
+  next.requires = raisedRequires(before.requires, `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`, WORKTREE_PREFIX_OPTIONAL_SINCE);
   next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
   if (answers.protectedBranches.length > 0)
     next.protectedBranches = answers.protectedBranches;
@@ -24235,28 +24111,28 @@ function planProjectInit(input) {
   const after = orderKeys(next, FILE_ORDER);
   const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}
 `;
-  const settingsNow = parseObject(existingSettings, settingsFile);
-  const merged = withBaseRef(settingsNow, answers.base !== defaultBranch);
-  const settingsChanged = merged.added.length > 0;
-  const settingsText = !settingsChanged && existingSettings !== null ? existingSettings : `${JSON.stringify(merged.settings, null, detectIndent(existingSettings ?? ""))}
-`;
+  const settings = settingsPlan(join44(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
+  const localSettings = settingsPlan(join44(root, ".claude", "settings.local.json"), existingLocalSettings, false);
   const notes = [];
   if (answers.base !== defaultBranch) {
     notes.push(`base ${answers.base} is not the repo's default branch ${defaultBranch}: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`);
   }
-  const deprecated = DEPRECATED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(beforeWorktrees, field));
-  if (deprecated.length > 0) {
-    notes.push(`the project's file still sets ${deprecated.map((field) => `worktrees.${field}`).join(", ")}: the worktree engine is deprecated and retires in the next minor version; \`cc-smart-dev-kit doctor\` names the steps to move`);
+  const retired = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(beforeWorktrees, field));
+  const engineLines = settings.removes.length + localSettings.removes.length;
+  if (retired.length > 0 || engineLines > 0) {
+    const what = [
+      ...retired.length > 0 ? [retired.map((field) => `worktrees.${field}`).join(", ")] : [],
+      ...engineLines > 0 ? [`its hook line${engineLines === 1 ? "" : "s"}`] : []
+    ].join(" and ");
+    notes.push(`the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}: ${what} ${retired.length + engineLines === 1 ? "goes" : "go"}, because Claude Code's own worktrees need none`);
   }
   return {
     file,
     text,
     changed: text !== existing,
     diff: diffOf(before, after),
-    settingsFile,
-    settingsText,
-    settingsChanged,
-    settingsAdds: merged.added,
+    settings,
+    localSettings,
     notes
   };
 }
@@ -24264,8 +24140,10 @@ function applyProjectInit(plan, options) {
   const wanted = [];
   if (plan.changed)
     wanted.push([plan.file, plan.text]);
-  if (plan.settingsChanged)
-    wanted.push([plan.settingsFile, plan.settingsText]);
+  for (const settings of [plan.settings, plan.localSettings]) {
+    if (settings.changed)
+      wanted.push([settings.file, settings.text]);
+  }
   return wanted.map(([file, text]) => {
     const created = !existsSync46(file);
     if (options.dryRun === true)
@@ -24373,7 +24251,6 @@ function detectFacts(runner, root) {
 function parseFlags(argv) {
   const flags = { dryRun: false, yes: false };
   const workflow = [];
-  const deprecated = [];
   const value = (name, next) => {
     if (next === undefined || next.startsWith("--"))
       throw new Error(`${name} needs a value`);
@@ -24395,14 +24272,11 @@ function parseFlags(argv) {
           break;
         case "--prefix":
         case "--setup":
-        case "--engine":
-          value(arg, argv[index + 1]);
-          index += 1;
-          deprecated.push(arg);
-          break;
         case "--no-setup":
-          deprecated.push(arg);
-          break;
+        case "--engine":
+          return {
+            error: `${arg} is gone: the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}, and Claude Code's own worktrees need none of its settings`
+          };
         case "--bases": {
           const pairs = value(arg, argv[index + 1]);
           index += 1;
@@ -24421,13 +24295,16 @@ function parseFlags(argv) {
           index += 1;
           break;
         case "--guard-main-folder":
-          flags.guardMainFolder = true;
+        case "--no-guard-main-folder":
+          flags.guardMainFolder = arg === "--guard-main-folder";
           break;
         case "--session-names":
-          flags.sessionNames = true;
+        case "--no-session-names":
+          flags.sessionNames = arg === "--session-names";
           break;
         case "--job-route":
-          flags.jobRoute = true;
+        case "--no-job-route":
+          flags.jobRoute = arg === "--job-route";
           break;
         case "--workflow": {
           for (const word of value(arg, argv[index + 1]).split(",")) {
@@ -24446,8 +24323,6 @@ function parseFlags(argv) {
   }
   if (workflow.length > 0)
     flags.workflow = workflow;
-  if (deprecated.length > 0)
-    flags.deprecatedFlags = deprecated;
   return { flags };
 }
 function workflowFromFlags(words) {
@@ -24563,12 +24438,13 @@ function printPlan(plan, context) {
     context.print("  (no change)");
   for (const line of plan.diff)
     context.print(`  ${line}`);
-  if (plan.settingsChanged) {
-    context.print(`${plan.settingsFile} also changes, merged with what it has:`);
-    for (const line of plan.settingsAdds)
-      context.print(`  + ${line}`);
+  const settings = [plan.settings, plan.localSettings].filter((one) => one.changed);
+  for (const one of settings) {
+    context.print(`${one.file} also changes, merged with what it has:`);
+    for (const line of one.lines)
+      context.print(`  ${line}`);
   }
-  if (!plan.changed && !plan.settingsChanged)
+  if (!plan.changed && settings.length === 0)
     context.print("Nothing to change.");
   for (const note of plan.notes)
     context.print(`! ${note}`);
@@ -24592,18 +24468,22 @@ var PROJECT_INIT_USAGE = `Usage: ${COMMAND} project init [--dry-run] [--yes] [fl
 Writes this project's .claude/cc-smart-dev-kit.json, and, when the base branch is not the
 repo's default branch, Claude Code's "worktree": {"baseRef": "head"} in
 .claude/settings.json, so a new worktree starts from the branch the session is on. Every
-project uses Claude Code's own worktrees: no worktree hook is written. It asks first, showing
-the defaults; every question has a flag, so a run with no terminal writes nothing unless
---yes is given. Nothing is committed: commit both files with the project.
+project uses Claude Code's own worktrees: no worktree hook is written. What the retired
+worktree engine left is taken out: its fields in the project's file, and its
+"cc-smart-dev-kit hook" lines in .claude/settings.json and .claude/settings.local.json. It asks
+first, showing the defaults and every - line; every question has a flag, so a run with no
+terminal writes nothing unless --yes is given. Nothing is committed: commit both files with
+the project.
 
   --base <branch>        the branch a new worktree starts from (default: origin/HEAD, else the
                          repo's only branch, else main, else master, else the current branch)
   --bases <p=b,p=b>      bases for other branch prefixes (default: hotfix/, release/)
   --protected <a,b>      the branches the git guard asks about (default: the default
                          branch, the base, and GitHub's protected branches)
-  --guard-main-folder    refuse edits in the main checkout itself
-  --session-names        each session names itself after its task
-  --job-route            send heavy commands through the job queue
+  --[no-]guard-main-folder
+                         refuse edits in the main checkout itself (or not)
+  --[no-]session-names   each session names itself after its task (or not)
+  --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
   --dry-run              print the plan and write nothing
   --yes                  no questions: write the flags and the defaults
@@ -24636,6 +24516,7 @@ ${PROJECT_INIT_USAGE}`);
       root: context.root,
       existing,
       existingSettings: readText(join45(context.root, ".claude", "settings.json")),
+      existingLocalSettings: readText(join45(context.root, ".claude", "settings.local.json")),
       defaultBranch: facts.defaultBranch,
       answers
     });
@@ -24644,16 +24525,12 @@ ${PROJECT_INIT_USAGE}`);
     return 1;
   }
   printPlan(plan, context);
-  if (flags.deprecatedFlags !== undefined) {
-    const names = flags.deprecatedFlags.join(", ");
-    context.print(`! ${names} ${flags.deprecatedFlags.length === 1 ? "is" : "are"} deprecated and ignored: the plugin's worktree engine retires in the next minor version, and every project uses Claude Code's own worktrees`);
-  }
   if (flags.dryRun) {
     context.print("A dry run: nothing was written.");
     return 0;
   }
   if (context.terminal !== null && !flags.yes) {
-    if (!context.terminal.confirm("Write these two files?")) {
+    if (!context.terminal.confirm("Write these files?")) {
       context.print("Left alone.");
       return 0;
     }
@@ -24721,49 +24598,25 @@ function oldNameLines(projectDir, sources, home) {
   }
   return lines;
 }
-function worktreeLines(config, sources, projectDir, checkout, paths, env) {
-  const hooks = PROJECT_HOOKS.map((spec) => {
-    const event = spec.events[0] ?? "";
-    const handlers = sources.flatMap((file) => wiredHandlers(file, event, null));
-    return { spec, event, wired: handlers.some((h) => runsProjectHook(h.command, spec.name)) };
-  });
-  const wired = hooks.filter((hook) => hook.wired).map((hook) => hook.event);
-  const worktrees = config?.worktrees;
-  const fields = worktrees === undefined ? [] : ["engine", "prefix", "setup"].filter((field) => Object.hasOwn(worktrees, field));
-  const named = fields.map((field) => `"worktrees.${field}"`);
-  const move = `; Claude Code's own worktrees need no hook, and a project whose base branch is not the repo's default branch adds "worktree": {"baseRef": "head"} to .claude/settings.json`;
+function engineLines(sources, projectDir, home) {
   const lines = [];
-  if (wired.length > 0) {
-    const what = `the project's settings wire ${wired.join(", ")} to cc-smart-dev-kit hook`;
-    if (worktrees === undefined) {
-      lines.push({
-        ok: false,
-        text: `project: ${what}, but ${config === null ? "there is no .claude/cc-smart-dev-kit.json" : '.claude/cc-smart-dev-kit.json has no "worktrees"'}, so each of them fails. Take the cc-smart-dev-kit hook lines out: the worktree engine is deprecated and retires in the next minor version${move}`
-      });
-    } else {
-      const drop = named.length > 0 ? ` and drop ${named.join(", ")} from .claude/cc-smart-dev-kit.json` : "";
-      lines.push({
-        ok: true,
-        warn: true,
-        text: `project: ${what}: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json${drop}${move}`
-      });
-    }
-  } else if (fields.length > 0) {
+  for (const file of sources) {
+    const names = [
+      ...new Set(allWiredHandlers(file).map((handler) => retiredEngineHookOf(handler.command)).filter((name) => name !== null))
+    ];
+    if (names.length === 0)
+      continue;
+    const hooks = names.map((name) => `${COMMAND} hook ${name}`).join(", ");
     lines.push({
-      ok: true,
-      warn: true,
-      text: `project: .claude/cc-smart-dev-kit.json still sets ${named.join(", ")}: the worktree engine is deprecated and retires in the next minor version. Remove ${fields.length === 1 ? "it" : "them"}${move}`
+      ok: false,
+      text: `project: ${shown(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time: run ${COMMAND} project init, which takes ${names.length === 1 ? "the line" : "those lines"} out (Claude Code's own worktrees need no hook)`
     });
   }
-  if (hooks.find((hook) => hook.event === "WorktreeCreate")?.wired === true) {
-    const others = [...sources, paths.settingsFile].flatMap((file) => wiredHandlers(file, "WorktreeCreate", null)).filter((handler) => !runsProjectHook(handler.command, "worktree-create"));
-    for (const other of others) {
-      lines.push({
-        ok: false,
-        text: `project: another WorktreeCreate hook runs too: ${other.command} (${shown(other.file, projectDir, paths.home)}). Claude Code runs both and makes two worktrees for each request; remove one`
-      });
-    }
-  }
+  return lines;
+}
+function worktreeLines(config, sources, checkout, env) {
+  const worktrees = config?.worktrees;
+  const lines = [];
   if (worktrees !== undefined) {
     const ignored = runGit(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env).ok;
     if (!ignored) {
@@ -24775,11 +24628,10 @@ function worktreeLines(config, sources, projectDir, checkout, paths, env) {
     }
     const defaultBranch = defaultBranchOf2(realRunner(env), checkout.root);
     if (worktrees.base !== defaultBranch && baseRefOf(sources) !== "head") {
-      const engine = wired.length > 0 ? ", and the plugin's worktree engine decides while it is wired" : "";
       lines.push({
         ok: true,
         warn: true,
-        text: `project: worktrees.base is ${worktrees.base}, not this repo's default branch ${defaultBranch}, and the project's settings do not set "worktree": {"baseRef": "head"}, so a new worktree is cut from the default branch instead${engine}: add "worktree": {"baseRef": "head"} to .claude/settings.json and commit it`
+        text: `project: worktrees.base is ${worktrees.base}, not this repo's default branch ${defaultBranch}, and the project's settings do not set "worktree": {"baseRef": "head"}, so a new worktree is cut from the default branch instead: add "worktree": {"baseRef": "head"} to .claude/settings.json and commit it`
       });
     }
   }
@@ -24858,7 +24710,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
       continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
-        if (PROJECT_HOOKS.some((spec) => runsProjectHook(handler.command, spec.name)))
+        if (retiredEngineHookOf(handler.command) !== null)
           continue;
         const key = JSON.stringify([hook.name, hook.event, handler.file, handler.command]);
         const entry = found.get(key) ?? { hook, handler, subjects: [] };
@@ -24891,17 +24743,19 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
     return [];
   const projectDir = env.CLAUDE_PROJECT_DIR !== undefined && env.CLAUDE_PROJECT_DIR !== "" ? env.CLAUDE_PROJECT_DIR : checkout.root;
   const sources = projectSettingsFiles(projectDir);
+  const engine = engineLines(sources, projectDir, paths.home);
   let config;
   try {
     config = loadProjectConfig(checkout).config;
   } catch (error) {
     if (!(error instanceof CcSmartDevKitConfigError))
       throw error;
-    return [{ ok: false, text: `project: ${error.message}` }];
+    return [{ ok: false, text: `project: ${error.message}` }, ...engine];
   }
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),
-    ...worktreeLines(config, sources, projectDir, checkout, paths, env)
+    ...engine,
+    ...worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
@@ -26802,7 +26656,7 @@ import {
   statSync as statSync13,
   unlinkSync as unlinkSync5,
   utimesSync,
-  writeFileSync as writeFileSync11
+  writeFileSync as writeFileSync10
 } from "fs";
 import { join as join49 } from "path";
 var HEARTBEAT_MS = 5000;
@@ -26844,7 +26698,7 @@ function errorCode(error) {
 function writeWhole(file, text, token) {
   const dir = file.slice(0, file.lastIndexOf("/"));
   const temp = join49(dir, `.${token}.tmp`);
-  writeFileSync11(temp, text, { mode: FILE_MODE });
+  writeFileSync10(temp, text, { mode: FILE_MODE });
   try {
     chmodSync3(temp, FILE_MODE);
     renameSync3(temp, file);
@@ -27171,7 +27025,7 @@ function openSharedStore(dir, options = {}) {
     }
     const probe = join49(path, `.probe-${crypto.randomUUID()}`);
     try {
-      writeFileSync11(probe, "");
+      writeFileSync10(probe, "");
       unlinkSync5(probe);
     } catch (error) {
       return {
@@ -28049,10 +27903,7 @@ function writeProjectFile(cwd, path, key, value, env) {
     removeLeaf(data, path);
   else
     setLeaf2(data, path, value);
-  const checked = ccSmartDevKitConfigSchema.safeParse(data);
-  if (!checked.success) {
-    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${describeIssues(checked.error.issues)}`);
-  }
+  checkCcSmartDevKitConfig(data, file);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(file, key, value);
   backupFile(cliPaths(env).stateDir, file);
@@ -30149,7 +30000,7 @@ function gatewayContext(options) {
 }
 
 // src/hooks/notify.ts
-import { readFileSync as readFileSync59, rmSync as rmSync13, statSync as statSync17, writeFileSync as writeFileSync12 } from "fs";
+import { readFileSync as readFileSync59, rmSync as rmSync13, statSync as statSync17, writeFileSync as writeFileSync11 } from "fs";
 import { tmpdir as tmpdir7 } from "os";
 import { basename as basename9, join as join55 } from "path";
 
@@ -30306,7 +30157,7 @@ function markedWaiting(file, nowMs) {
 }
 function markWaiting(file) {
   try {
-    writeFileSync12(file, `${Date.now()}
+    writeFileSync11(file, `${Date.now()}
 `);
   } catch {}
 }
@@ -30502,7 +30353,7 @@ function readFailed(file) {
 }
 function writeFailed(file, key) {
   try {
-    writeFileSync12(file, key);
+    writeFileSync11(file, key);
   } catch {}
 }
 function terminalRoute(event, env, notificationType = "") {
@@ -30903,7 +30754,7 @@ import {
   readSync as readSync2,
   rmSync as rmSync14,
   statSync as statSync19,
-  writeFileSync as writeFileSync13
+  writeFileSync as writeFileSync12
 } from "fs";
 import { platform } from "os";
 import { dirname as dirname19, join as join59, resolve as resolve9 } from "path";
@@ -31159,9 +31010,9 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
       rmSync14(path);
   }
   for (const session of sessions) {
-    writeFileSync13(join59(dir, `${tabConfigName(session)}.toml`), warpTabConfig(session, mainCheckout));
+    writeFileSync12(join59(dir, `${tabConfigName(session)}.toml`), warpTabConfig(session, mainCheckout));
   }
-  writeFileSync13(join59(dir, `${RESTORE_ALL}.toml`), [
+  writeFileSync12(join59(dir, `${RESTORE_ALL}.toml`), [
     TAB_CONFIG_MARK,
     'name = "Claude \xB7 bring back the sessions a restart or a closed window stopped"',
     'title = "restore Claude sessions"',
@@ -31222,18 +31073,14 @@ function clock(time) {
 }
 async function runSessions(paths, options, deps, cwd = process.cwd()) {
   let mainCheckout = resolve9(cwd);
-  let prefix = null;
   try {
     const checkout = locateCheckout(cwd, { env: process.env });
-    if (checkout !== null) {
+    if (checkout !== null)
       mainCheckout = checkout.mainCheckout ?? checkout.root;
-      const project = loadProjectConfig(checkout);
-      prefix = project.config?.worktrees?.prefix ?? null;
-    }
   } catch {}
   const projectsDir = join59(paths.claudeConfigDir, "projects");
   const machineStartedAt = deps.now - deps.uptimeSeconds * 1000;
-  const sessions = savedSessions(projectsDir, mainCheckout, prefix, deps.now - PIN_HOURS * 3600000);
+  const sessions = savedSessions(projectsDir, mainCheckout, null, deps.now - PIN_HOURS * 3600000);
   function openNow() {
     try {
       return new Set(liveSessions(paths.claudeConfigDir).map((session) => session.sessionId));
@@ -32144,7 +31991,6 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         project: { cwd: process.cwd(), pluginHooksFile: join61(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),
-          hookCommand: liveHookCommand(pluginDir(), process.execPath),
           run: liveRunner
         } : null
       });
@@ -32158,6 +32004,10 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
       if (name === USER_NOTIFY_HOOK_NAME && extra.length === 0) {
         await runNotifyEntry();
         return 0;
+      }
+      if (RETIRED_ENGINE_HOOKS.some((retired) => retired === name)) {
+        console.error(`${COMMAND} hook ${name}: this hook was retired in ${WORKTREE_ENGINE_RETIRED_IN}: remove its line from your settings \u2014 \`${COMMAND} project init\` does it`);
+        return 2;
       }
       const spec = PROJECT_HOOKS.find((one) => one.name === name);
       if (spec === undefined || extra.length > 0) {

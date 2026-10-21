@@ -1,7 +1,8 @@
 /**
  * The hooks a Claude Code settings file wires: what `cc-smart-dev-kit doctor` reads to check a
- * project's wiring (the worktree engine's lines, and a project hook that runs next to a
- * plugin hook on the same event and tool).
+ * project's wiring (a leftover line of the retired worktree engine, and a project hook that
+ * runs next to a plugin hook on the same event and tool), and what `project init` reads to
+ * take the engine's lines out.
  *
  * No hook reads these files: what Claude Code loaded for a session is not knowable from a
  * hook (a worktree's settings may differ from the ones the session started with), so a
@@ -9,6 +10,34 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
+
+/**
+ * The hooks the plugin's worktree engine had a project wire itself, as
+ * `cc-smart-dev-kit hook <name>`. They retired with the engine (`WORKTREE_ENGINE_RETIRED_IN`
+ * in `src/project/config.ts`): `cc-smart-dev-kit hook <name>` now prints the fix and exits 2,
+ * `doctor` names a leftover line, and `project init` removes it. Known by name here, never
+ * through the engine's own specs, so the list outlives the engine's code.
+ */
+export const RETIRED_ENGINE_HOOKS = [
+  "worktree-create",
+  "worktree-remove",
+  "subagent-stop",
+] as const;
+
+/**
+ * A wired command that runs a retired engine hook: the launcher by any path (`"$HOME/.local/
+ * bin/cc-smart-dev-kit"`, the bare name, the plugin's own `bin/`, the Windows `.cmd`), then
+ * `hook` and the name, with any spaces or quotes around the words.
+ */
+const RETIRED_ENGINE_LINE = new RegExp(
+  String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`,
+);
+
+/** The retired engine hook a handler's command runs (`worktree-create`), or null. */
+export function retiredEngineHookOf(command: string): string | null {
+  return RETIRED_ENGINE_LINE.exec(command)?.[3] ?? null;
+}
 
 /**
  * True when a settings `matcher` selects `subject` (a tool name, a SessionStart source, an
@@ -59,7 +88,7 @@ export interface WiredHandler {
 }
 
 /** A handler's command: `command` and its `args` (exec form), or its type when it has none. */
-function describeHandler(handler: unknown): string {
+export function describeHandler(handler: unknown): string {
   if (typeof handler !== "object" || handler === null) return "(a hook)";
   const { type, command, args } = handler as { type?: unknown; command?: unknown; args?: unknown };
   if (typeof command !== "string")

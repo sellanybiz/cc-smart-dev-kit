@@ -28,10 +28,8 @@
  *   with /exit.
  *
  * Everything is read from Claude Code's own files; nothing is tracked on the side. The
- * project is found from the working folder (`cc-smart-dev-kit.json` `worktrees.base`, and
- * `worktrees.prefix` while a project still runs the deprecated engine); without that file,
- * only the main checkout's own sessions are listed. A session's own worktree lives under
- * `<main checkout>/.claude/worktrees/`, and is listed with the rest of the project's.
+ * project is found from the working folder: its main checkout, whose own sessions are listed,
+ * and every session in a worktree under `<main checkout>/.claude/worktrees/` with them.
  */
 import {
   closeSync,
@@ -50,7 +48,7 @@ import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { liveSessions } from "../hooks/sessions";
 import { openUrlCandidates } from "../machine/open-url";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { locateCheckout } from "../project/resolve";
 import { atomicWrite } from "../setup/write";
 import {
   belongsToRepo,
@@ -286,16 +284,11 @@ export async function runSessions(
 ): Promise<number> {
   // The main checkout, so a run inside a worktree still lists every session of the project.
   let mainCheckout = resolve(cwd);
-  let prefix: null | string = null;
   try {
     const checkout = locateCheckout(cwd, { env: process.env });
-    if (checkout !== null) {
-      mainCheckout = checkout.mainCheckout ?? checkout.root;
-      const project = loadProjectConfig(checkout);
-      prefix = project.config?.worktrees?.prefix ?? null;
-    }
+    if (checkout !== null) mainCheckout = checkout.mainCheckout ?? checkout.root;
   } catch {
-    // Outside git, or a project file that does not read: the folder itself is the project.
+    // Outside git, or a main checkout git cannot find: the folder itself is the project.
   }
 
   const projectsDir = join(paths.claudeConfigDir, "projects");
@@ -303,7 +296,9 @@ export async function runSessions(
   const sessions = savedSessions(
     projectsDir,
     mainCheckout,
-    prefix,
+    // The retired engine's `worktrees.prefix` named its folders beside the repo; no project
+    // file holds one now, so only `.claude/worktrees/` counts.
+    null,
     deps.now - PIN_HOURS * 3_600_000,
   );
 

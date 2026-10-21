@@ -737,9 +737,12 @@ function projectForm(
 ): string {
   const baseHelp = "Edits happen in a worktree, never in the main checkout.";
   // What the settings file changes: Claude Code's `worktree.baseRef` line, when the base
-  // branch is not the repo's default branch.
-  const settingsNote = settingsLineNote(plan.settingsAdds.length);
-  // The hash of the two files the plan was made against: the write sends it back, and the
+  // branch is not the repo's default branch, and any line of the retired worktree engine.
+  const settingsNote = settingsLineNote(plan.settings);
+  // The personal settings file changes only when it still runs the retired engine: its box is
+  // there for the browser to fill, and hidden while it has nothing to show.
+  const localHidden = plan.localSettings.changed ? "" : " hidden";
+  // The hash of the files the plan was made against: the write sends it back, and the
   // server refuses a write whose preview no longer matches the files on disk.
   const hash = data.filesHash === null ? "" : ` data-files-hash="${escapeHtml(data.filesHash)}"`;
   return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}${hash}>
@@ -780,7 +783,8 @@ ${guardRow({ help: "The type check, the build, the tests and the coverage run he
 <h3>Preview</h3>
 <p class="small muted">Exactly what will be written.</p>
 ${codeBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", label: ".claude/cc-smart-dev-kit.json", text: plan.text })}
-${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the line .claude/settings.json changes by", label: ".claude/settings.json", text: plan.settingsAdds.join("\n") })}
+${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines .claude/settings.json changes by", label: ".claude/settings.json", text: plan.settings.lines.join("\n") })}
+<div data-preview-local-box${localHidden}>${codeBox({ attribute: "data-preview-local-settings", copyLabel: "Copy the lines .claude/settings.local.json changes by", label: ".claude/settings.local.json", text: plan.localSettings.lines.join("\n") })}</div>
 <p class="small muted" data-preview-note>${escapeHtml(settingsNote)}</p>
 <div class="col g2" data-preview-notes>${plan.notes
     .map((note) => `<p class="small muted">${escapeHtml(note)}</p>`)

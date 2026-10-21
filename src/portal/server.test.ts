@@ -16,6 +16,7 @@ import { realBrowserDoctorDeps } from "../browser/doctor";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
 import type { Machine } from "../machine/machine";
+import { parseCcSmartDevKitConfig } from "../project/config";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
@@ -120,7 +121,7 @@ async function open(options: {
    * world. Left out, it is a plain temp folder (no git project), which is what the other
    * pages need.
    */
-  projectFiles?: { config?: string; settings?: string };
+  projectFiles?: { config?: string; localSettings?: string; settings?: string };
   /**
    * The platform the portal believes it runs on (`machine.platform`): the Browser card's token
    * paragraph says something different on Windows, where a file has no mode.
@@ -156,6 +157,12 @@ async function open(options: {
     }
     if (options.projectFiles.settings !== undefined) {
       writeFileSync(join(cwd, ".claude", "settings.json"), options.projectFiles.settings);
+    }
+    if (options.projectFiles.localSettings !== undefined) {
+      writeFileSync(
+        join(cwd, ".claude", "settings.local.json"),
+        options.projectFiles.localSettings,
+      );
     }
   }
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
@@ -2056,7 +2063,7 @@ describe("the actions", () => {
 const PROJECT_CONFIG = `${JSON.stringify(
   {
     requires: ">=0.3",
-    worktrees: { base: "integration", prefix: "app-wt-", setup: ["bun", "install"] },
+    worktrees: { base: "integration" },
     protectedBranches: ["main", "integration"],
   },
   null,
@@ -2572,6 +2579,7 @@ describe("the project card", () => {
           answers: MERGED_ANSWERS,
           defaultBranch: "main",
           existing: PROJECT_CONFIG,
+          existingLocalSettings: null,
           existingSettings: null,
           root: world.cwd,
         },
@@ -2582,11 +2590,23 @@ describe("the project card", () => {
         changed: true,
         diff: ['+ worktrees.base: "trunk"'],
         file: join(world.cwd, ".claude", "cc-smart-dev-kit.json"),
+        localSettings: {
+          adds: [],
+          changed: false,
+          file: join(world.cwd, ".claude", "settings.local.json"),
+          lines: [],
+          removes: [],
+          text: "{}\n",
+        },
         notes: [],
-        settingsAdds: ['worktree.baseRef: "head"'],
-        settingsChanged: true,
-        settingsFile: join(world.cwd, ".claude", "settings.json"),
-        settingsText: '{\n  "worktree": {\n    "baseRef": "head"\n  }\n}\n',
+        settings: {
+          adds: ['worktree.baseRef: "head"'],
+          changed: true,
+          file: join(world.cwd, ".claude", "settings.json"),
+          lines: ['+ worktree.baseRef: "head"'],
+          removes: [],
+          text: '{\n  "worktree": {\n    "baseRef": "head"\n  }\n}\n',
+        },
         text: `${JSON.stringify(MERGED_ANSWERS, null, 2)}\n`,
       });
       // A preview is a plan: nothing was written.
@@ -2799,16 +2819,13 @@ describe("the project card", () => {
 
 // ── The real workflow module ────────────────────────────────────────────────────
 
-/** A project's file with everything the 0.4.0 core reads, the deprecated engine fields included. */
+/** A project's file with everything the 0.4.0 core reads. */
 const FULL_PROJECT_CONFIG = `${JSON.stringify(
   {
     requires: ">=0.3",
     worktrees: {
       base: "integration",
-      prefix: "app-wt-",
-      setup: ["bun", "install"],
       bases: { "release/": "main" },
-      engine: "own",
     },
     protectedBranches: ["main", "integration"],
     sessionNames: true,
@@ -2820,9 +2837,9 @@ const FULL_PROJECT_CONFIG = `${JSON.stringify(
 )}\n`;
 
 describe("the real workflow module", () => {
-  test("a project file with a workflow policy, bases and an engine", async () => {
+  test("a project file with a workflow policy and bases", async () => {
     // No fake here: `workflowAdapter` is the real module, so this one test proves the portal
-    // reads a 0.4.0 project's file — `workflow`, `worktrees.bases` and `worktrees.engine` —
+    // reads a 0.4.0 project's file — `workflow` and `worktrees.bases` —
     // through the CLI's own code. It runs git in the temp repo, and never `gh`: the test's
     // environment has no PATH for it.
     const backend = fakeBackend(["glm-5.3-flash"]);
@@ -2856,13 +2873,76 @@ describe("the real workflow module", () => {
       expect(machine.body).toContain('data-base-prefix value="release/"');
       expect(machine.body).toContain('data-base-value value="main"');
       // The preview is the CLI's own plan with the file's fields in it: the policy it keeps,
-      // the bases, Claude Code's baseRef line (integration is not the repo's default branch),
-      // and the deprecated engine fields exactly as the file has them.
+      // the bases, and Claude Code's baseRef line (integration is not the repo's default branch).
       expect(machine.body).toContain("&quot;workflow&quot;: {");
       expect(machine.body).toContain("&quot;release/&quot;: &quot;main&quot;");
-      expect(machine.body).toContain("&quot;engine&quot;: &quot;own&quot;");
-      expect(machine.body).toContain("worktree.baseRef: &quot;head&quot;");
+      expect(machine.body).toContain("+ worktree.baseRef: &quot;head&quot;");
       expect(machine.body).not.toContain("No line is added to .claude/settings.json.");
+      // Nothing to take out of the personal settings file: its box stays closed.
+      expect(machine.body).toContain("<div data-preview-local-box hidden>");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("D20: a file the retired engine left fields in: the card's write takes them, and its hook lines, out", async () => {
+    // The file does not load (every hook would ask), but the card still offers its form: the
+    // same plan as `project init`, through the real module, is the fix.
+    const config = `${JSON.stringify(
+      { worktrees: { base: "integration", prefix: "app-wt-", engine: "own" } },
+      null,
+      2,
+    )}\n`;
+    const local = `${JSON.stringify({
+      hooks: {
+        SubagentStop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: '"$HOME/.local/bin/cc-smart-dev-kit" hook subagent-stop',
+              },
+            ],
+          },
+        ],
+      },
+    })}\n`;
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config, localSettings: local },
+      workflow: workflowAdapter,
+    });
+    try {
+      await world.enter();
+      const machine = await world.call("/machine");
+      expect(machine.status).toBe(200);
+      expect(machine.body).not.toContain("cannot be read");
+      expect(machine.body).toContain("data-project-form data-files-hash=");
+      expect(machine.body).toContain(
+        "the plugin&#39;s worktree engine was retired in 1.0.0: worktrees.prefix, worktrees.engine and its hook line go, because Claude Code&#39;s own worktrees need none",
+      );
+      expect(machine.body).toContain("<div data-preview-local-box>");
+      expect(machine.body).toContain(
+        "- hooks.SubagentStop: &quot;$HOME/.local/bin/cc-smart-dev-kit&quot; hook subagent-stop",
+      );
+      const csrf = await world.csrfOf();
+      const hash = /data-files-hash="([^"]+)"/.exec(machine.body)?.[1] ?? "";
+      const yes = await world.post(
+        "project.write",
+        { answers: formAnswers({ base: "integration" }), confirm: true, previewHash: hash },
+        csrf,
+      );
+      expect(JSON.parse(yes.body).ok).toBe(true);
+      const file = join(world.cwd, ".claude", "cc-smart-dev-kit.json");
+      expect(parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file).worktrees).toEqual({
+        base: "integration",
+        bases: { "fix/": "main" },
+      });
+      expect(readFileSync(join(world.cwd, ".claude", "settings.local.json"), "utf8")).toBe("{}\n");
+      // Loaded again, the card is the plain set-up one.
+      expect((await world.call("/machine")).body).not.toContain("retired");
     } finally {
       world.portal.stop();
       backend.stop();

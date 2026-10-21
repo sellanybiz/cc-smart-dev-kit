@@ -48,7 +48,7 @@ describe("the main-folder guard", () => {
   function guarded(guardMainFolder = true) {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder },
+      worktrees: { base: "main", guardMainFolder },
     });
     const worktree = join(repo, "..", "app-wt-fix");
     git(repo, "worktree", "add", "-q", "-b", "fix", worktree);
@@ -111,7 +111,7 @@ describe("the main-folder guard", () => {
   test("cc-smart-dev-kit.json lists it in ownHooks (the project runs its own copy): silent", async () => {
     const { repo } = guarded();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+      worktrees: { base: "main", guardMainFolder: true },
       ownHooks: ["main-folder-guard"],
     });
     wireProjectHook(repo, "PreToolUse", "Edit|Write|NotebookEdit");
@@ -125,7 +125,7 @@ describe("the main-folder guard", () => {
     // repo ("cannot check"); it is accepted and silences nothing.
     const { repo, worktree } = guarded();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+      worktrees: { base: "main", guardMainFolder: true },
       ownHooks: ["serena-root"],
     });
     expect(

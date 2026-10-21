@@ -34,11 +34,11 @@ a clear error that says what is wrong.
 | `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
 | `worktrees` | object | Turns on the notes and guards that work with worktrees (the after-merge and leftovers notes, the stash question, the main-folder guard). Every project uses Claude Code's own worktrees (`<repo>/.claude/worktrees/<name>`); `project init` writes `base` for every project. |
 | `worktrees.base` | string | The branch new worktrees start from and pull requests go into; also the base the after-merge and leftovers hooks compare with. |
-| `worktrees.prefix` | string, **deprecated** | The folder-name prefix of a worktree the plugin's deprecated engine made beside the repo. Optional since 0.5.2; a project still wired to the engine sets it, and the engine retires in the next minor version. |
-| `worktrees.setup` | string array (argv), **deprecated** | A command the deprecated engine ran inside a new worktree, e.g. `["bun", "install"]`. A project on Claude Code's own worktrees runs its install itself; the engine retires in the next minor version. |
+| `worktrees.prefix` | **retired in 1.0.0, refused** | The folder-name prefix the plugin's worktree engine gave a worktree beside the repo. Not in the schema; `RETIRED_WORKTREE_FIELDS` refuses it by name, with the fix (`project init` removes it). |
+| `worktrees.setup` | **retired in 1.0.0, refused** | A command the engine ran inside a new worktree. Refused the same way. |
 | `worktrees.guardMainFolder` | boolean | Refuse edits in the main checkout itself (the main-folder guard). Off when left out. |
-| `worktrees.bases` | object: a branch-name prefix (ending in `/`) to a base branch | The base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`), over `worktrees.base`; the longest prefix that matches wins. Auto-merge and the after-merge note read it (`src/workflow/auto-merge.ts`, `src/hooks/after-merge.ts`); the deprecated engine also starts such a branch from it. |
-| `worktrees.engine` | `"plugin"` or `"own"`, **deprecated** | Who made this project's worktrees. Accepted and ignored until the engine retires in the next minor version; `doctor` warns and names the steps to move (`src/cli/project-checks.ts`). |
+| `worktrees.bases` | object: a branch-name prefix (ending in `/`) to a base branch | The base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`), over `worktrees.base`; the longest prefix that matches wins. Auto-merge and the after-merge note read it (`src/workflow/auto-merge.ts`, `src/hooks/after-merge.ts`). |
+| `worktrees.engine` | **retired in 1.0.0, refused** | Who made this project's worktrees. Refused the same way. |
 | `workflow` | object (`src/workflow/schema.ts`) | What cc-smart-dev-kit may do by itself here (commit, push, open a pull request, merge), over the person's own `~/.config/cc-smart-dev-kit/workflow.json`. Each field is optional, and the project's value wins field by field (`src/workflow/resolve.ts`). |
 | `workflow.fixesAfterReview` | object: `lines`, `files`, `percent`, each a whole number 0 or more | How much a branch may change after its review and still count as reviewed (D17): the change since the reviewed commit, the base's own changes taken out, is covered while its lines stay within `lines` or `percent`% of the reviewed lines (whichever is more), and its files within `files` or `percent`% of the reviewed files. `0`/`0`/`0`: the exact reviewed commit only. Default `200`/`10`/`20`. A review-gate key (`REVIEW_GATE_KEYS`): read from the base's committed file, and `workflow set` refuses it inside Claude Code. Nothing reads it for a decision yet. |
 | `workflow.workers` | object: `enabled` (boolean), `idleStopMinutes`, `max`, `quietMinutes` (whole numbers, 1 or more), `handoffPercent` (1–100), `memoryGb`, `softHours`, `maxHours` (numbers above 0), `tag` (string) | Lead and worker sessions (D34, D35): the one switch (`enabled`, off by default), the limits a lead keeps its workers to (their defaults: `workflowDefaults`, listed in README § The workflow), and the tag in their names (D26's rules: `isNameTag` in `src/workers/names.ts`; default: the main checkout's folder name). The person's file holds every project's default; a project's file wins field by field. Nothing reads it for a decision yet. |
@@ -53,25 +53,32 @@ a clear error that says what is wrong.
 The schema is `ccSmartDevKitConfigSchema` in `src/project/config.ts` (zod). The README shows an
 example; keep it in step.
 
-`worktrees.bases`, `worktrees.engine` and `workflow` came with 0.4.0: a project that uses one
-raises `requires` to `>=0.4`. `workflow.workers` and `workflow.fixesAfterReview` come with
-1.0.0 (optional fields: a minor change to the contract); a project that uses one raises
-`requires` to `>=1.0`. `worktrees.guardMainFolder`, `protectedBranches`,
+`worktrees.bases` and `workflow` came with 0.4.0 (and `worktrees.engine`, since retired): a
+project that uses one raises `requires` to `>=0.4`. `workflow.workers` and
+`workflow.fixesAfterReview` come with 1.0.0 (optional fields: a minor change to the
+contract); a project that uses one raises `requires` to `>=1.0`. `worktrees.guardMainFolder`, `protectedBranches`,
 `sessionNames` and `ownHooks` came with the hooks: a project that uses one raises its
 `requires` to the release that ships them. `worktrees.prefix` became optional in 0.5.2 with
 the engine's deprecation: a file written without it raises `requires` to `>=0.5.2` (one
 home: `WORKTREE_PREFIX_OPTIONAL_SINCE` in `src/project/config.ts`), so an older plugin hears
-"update", never "unknown file". The three engine fields stay accepted, and never cause a
-parse failure, until the engine retires in the next minor version. A hook
+"update", never "unknown file". The three engine fields retired with the engine in 1.0.0 (D20,
+the owner's yes to a removed field): a file that sets one does not load, and the error names
+each field and `project init`, which removes them. A hook
 that cannot read the file (too new, or broken) fails closed (`.claude/rules/hooks.md`) —
 except `ownHooks`, which is read on its own (`readOwnHooks`), so a listed hook stays silent
 even then.
 
-## `requires` first, then the strict parse
+## `requires` first, then the retired fields, then the strict parse
+
+One function runs them, in this order, for every reader (`checkCcSmartDevKitConfig`: a file on
+disk, the file committed on a branch, the object `workflow set --project` writes):
 
 1. Read only `requires`. When the running plugin is outside the range, throw
    `CcSmartDevKitVersionError`, whose message names the update command.
-2. Then parse the whole file strictly: an unknown field (`"worktree"`) is an error,
+2. Then the retired fields (`RETIRED_WORKTREE_FIELDS`): each one present is named, with the
+   fix, in one `CcSmartDevKitRetiredFieldError` — never "unknown field (a newer
+   cc-smart-dev-kit may be needed)", which would send the person to update.
+3. Then parse the whole file strictly: an unknown field (`"worktree"`) is an error,
    never ignored.
 
 The order matters. A project may use a field that is newer than a user's plugin. That

@@ -19,7 +19,7 @@ import {
   unknownCommand,
   usageError,
 } from "../cli/help";
-import { type LiveRunner, liveHookCommand } from "../cli/live-check";
+import type { LiveRunner } from "../cli/live-check";
 import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
 import { runProjectInit } from "../cli/project-init";
@@ -44,6 +44,7 @@ import { runtimeDir } from "../hooks/notify";
 import { runNotifyEntry } from "../hooks/notify-entry";
 import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
+import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { PROJECT_HOOKS } from "../hooks/specs";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runJobCommand } from "../jobs/commands";
@@ -53,6 +54,7 @@ import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
+import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { runSearch } from "../search/command";
 import { runSessions } from "../sessions/command";
@@ -359,7 +361,6 @@ async function main(argv: string[]): Promise<number> {
         live: rest.includes("--live")
           ? {
               pluginDir: pluginDir(),
-              hookCommand: liveHookCommand(pluginDir(), process.execPath),
               run: liveRunner,
             }
           : null,
@@ -377,6 +378,14 @@ async function main(argv: string[]): Promise<number> {
         // (`src/setup/user-notify-hook.ts`).
         await runNotifyEntry();
         return 0;
+      }
+      // A line the retired worktree engine had a project wire: the fix, never the old answer.
+      // Read nothing: whatever Claude Code sent on stdin does not change it.
+      if (RETIRED_ENGINE_HOOKS.some((retired) => retired === name)) {
+        console.error(
+          `${COMMAND} hook ${name}: this hook was retired in ${WORKTREE_ENGINE_RETIRED_IN}: remove its line from your settings — \`${COMMAND} project init\` does it`,
+        );
+        return 2;
       }
       const spec = PROJECT_HOOKS.find((one) => one.name === name);
       if (spec === undefined || extra.length > 0) {

@@ -17,7 +17,7 @@ import { reviewRecordHook } from "./specs";
 
 const CONFIG = {
   requires: ">=0.4",
-  worktrees: { base: "dev", prefix: "app-wt-" },
+  worktrees: { base: "dev" },
   workflow: { reviewBeforePush: true },
 };
 

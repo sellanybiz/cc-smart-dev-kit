@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
-import { PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
+import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { kindsSchema } from "../jobs/kinds";
 import { workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
@@ -39,6 +39,19 @@ export const RETIRED_HOOK_NAMES = ["serena-root"] as const;
  */
 export const WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2";
 
+/** The release that retired the plugin's own worktree engine: its fields and its hooks. */
+export const WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
+
+/**
+ * The `worktrees` fields only the plugin's worktree engine read. The engine retired in
+ * `WORKTREE_ENGINE_RETIRED_IN`, and every project uses Claude Code's own worktrees, so a file
+ * that still sets one is REFUSED. The strict parse alone would call it an unknown field that
+ * "a newer cc-smart-dev-kit may" know, which is wrong for a field that is gone, so
+ * `checkCcSmartDevKitConfig` names each one and the fix first. `project init` removes them
+ * (`src/project/init.ts`).
+ */
+export const RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"] as const;
+
 /**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
@@ -58,19 +71,6 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
        */
       base: z.string().min(1),
       /**
-       * Deprecated: the folder-name prefix of a worktree the plugin's engine made beside the
-       * repo ("app-wt-"). Still accepted, because a project wired to the engine uses it, and
-       * it retires with the engine in the next minor version. A project on Claude Code's own
-       * worktrees leaves it out.
-       */
-      prefix: z.string().min(1).optional(),
-      /**
-       * Deprecated: a command (argv form) the plugin's engine ran inside a new worktree, e.g.
-       * ["bun", "install"]. Still accepted until the engine retires; a project on Claude
-       * Code's own worktrees runs its install itself.
-       */
-      setup: z.array(z.string().min(1)).min(1).optional(),
-      /**
        * Refuse an Edit, Write or NotebookEdit of a file in the main checkout itself (not in
        * a worktree): there, every change goes in a worktree. Off when left out.
        */
@@ -79,7 +79,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
        * A branch-name prefix (ending in "/") to the base that branch family's pull requests
        * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go
        * into `base`. The longest prefix that matches wins. Auto-merge and the after-merge
-       * note read it; the deprecated engine also started such a branch from it.
+       * note read it.
        */
       bases: z
         .record(z.string(), z.string().min(1))
@@ -96,13 +96,6 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
           },
         })
         .optional(),
-      /**
-       * Deprecated: who made this project's worktrees. `"plugin"` wired cc-smart-dev-kit's
-       * engine hooks (`worktree-create`, `worktree-remove`, `subagent-stop`); `"own"` meant the
-       * project ran an engine of its own. Every project now uses Claude Code's own worktrees,
-       * so this is accepted and ignored until the engine retires in the next minor version.
-       */
-      engine: z.enum(["plugin", "own"]).optional(),
     })
     .optional(),
   /**
@@ -149,6 +142,15 @@ export class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
   override name = "CcSmartDevKitVersionError";
 }
 
+/**
+ * The file still sets a retired worktree engine field (`RETIRED_WORKTREE_FIELDS`). A config
+ * error like any other to every reader; its own class only so the portal's Project card can
+ * still offer its write, which takes the field out (`src/portal/facts.ts` › `readProject`).
+ */
+export class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
+  override name = "CcSmartDevKitRetiredFieldError";
+}
+
 function describeIssue(issue: z.core.$ZodIssue): string {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
@@ -176,6 +178,26 @@ function checkRequires(file: string, raw: unknown, pluginVersion: string): void 
   }
 }
 
+/** One retired field's message: the field, what to do, and the command that does it. */
+export function retiredFieldMessage(field: (typeof RETIRED_WORKTREE_FIELDS)[number]): string {
+  return `worktrees.${field} is no longer supported: remove it — Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README § Worktrees).`;
+}
+
+/**
+ * Refuses a file that still sets a retired engine field: one message per field, in the order
+ * of `RETIRED_WORKTREE_FIELDS`. A value of any type counts — the field is gone, whatever it holds.
+ */
+function checkRetiredFields(where: string, raw: unknown): void {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+  const worktrees = (raw as { worktrees?: unknown }).worktrees;
+  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees)) return;
+  const found = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+  if (found.length === 0) return;
+  throw new CcSmartDevKitRetiredFieldError(
+    `Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`,
+  );
+}
+
 /**
  * The names `ownHooks` lists in one cc-smart-dev-kit.json, read on their own, the way `requires` is:
  * a hook the project runs as its own copy stays silent even when the rest of the file needs
@@ -198,7 +220,7 @@ export function readOwnHooks(file: string): string[] | null {
 
 /**
  * Reads and validates one cc-smart-dev-kit.json: first `requires` against the plugin version, then the
- * whole file, strictly. Returns null when the file does not exist; throws CcSmartDevKitVersionError
+ * retired engine fields, then the whole file, strictly. Returns null when the file does not exist; throws CcSmartDevKitVersionError
  * when the plugin is too old, and CcSmartDevKitConfigError when the file is invalid.
  */
 export function loadCcSmartDevKitConfig(
@@ -227,7 +249,22 @@ export function parseCcSmartDevKitConfig(
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
   }
+  return checkCcSmartDevKitConfig(raw, where, pluginVersion);
+}
+
+/**
+ * Every check on a cc-smart-dev-kit.json already read as JSON, in its one order: `requires`
+ * first, then the retired engine fields, then the strict parse. `parseCcSmartDevKitConfig` runs
+ * it on a file's text; `writeProjectSetting` (`src/workflow/write.ts`) on the object it is about
+ * to write, so nothing writes a file this would refuse. Throws as `parseCcSmartDevKitConfig` does.
+ */
+export function checkCcSmartDevKitConfig(
+  raw: unknown,
+  where: string,
+  pluginVersion: string = VERSION,
+): CcSmartDevKitConfig {
   checkRequires(where, raw, pluginVersion);
+  checkRetiredFields(where, raw);
   const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");

@@ -6253,12 +6253,11 @@ var PLUGIN_HOOK_NAMES = [
   "session-name"
 ];
 var RETIRED_HOOK_NAMES = ["serena-root"];
+var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
-    prefix: string2().min(1).optional(),
-    setup: array(string2().min(1)).min(1).optional(),
     guardMainFolder: boolean2().optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
@@ -6266,8 +6265,7 @@ var ccSmartDevKitConfigSchema = strictObject({
         const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
         return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
       }
-    }).optional(),
-    engine: _enum(["plugin", "own"]).optional()
+    }).optional()
   }).optional(),
   protectedBranches: array(string2().min(1)).min(1).optional(),
   sessionNames: boolean2().optional(),
@@ -6284,6 +6282,10 @@ class CcSmartDevKitConfigError extends Error {
 
 class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
   name = "CcSmartDevKitVersionError";
+}
+
+class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitRetiredFieldError";
 }
 function describeIssue(issue) {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
@@ -6302,6 +6304,20 @@ function checkRequires(file, raw, pluginVersion) {
   if (!satisfiesRange(pluginVersion, requires)) {
     throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
   }
+}
+function retiredFieldMessage(field) {
+  return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
+}
+function checkRetiredFields(where, raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return;
+  const worktrees = raw.worktrees;
+  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
+    return;
+  const found = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+  if (found.length === 0)
+    return;
+  throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
 }
 function readOwnHooks(file) {
   if (!existsSync(file))
@@ -6329,7 +6345,11 @@ function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
   }
+  return checkCcSmartDevKitConfig(raw, where, pluginVersion);
+}
+function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   checkRequires(where, raw, pluginVersion);
+  checkRetiredFields(where, raw);
   const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");

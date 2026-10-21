@@ -3,7 +3,11 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { CcSmartDevKitConfigError, CcSmartDevKitVersionError } from "./config";
+import {
+  CcSmartDevKitConfigError,
+  CcSmartDevKitRetiredFieldError,
+  CcSmartDevKitVersionError,
+} from "./config";
 import {
   type Checkout,
   GIT_NOT_FOUND,
@@ -96,11 +100,8 @@ describe("resolveProject", () => {
         requires: ">=1.2",
         worktrees: {
           base: "dev",
-          prefix: "app-wt-",
-          setup: ["bun", "install"],
           guardMainFolder: true,
           bases: { "hotfix/": "main", "release/": "main" },
-          engine: "own",
         },
         protectedBranches: ["main", "release"],
         sessionNames: true,
@@ -114,11 +115,8 @@ describe("resolveProject", () => {
       requires: ">=1.2",
       worktrees: {
         base: "dev",
-        prefix: "app-wt-",
-        setup: ["bun", "install"],
         guardMainFolder: true,
         bases: { "hotfix/": "main", "release/": "main" },
-        engine: "own",
       },
       protectedBranches: ["main", "release"],
       sessionNames: true,
@@ -129,23 +127,10 @@ describe("resolveProject", () => {
     });
   });
 
-  test("worktrees.base alone is valid: the deprecated prefix is optional", () => {
+  test("worktrees.base alone is valid", () => {
     const repo = makeRepo();
     writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: "dev" } }));
     expect(resolveProject(repo)?.config?.worktrees).toEqual({ base: "dev" });
-    // The engine's fields are still accepted until it retires: never a parse failure.
-    writeCcSmartDevKitJson(
-      repo,
-      JSON.stringify({
-        worktrees: { base: "dev", prefix: "app-wt-", setup: ["bun", "install"], engine: "own" },
-      }),
-    );
-    expect(resolveProject(repo)?.config?.worktrees).toEqual({
-      base: "dev",
-      prefix: "app-wt-",
-      setup: ["bun", "install"],
-      engine: "own",
-    });
   });
 
   test("a retired hook name in ownHooks is still accepted: never a parse failure", () => {
@@ -161,19 +146,12 @@ describe("resolveProject", () => {
     [{ ownHooks: ["git-gaurd"] }, "ownHooks.0:"],
     [{ ownHooks: ["worktree-create"] }, "ownHooks.0:"],
     [{ ownHooks: "git-guard" }, "ownHooks:"],
+    [{ worktrees: { base: "dev", guardMainFolder: 1 } }, "worktrees.guardMainFolder:"],
     [
-      { worktrees: { base: "dev", prefix: "x-", guardMainFolder: 1 } },
-      "worktrees.guardMainFolder:",
-    ],
-    [
-      { worktrees: { base: "dev", prefix: "x-", bases: { hotfix: "main" } } },
+      { worktrees: { base: "dev", bases: { hotfix: "main" } } },
       'worktrees.bases: "hotfix" must end with "/"',
     ],
-    [
-      { worktrees: { base: "dev", prefix: "x-", bases: { "hotfix/": "" } } },
-      "worktrees.bases.hotfix/:",
-    ],
-    [{ worktrees: { base: "dev", prefix: "x-", engine: "mine" } }, "worktrees.engine:"],
+    [{ worktrees: { base: "dev", bases: { "hotfix/": "" } } }, "worktrees.bases.hotfix/:"],
     [{ workflow: { autoCommit: "yes" } }, "workflow.autoCommit:"],
     [{ workflow: { switches: { statusLine: true } } }, "workflow.switches:"],
   ])("the hook fields are checked: %j names %j", (content, field) => {
@@ -207,17 +185,14 @@ describe("resolveProject", () => {
 
   test("an invalid cc-smart-dev-kit.json throws an error that names the file and the field", () => {
     const repo = makeRepo();
-    const file = writeCcSmartDevKitJson(
-      repo,
-      JSON.stringify({ worktrees: { base: 5, prefix: "x-" } }),
-    );
+    const file = writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: 5 } }));
     expect(() => resolveProject(repo)).toThrow(CcSmartDevKitConfigError);
     expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: worktrees.base:`);
   });
 
   test("an unknown field in cc-smart-dev-kit.json is named", () => {
     const repo = makeRepo();
-    writeCcSmartDevKitJson(repo, JSON.stringify({ worktree: { base: "dev", prefix: "x-" } }));
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktree: { base: "dev" } }));
     expect(() => resolveProject(repo)).toThrow("worktree: unknown field");
   });
 
@@ -440,5 +415,107 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
     );
     const newer = checkoutOf(committedRepo('{ "requires": ">=99" }'));
     expect(() => readCommittedConfig(newer, "dev")).toThrow(CcSmartDevKitVersionError);
+  });
+});
+
+describe("D20: the retired worktree engine fields are refused, by name", () => {
+  /** The message for one field, written out by hand: the contract a person reads. */
+  const said = (field: string) =>
+    `worktrees.${field} is no longer supported: remove it — Claude Code's own worktrees need none. \`cc-smart-dev-kit project init\` removes it (README § Worktrees).`;
+
+  test("D20: a file with only worktrees.prefix (no base): the field's own message, nothing else", () => {
+    const repo = makeRepo();
+    const file = writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { prefix: "app-wt-" } }));
+    expect(() => resolveProject(repo)).toThrow(CcSmartDevKitRetiredFieldError);
+    let message = "";
+    try {
+      resolveProject(repo);
+    } catch (error) {
+      message = error instanceof CcSmartDevKitConfigError ? error.message : "not a config error";
+    }
+    expect(message).toBe(`Invalid ${file}: ${said("prefix")}`);
+  });
+
+  test.each([
+    ["setup", ["bun", "install"]],
+    ["engine", "plugin"],
+  ])("D20: worktrees.%s alone, beside a valid base: its own message", (field, value) => {
+    const repo = makeRepo();
+    const file = writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({ worktrees: { base: "main", [field]: value } }),
+    );
+    expect(() => resolveProject(repo)).toThrow(`Invalid ${file}: ${said(field)}`);
+  });
+
+  test("D20: all three: one message per field, in the schema's order, whatever their values", () => {
+    const repo = makeRepo();
+    const file = writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({ worktrees: { engine: 7, base: "main", setup: [], prefix: "" } }),
+    );
+    expect(() => resolveProject(repo)).toThrow(
+      `Invalid ${file}: ${said("prefix")} ${said("setup")} ${said("engine")}`,
+    );
+  });
+
+  test("D20: requires still comes first: a file for a newer plugin hears update", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({ requires: ">=99", worktrees: { base: "main", prefix: "app-wt-" } }),
+    );
+    expect(() => resolveProject(repo)).toThrow(CcSmartDevKitVersionError);
+  });
+
+  test("D20: ownHooks is still read on its own: never a throw", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" }, ownHooks: ["git-guard"] }),
+    );
+    const checkout = locateCheckout(repo);
+    expect(checkout === null ? null : ownHooksOf(checkout)).toEqual(["git-guard"]);
+  });
+
+  test("D20: a worktree whose own file still holds one: refused there, while the main checkout's loads", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: "main" } }));
+    const worktree = join(repo, "..", "wt-retired");
+    git(repo, "worktree", "add", "-q", "-b", "retired", worktree);
+    const own = writeCcSmartDevKitJson(
+      worktree,
+      JSON.stringify({ worktrees: { base: "main", setup: ["bun", "install"] } }),
+    );
+    expect(() => resolveProject(worktree)).toThrow(`Invalid ${own}: ${said("setup")}`);
+    expect(resolveProject(repo)?.config).toEqual({ worktrees: { base: "main" } });
+  });
+
+  test("D20: a main checkout whose file still holds one: a worktree with a clean file of its own loads", () => {
+    const repo = makeRepo();
+    const main = writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({ worktrees: { base: "main", engine: "own" } }),
+    );
+    const worktree = join(repo, "..", "wt-clean");
+    git(repo, "worktree", "add", "-q", "-b", "clean", worktree);
+    writeCcSmartDevKitJson(worktree, JSON.stringify({ worktrees: { base: "main" } }));
+    expect(resolveProject(worktree)?.config).toEqual({ worktrees: { base: "main" } });
+    expect(() => resolveProject(repo)).toThrow(`Invalid ${main}: ${said("engine")}`);
+  });
+
+  test("D20: a committed base file that still holds one: the committed read names the field", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: "dev", prefix: "app-wt-" } }));
+    git(repo, "add", ".claude/cc-smart-dev-kit.json");
+    git(repo, "commit", "-q", "-m", "policy");
+    git(repo, "update-ref", "refs/remotes/origin/dev", "HEAD");
+    // The working copy is clean: only the committed one still holds the field.
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: "dev" } }));
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("not in git");
+    expect(() => readCommittedConfig(checkout, "dev")).toThrow(
+      `Invalid origin/dev:.claude/cc-smart-dev-kit.json: ${said("prefix")}`,
+    );
   });
 });

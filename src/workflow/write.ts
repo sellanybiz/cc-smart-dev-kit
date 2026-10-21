@@ -22,7 +22,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
 import { STATUSLINE_KEY, statuslineSetting } from "../cli/setup";
-import { CcSmartDevKitConfigError, ccSmartDevKitConfigSchema } from "../project/config";
+import { checkCcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
 import { atomicWrite, backupFile, realTarget } from "../setup/write";
@@ -172,10 +172,9 @@ function writeProjectFile(
   const before = structuredClone(data);
   if (value === undefined) removeLeaf(data, path);
   else setLeaf(data, path, value);
-  const checked = ccSmartDevKitConfigSchema.safeParse(data);
-  if (!checked.success) {
-    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${describeIssues(checked.error.issues)}`);
-  }
+  // The same checks every reader of the file runs (`requires`, the retired engine fields, the
+  // strict parse), so this never writes a file the hooks would then refuse.
+  checkCcSmartDevKitConfig(data, file);
   if (Bun.deepEquals(before, data, true)) return shownNothing(file, key, value);
   // A backup first, in the state folder: `restore` does not undo a project's file (it is the
   // project's, committed to git), so the backup is only there to look at.

@@ -8,14 +8,11 @@
  * `cc-smart-dev-kit hook worktree-create` in its own settings, and `worktrees` in its cc-smart-dev-kit.json
  * (the frame refuses without it, `needsWorktrees`).
  *
- * - **A session's worktree:** the folder
- *   `<parent of the main checkout>/<prefix><name, every / a ->` on the branch `<name>`.
- *   An existing worktree of that branch is entered again (unless another running session
- *   works in it). Otherwise an existing branch is checked out, or a new one is cut from
- *   `origin/<base>` right after `git fetch origin <base>`; a failed fetch refuses, because a
- *   new branch starts only from the latest base. A branch named under a prefix of
- *   `worktrees.bases` (`hotfix/`, `release/`) starts from that prefix's base instead
- *   (`baseForBranch`). Then the project's `setup` runs inside.
+ * - **A session's worktree** is refused: the engine made it beside the repo from
+ *   `worktrees.prefix` and ran `worktrees.setup` inside, and both fields retired with the
+ *   engine (`WORKTREE_ENGINE_RETIRED_IN`), so a project file that sets one no longer loads.
+ *   The refusal names the fix. (`cc-smart-dev-kit hook worktree-create` itself exits 2 before
+ *   this runs: `src/entries/cli.ts`.)
  * - **A subagent's worktree** (`agent-<hex>`): what Claude Code would make for it,
  *   `<main checkout>/.claude/worktrees/<name>` on the branch `worktree-<name>`, from the
  *   base `worktree.baseRef` names: the remote's default branch (`"fresh"`, the default) or
@@ -26,17 +23,10 @@
  *
  * stdout is the folder and nothing else. A failure exits 1 with the reason on stderr.
  */
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { CcSmartDevKitConfig } from "../project/config";
+import { COMMAND } from "../build-info/names";
+import { type CcSmartDevKitConfig, WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { gitEnv } from "../project/git-env";
 import { withCreateLock } from "./create-lock";
 import {
@@ -50,7 +40,7 @@ import {
 } from "./git";
 import type { HookResult } from "./io";
 import type { Env, HookContext } from "./run";
-import { liveSessions, type SessionRecord } from "./sessions";
+import type { SessionRecord } from "./sessions";
 
 /** How long the project's setup command may run; the hook's own timeout is 600 s. */
 export const SETUP_TIMEOUT_MS = 540_000;
@@ -60,8 +50,6 @@ export const SETUP_TIMEOUT_MS = 540_000;
  * made, and the hook cannot tell).
  */
 export const ADD_TIMEOUT_MS = 500_000;
-/** The fetch of the base branch, for a configured worktree. */
-const BASE_FETCH_TIMEOUT_MS = 30_000;
 /** Claude Code's own fetch of the default branch is capped at five seconds. */
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 /** Claude Code fetches the default branch when the repo was not fetched for a day. */
@@ -316,10 +304,6 @@ export function runSetup(folder: string, setup: string[], env: Env): void {
   );
 }
 
-function setupMarker(folder: string, env: Env): string {
-  return join(git(folder, ["rev-parse", "--absolute-git-dir"], env), SETUP_MARKER);
-}
-
 export type ReuseDecision =
   | { kind: "reuse"; folder: string }
   | { kind: "create" }
@@ -385,93 +369,6 @@ export function reuseDecision(params: {
   return { kind: "reuse", folder: found.path };
 }
 
-function createConfigured(context: HookContext, name: string, worktrees: Worktrees): string {
-  const { env, paths, project, input } = context;
-  const main = project.mainCheckout;
-  if (main === null) throw new Refusal("the repo has no main checkout (a bare repo)");
-  // `worktrees.prefix` is deprecated with the engine, so the schema no longer requires it: a
-  // project wired to the engine must still set it, or there is no folder to make.
-  const prefix = worktrees.prefix;
-  if (prefix === undefined) {
-    throw new Refusal(
-      'worktrees.prefix is not set in .claude/cc-smart-dev-kit.json, and the deprecated worktree engine needs it to name its folder: add it, or take the "cc-smart-dev-kit hook worktree-create" line out and use Claude Code\'s own worktrees (`.claude/worktrees/<name>`)',
-    );
-  }
-  const prefixProblem = badPrefix(prefix);
-  if (prefixProblem !== null) throw new Refusal(prefixProblem);
-  const branch = name;
-  // A branch named under a prefix of its own (a hotfix, a release) starts from that prefix's
-  // base, never from the integration base (`worktrees.bases`).
-  const base = baseForBranch(worktrees, branch);
-  checkBranchName(main, branch, env);
-  const folder = configuredFolder(main, prefix, name);
-  const session = typeof input.session_id === "string" ? input.session_id : null;
-
-  // One creation of a branch at a time, held through `git worktree add` and the setup: a
-  // second session asking for the same branch mid-create gets one clear refusal instead.
-  return withCreateLock(project.commonDir, branch, session, () => {
-    let sessions: SessionRecord[] | null;
-    try {
-      sessions = liveSessions(paths.claudeConfigDir);
-    } catch {
-      sessions = null;
-    }
-    const decision = reuseDecision({
-      worktrees: listWorktrees(main, env),
-      branch,
-      folder,
-      sessions,
-      askingSession: session,
-      folderExists: existsSync,
-    });
-    if (decision.kind === "refuse") throw new Refusal(decision.why);
-
-    let target = folder;
-    if (decision.kind === "reuse") {
-      target = decision.folder;
-    } else {
-      if (existsSync(folder))
-        throw new Refusal(`${folder} exists and is not a worktree of this repo`);
-      const fetched = runGit(
-        main,
-        ["fetch", "--quiet", "origin", base],
-        noPromptEnv(env),
-        BASE_FETCH_TIMEOUT_MS,
-      );
-      if (hasRef(main, `refs/heads/${branch}`, env)) {
-        addWorktree(main, ["worktree", "add", "--quiet", folder, branch], env, folder);
-      } else if (hasRef(main, `refs/remotes/origin/${branch}`, env)) {
-        addWorktree(
-          main,
-          ["worktree", "add", "--quiet", "--track", "-b", branch, folder, `origin/${branch}`],
-          env,
-          folder,
-        );
-      } else if (fetched.ok) {
-        addWorktree(
-          main,
-          ["worktree", "add", "--quiet", "--no-track", "-b", branch, folder, `origin/${base}`],
-          env,
-          folder,
-        );
-      } else {
-        throw new Refusal(
-          `\`git fetch origin ${base}\` failed (${fetched.err || "no reason given"}): a new branch starts only from the latest ${base}`,
-        );
-      }
-      copyWorktreeInclude(main, folder, env);
-    }
-
-    // Also for a worktree entered again: a setup that failed last time left no marker.
-    const marker = setupMarker(target, env);
-    if (worktrees.setup !== undefined && !existsSync(marker)) {
-      runSetup(target, worktrees.setup, env);
-      writeFileSync(marker, "");
-    }
-    return target;
-  });
-}
-
 function createForSubagent(context: HookContext, name: string): string {
   const { env, paths, project, input } = context;
   const repo = project.mainCheckout ?? project.root;
@@ -515,13 +412,12 @@ export function worktreeCreate(context: HookContext): HookResult {
   try {
     const problem = badName(name);
     if (problem !== null) throw new Refusal(problem);
-    // The frame checked it (`needsWorktrees`); this only tells the type checker.
-    const worktrees = context.project.config?.worktrees;
-    if (worktrees === undefined) throw new Refusal("no worktrees in .claude/cc-smart-dev-kit.json");
-    const folder = isSubagentName(name)
-      ? createForSubagent(context, name)
-      : createConfigured(context, name, worktrees);
-    return { stdout: folder };
+    if (!isSubagentName(name)) {
+      throw new Refusal(
+        `the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}, and with it the worktrees.prefix it named this folder with: take the "${COMMAND} hook worktree-create" line out of the project's settings (\`${COMMAND} project init\` does it), and Claude Code makes its own worktrees`,
+      );
+    }
+    return { stdout: createForSubagent(context, name) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return { exitCode: 1, stderr: `worktree not created: ${reason}` };

@@ -50,7 +50,7 @@ const SESSION = "11111111-2222-3333-4444-555555555555";
 const AGENT = "0a1b2c3d4e5f60718";
 const FULL_CONFIG = {
   jobs: { route: true },
-  worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+  worktrees: { base: "main", guardMainFolder: true },
   sessionNames: true,
 };
 
@@ -127,7 +127,8 @@ const CASES: Case[] = [
         hook_event_name: "WorktreeCreate",
         session_id: SESSION,
         cwd: project(config),
-        name: "x",
+        // A subagent's name: a session's worktree retired with the engine's worktrees.prefix.
+        name: "agent-0a1b",
       },
       env: hookEnv(),
     }),

@@ -41,6 +41,7 @@ import {
   type ProjectInitPlan,
   type ProjectInitWrite,
   planProjectInit,
+  type SettingsFilePlan,
 } from "../project/init";
 import { autoMergeAllowed } from "../workflow/auto-merge";
 import {
@@ -65,6 +66,7 @@ export type {
   ProjectInitWrite,
   ResolvedValue,
   ResolvedWorkflow,
+  SettingsFilePlan,
   SwitchName,
   WorkflowKey,
   WorkflowSource,

@@ -505,7 +505,7 @@ describe("the base branch a project works against", () => {
     mkdirSync(config, { recursive: true });
     writeFileSync(
       join(config, "cc-smart-dev-kit.json"),
-      JSON.stringify({ worktrees: { base: "trunk", prefix: "app-wt-" } }),
+      JSON.stringify({ worktrees: { base: "trunk" } }),
     );
     const checkout = locateCheckout(main, { env });
     expect(baseBranch(checkout, env, main)).toEqual({ base: "trunk", from: "config" });
