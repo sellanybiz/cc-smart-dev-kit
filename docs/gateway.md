@@ -601,7 +601,7 @@ The router builds a **new** request for an affordable backend:
   the OmniRoute key made with the dashboard password. A test (`src/gateway/proxy.test.ts` ›
   "backendFetch is the only way") reads every file in `src/` and fails on a `fetch` that
   sends an `authorization` or `x-api-key` header any other way: a hand-kept list of callers is
-  how the judge test and claude-mem's check were missed before 0.6.0. A
+  how the judge test and claude-mem's check were missed before 1.0.0. A
   remote backend, and Anthropic, keep the environment's proxy settings: HTTPS through a
   company proxy is normal there. `directIfLoopback` passes `proxy: false`, which Bun
   honours from 1.4.3 on (oven-sh/bun#42692); Bun 1.4.2 ignores it and sends the key to

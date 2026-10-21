@@ -57,7 +57,6 @@ function cliPaths(env = process.env) {
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
     browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
-    serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
@@ -5924,7 +5923,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.0",
+  version: "0.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6142,7 +6141,6 @@ var PLUGIN_HOOK_NAMES = [
   "git-guard",
   "merge-guard",
   "main-folder-guard",
-  "serena-root",
   "message-guard",
   "agent-guard",
   "fable-session",
@@ -6152,11 +6150,12 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name"
 ];
+var RETIRED_HOOK_NAMES = ["serena-root"];
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
-    prefix: string2().min(1),
+    prefix: string2().min(1).optional(),
     setup: array(string2().min(1)).min(1).optional(),
     guardMainFolder: boolean2().optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
@@ -6174,7 +6173,7 @@ var ccSmartDevKitConfigSchema = strictObject({
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
   workflow: workflowSchema.optional(),
-  ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
+  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional()
 });
 
 class CcSmartDevKitConfigError extends Error {
@@ -7411,9 +7410,9 @@ async function takeReviewStart(file, agentId) {
 
 // src/hooks/after-merge.ts
 import { createHash as createHash2 } from "crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync4, writeFileSync as writeFileSync2 } from "fs";
 import { tmpdir } from "os";
-import { join as join9 } from "path";
+import { join as join8 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync as realpathSync3 } from "fs";
@@ -7430,9 +7429,6 @@ function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = form(path);
   const parent = form(folder);
   return child === parent || child.startsWith(`${parent}/`);
-}
-function samePath(a, b, ignoreCase = IGNORE_CASE) {
-  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
 }
 
 // src/setup/marketplace-access.ts
@@ -7508,87 +7504,6 @@ function innermostWorktree(path, worktrees) {
 function hasChanges(folder, env) {
   const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
   return !status.ok || status.out !== "";
-}
-
-// src/setup/launcher.ts
-var LAUNCHER_NAME = "cc-smart-dev-kit";
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-// src/hooks/project-wiring.ts
-var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
-function runsProjectHook(command, name) {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(String.raw`(^|[\s/"'])${LAUNCHER_NAME}["']?\s+hook\s+["']?${escaped}["']?(\s|;|$)`).test(command);
-}
-
-// src/hooks/settings-hooks.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5 } from "fs";
-import { join as join8 } from "path";
-function matcherSelects(matcher, subject) {
-  if (matcher === undefined || matcher === null || matcher === "" || matcher === "*")
-    return true;
-  if (typeof matcher !== "string")
-    return false;
-  if (subject === null)
-    return true;
-  if (/^[A-Za-z0-9_\- ,|]*$/.test(matcher)) {
-    return matcher.split(/[|,]/).map((part) => part.trim()).includes(subject);
-  }
-  try {
-    return new RegExp(matcher).test(subject);
-  } catch {
-    return false;
-  }
-}
-function hooksOf(file) {
-  if (!existsSync4(file))
-    return null;
-  try {
-    const parsed = JSON.parse(readFileSync5(file, "utf8"));
-    if (typeof parsed !== "object" || parsed === null)
-      return null;
-    const hooks = parsed.hooks;
-    return typeof hooks === "object" && hooks !== null && !Array.isArray(hooks) ? hooks : null;
-  } catch {
-    return null;
-  }
-}
-function describeHandler(handler) {
-  if (typeof handler !== "object" || handler === null)
-    return "(a hook)";
-  const { type, command, args } = handler;
-  if (typeof command !== "string")
-    return typeof type === "string" ? `(a ${type} hook)` : "(a hook)";
-  const rest = Array.isArray(args) ? args.filter((arg) => typeof arg === "string") : [];
-  return [command, ...rest].join(" ");
-}
-function wiredHandlers(file, event, subject) {
-  const groups = hooksOf(file)?.[event];
-  if (!Array.isArray(groups))
-    return [];
-  return groups.flatMap((group) => {
-    if (typeof group !== "object" || group === null)
-      return [];
-    const { matcher, hooks } = group;
-    if (!Array.isArray(hooks) || !matcherSelects(matcher, subject))
-      return [];
-    return hooks.map((handler) => ({ file, command: describeHandler(handler) }));
-  });
-}
-function projectSettingsFiles(projectDir) {
-  return [
-    join8(projectDir, ".claude", "settings.json"),
-    join8(projectDir, ".claude", "settings.local.json")
-  ];
 }
 
 // src/hooks/shell-command.ts
@@ -8674,18 +8589,14 @@ function quotableTitle(title) {
   const line = title.replace(/["`]/g, "'").replace(/\s+/g, " ").trim();
   return line.length > 100 ? `${line.slice(0, 99)}\u2026` : line;
 }
-function pluginRemovesWorktrees(context) {
-  const { env, paths, project } = context;
-  const started = env.CLAUDE_PROJECT_DIR;
-  const projectDir = started !== undefined && started !== "" ? started : project.mainCheckout ?? project.root;
-  return [paths.settingsFile, ...projectSettingsFiles(projectDir)].some((file) => wiredHandlers(file, "WorktreeRemove", null).some((handler) => runsProjectHook(handler.command, "worktree-remove")));
+function insideClaudeWorktrees(path) {
+  return /(^|[\\/])\.claude[\\/]worktrees[\\/]/.test(path);
 }
-function clearWorktreeNote(path, branch, checked) {
-  const exit = checked ? `ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the ${COMMAND} hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.` : `ExitWorktree with action "remove", without discard_changes: no ${COMMAND} hook removes this project's worktrees, so Claude Code's own check is what keeps uncommitted work, and it refuses when there is some.`;
+function clearWorktreeNote(path, branch) {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
-    exit,
-    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" \u2014 it removes the folder and the branch only when the worktree is finished.`
+    insideClaudeWorktrees(path) ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.' : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
+    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" \u2014 it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`
   ].join(`
 `);
 }
@@ -8724,7 +8635,7 @@ function viewPullRequest(ref, repo, folder, env) {
 }
 function announcedFile(repo, number, env) {
   const key = createHash2("sha256").update(repo).digest("hex").slice(0, 16);
-  return join9(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
+  return join8(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -8752,7 +8663,7 @@ function afterMerge(context) {
   const origin = runGit(repo, ["remote", "get-url", "origin"], env);
   const record = pr === null ? null : announcedFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync5(record),
+    announced: record !== null && existsSync4(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
@@ -8763,10 +8674,10 @@ function afterMerge(context) {
   });
   const notes = [];
   if (outcome.clear !== null)
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch, pluginRemovesWorktrees(context)));
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
     notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
-    mkdirSync4(join9(record, ".."), { recursive: true });
+    mkdirSync4(join8(record, ".."), { recursive: true });
     writeFileSync2(record, "");
   }
   return notes.length === 0 ? SILENT : addContext(event, notes.join(`
@@ -8775,7 +8686,7 @@ function afterMerge(context) {
 }
 
 // src/gateway/config.ts
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync6, statSync as statSync4 } from "fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, statSync as statSync4 } from "fs";
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -8967,7 +8878,7 @@ function loadConfigFile(path, platform = hostPlatform()) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync6(path, "utf8"));
+    raw = JSON.parse(readFileSync5(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -8979,7 +8890,7 @@ ${parsed.error}`);
 }
 
 // src/gateway/settings.ts
-import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync6 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -9002,11 +8913,11 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync6(path))
+  if (!existsSync5(path))
     return {};
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync7(path, "utf8"));
+    parsed = JSON.parse(readFileSync6(path, "utf8"));
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -9038,15 +8949,15 @@ function settingsReport(settingsPath) {
 }
 
 // src/hooks/agent-launches.ts
-import { appendFileSync as appendFileSync2, readFileSync as readFileSync8 } from "fs";
-import { join as join10 } from "path";
+import { appendFileSync as appendFileSync2, readFileSync as readFileSync7 } from "fs";
+import { join as join9 } from "path";
 function agentLaunchesFile(stateDir) {
-  return join10(stateDir, "agent-launches.jsonl");
+  return join9(stateDir, "agent-launches.jsonl");
 }
 function lastAgentLaunch(file) {
   let text;
   try {
-    text = readFileSync8(file, "utf8");
+    text = readFileSync7(file, "utf8");
   } catch {
     return null;
   }
@@ -9152,19 +9063,6 @@ function lastClaudeModel(transcriptPath) {
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
 var FORK = "fork";
-var OPUS_REASONS = [
-  "security",
-  "money",
-  "permissions",
-  "schema",
-  "deploy",
-  "ui",
-  "architecture",
-  "plan-review",
-  "debugging",
-  "research",
-  "retry"
-];
 var FABLE_BUILD_REASON = "build";
 var BUILDER_WORDS = [FABLE_BUILD_REASON];
 var FABLE_REASONS = [
@@ -9176,18 +9074,13 @@ var FABLE_REASONS = [
   "plan",
   "unsatisfied"
 ];
-var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "Code Explorer"];
-var REVIEW_AGENTS = ["Reviewer"];
-var REVIEW_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS";
+var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore"];
 var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
 var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
-var REVIEW_EFFORT = "high";
+var OPUS_ASK_EFFORT = "max";
+var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
 function effortAllowed(effort) {
   return ALLOWED_EFFORTS.includes(effort.toLowerCase());
-}
-function deeperThanReview(effort) {
-  const levels = ALLOWED_EFFORTS;
-  return levels.indexOf(effort.toLowerCase()) > levels.indexOf(REVIEW_EFFORT);
 }
 function agentKey(type) {
   const base = type.includes(":") ? type.split(":").pop() ?? type : type;
@@ -9239,8 +9132,10 @@ function throughFamilySlot(claude, family, gateway) {
   return asNamed(resolveTarget(first), family, tier);
 }
 function resolveName(text, gateway) {
-  if (text.startsWith("claude-"))
-    return throughFamilySlot(text, claudeFamily(text), gateway);
+  const family = claudeFamily(text);
+  if (family !== null || text.startsWith("claude-")) {
+    return throughFamilySlot(text, family, gateway);
+  }
   if (isSlotKey(text)) {
     const first = gateway.config?.slots[text]?.[0];
     const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
@@ -9267,7 +9162,9 @@ function resolveLaunchModel(name, gateway, env) {
   if (family === undefined) {
     const mapped = tierOfMappedId(text, gateway, env);
     const resolved = resolveName(text, gateway);
-    return mapped === null || resolved.tier !== null ? resolved : { ...resolved, tier: mapped };
+    if (mapped === null || resolved.tier !== null && resolved.family !== null)
+      return resolved;
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
@@ -9360,11 +9257,13 @@ function firstArgument(call) {
   return literal === null ? null : literal.value;
 }
 function stringOption(call, name) {
-  const found = new RegExp(`(^|[{,\\s])${name}\\s*:\\s*`).exec(call);
-  if (found === null)
+  const at = readOptions(call).keys.get(name);
+  if (at === undefined)
     return null;
-  const at = found.index + found[0].length;
-  const literal = literalAt(call, at);
+  const colon = /^\s*:\s*/.exec(call.slice(at));
+  if (colon === null)
+    return null;
+  const literal = literalAt(call, at + colon[0].length);
   return literal === null ? null : literal.value;
 }
 function callOpen(at, script) {
@@ -9452,51 +9351,71 @@ function lineOf(script, index) {
   return script.slice(0, index).split(`
 `).length;
 }
-function builtAtRuntime(call) {
+function readOptions(call) {
   const stack = [];
-  const keys = [];
+  const seen = [];
+  const keys = new Map;
+  let optionsDone = false;
   let keyExpected = false;
+  const found = (hidden) => ({ hidden, keys });
+  const twice = (key, end) => {
+    const open = seen.at(-1);
+    if (open !== undefined) {
+      if (open.has(key))
+        return true;
+      open.add(key);
+    }
+    if (stack.length === 1 && !optionsDone)
+      keys.set(key, end);
+    return false;
+  };
   for (let index = 1;index < call.length; index += 1) {
     const char = call[index] ?? "";
     const next = call[index + 1] ?? "";
     if (char === '"' || char === "'" || char === "`") {
       const literal = stringAt(call, index);
       if (literal === null)
-        return false;
+        return found(false);
+      if (keyExpected && char !== "`" && twice(literal.value, literal.end))
+        return found(true);
       index = literal.end - 1;
+      keyExpected = false;
       continue;
     }
     if (char === "/" && next === "/") {
       const end = call.indexOf(`
 `, index);
       if (end === -1)
-        return false;
+        return found(false);
       index = end;
       continue;
     }
     if (char === "/" && next === "*") {
       const end = call.indexOf("*/", index + 2);
       if (end === -1)
-        return false;
+        return found(false);
       index = end + 1;
       continue;
     }
     if (call.startsWith("...", index))
-      return true;
+      return found(true);
     if (/\s/.test(char))
       continue;
     if (char === "{" || char === "(" || char === "[") {
       if (keyExpected && char === "[")
-        return true;
+        return found(true);
       stack.push(char);
       if (char === "{")
-        keys.push(new Set);
+        seen.push(new Set);
       keyExpected = char === "{";
       continue;
     }
     if (char === "}" || char === ")" || char === "]") {
-      if (char === "}")
-        keys.pop();
+      if (char === "}") {
+        seen.pop();
+        if (stack.length === 1)
+          optionsDone = true;
+      }
       stack.pop();
       keyExpected = false;
       continue;
@@ -9507,17 +9426,16 @@ function builtAtRuntime(call) {
     }
     const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
     if (key !== undefined) {
-      const open = keys.at(-1);
-      if (open !== undefined) {
-        if (open.has(key))
-          return true;
-        open.add(key);
-      }
+      if (twice(key, index + key.length))
+        return found(true);
       index += key.length - 1;
     }
     keyExpected = false;
   }
-  return false;
+  return found(false);
+}
+function builtAtRuntime(call) {
+  return readOptions(call).hidden;
 }
 function callsOf(script) {
   return agentMentions(script).filter((mention) => mention.call).map((mention) => callOpen(mention.at, script));
@@ -9587,7 +9505,7 @@ var NO_WORKFLOW_MODEL = [
   "Write `model` and `effort` as string literals in the `agent(...)` options."
 ].join(`
 `);
-var PROMPT_UNREADABLE = "The launch's prompt is built at run time, so the guard cannot read an `Opus reason:` or `Fable reason:` line in it.";
+var PROMPT_UNREADABLE = "The launch's prompt is built at run time, so the guard cannot read a `Fable reason:` line in it.";
 function judgeWorkflow(script, ctx, env) {
   return readWorkflowScript(script).map((launch) => {
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
@@ -9629,17 +9547,25 @@ function reasonLine(prompt, label) {
   return null;
 }
 function reasonWord(text, allowed) {
-  const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
-  const word = found?.[1] ?? "";
+  const word = firstWord2(text) ?? "";
   return allowed.includes(word) ? word : null;
+}
+var REASON_WORD_MAX = 40;
+function firstWord2(text) {
+  const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
+  return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
 }
 var NO_MODEL = [
   "This Agent launch names no `model`.",
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
 ].join(`
 `);
-var EFFORTS = `${ALLOWED_EFFORTS.slice(0, -1).map((one) => `\`${one}\``).join(", ")} or \`${ALLOWED_EFFORTS.at(-1)}\``;
-var EFFORT_USE = "`medium` is for searches and reads, `high` for building and for reviews, and `xhigh` and `max` only when the person asks for them (an affordable gateway slot always runs at `max`).";
+function levelsText(levels) {
+  const named = levels.map((one) => `\`${one}\``);
+  return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
+}
+var EFFORTS = levelsText(ALLOWED_EFFORTS);
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).";
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
   `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
@@ -9662,18 +9588,14 @@ function namedModel(real) {
 function atEffort(effort) {
   return effort === null ? "at the session's own effort" : `at effort \`${effort.toLowerCase()}\``;
 }
-function opusDenial(real) {
-  return [
-    `This launch would run on ${namedModel(real)}.`,
-    "Opus is for reviews and the plugin's listed exceptions only: launch it as a review agent (`subagent_type` Reviewer, or one ending `:reviewer`), or put a line in the prompt saying why \u2014 the person is then asked to approve each one:",
-    `Opus reason: <${OPUS_REASONS.join("|")}>`
-  ].join(`
-`);
+function opusWhy(effort, word) {
+  const level = effort ?? "session-effort";
+  return word === null ? `opus:${level}` : `opus:${level}:${word}`;
 }
 function fableDenial(real) {
   return [
     `This launch would run on ${namedModel(real)}.`,
-    "Fable advises; it builds only when the person asks. Use a read-only agent type (Plan, Reviewer, Explore, Code Explorer) and put a line in the prompt saying why:",
+    `Fable advises; it builds only when the person asks. Use a read-only agent type (${READ_ONLY_AGENTS.join(", ")}) and put a line in the prompt saying why:`,
     `Fable reason: <${FABLE_REASONS.join("|")}> - <why>`,
     `An agent that can change files needs \`Fable reason: ${FABLE_BUILD_REASON} - <what the person asked>\` instead.`
   ].join(`
@@ -9700,9 +9622,7 @@ function judgeLaunch(launch, ctx, env) {
     return deny(real, effortDenial(launch.effort));
   }
   const type = launch.subagentType ?? "";
-  const review = ctx.reviewAgents === undefined ? agentList(REVIEW_AGENTS, env, REVIEW_AGENTS_ENV) : new Set(ctx.reviewAgents.map(agentKey));
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
-  const isReview = review.has(agentKey(type));
   const builder = !readOnly.has(agentKey(type));
   if (real.tier === "fable") {
     const said = reasonLine(launch.prompt, "Fable reason");
@@ -9733,47 +9653,34 @@ function judgeLaunch(launch, ctx, env) {
     };
   }
   if (real.tier === "opus") {
-    if (isReview) {
-      if (real.family !== "opus") {
-        if (nobodyWatches(env)) {
-          return deny(real, "A review whose model the guard cannot read as Claude Opus is approved by the person, one by one, and this session has nobody to answer (`claude -p`).");
-        }
-        return {
-          decision: "ask",
-          real,
-          reason: [
-            `A review on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus.`,
-            "Approve only if this review really runs on the opus tier."
-          ].join(`
-`),
-          why: "opus:review-unreadable"
-        };
-      }
-      const effort = launch.effort?.toLowerCase() ?? REVIEW_EFFORT;
-      if (!deeperThanReview(effort))
-        return allow(real, "review");
+    const said = reasonLine(launch.prompt, "Opus reason");
+    const effort = launch.effort?.toLowerCase() ?? null;
+    if (real.family !== "opus") {
       if (nobodyWatches(env)) {
         return deny(real, [
-          `A review at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
-          `Run it at \`${REVIEW_EFFORT}\`, or in an interactive session.`
+          `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer (\`claude -p\`).`,
+          "Name `opus` (or a Claude Opus id) as its model."
         ].join(`
 `));
       }
       return {
         decision: "ask",
         real,
-        reason: `${namedModel(real)} review at effort \`${effort}\`: a review runs at \`${REVIEW_EFFORT}\` unless you asked for a deeper one. Approve if you did.`,
-        why: `opus:review-${effort}`
+        reason: [
+          `A launch on \`${real.model}\` ${atEffort(launch.effort)}: the guard cannot read the model behind it as Claude Opus, so it may be a higher tier.`,
+          "Approve only if this launch really runs on the opus tier."
+        ].join(`
+`),
+        why: "opus:unreadable"
       };
     }
-    const said = reasonLine(launch.prompt, "Opus reason");
-    const word = reasonWord(said, OPUS_REASONS);
-    if (word === null)
-      return deny(real, opusDenial(real));
+    const why = opusWhy(effort, firstWord2(said));
+    if (effort !== OPUS_ASK_EFFORT)
+      return allow(real, why);
     if (nobodyWatches(env)) {
       return deny(real, [
-        "An Opus launch other than a review is approved by the person, one by one, and this session has nobody to answer (`claude -p`).",
-        "Run it in an interactive session, or launch it as a review agent."
+        `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer (\`claude -p\`).`,
+        `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`
       ].join(`
 `));
     }
@@ -9781,12 +9688,11 @@ function judgeLaunch(launch, ctx, env) {
       decision: "ask",
       real,
       reason: [
-        `${namedModel(real)} launch: not a review, ${atEffort(launch.effort)}, with the reason line \`Opus reason: ${said}\`.`,
-        "Opus is for reviews and the listed exceptions. Approve only if this launch is one of them."
+        `${namedModel(real)} launch at effort \`${effort}\`: \`${type || "general-purpose"}\`${said === null ? "" : `, with the reason line "Opus reason: ${said}"`}.`,
+        `The opus tier runs at ${levelsText(OPUS_FREE_EFFORTS)} with no question; \`${effort}\` only when the person asks for it. Approve only if you did.`
       ].join(`
 `),
-      why: `opus:${word}`,
-      restsOnPrompt: true
+      why
     };
   }
   if (!real.claude) {
@@ -9935,13 +9841,13 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync7, writeFileSync as writeFileSync4 } from "fs";
-import { dirname as dirname4, join as join12 } from "path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync7, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname4, join as join11 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync6, readFileSync as readFileSync9, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { join as join11 } from "path";
+import { join as join10 } from "path";
 var MAX_SESSION_NAME = 60;
 function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
@@ -9954,11 +9860,11 @@ function cleanSessionName(raw) {
   return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 function namesDir(env) {
-  return join11(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+  return join10(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync7(file) ? cleanSessionName(readFileSync9(file, "utf8")) : null;
+    return existsSync6(file) ? cleanSessionName(readFileSync8(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -9980,7 +9886,7 @@ function sessionName(context) {
   if (!isSessionId(sessionId))
     return SILENT;
   const dir = namesDir(env);
-  const wanted = readName(join11(dir, `${sessionId}.name`));
+  const wanted = readName(join10(dir, `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
   if (event === "SessionStart") {
     return {
@@ -9989,7 +9895,7 @@ function sessionName(context) {
       })
     };
   }
-  const appliedFile = join11(dir, sessionId);
+  const appliedFile = join10(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
     mkdirSync6(dir, { recursive: true });
@@ -10013,7 +9919,7 @@ function fableSessionModelName(real) {
   return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
 }
 function fableSessionMark(env, sessionId) {
-  return join12(namesDir(env), `${sessionId}.fable`);
+  return join11(namesDir(env), `${sessionId}.fable`);
 }
 function firstTime(mark) {
   try {
@@ -10041,7 +9947,7 @@ function fableSession(input, env, paths) {
   if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
     return SILENT;
   const mark = fableSessionMark(env, sessionId);
-  if (existsSync8(mark))
+  if (existsSync7(mark))
     return SILENT;
   let model;
   if (event === "SessionStart")
@@ -10300,8 +10206,21 @@ function runsGit(command) {
   return programsOf(command).includes("git");
 }
 
+// src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 // src/hooks/job-route.ts
-var LAUNCHER_IN_SHELL2 = `"$HOME/.local/bin/${COMMAND}"`;
 var PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 var SHELL_MEANING = /[$`*?[\]{}~<>|&;\n\\]/;
 function plainWords(command) {
@@ -10327,7 +10246,7 @@ function routedShell(env, which = (command) => Bun.which(command, { PATH: env.PA
 function jobRunCommand(kind, command, shell) {
   const words = plainWords(command);
   const inner = words === null ? `${shellWord(shell)} -c ${shellQuote(command)}` : words.map(shellWord).join(" ");
-  return `${LAUNCHER_IN_SHELL2} job run --kind ${kind} -- ${inner}`;
+  return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
 }
 function runsJobRun(command) {
   return shellSegments(command).some((segment) => {
@@ -10393,220 +10312,48 @@ function routeFacts(input) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute3, resolve as resolve6 } from "path";
-
-// src/hooks/serena-root.ts
-import { readFileSync as readFileSync10, rmSync, statSync as statSync5 } from "fs";
-import { isAbsolute as isAbsolute2, join as join13, resolve as resolve5 } from "path";
-var SERENA_ACTIVATE_TOOL = "mcp__serena__activate_project";
-var SERENA_ROOT_DIR = "serena-root";
-var UNKNOWN = "unknown";
-function serenaRootFile(paths, sessionId) {
-  if (typeof sessionId !== "string" || !/^[\w-]{1,128}$/.test(sessionId))
-    return null;
-  return join13(paths.stateDir, SERENA_ROOT_DIR, `${sessionId}.txt`);
-}
-function readSerenaRoot(paths, sessionId) {
-  const file = serenaRootFile(paths, sessionId);
-  if (file === null)
-    return;
-  let text;
-  try {
-    text = readFileSync10(file, "utf8");
-  } catch (error) {
-    const missing = error instanceof Error && "code" in error && error.code === "ENOENT";
-    return missing ? undefined : { kind: "unknown" };
-  }
-  const root = text.trim();
-  return root !== UNKNOWN && isAbsolute2(root) ? { kind: "path", path: resolve5(root) } : { kind: "unknown" };
-}
-function writeSerenaRoot(paths, sessionId, root) {
-  const file = serenaRootFile(paths, sessionId);
-  if (file === null)
-    return;
-  atomicWrite(file, root.kind === "path" ? root.path : UNKNOWN, 384);
-}
-function clearSerenaRoot(paths, sessionId) {
-  const file = serenaRootFile(paths, sessionId);
-  if (file !== null)
-    rmSync(file, { force: true });
-}
-function textsOf(value, depth = 0) {
-  if (typeof value === "string")
-    return [value];
-  if (depth > 4 || value === null || typeof value !== "object")
-    return [];
-  const parts = Array.isArray(value) ? value : Object.values(value);
-  return parts.flatMap((part) => textsOf(part, depth + 1));
-}
-function activatedRoot(toolResponse) {
-  const pattern = /^(?:The project with name '[^'\n]*' at (.+) is activated\.|Created and activated a new project with name '[^'\n]*' at (.+)\.)\s*$/m;
-  for (const text of textsOf(toolResponse)) {
-    const match = pattern.exec(text);
-    const root = match?.[1] ?? match?.[2];
-    if (root !== undefined)
-      return root.trim();
-  }
-  return;
-}
-function isFolder(path) {
-  try {
-    return isAbsolute2(path) && statSync5(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-function activationAllowed(project, folders) {
-  if (typeof project !== "string" || !isAbsolute2(project))
-    return false;
-  const wanted = resolve5(project);
-  return folders.some((folder) => samePath(wanted, folder, IGNORE_CASE));
-}
-var ACTIVATION_REFUSAL = "Point Serena only at this repo's main checkout or one of its worktrees, by absolute path \u2014 never a project name and never a folder outside the repo: every worktree shares one project name, so a name cannot say which folder is meant.";
-function requestedProject(input) {
-  return toolInput(input)["project"];
-}
-function repoFolders(context) {
-  const main = context.project.mainCheckout ?? context.project.root;
-  const [, ...worktrees] = listWorktrees(main, context.env, GUARD_GIT_TIMEOUT_MS);
-  return [main, ...worktrees.map((worktree) => worktree.path)];
-}
-function serenaRoot(context) {
-  const { input, event, paths, project } = context;
-  const sessionId = input.session_id;
-  if (project.config?.worktrees?.guardMainFolder !== true)
-    return SILENT;
-  if (event === "SessionStart") {
-    const source = stringField(input.source);
-    if (source === "startup")
-      clearSerenaRoot(paths, sessionId);
-    else if (source === "resume" || source === "clear" || source === "fork") {
-      writeSerenaRoot(paths, sessionId, { kind: "unknown" });
-    }
-    return SILENT;
-  }
-  const tool = stringField(input.tool_name);
-  if (tool !== SERENA_ACTIVATE_TOOL)
-    return SILENT;
-  if (event === "PostToolUse") {
-    const root = activatedRoot(input.tool_response);
-    if (root !== undefined && isFolder(root)) {
-      writeSerenaRoot(paths, sessionId, { kind: "path", path: resolve5(root) });
-    }
-    return SILENT;
-  }
-  if (event !== "PreToolUse")
-    return SILENT;
-  const wanted = requestedProject(input);
-  if (!activationAllowed(wanted, repoFolders(context))) {
-    return toolDecision("deny", ACTIVATION_REFUSAL);
-  }
-  writeSerenaRoot(paths, sessionId, { kind: "unknown" });
-  return SILENT;
-}
-
-// src/hooks/main-folder-guard.ts
-var SERENA_EDIT_TOOLS = new Set([
-  "mcp__serena__replace_symbol_body",
-  "mcp__serena__insert_after_symbol",
-  "mcp__serena__insert_before_symbol",
-  "mcp__serena__replace_content",
-  "mcp__serena__rename_symbol",
-  "mcp__serena__safe_delete_symbol",
-  "mcp__serena__replace_in_files",
-  ...["write_memory", "rename_memory", "edit_memory", "delete_memory"].map((tool) => `mcp__serena__${tool}`)
-]);
-var SERENA_MEMORY_TOOLS = new Set([
-  "mcp__serena__write_memory",
-  "mcp__serena__rename_memory",
-  "mcp__serena__edit_memory",
-  "mcp__serena__delete_memory"
-]);
-function memoryNameKeys(tool) {
-  return tool.endsWith("rename_memory") ? ["old_name", "new_name"] : ["memory_name"];
-}
+import { isAbsolute as isAbsolute2, resolve as resolve5 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute3(path) ? resolve6(path) : resolve6(cwd, path));
-}
-function serenaEditedFile(input, record, projectDir) {
-  const tool = stringField(input.tool_name);
-  if (tool === null || !SERENA_EDIT_TOOLS.has(tool))
-    return null;
-  const fields = toolInput(input);
-  let relative;
-  if (SERENA_MEMORY_TOOLS.has(tool)) {
-    const named = memoryNameKeys(tool).map((key) => stringField(fields[key])).filter((name) => name !== null && !name.startsWith("global/"));
-    if (named.length === 0)
-      return null;
-    relative = "";
-  } else {
-    relative = stringField(fields.relative_path) ?? (tool.endsWith("replace_in_files") ? "" : null);
-    if (relative === null)
-      return null;
-  }
-  if (record?.kind === "unknown")
-    return { unplaceable: true };
-  const root = record?.kind === "path" ? record.path : projectDir;
-  if (root === null || !isAbsolute3(root))
-    return { unplaceable: true };
-  return { file: realPath(resolve6(root, relative)) };
+  return realPath(isAbsolute2(path) ? resolve5(path) : resolve5(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
     return false;
   return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
 }
-function mainFolderRefusal(mainCheckout, base, viaSerena = false) {
+function mainFolderRefusal(mainCheckout) {
   return [
-    `This file is in the main checkout (${mainCheckout}). This project keeps the main checkout on \`${base}\` and makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
-    viaSerena ? "A Serena edit lands in the project Serena has active, and that is the main checkout. Point Serena at your worktree first: `mcp__serena__activate_project` with the worktree's absolute path \u2014 then edit through Serena again. Or use Edit/Write with the same file's path under the worktree." : "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: EnterWorktree, with the branch for this work as its `name`, makes one."
+    `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
+    "Already working in a worktree? Edit the same file under that worktree's folder.",
+    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one \u2014 use dashes, since a `/` becomes `+`."
   ].join(`
 `);
 }
-function unplaceableSerenaRefusal() {
-  return [
-    "This is a Serena edit, and the folder Serena has active is not known to cc-smart-dev-kit, so it cannot tell whether the file is in the main checkout.",
-    "Point Serena at a folder with `mcp__serena__activate_project` and an ABSOLUTE path (your worktree, or this repo's main checkout), then edit through Serena again \u2014 or use Edit/Write with the file's absolute path."
-  ].join(`
-`);
-}
-function startFolder(env) {
-  const dir = env["CLAUDE_PROJECT_DIR"];
-  return dir !== undefined && dir !== "" && isAbsolute3(dir) ? dir : null;
-}
-function judge(file, context, viaSerena) {
-  const { project, env } = context;
-  const main = realPath(project.mainCheckout ?? "");
+function mainFolderGuard(context) {
+  const { project, input, cwd, env } = context;
+  if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
+    return SILENT;
+  }
+  const file = editedFile(input, cwd);
+  if (file === null)
+    return SILENT;
+  const main = realPath(project.mainCheckout);
   const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
   if (!editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path)))) {
     return SILENT;
   }
-  const base = project.config?.worktrees?.base ?? "the base branch";
-  return toolDecision("deny", mainFolderRefusal(main, base, viaSerena));
-}
-function mainFolderGuard(context) {
-  const { project, input, cwd, env, paths } = context;
-  if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
-    return SILENT;
-  }
-  const serena = serenaEditedFile(input, readSerenaRoot(paths, input.session_id), startFolder(env));
-  if (serena !== null) {
-    return "unplaceable" in serena ? toolDecision("ask", unplaceableSerenaRefusal()) : judge(serena.file, context, true);
-  }
-  const file = editedFile(input, cwd);
-  return file === null ? SILENT : judge(file, context, false);
+  return toolDecision("deny", mainFolderRefusal(main));
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync10, readFileSync as readFileSync12 } from "fs";
+import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, dirname as dirname5, join as join14 } from "path";
+import { delimiter, dirname as dirname5, join as join12 } from "path";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -10644,6 +10391,9 @@ gpgcheck=1
 gpgkey=${WARP_KEY_URL}
 `;
 
+// src/setup/managed-hook.ts
+var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
+
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
   "const f=process.argv[process.argv.length-1];",
@@ -10654,42 +10404,58 @@ var FIND_INSTALL_JS2 = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
+// src/hooks/notify-types.ts
+var PLUGIN_NOTIFY_TYPES = [
+  "permission_prompt",
+  "elicitation_dialog",
+  "elicitation_url_dialog",
+  "worker_permission_prompt"
+];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
+var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
+var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
+var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+
+// src/setup/user-notify-hook.ts
+var USER_NOTIFY_HOOK_NAME = "notify";
+var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
+
 // src/cli/setup.ts
 function shellWord2(path) {
   return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
 }
 function statuslineSetting(paths) {
-  return { command: `${shellWord2(join14(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord2(join12(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/update/state.ts
 import {
   appendFileSync as appendFileSync3,
-  existsSync as existsSync9,
+  existsSync as existsSync8,
   mkdirSync as mkdirSync8,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync11,
-  rmSync as rmSync2,
-  statSync as statSync6,
+  readFileSync as readFileSync9,
+  rmSync,
+  statSync as statSync5,
   writeFileSync as writeFileSync5
 } from "fs";
-import { join as join15 } from "path";
+import { join as join13 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join15(stateDir, "update-hold"),
-    check: join15(stateDir, "update-check.json"),
-    reported: join15(stateDir, "update-reported"),
-    log: join15(stateDir, "update.log"),
-    lockDir: join15(stateDir, "update"),
-    sessions: join15(stateDir, "sessions")
+    hold: join13(stateDir, "update-hold"),
+    check: join13(stateDir, "update-check.json"),
+    reported: join13(stateDir, "update-reported"),
+    log: join13(stateDir, "update.log"),
+    lockDir: join13(stateDir, "update"),
+    sessions: join13(stateDir, "sessions")
   };
 }
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 function isHeld(files) {
-  return existsSync9(files.hold);
+  return existsSync8(files.hold);
 }
 
 // src/workflow/resolve.ts
@@ -10700,11 +10466,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync10(file))
+  if (!existsSync9(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync12(file, "utf8"));
+    raw = JSON.parse(readFileSync10(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -10746,7 +10512,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync12(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync10(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -11133,9 +10899,9 @@ function mergeGuard(context) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync11, readdirSync as readdirSync3, readFileSync as readFileSync13, statSync as statSync7 } from "fs";
+import { existsSync as existsSync10, readdirSync as readdirSync3, readFileSync as readFileSync11, statSync as statSync6 } from "fs";
 import { uptime } from "os";
-import { join as join16 } from "path";
+import { join as join14 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -11160,8 +10926,8 @@ function isRunning(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join16(claudeConfigDir, "sessions");
-  if (!existsSync11(dir))
+  const dir = join14(claudeConfigDir, "sessions");
+  if (!existsSync10(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
@@ -11171,9 +10937,9 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync7(join16(dir, file)).mtimeMs < bootedAt)
+      if (statSync6(join14(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync13(join16(dir, file), "utf8");
+      text = readFileSync11(join14(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -11220,8 +10986,8 @@ function messageGuard(context) {
 }
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync14, readlinkSync as readlinkSync3 } from "fs";
-import { join as join17 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync12, readlinkSync as readlinkSync3 } from "fs";
+import { join as join15 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -11240,8 +11006,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join17(worktree, relative);
-    const there = join17(mainCheckout, relative);
+    const here = join15(worktree, relative);
+    const there = join15(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -11249,9 +11015,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync4(here).every((entry) => same(join17(relative, entry)));
+        return b.isDirectory() && readdirSync4(here).every((entry) => same(join15(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync14(here).equals(readFileSync14(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync12(here).equals(readFileSync12(there));
     } catch {
       return false;
     }
@@ -11347,22 +11113,22 @@ async function reviewRecord(context) {
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync15, statSync as statSync8 } from "fs";
-import { basename as basename3, isAbsolute as isAbsolute4, join as join18, resolve as resolve7 } from "path";
+import { readFileSync as readFileSync13, statSync as statSync7 } from "fs";
+import { basename as basename3, isAbsolute as isAbsolute3, join as join16, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync15(join18(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync13(join16(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
-  if (!isAbsolute4(admin))
-    admin = resolve7(worktree, admin);
+  if (!isAbsolute3(admin))
+    admin = resolve6(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join18("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join16("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync8(join18(admin, file)).mtimeMs);
+      last = Math.max(last, statSync7(join16(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -11373,7 +11139,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync8(listed.path);
+    statSync7(listed.path);
   } catch {
     return "gone";
   }
@@ -11483,22 +11249,12 @@ var mainFolderGuardHook = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
   wiring: "plugin",
-  onConfigProblem: (message, input, _event, checkout, context) => {
+  onConfigProblem: (message, input, _event, checkout) => {
     const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
     const repo = checkout.mainCheckout ?? checkout.root;
-    if (file !== null && isInside(file, repo)) {
-      return toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message));
-    }
-    return serenaEditedFile(input, readSerenaRoot(context.paths, input.session_id), null) === null ? SILENT : toolDecision("ask", cannotCheck("whether this Serena edit belongs in a worktree", message));
+    return file !== null && isInside(file, repo) ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message)) : SILENT;
   },
   run: mainFolderGuard
-};
-var serenaRootHook = {
-  name: "serena-root",
-  events: ["PreToolUse", "PostToolUse", "SessionStart"],
-  wiring: "plugin",
-  onConfigProblem: (message) => ({ stderr: cannotCheck("which folder Serena edits", message) }),
-  run: serenaRoot
 };
 var messageGuardHook = {
   name: "message-guard",
@@ -11576,7 +11332,6 @@ var HOOKS = [
   gitGuardHook,
   mergeGuardHook,
   mainFolderGuardHook,
-  serenaRootHook,
   messageGuardHook,
   agentGuardHook,
   fableSessionHook,

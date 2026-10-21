@@ -12,7 +12,6 @@ paths:
   - "src/entries/notify.ts"
   - "src/entries/playwright-output.ts"
   - "src/entries/review-record.ts"
-  - "src/entries/serena-root.ts"
   - "src/entries/session-name.ts"
   - "src/entries/stop-failure.ts"
   - "src/entries/update-check.ts"
@@ -37,10 +36,16 @@ Each spec in `src/hooks/specs.ts` says who wires it (`wiring`):
   every project. It stays silent in a project without `cc-smart-dev-kit.json`, and in one whose
   `ownHooks` names it (§ The project's own copy).
 - **The project** (`PROJECT_HOOKS`, `wiring: "project"`): the project wires
-  `cc-smart-dev-kit hook <name>` in its own `.claude/settings.json`, exactly as the README's
-  § Worktrees shows (the lines come from `src/hooks/project-wiring.ts`; a test keeps the
-  README the same). Today: the worktree engine (WorktreeCreate, WorktreeRemove,
-  SubagentStop). No `ownHooks` step: the wiring is the project's opt-in.
+  `cc-smart-dev-kit hook <name>` in its own `.claude/settings.json`, exactly as
+  `cc-smart-dev-kit hook` prints it (the lines come from `src/hooks/project-wiring.ts`).
+  Today: the plugin's **deprecated** worktree engine (WorktreeCreate, WorktreeRemove,
+  SubagentStop), which retires in the next minor version. No `ownHooks` step: the wiring is
+  the project's opt-in.
+
+**Every project uses Claude Code's own worktrees** (`<repo>/.claude/worktrees/<name>` on
+`worktree-<name>`), and they need no hook. A project that still wires the engine keeps
+working until the engine retires; `worktrees.prefix` is optional in the schema and the engine
+needs it to name its folder, so the create hook fails closed and says so when it is missing.
 
 **Never wire WorktreeCreate or WorktreeRemove in `hooks.json`, and never the engine's
 `subagent-stop`.** A WorktreeCreate hook replaces Claude Code's own creation in every project
@@ -49,7 +54,8 @@ creation fail (proved live). So a plugin WorktreeCreate cannot step aside for a 
 did not opt in, and a hook-made worktree loses Claude Code's lock, its cleanup marker,
 `-w "#123"` and its Git LFS handling. `subagent-stop` is on that list for the same reason:
 it removes the worktree of the subagent that stopped, and which worktrees a project keeps is
-the project's decision, so it stays wired by the project.
+the project's decision, so it stays wired by the project. The engine itself is deprecated
+(owner, 2026-10-18): it is deleted in the next minor version, and no new project wires it.
 
 **A plugin SubagentStop hook that touches no worktree is fine** (today: `review-record`
 only, which also runs on SubagentStart to note the commit a review agent starts on, and
@@ -150,12 +156,12 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 - Never `process.cwd()`.
 - Without a `.claude/cc-smart-dev-kit.json`, every plugin hook stays silent. A project that never
   opted in must not notice the plugin.
-- The engine makes a subagent's worktree in Claude Code's own shape:
+- The deprecated engine makes a subagent's worktree in Claude Code's own shape:
   `<main checkout>/.claude/worktrees/agent-<hex>` on `worktree-agent-<hex>`, from the
   remote's default branch, or HEAD with `worktree.baseRef: "head"` or no remote;
   `.worktreeinclude` copied. SubagentStop finds it by that shape. A change to that shape
   needs the contract row proved again first.
-- A session's **new** branch is cut from `origin/<base>` right after
+- The engine cuts a session's **new** branch from `origin/<base>` right after
   `git fetch origin <base>`, so a repo with no `origin` cannot make one: WorktreeCreate
   fails closed and says the fetch failed. An existing branch is checked out all the same.
 
@@ -172,22 +178,45 @@ and, like `notify` and `update-check`, it is a `USER_HOOKS` bundle: no frame, no
 never enters the frame, needs no `cc-smart-dev-kit.json`, and its opt-in is the machine. (The one
 thing it reads from a project that has one is its `workflow.alerts` settings — which moments
 alert, and whether a sound goes with them — through `src/workflow/alerts.ts`.) It alerts on
-`Notification`, `Stop`, `PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
+`Notification` (the types a session's own process raises: `PLUGIN_NOTIFY_TYPES`), `Stop`,
+`PreToolUse` on `AskUserQuestion|ExitPlanMode`, and `StopFailure`
 (`rate_limit` only where the `stop-failure` hook will not show its own alert —
 `stopFailureWillAlert`: no desktop, no gateway set up, or a short rate limit), and clears its mark
-on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. The route is the desktop
+on `PostToolUse`, `PostToolUseFailure` and `UserPromptSubmit`. A background session
+(`CLAUDE_JOB_DIR`, `src/hooks/background-session.ts`) shows no alert of its own — it inherits
+the daemon's display and terminal variables, and agent view alerts for it while the list is
+open — and the usage-limit alert stays silent there too. The route is the desktop
 (`notify-send` — on a Linux desktop with the right tools the detached `alert-worker` in its
 place, which waits for a click and raises the session's window, `src/hooks/desktop-alert.ts`
 — `osascript`, with the freedesktop sound), or — with no desktop route here and
-an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777; inside Warp whose own
-plugin is on it stays quiet but for the sound and a waiting question; with nowhere to show it,
-nothing. The whole contract, the marks and the two settings: `docs/design.md` § The notifier.
+an SSH session (`SSH_CONNECTION`/`SSH_TTY`) — the terminal as OSC 777, or in Warp's own agent
+format when the far end is Warp (`farEndIsWarp`: Warp's own variables, else `LC_TERMINAL=WarpTerminal`,
+else the `sshWarp` setting); inside Warp whose own plugin is on it stays quiet but for the sound,
+a waiting question, a waiting agent and agent view's finished/failed alert; with nowhere to show it, nothing. The whole contract, the marks and the
+three settings: `docs/design.md` § The notifier.
+
+**The notifier has a second wiring, in the person's user settings.** Agent view
+(`claude agents`, the list of sessions) raises `Notification` with `agent_needs_input` and
+`agent_completed` in its own process, and runs **only the hooks in settings files, never a
+plugin's `hooks.json`** (proved live on 2.1.302; `docs/claude-code-contract.md`). So `setup`
+manages one entry under `hooks.Notification` in `~/.claude/settings.json`
+(`src/setup/user-notify-hook.ts`): matcher `AGENT_VIEW_MATCHER`, the command
+`"$HOME/.local/bin/cc-smart-dev-kit" hook notify`, timeout 10. It runs the same function the
+bundle's entry runs (`src/hooks/notify-entry.ts`), through the launcher, so an update that
+deletes the old version folder cannot break it. `plugin/hooks/hooks.json` therefore matches
+only `NOTIFY_MATCHER` (a session's own types): with both wirings the alert would run twice
+there. The code accepts both lists (`NOTIFY_TYPES`, one home in `src/hooks/notify-types.ts`);
+`setup` writes the entry through the managed-hook path (`src/setup/managed-hook.ts`: backup,
+atomic write, `owned-hooks.json`, `restore` removes it) and replaces a hand-written entry
+that runs the plugin's own `dist/notify.js` rather than adding a second. `doctor` checks the
+entry. On Windows the same line holds in Git Bash (`docs/windows-hooks.md`).
 
 **A hook's answer can carry `terminalSequence`** (Claude Code 2.1.141+): the OSC in that
 output field is written to the session's terminal by Claude Code itself — the only route for
 a hook with no controlling terminal — and Claude Code wraps it for tmux itself, so the field
 carries the **bare** sequence and a wrapped one is rejected whole
-(`docs/claude-code-contract.md`). An event whose output is not read (`StopFailure`) writes a
+(`docs/claude-code-contract.md`). An event whose output is not read (`StopFailure`), and agent
+view's own alerts (the list, `claude agents`, reads the field but never writes it out), write a
 terminal device instead: `/dev/tty` first, wrapped for tmux there (`forTty`), and, where the
 hook has no controlling terminal at all (2.1.301: ENXIO), the session's own device — the pty
 Claude Code is attached to, found from its pid (`src/hooks/terminal.ts`) — never both.
@@ -235,6 +264,11 @@ Where both exist, **the project says which plugin hooks to keep quiet**: `ownHoo
   `requires`), so it works even when the rest of the file is broken or needs a newer plugin.
 - The names are validated against the plugin's own (`PLUGIN_HOOK_NAMES` in
   `src/project/config.ts`; a test keeps them equal to `HOOKS`): a typo fails the strict parse.
+- **A retired plugin hook keeps its name** (`RETIRED_HOOK_NAMES` in the same file; today
+  `serena-root`, 0.6.0): a project file that lists it still parses, the name silences
+  nothing, and `doctor` prints one `·` line that it can go. Dropping the name from the schema
+  would fail the strict parse, and every guard would then ask on every call. A hook you
+  retire goes there.
 - `cc-smart-dev-kit doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
   when a listed hook's event has no project hook left to answer, and warns when a project
   hook runs next to a plugin hook the list does not name (both may answer).
@@ -308,6 +342,12 @@ A bug in a hook must never stop a user's work.
 - A guard asks rather than denies when the person may mean it (a force-push); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
   to another project's session).
+- **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching
+  call: "Yes, don't ask again" leaves no rule a PreToolUse hook's answer respects (proved
+  live 2026-10-19, on the main-folder guard's Serena branch, retired in 0.6.0). So a guard
+  asks only where the person's judgment is the point. When the fix is mechanical and Claude
+  can do it itself, the guard denies and says the step, and the person is not interrupted on
+  every call.
 - Anything a guard cannot work out (a session record it cannot read, a branch it cannot
   name) lets the call through.
 
@@ -318,8 +358,7 @@ lock. It never restarts a service, never changes a permission, and never asks a 
 Those happen only in a manual `cc-smart-dev-kit setup` run that shows the change first. A start
 must stay quick: no fetch.
 
-The plugin's SessionStart hooks are the Serena-root record (`serena-root`, opt-in with the
-guard it serves), the worktree-leftovers note, the session name, the Fable-session note
+The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the Fable-session note
 (`fable-session`, machine-wide) and the
 background self-update (`src/update/`, the owner's decision of 2026-10-15). `update-check`
 also brings the managed instructions copy up to this version when it is behind

@@ -32,9 +32,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { innermostWorktree, listWorktrees, runGit } from "./git";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
-import { runsProjectHook } from "./project-wiring";
 import type { Env, HookContext } from "./run";
-import { projectSettingsFiles, wiredHandlers } from "./settings-hooks";
 import {
   invocationOf,
   isShort,
@@ -1051,43 +1049,25 @@ function quotableTitle(title: string): string {
   return line.length > 100 ? `${line.slice(0, 99)}…` : line;
 }
 
-/**
- * True when the plugin's own WorktreeRemove hook (`cc-smart-dev-kit hook worktree-remove`) is
- * wired where Claude Code reads hooks for this session: the person's settings and the
- * project's two settings files, in the folder the session started in (`CLAUDE_PROJECT_DIR`,
- * else the main checkout). Only then does something check a worktree before `discard_changes`
- * removes it: that hook keeps a folder with uncommitted work, and a branch with commits that
- * are nowhere else (`worktree-remove.ts`). A project with an engine of its own, or none, has
- * no such check.
- */
-export function pluginRemovesWorktrees(context: HookContext): boolean {
-  const { env, paths, project } = context;
-  const started = env.CLAUDE_PROJECT_DIR;
-  const projectDir =
-    started !== undefined && started !== "" ? started : (project.mainCheckout ?? project.root);
-  return [paths.settingsFile, ...projectSettingsFiles(projectDir)].some((file) =>
-    wiredHandlers(file, "WorktreeRemove", null).some((handler) =>
-      runsProjectHook(handler.command, "worktree-remove"),
-    ),
-  );
+/** True when a worktree lives under `<repo>/.claude/worktrees/`, where Claude Code made it. */
+export function insideClaudeWorktrees(path: string): boolean {
+  return /(^|[\\/])\.claude[\\/]worktrees[\\/]/.test(path);
 }
 
 /**
- * The note that clears the session's own worktree once its pull request merged. `checked`:
- * the plugin's WorktreeRemove hook is wired (`pluginRemovesWorktrees`), so `discard_changes
- * true` is safe — Claude Code cannot check a worktree outside the repo, and that hook does.
- * Without it, nothing would check: the note never offers `discard_changes`, so Claude Code's
- * own check keeps uncommitted work, and the fallback is the plugin's own finished-worktree
- * check (`cc-smart-dev-kit worktrees --remove`, `src/worktrees/`).
+ * The note that clears the session's own worktree once its pull request merged. Claude Code
+ * checks a worktree under `.claude/worktrees/` itself; one outside it may be refused, and then
+ * the session checks it by hand before `discard_changes`. The fallback is the plugin's own
+ * finished-worktree check (`worktrees --remove`, `src/worktrees/`), which removes the folder
+ * and the branch only when the worktree is finished.
  */
-export function clearWorktreeNote(path: string, branch: string, checked: boolean): string {
-  const exit = checked
-    ? `ExitWorktree with action "remove" and discard_changes true. Claude Code cannot check a worktree outside the repo, so the ${COMMAND} hook does: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.`
-    : `ExitWorktree with action "remove", without discard_changes: no ${COMMAND} hook removes this project's worktrees, so Claude Code's own check is what keeps uncommitted work, and it refuses when there is some.`;
+export function clearWorktreeNote(path: string, branch: string): string {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
-    exit,
-    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" — it removes the folder and the branch only when the worktree is finished.`,
+    insideClaudeWorktrees(path)
+      ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.'
+      : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
+    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`,
   ].join("\n");
 }
 
@@ -1202,9 +1182,7 @@ export function afterMerge(context: HookContext): HookResult {
   });
   const notes: string[] = [];
   if (outcome.clear !== null)
-    notes.push(
-      clearWorktreeNote(outcome.clear.path, outcome.clear.branch, pluginRemovesWorktrees(context)),
-    );
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
     notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
     mkdirSync(join(record, ".."), { recursive: true });

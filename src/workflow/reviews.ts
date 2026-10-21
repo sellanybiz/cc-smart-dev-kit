@@ -65,10 +65,6 @@ export type ReviewRecord = Record<string, ReviewEntry>;
  * another plugin's `reviewer`, or a project agent of that name, never counts for this plugin's
  * `cc-smart-dev-kit:reviewer`. Claude Code reports a plugin agent as `plugin:name` and a
  * project agent by its frontmatter `name` (code.claude.com/docs/en/hooks § SubagentStart).
- *
- * The Agent guard's own review list (`REVIEW_AGENTS` in `src/hooks/agent-guard.ts`) is a
- * different question — which launches may run on Opus without a reason — and it is
- * machine-wide, so it cannot read a project's list.
  */
 export function recordsReview(agent: string, agents: readonly string[]): boolean {
   return agents.some((name) => name === agent);
@@ -113,7 +109,7 @@ function stringList(value: unknown): string[] | null {
 
 /**
  * The record in `file`: `{}` when there is none, or it cannot be read. Never throws. An entry
- * that names no writer — what a plugin before 0.6.0 wrote, `sha: time` — is dropped: it
+ * that names no writer — what a plugin before 1.0.0 wrote, `sha: time` — is dropped: it
  * cannot say which agent wrote it, so it proves no review now.
  */
 export function readReviews(file: string): ReviewRecord {

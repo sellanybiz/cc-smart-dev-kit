@@ -17,16 +17,35 @@ export function removeTempDirs(): void {
 }
 
 /**
- * The environment without any GIT_* variable, so git in a test never reaches a real repo,
- * and without CLAUDE_PROJECT_DIR, so a test run from a Claude Code session never reads that
- * session's project.
+ * Variables a test never inherits from the process that runs it: the Claude session that
+ * started the suite, and the desktop it is on. A hook reads them as facts about the machine (a
+ * background session, an SSH terminal, a desktop), so a suite run from inside Claude Code would
+ * otherwise test another machine than CI. A test that wants one sets it on its own env.
+ */
+const SESSION_VARIABLES: readonly string[] = [
+  "CLAUDECODE",
+  "TERM_PROGRAM",
+  "LC_TERMINAL",
+  "TMUX",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+];
+const SESSION_PREFIXES: readonly string[] = ["ANTHROPIC_", "CLAUDE_", "SSH_", "WARP_"];
+
+/**
+ * The environment without any GIT_* variable, so git in a test never reaches a real repo; and
+ * without the Claude session's own variables (`SESSION_VARIABLES`, `SESSION_PREFIXES`), so a
+ * test run from a session sees the same clean machine as CI. `CLAUDE_PROJECT_DIR` goes with
+ * them: a test run from a session must not read that session's project.
  */
 export function cleanGitEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !key.startsWith("GIT_") && key !== "CLAUDE_PROJECT_DIR") {
-      env[key] = value;
-    }
+    if (value === undefined) continue;
+    if (key.startsWith("GIT_")) continue;
+    if (SESSION_VARIABLES.includes(key)) continue;
+    if (SESSION_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+    env[key] = value;
   }
   return {
     ...env,

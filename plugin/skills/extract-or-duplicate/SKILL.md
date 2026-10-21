@@ -15,9 +15,9 @@ skill is how to apply it.
 ## Search before you write
 
 Before you add a helper, component, constant, type, mapper or hook, look for one that
-already exists: by name, by what it does, and with a language-server symbol search where the
-project has one. If it exists, import it. This is the cheapest half of the skill, and the half
-people skip.
+already exists: by name (`Grep` for it as a whole word), by what it does, and by structure —
+claude-mem's `smart_search` lists the functions and types whose names match (not there, or
+no answer: `Grep` alone). If it exists, import it. This is the cheapest half of the skill, and the half people skip.
 
 ## Extract now, or wait?
 

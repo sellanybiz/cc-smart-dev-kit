@@ -3,9 +3,14 @@
  * Machine-wide (`USER_HOOKS`): it reads no `cc-smart-dev-kit.json`, and its opt-in is the machine.
  *
  * Wired for one handler per event (`plugin/hooks/hooks.json`), so one alert per event:
- *   - `Notification`, matcher `permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input|worker_permission_prompt`
- *     — the moments Claude asks for something. The idle wait (`idle_prompt`) is left out on
- *     purpose: the `Stop` notification already announced that finished turn.
+ *   - `Notification`, matcher `permission_prompt|elicitation_dialog|elicitation_url_dialog|worker_permission_prompt`
+ *     (`PLUGIN_NOTIFY_TYPES`) — the moments a session's own process asks for something. The
+ *     idle wait (`idle_prompt`) is left out on purpose: the `Stop` notification already
+ *     announced that finished turn. Agent view's own `agent_needs_input` and
+ *     `agent_completed` (`AGENT_VIEW_TYPES`) are raised in the list's process, which runs no
+ *     plugin hooks: `cc-smart-dev-kit setup` wires them in the person's user settings
+ *     through `cc-smart-dev-kit hook notify` (`src/setup/user-notify-hook.ts`). The code
+ *     accepts both lists (`NOTIFY_TYPES`), so either wiring gets the same handling.
  *   - `Stop` — the turn ended, with the turn's last answer as the message.
  *   - `PreToolUse` on `AskUserQuestion|ExitPlanMode` — Claude asks a question or shows a
  *     plan. Claude Code raises no `Notification` at that moment, so this covers it.
@@ -48,9 +53,19 @@
  *
  * Inside Warp, Warp's own Claude Code plugin shows the finished turn, the question, the
  * permission prompt and the error itself, so ours stays quiet and plays only the sound
- * (Warp plays none on Linux); a question or an agent waiting may sit in a tab the person is
- * not looking at, so those stay ours (owner, 2026-10-11). Over plain SSH Warp's variables
- * are not forwarded, so the session gets our alert.
+ * (Warp plays none on Linux); a question, an agent waiting or agent view's finished/failed
+ * alert may sit in a tab the person is not looking at (and Warp's plugin has no
+ * `agent_completed`), so those stay ours (owner, 2026-10-11). Over SSH Warp's variables are
+ * not forwarded, so the session gets our alert — in Warp's own agent format when the far end
+ * is Warp (`farEndIsWarp`): Warp shows its popup while it is in front, and a desktop
+ * notification with a sound while it is not (proved live on a Windows PC reached over SSH,
+ * `docs/claude-code-contract.md`). The plain OSC 777 gives a silent Windows notification only.
+ *
+ * A background session (`CLAUDE_JOB_DIR`, `background-session.ts`) shows no alert of its own:
+ * it inherits the daemon's display and terminal variables, so its alerts would go to the wrong
+ * place. Agent view alerts for it while the list is open (`agent_needs_input`,
+ * `agent_completed`), and those alerts carry no session name of their own: the hook input is
+ * the list's, not the background session's.
  *
  * **The workflow's alert settings** are read too (`alertsAt`, once per run, at the folder the
  * session is in): `alerts.events` says which of the four moments alert at all — a moment left
@@ -73,6 +88,7 @@ import { notifyCommand } from "../update/apply";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
 import type { AlertEvent } from "../workflow/schema";
 import { type SoundName, soundArgv } from "./alert-sound";
+import { inBackgroundSession } from "./background-session";
 import {
   canWaitForClick,
   desktopTools,
@@ -83,25 +99,36 @@ import {
 } from "./desktop-alert";
 import { startDetached } from "./detached";
 import { type HookResult, SILENT } from "./io";
+import { AGENT_VIEW_TYPES, NOTIFY_TYPES } from "./notify-types";
 import type { Env } from "./run";
 import { cleanSessionName } from "./session-name";
 import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
 
-/** The notification types that mean "Claude needs you", the ones `hooks.json` matches. */
-export const NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "agent_needs_input",
-  "worker_permission_prompt",
-] as const;
+/**
+ * The types and the two matchers live in `notify-types.ts`, which imports nothing: this
+ * module reaches `cli/setup` through `src/workflow/`, which imports the managed user hook,
+ * so a constant defined here would sit in an import cycle. Re-exported here because the
+ * hook's own code, its tests and `doctor` read them from this module.
+ */
+export {
+  AGENT_VIEW_MATCHER,
+  AGENT_VIEW_TYPES,
+  NOTIFY_MATCHER,
+  NOTIFY_TYPES,
+  PLUGIN_NOTIFY_TYPES,
+} from "./notify-types";
 
 /** The tools that mean "Claude asks you something", the ones `hooks.json` matches. */
 export const ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
 
+/** What agent view's `agent_completed` says when its message is not usable. */
+const AGENT_FINISHED_BODY = "A background session finished.";
+const AGENT_FAILED_BODY = "A background session failed.";
+
 /** What each notification type says when Claude Code's message is not usable. */
 const TYPE_BODY: Readonly<Record<string, string>> = {
+  agent_completed: AGENT_FINISHED_BODY,
   agent_needs_input: "A background agent is waiting for you.",
   elicitation_dialog: "Claude asks you for input.",
   elicitation_url_dialog: "Claude asks you to open a page.",
@@ -129,6 +156,8 @@ export interface Alert {
   body: string;
   /** The desktop keeps this one on screen, and its own Do Not Disturb does not hide it. */
   critical: boolean;
+  /** The moment it is, for `workflow.alerts.events`: `alertFor` sets it with the words. */
+  moment: AlertEvent;
   title: string;
   /** The sound the desktop route plays for it; null: none. */
   sound: null | SoundName;
@@ -151,6 +180,13 @@ export const TERMINAL_SEQUENCE_EVENTS: readonly string[] = ["Notification", "Pre
 
 /** Warp's own Claude Code plugin: its id, and the check its scripts make for the terminal. */
 export const WARP_PLUGIN_ID = "warp@claude-code-warp";
+
+/** Warp's agent alert: the address after OSC 777's `notify`, and the protocol version it carries. */
+export const WARP_AGENT_TITLE = "warp://cli-agent";
+export const WARP_AGENT_PROTOCOL = 1;
+
+/** The name Warp gives itself: in `TERM_PROGRAM` in a Warp tab, and in `LC_TERMINAL` as a client sends it over ssh. */
+const WARP_TERMINAL_NAME = "warpterminal";
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -218,7 +254,7 @@ export function isSsh(env: Env): boolean {
  * background session keeps those but loses `TERM_PROGRAM`).
  */
 export function isWarpTerminal(env: Env): boolean {
-  if ((env.TERM_PROGRAM ?? "").toLowerCase() === "warpterminal") return true;
+  if ((env.TERM_PROGRAM ?? "").toLowerCase() === WARP_TERMINAL_NAME) return true;
   return (
     (env.WARP_CLI_AGENT_PROTOCOL_VERSION ?? "") !== "" && (env.WARP_CLIENT_VERSION ?? "") !== ""
   );
@@ -253,12 +289,78 @@ export function warpPluginOn(claudeConfigDir: string): boolean {
  * True when Warp's own plugin shows this alert itself: its hooks cover the finished turn, the
  * question, the plan, the permission prompt and the error. A question from another session or
  * a background agent waiting may sit in a tab the person is not looking at, and Warp shows
- * those only in its own window, so they stay ours (owner, 2026-10-11).
+ * those only in its own window, so they stay ours (owner, 2026-10-11). Agent view's finished
+ * or failed alert is ours too: Warp's plugin has no `agent_completed`.
  */
 export function warpShowsIt(event: string, input: Record<string, unknown>): boolean {
   if (event !== "Notification") return true;
   const type = typeof input.notification_type === "string" ? input.notification_type : "";
-  return !(type.startsWith("elicitation") || type === "agent_needs_input");
+  return !(
+    type.startsWith("elicitation") || (AGENT_VIEW_TYPES as readonly string[]).includes(type)
+  );
+}
+
+/**
+ * The event Warp's agent format carries for this alert. One mapping: `warpAgentSequence` uses
+ * it. **Never `agent_needs_input`**: Warp showed only a tab badge for it and no popup, while
+ * `permission_request` showed the popup (proved live on Windows Warp, 2026-10-19), so every
+ * wait and question goes as `permission_request`.
+ */
+export function warpEventOf(alert: Alert): string {
+  if (alert.moment === "finished") return "stop";
+  if (alert.moment === "failed") return "stop_failure";
+  return "permission_request";
+}
+
+/**
+ * The alert in Warp's own agent format, for a session whose far end is Warp: OSC 777 with
+ * `warp://cli-agent` and a JSON object — `{v, agent, event, session_id, cwd, project}`, then
+ * the event's own fields: `response` for a stop, `response` and, only when the input names a
+ * real error, `error_type`, for a failure, `summary` for a wait or a question. Every wait and
+ * question carries `permission_request`: the event Warp showed a popup for, where
+ * `agent_needs_input` gave only a tab badge (proved live 2026-10-19, `warpEventOf`). Warp
+ * shows its popup while it is in front, and a desktop notification with a sound while it is
+ * not (proved live over SSH from a pane without Warp's shell integration, `docs/claude-code-contract.md`). The body
+ * is already one line without control characters (`shown`), and `JSON.stringify` escapes what
+ * is left.
+ */
+export function warpAgentSequence(alert: Alert, input: Record<string, unknown>): string {
+  const cwd = typeof input.cwd === "string" ? input.cwd : "";
+  const event = warpEventOf(alert);
+  const payload: Record<string, unknown> = {
+    v: WARP_AGENT_PROTOCOL,
+    agent: "claude",
+    event,
+    session_id: typeof input.session_id === "string" ? input.session_id : "",
+    cwd,
+    project: cwd === "" ? "" : basename(cwd),
+  };
+  if (event === "stop" || event === "stop_failure") payload.response = alert.body;
+  else payload.summary = alert.body;
+  // Warp shows `error_type` as a prefix of the text ("unknown: …"), so it carries only a real
+  // StopFailure reason: an `agent_completed` failure names none, and "unknown" would show.
+  if (event === "stop_failure" && typeof input.error === "string" && input.error !== "") {
+    payload.error_type = input.error;
+  }
+  return `\u001b]777;notify;${WARP_AGENT_TITLE};${JSON.stringify(payload)}\u0007`;
+}
+
+/**
+ * True when the terminal at the far end of an SSH session is Warp. The session's own
+ * environment says so when it can: Warp in this session (`isWarpTerminal`); a terminal that
+ * names itself in `TERM_PROGRAM` (VS Code says `vscode`) — tmux's own `tmux` says nothing
+ * about the far end, so it decides nothing; or `LC_TERMINAL`, which an SSH client sends with
+ * `SetEnv` and the server's sshd lets through with its usual `AcceptEnv LANG LC_*` (the
+ * convention iTerm2 uses too, so only `WarpTerminal` counts). With none of them, the person's
+ * own fallback setting decides (`notify.json`'s `sshWarp`).
+ */
+export function farEndIsWarp(env: Env, config: NotifyConfig): boolean {
+  if (isWarpTerminal(env)) return true;
+  const program = env.TERM_PROGRAM ?? "";
+  if (program !== "" && program.toLowerCase() !== "tmux") return false;
+  const client = env.LC_TERMINAL ?? "";
+  if (client !== "") return client.toLowerCase() === WARP_TERMINAL_NAME;
+  return config.sshWarp;
 }
 
 /** The session's name for the alert's title: its own name, else its folder. */
@@ -300,6 +402,7 @@ function askAlert(input: Record<string, unknown>, ctx: AlertContext): Alert {
     return {
       body: "A plan is ready for your OK",
       critical: true,
+      moment: "question",
       sound: "service-login",
       title: titled("Claude asks you", ctx.label),
     };
@@ -313,6 +416,7 @@ function askAlert(input: Record<string, unknown>, ctx: AlertContext): Alert {
   return {
     body: shown(asked, "Claude has a question for you"),
     critical: true,
+    moment: "question",
     sound: "service-login",
     title: titled("Claude asks you", ctx.label),
   };
@@ -348,6 +452,7 @@ export function alertFor(
       return {
         body: shown(text, "The turn ended with an error"),
         critical: true,
+        moment: "failed",
         sound: "dialog-warning",
         title: titled("Claude stopped", ctx.label),
       };
@@ -363,6 +468,7 @@ export function alertFor(
       return {
         body: shown(answer ?? "", "Claude finished its turn."),
         critical: false,
+        moment: "finished",
         sound: "service-logout",
         title: titled("Claude finished", ctx.label),
       };
@@ -374,13 +480,28 @@ export function alertFor(
     case "Notification": {
       const type = typeof input.notification_type === "string" ? input.notification_type : "";
       if (!(NOTIFY_TYPES as readonly string[]).includes(type)) return null;
-      if (markedWaiting(ctx.mark, ctx.nowMs)) return null;
+      const agentView = (AGENT_VIEW_TYPES as readonly string[]).includes(type);
+      // Agent view raises these in the list's own process, with the list's session and
+      // folder: the per-session question mark is not about them.
+      if (!agentView && markedWaiting(ctx.mark, ctx.nowMs)) return null;
       const message = typeof input.message === "string" ? input.message : "";
+      if (type === "agent_completed") {
+        // The list says which it was in one word: "<label> finished" or "<label> failed".
+        const failed = message.endsWith(" failed");
+        return {
+          body: shown(message, failed ? AGENT_FAILED_BODY : AGENT_FINISHED_BODY),
+          critical: failed,
+          moment: failed ? "failed" : "finished",
+          sound: failed ? "dialog-warning" : "service-logout",
+          title: titled(failed ? "Claude stopped" : "Claude finished", null),
+        };
+      }
       return {
         body: shown(message, TYPE_BODY[type] ?? "Claude needs you."),
         critical: true,
+        moment: "needs-you",
         sound: "service-login",
-        title: titled("Claude needs you", ctx.label),
+        title: titled("Claude needs you", agentView ? null : ctx.label),
       };
     }
     default:
@@ -415,7 +536,7 @@ function writeFailed(file: string, key: string): void {
 }
 
 /** How the sequence reaches the session's terminal. */
-export type TerminalRoute = "field" | "field-if-no-tty" | "tty";
+export type TerminalRoute = "device-then-field" | "field" | "field-if-no-tty" | "tty";
 
 /**
  * How this event's alert should reach the terminal:
@@ -432,9 +553,21 @@ export type TerminalRoute = "field" | "field-if-no-tty" | "tty";
  *     controlling terminal (`writeSessionTerminal`; only one of the two is ever written to).
  *     Both are POSIX devices and neither exists on Windows (`ttyDevice`), so there this route
  *     writes nothing: the desktop toast is the alert's way out (docs/windows-notify.md).
+ *   - `device-then-field`: agent view's own alerts (`AGENT_VIEW_TYPES`). They come from the
+ *     list (`claude agents`), which reads the field but never writes it out — only a session's
+ *     conversation view sets up that writer (2.1.302, docs/claude-code-contract.md) — so the
+ *     devices come first, as for `tty`: the list's own pty is where its alert lands
+ *     (`CLAUDE_PID` is the list's pid). With no device (a host without `/proc`), the field
+ *     still carries the alert a session's own `agent_needs_input` raises. One write either way.
  */
-export function terminalRoute(event: string, env: Env): TerminalRoute {
+export function terminalRoute(event: string, env: Env, notificationType = ""): TerminalRoute {
   if (!TERMINAL_SEQUENCE_EVENTS.includes(event)) return "tty";
+  if (
+    event === "Notification" &&
+    (AGENT_VIEW_TYPES as readonly string[]).includes(notificationType)
+  ) {
+    return "device-then-field";
+  }
   const raw = env.CLAUDE_CODE_VERSION;
   if (raw === undefined || raw === "") return "field-if-no-tty";
   return versionAtLeast(raw, TERMINAL_SEQUENCE_MIN_VERSION) ? "field" : "tty";
@@ -492,10 +625,20 @@ export interface NotifyConfig {
   desktopSound: boolean;
   /** Send a terminal bell after an SSH alert. Default: off — the alert itself is the signal. */
   sshBell: boolean;
+  /**
+   * The fallback for an SSH session whose far end names no terminal: treat it as Warp and
+   * send Warp's agent format. Default: off. `LC_TERMINAL=WarpTerminal` decides by itself,
+   * so this is only for a server whose sshd does not forward it.
+   */
+  sshWarp: boolean;
 }
 
 /** Every setting's default; a file that is missing, broken or holds another kind keeps them. */
-export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = { desktopSound: true, sshBell: false };
+export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = {
+  desktopSound: true,
+  sshBell: false,
+  sshWarp: false,
+};
 
 /** The settings from `file`: a broken or missing file, and every other value, means the defaults. */
 export function readNotifyConfig(file: string): NotifyConfig {
@@ -511,6 +654,7 @@ export function readNotifyConfig(file: string): NotifyConfig {
   return {
     desktopSound: typeof parsed.desktopSound === "boolean" ? parsed.desktopSound : true,
     sshBell: parsed.sshBell === true,
+    sshWarp: parsed.sshWarp === true,
   };
 }
 
@@ -562,6 +706,17 @@ export interface NotifyDeps {
    * Claude Code whose hook has no controlling terminal (`/dev/tty` fails with ENXIO there).
    */
   writeSessionTerminal: (sequence: string) => boolean;
+}
+
+/**
+ * The one-alert-per-session key of agent view's alert: the list's session plus the background
+ * session the message names ("<label> needs your input…", "<label> finished" or "<label>
+ * failed"), so one background session's alert never closes another's on the desktop, while a
+ * session's "finished" still replaces its own "needs your input".
+ */
+export function agentViewKey(session: string, message: string): string {
+  const named = message.replace(/ (?:needs your input(?:: [\s\S]*)?|finished|failed)$/, "");
+  return `${session}-${Bun.hash(named).toString(36)}`;
 }
 
 /**
@@ -641,18 +796,6 @@ function playSound(
 }
 
 /**
- * The alert moment a hook event is, for `alerts.events`. Only the events `alertFor` accepts
- * reach this, so it maps by the event alone — which notification types and which tools count
- * is decided in one place (`alertFor`, and `hooks.json`).
- */
-export const ALERT_EVENT_OF: Readonly<Record<string, AlertEvent>> = {
-  Notification: "needs-you",
-  PreToolUse: "question",
-  Stop: "finished",
-  StopFailure: "failed",
-};
-
-/**
  * The hook's work: show the alert for this event, or stay quiet. At most one alert per
  * event. Anything that goes wrong is one short line on stderr (the entry), and the session
  * goes on.
@@ -664,6 +807,10 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   // ("cli" in a terminal, "sdk-cli" in `claude -p`, where nobody watches a terminal), and a
   // missing one counts as the terminal rather than silencing every alert.
   if ((deps.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli") return SILENT;
+  // A background session shows no alert of its own: it inherits the daemon's display and
+  // terminal variables, so its alerts would go to the wrong place. Agent view alerts for it
+  // while the list is open (`background-session.ts`).
+  if (inBackgroundSession(deps.env)) return SILENT;
 
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
@@ -705,8 +852,7 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   // alert, and whether a sound goes with them. Read only here, where there is an alert to
   // show; a file that cannot be read keeps today's behaviour and says so on stderr.
   const here = alertsAt(deps.paths, cwd, deps.env);
-  const kind = ALERT_EVENT_OF[event];
-  if (kind !== undefined && !here.alerts.events.value.includes(kind)) {
+  if (!here.alerts.events.value.includes(alert.moment)) {
     // The person asked for no alert at this moment. The mark written above goes with it: a
     // question with no alert must not hide the permission prompt that follows it, which is
     // the same wait and may be a moment the person does want to hear about.
@@ -715,7 +861,13 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   }
 
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
-  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, session));
+  const type = typeof input.notification_type === "string" ? input.notification_type : "";
+  const agentView =
+    event === "Notification" && (AGENT_VIEW_TYPES as readonly string[]).includes(type);
+  const desktopKey = agentView
+    ? agentViewKey(session, typeof input.message === "string" ? input.message : "")
+    : session;
+  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, desktopKey));
   if (isWarpTerminal(deps.env) && warpPluginOn(deps.paths.claudeConfigDir)) {
     if (warpShowsIt(event, input)) {
       // Warp's own plugin shows this one itself, in its window while it is in front and as
@@ -734,24 +886,35 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   }
 
   if (!isSsh(deps.env)) return withProblem(SILENT, here.problem);
-  // The same alert, into the terminal the person is looking at, as OSC 777. The field
-  // carries the bare sequence: Claude Code writes it out, and wraps it for tmux itself.
-  const sequence =
-    config.sshBell || here.alerts.sound.value
-      ? `${notifySequence(alert.title, alert.body)}\u0007`
-      : notifySequence(alert.title, alert.body);
-  const route = terminalRoute(event, deps.env);
+  // The same alert, into the terminal the person is looking at. With Warp at the far end it
+  // goes in Warp's own agent format: Warp shows its popup while it is in front, and a desktop
+  // notification with a sound while it is not — it decides the sound itself, so no extra BEL
+  // goes with it. Every other far end gets OSC 777, with the bell when a setting asks for one.
+  // The field carries the bare sequence: Claude Code writes it out, and wraps it for tmux
+  // itself.
+  let sequence: string;
+  if (farEndIsWarp(deps.env, config)) {
+    sequence = warpAgentSequence(alert, input);
+  } else {
+    const plain = notifySequence(alert.title, alert.body);
+    sequence = config.sshBell || here.alerts.sound.value ? `${plain}\u0007` : plain;
+  }
+  const route = terminalRoute(event, deps.env, type);
   if (route === "field") return withProblem(fieldAnswer(sequence), here.problem);
   const onTty = forTty(sequence, deps.env);
-  if (route === "tty") {
-    // This event's answer is not read (StopFailure), or the Claude Code is too old for the
-    // field: `/dev/tty` first — the route an older Claude Code needs, wrapped for tmux here
-    // — and, when the hook has no controlling terminal (2.1.301: ENXIO), the session's own
-    // terminal device, which is the pty Claude Code runs on (`writeSessionTerminal`).
-    // Never both: one alert.
+  if (route === "tty" || route === "device-then-field") {
+    // This event's answer is not read (StopFailure), the Claude Code is too old for the
+    // field, or the alert is agent view's (the list never writes the field out): `/dev/tty`
+    // first — the route an older Claude Code needs, wrapped for tmux here — and, when the
+    // hook has no controlling terminal (2.1.301: ENXIO), the session's own terminal device,
+    // which is the pty Claude Code runs on (`writeSessionTerminal`). Never both: one alert.
     if (deps.writeTerminal(onTty)) return withProblem(SILENT, here.problem);
-    deps.writeSessionTerminal(onTty);
-    return withProblem(SILENT, here.problem);
+    if (deps.writeSessionTerminal(onTty)) return withProblem(SILENT, here.problem);
+    // No device at all: agent view's type takes the field, which a session's own
+    // `agent_needs_input` still has written out.
+    return route === "device-then-field"
+      ? withProblem(fieldAnswer(sequence), here.problem)
+      : withProblem(SILENT, here.problem);
   }
   // The version is not known: /dev/tty, or the field when the hook has no terminal at all.
   return deps.writeTerminal(onTty)

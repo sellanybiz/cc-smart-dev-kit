@@ -1,4 +1,4 @@
-/** `project init`: the plan it makes, and the two files `applyProjectInit` writes. */
+/** `project init`: the plan it makes, and the file `applyProjectInit` writes. */
 import { describe, expect, test } from "bun:test";
 import {
   existsSync,
@@ -21,23 +21,27 @@ import {
 
 /** The minor this build's `requires` asks for, written by hand from the built-in version. */
 const THIS_MINOR = `>=${VERSION.split(".").slice(0, 2).join(".")}`;
+/** The first plugin version that accepts `worktrees` without a prefix, written by hand. */
+const NO_PREFIX_MINOR = ">=0.5.2";
 
 const ANSWERS: ProjectInitAnswers = {
   base: "dev",
-  prefix: "app-wt-",
-  setup: ["bun", "install"],
   bases: { "hotfix/": "main", "release/": "main" },
   protectedBranches: ["main", "dev"],
   guards: { guardMainFolder: true, sessionNames: true, jobRoute: false },
-  engine: "plugin",
   workflow: {},
 };
+
+/** The base (`dev`) is not the repo's default branch, so the settings file gets this line. */
+const BASE_REF_NOTE =
+  'base dev is not the repo\'s default branch main: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on';
 
 function input(overrides: Partial<ProjectInitInput> = {}): ProjectInitInput {
   return {
     root: tempDir("project-init"),
     existing: null,
     existingSettings: null,
+    defaultBranch: "main",
     answers: ANSWERS,
     ...overrides,
   };
@@ -48,7 +52,7 @@ function fileOf(root: string): string {
 }
 
 describe("planProjectInit", () => {
-  test("a fresh project: the file, every change, and the engine's three lines", () => {
+  test("a fresh project: no prefix, so requires names 0.5.2, and the baseRef line", () => {
     const root = tempDir("project-init");
     const plan = planProjectInit(input({ root }));
     expect(plan.file).toBe(fileOf(root));
@@ -56,20 +60,14 @@ describe("planProjectInit", () => {
     expect(plan.text).toBe(
       [
         "{",
-        `  "requires": "${THIS_MINOR}",`,
+        `  "requires": "${NO_PREFIX_MINOR}",`,
         '  "worktrees": {',
         '    "base": "dev",',
-        '    "prefix": "app-wt-",',
-        '    "setup": [',
-        '      "bun",',
-        '      "install"',
-        "    ],",
         '    "guardMainFolder": true,',
         '    "bases": {',
         '      "hotfix/": "main",',
         '      "release/": "main"',
-        "    },",
-        '    "engine": "plugin"',
+        "    }",
         "  },",
         '  "protectedBranches": [',
         '    "main",',
@@ -82,61 +80,85 @@ describe("planProjectInit", () => {
     );
     expect(plan.diff).toEqual([
       `+ protectedBranches: ["main","dev"]`,
-      `+ requires: "${THIS_MINOR}"`,
+      `+ requires: "${NO_PREFIX_MINOR}"`,
       `+ sessionNames: true`,
       `+ worktrees.base: "dev"`,
       `+ worktrees.bases.hotfix/: "main"`,
       `+ worktrees.bases.release/: "main"`,
-      `+ worktrees.engine: "plugin"`,
       `+ worktrees.guardMainFolder: true`,
-      `+ worktrees.prefix: "app-wt-"`,
-      `+ worktrees.setup: ["bun","install"]`,
     ]);
+    expect(plan.notes).toEqual([BASE_REF_NOTE]);
     expect(plan.settingsFile).toBe(join(root, ".claude", "settings.json"));
     expect(plan.settingsChanged).toBe(true);
-    expect(plan.hookLines).toEqual([
-      'WorktreeCreate: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create (timeout 600 s)',
-      'WorktreeRemove: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-remove (timeout 60 s)',
-      'SubagentStop: "$HOME/.local/bin/cc-smart-dev-kit" hook subagent-stop (timeout 60 s)',
-    ]);
-    expect(JSON.parse(plan.settingsText)).toEqual({
-      hooks: {
-        WorktreeCreate: [
-          {
-            hooks: [
-              {
-                type: "command",
-                command: '"$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create',
-                timeout: 600,
-              },
-            ],
-          },
-        ],
-        WorktreeRemove: [
-          {
-            hooks: [
-              {
-                type: "command",
-                command: '"$HOME/.local/bin/cc-smart-dev-kit" hook worktree-remove',
-                timeout: 60,
-              },
-            ],
-          },
-        ],
-        SubagentStop: [
-          {
-            hooks: [
-              {
-                type: "command",
-                command: '"$HOME/.local/bin/cc-smart-dev-kit" hook subagent-stop',
-                timeout: 60,
-              },
-            ],
-          },
-        ],
-      },
-    });
+    expect(plan.settingsAdds).toEqual(['worktree.baseRef: "head"']);
+    expect(plan.settingsText).toBe(
+      ["{", '  "worktree": {', '    "baseRef": "head"', "  }", "}", ""].join("\n"),
+    );
+  });
+
+  test("the default branch as the base needs no settings line at all", () => {
+    const plan = planProjectInit(input({ answers: { ...ANSWERS, base: "main" } }));
+    expect(plan.settingsChanged).toBe(false);
+    expect(plan.settingsAdds).toEqual([]);
     expect(plan.notes).toEqual([]);
+  });
+
+  test("no prefix needs at least 0.5.2; a kept prefix keeps the plugin's minor", () => {
+    // A 0.5.0/0.5.1 plugin still requires `worktrees.prefix`: a file written without one
+    // must ask for the version that made it optional, or every guard asks there. The file's
+    // own range is an older minor's, written by hand: it must not depend on this plugin's.
+    const noPrefix = planProjectInit(
+      input({ existing: `{"requires": ">=0.5", "worktrees": {"base": "dev"}}\n` }),
+    );
+    expect(noPrefix.text).toContain(`"requires": "${NO_PREFIX_MINOR}"`);
+    const withPrefix = planProjectInit(
+      input({
+        existing: `{"requires": ">=0.1", "worktrees": {"base": "dev", "prefix": "app-wt-"}}\n`,
+      }),
+    );
+    expect(withPrefix.text).toContain(`"requires": "${THIS_MINOR}"`);
+    // A file that already needs a newer plugin keeps its range, prefix or not.
+    expect(planProjectInit(input({ existing: '{"requires": ">=0.6"}' })).text).toContain(
+      '"requires": ">=0.6"',
+    );
+    expect(planProjectInit(input({ existing: '{"requires": ">=0.5.3"}' })).text).toContain(
+      '"requires": ">=0.5.3"',
+    );
+    expect(
+      planProjectInit(
+        input({
+          existing: '{"requires": ">=0.6", "worktrees": {"base": "dev", "prefix": "app-wt-"}}\n',
+        }),
+      ).text,
+    ).toContain('"requires": ">=0.6"');
+  });
+
+  test("a file with the engine's fields, its answers unchanged and this minor's range: not rewritten", () => {
+    // Its range is this plugin's own minor: an older one is raised to it (the test above), so a
+    // hand-written ">=0.5" would stop being "unchanged" at every minor release.
+    const root = tempDir("project-init");
+    const existing = `${JSON.stringify(
+      {
+        requires: THIS_MINOR,
+        worktrees: {
+          base: "dev",
+          prefix: "app-wt-",
+          setup: ["bun", "install"],
+          guardMainFolder: true,
+          bases: { "hotfix/": "main", "release/": "main" },
+          engine: "plugin",
+        },
+        protectedBranches: ["main", "dev"],
+        sessionNames: true,
+      },
+      null,
+      4,
+    )}\n`;
+    const settings = `${JSON.stringify({ worktree: { baseRef: "head" } }, null, 2)}\n`;
+    const plan = planProjectInit(input({ root, existing, existingSettings: settings }));
+    expect(plan.changed).toBe(false);
+    expect(plan.diff).toEqual([]);
+    expect(plan.settingsChanged).toBe(false);
   });
 
   test("an existing file keeps every field, its indentation, and what the answers do not touch", () => {
@@ -158,10 +180,12 @@ describe("planProjectInit", () => {
     expect(written.ownHooks).toEqual(["git-guard"]);
     expect(written.instructions).toBe(true);
     expect(written.requires).toBe(THIS_MINOR);
+    // The deprecated engine fields the file already has stay exactly as they are: the project
+    // keeps working until the engine retires, and `doctor` names the move.
     expect(written.worktrees).toEqual({
       base: "dev",
       prefix: "app-wt-",
-      setup: ["bun", "install"],
+      setup: ["npm", "ci"],
       guardMainFolder: true,
       bases: { "hotfix/": "main", "release/": "main" },
       engine: "plugin",
@@ -176,11 +200,14 @@ describe("planProjectInit", () => {
       `+ worktrees.bases.hotfix/: "main"`,
       `+ worktrees.bases.release/: "main"`,
       `+ worktrees.guardMainFolder: true`,
-      `~ worktrees.setup: ["npm","ci"] -> ["bun","install"]`,
+    ]);
+    expect(plan.notes).toEqual([
+      BASE_REF_NOTE,
+      "the project's file still sets worktrees.prefix, worktrees.setup, worktrees.engine: the worktree engine is deprecated and retires in the next minor version; `cc-smart-dev-kit doctor` names the steps to move",
     ]);
   });
 
-  test("a field the answers leave out is taken out: no setup, no guard", () => {
+  test("a field the answers leave out is taken out: no guard, no session names", () => {
     const root = tempDir("project-init");
     const existing = `${JSON.stringify({
       worktrees: {
@@ -198,7 +225,6 @@ describe("planProjectInit", () => {
         existing,
         answers: {
           ...ANSWERS,
-          setup: null,
           bases: {},
           protectedBranches: [],
           guards: { guardMainFolder: false, sessionNames: false, jobRoute: false },
@@ -206,15 +232,22 @@ describe("planProjectInit", () => {
       }),
     );
     const written = JSON.parse(plan.text) as Record<string, unknown>;
-    expect(written.worktrees).toEqual({ base: "dev", prefix: "app-wt-", engine: "plugin" });
+    // What the answers manage goes; the deprecated fields stay as they were.
+    expect(written.worktrees).toEqual({
+      base: "dev",
+      prefix: "app-wt-",
+      setup: ["bun", "install"],
+    });
     expect(written).not.toHaveProperty("sessionNames");
     expect(written).not.toHaveProperty("protectedBranches");
     expect(written).not.toHaveProperty("jobs");
     expect(plan.diff).toContain("- jobs.route: true");
     expect(plan.diff).toContain("- sessionNames: true");
     expect(plan.diff).toContain("- worktrees.guardMainFolder: true");
-    expect(plan.diff).toContain('- worktrees.setup: ["bun","install"]');
-    expect(plan.notes).toEqual(["no setup command: a new worktree gets no dependencies installed"]);
+    expect(plan.notes).toEqual([
+      BASE_REF_NOTE,
+      "the project's file still sets worktrees.prefix, worktrees.setup: the worktree engine is deprecated and retires in the next minor version; `cc-smart-dev-kit doctor` names the steps to move",
+    ]);
   });
 
   test("the job queue is a project field, and the other kinds stay", () => {
@@ -232,98 +265,7 @@ describe("planProjectInit", () => {
     });
   });
 
-  test("an engine of the project's own: no hook lines, and a note saying so", () => {
-    const root = tempDir("project-init");
-    const settings =
-      '{\n  "hooks": { "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "./mine" }] }] }\n}\n';
-    const plan = planProjectInit(
-      input({ root, existingSettings: settings, answers: { ...ANSWERS, engine: "own" } }),
-    );
-    expect(plan.settingsChanged).toBe(false);
-    expect(plan.hookLines).toEqual([]);
-    // Nothing is written, so the settings file keeps its own text; the plan's copy is only shown.
-    expect(JSON.parse(plan.settingsText)).toEqual(JSON.parse(settings));
-    expect(plan.notes).toEqual([
-      'engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json — your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none',
-    ]);
-    expect((JSON.parse(plan.text) as { worktrees: { engine: string } }).worktrees.engine).toBe(
-      "own",
-    );
-  });
-
-  test("plugin, then an engine of the project's own: the plugin's lines are taken back out", () => {
-    const root = tempDir("project-init");
-    const settingsFile = join(root, ".claude", "settings.json");
-    // What an earlier `project init` left behind: the engine's three lines, beside a hook the
-    // project wired itself.
-    const first = planProjectInit(input({ root }));
-    const afterFirst = planProjectInit(
-      input({ root, existingSettings: first.settingsText }),
-    ).settingsText;
-    const withTheirOwn = `${JSON.stringify(
-      { ...JSON.parse(afterFirst), theirHook: { kept: true } },
-      null,
-      2,
-    )}\n`;
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(settingsFile, withTheirOwn);
-
-    // The person switches to an engine of the project's own.
-    const own = planProjectInit(
-      input({ root, existingSettings: withTheirOwn, answers: { ...ANSWERS, engine: "own" } }),
-    );
-    // The command exactly as the file wires it, timeout and all: the same shape the added
-    // lines are reported in.
-    expect(own.removedLines).toEqual([
-      'WorktreeCreate: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create (timeout 600 s)',
-      'WorktreeRemove: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-remove (timeout 60 s)',
-      'SubagentStop: "$HOME/.local/bin/cc-smart-dev-kit" hook subagent-stop (timeout 60 s)',
-    ]);
-    expect(own.hookLines).toEqual([]);
-    expect(own.settingsChanged).toBe(true);
-    // Their own key, and every hook the project wired for itself, are left exactly as they
-    // were: only a group that is entirely ours goes.
-    const written = JSON.parse(own.settingsText) as Record<string, unknown>;
-    expect(written.theirHook).toEqual({ kept: true });
-    expect(own.settingsText).not.toContain("cc-smart-dev-kit hook");
-    expect(own.notes[0]).toContain("two engines answer each worktree request");
-
-    // And back to the plugin's engine: the three lines are added again, in full.
-    const back = planProjectInit(
-      input({ root, existingSettings: own.settingsText, answers: { ...ANSWERS } }),
-    );
-    expect(back.hookLines.length).toBe(3);
-    expect(back.removedLines).toEqual([]);
-    expect(back.settingsChanged).toBe(true);
-    expect(back.settingsText).toContain("hook worktree-create");
-    expect(back.settingsText).toContain('"theirHook"');
-  });
-
-  test("a project's own hooks in the settings file stay, and ours is added after them", () => {
-    const root = tempDir("project-init");
-    const settings = `${JSON.stringify(
-      {
-        hooks: {
-          WorktreeCreate: [{ hooks: [{ type: "command", command: "./make-worktree.sh" }] }],
-          PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh" }] }],
-        },
-      },
-      null,
-      2,
-    )}\n`;
-    const plan = planProjectInit(input({ root, existingSettings: settings }));
-    const merged = JSON.parse(plan.settingsText) as {
-      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-    };
-    expect(merged.hooks.WorktreeCreate?.[0]?.hooks[0]?.command).toBe("./make-worktree.sh");
-    expect(merged.hooks.WorktreeCreate?.[1]?.hooks[0]?.command).toBe(
-      '"$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create',
-    );
-    expect(merged.hooks.PreToolUse?.[0]?.hooks[0]?.command).toBe("./guard.sh");
-    expect(plan.hookLines).toHaveLength(3);
-  });
-
-  test("a project that already wires the engine adds nothing", () => {
+  test("a project that is already set up adds nothing", () => {
     const root = tempDir("project-init");
     const first = planProjectInit(input({ root }));
     const plan = planProjectInit(
@@ -350,7 +292,7 @@ describe("requiresFor", () => {
 });
 
 describe("applyProjectInit", () => {
-  test("it writes both files, with a backup of each", () => {
+  test("it writes the file, with a backup", () => {
     const root = tempDir("project-init");
     const stateDir = tempDir("project-init-state");
     const plan = planProjectInit(input({ root }));
@@ -380,23 +322,23 @@ describe("applyProjectInit", () => {
   });
 
   test("a symlinked project file keeps its link: the target gets the change", () => {
-    // A `.claude/settings.json` linked into a dotfiles repo is a person's own file: an atomic
-    // write straight at the link would replace it with a plain file, and the link would be
-    // gone (the managed writers follow the link; these two did not).
+    // A `.claude/cc-smart-dev-kit.json` linked into a dotfiles repo is a person's own file: an
+    // atomic write straight at the link would replace it with a plain file, and the link would
+    // be gone (the managed writers follow the link; this one did too little at first).
     const root = tempDir("project-init");
-    const target = join(tempDir("dotfiles"), "settings.json");
+    const target = join(tempDir("dotfiles"), "cc-smart-dev-kit.json");
     writeFileSync(target, "{}\n");
     mkdirSync(join(root, ".claude"), { recursive: true });
-    const settingsFile = join(root, ".claude", "settings.json");
-    symlinkSync(target, settingsFile);
+    const file = fileOf(root);
+    symlinkSync(target, file);
 
-    const plan = planProjectInit(input({ root, existingSettings: "{}\n" }));
-    expect(plan.settingsChanged).toBe(true);
+    const plan = planProjectInit(input({ root, existing: "{}\n" }));
+    expect(plan.changed).toBe(true);
     const writes = applyProjectInit(plan, { stateDir: tempDir("project-init-state") });
-    expect(writes.some((write) => write.file === settingsFile)).toBe(true);
+    expect(writes.some((write) => write.file === file)).toBe(true);
 
-    expect(lstatSync(settingsFile).isSymbolicLink()).toBe(true);
-    expect(readFileSync(target, "utf8")).toBe(plan.settingsText);
+    expect(lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe(plan.text);
   });
 
   test("a dry run writes nothing", () => {
@@ -409,7 +351,6 @@ describe("applyProjectInit", () => {
       { file: plan.settingsFile, created: true, backup: null },
     ]);
     expect(existsSync(plan.file)).toBe(false);
-    expect(existsSync(plan.settingsFile)).toBe(false);
   });
 
   test("an existing file's own mode stays", () => {
@@ -417,12 +358,11 @@ describe("applyProjectInit", () => {
     const stateDir = tempDir("project-init-state");
     const first = planProjectInit(input({ root }));
     applyProjectInit(first, { stateDir });
-    writeFileSync(join(root, ".claude", "settings.json"), first.settingsText);
     const plan = planProjectInit(
       input({
         root,
         existing: '{"worktrees": {"base": "main", "prefix": "a-wt-"}}\n',
-        existingSettings: first.settingsText,
+        existingSettings: readFileSync(join(root, ".claude", "settings.json"), "utf8"),
       }),
     );
     const writes = applyProjectInit(plan, { stateDir });

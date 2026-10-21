@@ -111,15 +111,30 @@ export function routerNeedsSetup(paths: CliPaths): boolean {
 /** Said after an update whose router changed. */
 export const ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 
+/**
+ * Said after an update when agent view's user-level notification hook is missing: only a
+ * person's `setup` writes it (a background update never runs setup), so the next update says
+ * so rather than leaving agent view silent.
+ */
+export const NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
+
 /** A version safe to put in a notification and a shell-free argv: else a plain word. */
 function shownVersion(version: null | string): string {
   return version !== null && /^[0-9A-Za-z.+-]{1,40}$/.test(version) ? version : "a new version";
 }
 
-/** The notification's text; with `routerChanged`, the `gateway setup` hint too. */
-export function installedText(version: null | string, routerChanged = false): string {
+/** The notification's text, with a hint for each thing the update left for a person's setup. */
+export function installedText(
+  version: null | string,
+  routerChanged = false,
+  notifyHookMissing = false,
+): string {
   const text = `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
-  return routerChanged ? `${text}; ${ROUTER_SETUP_HINT}` : text;
+  const hints = [
+    ...(routerChanged ? [ROUTER_SETUP_HINT] : []),
+    ...(notifyHookMissing ? [NOTIFY_HOOK_SETUP_HINT] : []),
+  ];
+  return hints.length === 0 ? text : `${text}; ${hints.join("; ")}`;
 }
 
 /**

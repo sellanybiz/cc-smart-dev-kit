@@ -14,12 +14,14 @@ import { dirname, join } from "node:path";
 import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { localDay } from "../gateway/safety-checks";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
+import { recordMcpServer } from "../mcp/records";
+import { serenaLeftoverPaths } from "../mcp/retired";
 import { MCP_VERSIONS } from "../mcp/versions";
 import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { installLauncherCmd } from "../setup/launcher-cmd";
 import { applyManagedJson } from "../setup/managed-json";
-import { listBackups } from "../setup/write";
+import { listBackups, writeManagedFile } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { ccSmartDevKitImports, runDoctor } from "./doctor";
@@ -418,7 +420,6 @@ function setupOptions(
     machine: noHostMachine(home, confirm),
     instructions: null,
     instructionsSource: PLUGIN_INSTRUCTIONS,
-    serenaSource: PLUGIN_SERENA,
     statusline: false,
     // No environment of its own: a test that wants a key sets one through `extra`.
     env: {},
@@ -435,16 +436,13 @@ const INSTRUCTIONS_CREATED = [
 ];
 
 /**
- * The MCP servers setup registers, as it prints them: the three that need no key, then the
- * context Serena is started with. Tavily is left out without a key (`TAVILY_SKIPPED`).
+ * The MCP servers setup registers, as it prints them: the two that need no key. Tavily is
+ * left out without a key (`TAVILY_SKIPPED`).
  */
 const MCP_REGISTERED = [
   "+ MCP server playwright registered for your user",
-  "+ MCP server serena registered for your user",
   "+ MCP server sequential-thinking registered for your user",
 ];
-const SERENA_CONTEXT =
-  "+ ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: Serena's context (project switching on)";
 const TAVILY_SKIPPED =
   "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, in the settings, or in a key file: put the key there (chmod 600), or set the variable, then run setup again";
 
@@ -455,18 +453,8 @@ const TAVILY_SKIPPED =
  */
 function mcpDryRunLines(home: string): string[] {
   const launcher = join(home, ".local", "bin", "cc-smart-dev-kit");
-  const context = join(
-    home,
-    ".local",
-    "share",
-    "cc-smart-dev-kit",
-    "serena",
-    "contexts",
-    "worktree.yml",
-  );
   return [
     `$ claude mcp add-json --scope user playwright {"command":"${launcher}","args":["browser","mcp"]}`,
-    `$ claude mcp add-json --scope user serena {"args":["--from","git+https://github.com/oraios/serena@${MCP_VERSIONS.serena}","serena","start-mcp-server","--context","${context}","--open-web-dashboard","False","--project-from-cwd"],"command":"uvx","timeout":300000}`,
     `$ claude mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"bunx"}`,
   ];
 }
@@ -478,9 +466,17 @@ const tavilyDoctorSkipped = (home: string): string =>
 /** doctor's lines for the MCP servers, after a setup registered them. */
 const MCP_DOCTOR_OK = [
   '✓ MCP server "playwright": Connected',
-  '✓ MCP server "serena": Connected',
   '✓ MCP server "sequential-thinking": Connected',
 ];
+
+/** The user-level Notification hook setup writes for agent view, and its line. */
+const NOTIFY_HOOK_ENTRY = {
+  matcher: "agent_needs_input|agent_completed",
+  hooks: [
+    { type: "command", command: '"$HOME/.local/bin/cc-smart-dev-kit" hook notify', timeout: 10 },
+  ],
+};
+const NOTIFY_HOOK_ADDED = `~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook ("$HOME/.local/bin/cc-smart-dev-kit" hook notify)`;
 
 /** The block setup writes into ~/.claude/CLAUDE.md. */
 const BLOCK = [
@@ -491,9 +487,6 @@ const BLOCK = [
 ].join("\n");
 
 const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
-
-/** The plugin's real `serena` folder: setup installs its context as it does for a person. */
-const PLUGIN_SERENA = join(import.meta.dir, "..", "..", "plugin", "serena");
 
 /** What setup prints when it stores `--no-instructions`, and when `--instructions` clears it. */
 const OPT_OUT_STORED =
@@ -517,7 +510,7 @@ describe("cc-smart-dev-kit setup", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
-        SERENA_CONTEXT,
+        NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
@@ -527,6 +520,7 @@ describe("cc-smart-dev-kit setup", () => {
     expect(existsSync(launcher)).toBe(true);
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
+      hooks: { Notification: [NOTIFY_HOOK_ENTRY] },
       enabledPlugins: {
         "cc-smart-dev-kit@cc-smart-dev-kit": true,
         "claude-mem@thedotmack": true,
@@ -544,7 +538,8 @@ describe("cc-smart-dev-kit setup", () => {
   test("the backups go into the state folder, never beside the files", () => {
     const { configDir, stateDir, settingsFile, binDir, run } = setup();
     run(["setup"]);
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
+    // Two changes to settings.json: the auto-update key, then the notification hook.
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
     expect(readdirSync(binDir)).toEqual(["cc-smart-dev-kit"]);
     expect(readdirSync(configDir).sort()).toEqual([
       // Claude Code's own user-scope config: the fake `claude mcp add-json` writes it.
@@ -562,7 +557,7 @@ describe("cc-smart-dev-kit setup", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(`Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`);
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(1);
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
   });
 
   test("--dry-run prints the changes and writes nothing at all: no state folder, no lock", () => {
@@ -575,7 +570,7 @@ describe("cc-smart-dev-kit setup", () => {
         ...mcpDryRunLines(home),
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
-        SERENA_CONTEXT,
+        NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
         "Dry run: nothing was written or run.",
@@ -715,7 +710,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
-        SERENA_CONTEXT,
+        NOTIFY_HOOK_ADDED,
         OPT_OUT_STORED,
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
@@ -883,6 +878,7 @@ describe("cc-smart-dev-kit doctor", () => {
         `✓ the browser token is set (${join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token")}, mode 600)`,
         // Warp is optional too.
         "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
+        `✓ agent view's notification hook is set in ~/.claude/settings.json: "$HOME/.local/bin/cc-smart-dev-kit" hook notify`,
         // The gateway is optional: never set up is information, not a failure.
         "· gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
         "",
@@ -1073,6 +1069,7 @@ describe("cc-smart-dev-kit doctor", () => {
       "✓ claude-mem@thedotmack 13.39.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
       "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
+      "✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive. Run: cc-smart-dev-kit setup",
       "· gateway: not checked on this Bun (its checks send the backend key)",
     ]);
     expect(exitCode).toBe(1);
@@ -1553,7 +1550,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
-        SERENA_CONTEXT,
+        NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
@@ -1632,13 +1629,12 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
       [
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
-        SERENA_CONTEXT,
+        NOTIFY_HOOK_ADDED,
         ...INSTRUCTIONS_CREATED,
         "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
         "  $ claude plugin marketplace add thedotmack/claude-mem",
         "  $ claude plugin marketplace add anthropics/claude-plugins-official",
         "! The claude command is not on PATH, so playwright was not registered. Run it once it is.",
-        "! The claude command is not on PATH, so serena was not registered. Run it once it is.",
         "! The claude command is not on PATH, so sequential-thinking was not registered. Run it once it is.",
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
@@ -2634,22 +2630,15 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(Object.keys(userConfig.mcpServers).sort()).toEqual([
       "playwright",
       "sequential-thinking",
-      "serena",
     ]);
     expect(userConfig.mcpServers.playwright).toEqual({
       args: ["browser", "mcp"],
       command: join(home, ".local", "bin", "cc-smart-dev-kit"),
     });
-    expect(userConfig.mcpServers.serena.args).toContain("--project-from-cwd");
-    // Serena's context is installed beside the plugin's data, and is a managed file.
-    expect(
-      existsSync(join(home, ".local/share/cc-smart-dev-kit/serena/contexts/worktree.yml")),
-    ).toBe(true);
 
     // doctor: each one is registered and starts (the fake `claude mcp get` says Connected).
     const checked = run(["doctor"]);
     expect(checked.stdout).toContain('✓ MCP server "playwright": Connected\n');
-    expect(checked.stdout).toContain('✓ MCP server "serena": Connected\n');
     expect(checked.stdout).toContain('✓ MCP server "sequential-thinking": Connected\n');
 
     // restore: removed from Claude Code's config, and no record left.
@@ -2658,9 +2647,110 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(restored.stdout).toContain("- MCP server playwright removed from your user config\n");
     expect(readJson(join(configDir, ".claude.json")).mcpServers).toEqual({});
     expect(existsSync(join(configDir, "cc-smart-dev-kit", "mcp-servers.json"))).toBe(false);
-    expect(
-      existsSync(join(home, ".local/share/cc-smart-dev-kit/serena/contexts/worktree.yml")),
-    ).toBe(false);
+  });
+
+  test("Serena, as an older setup left it: setup takes back its own registration, the context and the records; doctor says so once", () => {
+    const { configDir, home, stateDir, run, claudeCalls } = setup();
+    expect(run(["setup"]).exitCode).toBe(0);
+    // What an older setup left: `serena` registered and recorded, its context file as a
+    // tracked whole file, and the serena-root hook's records.
+    const where = serenaLeftoverPaths(cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home }));
+    const serenaJson = JSON.stringify({
+      args: ["serena", "start-mcp-server", "--context", where.contextFile],
+      command: "uvx",
+    });
+    const userConfigFile = join(configDir, ".claude.json");
+    const userConfig = readJson(userConfigFile);
+    userConfig.mcpServers.serena = JSON.parse(serenaJson);
+    writeFileSync(userConfigFile, JSON.stringify(userConfig, null, 2));
+    recordMcpServer(stateDir, "serena", serenaJson, "2026-10-01T00:00:00.000Z");
+    writeManagedFile(where.contextFile, "single_project: false\n", {
+      kind: "whole-file",
+      newFileMode: 0o644,
+      stateDir,
+    });
+    mkdirSync(where.recordDir, { recursive: true });
+    writeFileSync(join(where.recordDir, "11111111-2222-3333-4444-555555555555.txt"), "unknown");
+
+    const owed =
+      '✗ Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered, Serena\'s context ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml, the serena-root records in ~/.claude/cc-smart-dev-kit/serena-root/ yet. Run: cc-smart-dev-kit setup\n';
+    const before = run(["doctor"]);
+    expect(before.exitCode).toBe(1);
+    expect(before.stdout).toContain(owed);
+
+    const removed = [
+      "- ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: removed (Serena's context; Serena is retired in 0.6.0)",
+      "- ~/.local/share/cc-smart-dev-kit/serena/: removed (Serena's folder, empty now)",
+      "- ~/.claude/cc-smart-dev-kit/serena-root/: removed (the serena-root hook's records; Serena is retired in 0.6.0)",
+    ];
+    // A dry run shows each step, and changes nothing.
+    const dry = run(["setup", "--dry-run"]);
+    expect(dry.exitCode).toBe(0);
+    expect(dry.stdout).toBe(
+      [
+        "$ claude mcp remove serena --scope user",
+        ...removed,
+        TAVILY_SKIPPED,
+        "Dry run: nothing was written or run.",
+        "",
+      ].join("\n"),
+    );
+    expect(readJson(userConfigFile).mcpServers.serena).toBeDefined();
+    expect(existsSync(where.contextFile)).toBe(true);
+    expect(existsSync(where.recordDir)).toBe(true);
+    expect(claudeCalls()).not.toContain("mcp remove serena");
+
+    const result = run(["setup"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      [
+        "- MCP server serena removed from your user config",
+        ...removed,
+        TAVILY_SKIPPED,
+        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
+        "",
+      ].join("\n"),
+    );
+    // Through Claude Code's own command; the plugin's own servers stay.
+    expect(claudeCalls()).toContain("mcp remove serena --scope user\n");
+    expect(Object.keys(readJson(userConfigFile).mcpServers).sort()).toEqual([
+      "playwright",
+      "sequential-thinking",
+    ]);
+    expect(existsSync(where.folder)).toBe(false);
+    expect(existsSync(where.recordDir)).toBe(false);
+    expect(listBackups(stateDir, where.contextFile).at(-1)?.absent).toBe(false);
+
+    // doctor has nothing more to say about it, and a second setup has nothing to do.
+    const after = run(["doctor"]);
+    expect(after.stdout).not.toContain("Serena");
+    expect(after.stdout).not.toContain("serena");
+    expect(run(["setup"]).stdout).toBe(
+      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
+    );
+  });
+
+  test("a serena of the person's own: setup never touches it, and doctor shows it with ·, never ✗", () => {
+    const { configDir, run, claudeCalls } = setup();
+    expect(run(["setup"]).exitCode).toBe(0);
+    const userConfigFile = join(configDir, ".claude.json");
+    const userConfig = readJson(userConfigFile);
+    userConfig.mcpServers.serena = { args: ["serena", "start-mcp-server"], command: "uvx" };
+    writeFileSync(userConfigFile, JSON.stringify(userConfig, null, 2));
+
+    expect(run(["setup"]).stdout).toBe(
+      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
+    );
+    expect(claudeCalls()).not.toContain("mcp remove serena");
+    expect(readJson(userConfigFile).mcpServers.serena).toEqual({
+      args: ["serena", "start-mcp-server"],
+      command: "uvx",
+    });
+    const checked = run(["doctor"]);
+    expect(checked.stdout).toContain(
+      '· the "serena" MCP server is registered (uvx serena start-mcp-server), and cc-smart-dev-kit has no record of registering it as it is: cc-smart-dev-kit no longer registers it (0.6.0) and leaves it alone. To remove it: claude mcp remove serena --scope user\n',
+    );
+    expect(checked.stdout).not.toContain("✗ Serena");
   });
 
   test("a bunx on PATH: sequential-thinking is registered by its absolute path", () => {
@@ -2679,8 +2769,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
   });
 
   test("no bunx on the machine: sequential-thinking keeps the bare name", () => {
-    // Nothing to point at: the registration says `bunx`, and Claude Code's own PATH
-    // decides, as it would for `uvx` in the serena registration.
+    // Nothing to point at: the registration says `bunx`, and Claude Code's own PATH decides.
     const { run, claudeCalls } = setup();
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
@@ -2721,7 +2810,9 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(`${restored.stdout}${restored.stderr}`).not.toContain("tvly-file-secret");
     // The line names the key's PATH, never its value. The `env` object setup made for it goes
     // with the key: this settings file had none of its own.
-    expect(restored.stdout).toContain("env.TAVILY_API_KEY, env; everything else kept");
+    expect(restored.stdout).toContain(
+      "env.TAVILY_API_KEY, env, the hook entry in hooks.Notification; everything else kept",
+    );
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });
 

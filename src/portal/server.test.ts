@@ -2428,11 +2428,8 @@ function formAnswers(overrides: Record<string, unknown> = {}) {
   return {
     base: "trunk",
     bases: { "fix/": "main" },
-    engine: "own",
     guards: { guardMainFolder: false, jobRoute: true, sessionNames: false },
-    prefix: "wt-",
     protectedBranches: ["main"],
-    setup: ["npm", "ci"],
     ...overrides,
   };
 }
@@ -2441,11 +2438,8 @@ function formAnswers(overrides: Record<string, unknown> = {}) {
 const MERGED_ANSWERS: ProjectInitAnswers = {
   base: "trunk",
   bases: { "fix/": "main" },
-  engine: "own",
   guards: { guardMainFolder: false, jobRoute: true, sessionNames: false },
-  prefix: "wt-",
   protectedBranches: ["main"],
-  setup: ["npm", "ci"],
   workflow: { openPr: "draft" },
 };
 
@@ -2490,19 +2484,16 @@ describe("the project card", () => {
       await world.enter();
       const page = await world.call("/machine");
       expect(page.body).not.toContain("not set up");
-      // The three fields, the base rows, the protected chips, the guards and the engine.
+      // The base field, the base rows, the protected chips and the guards.
       expect(page.body).toContain('id="f-base"');
       expect(page.body).toContain('data-base-prefix value="hotfix/"');
       expect(page.body).toContain('data-protected-name value="integration"');
       expect(page.body).toContain('data-form-switch="guardMainFolder"');
-      expect(page.body).toContain('aria-pressed="true" data-engine-value="plugin"');
-      // The preview: the plan's own text, the three lines the settings file gets, and the note.
+      // The preview: the plan's own text, Claude Code's baseRef line, and the note.
       expect(page.body).toContain("&quot;base&quot;: &quot;integration&quot;");
+      expect(page.body).toContain("worktree.baseRef: &quot;head&quot;");
       expect(page.body).toContain(
-        "&quot;command&quot;: &quot;cc-smart-dev-kit hook worktree&quot;",
-      );
-      expect(page.body).toContain(
-        "3 lines, added inside the existing file. Nothing else there changes.",
+        "1 line, added inside the existing file. Nothing else there changes.",
       );
       expect(page.body).toContain("Write the files");
       expect(page.body).toContain("Cancel");
@@ -2531,12 +2522,9 @@ describe("the project card", () => {
       const csrf = await world.csrfOf();
       const cases: [Record<string, unknown>, string][] = [
         [{ base: "" }, "The base branch is needed: it is the branch a new worktree starts from."],
-        [{ prefix: "app/wt-" }, "The worktree folder prefix cannot hold / or"],
         [{ bases: { hotfix: "main" } }, '"hotfix" is not prefix=base: the prefix ends with "/".'],
-        [{ setup: [] }, 'The setup command must be words, like "bun install".'],
         [{ protectedBranches: [7] }, "The protected branches must be a list of branch names."],
         [{ guards: { guardMainFolder: true } }, "guards.sessionNames is true or false."],
-        [{ engine: "git" }, 'The worktree engine is "plugin" or "own".'],
       ];
       for (const [override, why] of cases) {
         const answer = await world.post(
@@ -2582,23 +2570,23 @@ describe("the project card", () => {
       expect(workflow.calls.planProjectInit).toEqual([
         {
           answers: MERGED_ANSWERS,
+          defaultBranch: "main",
           existing: PROJECT_CONFIG,
           existingSettings: null,
           root: world.cwd,
         },
       ]);
-      // The answer is that plan, exactly: the two file names, the file's own text, and no
-      // lines for an engine of the project's own.
+      // The answer is that plan, exactly: the two file names, the file's own text, and
+      // Claude Code's baseRef line (the base, trunk, is not the repo's default branch).
       expect(body.preview).toEqual({
         changed: true,
         diff: ['+ worktrees.base: "trunk"'],
         file: join(world.cwd, ".claude", "cc-smart-dev-kit.json"),
-        hookLines: [],
         notes: [],
-        removedLines: [],
-        settingsChanged: false,
+        settingsAdds: ['worktree.baseRef: "head"'],
+        settingsChanged: true,
         settingsFile: join(world.cwd, ".claude", "settings.json"),
-        settingsText: "\n",
+        settingsText: '{\n  "worktree": {\n    "baseRef": "head"\n  }\n}\n',
         text: `${JSON.stringify(MERGED_ANSWERS, null, 2)}\n`,
       });
       // A preview is a plan: nothing was written.
@@ -2642,6 +2630,7 @@ describe("the project card", () => {
       expect(call?.plan.file).toBe(join(world.cwd, ".claude", "cc-smart-dev-kit.json"));
       expect(JSON.parse(yes.body).lines).toEqual([
         `+ ${join(world.cwd, ".claude", "cc-smart-dev-kit.json")}`,
+        `+ ${join(world.cwd, ".claude", "settings.json")}`,
         "Commit both files with the project: the team shares one setup.",
       ]);
       // The portal itself never writes the repo: the module does, and this test's module is a
@@ -2710,42 +2699,6 @@ describe("the project card", () => {
       );
       expect(JSON.parse(bare.body).lines[0]).toContain("changed since the preview");
       expect(workflow.calls.applyProjectInit.length).toBe(1);
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("an engine of the project's own shows the settings lines it takes back out", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    // The project's own file says `"own"`: that is the form's first answer, and the plan the
-    // page draws from it is the one that takes the plugin's lines back out.
-    const workflow = fakeWorkflow({
-      defaults: { answers: { ...fakeDefaults().answers, engine: "own" } },
-    });
-    const world = await open({
-      backendPort: backend.port,
-      projectFiles: {
-        config: PROJECT_CONFIG,
-        settings:
-          '{\n  "hooks": {\n    "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "$HOME/.local/bin/cc-smart-dev-kit hook worktree-create", "timeout": 600 }] }]\n  }\n}\n',
-      },
-      workflow,
-    });
-    try {
-      await world.enter();
-      const page = await world.call("/machine");
-      // The preview box shows what the file loses, a "-" line the way a diff reads, and the
-      // note under it counts the removal — the same sentence the preview's answer carries.
-      expect(page.body).toContain(
-        "- WorktreeCreate: cc-smart-dev-kit hook worktree-create (timeout 600 s)",
-      );
-      expect(page.body).toContain(
-        "1 line removed, the plugin&#39;s own hooks. Nothing else there changes.",
-      );
-      // The plugin's added lines are not shown for this engine: they are what goes out.
-      expect(page.body).not.toContain("WorktreeCreate: $HOME/.local/bin");
-      expect(workflow.calls.planProjectInit[0]?.answers.engine).toBe("own");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2846,7 +2799,7 @@ describe("the project card", () => {
 
 // ── The real workflow module ────────────────────────────────────────────────────
 
-/** A project's file with everything the 0.4.0 core reads: the policy, the bases, the engine. */
+/** A project's file with everything the 0.4.0 core reads, the deprecated engine fields included. */
 const FULL_PROJECT_CONFIG = `${JSON.stringify(
   {
     requires: ">=0.3",
@@ -2897,18 +2850,19 @@ describe("the real workflow module", () => {
         '<button type="button" aria-pressed="true" disabled>Draft</button>',
       );
 
-      // The card's form starts from the project's own file: its base row, and its engine.
+      // The card's form starts from the project's own file: its base row.
       const machine = await world.call("/machine");
       expect(machine.status).toBe(200);
       expect(machine.body).toContain('data-base-prefix value="release/"');
       expect(machine.body).toContain('data-base-value value="main"');
-      expect(machine.body).toContain('aria-pressed="true" data-engine-value="own"');
       // The preview is the CLI's own plan with the file's fields in it: the policy it keeps,
-      // the bases, and the engine of the project's own (so no line is added to the settings).
+      // the bases, Claude Code's baseRef line (integration is not the repo's default branch),
+      // and the deprecated engine fields exactly as the file has them.
       expect(machine.body).toContain("&quot;workflow&quot;: {");
       expect(machine.body).toContain("&quot;release/&quot;: &quot;main&quot;");
       expect(machine.body).toContain("&quot;engine&quot;: &quot;own&quot;");
-      expect(machine.body).toContain("No line is added to .claude/settings.json.");
+      expect(machine.body).toContain("worktree.baseRef: &quot;head&quot;");
+      expect(machine.body).not.toContain("No line is added to .claude/settings.json.");
     } finally {
       world.portal.stop();
       backend.stop();

@@ -18,7 +18,6 @@ import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
-import { SERENA_EDIT_TOOLS } from "./main-folder-guard";
 import { GH_TIMEOUT_MS } from "./merge-guard";
 import { HOOK_LOG_ENV } from "./run";
 import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
@@ -191,16 +190,11 @@ esac
     }
   });
 
-  test("the main-folder-guard matcher matches every tool the guard judges", () => {
+  test("the main-folder-guard matcher is exactly the tools the guard judges", () => {
     const matcher = wired.find(({ handler }) => bundleOf(handler) === "main-folder-guard")?.matcher;
-    expect(typeof matcher).toBe("string");
-    // Claude Code matches the tool name against the matcher as a regular expression.
-    const matches = new RegExp(`^(?:${matcher ?? ""})$`);
-    for (const tool of [...SERENA_EDIT_TOOLS, "Edit", "Write", "NotebookEdit"]) {
-      expect(`${tool}: ${String(matches.test(tool))}`).toBe(`${tool}: true`);
-    }
-    // A tool it must keep out of: Serena's activation is the serena-root hook's own matcher.
-    expect(matches.test("mcp__serena__activate_project")).toBe(false);
+    // Claude Code matches the tool name against the matcher as a regular expression: the
+    // three edit tools that name their file by an absolute path, and nothing else.
+    expect(matcher).toBe("Edit|Write|NotebookEdit");
   });
 
   test("the timeouts: short for a guard", () => {

@@ -501,7 +501,7 @@ The guarantees:
   restore with nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
-`~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `changed.json`, the lock and `backups/`. The
+`~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `owned-hooks.json`, `changed.json`, the lock and `backups/`. The
 state is per config folder, but the launcher in `~/.local/bin` is shared by all of
 them. So a restore under one config folder can remove a launcher another one relies
 on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
@@ -540,18 +540,17 @@ page and `cc-smart-dev-kit workflow show` can never disagree; a row the project 
 read-only here and links to the Project card, and a value outside its row's own set is
 refused in words. The Project card on Machine is about the repo the portal was started in:
 state A (no `.claude/cc-smart-dev-kit.json`) or the form, whose first values are the command
-line's own detection (`detectFacts` + `defaultAnswers` — the default branch, the lockfile's
-command, GitHub's protected branches). Its **preview is the server's own `planProjectInit`**,
+line's own detection (`detectFacts` + `defaultAnswers` — the default branch, GitHub's
+protected branches). Its **preview is the server's own `planProjectInit`**,
 the same pure function the write runs, so the browser never builds the file: a form change is
 a `project.preview` POST — at once for a finished edit, 300 ms after the typing pauses in a
 text box — and the boxes are drawn from the answer. The answer carries
 `projectFilesHash` of the two texts it planned from, the page keeps it, and `project.write`
 sends it back: a project file that changed since the preview is refused ("preview again")
 rather than written over field by field. `Write the files` asks first and runs
-`applyProjectInit` — a backup, an atomic write, two files, and never a commit. An engine of
-the project's own (`"worktrees.engine": "own"`) has `withoutProjectHooks` take the
-cc-smart-dev-kit hook lines back out of `.claude/settings.json` (only groups that are
-entirely ours), so two engines never answer one worktree request.
+`applyProjectInit` — a backup, an atomic write, two files, and never a commit. The settings
+file gets Claude Code's `"worktree": {"baseRef": "head"}` when the base branch is not the
+repo's default branch.
 
 **The workflow module is behind one seam** (`src/portal/workflow-adapter.ts`). The values,
 the writes, the auto-merge rule and the project's two files all come from `src/workflow/`
@@ -943,7 +942,7 @@ and gives its own details, with `.claude/cc-smart-dev-kit.json`:
 ```json
 {
   "requires": ">=0.1",
-  "worktrees": { "base": "main", "prefix": "app-wt-", "setup": ["bun", "install"] },
+  "worktrees": { "base": "main", "bases": { "release/": "main" } },
   "instructions": true,
   "autoMode": ["In my-app: never touch production."]
 }
@@ -956,10 +955,13 @@ user settings), and the opt-in instructions load through the project's own impor
 holds the project's policy for what cc-smart-dev-kit may do by itself (§ The workflow).
 
 Three fields came with 0.4.0: `worktrees.bases` (a branch-name prefix to the base a worktree
-of such a branch starts from, § The worktree engine), `worktrees.engine` (`"plugin"` or
-`"own"`: who makes this project's worktrees) and `workflow` (§ The workflow). All three are
-optional and nothing else about the file changed, so a project that writes one raises its
-`requires` to the release that brought it — which is what `project init` writes.
+of such a branch starts from, § Worktrees), `worktrees.engine` (`"plugin"` or `"own"`: who
+makes this project's worktrees) and `workflow` (§ The workflow). All three are optional and
+nothing else about the file changed, so a project that writes one raises its `requires` to
+the release that brought it — which is what `project init` writes. `worktrees.engine` is
+deprecated since 0.5.2, with `worktrees.prefix` and `worktrees.setup`: every project uses
+Claude Code's own worktrees now (§ Worktrees), the engine retires in the next minor version,
+and the three fields stay accepted (no parse failure) until then.
 
 - A hook finds the project from its input's `cwd`, which follows the session into a
   worktree. A worktree's own `cc-smart-dev-kit.json` wins; else the main checkout's is used. A moved
@@ -968,8 +970,9 @@ optional and nothing else about the file changed, so a project that writes one r
   than a user's plugin; that user is told to update, not that the field is unknown.
 - **Without `cc-smart-dev-kit.json`, the plugin does Claude Code's default** and its guards stay
   silent. A project that never opted in does not notice the plugin.
-- **The worktree engine needs more than the file:** the project also wires its three hooks
-  in its own `.claude/settings.json` (§ The hooks › The worktree engine).
+- **The worktree engine is deprecated, and needs more than the file:** a project that still
+  wires its three hooks in its own `.claude/settings.json` keeps working until the next
+  minor version (§ The worktree engine).
 
 ### How a project adds its own part to a general skill
 
@@ -980,7 +983,7 @@ its own repo.
 
 ## Instructions, skills and agents
 
-The plugin carries general working instructions for Claude, 16 skills and 4 agents, all
+The plugin carries general working instructions for Claude, 17 skills and 3 agents, all
 written for any project (`README.md` § Instructions, skills and agents lists them).
 
 **The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot
@@ -1010,6 +1013,10 @@ created and that holds nothing else is removed.
   whose stamp names another version. `doctor` uses it (and compares each file with the
   plugin's). `refreshInstructionsCopy(paths, version)` brings only the copy up to that
   version: no block, no other step, no question, nothing when opted out or never installed.
+  `refreshDue` also stops a session of an older version from writing its files back over a
+  newer copy (`refreshMayWrite`: the installed version writes, and with no record of it only
+  one newer than the stamp); a session that may not refresh says why in one stderr line
+  (`refreshInstructionsAtSessionStart`).
   It is the **new** version's first session start that calls it: the update itself runs the
   old version's code, which does not know the new files, so the `update-check` SessionStart
   hook refreshes the copy through `refreshInstructionsAtSessionStart` — the copy only,
@@ -1046,8 +1053,11 @@ An agent that works by a skill loads it with `skills:` in its frontmatter (`revi
 `cc-smart-dev-kit:review`; `rules-maintainer`: `cc-smart-dev-kit:self-evolve`): the skill's text is in its
 context from the start, and it needs no path to the plugin's version folder (proved live:
 `claude-code-contract.md` § Instructions).
-Agents that need an MCP server name its tools as `mcp__serena__*` or `mcp__playwright__*`:
-the servers are registered for the user (§ MCP servers at user scope), so the names stay.
+Agents that need an MCP server name its tools as `mcp__playwright__*`: the servers are
+registered for the user (§ MCP servers at user scope), so the names stay. The reviewer also
+lists claude-mem's `smart_search`, `smart_outline` and `smart_unfold` (the companion plugin's
+own tool names), for a big file's shape; when they are not there or do not answer (on Windows
+they can fail without an error, claude-mem #1247), it uses Grep and Read.
 
 **The output style** ships but is never switched on: a person picks it with `/output-style`.
 ## The hooks
@@ -1072,9 +1082,9 @@ spec, `specs.ts`):
   The baked line is
   single-quoted the way `shellQuote` writes it (each `'` as `'\''`), and the shim undoes
   exactly that, so a bun under a folder like `/home/o'brien` is found.
-- **The worktree engine** (`PROJECT_HOOKS`): WorktreeCreate, WorktreeRemove and
-  SubagentStop, which a project wires itself as `cc-smart-dev-kit hook <name>` (§ The worktree
-  engine). The launcher already runs its baked bun.
+- **The deprecated worktree engine** (`PROJECT_HOOKS`): WorktreeCreate, WorktreeRemove and
+  SubagentStop, which a project still on the engine wires itself as `cc-smart-dev-kit hook
+  <name>` (§ The worktree engine). The launcher already runs its baked bun.
 
 The contract they follow: `.claude/rules/hooks.md`. The Claude Code behaviour they rely on,
 each row proved: `claude-code-contract.md` § Hooks and § Worktrees.
@@ -1108,7 +1118,46 @@ Every hook, of both kinds, runs in the same frame (`src/hooks/run.ts`), in this 
 The frame is general on purpose: later hooks (notifications, the routing of heavy jobs)
 are new specs in it, plugin-wired or project-wired.
 
-### The worktree engine
+### Worktrees: Claude Code's own
+
+Every project uses Claude Code's own worktrees (owner, 2026-10-18). A new task starts from
+the main checkout with `claude -w <task-name>`, and Claude Code makes
+`<repo>/.claude/worktrees/<task-name>` on the branch `worktree-<task-name>` (a `/` in the
+name becomes `+`). It keeps its own lock on the worktree, its cleanup marker, the reset of a
+reused clean worktree, `-w "#123"` and its Git LFS handling — none of which a hook could
+rebuild. Entering an existing worktree is `claude -w <name>`, or `EnterWorktree` with its
+`name` (which resumes it as it was left); `EnterWorktree` with a `path` only switches between
+worktrees for a session already inside one, and fails from the main checkout. An unrelated
+task from inside a worktree goes back to the main checkout first. A subagent with its own
+worktree never calls either tool: Claude Code refuses both, and it uses `cd` to move inside
+its own checkout.
+
+- **The base comes from `origin`'s default branch** under `worktree.baseRef: "fresh"` (the
+  default; it fetches that branch only when the repo was not fetched for 24 hours). A project
+  whose base branch is another one sets `"worktree": {"baseRef": "head"}` in its committed
+  `.claude/settings.json`: a worktree, and a subagent's worktree, start from the current
+  branch. `project init` writes that line, and `doctor` warns with the line to add when a
+  non-default base has no `baseRef: "head"`. `baseRef` takes `"fresh"` or `"head"`, never a
+  branch name (`docs/claude-code-contract.md` § Worktrees).
+- **`.worktreeinclude`** names the git-ignored files a worktree needs; Claude Code copies
+  them in. There is no setup step: the session runs the project's install first.
+- **`.claude/worktrees/` is git-ignored by the project**; `doctor` warns when it is not.
+- **Cleanup:** Claude Code removes a clean worktree of an unnamed session on exit and asks
+  first for a named one or one with work left; a subagent's worktree is removed when it made
+  no changes. `cc-smart-dev-kit worktrees` finds the repo's
+  finished ones, and `cc-smart-dev-kit sessions` lists a project's sessions in its nested
+  worktrees (the project folder is the path with every `/` and `.` turned into `-`).
+
+`project init` writes no worktree hook, and `doctor` warns (`!`) when a project still sets
+`worktrees.engine`, `worktrees.prefix` or `worktrees.setup`, or wires the engine's hook lines,
+naming the steps to move; the engine retires in the next minor version.
+
+### The worktree engine (deprecated)
+
+The engine still works in this release for a project that wired it before 0.5.2, and it is
+deleted in the next minor version (owner, 2026-10-18). `worktrees.prefix` is optional in the
+schema now; a project on the engine must still set it, and the create hook fails closed and
+says so when it is missing. The rest of this section describes the engine as it was.
 
 A WorktreeCreate hook **replaces** Claude Code's own creation, for sessions and subagents,
 in every project where it is wired, and a hook that prints no folder makes the creation fail
@@ -1120,12 +1169,11 @@ uses it, the marker its periodic sweep looks for, the reset of a reused clean wo
 engine is opt-in per project** (owner, 2026-10-15): the plugin wires no WorktreeCreate or
 WorktreeRemove, and no SubagentStop that touches a worktree — the engine's `subagent-stop`
 removes one, so it stays the project's; a SubagentStop that touches none (`review-record`)
-may be the plugin's (`.claude/rules/hooks.md`). A project that wants the engine:
+may be the plugin's (`.claude/rules/hooks.md`). A project that wired the engine before 0.5.2:
 
-1. gives its `cc-smart-dev-kit.json` a `worktrees` field, and
-2. wires the three hooks in its own `.claude/settings.json`, as the README's § Worktrees
-   shows (its one home; `cc-smart-dev-kit hook` prints the same lines, from
-   `src/hooks/project-wiring.ts`, and a test keeps the two the same).
+1. gave its `cc-smart-dev-kit.json` a `worktrees` field, and
+2. wired the three hooks in its own `.claude/settings.json` (`cc-smart-dev-kit hook` prints the
+   lines, from `src/hooks/project-wiring.ts`).
 
 Each line is a shell string, `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>`: the shell fills in
 `$HOME`, so the launcher is found by its full path whatever PATH Claude Code was started
@@ -1156,12 +1204,12 @@ Then, in that project:
   released line of work never inherits the integration base's unreleased work. The
   after-merge note says so too: a session on such a branch is told not to merge the
   integration base in.
-- **A project may run an engine of its own** (`worktrees.engine: "own"`): then it wires no
-  `cc-smart-dev-kit hook` lines, and `doctor` expects none (`·`, never ✗) and warns (`!`) when
-  the plugin's engine hooks are wired anyway next to another WorktreeCreate hook, because two
-  hooks make two worktrees for each request. Everything that only *reads* the repo keeps
-  working there: the after-merge and worktree-leftovers notes, the stash question, and
-  `cc-smart-dev-kit worktrees`, which all read `worktrees.base` and never make a worktree.
+- **A project that ran an engine of its own** (`worktrees.engine: "own"`) wired no
+  `cc-smart-dev-kit hook` lines. The field is deprecated with the engine and is accepted and
+  ignored until the engine retires; `doctor` names it in its `!` line. Everything that only
+  *reads* the repo keeps working: the after-merge and worktree-leftovers notes, the stash
+  question, and `cc-smart-dev-kit worktrees`, which all read `worktrees.base` and never make
+  a worktree.
 - **A subagent's worktree (`agent-<hex>`):** what Claude Code would make for it,
   `<main checkout>/.claude/worktrees/<name>` on the branch `worktree-<name>`. The base
   follows Claude Code's `worktree.baseRef` setting: `"fresh"` (the default) is the remote's
@@ -1198,12 +1246,11 @@ worktrees).
 | Hook | Event (matcher) | On when | What it does |
 |---|---|---|---|
 | `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
-| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Serena's edit tools) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. A Serena edit names its file relative to the folder Serena has ACTIVE, so it is placed by `serena-root`'s record (else by `CLAUDE_PROJECT_DIR`, the folder the session started in); a file it cannot place is an `ask`, never a pass. |
-| `serena-root` | PreToolUse, PostToolUse (`mcp__serena__activate_project`), SessionStart | `worktrees.guardMainFolder` | Records which folder Serena edits for this session (`<stateDir>/serena-root/<session id>.txt`): "unknown" from the moment an activation is allowed until Serena's own answer names the folder, so the record is only ever a folder Serena confirmed — and the guard ASKS while it is unknown. It refuses an activation that names a project by NAME or a folder outside this repo and its worktrees. On a broken cc-smart-dev-kit.json it records nothing and says so. |
+| `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. (Until 0.6.0 it also placed Serena's edits, with the `serena-root` hook's record; both went with Serena.) |
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
-| `agent-guard` | PreToolUse (Agent, Task, Workflow) | **machine-wide** | The model a launch really runs on, and the owner's model rules (2026-10-16): no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh`/`max` only on request — D5 of 0.6.0); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name — is a review at `medium`/`high`, a review above `high` as an **ask**, an unreadable review as an ask, or an `Opus reason:` word; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. Every premium launch is recorded with its reason once it is known to run (an asked one after it ran). § The Agent guard. |
+| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. A form that names no pull request gets no note. |
@@ -1230,9 +1277,11 @@ It is wired `--missing=ask`: a guard fails closed.
 
 Why the owner asked for it (2026-10-16): an Agent call that names no model runs on the
 session's model — on an Opus session, every plain `Explore` is an Opus spawn — an Opus or
-Fable agent spends the person's own plan usage, and a subagent at `low` or `medium` does work
-nobody chose to cheapen. So the guard holds the effort rule first — `high`, `xhigh` or `max`
-only, `ALLOWED_EFFORTS` in the code, refused on every model — and then reads the launch's
+Fable agent spends the person's own plan usage, and a subagent at `low` does work nobody chose
+to cheapen. So the guard holds the effort rule first — `medium`, `high`, `xhigh` or `max` only,
+`ALLOWED_EFFORTS` in the code, `low` refused on every model (D5, D13: `medium` for searches and
+reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the
+person asks) — and then reads the launch's
 `model`, `effort`, `subagent_type` and prompt, and resolves the model the launch will really
 run on:
 
@@ -1260,26 +1309,49 @@ no hook of their own (proved live on 2.1.301 — a project hook with the matcher
 `Agent|Task|Workflow` saw the `Workflow` call and nothing else), so the guard reads the
 `script` text: the `model`, `effort` and `agentType` of each call, and its prompt when that
 is a fixed string literal (`readWorkflowScript` — a template that builds its text, `` `${…}` ``,
-is not one). A `model` held in a variable, or a prompt built at run time, is refused for an
-Opus or Fable launch rather than guessed. Two things are refused for the whole call
-(`workflowRefusal`), because no rule can hold for a launch the guard cannot follow: `agent`
-mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent` passed
-around), and a call whose options are built at run time (a `...spread`, a computed `[…]`
-key). The strictest launch of the call answers for the whole call.
+is not one). An option counts only as a key of the call's own options object, quoted or not
+— never the same words in the prompt or in a nested object (`schema: { effort: … }`). A
+`model` held in a variable is refused rather than guessed, and a prompt built at run time is
+refused for a Fable launch (its reason line cannot be read). Two things are refused for the
+whole call (`workflowRefusal`), because no rule can hold for a launch the guard cannot follow:
+`agent` mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent`
+passed around), and a call whose options are built at run time (a `...spread`, a computed
+`[…]` key, the same key twice). The strictest launch of the call answers for the whole call.
 
-The rules are in one table in `src/hooks/agent-guard.ts` (its header), the two lists a person
-may extend are environment variables (`CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`,
-`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`), and the answer is a PreToolUse `deny` (the rule, in
-words, to Claude) or an `ask` (a Fable launch, a review at effort `max` — the deeper review is
-the person's own call, and its ask rests on the effort, not on a prompt — a review whose model
-the guard cannot read as Opus, and an Opus launch that is not a review and carries an
-`Opus reason:` line; the person approves each one). An `ask` in a session nobody
+The rules are in one table in `src/hooks/agent-guard.ts` (its header), the one list a person
+may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
+read-only agent types the Fable rule reads), and the answer is a PreToolUse `deny` (the rule, in
+words, to Claude) or an `ask` (a Fable launch, and an `opus`-tier launch at effort `max`; the
+person approves each one, and the opus-tier ask rests on the effort, not on a prompt).
+
+**The `opus` tier** (the owner's decision D11, 2026-10-17) is judged by its effort alone: at
+`high` or `xhigh` it runs with no question, for any agent type and any purpose — a review or a
+build, with or without a reason line — and at `max` (`OPUS_ASK_EFFORT`) it asks the person,
+naming the model and the effort. An `Opus reason: <word>` line is optional: when a prompt has
+one, its first word goes into the record, and nothing else reads it. A fork names no effort —
+it runs at the session's own, which the person chose — so an `opus`-tier fork is allowed; a
+fork that names `max` itself is held to the same rule. **The free path is for a reading the
+guard can prove is the Opus family**: the `opus` name, a Claude Opus id (a cloud provider's
+`us.anthropic.claude-opus-…` too), the opus slot, or an id the person's own
+`ANTHROPIC_DEFAULT_<FAMILY>_MODEL` names for it. A reading with no family — a name no rule
+knows (`best`, `inherit`, an id the guard cannot read) — may stand for a higher tier, so it
+asks at any effort, is refused in `claude -p`, and is recorded as `opus:unreadable`. (Before D11 the tier needed a review
+agent type or a listed reason word, and refused every launch but a review at `high`; that
+reason list, the review-agent list and its variable are gone.)
+
+An `ask` in a session nobody
 watches (`claude -p`, `CLAUDE_CODE_SESSION_ATTENDED=0`) is refused just like a deny — Claude
 Code cannot ask anyone there (proved live on 2.1.301) — so the guard answers that denial with
-a message that says why; only a review the guard reads as Opus, at `high` or `xhigh`, stays
-allowed there. Every allowed or asked premium launch is recorded once, by its `tool_use_id`, in
-`<stateDir>/agent-launches.jsonl` with its reason (`opus:review-max` for a review at `max`,
-`fable:build` for a builder the person asked for), and `cc-smart-dev-kit usage` lists them (count,
+a message that says why; an Opus-family launch below `max` needs no answer, so it stays
+allowed there, one at `max` is told to run at `medium`, `high` or `xhigh`, or in an
+interactive session, and one with no family is told to name `opus`. Every premium launch is
+recorded once it is known to run — an allowed one on PreToolUse, an asked one on PostToolUse
+(`RAN_EVENT`: the call ran, so the person said yes; one they refuse is never recorded) — once
+per `tool_use_id`, in
+`<stateDir>/agent-launches.jsonl` with why it ran — the `opus` tier as `opus:<effort>`, with
+the prompt's reason word after it when there is one (`opus:xhigh`, `opus:max:security`; a fork
+`opus:session-effort`), and the `fable` tier by its word (`fable:build` for a builder the
+person asked for) — and `cc-smart-dev-kit usage` lists them (count,
 why) — the transcripts say which model wrote a reply, never why it was allowed. A Workflow call
 denied as a whole records none of its launches: nothing in it ran; an `ask` names every launch
 of the script that asks, not only the first.
@@ -1289,12 +1361,12 @@ of the script that asks, not only the first.
 through `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` and through its family's slot, a Claude id has its
 family's, and a name the guard cannot read is the `opus` tier, the strict reading. So an
 override that points `opus` at a backend never becomes an affordable slot, is never forced to
-`max`, and never loses the reason line; the messages name both, `` `opus` (answered by
+`max`, and still asks at `max`; the messages name both, `` `opus` (answered by
 openai:gpt-5.5) ``.
 
 The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
-- **A read-only agent** (Plan, Reviewer, Explore, Code Explorer) takes any word of
+- **A read-only agent** (Plan, Reviewer, Explore) takes any word of
   `FABLE_REASONS` — `hard`, `rewrite`, `ui-design`, `architecture`, `review`, `plan`,
   `unsatisfied` — where `unsatisfied` is a fresh attempt after the person did not like the main
   session's answer (`subagent-decision` § Choosing Fable has the brief it gets) and `review` is
@@ -1356,8 +1428,9 @@ twice.
 `cc-smart-dev-kit.json`; the one thing it reads from a project's file is the `workflow.alerts`
 settings, when a project has them (§ The workflow › The alert settings).
 
-**Which events, one alert each** (`plugin/hooks/hooks.json`): `Notification` (the "needs you"
-types, `worker_permission_prompt` included; the idle wait is left out — the `Stop` alert
+**Which events, one alert each** (`plugin/hooks/hooks.json`): `Notification` (a session's own
+"needs you" types, `worker_permission_prompt` included — `PLUGIN_NOTIFY_TYPES`; the idle
+wait is left out — the `Stop` alert
 already announced that turn); `Stop` (the turn's last answer as the body, from the
 transcript's tail, 300 ms after the event because Claude Code writes it just then);
 `PreToolUse` on `AskUserQuestion|ExitPlanMode` (Claude Code raises no Notification at the
@@ -1368,6 +1441,43 @@ where that hook will show its alert — a desktop to show it on, the gateway set
 plan limit (`stopFailureWillAlert`) — so one stop never gives two alerts; where it has no
 alert to give (no desktop, no gateway, a short rate limit, which is no plan limit), the
 notifier announces the stopped turn on its own routes.
+
+**Agent view and background sessions.** Claude Code raises `Notification` hooks in the
+list's own process while `claude agents` is open: `agent_needs_input` while a session waits,
+and `agent_completed` with "<label> finished" or "<label> failed". **That process runs only
+the hooks in settings files, never a plugin's `hooks.json`** (proved live on 2.1.302,
+`docs/claude-code-contract.md`), so `cc-smart-dev-kit setup` manages one user-level entry in
+`~/.claude/settings.json` (`src/setup/user-notify-hook.ts`): matcher
+`agent_needs_input|agent_completed`, the command
+`"$HOME/.local/bin/cc-smart-dev-kit" hook notify`, timeout 10. It runs the same function the
+bundle's entry runs (`src/hooks/notify-entry.ts`) through the launcher, so a plugin update
+that deletes the old version folder cannot break it. The plugin's `hooks.json` leaves these
+two types out (`NOTIFY_MATCHER`), so a normal session never runs the alert twice. The entry's
+record is `owned-hooks.json`, never a `changed.json` kind: an older running cc-smart-dev-kit
+(a portal copy, a session that has not restarted) refuses a changed.json kind it does not
+know. An entry the person edited (another timeout, a redirection) is theirs — setup leaves
+it, claims nothing and adds no second one, and `doctor` shows it as information, never a
+failure. A hand-written entry setup replaced (it ran the plugin's own `dist/notify.js`, from a
+version folder) does not come back on restore: the managed entry goes, and the file's backup
+has the old one. A background update never runs setup, so when the entry is missing its
+notification says `cc-smart-dev-kit setup` writes it (`NOTIFY_HOOK_SETUP_HINT`). The hook input is the
+list's session and folder, so those alerts carry no session name (`titled(kind, null)`), and
+the per-session question mark says nothing about them. `agent_needs_input` also comes from a
+session's own process (a teammate's setup question, auto mode's classifier notice), and the
+input carries no sign of which: both get the agent-view handling, so that one alert loses its
+`· <session>` and its mark — a cost taken knowingly, since guessing from the message's words
+would be wrong for one of them. On a Linux desktop the one-alert-per-session key adds the
+session the message names (`agentViewKey`): one background session's alert never closes
+another's. The list never writes a hook's `terminalSequence` out, so these types take the
+devices first (`device-then-field`), and the field only when no device is found. A background session has
+`CLAUDE_JOB_DIR` set (Claude Code's environment-variables page) and inherits the daemon's
+`DISPLAY` and terminal variables, so an alert of its own would go to the wrong place: the
+notifier and the usage-limit alert stay silent there, and agent view is the one place its
+alerts come from while the list is open (`background-session.ts`). The owner accepted the
+trade-off (2026-10-18): with no list open, a background session does not alert. The alert's
+moment is its own field (`Alert.moment`), set with its words in `alertFor`: the
+finished/failed split of `agent_completed` is what `alerts.events` filters on, like every
+other moment.
 
 **The waits that stay quiet**, all from the team's older notification script, which this
 replaces: the permission prompt about six seconds after a question (the same wait — a mark
@@ -1390,8 +1500,26 @@ line, capped) and sent through the hook's `terminalSequence` output field (Claud
 and later writes it to the session's terminal itself, and wraps it for tmux — a wrapped
 sequence in the field is rejected, so the field carries the bare one), or straight to
 `/dev/tty` (wrapped for tmux by `tmuxPassthrough` when `TMUX` is set) for a Claude Code
-without that field; **the session's own device** — for an event whose answer Claude Code does
-not read at all (`StopFailure`), and for a Claude Code too old for the field, where `/dev/tty`
+without that field; **Warp at the far end** — `farEndIsWarp` sends that SSH alert in Warp's
+own agent format instead: OSC 777 with `warp://cli-agent` and one JSON object (`v`, `agent`,
+`event`, `session_id`, `cwd`, `project`, then `response` for a stop or `summary` for a wait;
+`error_type` only when the input names a real StopFailure reason, because Warp shows it as a
+prefix of the text). Warp shows its popup while the person is in front, and a desktop
+notification with a sound while they are not, and it decides the sound itself: no extra BEL.
+Proved live 2026-10-18 on a Windows PC reached over SSH from a pane without Warp's shell
+integration; the plain OSC 777 gave a silent Windows notification there. The far end counts
+as Warp when `isWarpTerminal` says so, when `LC_TERMINAL=WarpTerminal` arrives (the client's
+`SetEnv`, through sshd's usual `AcceptEnv LANG LC_*`), or when the person set `sshWarp`; a
+named terminal in `TERM_PROGRAM` (VS Code's `vscode`) says it is not Warp, while tmux's own
+`tmux` says nothing about the far end. One function maps the event (`warpEventOf`): finished
+→ `stop`, failed → `stop_failure`, and every wait and question — a permission prompt, a
+worker's prompt, agent view's `agent_needs_input`, a question — → `permission_request`.
+`agent_needs_input` is never sent: Warp showed only a tab badge for it and no popup, while
+`permission_request` showed the popup (proved live on Windows Warp, 2026-10-19);
+**the session's own device** — for an event whose answer Claude Code does
+not read at all (`StopFailure`), for agent view's own alerts (the list reads the field but
+never writes it out: only a session's conversation view sets up that writer, 2.1.302, so the
+list's own pty is the route there), and for a Claude Code too old for the field, where `/dev/tty`
 is tried first and a hook on 2.1.301 has no controlling terminal at all (ENXIO): the pty
 Claude Code is attached to, found from its pid (`CLAUDE_PID`, then the hook's parent:
 `/proc/<pid>/fd/0`, then 1 and 2), written to only when this user owns it, and wrapped for
@@ -1399,8 +1527,9 @@ tmux like `/dev/tty` (proved live 2026-10-16: the alert arrived in the terminal 
 exactly once; `src/hooks/terminal.ts`, `docs/claude-code-contract.md`); **nothing** — no desktop route, not over SSH, or **inside Warp** with
 Warp's own plugin on (`TERM_PROGRAM=WarpTerminal`, or the `WARP_*` pair a background session
 keeps), whose hooks already show a finished turn, a question, a permission prompt and an
-error. In Warp ours plays only the sound, and shows a question (`elicitation_*`) or a waiting
-agent itself: those may sit in a tab the person is not looking at (owner, 2026-10-11). A
+error. In Warp ours plays only the sound, and shows a question (`elicitation_*`), a waiting
+agent or agent view's finished/failed alert itself (Warp's plugin has no `agent_completed`):
+those may sit in a tab the person is not looking at (owner, 2026-10-11). A
 session that is none of those — no desktop, no SSH, no Warp — gets nothing, and that is not a
 failure: an alert on every turn would be noise.
 
@@ -1426,9 +1555,11 @@ this plugin does not carry) — the window is raised, and the tab stays where it
 Windows and the SSH terminal are unchanged.
 
 **The title** is `<kind> · <session>`: the session's newest `customTitle` from the
-transcript's tail (`cleanSessionName`), else the folder of the hook's `cwd`. **The settings**
-are `~/.claude/cc-smart-dev-kit/notify.json`: `desktopSound` (default on) and `sshBell` (default off,
-one BEL after an SSH alert). The notifier starts detached, so a slow one never holds the
+transcript's tail (`cleanSessionName`), else the folder of the hook's `cwd`; agent view's
+alerts carry no session name, because their input is the list's. **The settings**
+are `~/.claude/cc-smart-dev-kit/notify.json`: `desktopSound` (default on), `sshBell` (default off,
+one BEL after an SSH alert) and `sshWarp` (default off: the fallback that says the far end of
+an SSH session is Warp). The notifier starts detached, so a slow one never holds the
 hook. `setup` does not touch anyone's own notification hooks: a person with those removes
 them by hand when they switch to this one.
 
@@ -1463,7 +1594,8 @@ into a release branch, the main checkout following the base branch after each me
 (installs and migrations), the notes about one project's dev notes, migrations and env
 files, and the claude-mem start-folder note. **Ported in Phase 4, with the MCP servers the
 plugin registers:** the Serena root record (Serena's edits in the main-folder guard — the
-`serena-root` hook, above) and the Playwright output folder (the `playwright-output` hook).
+`serena-root` hook, retired with Serena in 0.6.0) and the Playwright output folder (the
+`playwright-output` hook, above).
 **Not ported:** the Windows helper that
 removes a worktree after the session lets go of it — the plugin removes one when its session
 asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and it moves the
@@ -1479,8 +1611,9 @@ Do-Not-Disturb check are the same as that script's — they are the `notify` hoo
 ### `doctor --live`
 
 `cc-smart-dev-kit doctor --live` (opt-in; it uses the person's login and costs a few cents) makes two
-throwaway repos in a temp folder, one without `cc-smart-dev-kit.json` and one that turned the
-worktree engine on exactly as the README says, and runs one `claude -p` session in each with
+throwaway repos in a temp folder, one without `cc-smart-dev-kit.json` (Claude Code's own
+worktrees, the default every project uses) and one that still wires the deprecated worktree
+engine, and runs one `claude -p` session in each with
 this plugin (`--plugin-dir`), only the EnterWorktree, ExitWorktree and Bash tools,
 `--allowedTools` for exactly the calls it makes (never a mode that skips the permission
 checks), and a three-step prompt: enter a worktree, `git status` there, leave with
@@ -1492,10 +1625,10 @@ instead. Every hook run is logged (`CC_SMART_DEV_KIT_HOOK_LOG`, with each run's 
 the git guard), the git guard **read the command line** (its log names the programs it
 parsed: a hook that fired is not a guard that answered), no WorktreeCreate hook ran, Claude
 Code made its own worktree and the session worked in it, and ExitWorktree removed it; with
-the engine, its WorktreeCreate made the configured folder, the session worked there, and its
-WorktreeRemove removed the folder and the branch. When all pass it records the Claude Code
-version in the state folder (`live-check.json`); plain `doctor` shows that line, and says
-to run it again when the installed Claude Code is another version.
+the deprecated engine wired, its WorktreeCreate made the configured folder, the session
+worked there, and its WorktreeRemove removed the folder and the branch. When all pass it
+records the Claude Code version in the state folder (`live-check.json`); plain `doctor` shows
+that line, and says to run it again when the installed Claude Code is another version.
 
 ## The workflow
 
@@ -1646,8 +1779,8 @@ committed); a stop with no start seen records nothing either. The names are comp
 name only for an agent with no plugin prefix — Claude Code reports a plugin agent as
 `plugin:name` (code.claude.com/docs/en/hooks § SubagentStart), so another plugin's
 `reviewer`, or a project agent of that name, never counts for `cc-smart-dev-kit:reviewer`. The
-Agent guard's own review list (`REVIEW_AGENTS`) answers a different question — which launches
-may run on Opus with no reason line — and is machine-wide, so it cannot read a project's list.
+Agent guard keeps no review list since D11: every `opus`-tier launch below `max` runs with no
+question, a review or not.
 The list the hook reads is the checkout's own, but the record keeps the agent that wrote it,
 and the merge guard judges that agent against the list committed on the base (`hasReview`):
 a list a session adds to in its own worktree records nothing the guard trusts. **SubagentStop,
@@ -1711,9 +1844,16 @@ answer the same command). The second warning leaves the machine-wide hooks out
 `agent-guard`): they answer about the machine, not the project, so a project hook on their
 event is not a second copy of a plugin piece.
 
-The worktree engine is not part of the switch, because the project wires it itself: a project
-with its own worktree hooks moves by replacing those lines with the engine's, in one commit
-(README § Worktrees). `cc-smart-dev-kit doctor` reports a second WorktreeCreate left behind.
+**A plugin hook the plugin retires** keeps its name in the schema as a retired name
+(`RETIRED_HOOK_NAMES` in `src/project/config.ts`; today `serena-root`, 0.6.0): a project file
+that still lists it parses, and the name silences nothing, because no hook of that name runs.
+Refusing it would fail the strict parse, and every guard would then ask about every call.
+`doctor` prints one `·` line that the name can go.
+
+The deprecated worktree engine is not part of the switch, because the project wires it
+itself: a project still on it moves by taking those lines out and using Claude Code's own
+worktrees (README § Worktrees), in one commit. `cc-smart-dev-kit doctor` reports a second
+WorktreeCreate left behind.
 
 ## The browser
 
@@ -1903,16 +2043,36 @@ hook matcher and agent tool list that names `mcp__<server>__*`; and a server fro
 file or the "local" scope is stopped by Claude Code as soon as the session's folder changes,
 which every session that works in a worktree does. Registered for the user, the names stay.
 
-- **Four servers**: `playwright` (the browser above), `serena` (with the plugin's own
-  context, so a session can point Serena at its worktree), `sequential-thinking`, and
-  `tavily-websearch`. Each version is pinned in `src/mcp/versions.ts`; the file's header says
-  why, and how to move one. A project's own servers stay in that project.
-- **Serena's context** is a whole file cc-smart-dev-kit owns, installed in the data folder
-  (`<dataDir>/serena/contexts/worktree.yml`), because the registration names its path and a
-  version folder is deleted by an update. It is Serena's own `claude-code` context with
-  `single_project: false`: with the default, `activate_project` is hidden and Serena could
-  never follow a session into its worktree.
-- - **The settings' own `env` counts as a key** (`readTavilyKey`): `TAVILY_API_KEY` in the process
+- **Three servers** (`SERVER_NAMES`): `playwright` (the browser above), `sequential-thinking`,
+  and `tavily-websearch`. Each version is pinned in `src/mcp/versions.ts`; the file's header
+  says why, and how to move one. A project's own servers stay in that project.
+- **A retired server** (`RETIRED_SERVER_NAMES`; today `serena`, dropped in 0.6.0 — one server
+  per session at about 3 GB each in a large project, for tools sessions seldom called) is taken
+  back by the next setup, in `src/mcp/retired.ts`, the one home of that cleanup:
+  `planRetiredServers` plans a `remove` only while the record says setup registered it AND
+  Claude Code still holds exactly that JSON — the rule a Tavily server without a key follows —
+  so `applyMcpServers` runs `claude mcp remove`. A record marked `pending` (an older setup's pin
+  update stopped after its `add-json`, so the record holds the old JSON and Claude Code the
+  newer) counts too when the live config has setup's own shape — `uvx`, `--from` Serena's
+  repository, `--context` setup's own context file — as `planMcpServers`' pending branch
+  reasons with the JSON it would write (`setupMadeIt`, which `doctor` asks too). Any other
+  `serena` stays (its record, if any, is forgotten), and the lines say only what is known:
+  setup has no record of registering it as it is. Then, in setup's locked pass, `planSerenaCleanup` and
+  `applySerenaCleanup` remove what 0.5.x left beside it: the context file
+  (`<dataDir>/serena/contexts/worktree.yml`, a whole file setup owned) through
+  `removeManagedFile` (a backup first) and `forgetChange`, its folder only when nothing else is
+  in it, and the `serena-root` records (`<stateDir>/serena-root/`). The context file stays while
+  any MCP registration in Claude Code's own config — the user scope but the ones this run took
+  back, and every folder's local scope — still names it, or when that config does not read:
+  a Serena of the person's own may start with it. Only the servers are read there, never the
+  rest of the file (a prompt may quote the path). The dry pass counts the planned removals;
+  the real pass counts only those that succeeded (`McpApplyResult.removed`), so a failed
+  `claude mcp remove` keeps the file its registration names. `doctor` asks the same
+  functions (`retiredChecks`): one ✗ line while setup owes any of it, none after, and a `·`
+  line for a `serena` that is not setup's. `mcp status` lists only `SERVER_NAMES`, so the
+  installer never offers to replace a retired name. `restore` needs nothing new: it takes back
+  a recorded registration and a tracked file the way it takes back any other.
+- **The settings' own `env` counts as a key** (`readTavilyKey`): `TAVILY_API_KEY` in the process
   environment, then the `env` of the settings files (the map Claude Code expands an MCP server's
   `${VAR}` from — `userSettings`/`flagSettings`/`policySettings` `.env`, read in the installed
   2.1.302), then the key file setup owns. A key that lives only in the settings is a key Claude
@@ -1934,7 +2094,8 @@ which every session that works in a worktree does. Registered for the user, the 
 - **What setup registered is recorded** (`<stateDir>/mcp-servers.json`: the name, the exact
   JSON, when, and whether an update is in flight), so `restore` removes exactly that: each
   server that still holds what setup wrote (`claude mcp remove <name> --scope user`), then the
-  record, Serena's context file and the Tavily `env` key. A server the person re-pointed — or
+  record and the Tavily `env` key (and, for a machine setup reached before 0.6.0, Serena's
+  context file, a tracked whole file like any other). A server the person re-pointed — or
   removed — is theirs and stays: the record is forgotten, and a later restore does not try it
   again (a `·` line says the exact command that adds it back). A server of the person's own
   under one of these names is never taken over; setup says how to hand it back.
@@ -1956,8 +2117,8 @@ which every session that works in a worktree does. Registered for the user, the 
   "which of these are the plugin's?": the same rule as setup's own (`sameConfig` against the
   record — one home), a line each, and `--json` for a script. Exit 1 means Claude Code's own
   config could not be read, so "nothing is foreign" and "could not check" are never confused.
-  **All four names are reported, Tavily included with no key** (premium review, 2026-10-17: it
-  used to be left out then, so a `tavily-websearch` a project's script had registered was never
+  **Every name in `SERVER_NAMES` is reported, Tavily included with no key** (premium review,
+  2026-10-17: it used to be left out then, so a `tavily-websearch` a project's script had registered was never
   offered for replacement on a machine whose key arrived later in the installer's step 7), and a
   record file that cannot be read gives `unknown` — never `foreign`, or the installer would
   offer to replace a server that is probably the plugin's own.

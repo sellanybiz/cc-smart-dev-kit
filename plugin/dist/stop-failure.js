@@ -58,7 +58,6 @@ function cliPaths(env = process.env) {
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
     browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
-    serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
@@ -103,6 +102,11 @@ function soundArgv(moment, platform, which) {
     return afplay === null ? null : [afplay, join3("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
   }
   return null;
+}
+
+// src/hooks/background-session.ts
+function inBackgroundSession(env) {
+  return (env.CLAUDE_JOB_DIR ?? "") !== "";
 }
 
 // src/hooks/detached.ts
@@ -6320,7 +6324,7 @@ import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.5.0",
+  version: "0.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6523,7 +6527,6 @@ var PLUGIN_HOOK_NAMES = [
   "git-guard",
   "merge-guard",
   "main-folder-guard",
-  "serena-root",
   "message-guard",
   "agent-guard",
   "fable-session",
@@ -6533,11 +6536,12 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name"
 ];
+var RETIRED_HOOK_NAMES = ["serena-root"];
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
-    prefix: string2().min(1),
+    prefix: string2().min(1).optional(),
     setup: array(string2().min(1)).min(1).optional(),
     guardMainFolder: boolean2().optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
@@ -6555,7 +6559,7 @@ var ccSmartDevKitConfigSchema = strictObject({
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
   workflow: workflowSchema.optional(),
-  ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
+  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional()
 });
 
 class CcSmartDevKitConfigError extends Error {
@@ -6770,6 +6774,7 @@ gpgkey=${WARP_KEY_URL}
 
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
 var FIND_INSTALL_JS = [
   "const f=process.argv[process.argv.length-1];",
   'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
@@ -6784,6 +6789,9 @@ var IGNORE_CASE = process.platform === "win32";
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 
+// src/setup/managed-hook.ts
+var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
+
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
   "const f=process.argv[process.argv.length-1];",
@@ -6793,6 +6801,22 @@ var FIND_INSTALL_JS2 = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);"
 ].join("");
+
+// src/hooks/notify-types.ts
+var PLUGIN_NOTIFY_TYPES = [
+  "permission_prompt",
+  "elicitation_dialog",
+  "elicitation_url_dialog",
+  "worker_permission_prompt"
+];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
+var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
+var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
+var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+
+// src/setup/user-notify-hook.ts
+var USER_NOTIFY_HOOK_NAME = "notify";
+var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -6955,6 +6979,7 @@ function windowsToastArgvFor(title, body, critical = false) {
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
+var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 
 // src/hooks/transcript.ts
 import { closeSync, fstatSync, openSync, readSync } from "fs";
@@ -7231,6 +7256,8 @@ async function hook() {
     console.error("cc-smart-dev-kit StopFailure: the hook input is not JSON");
     return;
   }
+  if (inBackgroundSession(process.env))
+    return;
   const paths = cliPaths();
   const ctx = readAlertContext(paths, Date.now(), input, process.env);
   const alert = planAlert(input, ctx);

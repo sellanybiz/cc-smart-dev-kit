@@ -17,7 +17,10 @@
  * model is at its limit and the model answers again once it can.
  *
  * Only for a person who set the gateway up (`gateway.json` exists): someone who never
- * opted in must not notice the plugin. A `gateway.json` that cannot be read still gives the
+ * opted in must not notice the plugin. A background session (`CLAUDE_JOB_DIR`,
+ * `background-session.ts`) shows nothing here: agent view alerts for it while the list is
+ * open, and the session inherits the daemon's display, so its own alert would go to the
+ * wrong place. A `gateway.json` that cannot be read still gives the
  * plain alert: it says what happened, with no action. It never blocks: the work that waits
  * (a notification with buttons that waits for a click) runs in a detached worker, started
  * through the launcher (`~/.local/bin/cc-smart-dev-kit alert-worker …`), never from the plugin's
@@ -63,6 +66,7 @@ import {
   withoutContextSuffix,
 } from "../gateway/targets";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
+import { inBackgroundSession } from "./background-session";
 import { hasDesktop } from "./desktop-alert";
 import type { Env } from "./run";
 import { lastClaudeModel } from "./transcript";
@@ -415,9 +419,15 @@ export function limitAlertDesktop(
  * show it on, a person who set the gateway up, and a plan limit rather than a short rate
  * limit (`planAlert`). The notifier asks this before it stays quiet for a `rate_limit` stop,
  * so one stop never gives two alerts — and where that hook has no alert to give (no desktop,
- * no gateway, a short limit), the notifier shows one on its own routes instead.
+ * no gateway, a short limit), the notifier shows one on its own routes instead. In a
+ * background session neither alerts.
+ *
+ * A background session never alerts here: agent view alerts for it while the list is open,
+ * and the session inherits the daemon's display, so an alert of its own would go to the wrong
+ * place (`background-session.ts`).
  */
 export function stopFailureWillAlert(input: unknown, deps: LimitAlertDeps): boolean {
+  if (inBackgroundSession(deps.env)) return false;
   if (!limitAlertDesktop(deps.platform, deps.env, deps.which)) return false;
   return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input, deps.env)) !== null;
 }

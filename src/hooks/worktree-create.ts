@@ -389,14 +389,22 @@ function createConfigured(context: HookContext, name: string, worktrees: Worktre
   const { env, paths, project, input } = context;
   const main = project.mainCheckout;
   if (main === null) throw new Refusal("the repo has no main checkout (a bare repo)");
-  const prefixProblem = badPrefix(worktrees.prefix);
+  // `worktrees.prefix` is deprecated with the engine, so the schema no longer requires it: a
+  // project wired to the engine must still set it, or there is no folder to make.
+  const prefix = worktrees.prefix;
+  if (prefix === undefined) {
+    throw new Refusal(
+      'worktrees.prefix is not set in .claude/cc-smart-dev-kit.json, and the deprecated worktree engine needs it to name its folder: add it, or take the "cc-smart-dev-kit hook worktree-create" line out and use Claude Code\'s own worktrees (`.claude/worktrees/<name>`)',
+    );
+  }
+  const prefixProblem = badPrefix(prefix);
   if (prefixProblem !== null) throw new Refusal(prefixProblem);
   const branch = name;
   // A branch named under a prefix of its own (a hotfix, a release) starts from that prefix's
   // base, never from the integration base (`worktrees.bases`).
   const base = baseForBranch(worktrees, branch);
   checkBranchName(main, branch, env);
-  const folder = configuredFolder(main, worktrees.prefix, name);
+  const folder = configuredFolder(main, prefix, name);
   const session = typeof input.session_id === "string" ? input.session_id : null;
 
   // One creation of a branch at a time, held through `git worktree add` and the setup: a

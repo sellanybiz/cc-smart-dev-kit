@@ -31,6 +31,7 @@ import {
   type Watch,
 } from "../hooks/desktop-alert";
 import { runtimeDir } from "../hooks/notify";
+import { runNotifyEntry } from "../hooks/notify-entry";
 import { projectHookSettingsText } from "../hooks/project-wiring";
 import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
@@ -40,7 +41,6 @@ import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
-import { serenaFolder } from "../mcp/serena-context";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
@@ -50,9 +50,16 @@ import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
+
+/**
+ * Every name `cc-smart-dev-kit hook` accepts: the project hooks, then the user-level notifier
+ * setup writes. The help, the dispatch below and the README's row all name these.
+ */
+const HOOK_NAMES = [...PROJECT_HOOKS.map((spec) => spec.name), USER_NOTIFY_HOOK_NAME];
 
 const HELP = `cc-smart-dev-kit ${VERSION} - set up and check the cc-smart-dev-kit plugin for Claude Code
 
@@ -111,10 +118,11 @@ Commands:
                      the merge guard reads that record. It is for your own terminal: inside
                      Claude Code the review-record hook writes the record when a review
                      agent returns, so review-done refuses there.
-  hook <worktree-create|worktree-remove|subagent-stop>
+  hook <${HOOK_NAMES.join("|")}>
                      The worktree engine, for a project that wires it in its own
-                     .claude/settings.json: reads the hook's input on stdin and answers
-                     as Claude Code expects. Without a name: prints the lines to paste.
+                     .claude/settings.json, and the notifier hook setup wires in your user
+                     settings: reads the hook's input on stdin and answers as Claude Code
+                     expects. Without a name: prints the lines to paste.
   session-name <session id> <name>
                      Name a Claude session after its task (for the session-name hook).
   restore [--yes] [--now]
@@ -211,13 +219,18 @@ Commands:
 
 Paths follow HOME and CLAUDE_CONFIG_DIR.`;
 
-const HOOK_HELP = `Usage: ${COMMAND} hook <${PROJECT_HOOKS.map((spec) => spec.name).join("|")}>
+const HOOK_HELP = `Usage: ${COMMAND} hook <${HOOK_NAMES.join("|")}>
 
 The worktree engine is opt-in per project. To turn it on in a project, give its
 .claude/cc-smart-dev-kit.json a "worktrees" field, and paste these hooks into its
 .claude/settings.json (merge them with any "hooks" it has):
 
-${projectHookSettingsText()}`;
+${projectHookSettingsText()}
+
+notify is the notifier hook, with the same input and answer as the plugin's own bundle.
+${COMMAND} setup wires it in your user settings for agent view, which runs no plugin hooks
+(Claude Code's list of sessions raises agent_needs_input and agent_completed there). It is
+not a project hook: it needs no settings from a project, and it works in every folder.`;
 
 /**
  * The plugin's other bundles beside this one (plugin/dist/<name>.js): the router, and the
@@ -425,7 +438,6 @@ async function main(argv: string[]): Promise<number> {
         machine: realMachine(process.env, ask),
         instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(import.meta.dir),
-        serenaSource: serenaFolder(import.meta.dir),
         statusline: rest.includes("--statusline"),
       });
     }
@@ -506,6 +518,13 @@ async function main(argv: string[]): Promise<number> {
       const [name, ...extra] = rest;
       if (name === undefined || name === "--help" || name === "-h") {
         console.log(HOOK_HELP);
+        return 0;
+      }
+      if (name === USER_NOTIFY_HOOK_NAME && extra.length === 0) {
+        // The same wiring as `plugin/dist/notify.js`: one function, one answer. This is the
+        // command the user-level hook setup writes for agent view runs
+        // (`src/setup/user-notify-hook.ts`).
+        await runNotifyEntry();
         return 0;
       }
       const spec = PROJECT_HOOKS.find((one) => one.name === name);

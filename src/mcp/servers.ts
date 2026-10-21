@@ -12,27 +12,32 @@
  * WHAT THE PLUGIN REGISTERS
  *   - `playwright`: the browser (`browser/launcher.ts`): the Playwright MCP server on the
  *     person's own Chrome, through the Playwright extension, in the profile `claude-code`.
- *   - `serena`: code intelligence, started with the plugin's own context, which allows
- *     `activate_project` so a session can point Serena at its worktree.
  *   - `sequential-thinking`: the general reasoning server.
  *   - `tavily-websearch`: Tavily's remote HTTP server. Its key is never written here: the
  *     header carries `${TAVILY_API_KEY}`, which Claude Code fills in from its own
  *     environment when it connects, and the key itself lives in the person's environment or
  *     in a key file only they can read (`tavily.ts`). Without a key the server is skipped.
  *
+ * WHAT IT NO LONGER REGISTERS
+ *   `RETIRED_SERVER_NAMES`: a server an earlier version registered. The next setup takes back
+ *   a registration of its own (`retired.ts`); one of the person's own under that name stays.
+ *
  * A project's own servers are the project's: the plugin never knows them.
  */
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 
 /** The servers this plugin manages, in the order setup registers them. */
-export const SERVER_NAMES = [
-  "playwright",
-  "serena",
-  "sequential-thinking",
-  "tavily-websearch",
-] as const;
+export const SERVER_NAMES = ["playwright", "sequential-thinking", "tavily-websearch"] as const;
 
 export type ServerName = (typeof SERVER_NAMES)[number];
+
+/**
+ * The servers an earlier version registered and this one does not. `serena` went in 0.6.0:
+ * one server per session, gigabytes of memory each, for tools sessions seldom called.
+ */
+export const RETIRED_SERVER_NAMES = ["serena"] as const;
+
+export type RetiredServerName = (typeof RETIRED_SERVER_NAMES)[number];
 
 /** One server's registration: the name, and the JSON `claude mcp add-json` takes. */
 export interface McpServer {
@@ -56,8 +61,6 @@ export interface McpContext {
   launcher: readonly string[];
   /** `bunx`, as an absolute path when there is one. */
   bunx: string;
-  /** The Serena context installed beside the plugin's data (`<dataDir>/serena/contexts/worktree.yml`). */
-  serenaContextFile: string;
   /**
    * The Tavily key's state: `key: true` when one is available, else the reason it is not —
    * that reason becomes the note setup prints (`skipped — <reason>`).
@@ -69,22 +72,7 @@ function json(config: Record<string, unknown>): string {
   return JSON.stringify(config);
 }
 
-/** Serena's start command, after `uvx`. `--context` takes a context name or a YAML path. */
-export function serenaArgs(contextFile: string): string[] {
-  return [
-    "--from",
-    `git+https://github.com/oraios/serena@${MCP_VERSIONS.serena}`,
-    "serena",
-    "start-mcp-server",
-    "--context",
-    contextFile,
-    "--open-web-dashboard",
-    "False",
-    "--project-from-cwd",
-  ];
-}
-
-/** The longest ONE tool call may run — a Tavily research, a Serena rename across a repo. */
+/** The longest ONE tool call may run — a Tavily research. */
 const LONG_CALL_MS = 300_000;
 
 /** Every server, with the JSON to register it by. */
@@ -96,14 +84,6 @@ export function mcpServers(context: McpContext): McpServer[] {
       // `command` first, then `args`: the order every earlier setup wrote, so a machine whose
       // registration is the same as before sees the same JSON text (`planMcpServers`).
       json: json({ command, args: [...before, "browser", "mcp"] }),
-    },
-    {
-      name: "serena",
-      json: json({
-        args: serenaArgs(context.serenaContextFile),
-        command: "uvx",
-        timeout: LONG_CALL_MS,
-      }),
     },
     {
       name: "sequential-thinking",

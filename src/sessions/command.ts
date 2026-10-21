@@ -28,8 +28,10 @@
  *   with /exit.
  *
  * Everything is read from Claude Code's own files; nothing is tracked on the side. The
- * project is found from the working folder (`cc-smart-dev-kit.json` `worktrees.prefix` and
- * `worktrees.base`); without that file, only the main checkout's own sessions are listed.
+ * project is found from the working folder (`cc-smart-dev-kit.json` `worktrees.base`, and
+ * `worktrees.prefix` while a project still runs the deprecated engine); without that file,
+ * only the main checkout's own sessions are listed. A session's own worktree lives under
+ * `<main checkout>/.claude/worktrees/`, and is listed with the rest of the project's.
  */
 import {
   closeSync,
@@ -101,7 +103,7 @@ function readTail(path: string, size: number): string {
 export function savedSessions(
   projectsDir: string,
   mainCheckout: string,
-  prefix: string,
+  prefix: null | string,
   since: number,
 ): SavedSession[] {
   if (!existsSync(projectsDir)) return [];
@@ -284,13 +286,13 @@ export async function runSessions(
 ): Promise<number> {
   // The main checkout, so a run inside a worktree still lists every session of the project.
   let mainCheckout = resolve(cwd);
-  let prefix = "";
+  let prefix: null | string = null;
   try {
     const checkout = locateCheckout(cwd, { env: process.env });
     if (checkout !== null) {
       mainCheckout = checkout.mainCheckout ?? checkout.root;
       const project = loadProjectConfig(checkout);
-      prefix = project.config?.worktrees?.prefix ?? "";
+      prefix = project.config?.worktrees?.prefix ?? null;
     }
   } catch {
     // Outside git, or a project file that does not read: the folder itself is the project.

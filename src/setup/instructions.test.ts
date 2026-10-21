@@ -23,6 +23,7 @@ import {
   optOutFile,
   readVersionStamp,
   refreshInstructionsCopy,
+  refreshRefusal,
   removeInstructions,
   setInstructionsOptOut,
   versionStampFile,
@@ -33,6 +34,7 @@ import { listBackups, readChanged } from "./write";
 /** The plugin versions the tests stamp the copy with. */
 const V1 = "1.0.0";
 const V2 = "1.1.0";
+const V3 = "1.2.0";
 
 const BLOCK = [
   "<!-- cc-smart-dev-kit:begin -->",
@@ -328,7 +330,7 @@ describe("refreshInstructionsCopy", () => {
     expect(readVersionStamp(stateDir)).toBe("1.0.0");
   });
 
-  test("ST-2: an older session never writes back older instructions", async () => {
+  test("an older session never writes back older instructions", async () => {
     // A session of the old version still runs after an update: its SessionStart (a resume, a
     // `/clear`, a compaction) must not put the old files back over the new version's copy.
     const { source, stateDir, paths } = setup();
@@ -345,7 +347,20 @@ describe("refreshInstructionsCopy", () => {
     expect(readVersionStamp(stateDir)).toBe("1.1.0");
   });
 
-  test("ST-2: the installed version refreshes the copy, also when it is older (a downgrade)", async () => {
+  test("a newer session that is not the installed one never writes the installed copy", async () => {
+    // Only the version Claude Code has installed writes: a session running another build
+    // (a plugin loaded with `--plugin-dir`, or a second checkout) is not the copy's owner,
+    // even when its version is newer than the copy.
+    const { source, stateDir, paths } = setup();
+    installedAt(paths, V2);
+    installInstructions(paths, false, V2);
+    writeFileSync(join(source, "core.md"), "# Core, version three\n");
+    expect(await refreshInstructionsCopy(paths, V3)).toEqual([]);
+    expect(read(join(paths.target, "core.md"))).toBe("# Core\n");
+    expect(readVersionStamp(stateDir)).toBe("1.1.0");
+  });
+
+  test("the installed version writes its copy over a newer stamp too (a rollback)", async () => {
     // The person installed the older version on purpose: its session is the installed one, so
     // its files are the right ones.
     const { dir, source, stateDir, paths } = setup();
@@ -360,7 +375,7 @@ describe("refreshInstructionsCopy", () => {
     expect(readVersionStamp(stateDir)).toBe("1.0.0");
   });
 
-  test("ST-2: a stamp that is not a version is refreshed only by the installed version", async () => {
+  test("a stamp that is not a version is refreshed only by the installed version", async () => {
     const { source, stateDir, paths } = setup();
     installInstructions(paths, false, V1);
     writeFileSync(versionStampFile(stateDir), "not-a-version\n");
@@ -369,6 +384,24 @@ describe("refreshInstructionsCopy", () => {
     installedAt(paths, V2);
     expect(await refreshInstructionsCopy(paths, V2)).toHaveLength(1);
     expect(readVersionStamp(stateDir)).toBe("1.1.0");
+  });
+
+  test("refreshRefusal: one line, and none when the copy is already the installed version's", () => {
+    const { paths } = setup();
+    installInstructions(paths, false, V2);
+    // Installed 1.1.0 and this session 1.0.0: the copy is right, so nothing to say.
+    installedAt(paths, V2);
+    expect(refreshRefusal(paths, V1)).toBeNull();
+    // Installed 1.2.0 while the copy is 1.1.0: the old session learns the step.
+    installedAt(paths, V3);
+    expect(refreshRefusal(paths, V1)).toBe(
+      "this session runs 1.0.0; restart it to use the installed 1.2.0's instructions",
+    );
+    // No record of the installed version, and a copy that is not this session's.
+    rmSync(paths.installedPluginsFile);
+    expect(refreshRefusal(paths, V1)).toBe(
+      "this session runs 1.0.0, and the instructions copy is not this session's; it is left alone",
+    );
   });
 
   test("dry run: the lines, and nothing written", async () => {

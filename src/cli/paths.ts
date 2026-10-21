@@ -27,8 +27,6 @@ export interface CliPaths extends RouterPaths {
    * Chrome without an approval page (`src/browser/token.ts`).
    */
   browserTokenFile: string;
-  /** The Serena context the plugin starts Serena with: `<dataDir>/serena/contexts/worktree.yml`. */
-  serenaContextFile: string;
   /** The router's long-running copy: `~/.local/share/cc-smart-dev-kit/router.js`. */
   routerCopy: string;
   /**
@@ -108,15 +106,6 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
       ".config",
       "cc-smart-dev-kit",
       "playwright-extension.token",
-    ),
-    serenaContextFile: join(
-      router.home,
-      ".local",
-      "share",
-      "cc-smart-dev-kit",
-      "serena",
-      "contexts",
-      "worktree.yml",
     ),
     routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),

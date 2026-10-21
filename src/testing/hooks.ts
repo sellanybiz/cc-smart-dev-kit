@@ -83,10 +83,9 @@ export function hookEnv(): Record<string, string> {
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     TMPDIR: tmp,
   };
-  // `CLAUDECODE` is dropped: it says the suite itself runs inside Claude Code, not that the
-  // person is, and a command that refuses there must be tested on purpose (a test that wants
-  // it sets it). Without this, a suite run from a session tests a different machine than CI.
-  delete env.CLAUDECODE;
+  // `cleanGitEnv` drops the running session's own variables, so the suite tests the same
+  // machine in a session as in CI; a test that wants one (a background session, SSH, a
+  // desktop) sets it on the env it passes.
   return env;
 }
 

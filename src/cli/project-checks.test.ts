@@ -10,13 +10,20 @@ import { projectChecks, renamedCommand } from "./project-checks";
 
 const PLUGIN_HOOKS = join(import.meta.dir, "..", "..", "plugin", "hooks", "hooks.json");
 const ENGINE = { worktrees: { base: "main", prefix: "app-wt-" } };
-const HINT =
-  "Run `cc-smart-dev-kit hook` for the lines to paste (also in the cc-smart-dev-kit README, § Worktrees)";
+const MOVE =
+  '; Claude Code\'s own worktrees need no hook, and a project whose base branch is not the repo\'s default branch adds "worktree": {"baseRef": "head"} to .claude/settings.json';
+const NOT_IGNORED =
+  "project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add \".claude/worktrees/\" to the repo's .gitignore and commit it";
 
 function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
   return projectChecks(repo, env, cliPaths(env), hooksFile).map(
     (line) => `${line.info ? "·" : line.warn ? "!" : line.ok ? "✓" : "✗"} ${line.text}`,
   );
+}
+
+/** The repo ignores `.claude/worktrees/`, where Claude Code makes its worktrees. */
+function ignoreWorktrees(repo: string): void {
+  writeFileSync(join(repo, ".gitignore"), ".claude/worktrees/\n");
 }
 
 /** The project's settings with only some of the engine's hooks. */
@@ -27,7 +34,7 @@ function wireOnly(repo: string, events: string[], extra: Record<string, unknown>
   });
 }
 
-describe("the worktree engine's wiring", () => {
+describe("Claude Code's own worktrees, and the deprecated engine", () => {
   test("outside git: nothing to say", () => {
     expect(check(tempDir("nogit"))).toEqual([]);
   });
@@ -41,49 +48,123 @@ describe("the worktree engine's wiring", () => {
     expect(check(makeRepo(), env)).toEqual(["· project: not checked, git is not on PATH"]);
   });
 
-  test("worktrees set, the three hooks wired as the README says: one ✓", () => {
+  test("worktrees set, no engine hook, the folder ignored: nothing to say", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([]);
+  });
+
+  test(".claude/worktrees/ not git-ignored: one ! line naming the .gitignore entry", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    expect(check(repo)).toEqual([`! ${NOT_IGNORED}`]);
+  });
+
+  test("a base branch that is not the default, no baseRef: one ! line naming the line to add", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "dev" } });
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([
+      '! project: worktrees.base is dev, not this repo\'s default branch main, and the project\'s settings do not set "worktree": {"baseRef": "head"}, so a new worktree is cut from the default branch instead: add "worktree": {"baseRef": "head"} to .claude/settings.json and commit it',
+    ]);
+  });
+
+  test("a base branch that is not the default, with baseRef head: nothing to say", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "dev" } });
+    writeClaudeFile(repo, "settings.json", { worktree: { baseRef: "head" } });
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([]);
+  });
+
+  test("a base branch that is not the default, baseRef head in settings.local.json: nothing", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "dev" } });
+    writeClaudeFile(repo, "settings.local.json", { worktree: { baseRef: "head" } });
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([]);
+  });
+
+  test("the default branch as the base needs no baseRef line", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([]);
+  });
+
+  test("a non-default base with the engine still wired: the line says the engine decides", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "dev", prefix: "app-wt-" },
+    });
+    writeClaudeFile(repo, "settings.json", projectHookSettings());
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([
+      `! project: the project's settings wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json and drop "worktrees.prefix" from .claude/cc-smart-dev-kit.json${MOVE}`,
+      '! project: worktrees.base is dev, not this repo\'s default branch main, and the project\'s settings do not set "worktree": {"baseRef": "head"}, so a new worktree is cut from the default branch instead, and the plugin\'s worktree engine decides while it is wired: add "worktree": {"baseRef": "head"} to .claude/settings.json and commit it',
+    ]);
+  });
+
+  test("the wired-engine line names no field when the file sets none", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    writeClaudeFile(repo, "settings.json", projectHookSettings());
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([
+      `! project: the project's settings wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json${MOVE}`,
+    ]);
+  });
+
+  test("the deprecated fields still set, nothing wired: one ! line naming each field", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", prefix: "app-wt-", setup: ["bun", "install"], engine: "own" },
+    });
+    ignoreWorktrees(repo);
+    expect(check(repo)).toEqual([
+      `! project: .claude/cc-smart-dev-kit.json still sets "worktrees.engine", "worktrees.prefix", "worktrees.setup": the worktree engine is deprecated and retires in the next minor version. Remove them${MOVE}`,
+    ]);
+  });
+
+  test("the engine's three hooks wired: one ! line naming the lines and the fields to remove", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
     writeClaudeFile(repo, "settings.json", projectHookSettings());
+    ignoreWorktrees(repo);
     expect(check(repo)).toEqual([
-      "✓ project: the worktree engine is wired (WorktreeCreate, WorktreeRemove, SubagentStop)",
+      `! project: the project's settings wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json and drop "worktrees.prefix" from .claude/cc-smart-dev-kit.json${MOVE}`,
     ]);
   });
 
-  test("worktrees set, nothing wired: ✗, Claude Code makes its own worktrees, and how to wire them", () => {
+  test("the engine's hooks wired, part of them in settings.local.json: ! naming every event", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
-    expect(check(repo)).toEqual([
-      `✗ project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook, so Claude Code makes its own worktrees. ${HINT}`,
-    ]);
-  });
-
-  test("worktrees set, only WorktreeCreate wired (in settings.local.json): ✗ naming the other two", () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
+    ignoreWorktrees(repo);
     writeClaudeFile(repo, "settings.local.json", {
       hooks: { WorktreeCreate: projectHookSettings().hooks.WorktreeCreate },
     });
     expect(check(repo)).toEqual([
-      `✗ project: "worktrees" is set in .claude/cc-smart-dev-kit.json, but the project's settings do not wire WorktreeRemove, SubagentStop to cc-smart-dev-kit hook. ${HINT}`,
+      `! project: the project's settings wire WorktreeCreate to cc-smart-dev-kit hook: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json and drop "worktrees.prefix" from .claude/cc-smart-dev-kit.json${MOVE}`,
     ]);
   });
 
-  test("wired, but no cc-smart-dev-kit.json, or one without worktrees: ✗, each worktree would fail", () => {
+  test("wired, but no cc-smart-dev-kit.json, or one without worktrees: ✗, each hook fails", () => {
     const repo = makeRepo();
     wireOnly(repo, ["WorktreeCreate", "WorktreeRemove"]);
     expect(check(repo)).toEqual([
-      '✗ project: the project\'s settings wire WorktreeCreate, WorktreeRemove to cc-smart-dev-kit hook, but there is no .claude/cc-smart-dev-kit.json, so each of them fails. Add "worktrees", or take the cc-smart-dev-kit hook lines out',
+      `✗ project: the project's settings wire WorktreeCreate, WorktreeRemove to cc-smart-dev-kit hook, but there is no .claude/cc-smart-dev-kit.json, so each of them fails. Take the cc-smart-dev-kit hook lines out: the worktree engine is deprecated and retires in the next minor version${MOVE}`,
     ]);
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     expect(check(repo)).toEqual([
-      '✗ project: the project\'s settings wire WorktreeCreate, WorktreeRemove to cc-smart-dev-kit hook, but .claude/cc-smart-dev-kit.json has no "worktrees", so each of them fails. Add "worktrees", or take the cc-smart-dev-kit hook lines out',
+      `✗ project: the project's settings wire WorktreeCreate, WorktreeRemove to cc-smart-dev-kit hook, but .claude/cc-smart-dev-kit.json has no "worktrees", so each of them fails. Take the cc-smart-dev-kit hook lines out: the worktree engine is deprecated and retires in the next minor version${MOVE}`,
     ]);
   });
 
   test("a second WorktreeCreate next to the engine, the project's or the user's: ✗ for each", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
+    ignoreWorktrees(repo);
     const settings = projectHookSettings();
     settings.hooks.WorktreeCreate?.push({
       hooks: [{ type: "command", command: "./make-worktree.sh", timeout: 60 }],
@@ -97,59 +178,20 @@ describe("the worktree engine's wiring", () => {
       }),
     );
     expect(check(repo, env)).toEqual([
-      "✓ project: the worktree engine is wired (WorktreeCreate, WorktreeRemove, SubagentStop)",
+      `! project: the project's settings wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json and drop "worktrees.prefix" from .claude/cc-smart-dev-kit.json${MOVE}`,
       "✗ project: another WorktreeCreate hook runs too: ./make-worktree.sh (.claude/settings.json). Claude Code runs both and makes two worktrees for each request; remove one",
       "✗ project: another WorktreeCreate hook runs too: mine (~/.claude/settings.json). Claude Code runs both and makes two worktrees for each request; remove one",
     ]);
   });
 
-  test('engine "own", the plugin hooks not wired: one · line, never a ✗', () => {
+  test("an engine of the project's own, no hooks: the deprecated fields line, never a failure", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
     });
+    ignoreWorktrees(repo);
     expect(check(repo)).toEqual([
-      '· project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
-    ]);
-  });
-
-  test('engine "own" with the project\'s own worktree hook: still one · line', () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
-    });
-    writeClaudeFile(repo, "settings.json", {
-      hooks: { WorktreeCreate: [{ hooks: [{ type: "command", command: "./make-worktree.sh" }] }] },
-    });
-    expect(check(repo)).toEqual([
-      '· project: "worktrees.engine" is "own" in .claude/cc-smart-dev-kit.json, so this project runs its own worktree engine and the cc-smart-dev-kit engine hooks are not wired here',
-    ]);
-  });
-
-  test('engine "own" but the plugin\'s engine wired anyway: a ! line, two engines', () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
-    });
-    writeClaudeFile(repo, "settings.json", projectHookSettings());
-    expect(check(repo)).toEqual([
-      '! project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out',
-    ]);
-  });
-
-  test('engine "own", the plugin wired next to another WorktreeCreate hook: a ! for each', () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", engine: "own" },
-    });
-    const settings = projectHookSettings();
-    settings.hooks.WorktreeCreate?.push({
-      hooks: [{ type: "command", command: "./make-worktree.sh", timeout: 60 }],
-    });
-    writeClaudeFile(repo, "settings.json", settings);
-    expect(check(repo)).toEqual([
-      '! project: "worktrees.engine" is "own", so this project runs its own worktree engine, but its settings also wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: two engines answer each worktree request. Take the cc-smart-dev-kit hook lines out',
-      "! project: another WorktreeCreate hook runs too: ./make-worktree.sh (.claude/settings.json). Claude Code runs both and makes two worktrees for each request; remove one",
+      `! project: .claude/cc-smart-dev-kit.json still sets "worktrees.engine", "worktrees.prefix": the worktree engine is deprecated and retires in the next minor version. Remove them${MOVE}`,
     ]);
   });
 
@@ -192,6 +234,7 @@ describe("a project that used the old anymodel name", () => {
   test("the new names: no warning; a hook that only says anymodel somewhere else is not one", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", ENGINE);
+    ignoreWorktrees(repo);
     writeClaudeFile(repo, "settings.json", {
       hooks: {
         PreToolUse: [
@@ -201,7 +244,7 @@ describe("a project that used the old anymodel name", () => {
       },
     });
     expect(check(repo)).toEqual([
-      "✓ project: the worktree engine is wired (WorktreeCreate, WorktreeRemove, SubagentStop)",
+      `! project: the project's settings wire WorktreeCreate, WorktreeRemove, SubagentStop to cc-smart-dev-kit hook: the worktree engine is deprecated and retires in the next minor version. Take those lines out of .claude/settings.json and drop "worktrees.prefix" from .claude/cc-smart-dev-kit.json${MOVE}`,
       "! project: the plugin's git-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list \"git-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's merge-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of merge-guard, list \"merge-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of job-route, list \"job-route\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
@@ -244,8 +287,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
-      // serena-root also runs at a session start (it forgets or distrusts its record there).
-      both("serena-root", "./hello.sh", "SessionStart (startup)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "bun p.ts", "UserPromptSubmit"),
@@ -263,7 +304,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("job-route", "./guard.sh", "PreToolUse (Bash)"),
-      both("serena-root", "./hello.sh", "SessionStart (startup)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
     ]);
   });
@@ -277,7 +317,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     expect(check(repo)).toEqual([
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       "· project: the plugin's worktree-leftovers is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
-      both("serena-root", "./hello.sh", "SessionStart (startup)"),
     ]);
   });
 
@@ -301,8 +340,18 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["main-folder-guard"] });
     expect(check(repo)).toEqual([
-      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit, mcp__serena__(replace_symbol_body, insert_after_symbol, insert_before_symbol, replace_content, rename_symbol, safe_delete_symbol, replace_in_files, write_memory, rename_memory, edit_memory, delete_memory)): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
+      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
     ]);
+  });
+
+  test("a retired hook name in ownHooks: one · line that it silences nothing and can go, never a warning", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["serena-root"] });
+    expect(check(repo)).toEqual([
+      '· project: .claude/cc-smart-dev-kit.json lists serena-root in ownHooks, a plugin hook that is retired: it silences nothing. Take "serena-root" out of ownHooks',
+    ]);
+    const env = hookEnv();
+    expect(projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS).every((l) => l.ok)).toBe(true);
   });
 
   test("a project hook for every tool runs next to each plugin hook on that event, for all its tools", () => {
@@ -314,7 +363,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     // review-record runs on SubagentStop, not PostToolUse, so a PostToolUse "*" never meets it.
     expect(check(repo)).toEqual([
       both("after-merge", "./log.sh", "PostToolUse (Bash, PowerShell)"),
-      both("serena-root", "./log.sh", "PostToolUse (mcp__serena__activate_project)"),
     ]);
   });
 

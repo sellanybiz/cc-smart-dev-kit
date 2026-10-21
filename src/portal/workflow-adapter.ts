@@ -104,7 +104,6 @@ function projectInitDefaults(input: { env: Env; root: string }): ProjectInitDefa
       readExisting(join(input.root, ".claude", "cc-smart-dev-kit.json")),
       facts,
       { dryRun: false, yes: false },
-      input.root,
     ),
     defaultBranch: facts.defaultBranch,
   };

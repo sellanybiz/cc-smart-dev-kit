@@ -72,7 +72,7 @@ a step that failed, and running it again goes on from there.
     the file, says why, and the question comes once more.
   A key that cannot be checked (OmniRoute not running, a 5xx) is saved with a warning, never
   silently. With no OmniRoute at all, nothing is asked and the gateway goes on the list at the end.
-- **An MCP server of yours.** If one of the plugin's four server names (`playwright`, `serena`,
+- **An MCP server of yours.** If one of the plugin's three server names (`playwright`,
   `sequential-thinking`, `tavily-websearch`) is registered at user scope by something else — a
   project's own script, say — setup leaves it alone, as it must. The installer then shows what
   runs instead and asks whether to replace it, one server at a time. A yes runs
@@ -188,6 +188,40 @@ step below runs the plugin through it.
    ([The browser](#the-browser)); without the token, the browser tools do not work.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
+
+## 0.6.0: Serena is removed
+
+The plugin no longer registers the Serena MCP server, and its `serena-root` hook and its
+`code-explorer` agent are gone. One Serena server ran for each Claude session, at about 3 GB of
+memory each in a large project; sessions seldom used it, and Grep, Glob and Read do most code
+search. For a file's shape — its functions and exports — claude-mem's `smart_outline`,
+`smart_search` and `smart_unfold` do the job (claude-mem is a [companion
+plugin](#companion-plugins) setup installs).
+
+**After you update, run `cc-smart-dev-kit setup` once.** It takes back what an older setup made
+for Serena, and nothing else:
+
+- the `serena` MCP server, with Claude Code's own `claude mcp remove serena --scope user` —
+  only while setup's record says setup registered it, and it still holds exactly what setup
+  registered (or, after a pin update an older setup left half done, it still has setup's own
+  shape: `uvx`, Serena's repository, and setup's own context file);
+- Serena's context file, `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`
+  (a backup goes to the state folder first), and its folder once it is empty;
+- the `serena-root` hook's records, `~/.claude/cc-smart-dev-kit/serena-root/`.
+
+`--dry-run` shows each of these first. Until setup has run, `doctor` prints one ✗ line that
+says so; after it, nothing.
+
+**A Serena of your own stays.** A `serena` server that setup did not register (or one you
+changed since) is never touched: `doctor` shows it as a `·` line. Its context file stays too,
+while a registration still starts Serena with it. The main-folder guard no longer looks at
+Serena's edit tools, so a Serena you keep can edit a guarded main checkout without a refusal.
+To remove a Serena of your own by hand:
+`claude mcp remove serena -s user`. A project's own `.serena/` folder (Serena's project
+settings and memories) is the project's: delete it when nothing uses it any more.
+
+A project whose `.claude/cc-smart-dev-kit.json` lists `serena-root` in `ownHooks` keeps working:
+the name is still accepted, silences nothing, and `doctor` says it can go.
 
 ## What's new in 0.5.0
 
@@ -540,7 +574,7 @@ Five pages say how, and what still has to be tested there:
 
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit setup` | Installs the launcher, turns on plugin auto-update, and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
+| `cc-smart-dev-kit setup` | Installs the launcher, turns on plugin auto-update, writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
 | `cc-smart-dev-kit setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/cc-smart-dev-kit/no-instructions`), so a later plain `cc-smart-dev-kit setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `cc-smart-dev-kit setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `cc-smart-dev-kit setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
@@ -550,13 +584,13 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit setup --statusline` | Also sets Claude Code's status line to `cc-smart-dev-kit statusline`, as a key cc-smart-dev-kit owns, without asking (also after an earlier "no"). It never replaces a status line you set: one you set yourself, also after setup had set it, stops setup before it writes anything, and `restore` leaves it. |
 | `cc-smart-dev-kit statusline` | The status line itself: plan usage, a warning from 85 %, and any gateway fallback in use. Reads the JSON Claude Code passes on stdin. |
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
-| `cc-smart-dev-kit mcp status [--json]` | Read-only: the four MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
-| `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and the worktree engine on the Claude Code installed here (below); it never runs without the flag. |
-| `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop>` | The worktree engine, for a project that wires it in its own `.claude/settings.json` (§ Worktrees). It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
-| `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, unless the project runs an engine of its own, the worktree engine's three lines in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the setup command from the lockfile, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
+| `cc-smart-dev-kit mcp status [--json]` | Read-only: the three MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
+| `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and both worktree shapes on the Claude Code installed here (below); it never runs without the flag. |
+| `cc-smart-dev-kit hook <worktree-create\|worktree-remove\|subagent-stop\|notify>` | The plugin's **deprecated** worktree engine, for a project that still wires it in its own `.claude/settings.json` (§ Worktrees), and the notifier hook (below): `setup` wires `hook notify` in your user settings for agent view. It reads the hook's input on stdin and answers as Claude Code expects. With no name, it prints the lines to paste. |
+| `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
 | `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| review-done [--sha <commit>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, and whether the commit here has a recorded review. `set` and `unset` write one value; `--project` writes the project's committed file. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
-| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
+| `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, the [agent view notification hook](#notifications), claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. |
@@ -589,7 +623,9 @@ hour**, in the background, and never makes the session wait or prints anything:
    a new version was installed (`notify-send` on Linux, `osascript` on macOS, a PowerShell
    toast on Windows): "cc-smart-dev-kit
    X installed; restart Claude sessions to load it". When the new version's router
-   differs from the one running, the notification adds the `cc-smart-dev-kit gateway setup` hint.
+   differs from the one running, the notification adds the `cc-smart-dev-kit gateway setup` hint;
+   when agent view's notification hook is missing (a background update never runs setup, so it
+   never writes that hook), the notification says `cc-smart-dev-kit setup` writes it.
 
 It never restarts the router, a service or a session. A new router still needs
 `cc-smart-dev-kit gateway setup`, which asks first. When a background update fails, the next
@@ -676,12 +712,16 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   command or the click that fixes it; without the token nothing runs at all
   ([The browser](#the-browser)). Whether the `playwright` server is registered and starts is the
   MCP servers' own line, just below;
-- the MCP servers setup registers (the `playwright` browser, `serena`,
-  `sequential-thinking`, `tavily-websearch`): each is registered at user scope and starts
+- the MCP servers setup registers (the `playwright` browser, `sequential-thinking`,
+  `tavily-websearch`): each is registered at user scope and starts
   (`claude mcp get`, which starts it once). ✗ when one is missing ("Run: cc-smart-dev-kit setup")
   or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
   what to remove. Without a Tavily key its server is skipped, as a `·` line that names the
   key file: a person who never wanted web search loses nothing. A key is never printed;
+- what an older setup left for Serena ([0.6.0](#060-serena-is-removed)): one ✗ line while
+  setup still has to take back the `serena` registration it made, its context file or the
+  `serena-root` records ("Run: cc-smart-dev-kit setup"), and nothing once it has. A `serena`
+  of your own is a `·` line: it stays;
 - OmniRoute, when it is installed here: a `·` line when a newer release has been out for
   three days (with `cc-smart-dev-kit omniroute update`), and nothing when it is the newest or
   the registry cannot be read. Never a failure (§ OmniRoute updates);
@@ -691,6 +731,9 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   `tmux set -g allow-passthrough all`): tmux is optional. When neither is wrong — the line
   is in the file, and you are outside tmux, or inside one whose passthrough is `all` —
   doctor prints no tmux line at all;
+- agent view's notification hook: the user-level `Notification` hook setup writes into
+  `~/.claude/settings.json` (matcher `agent_needs_input|agent_completed`). A ✗ says it is
+  missing or runs something else, with "Run: cc-smart-dev-kit setup" (§ Notifications);
 - the Linux desktop extras of the alerts (§ Notifications), when a desktop is there: a `·`
   line for each tool that is missing — `gdbus` for the minute on screen and one alert per
   session, `xdotool` for the raise on a click, `xfconf-query` for XFCE's Do Not Disturb —
@@ -722,13 +765,19 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   "gateway.json kept; the gateway is not installed";
 - the project of the folder you run it in (nothing outside a git project; a `·` line
   when git is not on PATH):
-  - with `worktrees` in its `cc-smart-dev-kit.json`: that its `.claude/settings.json` (or
-    `settings.local.json`) wires the three worktree hooks (§ Worktrees). ✗ names the
-    missing ones and how to wire them;
-  - ✗ when it wires them but has no `worktrees`: each worktree would fail;
+  - `!` warnings for the deprecated worktree engine: `worktrees.engine`, `worktrees.prefix`
+    or `worktrees.setup` still set, the engine's hook lines still wired, or both — each
+    names what to remove and says the engine retires in the next minor version (§ Worktrees);
+  - ✗ when the engine's hook lines are wired but there is no `worktrees`: each hook fails;
   - ✗ for each other WorktreeCreate hook next to the engine's, in the project's settings
     or yours: Claude Code runs both and makes two worktrees;
-  - as information (`·`), each plugin hook the project's `ownHooks` turns off here;
+  - `!` when `.claude/worktrees/` is not git-ignored in the repo, so Claude Code's own
+    worktrees would show up in `git status`;
+  - `!` when `worktrees.base` is not the repo's default branch and the project's settings do
+    not set `"worktree": {"baseRef": "head"}`, so a new worktree would be cut from the default
+    branch instead; the line names the one line to add;
+  - as information (`·`), each plugin hook the project's `ownHooks` turns off here, and each
+    retired hook name it still lists (`serena-root`): accepted, it silences nothing and can go;
   - `!` warnings (never a failure) for an `ownHooks` entry with no project hook left to
     answer, and for a project hook that runs next to a plugin hook `ownHooks` does not
     name: both would answer (§ The hooks);
@@ -749,10 +798,10 @@ leave with "remove". It uses your Claude login and costs a few cents. In the rep
 `cc-smart-dev-kit.json` it checks that the plugin's hooks fired (SessionStart, and the git guard
 before the Bash call), that the git guard read the command line (the hook log names the
 programs it parsed: `git`), that no WorktreeCreate hook ran and Claude Code made its own
-worktree, and that it removed it. In the repo that turned the worktree engine on
-(`worktrees`, and the lines from § Worktrees), it checks that the engine's WorktreeCreate
-made the right folder and branch, the session worked there, and its WorktreeRemove removed
-both. When everything passes it records the Claude Code version in
+worktree, and that it removed it. In the repo that still wires the deprecated engine
+(`worktrees`, and the lines from the old § Worktrees setup), it checks that the engine's
+WorktreeCreate made the right folder and branch, the session worked there, and its
+WorktreeRemove removed both. When everything passes it records the Claude Code version in
 `~/.claude/cc-smart-dev-kit/live-check.json`. The temp folder is removed.
 
 Setup only changes the keys it owns. Before each change it makes a backup in
@@ -917,8 +966,7 @@ one, with the name it becomes.
   project's own add-ons (`review.md`, `plan-task.md`, …). Rename the folder.
 - **A hook in `.claude/settings.json`** that still calls `"$HOME/.local/bin/anymodel" hook
   <name>` — that launcher went with 0.2.x. Change it to
-  `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>` (the lines are in § Worktrees, and
-  `cc-smart-dev-kit hook` prints them).
+  `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>` (`cc-smart-dev-kit hook` prints the lines).
 
 ## The AI gateway (optional)
 
@@ -1094,8 +1142,9 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
 - **`cc-smart-dev-kit usage`** reads Claude Code's own transcripts and shows, per session, the
   main session's replies by model and, apart, its subagents: how each was launched, which
   model wrote each reply, and the share on Opus. It also lists the Opus and Fable launches
-  the `agent-guard` hook allowed, with the reason each one gave (review, or its
-  `Opus reason:` / `Fable reason:` word) — an Opus or Fable agent spends your own plan usage.
+  the `agent-guard` hook let run, with why: an Opus launch by its effort, or its
+  `Opus reason:` word when it gave one, and a Fable launch by its `Fable reason:` word — an
+  Opus or Fable agent spends your own plan usage.
 - **Auto mode's safety checks**, in the same report when the gateway is set up. In auto mode
   Claude Code sends one extra request for every shell command or network action it judges
   ([The auto-mode block](#the-auto-mode-block)). Those requests are not a session's replies —
@@ -1167,13 +1216,12 @@ row's own set (a merge method that is not `merge`, `squash` or `rebase`; a perce
 not 1–100) is refused in words, and nothing is written.
 
 **The Project card** is about the repo the portal was started in. Nothing set up yet: the
-line and **Set up this project**, which opens the form — the base branch, the worktree folder
-prefix, the setup command, the branches that start from another base, the protected branches,
-the three guards and the worktree engine. Its first values are what
-`cc-smart-dev-kit project init` would offer for this repo (its default branch — the remote's
-`origin/HEAD`, else the repo's only branch, else `main`, else `master`, else the branch you
-are on — its lockfile's command, the branches GitHub protects), never a value this page made
-up. The preview is that command's own plan, made on the server and sent to the page: a box
+line and **Set up this project**, which opens the form — the base branch, the branches that
+start from another base, the protected branches and the three guards. Its first values are
+what `cc-smart-dev-kit project init` would offer for this repo (its default branch — the
+remote's `origin/HEAD`, else the repo's only branch, else `main`, else `master`, else the
+branch you are on — and the branches GitHub protects), never a value this page made up. The
+preview is that command's own plan, made on the server and sent to the page: a box
 asks again once the typing pauses (300 ms, and at once when an edit is finished), so the boxes
 follow the words, and the browser never builds the file. Each answer carries the hash of the
 two files it was planned from, and **Write the files** sends it back: a project file someone
@@ -1265,7 +1313,10 @@ user, **on by default**:
   them back. `cc-smart-dev-kit restore` takes them out with everything else and forgets the choice,
   so the next setup installs them again.
 - Setup records which plugin version wrote the copy (`~/.claude/cc-smart-dev-kit/instructions-version`).
-  `doctor` says when the copy is behind the installed plugin.
+  `doctor` says when the copy is behind the installed plugin. A session still running an
+  older plugin never writes its files back over a newer copy: only the installed plugin
+  version writes the copy (and with no record of it, only a version newer than the copy), and
+  the session says why in one line on stderr.
 
 The import reaches the main session and subagents that load `CLAUDE.md` (the built-in
 `Explore` and `Plan` do not). With `CLAUDE_CONFIG_DIR` set, both live under that folder.
@@ -1280,7 +1331,7 @@ but nothing imports it until a project does — add this line to the project's `
 
 Claude Code asks once before it loads an import from outside the project (its docs say so;
 not yet proved here: `docs/claude-code-contract.md`). The file reads its
-values (`base`, `prefix`, `setup`) from the project's `.claude/cc-smart-dev-kit.json`, field
+values (`base`, `bases`) from the project's `.claude/cc-smart-dev-kit.json`, field
 `worktrees`.
 
 That committed import line points at **each person's own copy**. For a teammate without
@@ -1310,19 +1361,18 @@ names such a missing import.
 | `gateway` | The optional AI gateway. |
 | `search` | Quick web lookups and one page's text through the gateway (`cc-smart-dev-kit search`). |
 
-**4 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
+**3 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
 none is pinned in their files). `reviewer` and `rules-maintainer` load the skill they work by
 (`review`, `self-evolve`) at start, through their `skills:` field:
 
 | Agent | Job | Needs |
 |---|---|---|
-| `reviewer` | The read-only second opinion on a change set. | — (uses Serena when it is there) |
+| `reviewer` | The read-only second opinion on a change set. | — (uses claude-mem's `smart_outline`, `smart_search` and `smart_unfold` when they are there and answer; else Grep and Read) |
 | `rules-maintainer` | Edits to instruction files, with a duplicate and conflict check. | — |
-| `code-explorer` | Symbol search: callers, references, definitions. | the **Serena** MCP server |
 | `ui-verifier` | Drives the running app in a browser and measures. | the **Playwright** MCP server |
 
-The MCP servers keep their usual tool names (`mcp__serena__*`, `mcp__playwright__*`) because
-they are registered for your user, not served by the plugin.
+The MCP servers keep their usual tool names (`mcp__playwright__*`) because they are registered
+for your user, not served by the plugin.
 
 **An output style**, `Structured replies` (answer first, short sections, tables). Optional:
 pick it with `/output-style`. The plugin never switches it on.
@@ -1482,8 +1532,8 @@ and optional shared folders for containers or users on one host, in
 The plugin's hooks run in every project. Most stay silent in a **project without
 `.claude/cc-smart-dev-kit.json`**; the ones that are about your machine, not a project —
 `agent-guard`, `fable-session`, `notify` and `playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
-Claude Code makes its own worktrees, unless a project turns on the worktree engine
-(§ Worktrees). Each hook runs through `bin/cc-smart-dev-kit-bun.sh`, which finds bun even when your
+every project uses Claude Code's own worktrees (§ Worktrees); the deprecated engine's three
+hooks run only where a project still wires them. Each hook runs through `bin/cc-smart-dev-kit-bun.sh`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
 `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, and bun on PATH. It starts bun with
 `--no-env-file` and the plugin's own empty `bunfig.toml`, so a hook never reads the working
@@ -1495,12 +1545,11 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | Hook | When | What it does |
 |---|---|---|
 | `git-guard` | before a Bash or PowerShell command | Asks you before a force-push, a push to a protected branch (`protectedBranches`), `push --all` / `--mirror`, a branch deleted on the remote (`git push origin :x`, `--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that throws changes away, `branch -D`, `stash clear` and an unnamed `stash drop` (they throw work away), and (with `worktrees`) a bare `git stash` or `stash pop`: every worktree shares one stash. Text in quotes, here-docs and comments is not a command; a shell keyword, a wrapper (`timeout 60 git push -f`, `sudo -u me …`), a here-doc fed to `sh`, and the text piped into `sh` are read through. Git's own abbreviations count (`--forc` is `--force`). Not read: a git alias (`-c alias.x=…`, or one of your own), `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file, and a branch it cannot name. |
-| `main-folder-guard` | before Edit, Write, NotebookEdit, and Serena's edit tools | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. A Serena edit is placed by the folder Serena has active, which `serena-root` records for the session; a folder it cannot work out, it asks about rather than letting the edit through. |
-| `serena-root` | `mcp__serena__activate_project` (before and after the call), and a session start | Records which folder Serena edits for this session (`worktrees.guardMainFolder`), so the guard above can place a Serena edit: from the moment an activation is allowed the record says "unknown" until Serena's own answer names the folder, so the guard asks rather than trusting a folder Serena may not be on. It refuses an activation that names a project by name, or a folder outside this repo and its worktrees. At a session start it forgets the record (`startup`) or distrusts it (`resume`, `clear`, `fork`). |
+| `main-folder-guard` | before Edit, Write, NotebookEdit | With `worktrees.guardMainFolder`: refuses an edit of a file in the main checkout itself, and says how to get into a worktree. |
 | `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
 | `merge-guard` | before a Bash or PowerShell command | Asks you before a command that merges a pull request. The forms it reads: `gh pr merge` (`gh pr -R owner/repo merge 5` included), `--auto` (an armed merge lands once the checks pass, with nobody watching), a `gh alias` that expands to one (read from `gh alias list`), and — asking whatever the policy says — a `gh api` call to the pull-request merge endpoint (`repos/o/r/pulls/5/merge`, any method spelling) or a GraphQL query that names `mergePullRequest` / `enablePullRequestAutoMerge`. **Every merge in the command is judged**: `gh pr merge 5 && gh pr merge 6` checks both, and the first it does not allow asks, naming that pull request. It reads three facts, read-only: the pull request (`gh pr view`), the repository's default branch (`gh repo view`), and its required checks (`gh pr checks --required`; a skipped one counts as passing, GitHub's own rule). It lets a merge through with no question only when `autoMerge` is on, the pull request's base is the project's integration base, every required check passed, and — with `reviewBeforePush` on — the head commit has a [recorded review](#the-workflow) by an agent `reviewAgents` names, or by you. **It reads that policy as committed on the pull request's base** (`origin/<base>`, as last fetched), never from a checkout's own copy of `.claude/cc-smart-dev-kit.json`: a session cannot switch the gate off by editing its worktree's file. No such ref, no file there, or a file it cannot use asks you. Every other case asks you, with the reason it asks; so does a merge that names a repository other than this project's own (`--repo`/`-R`: the policy covers this repository only), one whose earlier steps change the folder, branch or repository it acts on (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing, fails, or answers something it cannot read. A merge with `--admin` (any value) always asks, whatever the policy says, naming the pull request: `--admin` merges past the repository's branch protection — its required reviews (a code-owner approval among them), its required checks and its merge queue — so you decide each one. It asks rather than refuses, because a release may use `--admin` on purpose. In a project without `.claude/cc-smart-dev-kit.json` it stays silent, like every project hook. |
 | `message-guard` | before SendMessage | Refuses a message to a session that works outside this repo (ListAgents lists every session on the machine). |
-| `agent-guard` | before an Agent launch, and after it for the record | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); `effort` `low` is refused on every model, a Claude model and an affordable slot alike — a subagent runs at `medium` (searches and reads), `high` (building and reviews), or `xhigh` and `max` when you ask for them; an affordable gateway slot needs `effort: "max"`: a slot key, a `<backend>:<model>` target, or `haiku` / `sonnet` (or their ids) while the gateway is on and that family's slot (scout, worker) has a chain whose first target is a backend, read from `gateway.json`; with no chain, or one that starts with a `claude-…` model, the launch is Claude — a name no rule knows (`best`, `opusplan`, `default`, …) is judged like Opus; **`opus` and `fable` mean the TIER, whatever model answers behind them** — an override, or the opus or fable slot's chain, that points one at another vendor keeps the tier's rules, is never affordable and never forced to `max`, and the question names both (`` `opus` (answered by openai:gpt-5.5) ``); **a name never runs below the tier of the Claude model that answers it** — `sonnet` or `haiku` whose `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`, or whose slot's chain, starts with a Claude Opus or Fable id is judged as that tier, because it spends that tier's usage; a review agent whose model the guard reads as Opus is allowed at `medium` or `high` — at `xhigh` or `max` it asks you (a deeper review is your call, and in `claude -p`, with nobody to answer, it is refused), and a review whose model it cannot read asks about that reading — and any other `opus`-tier launch needs an `Opus reason: <word>` line (one of the guard's listed words, which its refusal names; punctuation after the word is fine) and asks you to approve it (in `claude -p` that one is refused too); on the `fable` tier a read-only agent (Plan, Reviewer, Explore, Code Explorer) with a `Fable reason: <word> - <why>` line asks you — `build` is the builder's own word, refused there — and an agent that can change files — a builder, or a fork — asks with `Fable reason: build - <what you asked for>`. A fork always runs on the session's model and effort (Claude Code ignores a `model` a fork is given) and needs no `model`; an unknown session model counts as the `opus` tier. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own; a deny refuses the whole call, so none of its launches is recorded, and an ask names every launch that asks. Every premium-tier launch is recorded once it is known to run — an allowed one before it starts, an asked one after it ran (Claude Code runs the after-hook only for a call that ran, so a launch you refuse is never recorded) — and `cc-smart-dev-kit usage` lists them with why. |
+| `agent-guard` | before an Agent launch, and after it for the record | **Machine-wide** (it runs with or without `.claude/cc-smart-dev-kit.json`): it resolves the model the launch really runs on and holds the model rules. A launch with no `model` or no `effort` is refused (it would inherit the session's, which nobody chose); `effort` `low` is refused on every model, a Claude model and an affordable slot alike (a subagent runs at `medium`, `high`, `xhigh` or `max` only); an affordable gateway slot needs `effort: "max"`: a slot key, a `<backend>:<model>` target, or `haiku` / `sonnet` (or their ids) while the gateway is on and that family's slot (scout, worker) has a chain whose first target is a backend, read from `gateway.json`; with no chain, or one that starts with a `claude-…` model, the launch is Claude — a name no rule knows (`best`, `opusplan`, `default`, …) is the `opus` tier without a proved family, so it asks you at every effort (refused in `claude -p`): it may stand for a higher tier; **`opus` and `fable` mean the TIER, whatever model answers behind them** — an override, or the opus or fable slot's chain, that points one at another vendor keeps the tier's rules, is never affordable and never forced to `max`, and the question names both (`` `opus` (answered by openai:gpt-5.5) ``); a name never runs below the tier of what answers it — `sonnet` whose override or worker chain is a Claude Opus id is the `opus` tier; **a launch read as Opus (the `opus` name, a Claude Opus id, the opus slot) runs with no question at `medium`, `high` or `xhigh`** — any agent, any purpose, review or not, no reason line needed — and **asks you at `max`**, naming the model and the effort (in `claude -p`, with nobody to answer, a `max` launch is refused and the message says to run it at `medium`, `high` or `xhigh`, or in an interactive session); an `Opus reason: <word>` line is optional, and only names the purpose in the record; a fork runs at the session's own effort, which you chose, so an `opus`-tier fork is allowed; on the `fable` tier a read-only agent (Plan, Reviewer, Explore) with a `Fable reason: <word> - <why>` line (punctuation after the word is fine) asks you — `build` is the builder's own word, refused there — and an agent that can change files — a builder, or a fork — asks with `Fable reason: build - <what you asked for>`. A fork always runs on the session's model and effort (Claude Code ignores a `model` a fork is given) and needs no `model`; an unknown session model counts as the `opus` tier. A **Workflow** call is judged the same way, from the `agent(...)` options in its script — a launch whose `model` is built at run time is refused, never guessed, and a script that hands `agent` around (`const run = agent; run(…)`, `agent?.(…)`) or builds a call's options at run time (a `...spread`, a computed key) is refused whole — because (proved live) a workflow's agents run inside the tool and pass no hook of their own; a deny refuses the whole call, so none of its launches is recorded, and an ask names every launch that asks. Every premium-tier launch is recorded once it is known to run — an allowed one before the call, an asked one after it ran (you said yes); one you refuse never — and `cc-smart-dev-kit usage` lists them with why: for the `opus` tier its effort, or its `Opus reason:` word when the prompt has one; for the `fable` tier its `Fable reason:` word. |
 | `fable-session` | a session starts; a model switch; each answer ends | **Machine-wide**: when the session's own model is the `fable` tier — Claude Fable, or a model an override points that tier at — it shows *you* one line, once a session: the premium tier uses your plan's limits faster than Opus, so switch with `/model` if you did not mean to. Nothing goes to Claude, never an error and never a block. A session start judges only the `model` the start names; a switch judges `to_model` — the model the session moved TO — so the line appears AT the switch; a finished answer is judged by the model that answered it, which is the catch-all for a Claude Code that fires no `PostModelSwitch`, and can never fire for a model the session has already left (the old `UserPromptSubmit` read was one turn behind: it missed the switch to Fable and warned after the switch back). The line was seen live on a real session (2026-10-17); that `systemMessage` shows on `PostModelSwitch` and `Stop` is not proved yet (the contract's § Relied on, not proved yet). |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
 | `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. |
@@ -1542,8 +1591,11 @@ alert:
 | a question (`AskUserQuestion`) or a plan for your OK (`ExitPlanMode`) | `Claude asks you · <session>`, with the question |
 | the turn ended | `Claude finished · <session>`, with the turn's last answer |
 | the turn died on an error | `Claude stopped · <session>`, with the error |
+| agent view: a session waits, or finished or failed | `Claude needs you`, `Claude finished` or `Claude stopped`, with the list's message |
 
-`<session>` is the session's `/rename` name when it has one, else its folder. Questions need
+`<session>` is the session's `/rename` name when it has one, else its folder. Agent view's
+alerts carry no session name: Claude Code raises them in the list's own process, and the
+message says which session it is. Questions need
 a hook of their own: Claude Code raises no notification at the moment Claude asks. A few
 waits stay quiet on purpose: the idle wait (the "finished" alert already announced that
 turn), the permission prompt that follows a question about six seconds later (the same wait),
@@ -1553,6 +1605,30 @@ usage limit **where the `stop-failure` hook shows that alert itself** (a desktop
 gateway set up — never two alerts for one stop). Where that hook has no alert to show (no
 desktop, no gateway), the stopped turn is this hook's alert like any other.
 
+**Agent view** (`claude agents`, the list of sessions) raises its own alerts while the list is
+open: one for a session that needs your input, and one when a session finished or failed.
+Two limits are Claude Code's own: the list alerts only for a session it saw in another state
+first (one that starts and waits or finishes within seconds gives none), and **while you are
+inside a session you opened from the list, it raises no alert for the others**. To keep every
+alert, leave one tab on the list and open a session in another tab with
+`claude attach <name>`. The
+first says `Claude needs you`; the others say `Claude finished` or `Claude stopped`, and the
+list's message says which session and how it ended. **Agent view runs only the hooks in
+settings files, never a plugin's**, so `cc-smart-dev-kit setup` writes one user-level
+`Notification` hook in `~/.claude/settings.json`, with the matcher
+`agent_needs_input|agent_completed`. It runs `cc-smart-dev-kit hook notify` through the
+launcher, so a plugin update never breaks it. `cc-smart-dev-kit restore` takes the hook out,
+`doctor` says when it is missing, and every hook of your own stays as it is. If you edit that
+entry (a longer timeout, a redirection), it is yours: setup leaves it and adds no second one,
+and `doctor` shows it as information, never a failure. If setup replaced a hand-written entry
+that ran the plugin's own `dist/notify.js`, `restore` removes the managed entry and does not
+bring the old one back: it named a version folder an update deletes, and the file's backup has
+it. **A background session** (one Claude Code
+started outside a terminal) shows no alert of its own: it inherits the display and terminal
+variables of the program that started it, so its own alert would go to the wrong place. Agent
+view is the one place its alerts come from while the list is open; with no list open, it does
+not alert.
+
 **A desktop** shows the alert through `notify-send` on Linux (it needs a desktop:
 `DISPLAY` or `WAYLAND_DISPLAY`) or `osascript` on macOS, and plays the freedesktop sound
 when `paplay` is installed. **An SSH session** with no desktop to show it on gets the same
@@ -1560,10 +1636,33 @@ alert in the terminal you are looking at, as an OSC 777 notification — no `not
 needed on a server: Claude Code writes the sequence for the hook (2.1.141 or later, wrapped
 for tmux itself), and for an event whose answer Claude Code does not read (the usage-limit
 alert) the hook writes it to the terminal device Claude Code's own session is attached to.
+**When the terminal at the far end of the SSH session is Warp**, the alert goes in Warp's own
+agent format instead: Warp shows its popup while it is in front, and a desktop notification
+with a sound while it is not (proved live on a Windows PC reached over SSH, 2026-10-18). A
+plain OSC 777 gives only a silent Windows notification there. A Warp tab sends nothing over
+SSH by default, so the client has to say it is Warp — with `LC_TERMINAL`, which sshd lets
+through with its usual `AcceptEnv LANG LC_*` (the Debian and Ubuntu default):
+
+```sh
+ssh -o SetEnv=LC_TERMINAL=WarpTerminal <host>
+```
+
+or one line in that host's block of `~/.ssh/config`:
+
+```
+Host <host>
+  SetEnv LC_TERMINAL=WarpTerminal
+```
+
+`ssh -G <host>` shows what the client will send. Inside tmux, a pane keeps the variables of
+the moment its tmux server started: after you change `SetEnv`, restart tmux, or the alert
+keeps its old form. A server whose sshd does not forward
+`LC_TERMINAL` needs the `sshWarp` fallback setting below.
 **Inside Warp** Warp's own
 Claude Code plugin shows a finished turn, a question, a permission prompt and an error
-itself, so ours stays quiet and plays only the sound — except a question or a waiting agent,
-which may sit in a tab you are not looking at: those stay ours. With no desktop, no SSH and
+itself, so ours stays quiet and plays only the sound — except a question, a waiting agent or
+agent view's finished/failed alert (Warp's plugin has no such alert), which may sit in a tab
+you are not looking at: those stay ours. With no desktop, no SSH and
 no Warp there is nowhere to show it, and nothing happens — not a failure.
 
 **A Linux desktop gives the alert three more things, each where its tool is installed**
@@ -1584,15 +1683,18 @@ behaviour does not come over: picking the session's **tab** inside XFCE Terminal
 the desktop's accessibility service, which this plugin does not carry) — the window comes to
 the front, and the tab stays where it is.
 
-One settings file, `~/.claude/cc-smart-dev-kit/notify.json` (both keys optional):
+One settings file, `~/.claude/cc-smart-dev-kit/notify.json` (all three keys optional):
 
 ```json
-{ "desktopSound": true, "sshBell": false }
+{ "desktopSound": true, "sshBell": false, "sshWarp": false }
 ```
 
 `desktopSound` (default `true`) plays the freedesktop sound with a desktop notification.
 `sshBell` (default `false`) sends a terminal bell after an SSH alert, for a terminal that
-ignores the notification.
+ignores the notification. Not with Warp at the far end: Warp decides the sound itself.
+`sshWarp` (default `false`) treats the far end of an SSH session as Warp when nothing else
+names it, so the alert goes in Warp's agent format. Turn it on only when you connect from
+Warp: another terminal ignores the sequence, and the alert is lost.
 
 **tmux swallows a sequence written inside a pane**, so an alert from a session in a tmux
 window reaches your terminal only through tmux's passthrough. `cc-smart-dev-kit setup` adds one line
@@ -1782,7 +1884,6 @@ folders. Registered for the user, the names stay and the servers stay.
 | Server | What it is |
 |---|---|
 | `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. On Windows it starts the `.cmd` launcher through `cmd.exe /c` — Claude Code starts the server as a program, and a program there cannot run the `sh` launcher. |
-| `serena` | [Serena](https://github.com/oraios/serena) code intelligence, at a pinned commit, started with the plugin's own context (installed as `~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml`): Serena's `claude-code` context with project switching on, so `activate_project` is listed and a session can point Serena at its worktree. |
 | `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
 | `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |
 
@@ -1825,7 +1926,12 @@ folders. Registered for the user, the names stay and the servers stay.
   cc-smart-dev-kit did not write is left alone, with a note saying how to hand it back
   (`claude mcp remove <name> --scope user`, then setup). One setup wrote and you re-pointed
   since is yours too, and `restore` leaves it.
-- **`cc-smart-dev-kit mcp status [--json]`** answers, read-only, which of the four are the
+- **A server the plugin retired** (`serena`, in 0.6.0): the next setup takes back the
+  registration it made, by the same rule — only while the record says it is setup's and it
+  still holds exactly that — and never one of yours under that name. `mcp status` no longer
+  lists the name, so the installer never offers to replace yours
+  ([0.6.0](#060-serena-is-removed)).
+- **`cc-smart-dev-kit mcp status [--json]`** answers, read-only, which of the three are the
   plugin's and which are registered by something else: `! playwright: registered by something
   else (node /opt/tools/server.js). To let setup manage it: claude mcp remove playwright
   --scope user, then cc-smart-dev-kit setup`. The command and its arguments are shown; an
@@ -1838,7 +1944,7 @@ folders. Registered for the user, the names stay and the servers stay.
   under "What is left" with the exact command.
 - **`restore` takes exactly those back**: each server that still holds what setup registered
   is removed (`claude mcp remove <name> --scope user`), the record goes
-  (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so do Serena's context file and the
+  (`~/.claude/cc-smart-dev-kit/mcp-servers.json`), and so does the
   Tavily `env` key. A server you re-pointed — or removed yourself — stays, and setup says so
   with the exact command that adds it back (a server you removed is never registered again).
   A server restore could not remove keeps its record, so the next `restore` tries again; that,
@@ -1886,18 +1992,50 @@ what it would open and opens nothing.
 
 ## Worktrees
 
-A WorktreeCreate hook **replaces** Claude Code's own worktree creation, for sessions and
-subagents, in every project where it is wired; a hook cannot step aside (proved live:
-[docs/claude-code-contract.md](docs/claude-code-contract.md)). Claude Code's own creation
-locks a worktree while a session uses it, marks it for its own cleanup, supports
-`claude -w "#123"` (a pull request), and handles Git LFS; a hook does none of that. So the
-plugin wires no worktree hook. **A project that wants cc-smart-dev-kit's worktrees turns the engine
-on itself**, in two steps:
+Every project uses **Claude Code's own worktrees**: `<repo>/.claude/worktrees/<name>` on the
+branch `worktree-<name>`. The plugin wires no worktree hook, so Claude Code's own handling
+holds: it locks a worktree while a session uses it, marks it for its own cleanup, supports
+`claude -w "#123"` (a pull request), and handles Git LFS.
 
-1. Give its `.claude/cc-smart-dev-kit.json` a `worktrees` field (§ A project's
-   `.claude/cc-smart-dev-kit.json`).
-2. Paste these hooks into its `.claude/settings.json`, and commit it (merge them with any
-   `hooks` it has). `cc-smart-dev-kit hook` prints the same lines.
+- **A new task starts from the main checkout:** `claude -w <task-name>`. Use dashes, not
+  slashes: a `/` in a name becomes `+` in both the folder and the branch. An existing
+  worktree opens the same way by its name — `claude -w <name>`, or `EnterWorktree` with its
+  `name`, which resumes it as it was left — while `EnterWorktree` with a `path` only switches
+  between worktrees for a session already inside one.
+- **The branch is cut from `origin`'s default branch** by default (`fresh`: it fetches that
+  branch only when the repo was not fetched in the last 24 hours). A project whose work
+  branches from another branch sets `"worktree": {"baseRef": "head"}` in its committed
+  `.claude/settings.json`: a new worktree then starts from the current branch — start new
+  work from the main checkout on the base branch (`git switch <base>` first if it was switched
+  to explore) — and a subagent's worktree gets the session's commits too. `baseRef` takes only
+  `"fresh"` or `"head"`, never a branch name. `cc-smart-dev-kit doctor` warns when the base
+  branch is not the default and the line is missing. `project init` writes it.
+- **Git-ignored files a worktree needs** (`.env.local` and the like) are named in
+  `.worktreeinclude`, which Claude Code copies into each new worktree.
+- **There is no setup step.** The session runs the project's own install first (for example
+  `bun install`, and again after a pull that changes the lockfile).
+- **`.claude/worktrees/` must be git-ignored:** add it to the repo's `.gitignore` and commit
+  that. `cc-smart-dev-kit doctor`, run in the project, warns when it is not.
+- **A subagent with `isolation: "worktree"`** gets its own worktree, cut from the same base
+  as the session's (the session's branch with `baseRef: "head"`, else `origin`'s default
+  branch), usually with no packages installed.
+
+**Clearing a worktree.** Claude Code removes a clean worktree of an unnamed session on exit,
+and asks first for a named one or one with work left; a subagent's worktree is removed when it
+made no changes. After a merge, the
+after-merge note asks the session to clear the one it worked in. `cc-smart-dev-kit worktrees`
+finds the repo's finished ones (§ below).
+
+**The plugin's worktree engine is deprecated.** It still works in this release for a project
+that wired it into its own `.claude/settings.json`
+(`cc-smart-dev-kit hook worktree-create`, `worktree-remove`, `subagent-stop`, with
+`worktrees.prefix` and `worktrees.setup`), and it retires in the next minor version.
+`cc-smart-dev-kit doctor` warns and names the steps to move: take those three hook lines out,
+drop `worktrees.engine`, `worktrees.prefix` and `worktrees.setup` from
+`.claude/cc-smart-dev-kit.json`, and add `"worktree": {"baseRef": "head"}` to
+`.claude/settings.json` when the base branch is not the repo's default branch.
+
+For a project still on the engine, these are the exact lines `cc-smart-dev-kit hook` prints:
 
 ```json
 {
@@ -1939,50 +2077,6 @@ on itself**, in two steps:
 }
 ```
 
-Each line runs the launcher by its full path under `$HOME`, so it works for every
-teammate who ran `cc-smart-dev-kit setup`, whatever the PATH Claude Code was started with (an IDE
-or a desktop launcher may leave out `~/.local/bin`); the launcher runs the bun setup saved
-in it. A teammate who never ran setup gets a failed worktree, and Claude Code shows why
-(`cc-smart-dev-kit` not found, or the plugin not installed). Then, in that project:
-
-| Hook | When | What it does |
-|---|---|---|
-| `worktree-create` | a worktree is made (`claude -w <name>`, EnterWorktree, a subagent) | A session's worktree: a folder beside the repo, `<prefix><name>` (a `/` becomes `-`), on the branch `<name>`, from the freshly fetched `origin/<base>` (or the existing branch), then your `setup` command inside. A worktree of that branch that exists is entered again, unless another running session works in it. One creation of a branch runs at a time (a lock in the repo's git folder): a second session asking for the same branch mid-create is refused with one clear line, and a lock whose process is gone is taken over. **A new branch needs `origin`**: the fetch is what makes it start from the latest base, so a repo with no remote refuses and says so (an existing branch is checked out all the same). A subagent's worktree: Claude Code's own shape, `.claude/worktrees/agent-<id>` on `worktree-agent-<id>`, from the remote's default branch (or `HEAD` with Claude Code's `worktree.baseRef: "head"`), with no setup. Both get the files `.worktreeinclude` names. |
-| `worktree-remove` | Claude Code removes a worktree a hook made | Removes it only when nothing in it is uncommitted or untracked **and it holds no ignored file git does not keep** (an edited `.env.local`, a notes file, a key): those cannot come back, so the worktree is kept and the files are named. `node_modules`, build output, caches, and a `.worktreeinclude` copy nobody changed (the main checkout still has it, byte for byte) do not block. Then its branch, when every commit on it is also on another branch. Otherwise it keeps it and says why. Claude Code cannot check a worktree outside the repo, so `ExitWorktree` asks for `discard_changes: true` there; this hook still never discards work. |
-| `subagent-stop` | a subagent ends | Removes its worktree and branch when it changed nothing (Claude Code keeps every worktree a hook made for a subagent). |
-
-Wired without `worktrees` in `cc-smart-dev-kit.json`, or with a `cc-smart-dev-kit.json` that needs a newer
-plugin or is broken, each of the three fails closed: no worktree is made or removed, and
-the message says why. `cc-smart-dev-kit doctor`, run in the project, checks the wiring.
-
-**A branch that belongs to another line of work starts from another base.** `worktrees.bases`
-maps a branch-name prefix to the base a new worktree for such a branch starts from:
-`{"hotfix/": "main", "release/": "main"}` makes every `release/…` branch start from the
-freshly fetched `origin/main`, while a `fix/…` branch keeps starting from `worktrees.base`
-(the integration base). The longest prefix that matches wins. So a released line of work
-never inherits unreleased work from the integration base. The after-merge note names those
-prefixes too: a session on such a branch is told **not** to merge the integration base in,
-because that would ship unreleased work.
-
-**A project that already runs its own worktree engine** sets `worktrees.engine` to `"own"`.
-It then wires no `cc-smart-dev-kit hook` lines at all, and `cc-smart-dev-kit doctor` expects none
-(one `·` line) instead of reporting ✗; it warns (`!`) when the plugin's engine hooks are
-wired anyway next to another WorktreeCreate hook, because two hooks make two worktrees for
-each request. Use it when the project has an engine of its own (its own script, or another
-plugin) that makes its worktrees: cc-smart-dev-kit's after-merge and leftovers notes, the
-`worktrees` command and the stash question all keep working, because they read
-`worktrees.base` and never make a worktree.
-
-**Moving from a project's own worktree hook:** replace its WorktreeCreate, WorktreeRemove
-and SubagentStop lines with these, in one commit. Two WorktreeCreate hooks make two
-worktrees for each request; `cc-smart-dev-kit doctor` reports a second one.
-
-**A long job has a long timeout, and says what to do when it runs out:** `git worktree add`
-gets 500 s, the `setup` inside 540 s (the hook's own timeout is 600 s), and
-`git worktree remove` 50 s (that hook's is 60 s). On a timeout the message names the folder
-and how to finish by hand (`git worktree remove --force <folder>`, after checking that it
-holds nothing you need).
-
 ### Clearing the finished ones: `cc-smart-dev-kit worktrees`
 
 `cc-smart-dev-kit worktrees` lists every worktree of the repo after fetching
@@ -2022,11 +2116,11 @@ file (or without the field) the remote's default branch (`origin/HEAD`), else `m
 one line saying which was used.
 
 A session's own worktree is normally cleared by the session. The after-merge note, right
-after its branch's pull request merged, says `ExitWorktree` with action `remove` — with
-`discard_changes true` only where the plugin's own `worktree-remove` hook is wired (§ the
-engine's lines above), since that hook is what keeps uncommitted work then; without it,
-Claude Code's own check does — and, when `ExitWorktree` cannot, `cc-smart-dev-kit worktrees
---remove <path>`. The SessionStart note, when finished worktrees are left behind, points at
+after its branch's pull request merged, says `ExitWorktree` with action `remove`. Claude Code
+checks a worktree under `.claude/worktrees/` itself; for one outside it, the note says to check
+`git status --porcelain` and `git log @{u}..` first, and only then to pass `discard_changes
+true`. When `ExitWorktree` cannot, it says `cc-smart-dev-kit worktrees --remove <path>`, which
+removes the folder and the branch only when the worktree is finished. The SessionStart note, when finished worktrees are left behind, points at
 `cc-smart-dev-kit worktrees --clean`.
 
 ## `project init`
@@ -2035,21 +2129,23 @@ Claude Code's own check does — and, when `ExitWorktree` cannot, `cc-smart-dev-
 copy them from this page:
 
 - `.claude/cc-smart-dev-kit.json` — the project's settings (below);
-- `.claude/settings.json` — the worktree engine's three hook lines (§ Worktrees), merged
-  with whatever that file already wires. A project that runs an engine of its own
-  (`"worktrees.engine": "own"`) gets none added, and the cc-smart-dev-kit lines an earlier
-  run left there are **taken back out**: with both wired, two engines answer each worktree
-  request (`doctor` flags exactly that).
+- `.claude/settings.json` — `"worktree": {"baseRef": "head"}` when the chosen base branch is
+  not the repo's default branch, so a new worktree starts from the current branch. It is
+  merged with whatever that file already has; nothing else there changes, and a project on
+  the default branch gets no line.
+
+It writes no worktree hook: every project uses Claude Code's own worktrees (§ Worktrees).
+The deprecated engine fields (`worktrees.engine`, `worktrees.prefix`, `worktrees.setup`) are
+never asked for or added; a file that already has them keeps them, and `cc-smart-dev-kit doctor`
+names the steps to move.
 
 It asks first and shows every default, which it reads from the repo: the base branch from
 `origin/HEAD` — else the repo's only branch when it has one (a repo whose only branch is `dev`
 works from `dev`, never from a `main` it does not have), else `main`, else `master`, else the
-branch HEAD is on — the setup command from the lockfile
-(`bun install`, `npm ci`, `pnpm install`, `yarn`), the worktree folder prefix from the
-repo's name, the bases offered for `hotfix/` and `release/` from the default branch, and the
-protected branches from the default branch and the base plus, when `gh` is installed and
-answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
-quietly). Then it prints the file it will write with the changes line by line, the lines it
+branch HEAD is on — the bases offered for `hotfix/` and `release/` from the default branch,
+and the protected branches from the default branch and the base plus, when `gh` is installed
+and answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
+quietly). Then it prints the file it will write with the changes line by line, the line it
 adds to (or takes out of) `.claude/settings.json`, and writes both — a backup first, in
 `~/.claude/cc-smart-dev-kit/backups/`. **Nothing is committed:** commit the two files with the
 project.
@@ -2057,9 +2153,8 @@ project.
 Every question has a flag, so it also runs without a terminal:
 
 ```sh
-cc-smart-dev-kit project init --base dev --prefix my-app-wt- --setup "bun install" \
-  --bases "hotfix/=main,release/=main" --protected "main,dev" \
-  --guard-main-folder --session-names --engine plugin --workflow "openPr=draft"
+cc-smart-dev-kit project init --base dev --bases "hotfix/=main,release/=main" \
+  --protected "main,dev" --guard-main-folder --session-names --workflow "openPr=draft"
 ```
 
 `cc-smart-dev-kit project init --help` lists them all. With no terminal it writes nothing unless
@@ -2184,8 +2279,8 @@ repository's branch protection, and your yes to a merge, are what hold against t
 
 | Setting | What it does |
 |---|---|
-| `alerts.events` | Which moments alert: `needs-you` (a permission prompt, an MCP prompt, a background agent waiting), `question` (a question, or a plan for your OK), `finished` (a turn ended), `failed` (a turn died). A moment left out is silence, on every route. |
-| `alerts.sound` | A sound with the alert where the platform has one: Linux's freedesktop sound through `paplay` (else `canberra-gtk-play`), a system sound through `afplay` on macOS, the toast's own sound on Windows, a terminal bell over SSH. Off by default; `notify.json`'s own `desktopSound` and `sshBell` keep working beside it. |
+| `alerts.events` | Which moments alert: `needs-you` (a permission prompt, an MCP prompt, a background agent waiting), `question` (a question, or a plan for your OK), `finished` (a turn ended, or agent view says a session finished), `failed` (a turn died, or agent view says a session failed). A moment left out is silence, on every route. |
+| `alerts.sound` | A sound with the alert where the platform has one: Linux's freedesktop sound through `paplay` (else `canberra-gtk-play`), a system sound through `afplay` on macOS, the toast's own sound on Windows, a terminal bell over SSH (not with Warp at the far end, which plays its own). Off by default; `notify.json`'s own `desktopSound` and `sshBell` keep working beside it. |
 | `alerts.usagePercent` | The plan usage, in percent, a warning starts at (85 by default) — the status line's `⚠`. |
 
 **The switches** (`switches.*`) are not stored anywhere: each one reads and writes the
@@ -2224,11 +2319,8 @@ every question it holds.
   "requires": ">=0.1",
   "worktrees": {
     "base": "main",
-    "prefix": "app-wt-",
-    "setup": ["bun", "install"],
     "guardMainFolder": true,
-    "bases": { "hotfix/": "main", "release/": "main" },
-    "engine": "plugin"
+    "bases": { "hotfix/": "main", "release/": "main" }
   },
   "protectedBranches": ["main"],
   "sessionNames": true,
@@ -2243,16 +2335,16 @@ every question it holds.
 | Field | What it does |
 |---|---|
 | `requires` | The plugin versions this project needs, as a version range (npm syntax). Checked first: a project needing a newer plugin is told to update, not that a field is unknown. |
-| `worktrees` | Turns on the hooks that work with worktrees (the after-merge and leftovers notes, the stash question), and is what the worktree engine needs once the project wires it (§ Worktrees). |
-| `worktrees.base` | The branch a new worktree starts from (`origin/<base>`, fetched first). |
-| `worktrees.prefix` | The folder-name prefix of a worktree beside the repo (no `/`). |
-| `worktrees.setup` | A command run inside a new worktree, as a list of words (`["bun", "install"]`). Its output goes to the hook's log, not to Claude. When it fails, the worktree stays and the next request for it runs the setup again. |
+| `worktrees` | Turns on the notes and guards that work with worktrees (the after-merge and leftovers notes, the stash question, the main-folder guard). Every project uses Claude Code's own worktrees (§ Worktrees). |
+| `worktrees.base` | The branch a new worktree starts from and pull requests go into; the base the after-merge and leftovers notes compare with. |
+| `worktrees.prefix` | **Deprecated** with the plugin's worktree engine: the folder-name prefix of a worktree beside the repo. Optional since 0.5.2; the engine retires in the next minor version. |
+| `worktrees.setup` | **Deprecated** with the plugin's worktree engine: a command it ran inside a new worktree, as a list of words (`["bun", "install"]`). A project on Claude Code's own worktrees runs its install itself. |
 | `worktrees.guardMainFolder` | `true`: refuse edits in the main checkout itself. Off when left out. |
-| `worktrees.bases` | A branch-name prefix (ending in `/`) to the base a new worktree for such a branch starts from (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch starts from `base` (§ Worktrees). |
-| `worktrees.engine` | `"plugin"` (the default): the project wires cc-smart-dev-kit's worktree engine. `"own"`: it runs an engine of its own, so `doctor` expects no cc-smart-dev-kit hook lines (§ Worktrees). |
+| `worktrees.bases` | A branch-name prefix (ending in `/`) to the base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch's requests go into `base`. Auto-merge and the after-merge note read it; to start a task from another base, switch the main checkout to it first with `baseRef: "head"`, or `git worktree add` it as Claude Code's docs say. |
+| `worktrees.engine` | **Deprecated**: `"plugin"` or `"own"` said who made the project's worktrees. Accepted and ignored until the engine retires in the next minor version; `doctor` names the steps to move. |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
-| `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). |
+| `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). A retired hook name (`serena-root`, 0.6.0) is still accepted and silences nothing. |
 | `instructions` | Accepted now. Today a project loads the opt-in instructions with its own import line (§ Instructions, skills and agents); the field does not load them yet. |
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
 | `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |
@@ -2261,7 +2353,12 @@ every question it holds.
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`. A project that
-uses a field raises its `requires` to the release that brought the field.
+uses a field raises its `requires` to the release that brought the field: a file written
+without `worktrees.prefix` asks for at least `>=0.5.2`, the version that made it optional, so
+a teammate on an older plugin is told to update instead of failing the file's parse.
+`worktrees.prefix`, `worktrees.setup` and `worktrees.engine` stay accepted until the
+plugin's worktree engine retires in the next minor version; `cc-smart-dev-kit doctor` warns
+and names the steps to move.
 
 ## Develop
 

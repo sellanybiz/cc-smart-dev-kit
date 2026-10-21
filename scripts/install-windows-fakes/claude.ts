@@ -171,6 +171,20 @@ function pluginRecord(context: Context): void {
   pluginEnable(context);
 }
 
+/**
+ * `claude mcp remove <name>`: the server leaves Claude Code's user config (`.claude.json`, under
+ * `CLAUDE_CONFIG_DIR`), so a test sees what the installer took away. No file: nothing to do.
+ */
+function mcpRemove(context: Context, name: string): void {
+  const file = join(context.configDir, ".claude.json");
+  if (!existsSync(file)) return;
+  const config = readJson(file);
+  const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
+  delete servers[name];
+  config.mcpServers = servers;
+  writeJson(file, config);
+}
+
 function pluginUninstall(context: Context, id: string): void {
   const installed = readJson(installedFile(context));
   const plugins = (installed.plugins ?? {}) as Record<string, unknown>;
@@ -187,6 +201,10 @@ export function answer(
 ): number {
   record(context, `claude ${argv.join(" ")}`);
   const [plugin, command, third, fourth] = argv;
+  if (plugin === "mcp" && command === "remove" && third !== undefined) {
+    mcpRemove(context, third);
+    return 0;
+  }
   if (plugin !== "plugin") return 0;
   if (command === "marketplace" && third === "add" && fourth !== undefined) {
     return marketplaceAdd(context, fourth, io);

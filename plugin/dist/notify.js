@@ -1,5 +1,5 @@
 // @bun
-// src/entries/notify.ts
+// src/hooks/notify-entry.ts
 import { existsSync as existsSync6 } from "fs";
 import { join as join7 } from "path";
 
@@ -58,7 +58,6 @@ function cliPaths(env = process.env) {
     dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
     browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
     browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
-    serenaContextFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "serena", "contexts", "worktree.yml"),
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
@@ -81,6 +80,51 @@ function claudeMemDataDir(env, home) {
     return home;
   return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
+
+// src/build-info/names.ts
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
+var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "cc-smart-dev-kit";
+
+// src/build-info/index.ts
+var info = {
+  version: "0.6.0",
+  repo: "sellanybiz/cc-smart-dev-kit",
+  dependencies: [
+    {
+      name: "claude-mem",
+      marketplace: "thedotmack",
+      version: ">=13.29.0"
+    },
+    {
+      name: "frontend-design",
+      marketplace: "claude-plugins-official"
+    }
+  ]
+};
+var VERSION = info.version;
+var MARKETPLACE_SOURCE = info.repo;
+var DEPENDENCIES = info.dependencies;
+var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
+var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
+var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/setup/file-mode.ts
+function isOwnerOnly(mode, platform = hostPlatform()) {
+  return platform === "win32" || (mode & 63) === 0;
+}
+
+// src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
 
 // src/hooks/notify.ts
 import { readFileSync as readFileSync6, rmSync, statSync as statSync3, writeFileSync } from "fs";
@@ -107,35 +151,6 @@ function oneLine(text, max, options = {}) {
   const line = flat.trim();
   return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
 }
-
-// src/build-info/names.ts
-var MARKETPLACE = "cc-smart-dev-kit";
-var PLUGIN = "cc-smart-dev-kit";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "cc-smart-dev-kit";
-
-// src/build-info/index.ts
-var info = {
-  version: "0.5.0",
-  repo: "sellanybiz/cc-smart-dev-kit",
-  dependencies: [
-    {
-      name: "claude-mem",
-      marketplace: "thedotmack",
-      version: ">=13.29.0"
-    },
-    {
-      name: "frontend-design",
-      marketplace: "claude-plugins-official"
-    }
-  ]
-};
-var VERSION = info.version;
-var MARKETPLACE_SOURCE = info.repo;
-var DEPENDENCIES = info.dependencies;
-var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
-var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
-var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/shell/powershell.ts
 var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
@@ -226,6 +241,7 @@ var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
+var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 function notifyCommand(text, platform, which, title = PLUGIN, critical = false) {
   if (platform === "linux") {
     const notifySend = which("notify-send");
@@ -6210,7 +6226,6 @@ var PLUGIN_HOOK_NAMES = [
   "git-guard",
   "merge-guard",
   "main-folder-guard",
-  "serena-root",
   "message-guard",
   "agent-guard",
   "fable-session",
@@ -6220,11 +6235,12 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name"
 ];
+var RETIRED_HOOK_NAMES = ["serena-root"];
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
-    prefix: string2().min(1),
+    prefix: string2().min(1).optional(),
     setup: array(string2().min(1)).min(1).optional(),
     guardMainFolder: boolean2().optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
@@ -6242,7 +6258,7 @@ var ccSmartDevKitConfigSchema = strictObject({
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
   workflow: workflowSchema.optional(),
-  ownHooks: array(_enum(PLUGIN_HOOK_NAMES)).optional()
+  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional()
 });
 
 class CcSmartDevKitConfigError extends Error {
@@ -6393,11 +6409,6 @@ function loadProjectConfig(checkout, pluginVersion) {
 
 // src/workflow/resolve.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4 } from "fs";
-
-// src/setup/file-mode.ts
-function isOwnerOnly(mode, platform = hostPlatform()) {
-  return platform === "win32" || (mode & 63) === 0;
-}
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -6714,21 +6725,14 @@ gpgcheck=1
 gpgkey=${WARP_KEY_URL}
 `;
 
-// src/setup/launcher.ts
-var LAUNCHER_NAME = "cc-smart-dev-kit";
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
 // src/path-compare.ts
 var IGNORE_CASE = process.platform === "win32";
 
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/setup/managed-hook.ts
+var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
 
 // src/setup/launcher-cmd.ts
 var FIND_INSTALL_JS2 = [
@@ -6739,6 +6743,22 @@ var FIND_INSTALL_JS2 = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);"
 ].join("");
+
+// src/hooks/notify-types.ts
+var PLUGIN_NOTIFY_TYPES = [
+  "permission_prompt",
+  "elicitation_dialog",
+  "elicitation_url_dialog",
+  "worker_permission_prompt"
+];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
+var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
+var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
+var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+
+// src/setup/user-notify-hook.ts
+var USER_NOTIFY_HOOK_NAME = "notify";
+var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -6853,6 +6873,11 @@ function soundArgv(moment, platform, which) {
     return afplay === null ? null : [afplay, join4("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
   }
   return null;
+}
+
+// src/hooks/background-session.ts
+function inBackgroundSession(env) {
+  return (env.CLAUDE_JOB_DIR ?? "") !== "";
 }
 
 // src/hooks/desktop-alert.ts
@@ -7358,6 +7383,8 @@ function limitAlertDesktop(platform, env, which) {
   return false;
 }
 function stopFailureWillAlert(input, deps) {
+  if (inBackgroundSession(deps.env))
+    return false;
   if (!limitAlertDesktop(deps.platform, deps.env, deps.which))
     return false;
   return planAlert(input, readAlertContext(deps.paths, deps.nowMs, input, deps.env)) !== null;
@@ -7377,15 +7404,11 @@ var spawnRunner = ({ argv, timeoutMs }) => {
 var ACTION_WAIT_MS = 30 * 60000;
 
 // src/hooks/notify.ts
-var NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "agent_needs_input",
-  "worker_permission_prompt"
-];
 var ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
+var AGENT_FINISHED_BODY = "A background session finished.";
+var AGENT_FAILED_BODY = "A background session failed.";
 var TYPE_BODY = {
+  agent_completed: AGENT_FINISHED_BODY,
   agent_needs_input: "A background agent is waiting for you.",
   elicitation_dialog: "Claude asks you for input.",
   elicitation_url_dialog: "Claude asks you to open a page.",
@@ -7400,6 +7423,9 @@ var TRANSCRIPT_FLUSH_MS = 300;
 var TERMINAL_SEQUENCE_MIN_VERSION = "2.1.141";
 var TERMINAL_SEQUENCE_EVENTS = ["Notification", "PreToolUse", "Stop"];
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
+var WARP_AGENT_TITLE = "warp://cli-agent";
+var WARP_AGENT_PROTOCOL = 1;
+var WARP_TERMINAL_NAME = "warpterminal";
 function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -7440,7 +7466,7 @@ function isSsh(env) {
   return (env.SSH_CONNECTION ?? "") !== "" || (env.SSH_TTY ?? "") !== "";
 }
 function isWarpTerminal(env) {
-  if ((env.TERM_PROGRAM ?? "").toLowerCase() === "warpterminal")
+  if ((env.TERM_PROGRAM ?? "").toLowerCase() === WARP_TERMINAL_NAME)
     return true;
   return (env.WARP_CLI_AGENT_PROTOCOL_VERSION ?? "") !== "" && (env.WARP_CLIENT_VERSION ?? "") !== "";
 }
@@ -7468,7 +7494,45 @@ function warpShowsIt(event, input) {
   if (event !== "Notification")
     return true;
   const type = typeof input.notification_type === "string" ? input.notification_type : "";
-  return !(type.startsWith("elicitation") || type === "agent_needs_input");
+  return !(type.startsWith("elicitation") || AGENT_VIEW_TYPES.includes(type));
+}
+function warpEventOf(alert) {
+  if (alert.moment === "finished")
+    return "stop";
+  if (alert.moment === "failed")
+    return "stop_failure";
+  return "permission_request";
+}
+function warpAgentSequence(alert, input) {
+  const cwd = typeof input.cwd === "string" ? input.cwd : "";
+  const event = warpEventOf(alert);
+  const payload = {
+    v: WARP_AGENT_PROTOCOL,
+    agent: "claude",
+    event,
+    session_id: typeof input.session_id === "string" ? input.session_id : "",
+    cwd,
+    project: cwd === "" ? "" : basename(cwd)
+  };
+  if (event === "stop" || event === "stop_failure")
+    payload.response = alert.body;
+  else
+    payload.summary = alert.body;
+  if (event === "stop_failure" && typeof input.error === "string" && input.error !== "") {
+    payload.error_type = input.error;
+  }
+  return `\x1B]777;notify;${WARP_AGENT_TITLE};${JSON.stringify(payload)}\x07`;
+}
+function farEndIsWarp(env, config) {
+  if (isWarpTerminal(env))
+    return true;
+  const program = env.TERM_PROGRAM ?? "";
+  if (program !== "" && program.toLowerCase() !== "tmux")
+    return false;
+  const client = env.LC_TERMINAL ?? "";
+  if (client !== "")
+    return client.toLowerCase() === WARP_TERMINAL_NAME;
+  return config.sshWarp;
 }
 function sessionLabel(transcript, cwd) {
   if (transcript !== null) {
@@ -7490,6 +7554,7 @@ function askAlert(input, ctx) {
     return {
       body: "A plan is ready for your OK",
       critical: true,
+      moment: "question",
       sound: "service-login",
       title: titled("Claude asks you", ctx.label)
     };
@@ -7500,6 +7565,7 @@ function askAlert(input, ctx) {
   return {
     body: shown(asked, "Claude has a question for you"),
     critical: true,
+    moment: "question",
     sound: "service-login",
     title: titled("Claude asks you", ctx.label)
   };
@@ -7518,6 +7584,7 @@ function alertFor(input, event, ctx) {
       return {
         body: shown(text, "The turn ended with an error"),
         critical: true,
+        moment: "failed",
         sound: "dialog-warning",
         title: titled("Claude stopped", ctx.label)
       };
@@ -7533,6 +7600,7 @@ function alertFor(input, event, ctx) {
       return {
         body: shown(answer ?? "", "Claude finished its turn."),
         critical: false,
+        moment: "finished",
         sound: "service-logout",
         title: titled("Claude finished", ctx.label)
       };
@@ -7546,14 +7614,26 @@ function alertFor(input, event, ctx) {
       const type = typeof input.notification_type === "string" ? input.notification_type : "";
       if (!NOTIFY_TYPES.includes(type))
         return null;
-      if (markedWaiting(ctx.mark, ctx.nowMs))
+      const agentView = AGENT_VIEW_TYPES.includes(type);
+      if (!agentView && markedWaiting(ctx.mark, ctx.nowMs))
         return null;
       const message = typeof input.message === "string" ? input.message : "";
+      if (type === "agent_completed") {
+        const failed = message.endsWith(" failed");
+        return {
+          body: shown(message, failed ? AGENT_FAILED_BODY : AGENT_FINISHED_BODY),
+          critical: failed,
+          moment: failed ? "failed" : "finished",
+          sound: failed ? "dialog-warning" : "service-logout",
+          title: titled(failed ? "Claude stopped" : "Claude finished", null)
+        };
+      }
       return {
         body: shown(message, TYPE_BODY[type] ?? "Claude needs you."),
         critical: true,
+        moment: "needs-you",
         sound: "service-login",
-        title: titled("Claude needs you", ctx.label)
+        title: titled("Claude needs you", agentView ? null : ctx.label)
       };
     }
     default:
@@ -7577,9 +7657,12 @@ function writeFailed(file, key) {
     writeFileSync(file, key);
   } catch {}
 }
-function terminalRoute(event, env) {
+function terminalRoute(event, env, notificationType = "") {
   if (!TERMINAL_SEQUENCE_EVENTS.includes(event))
     return "tty";
+  if (event === "Notification" && AGENT_VIEW_TYPES.includes(notificationType)) {
+    return "device-then-field";
+  }
   const raw = env.CLAUDE_CODE_VERSION;
   if (raw === undefined || raw === "")
     return "field-if-no-tty";
@@ -7607,7 +7690,11 @@ function tmuxPassthrough(sequence) {
 function forTty(sequence, env) {
   return (env.TMUX ?? "") === "" ? sequence : tmuxPassthrough(sequence);
 }
-var DEFAULT_NOTIFY_CONFIG = { desktopSound: true, sshBell: false };
+var DEFAULT_NOTIFY_CONFIG = {
+  desktopSound: true,
+  sshBell: false,
+  sshWarp: false
+};
 function readNotifyConfig(file) {
   let parsed;
   try {
@@ -7619,7 +7706,8 @@ function readNotifyConfig(file) {
     return DEFAULT_NOTIFY_CONFIG;
   return {
     desktopSound: typeof parsed.desktopSound === "boolean" ? parsed.desktopSound : true,
-    sshBell: parsed.sshBell === true
+    sshBell: parsed.sshBell === true,
+    sshWarp: parsed.sshWarp === true
   };
 }
 function spawnNotifyFor(platform) {
@@ -7628,6 +7716,10 @@ function spawnNotifyFor(platform) {
       onError: (message) => console.error(`cc-smart-dev-kit notify: could not show the notification: ${message}`)
     });
   };
+}
+function agentViewKey(session, message) {
+  const named = message.replace(/ (?:needs your input(?:: [\s\S]*)?|finished|failed)$/, "");
+  return `${session}-${Bun.hash(named).toString(36)}`;
 }
 function desktopTarget(deps, cwd, label, session) {
   return {
@@ -7662,16 +7754,12 @@ function playSound(alert, deps, config, alerts) {
   if (argv !== null)
     deps.run(argv);
 }
-var ALERT_EVENT_OF = {
-  Notification: "needs-you",
-  PreToolUse: "question",
-  Stop: "finished",
-  StopFailure: "failed"
-};
 function notifyHook(input, event, deps) {
   if (!isJsonObject4(input))
     return SILENT;
   if ((deps.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli")
+    return SILENT;
+  if (inBackgroundSession(deps.env))
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
@@ -7702,14 +7790,16 @@ function notifyHook(input, event, deps) {
   if (alert === null)
     return SILENT;
   const here = alertsAt(deps.paths, cwd, deps.env);
-  const kind = ALERT_EVENT_OF[event];
-  if (kind !== undefined && !here.alerts.events.value.includes(kind)) {
+  if (!here.alerts.events.value.includes(alert.moment)) {
     if (event === "PreToolUse")
       forget(mark);
     return withProblem(SILENT, here.problem);
   }
   const config = readNotifyConfig(deps.paths.notifyConfigFile);
-  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, session));
+  const type = typeof input.notification_type === "string" ? input.notification_type : "";
+  const agentView = event === "Notification" && AGENT_VIEW_TYPES.includes(type);
+  const desktopKey = agentView ? agentViewKey(session, typeof input.message === "string" ? input.message : "") : session;
+  const argv = desktopCommand(alert, deps, desktopTarget(deps, cwd, label, desktopKey));
   if (isWarpTerminal(deps.env) && warpPluginOn(deps.paths.claudeConfigDir)) {
     if (warpShowsIt(event, input)) {
       if (argv !== null)
@@ -7724,16 +7814,23 @@ function notifyHook(input, event, deps) {
   }
   if (!isSsh(deps.env))
     return withProblem(SILENT, here.problem);
-  const sequence = config.sshBell || here.alerts.sound.value ? `${notifySequence(alert.title, alert.body)}\x07` : notifySequence(alert.title, alert.body);
-  const route = terminalRoute(event, deps.env);
+  let sequence;
+  if (farEndIsWarp(deps.env, config)) {
+    sequence = warpAgentSequence(alert, input);
+  } else {
+    const plain = notifySequence(alert.title, alert.body);
+    sequence = config.sshBell || here.alerts.sound.value ? `${plain}\x07` : plain;
+  }
+  const route = terminalRoute(event, deps.env, type);
   if (route === "field")
     return withProblem(fieldAnswer(sequence), here.problem);
   const onTty = forTty(sequence, deps.env);
-  if (route === "tty") {
+  if (route === "tty" || route === "device-then-field") {
     if (deps.writeTerminal(onTty))
       return withProblem(SILENT, here.problem);
-    deps.writeSessionTerminal(onTty);
-    return withProblem(SILENT, here.problem);
+    if (deps.writeSessionTerminal(onTty))
+      return withProblem(SILENT, here.problem);
+    return route === "device-then-field" ? withProblem(fieldAnswer(sequence), here.problem) : withProblem(SILENT, here.problem);
   }
   return deps.writeTerminal(onTty) ? withProblem(SILENT, here.problem) : withProblem(fieldAnswer(sequence), here.problem);
 }
@@ -7812,47 +7909,49 @@ function realTerminalProbe(env, parentPid) {
   };
 }
 
-// src/entries/notify.ts
+// src/hooks/notify-entry.ts
 function writeTerminal(sequence) {
   const device = ttyDevice(process.platform);
   return device !== null && writeDevice(device, sequence);
 }
-async function hook() {
-  let input;
+async function runNotifyEntry() {
   try {
-    input = JSON.parse(await Bun.stdin.text());
-  } catch {
-    console.error("cc-smart-dev-kit notify: the hook input is not JSON");
-    return;
-  }
-  const event = typeof input === "object" && input !== null && !Array.isArray(input) ? input.hook_event_name : undefined;
-  const env = process.env;
-  const paths = cliPaths(env);
-  const probe = realTerminalProbe(env, process.ppid);
-  const launcher = join7(paths.binDir, LAUNCHER_NAME);
-  const result = notifyHook(input, typeof event === "string" ? event : "", {
-    capture: spawnRunner,
-    env,
-    launcher: existsSync6(launcher) ? launcher : null,
-    nowMs: Date.now(),
-    paths,
-    platform: process.platform,
-    run: spawnNotifyFor(process.platform),
-    which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
-    writeSessionTerminal: (sequence) => {
-      const device = sessionTerminalDevice(probe);
-      return device !== null && writeDevice(device, sequence);
-    },
-    writeTerminal
-  });
-  if (result.stdout !== undefined)
-    await Bun.write(Bun.stdout, result.stdout);
-  if (result.stderr !== undefined)
-    await Bun.write(Bun.stderr, `${result.stderr}
+    let input;
+    try {
+      input = JSON.parse(await Bun.stdin.text());
+    } catch {
+      console.error("cc-smart-dev-kit notify: the hook input is not JSON");
+      return;
+    }
+    const event = typeof input === "object" && input !== null && !Array.isArray(input) ? input.hook_event_name : undefined;
+    const env = process.env;
+    const paths = cliPaths(env);
+    const probe = realTerminalProbe(env, process.ppid);
+    const launcher = join7(paths.binDir, LAUNCHER_NAME);
+    const result = notifyHook(input, typeof event === "string" ? event : "", {
+      capture: spawnRunner,
+      env,
+      launcher: existsSync6(launcher) ? launcher : null,
+      nowMs: Date.now(),
+      paths,
+      platform: process.platform,
+      run: spawnNotifyFor(process.platform),
+      which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
+      writeSessionTerminal: (sequence) => {
+        const device = sessionTerminalDevice(probe);
+        return device !== null && writeDevice(device, sequence);
+      },
+      writeTerminal
+    });
+    if (result.stdout !== undefined)
+      await Bun.write(Bun.stdout, result.stdout);
+    if (result.stderr !== undefined)
+      await Bun.write(Bun.stderr, `${result.stderr}
 `);
+  } catch (error) {
+    console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
-try {
-  await hook();
-} catch (error) {
-  console.error(`cc-smart-dev-kit notify: ${error instanceof Error ? error.message : String(error)}`);
-}
+
+// src/entries/notify.ts
+await runNotifyEntry();

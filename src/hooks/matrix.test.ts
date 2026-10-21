@@ -39,7 +39,6 @@ import {
   messageGuardHook,
   PROJECT_HOOKS,
   reviewRecordHook,
-  serenaRootHook,
   sessionNameHook,
   subagentStopHook,
   worktreeCreateHook,
@@ -110,7 +109,7 @@ const denyLine = (result: HookResult) => {
   expect(result.exitCode ?? 0).toBe(0);
   const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
   expect(output.permissionDecision).toBe("deny");
-  expect(output.permissionDecisionReason).toContain("Opus is for reviews");
+  expect(output.permissionDecisionReason).toContain("asks for effort `low`");
 };
 const contextLine = (result: HookResult) => {
   const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
@@ -224,7 +223,7 @@ const CASES: Case[] = [
         session_id: SESSION,
         cwd: project(config),
         tool_name: "Agent",
-        tool_input: { effort: "high", model: "opus", prompt: "do it" },
+        tool_input: { effort: "low", model: "opus", prompt: "do it" },
       },
       env: hookEnv(),
     }),
@@ -282,34 +281,6 @@ const CASES: Case[] = [
       };
     },
     failsClosed: askLine,
-  },
-  {
-    spec: serenaRootHook,
-    own: { event: "PreToolUse", matcher: "mcp__serena__activate_project" },
-    setup: (config) => {
-      const repo = project(config);
-      // An activation outside the repo: the one call this hook refuses.
-      return {
-        input: {
-          hook_event_name: "PreToolUse",
-          session_id: SESSION,
-          cwd: repo,
-          tool_name: "mcp__serena__activate_project",
-          tool_input: { project: tempDir("elsewhere") },
-        },
-        env: hookEnv(),
-      };
-    },
-    // Nothing is recorded while cc-smart-dev-kit.json cannot be read — the main-folder guard
-    // then ASKS about a Serena edit (specs.ts, mainFolderGuardHook.onConfigProblem) — and one
-    // line on stderr says why.
-    failsClosed: (result) => {
-      expect(result.exitCode ?? 0).toBe(0);
-      expect(result.stdout).toBeUndefined();
-      expect(result.stderr).toStartWith(
-        "cc-smart-dev-kit cannot check which folder Serena edits: ",
-      );
-    },
   },
   {
     spec: messageGuardHook,
@@ -474,6 +445,15 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     if (c.spec.wiring !== "plugin") return;
     const { input, env } = c.setup(listing(c));
     expect(await runHook(c.spec, input, env)).toEqual({});
+  });
+
+  test("a retired name in ownHooks (serena-root): the file still reads, and this hook still speaks", async () => {
+    // A project file written for an older plugin may still list it. Refused, the strict parse
+    // would fail and every guard would ask about every call; accepted, it silences nothing.
+    const { input, env } = c.setup({ ...FULL_CONFIG, ownHooks: ["serena-root"] });
+    const result = await runHook(c.spec, input, env);
+    expect(speaks(result)).toBe(true);
+    expect(`${result.stdout ?? ""}${result.stderr ?? ""}`).not.toContain("ownHooks");
   });
 
   test("requires not met: fails closed", async () => {

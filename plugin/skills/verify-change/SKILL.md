@@ -37,8 +37,8 @@ to go green.
 You changed a shared type, function, hook, service, route, cache key, event name or anything
 with several callers:
 
-- find every caller (a language-server tool where the project has one, else `Grep`) and
-  `Grep` for the text forms too — route strings, keys, event names;
+- find every caller (`Grep` for the name as a whole word, `\bname\b`) and the text forms
+  too — route strings, keys, event names;
 - run the type check once, to see every broken caller now.
 
 The full protocol — scope limits, renames, data — is `/cc-smart-dev-kit:impact-analysis`.

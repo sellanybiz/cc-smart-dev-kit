@@ -798,33 +798,24 @@ export const PORTAL_JS = `(function () {
         var name = node.value.trim();
         if (name !== "") protectedNames.push(name);
       });
-      var setupText = answerOf("setup");
-      var engine = form.querySelector("[data-engine] button[aria-pressed='true']");
       return {
         answers: {
           base: answerOf("base"),
-          prefix: answerOf("prefix"),
-          setup: setupText === "" ? null : setupText.split(/\\s+/),
           bases: bases,
           protectedBranches: protectedNames,
           guards: {
             guardMainFolder: guardOn("guardMainFolder"),
             sessionNames: guardOn("sessionNames"),
             jobRoute: guardOn("jobRoute")
-          },
-          engine: engine ? engine.getAttribute("data-engine-value") : "plugin"
+          }
         }
       };
     };
 
     var drawPlan = function (data, preview) {
-      // What the settings file changes: the lines the engine adds, and the ones an engine of
-      // the project's own takes back out — a line beginning with "-", the way a diff reads.
-      var settingsLines = (preview.hookLines || []).concat(
-        (preview.removedLines || []).map(function (line) { return "- " + line; })
-      );
       filePre.textContent = preview.text;
-      settingsPre.textContent = settingsLines.join("\\n");
+      // The settings file gets Claude Code's worktree.baseRef line, or nothing.
+      settingsPre.textContent = (preview.settingsAdds || []).join("\\n");
       if (typeof data.filesHash === "string") filesHash = data.filesHash;
       // The note under the settings box comes from the server, like the boxes: one home for
       // the sentence, and it can never describe a different plan than the one drawn.
@@ -876,15 +867,6 @@ export const PORTAL_JS = `(function () {
     };
     Array.prototype.forEach.call(form.querySelectorAll("[data-form-switch]"), function (button) {
       button.addEventListener("click", function () { flip(button); });
-    });
-
-    Array.prototype.forEach.call(form.querySelectorAll("[data-engine] button"), function (button) {
-      button.addEventListener("click", function () {
-        Array.prototype.forEach.call(form.querySelectorAll("[data-engine] button"), function (other) {
-          other.setAttribute("aria-pressed", other === button ? "true" : "false");
-        });
-        ask();
-      });
     });
 
     // An added row is the page's own markup, taken from the template beside the list: the

@@ -36,8 +36,8 @@ through the two lists below, but **only the entries this diff touches.** Walking
 does not apply is theatre; name the ones you skipped, one line each.
 
 The bug usually lives between what you changed and what you did not. For every exported
-symbol you touched, find its callers (a language-server tool such as Serena where the
-project has one, else `Grep`) and read them.
+symbol you touched, find its callers (`Grep` for the name as a whole word, `\bname\b`) and
+read them.
 
 ## Review dimensions
 
@@ -131,8 +131,8 @@ asks, with the line `Fable reason: review - <why>`; `agent-guard` then asks the 
   new change set: its own branch, its own read. Fixes to code the agent already read are a
   re-push, not a new change set.
 - **The brief:** the diff (or how to get it: base and branch), what the change is meant to
-  do, your own edge-case list, and whether the session pointed a language-server tool at this
-  checkout.
+  do, your own edge-case list, and the checkout's absolute path (in a worktree, the
+  worktree's).
 - **Commit before you start it, and do not commit while it runs.** With `reviewBeforePush`
   on, the record of the review is written by the plugin's `review-record` hook: Claude Code
   tells it when a subagent finishes, and when that agent is one the workflow's `reviewAgents`

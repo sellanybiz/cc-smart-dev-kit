@@ -8,7 +8,7 @@ parts fit: `design.md`.
 | 1 | Foundation | Done |
 | 2 | The AI gateway | Done |
 | 3 | Hooks and `doctor --live` | Done (0.3.0) |
-| 4 | Shared browser, Serena, MCP registration, session tools | Done (0.3.0; the browser replaced in 0.4.0) |
+| 4 | Shared browser, Serena, MCP registration, session tools | Done (0.3.0; the browser replaced in 0.4.0, Serena removed in 0.6.0) |
 | 5 | Instructions, skills, agents | Done (0.3.0) |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Done (0.3.0) |
 | 7 | Opus and Fable slots, the usage-limit alert | Done (0.3.0) |
@@ -86,6 +86,68 @@ Done in this release:
   browser's own state. What 0.3.0 left — the profile folder `<dataDir>/playwright` and the Chrome
   it may still have running — is reported by `doctor` (with the command that deletes the folder,
   which is the person's own call, and the pid of that Chrome) and is never deleted or used.
+
+## 0.6.0 — Serena is removed
+
+The owner's decision (2026-10-19), from a measurement on one machine: one Serena MCP server
+ran per Claude session, about 3.2 GB each in a large project's main folder (18 GB for 10
+sessions, swap full); Serena was used in 12 of 158 sessions in 14 days, never in this repo,
+its own tools (rename, safe delete, symbol edits) were never called, and `activate_project`
+failed 18% of the time. Grep, Glob and Read do almost all code search; claude-mem's
+`smart_search`, `smart_outline` and `smart_unfold` cover symbol finding and outlines. Claude
+Code's own LSP plugin is not added in its place (one TypeScript server per session).
+
+- **Gone:** the `serena` registration, its pin and its context (`plugin/serena/`), the
+  `serena-root` hook, the Serena branch of the main-folder guard (Edit, Write and NotebookEdit
+  are guarded exactly as before), and the `code-explorer` agent. The skills and the reviewer
+  use Grep with a whole-word pattern, `Explore` for a wide sweep, and claude-mem's tools for a
+  file's shape.
+- **Setup cleans up after it** (`design.md` § MCP servers at user scope): the `serena`
+  registration setup made, through `claude mcp remove` — never one of the person's own — its
+  context file and the `serena-root` records; `--dry-run` shows each, and `doctor` has one ✗
+  line until setup has run.
+- **`serena-root` in a project's `ownHooks`** is still accepted, silences nothing, and gets a
+  `·` line in `doctor`.
+
+The release that was planned as 0.6.0 (the one 0.5.5 brought D11 forward from) is 0.7.0 now;
+the deprecated worktree engine (§ 0.5.2) is not removed in this release.
+
+## 0.5.5 — Opus runs without asking below `max` (D11)
+
+The owner's decision D11, brought forward from 0.6.0 because a session nobody can be asked in
+(a background session, `claude -p`) could not start its Opus builders at all:
+
+- **An `opus` launch runs with no question at `high` or `xhigh`** — any agent, any purpose,
+  review or not — and needs no `Opus reason:` line; **at `max` it asks the person**, and a
+  `claude -p` session refuses that one, with a message saying to run it lower or interactively.
+  Fable keeps its rules exactly (`design.md` § The Agent guard).
+- **The reason list, the review-agent list and `CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`
+  are gone.** An `Opus reason:` line is optional: when a prompt has one, its first word only
+  names the purpose in the record, which reads `opus:<effort>` (with the word after it when
+  there is one, `opus:xhigh:security`; a fork is `opus:session-effort`).
+- **Everything else is unchanged:** `model` and `effort` on every launch, `low` and `medium`
+  refused, an affordable gateway slot at `max`, and Fable's reason line and asks.
+
+## 0.5.2 — every project on Claude Code's own worktrees
+
+The owner's decision (2026-10-18): the plugin's own worktree engine is retired in favour of
+Claude Code's, which is what every project gets now.
+
+- **Every project uses Claude Code's own worktrees**: `<repo>/.claude/worktrees/<name>` on
+  `worktree-<name>`, a task started with `claude -w <task-name>`, and no WorktreeCreate or
+  WorktreeRemove hook (`design.md` § Worktrees: Claude Code's own).
+- **`"worktree": {"baseRef": "head"}`** in a project's committed `.claude/settings.json` when
+  its base branch is not the repo's default branch: a worktree, and a subagent's worktree, are
+  cut from the current branch. `project init` writes the line; `baseRef` takes only `"fresh"`
+  (the default) or `"head"`.
+- **The engine is deprecated, not yet deleted**: `worktrees.engine`, `worktrees.prefix`
+  (optional now) and `worktrees.setup` stay accepted, `cc-smart-dev-kit hook` still answers for a
+  project that wired it, and `doctor` warns with the exact steps to move. **The engine's code
+  and fields are removed in the next minor version.**
+- **`doctor`** warns when `.claude/worktrees/` is not git-ignored, when a project still sets
+  an engine field or wires its hooks, and when a non-default `worktrees.base` has no
+  `baseRef: "head"` in the project's settings.
+- **`cc-smart-dev-kit sessions`** finds a project's sessions in its nested worktrees too.
 
 ## 0.4.1 — the model rules of 2026-10-16
 
@@ -200,7 +262,8 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
   the profile in the data folder, the tab filter and the picker bundle are gone, and the browser
   refuses to run without the extension's token.
 - Serena, with the plugin's own context (project switching on, so a session can point it at
-  its worktree) installed in the data folder.
+  its worktree) installed in the data folder. **Removed in 0.6.0**, with its root record
+  below (§ 0.6.0).
 - `setup` registers the general MCP servers at user scope, so tool names stay
   `mcp__<server>__*`, and `restore` removes exactly what it registered. Tavily's key comes
   from the environment or a 0600 file, is never printed, and never reaches a registration.
@@ -226,7 +289,7 @@ sessions closed in the same moment before the machine started (`docs/windows-set
 - Always-on instructions, imported from `~/.claude/CLAUDE.md` through a managed block.
 - Opt-in instructions, per project (`cc-smart-dev-kit.json` `instructions`).
 - General skills and agents, which read a project's own additions when they exist. The
-  plugin ships 17 skills and 4 agents.
+  plugin ships 17 skills and 3 agents (4 until 0.6.0: `code-explorer` went with Serena).
 
 ## 6 — Notifications, claude-mem settings, the auto-mode block (done, 0.3.0)
 

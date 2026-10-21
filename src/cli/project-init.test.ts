@@ -17,7 +17,6 @@ import {
   protectedFromGithub,
   realRunner,
   runProjectInit,
-  setupFromLockfile,
   shownBases,
   shownWorkflow,
   workflowFromFlags,
@@ -69,10 +68,6 @@ describe("the flags", () => {
       "--yes",
       "--base",
       "dev",
-      "--prefix",
-      "app-wt-",
-      "--setup",
-      "bun install",
       "--bases",
       "hotfix/=main,release/=main",
       "--protected",
@@ -80,8 +75,6 @@ describe("the flags", () => {
       "--guard-main-folder",
       "--session-names",
       "--job-route",
-      "--engine",
-      "own",
       "--workflow",
       "openPr=draft,autoCommit=true",
     ]);
@@ -90,28 +83,36 @@ describe("the flags", () => {
         dryRun: true,
         yes: true,
         base: "dev",
-        prefix: "app-wt-",
-        setup: ["bun", "install"],
         bases: { "hotfix/": "main", "release/": "main" },
         protectedBranches: ["main", "dev"],
         guardMainFolder: true,
         sessionNames: true,
         jobRoute: true,
-        engine: "own",
         workflow: ["openPr=draft", "autoCommit=true"],
       },
     });
   });
 
-  test("--no-setup writes no setup command", () => {
-    expect(parseFlags(["--no-setup"])).toEqual({
-      flags: { dryRun: false, yes: false, setup: null },
+  test("the deprecated engine's flags are accepted and ignored, not unknown", () => {
+    expect(
+      parseFlags([
+        "--prefix",
+        "app-wt-",
+        "--setup",
+        "bun install",
+        "--no-setup",
+        "--engine",
+        "own",
+      ]),
+    ).toEqual({
+      flags: {
+        dryRun: false,
+        yes: false,
+        deprecatedFlags: ["--prefix", "--setup", "--no-setup", "--engine"],
+      },
     });
-  });
-
-  test("an unknown flag, a missing value, and a wrong engine: one error each", () => {
+    expect(parseFlags(["--prefix"])).toEqual({ error: "--prefix needs a value" });
     expect(parseFlags(["--base"])).toEqual({ error: "--base needs a value" });
-    expect(parseFlags(["--engine", "solo"])).toEqual({ error: '--engine is "plugin" or "own"' });
     expect(parseFlags(["--bases", "hotfix"])).toEqual({
       error: '--bases: "hotfix" is not prefix=base',
     });
@@ -184,25 +185,10 @@ describe("the defaults from the repo", () => {
       // protected branches, so a wrong base put a branch that is not in the repo into both.
       const only = repoWith(["dev"]);
       const facts = detectFacts(realRunner(cleanGitEnv()), only);
-      const answers = defaultAnswers(null, facts, { dryRun: false, yes: false }, only);
+      const answers = defaultAnswers(null, facts, { dryRun: false, yes: false });
       expect(answers.base).toBe("dev");
       expect(answers.protectedBranches).toEqual(["dev"]);
     });
-  });
-
-  test("the setup command comes from the lockfile", () => {
-    const root = tempDir("project-init");
-    expect(setupFromLockfile(root)).toBeNull();
-    writeFileSync(join(root, "package-lock.json"), "{}");
-    expect(setupFromLockfile(root)).toEqual(["npm", "ci"]);
-    writeFileSync(join(root, "bun.lock"), "");
-    expect(setupFromLockfile(root)).toEqual(["bun", "install"]);
-    const pnpm = tempDir("project-init");
-    writeFileSync(join(pnpm, "pnpm-lock.yaml"), "");
-    expect(setupFromLockfile(pnpm)).toEqual(["pnpm", "install"]);
-    const yarn = tempDir("project-init");
-    writeFileSync(join(yarn, "yarn.lock"), "");
-    expect(setupFromLockfile(yarn)).toEqual(["yarn"]);
   });
 
   test("GitHub's protected branches are read with gh, and quietly skipped without it", () => {
@@ -235,13 +221,14 @@ describe("the defaults from the repo", () => {
   });
 
   test("a flag wins, then the project's own file, then the repo", () => {
-    const root = tempDir("project-init");
-    const facts = { defaultBranch: "main", setup: ["npm", "ci"], protectedFromGithub: ["release"] };
+    const facts = { defaultBranch: "main", protectedFromGithub: ["release"] };
     const flags = { dryRun: false, yes: false };
-    const fromRepo = defaultAnswers(null, facts, flags, root);
+    const fromRepo = defaultAnswers(null, facts, flags);
     expect(fromRepo.base).toBe("main");
-    expect(fromRepo.prefix).toBe(`${root.split("/").at(-1) ?? ""}-wt-`);
-    expect(fromRepo.setup).toEqual(["npm", "ci"]);
+    // The deprecated engine's fields are never offered, and never written fresh.
+    expect(fromRepo).not.toHaveProperty("prefix");
+    expect(fromRepo).not.toHaveProperty("setup");
+    expect(fromRepo).not.toHaveProperty("engine");
     expect(fromRepo.bases).toEqual({ "hotfix/": "main", "release/": "main" });
     expect(fromRepo.protectedBranches).toEqual(["main", "release"]);
     expect(fromRepo.guards).toEqual({
@@ -249,7 +236,6 @@ describe("the defaults from the repo", () => {
       sessionNames: true,
       jobRoute: false,
     });
-    expect(fromRepo.engine).toBe("plugin");
     expect(fromRepo.workflow).toEqual({});
 
     const existing = {
@@ -259,41 +245,28 @@ describe("the defaults from the repo", () => {
       jobs: { route: true },
       workflow: { autoCommit: true },
     };
-    const fromFile = defaultAnswers(existing, facts, flags, root);
+    const fromFile = defaultAnswers(existing, facts, flags);
     expect(fromFile.base).toBe("dev");
-    expect(fromFile.prefix).toBe("my-wt-");
-    expect(fromFile.setup).toEqual(["pnpm", "install"]);
     expect(fromFile.protectedBranches).toEqual(["dev"]);
     expect(fromFile.guards).toEqual({
       guardMainFolder: true,
       sessionNames: false,
       jobRoute: true,
     });
-    expect(fromFile.engine).toBe("own");
     expect(fromFile.workflow).toEqual({ autoCommit: true });
 
-    const withFlags = defaultAnswers(
-      existing,
-      facts,
-      {
-        dryRun: false,
-        yes: true,
-        base: "integration",
-        prefix: "w-",
-        setup: ["yarn"],
-        bases: { "release/": "main" },
-        protectedBranches: ["integration"],
-        guardMainFolder: false,
-        sessionNames: true,
-        jobRoute: false,
-        engine: "plugin",
-        workflow: ["openPr=ready"],
-      },
-      root,
-    );
+    const withFlags = defaultAnswers(existing, facts, {
+      dryRun: false,
+      yes: true,
+      base: "integration",
+      bases: { "release/": "main" },
+      protectedBranches: ["integration"],
+      guardMainFolder: false,
+      sessionNames: true,
+      jobRoute: false,
+      workflow: ["openPr=ready"],
+    });
     expect(withFlags.base).toBe("integration");
-    expect(withFlags.prefix).toBe("w-");
-    expect(withFlags.setup).toEqual(["yarn"]);
     expect(withFlags.bases).toEqual({ "release/": "main" });
     expect(withFlags.protectedBranches).toEqual(["integration"]);
     expect(withFlags.guards).toEqual({
@@ -301,7 +274,6 @@ describe("the defaults from the repo", () => {
       sessionNames: true,
       jobRoute: false,
     });
-    expect(withFlags.engine).toBe("plugin");
     expect(withFlags.workflow).toEqual({ openPr: "ready" });
   });
 });
@@ -321,30 +293,26 @@ describe("the questions on a terminal", () => {
     };
     const before = defaultAnswers(
       null,
-      { defaultBranch: "main", setup: null, protectedFromGithub: [] },
+      { defaultBranch: "main", protectedFromGithub: [] },
       { dryRun: false, yes: false },
-      "/code/my-app",
     );
     expect(askedAnswers(terminal, before)).toEqual(before);
     expect(asked).toContain("The branch a new worktree starts from");
     expect(asked).toContain(
       "Refuse edits in the main checkout itself, so every change goes in a worktree? (yes/no)",
     );
-    expect(asked).toContain(
-      'Who makes this project\'s worktrees: "plugin" (cc-smart-dev-kit\'s engine) or "own" (your own)?',
-    );
+    // The deprecated engine's three questions are gone.
+    expect(asked.some((question) => question.includes("worktree engine"))).toBe(false);
+    expect(asked.some((question) => question.includes("folder-name prefix"))).toBe(false);
+    expect(asked.some((question) => question.includes("run inside a new worktree"))).toBe(false);
   });
 
   test("the answers replace the defaults, and an empty one means none", () => {
     const answers: Record<string, string> = {
       "The branch a new worktree starts from": "dev",
-      "The folder-name prefix of a worktree beside the repo": "app-wt-",
-      'The command run inside a new worktree (words, like "bun install"; empty: none)': "",
       "Bases for other branch prefixes, as prefix=base,prefix=base (empty: none)": "release/=main",
       "The branches the git guard asks about before a push (comma separated)": "",
       "Name each session after its task? (yes/no)": "no",
-      'Who makes this project\'s worktrees: "plugin" (cc-smart-dev-kit\'s engine) or "own" (your own)?':
-        "own",
       "Send heavy commands (type checks, test runs, builds) through the machine's job queue? (yes/no)":
         "yes",
     };
@@ -354,19 +322,15 @@ describe("the questions on a terminal", () => {
     };
     const before = defaultAnswers(
       null,
-      { defaultBranch: "main", setup: null, protectedFromGithub: [] },
+      { defaultBranch: "main", protectedFromGithub: [] },
       { dryRun: false, yes: false },
-      "/code/my-app",
     );
     const after = askedAnswers(terminal, before);
     expect(after.base).toBe("dev");
-    expect(after.prefix).toBe("app-wt-");
-    expect(after.setup).toBeNull();
     expect(after.bases).toEqual({ "release/": "main" });
     expect(after.protectedBranches).toEqual([]);
     expect(after.guards.sessionNames).toBe(false);
     expect(after.guards.jobRoute).toBe(true);
-    expect(after.engine).toBe("own");
   });
 });
 
@@ -386,29 +350,54 @@ describe("the run", () => {
     const run = context(repo);
     expect(
       runProjectInit(
-        ["--yes", "--base", "dev", "--prefix", "app-wt-", "--bases", "hotfix/=main"],
+        ["--yes", "--base", "dev", "--bases", "hotfix/=main"],
         run.context,
         runner({}, () => ({ ok: false, out: "", err: "" })),
       ),
     ).toBe(0);
     const file = join(repo, ".claude", "cc-smart-dev-kit.json");
     const written = JSON.parse(readFileSync(file, "utf8")) as {
-      worktrees: { base: string; prefix: string; bases: Record<string, string> };
+      worktrees: Record<string, unknown>;
       requires: string;
     };
     expect(written.worktrees.base).toBe("dev");
-    expect(written.worktrees.prefix).toBe("app-wt-");
     expect(written.worktrees.bases).toEqual({ "hotfix/": "main" });
-    expect(
-      (
-        JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8")) as {
-          hooks: Record<string, unknown>;
-        }
-      ).hooks.WorktreeCreate,
-    ).toBeDefined();
+    // No prefix, setup or engine: every project uses Claude Code's own worktrees.
+    expect(written.worktrees).not.toHaveProperty("prefix");
+    expect(written.worktrees).not.toHaveProperty("setup");
+    expect(written.worktrees).not.toHaveProperty("engine");
+    // The base is not the repo's default branch: a worktree starts from the current branch.
+    expect(JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8"))).toEqual({
+      worktree: { baseRef: "head" },
+    });
+    expect(run.lines).toContain("Commit both files with the project.");
     expect(run.lines.at(-1)).toBe(
       `The file asks for cc-smart-dev-kit ${written.requires}: every teammate needs that plugin version or newer.`,
     );
+  });
+
+  test("the deprecated engine's flags write nothing, and one ! line says they are ignored", () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(
+      runProjectInit(["--yes", "--prefix", "app-wt-", "--engine", "own"], run.context, runner({})),
+    ).toBe(0);
+    const written = JSON.parse(
+      readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8"),
+    ) as { worktrees: Record<string, unknown> };
+    expect(written.worktrees).not.toHaveProperty("prefix");
+    expect(written.worktrees).not.toHaveProperty("engine");
+    expect(run.lines).toContain(
+      "! --prefix, --engine are deprecated and ignored: the plugin's worktree engine retires in the next minor version, and every project uses Claude Code's own worktrees",
+    );
+  });
+
+  test("--yes with the default branch as the base writes no settings file", () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(true);
+    expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(false);
   });
 
   test("--dry-run prints the plan and writes nothing, also with --yes", () => {
@@ -472,20 +461,24 @@ describe("the run", () => {
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
-  test("engine own: the project's file only, no hook lines", () => {
+  test("a project file's deprecated engine fields are kept, and the flags never add one", () => {
     const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    writeFileSync(
+      file,
+      `${JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-", setup: ["bun", "install"] } }, null, 2)}\n`,
+    );
     const run = context(repo);
-    expect(runProjectInit(["--yes", "--engine", "own"], run.context, runner({}))).toBe(0);
-    expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(false);
-    expect(
-      (
-        JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")) as {
-          worktrees: { engine: string };
-        }
-      ).worktrees.engine,
-    ).toBe("own");
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    const after = JSON.parse(readFileSync(file, "utf8")) as {
+      worktrees: Record<string, unknown>;
+    };
+    expect(after.worktrees.prefix).toBe("app-wt-");
+    expect(after.worktrees.setup).toEqual(["bun", "install"]);
+    expect(after.worktrees).not.toHaveProperty("engine");
     expect(run.lines).toContain(
-      '! engine "own": no cc-smart-dev-kit hook lines are added to .claude/settings.json — your own engine makes this project\'s worktrees; `cc-smart-dev-kit doctor` expects none',
+      "! the project's file still sets worktrees.prefix, worktrees.setup: the worktree engine is deprecated and retires in the next minor version; `cc-smart-dev-kit doctor` names the steps to move",
     );
   });
 
@@ -531,7 +524,7 @@ describe("the command itself, as Claude Code runs it", () => {
     expect(result.stderr.toString()).toBe("");
   });
 
-  test("`--yes` in a real repo writes both files, in this HOME's state folder", () => {
+  test("`--yes` in a real repo writes the project's file, in this HOME's state folder", () => {
     const home = tempDir("init-cli-home");
     const repo = makeRepo();
     const guard = subprocessGuard();
@@ -543,6 +536,8 @@ describe("the command itself, as Claude Code runs it", () => {
         "project",
         "init",
         "--yes",
+        "--base",
+        "dev",
       ],
       {
         cwd: repo,

@@ -324,21 +324,36 @@ function installCopy(
 }
 
 /**
- * May a session of `version` write its files over the copy that `stamp` names? Only the
- * plugin version Claude Code has installed now (`installed`: also an older one the person went
- * back to), or a version newer than the stamp. A session of an older version keeps running
- * after an update, and its SessionStart comes again on a resume, a `/clear` or a compaction:
- * without this it put the old files back over the new ones, and the next new session put the
- * new ones back, each time with a backup. A stamp or a version that is not a version number
- * proves nothing newer: only the installed version writes then.
+ * May a session of `version` write its files over the copy? When Claude Code's record of the
+ * installed version can be read, ONLY that version writes: a session of an older version keeps
+ * running after an update, and its SessionStart comes again on a resume, a `/clear` or a
+ * compaction — without this it put the old files back over the new ones. A copy written by a
+ * newer version is never replaced by an older session. With no record, the stamp decides: a
+ * new session of a newer version writes, and a copy that is not older is left alone.
  */
 export function refreshMayWrite(
   stamp: string | null,
   version: string,
   installed: string | null,
 ): boolean {
-  if (installed !== null && installed === version) return true;
+  if (installed !== null) return installed === version;
   return isOlder(stamp, version);
+}
+
+/**
+ * Why this session must not refresh the copy, in one line, or null when it may — or when it
+ * has nothing to do. None when the copy is already the installed version's: an old session
+ * then runs old code, and the copy is right.
+ */
+export function refreshRefusal(paths: InstructionsPaths, version: string): string | null {
+  if (!instructionsNeedRefresh(paths, version)) return null;
+  const stamp = readVersionStamp(paths.stateDir);
+  const installed = findUserInstall(paths.installedPluginsFile)?.version ?? null;
+  if (refreshMayWrite(stamp, version, installed)) return null;
+  if (installed !== null && stamp === installed) return null;
+  return installed !== null
+    ? `this session runs ${version}; restart it to use the installed ${installed}'s instructions`
+    : `this session runs ${version}, and the instructions copy is not this session's; it is left alone`;
 }
 
 /** Does the copy need `version`, and may this session write it? Files only, never a write. */
@@ -352,7 +367,7 @@ function refreshDue(paths: InstructionsPaths, version: string): boolean {
  * Brings the copy up to `version` after a plugin update, and does nothing else: no block, no
  * other setup step, no question. It does nothing when the person opted out, when setup never
  * installed the copy, when the stamp already names `version` (`instructionsNeedRefresh`), or
- * when `version` is neither the installed one nor newer than the stamp (`refreshMayWrite`).
+ * when this session is not the one that may write (`refreshMayWrite`).
  * Runs inside the state folder's lock; with `dryRun`, it only reports and takes no lock.
  */
 export async function refreshInstructionsCopy(

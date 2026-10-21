@@ -13,11 +13,14 @@
  *   - Tavily's key: from the environment or the key file. No key is a `·` line, never a
  *     failure: a person who never wanted Tavily has no server and loses nothing. Its value is
  *     never read into a message.
+ *   - A retired server (`retired.ts`): one ✗ line while setup still owes its removal, and a
+ *     `·` line for one of the person's own under that name.
  */
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { readMcpRecords } from "./records";
 import { overridingServer, readUserServers, sameConfig } from "./register";
+import { retiredChecks } from "./retired";
 import { SERVER_NAMES } from "./servers";
 import { describeServerConfig } from "./status";
 import { readTavilyKey } from "./tavily";
@@ -33,7 +36,7 @@ export interface McpCheck {
 
 /**
  * How long `claude mcp get` may take: it starts the server, and a first download can take a
- * minute (a Serena pinned by commit, the Playwright MCP through `bunx`).
+ * minute (the Playwright MCP through `bunx`).
  */
 const FIRST_START_LIMIT_MS = 180_000;
 
@@ -192,5 +195,8 @@ export function mcpChecks(
       } (key file: ${paths.tavilyKeyFile})`,
     });
   }
+  // What a retired server left (Serena): a line only while setup owes its removal, or for a
+  // server of that name that is the person's own.
+  checks.push(...retiredChecks(paths));
   return checks;
 }

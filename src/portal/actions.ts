@@ -846,11 +846,8 @@ async function setWorkflowSetting(
 export interface ProjectFormFields {
   base: string;
   bases: Record<string, string>;
-  engine: "plugin" | "own";
   guards: { guardMainFolder: boolean; jobRoute: boolean; sessionNames: boolean };
-  prefix: string;
   protectedBranches: string[];
-  setup: null | string[];
 }
 
 /**
@@ -868,30 +865,6 @@ export function parseProjectForm(
       ok: false,
       why: "The base branch is needed: it is the branch a new worktree starts from.",
     };
-  }
-  const prefix = typeof value.prefix === "string" ? value.prefix.trim() : "";
-  if (prefix === "") {
-    return {
-      ok: false,
-      why: "The worktree folder prefix is needed: it names the folder beside the repo.",
-    };
-  }
-  if (prefix.includes("/") || prefix.includes("\\")) {
-    return {
-      ok: false,
-      why: "The worktree folder prefix cannot hold / or \\: it is a folder name.",
-    };
-  }
-  let setup: null | string[] = null;
-  if (value.setup !== null && value.setup !== undefined) {
-    if (
-      !Array.isArray(value.setup) ||
-      value.setup.length === 0 ||
-      !value.setup.every((word) => typeof word === "string" && word !== "")
-    ) {
-      return { ok: false, why: 'The setup command must be words, like "bun install".' };
-    }
-    setup = value.setup as string[];
   }
   if (!isObject(value.bases)) return { ok: false, why: "The bases must be prefix → base pairs." };
   const bases: Record<string, string> = {};
@@ -920,12 +893,9 @@ export function parseProjectForm(
     if (typeof on !== "boolean") return { ok: false, why: `guards.${name} is true or false.` };
     guards[name] = on;
   }
-  if (value.engine !== "plugin" && value.engine !== "own") {
-    return { ok: false, why: 'The worktree engine is "plugin" or "own".' };
-  }
   return {
     ok: true,
-    value: { base, bases, engine: value.engine, guards, prefix, protectedBranches, setup },
+    value: { base, bases, guards, protectedBranches },
   };
 }
 
@@ -941,6 +911,8 @@ function projectAnswers(
   | {
       ok: true;
       answers: ProjectInitAnswers;
+      /** The repo's default branch, which the plan compares the base with. */
+      defaultBranch: string;
       existing: null | string;
       existingSettings: null | string;
       root: string;
@@ -958,6 +930,7 @@ function projectAnswers(
     return {
       ok: true,
       answers: { ...defaults.answers, ...form.value },
+      defaultBranch: defaults.defaultBranch,
       ...texts,
       root: project.root,
     };
@@ -976,6 +949,7 @@ async function projectPreview(
   try {
     const plan = action.workflow.planProjectInit({
       answers: built.answers,
+      defaultBranch: built.defaultBranch,
       existing: built.existing,
       existingSettings: built.existingSettings,
       root: built.root,
@@ -987,7 +961,7 @@ async function projectPreview(
         existing: built.existing,
         existingSettings: built.existingSettings,
       }),
-      lines: [settingsLineNote(plan.hookLines.length, plan.removedLines.length)],
+      lines: [settingsLineNote(plan.settingsAdds.length)],
       ok: true,
       preview: plan,
     };
@@ -1026,6 +1000,7 @@ async function projectWrite(
   try {
     const plan = action.workflow.planProjectInit({
       answers: built.answers,
+      defaultBranch: built.defaultBranch,
       existing: built.existing,
       existingSettings: built.existingSettings,
       root: built.root,

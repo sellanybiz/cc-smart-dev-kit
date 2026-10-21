@@ -32,17 +32,17 @@ a clear error that says what is wrong.
 | Field | Type | Meaning |
 |---|---|---|
 | `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
-| `worktrees` | object | Turns on the plugin hooks that work with worktrees, and is what the worktree engine needs. The engine also needs the project to wire `cc-smart-dev-kit hook <name>` in its own settings (README § Worktrees); wired without `worktrees`, each engine hook fails closed (`needsWorktrees` in `src/hooks/specs.ts`), never falls back to another shape. |
-| `worktrees.base` | string | The branch new worktrees start from (`origin/<base>`, freshly fetched); also the base the after-merge and leftovers hooks compare with. |
-| `worktrees.prefix` | string | The folder-name prefix of a worktree beside the repo. No `/` or `\` (the hook refuses one). |
-| `worktrees.setup` | string array (argv) | A command run inside a new worktree, e.g. `["bun", "install"]`. |
+| `worktrees` | object | Turns on the notes and guards that work with worktrees (the after-merge and leftovers notes, the stash question, the main-folder guard). Every project uses Claude Code's own worktrees (`<repo>/.claude/worktrees/<name>`); `project init` writes `base` for every project. |
+| `worktrees.base` | string | The branch new worktrees start from and pull requests go into; also the base the after-merge and leftovers hooks compare with. |
+| `worktrees.prefix` | string, **deprecated** | The folder-name prefix of a worktree the plugin's deprecated engine made beside the repo. Optional since 0.5.2; a project still wired to the engine sets it, and the engine retires in the next minor version. |
+| `worktrees.setup` | string array (argv), **deprecated** | A command the deprecated engine ran inside a new worktree, e.g. `["bun", "install"]`. A project on Claude Code's own worktrees runs its install itself; the engine retires in the next minor version. |
 | `worktrees.guardMainFolder` | boolean | Refuse edits in the main checkout itself (the main-folder guard). Off when left out. |
-| `worktrees.bases` | object: a branch-name prefix (ending in `/`) to a base branch | The base a new worktree for such a branch starts from (`{"hotfix/": "main", "release/": "main"}`), over `worktrees.base`; the longest prefix that matches wins. The after-merge note names those prefixes (`src/hooks/after-merge.ts`). |
-| `worktrees.engine` | `"plugin"` (the default) or `"own"` | Who makes this project's worktrees. `"own"`: the project runs an engine of its own, so `doctor` does not expect the plugin's hooks (a `·` line, never ✗) and warns when they are wired anyway (`src/cli/project-checks.ts`). |
+| `worktrees.bases` | object: a branch-name prefix (ending in `/`) to a base branch | The base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`), over `worktrees.base`; the longest prefix that matches wins. Auto-merge and the after-merge note read it (`src/workflow/auto-merge.ts`, `src/hooks/after-merge.ts`); the deprecated engine also starts such a branch from it. |
+| `worktrees.engine` | `"plugin"` or `"own"`, **deprecated** | Who made this project's worktrees. Accepted and ignored until the engine retires in the next minor version; `doctor` warns and names the steps to move (`src/cli/project-checks.ts`). |
 | `workflow` | object (`src/workflow/schema.ts`) | What cc-smart-dev-kit may do by itself here (commit, push, open a pull request, merge), over the person's own `~/.config/cc-smart-dev-kit/workflow.json`. Each field is optional, and the project's value wins field by field (`src/workflow/resolve.ts`). |
 | `protectedBranches` | string array | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | boolean | Each session names itself after its task (the session-name hook). Off when left out. |
-| `ownHooks` | array of plugin hook names | The plugin hooks this project still runs as its own copy (`["git-guard"]`): exactly those stay silent here, so two copies never both answer. Emptied once the project removed its copies (`docs/design.md` § The safe switch). A name that is not a plugin hook is refused by the strict parse (`PLUGIN_HOOK_NAMES` in `src/project/config.ts`). |
+| `ownHooks` | array of plugin hook names | The plugin hooks this project still runs as its own copy (`["git-guard"]`): exactly those stay silent here, so two copies never both answer. Emptied once the project removed its copies (`docs/design.md` § The safe switch). A name that is not a plugin hook is refused by the strict parse (`PLUGIN_HOOK_NAMES` in `src/project/config.ts`); a retired one (`RETIRED_HOOK_NAMES`: `serena-root`, 0.6.0) is still accepted and silences nothing. |
 | `instructions` | boolean | Turns on the opt-in instructions for this project. Not acted on yet: since Phase 5 a project loads them with its own import line (`README.md`). |
 | `autoMode` | string array | Auto-mode rules `setup` copies into the user's `autoMode.environment` (`src/setup/auto-mode.ts`). Used now. |
 | `jobs.kinds` | object: kind name to kind | The project's heavy-job kinds over the defaults (`src/jobs/kinds.ts`, `docs/jobs.md`). Used now. |
@@ -54,7 +54,11 @@ example; keep it in step.
 `worktrees.bases`, `worktrees.engine` and `workflow` came with 0.4.0: a project that uses one
 raises `requires` to `>=0.4`. `worktrees.guardMainFolder`, `protectedBranches`,
 `sessionNames` and `ownHooks` came with the hooks: a project that uses one raises its
-`requires` to the release that ships them. A hook
+`requires` to the release that ships them. `worktrees.prefix` became optional in 0.5.2 with
+the engine's deprecation: a file written without it raises `requires` to `>=0.5.2` (one
+home: `WORKTREE_PREFIX_OPTIONAL_SINCE` in `src/project/config.ts`), so an older plugin hears
+"update", never "unknown file". The three engine fields stay accepted, and never cause a
+parse failure, until the engine retires in the next minor version. A hook
 that cannot read the file (too new, or broken) fails closed (`.claude/rules/hooks.md`) —
 except `ownHooks`, which is read on its own (`readOwnHooks`), so a listed hook stays silent
 even then.

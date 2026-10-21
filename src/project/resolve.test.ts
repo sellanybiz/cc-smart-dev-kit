@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
-import { git, tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { CcSmartDevKitConfigError, CcSmartDevKitVersionError } from "./config";
 import {
   type Checkout,
@@ -127,6 +127,31 @@ describe("resolveProject", () => {
       workflow: { autoCommit: true, alerts: { usagePercent: 70 } },
       ownHooks: ["git-guard", "after-merge"],
     });
+  });
+
+  test("worktrees.base alone is valid: the deprecated prefix is optional", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, JSON.stringify({ worktrees: { base: "dev" } }));
+    expect(resolveProject(repo)?.config?.worktrees).toEqual({ base: "dev" });
+    // The engine's fields are still accepted until it retires: never a parse failure.
+    writeCcSmartDevKitJson(
+      repo,
+      JSON.stringify({
+        worktrees: { base: "dev", prefix: "app-wt-", setup: ["bun", "install"], engine: "own" },
+      }),
+    );
+    expect(resolveProject(repo)?.config?.worktrees).toEqual({
+      base: "dev",
+      prefix: "app-wt-",
+      setup: ["bun", "install"],
+      engine: "own",
+    });
+  });
+
+  test("a retired hook name in ownHooks is still accepted: never a parse failure", () => {
+    const repo = makeRepo();
+    writeCcSmartDevKitJson(repo, JSON.stringify({ ownHooks: ["serena-root", "git-guard"] }));
+    expect(resolveProject(repo)?.config?.ownHooks).toEqual(["serena-root", "git-guard"]);
   });
 
   test.each([
@@ -307,7 +332,7 @@ function fakeGitEnv(answers: Record<string, string>): Record<string, string | un
     `#!/bin/sh\ncase "$1" in\n${cases}\n  *) exec ${JSON.stringify(realGit)} "$@" ;;\nesac\n`,
   );
   chmodSync(join(dir, "git"), 0o755);
-  return { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` };
+  return { ...cleanGitEnv(), PATH: `${dir}:${process.env.PATH ?? ""}` };
 }
 
 describe("resolveProject: git problems give clear errors", () => {

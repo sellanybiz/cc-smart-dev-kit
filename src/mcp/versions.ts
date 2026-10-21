@@ -21,11 +21,6 @@ export const MCP_VERSIONS = {
   playwright: "0.0.83",
   /** `@modelcontextprotocol/server-sequential-thinking`. */
   sequentialThinking: "2026.8.31",
-  /**
-   * github.com/oraios/serena at a commit on its main branch (it reports 2.0.0.dev0). A full
-   * commit id, so `uvx` starts it from its own cache and never has to ask GitHub.
-   */
-  serena: "d0f7f92631c23dc4c5ed0b5ccd35bc623b19a809",
 } as const;
 
 /** Tavily's remote MCP server: an HTTP server, so no version to pin. */

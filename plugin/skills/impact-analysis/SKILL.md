@@ -14,19 +14,19 @@ exists in three.
 
 ## Before the change: find every consumer
 
-- **Symbols** (a function, type, class, hook, component): a language-server search where the
-  project has one (Serena's `find_referencing_symbols`, or `cc-smart-dev-kit:code-explorer` for a
-  broad sweep) — it gives the enclosing function for each hit. It must point at **your**
-  checkout: in a worktree, a language server still pointed at the main checkout misses every
-  caller your branch added. Otherwise `Grep`.
+- **Symbols** (a function, type, class, hook, component): `Grep` for the name as a whole word
+  (`\bname\b`), its import lines included, then `Read` around each hit to see the function it
+  sits in. More than three files to read: hand the sweep to `Explore` with the exact names,
+  and ask for every hit. When the question is a file's shape — its functions and exports —
+  claude-mem's `smart_outline` (one file) and `smart_search` (the repo) answer it without
+  reading whole files; when they are not there or do not answer, fall back to `Grep` and
+  `Read`. Search **your** checkout: in a worktree, a search of the main
+  checkout misses every caller your branch added.
 - **Text** (a route string, a cache or query key, an event name, a column name, an
   environment variable, a permission key): `Grep`.
 - **Never cut a caller list short** — no `| head`, no `-m`. This pass is about completeness,
   and a cut list looks exactly like a finished one. Count the hits, then read them; a long
   list is itself the finding.
-- A language server's first reference search can come back empty while it warms up: run a
-  symbol lookup on the defining file first, then retry. Never report "zero callers" from a
-  cold start.
 
 Then:
 
