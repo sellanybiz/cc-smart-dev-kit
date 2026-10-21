@@ -10,6 +10,8 @@ import { dirname, join } from "node:path";
 import { withLock } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import {
+  addWorkerQuestion,
+  answerWorkerQuestion,
   appendWorkerEvent,
   createWorker,
   type HandBackReport,
@@ -27,12 +29,16 @@ import {
   WORKER_STATES,
   WORKER_STORE_VERSION,
   WorkerStoreError,
+  workerBriefFile,
   workerEventsFile,
   workerFile,
+  workerFilesDir,
   workerReportFile,
+  workerSettingsFile,
   workerStoreDir,
   writeLead,
   writeReport,
+  writeStoreFile,
 } from "./store";
 
 const REPO = "/home/user/my-app";
@@ -52,6 +58,7 @@ function key(repo: string): string {
 function queued(id = "wk-K-contracts", repo = REPO): NewWorker {
   return {
     base: null,
+    baseRef: "release-1.0.0",
     branch: "wk/K-contracts",
     effort: "xhigh",
     files: ["src/workers/store.ts"],
@@ -61,18 +68,20 @@ function queued(id = "wk-K-contracts", repo = REPO): NewWorker {
     leadName: "LEAD my-app master-plan",
     leadSessionId: LEAD,
     memoryMb: null,
-    model: { named: "opus", resolved: "claude-opus-5-5", slot: null },
+    model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
     name: "W my-app K contracts",
     permissionMode: "auto",
     phase: "K",
     plan: ".claude/plans/master-plan.md",
     pr: null,
+    questions: [],
     reportPath: null,
     repo,
     sessionId: null,
     shortId: null,
     slug: "contracts",
     state: "queued",
+    waitsFor: [],
     worktree: `${repo}/.claude/worktrees/wk-K-contracts`,
   };
 }
@@ -123,6 +132,26 @@ describe("where the store lives", () => {
     expect(workerReportFile(state, REPO, "wk-K-contracts")).toBe(
       join(dir, "reports", "wk-K-contracts.json"),
     );
+    expect(workerFilesDir(state, REPO, "wk-K-contracts")).toBe(
+      join(dir, "files", "wk-K-contracts"),
+    );
+    expect(workerBriefFile(state, REPO, "wk-K-contracts")).toBe(
+      join(dir, "files", "wk-K-contracts", "brief.md"),
+    );
+    expect(workerSettingsFile(state, REPO, "wk-K-contracts")).toBe(
+      join(dir, "files", "wk-K-contracts", "settings.json"),
+    );
+  });
+
+  test("a worker's own file: 0600 in a 0700 folder, written whole", () => {
+    const state = tempDir("state");
+    const file = workerBriefFile(state, REPO, "wk-K-contracts");
+    writeStoreFile(file, "the brief\n");
+    writeStoreFile(file, "the brief, again\n");
+    expect(readFileSync(file, "utf8")).toBe("the brief, again\n");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
+    expect(() => workerFilesDir(state, REPO, "../x")).toThrow(WorkerStoreError);
   });
 
   test("an id that is not a plain file name never becomes a path", () => {
@@ -231,6 +260,121 @@ describe("the worker record", () => {
     );
   });
 
+  test("the phases a worker waits for are part of its record", async () => {
+    const state = tempDir("state");
+    await createWorker(state, { ...queued(), waitsFor: ["B6a", "B7"] }, T0);
+    expect(readWorker(state, REPO, "wk-K-contracts")?.waitsFor).toEqual(["B6a", "B7"]);
+  });
+});
+
+describe("D36: a worker's questions", () => {
+  test("D36: a question goes at the end of its list, with no answer, and is one question event", async () => {
+    const state = tempDir("state");
+    await createWorker(state, { ...queued(), state: "working" }, T0);
+    const after = await addWorkerQuestion(
+      state,
+      REPO,
+      "wk-K-contracts",
+      { options: ["Keep the field", "Drop it"], question: "Keep the old field?", recommended: 1 },
+      T1,
+    );
+    expect(after.questions).toEqual([
+      {
+        answer: null,
+        answeredAt: null,
+        askedAt: "2026-10-21T10:05:00.000Z",
+        options: ["Keep the field", "Drop it"],
+        question: "Keep the old field?",
+        recommended: 1,
+      },
+    ]);
+    expect(after.state).toBe("working");
+    expect(readWorkerEvents(state, REPO).events.at(-1)).toEqual({
+      at: "2026-10-21T10:05:00.000Z",
+      lead: LEAD,
+      name: "W my-app K contracts",
+      state: "working",
+      text: "Keep the old field?",
+      type: "question",
+      version: 1,
+      worker: "wk-K-contracts",
+    });
+  });
+
+  test("D36: the lead's answer is recorded once, with its time, and is no event", async () => {
+    const state = tempDir("state");
+    await createWorker(state, queued(), T0);
+    const asked = { options: ["a", "b"], question: "Which one?", recommended: null };
+    await addWorkerQuestion(state, REPO, "wk-K-contracts", asked, T0);
+    const answered = await answerWorkerQuestion(state, REPO, "wk-K-contracts", 0, "b", T1);
+    expect(answered.questions[0]).toMatchObject({
+      answer: "b",
+      answeredAt: "2026-10-21T10:05:00.000Z",
+    });
+    expect(readWorkerEvents(state, REPO).events.map((one) => one.type)).toEqual([
+      "created",
+      "question",
+    ]);
+    await expect(answerWorkerQuestion(state, REPO, "wk-K-contracts", 0, "a", T1)).rejects.toThrow(
+      'question 0 of worker "wk-K-contracts" has its answer already',
+    );
+    await expect(answerWorkerQuestion(state, REPO, "wk-K-contracts", 1, "a", T1)).rejects.toThrow(
+      'worker "wk-K-contracts" has no question 1',
+    );
+  });
+
+  test("D36: a question with one option, or a recommendation it does not hold, is never written", async () => {
+    const state = tempDir("state");
+    await createWorker(state, queued(), T0);
+    await expect(
+      addWorkerQuestion(
+        state,
+        REPO,
+        "wk-K-contracts",
+        { options: ["only"], question: "Go?", recommended: null },
+        T1,
+      ),
+    ).rejects.toThrow("questions.0.options: Too small: expected array to have >=2 items");
+    await expect(
+      addWorkerQuestion(
+        state,
+        REPO,
+        "wk-K-contracts",
+        { options: ["a", "b"], question: "Go?", recommended: 3 },
+        T1,
+      ),
+    ).rejects.toThrow("questions.0.recommended: recommends option 3 of 2");
+    expect(readWorker(state, REPO, "wk-K-contracts")?.questions).toEqual([]);
+    expect(readWorkerEvents(state, REPO).events.map((one) => one.type)).toEqual(["created"]);
+  });
+
+  test("D36: an answer without its time is a broken record", () => {
+    const state = tempDir("state");
+    const file = workerFile(state, REPO, "wk-K-contracts");
+    mkdirSync(dirname(file), { recursive: true });
+    const question = {
+      answer: "b",
+      answeredAt: null,
+      askedAt: "2026-10-21T10:00:00.000Z",
+      options: ["a", "b"],
+      question: "Which one?",
+      recommended: null,
+    };
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...queued(),
+        createdAt: "x",
+        questions: [question],
+        updatedAt: "x",
+        version: 1,
+      }),
+    );
+    expect(() => readWorker(state, REPO, "wk-K-contracts")).toThrow(
+      "questions.0.answeredAt: an answer and its time are given together",
+    );
+  });
+
   test("a write waits for the store's lock and keeps what the holder wrote", async () => {
     // Two writers at once (a lead and a worker reporting): the second one's read-modify-write
     // must not drop the first one's change. The holder here is exactly what another writer —
@@ -274,7 +418,13 @@ describe("a record a newer kit wrote", () => {
       ...queued(),
       createdAt: "2026-10-21T10:00:00.000Z",
       kind: "research",
-      model: { named: "opus", profile: "fast", resolved: "claude-opus-5-5", slot: null },
+      model: {
+        named: "opus",
+        profile: "fast",
+        resolved: "claude-opus-5-5",
+        slot: null,
+        tier: "opus",
+      },
       queueTicket: 7,
       state: "parked",
       updatedAt: "2026-10-21T10:00:00.000Z",
@@ -365,6 +515,7 @@ describe("the lead record", () => {
       plan: ".claude/plans/master-plan.md",
       repo: REPO,
       sessionId: LEAD,
+      tag: "my-app",
     };
     await writeLead(state, lead, T0);
     const again = await writeLead(state, { ...lead, plan: ".claude/plans/next.md" }, T1);
@@ -386,7 +537,7 @@ describe("the lead record", () => {
     await expect(
       writeLead(
         state,
-        { cwd: REPO, name: "LEAD x y", plan: "p", repo: REPO, sessionId: "../x" },
+        { cwd: REPO, name: "LEAD x y", plan: "p", repo: REPO, sessionId: "../x", tag: "x" },
         T0,
       ),
     ).rejects.toThrow(WorkerStoreError);

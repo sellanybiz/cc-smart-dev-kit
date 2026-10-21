@@ -133,6 +133,9 @@ function cmdArgument(argument) {
   return { ok: true, text: `"${kept}${trailing}${trailing}"` };
 }
 function windowsStart(argv) {
+  return cmdLine('start "" /b ', argv);
+}
+function cmdLine(head, argv) {
   if (argv[0] === undefined) {
     return { argument: "", ok: false, reason: "there is no program to start" };
   }
@@ -143,7 +146,7 @@ function windowsStart(argv) {
       return { argument, ok: false, reason: one.reason };
     quoted.push(one.text);
   }
-  return { argv: [CMD, ...CMD_ARGUMENTS, `"start "" /b ${quoted.join(" ")}"`], ok: true };
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
 }
 function forMessage(argument) {
   return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
@@ -6439,6 +6442,8 @@ var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case
 
 // src/workers/names.ts
 var MAX_TAG = 12;
+var MAX_PHASE = 8;
+var MAX_SLUG = 32;
 var LEAD_ROLE = "LEAD";
 var WORKER_ROLE = "W";
 var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
@@ -6453,6 +6458,8 @@ var TAG_RULE = partRule(MAX_TAG);
 function isNameTag(value) {
   return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
 }
+var SLUG_RULE = partRule(MAX_SLUG);
+var PHASE_RULE = partRule(MAX_PHASE);
 var PART = "[A-Za-z0-9._-]+";
 var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
 var WORKER_SHAPE = new RegExp(`^${WORKER_ROLE}( ${PART}){2,4}$`);
@@ -6474,6 +6481,7 @@ var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
   "workers.idleStopMinutes": AT_LEAST_ONE,
   "workers.max": AT_LEAST_ONE,
+  "workers.maxOpus": AT_LEAST_ONE,
   "workers.memoryGb": ABOVE_ZERO,
   "workers.quietMinutes": AT_LEAST_ONE,
   "workers.handoffPercent": PERCENT,
@@ -6511,6 +6519,7 @@ var workflowSchema = strictObject({
     enabled: boolean2().optional(),
     idleStopMinutes: numberField("workers.idleStopMinutes"),
     max: numberField("workers.max"),
+    maxOpus: numberField("workers.maxOpus"),
     memoryGb: numberField("workers.memoryGb"),
     quietMinutes: numberField("workers.quietMinutes"),
     handoffPercent: numberField("workers.handoffPercent"),
@@ -6542,7 +6551,8 @@ var workflowDefaults = {
   workers: {
     enabled: false,
     idleStopMinutes: 10,
-    max: 4,
+    max: 6,
+    maxOpus: 2,
     memoryGb: 2,
     quietMinutes: 20,
     handoffPercent: 70,
@@ -6571,6 +6581,7 @@ var POLICY_KEYS = [
   "workers.enabled",
   "workers.idleStopMinutes",
   "workers.max",
+  "workers.maxOpus",
   "workers.memoryGb",
   "workers.quietMinutes",
   "workers.handoffPercent",

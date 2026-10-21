@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import type { GatewayConfig } from "../gateway/config";
 import { judgeLaunch, readLaunch } from "../hooks/agent-guard";
 import {
+  answeringSlot,
   effectiveLaunch,
   effortAllowed,
   type GatewayFacts,
@@ -205,6 +206,35 @@ describe("D21: the worker kinds", () => {
     expect(workerLaunch(kind, AFFORDABLE, NO_ENV).real).toEqual(
       resolveLaunchModel("opus", AFFORDABLE, NO_ENV),
     );
+  });
+});
+
+describe("the slot that answers a launch", () => {
+  test("a family name: its family's slot while it has a chain and the gateway is on", () => {
+    expect(answeringSlot("sonnet", AFFORDABLE, NO_ENV)).toBe("cc-smart-dev-kit-worker");
+    expect(answeringSlot("opus", CLAUDE_SLOTS, NO_ENV)).toBe("cc-smart-dev-kit-opus");
+    expect(answeringSlot("haiku", AFFORDABLE, NO_ENV)).toBeNull();
+    expect(answeringSlot("sonnet", CONFIG_BUT_OFF, NO_ENV)).toBeNull();
+    expect(answeringSlot("sonnet", NO_GATEWAY, NO_ENV)).toBeNull();
+  });
+
+  test("through the person's override: a Claude id goes to its family's slot, a backend to none", () => {
+    expect(
+      answeringSlot("sonnet", AFFORDABLE, { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-opus-5-5" }),
+    ).toBe("cc-smart-dev-kit-opus");
+    expect(
+      answeringSlot("sonnet", AFFORDABLE, { ANTHROPIC_DEFAULT_SONNET_MODEL: "omniroute:glm-5.3" }),
+    ).toBeNull();
+  });
+
+  test("a Claude id and a slot key, named directly", () => {
+    expect(answeringSlot("claude-sonnet-5-5[1m]", AFFORDABLE, NO_ENV)).toBe(
+      "cc-smart-dev-kit-worker",
+    );
+    expect(answeringSlot("cc-smart-dev-kit-scout", AFFORDABLE, NO_ENV)).toBe(
+      "cc-smart-dev-kit-scout",
+    );
+    expect(answeringSlot("omniroute:glm-5.3", AFFORDABLE, NO_ENV)).toBeNull();
   });
 });
 

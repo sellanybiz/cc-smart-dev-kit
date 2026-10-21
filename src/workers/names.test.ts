@@ -7,9 +7,11 @@ import {
   cleanSessionName,
   isNameTag,
   isPhase,
+  isSlug,
   leadName,
   NAME_VIEW,
   roleOf,
+  SLUG_RULE,
   withoutListRef,
   workerName,
   workerTag,
@@ -131,6 +133,18 @@ describe("D26: the names", () => {
         `a hand-off number is a whole number of 2 or more, not ${bad}`,
       );
     }
+  });
+
+  test("D26: a slug is clean and at most 32 characters, or worker start refuses it", () => {
+    expect(isSlug("portal-live")).toBe(true);
+    expect(isSlug("v1.2_fix")).toBe(true);
+    expect(isSlug("x".repeat(32))).toBe(true);
+    for (const bad of ["", "portal live", "a--b", "-x", "x-", "x".repeat(33), "ü", "x]"]) {
+      expect(isSlug(bad)).toBe(false);
+    }
+    expect(SLUG_RULE).toBe(
+      '1-32 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
+    );
   });
 
   test("D26: a tag in workflow.workers.tag must already be clean", () => {

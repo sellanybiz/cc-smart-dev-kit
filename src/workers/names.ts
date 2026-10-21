@@ -37,6 +37,13 @@ export const MAX_TAG = 12;
 /** The longest phase (`K`, `W1a`, `D17b`, `E1a-E1b`): `W <tag> <phase>` stays inside `NAME_VIEW`. */
 export const MAX_PHASE = 8;
 
+/**
+ * The longest slug a worker's branch and worktree carry (`wk/<phase>-<slug>`,
+ * `wk-<phase>-<slug>`): with the longest phase it stays well inside a folder name, and in a
+ * name the slug is the part that is cut, never the role or the phase.
+ */
+export const MAX_SLUG = 32;
+
 /** The first word of a lead's name. */
 export const LEAD_ROLE = "LEAD";
 
@@ -103,6 +110,21 @@ export function isPhase(value: string): boolean {
   return value !== "" && value.length <= MAX_PHASE && namePart(value, MAX_PHASE) === value;
 }
 
+/** The slug's rule, as `worker start` refuses a `--slug` with it. */
+export const SLUG_RULE = partRule(MAX_SLUG);
+
+/**
+ * True when `value` is a slug as written: already clean, at most `MAX_SLUG` characters. Like a
+ * phase, a slug is part of a worker's identity (its branch and its worktree), so one that is not
+ * clean is refused rather than changed.
+ */
+export function isSlug(value: string): boolean {
+  return value !== "" && value.length <= MAX_SLUG && namePart(value, MAX_SLUG) === value;
+}
+
+/** The phase's rule, in the words a refusal says it. */
+export const PHASE_RULE = partRule(MAX_PHASE);
+
 /**
  * The tag of a repository's names: `configured` (`workflow.workers.tag`) when the person set
  * one, else the main checkout's folder name, made clean and short (`namePart`). Throws when
@@ -152,7 +174,7 @@ export function workerName(tag: string, phase: string, slug: string, n?: number)
   const cleanTag = requiredPart(tag, MAX_TAG, "tag");
   if (!isPhase(phase)) {
     throw new SessionNameError(
-      `the phase "${phase}" cannot be part of a name: a phase is ${partRule(MAX_PHASE)}`,
+      `the phase "${phase}" cannot be part of a name: a phase is ${PHASE_RULE}`,
     );
   }
   const suffix = handoffSuffix(n);

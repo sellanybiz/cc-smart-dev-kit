@@ -79,6 +79,7 @@ export interface ResolvedWorkflow {
     enabled: ResolvedValue<boolean>;
     idleStopMinutes: ResolvedValue<number>;
     max: ResolvedValue<number>;
+    maxOpus: ResolvedValue<number>;
     memoryGb: ResolvedValue<number>;
     quietMinutes: ResolvedValue<number>;
     handoffPercent: ResolvedValue<number>;
@@ -297,6 +298,7 @@ const RESOLVED: {
   "workers.enabled": (r) => r.workers.enabled,
   "workers.idleStopMinutes": (r) => r.workers.idleStopMinutes,
   "workers.max": (r) => r.workers.max,
+  "workers.maxOpus": (r) => r.workers.maxOpus,
   "workers.memoryGb": (r) => r.workers.memoryGb,
   "workers.quietMinutes": (r) => r.workers.quietMinutes,
   "workers.handoffPercent": (r) => r.workers.handoffPercent,
@@ -370,6 +372,7 @@ export function resolveWorkflow(
         workers.idleStopMinutes ?? workflowDefaults.workers.idleStopMinutes,
       ),
       max: of("workers.max", workers.max ?? workflowDefaults.workers.max),
+      maxOpus: of("workers.maxOpus", workers.maxOpus ?? workflowDefaults.workers.maxOpus),
       memoryGb: of("workers.memoryGb", workers.memoryGb ?? workflowDefaults.workers.memoryGb),
       quietMinutes: of(
         "workers.quietMinutes",

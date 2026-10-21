@@ -278,6 +278,31 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
 }
 
 /**
+ * The gateway slot that answers a launch named `name`, followed the way `resolveLaunchModel`
+ * follows it: a family name through `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`, then — a family name or a
+ * Claude id — its family's slot while that slot has a chain; a slot key is its own slot. Null
+ * when no slot answers: the gateway off, a family slot with no chain (Claude itself answers), a
+ * `<backend>:<model>` named directly. What a worker's record names as its `slot`.
+ */
+export function answeringSlot(name: string, gateway: GatewayFacts, env: Env): null | string {
+  if (!gateway.gatewayOn || gateway.config === null) return null;
+  let text = withoutContextSuffix(name.trim());
+  const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
+  if (family !== undefined) {
+    const override = stringField(env[familyEnv(family)]);
+    if (override === null) {
+      return familyFirstTarget(gateway, family) === null ? null : familySlotKey(family);
+    }
+    text = withoutContextSuffix(override.trim());
+  }
+  if (isSlotKey(text)) return text;
+  const idFamily = claudeFamily(text);
+  return familyFirstTarget(gateway, idFamily) === null || idFamily === null
+    ? null
+    : familySlotKey(idFamily);
+}
+
+/**
  * True when an affordable model answers: one that is not Claude, behind a name of no premium
  * tier — a backend target, an affordable slot, or `haiku` / `sonnet` while their family's slot
  * chain starts with a backend. With the gateway on such a launch runs at `AFFORDABLE_EFFORT`. A

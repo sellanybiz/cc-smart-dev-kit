@@ -1752,7 +1752,8 @@ place (`auto-merge.ts`).
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source, and written by `workflow set`; the merge guard judges with them once its call site moves onto `readCover` (D17b). |
-| `workers.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The lead and worker sessions (§ Lead and workers) are the part that will read them. |
+| `workers.enabled`, `workers.max`, `workers.maxOpus`, `workers.memoryGb`, `workers.tag` | `worker lead` and `worker start` (`src/workers/`, § Lead and workers): the switch they refuse without, the two caps (D37) and the free memory a start is queued by, and the tag in the names. |
+| the other `workers.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later worker parts (the watch, the worker's own hooks) will read them. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through
 with no question only when **all** of these hold: `autoMerge` is on (`autoMergeOff` is the first
@@ -2114,15 +2115,16 @@ worker — the news arrives by itself — and merges the finished branches local
 sessions win over subagents alone (every hand-back lands in the lead's context, and a long phase
 rots it) and over agent teams (no worktree isolation, no resume).
 
-This section holds the contracts every part of it builds on: the switch, the kinds, the names
-and the store. Nothing acts on them yet; the launcher (`worker start`), the watch that brings the
-lead its news, and the worker and lead hooks are later parts, and extend this section.
+This section holds the contracts every part of it builds on — the switch, the kinds, the names
+and the store — and the two commands that act on them so far: `worker lead` and the launcher,
+`worker start` (§ The lead and the launch, below). The watch that brings the lead its news, the
+hand-back report command, and the worker and lead hooks are later parts, and extend this section.
 
 **The switch** (D34) is `workflow.workers.enabled`, off by default, in the person's
 `workflow.json` (every project's default) and in a project's `.claude/cc-smart-dev-kit.json`,
 which wins field by field like every workflow setting (§ The workflow). Beside it in the same
-group sit the limits a lead keeps its workers to — how many run on the machine at once, the
-free memory a new one needs, when a quiet one is reported, when a long one hands off, when a
+group sit the limits a lead keeps its workers to — how many run on the machine at once, and how
+many of those on the opus tier (D37), the free memory a new one needs, when a quiet one is reported, when a long one hands off, when a
 blocked one is stopped (D35: a worker never outlives its work) — and the `tag` of their names.
 `workflow show` prints each with its source.
 
@@ -2170,7 +2172,9 @@ repository, under the state folder:
 <stateDir>/workers/<repo key>/workers/<worker id>.json   one record per worker
 <stateDir>/workers/<repo key>/leads/<session id>.json    one record per lead
 <stateDir>/workers/<repo key>/reports/<worker id>.json   a worker's hand-back report
+<stateDir>/workers/<repo key>/files/<worker id>/         its brief.md and its settings.json
 <stateDir>/workers/<repo key>/events.jsonl               every change, one line each, append-only
+<stateDir>/workers/lock                                  the machine-wide lock of a start decision
 ```
 
 - **The key is the review record's** (`repoKey`, a hash of the main checkout's folder), so every
@@ -2179,16 +2183,25 @@ repository, under the state folder:
 - **Every write holds the store's own lock** (`withLock` on the repository's folder, 3 s at most),
   not the state folder's shared one: two leads, or a lead and a worker reporting at once, both
   land. A state change and its `state` event are written under one hold, so the log never misses
-  a change; a new worker is one `created` event, a step or a report one line each.
+  a change; a new worker is one `created` event, a step, a report or a question one line each.
+  Every change of a worker record goes through one read-modify-write (`changeWorker`).
 - **A worker record** holds who it is (its id — a plain file name, known before any session
-  exists —, its name, its session's id and short id, its lead), what it does (the repository,
-  the plan, the phase and slug, the kind, the model as named with the slot and the model that
-  answer it, the effort, the permission mode, the worktree, the branch, the base and its commit,
-  the files of its brief) and where it is: its state, its last line, its report, its pull request,
-  its memory, and when it was recorded and changed. The states are `queued`, `starting`,
+  exists: `<phase>-<slug>-<6 hex>`, so a second try of a phase never meets the first's record —,
+  its name, its session's id and short id, its lead), what it does (the repository, the plan, the
+  phase and slug, the kind, the model as named with the slot and the model that answer it
+  (`answeringSlot`), the effort, the permission mode, the worktree, the branch, the ref it starts
+  from, the base and its commit once it starts, the phases it waits for, the files of its brief)
+  and where it is: its state, its last line, its report, its pull request, its memory, its
+  questions, and when it was recorded and changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`WORKER_STATES`, each one's meaning in the file). **A lead record** holds its session
-  id, name, repository, plan and folder.
+  id, name, repository, plan, the tag its workers' names carry, and folder.
+- **A worker's questions** (D36): a worker never asks the person. A question to its lead — the
+  question, two or more options, the one it recommends (counted from 1), when it was asked — goes
+  at the end of its `questions` with a `question` event (`addWorkerQuestion`), and the worker goes
+  on with what the question does not block; the lead's answer is recorded once, with its time
+  (`answerWorkerQuestion`). A recommendation that is not one of the options, or an answer without
+  its time, is refused.
 - **The hand-back report** is what a worker gives the lead when its phase ends: its status (`done`,
   `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
   diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
@@ -2205,6 +2218,84 @@ repository, under the state folder:
   wrote, and the newer version number. A record that lacks a field this kit needs is broken: a
   single read throws, naming the file and the field, and a list names it under `broken` and
   goes on.
+
+### The lead and the launch
+
+**`worker lead [--plan <slug>] [--tag <tag>]`** (`src/workers/lead.ts`) records the session
+that runs it as a lead of this repository. **Which session** is found the way L1a.1 proved it:
+the nearest ancestor process with a Claude Code session record, `<config folder>/sessions/<pid>.json`
+(`callingSession`, `src/workers/session.ts`; parents from `/proc` on Linux, one process listing
+elsewhere). Its name, `LEAD <tag> <plan>`, is written into the lead record as data: the
+session-name hook applies it later, and the command prints the `/rename` line meanwhile. The tag is
+`--tag`, else `workflow.workers.tag`, else the main checkout's folder name; the plan is `--plan`,
+else the plan this session already leads, else the branch.
+
+**`worker start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/workers/start.ts`)
+**returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
+polls or retries. In order:
+
+1. **The refusals** (exit 1, a line and its `Fix:`), shared with `worker lead` (`caller.ts`): the
+   caller is a worker (`CC_SMART_DEV_KIT_WORKER` set); the folder is not in a git project, or its
+   kit config does not read; workers are off here (D34, resolved as `workflow show` resolves it);
+   no Claude Code session runs the command; that session is in bypass mode — its command line
+   (`--dangerously-skip-permissions`, `--permission-mode bypassPermissions`) where the machine
+   shows it, else `permissions.defaultMode` in the checkout's `settings.local.json`, its
+   `settings.json`, then the person's (`bypass.ts`): a lead there would act on every worker's
+   message with no question. Then: no lead recorded for this session here (`worker lead` first);
+   a brief that cannot be read, or is empty; no `claude` (PATH, then `~/.local/bin`); a base that
+   is no commit. A wrong command line is exit 2: no phase, slug or kind, an unknown kind, an effort
+   a worker never runs at, a phase that waits for itself.
+2. **The model and effort**: the kind's (`workerLaunch`, D21). An override (`--model`, `--effort`;
+   a model alone runs at the kind's effort, or `max` when an affordable model answers it) is
+   judged by the Agent guard's own `judgeLaunch`: one it refuses is refused with its words, and
+   one it would **ask** the person about (`opus` at `max`, an unreadable name) is refused too,
+   because `worker start` never asks — the person starts such a session themselves. Fable is
+   refused: no worker carries the person's `Fable reason: build` line.
+3. **Start now, or queued** (`places.ts`), decided under one machine-wide lock
+   (`<stateDir>/workers/lock`) so two starts never both take the last place, and recorded
+   (`starting` or `queued`) under the same hold. First the name must be free: no worker of this
+   repository holds the branch (`holdsName`: every record but a `removed` one, and a `failed` one
+   that never got a session and left no worktree), and neither the branch nor the folder exists. Then, in order: **its phases** (`--waits-for`) — each phase's newest worker here must be
+   `done`, `merged` or `removed` (`worker rm` refuses an unmerged branch); **the two caps** (D37)
+   — the workers of every repository on this machine in `starting`, `working`, `blocked`,
+   `paused` or `quiet` stay below `workflow.workers.max` (6), and, for a new opus-tier worker, the
+   opus-tier ones among them stay below `workflow.workers.maxOpus` (2): the tier the model's name
+   stands for, recorded at launch (`model.tier`), so the opus kinds and an override onto opus
+   both count; the queued line names the cap that holds it; **the memory** — the memory free now less what heavy
+   jobs reserved and have not used yet (the job queue's own reading) is at least
+   `workflow.workers.memoryGb` (no check where free memory cannot be read: macOS). The store alone
+   decides, so a start never waits on agent view; the watch keeps the states true. A start that
+   finds a free place takes it, also while older workers wait: each lead's watch starts its own
+   queued ones. A queued worker has no worktree yet and its `base` is null: it is cut from its
+   `baseRef` when it starts, so a phase that waited for another starts from the merged result.
+4. **Its files** (`files/<id>/`): `brief.md` — the brief as given, then a fixed frame (`brief.ts`):
+   who it is and for whom, its worktree and branch, the files it owns, the git rule (D24: commit on
+   its branch, never push, never open a pull request, never merge), how it hands back
+   (`worker report --status done|failed`), and D36's rule: never ask the person or call
+   AskUserQuestion; a question goes to the lead with `worker report --question … --option …
+   --recommend <n>`, the worker goes on with what it does not block, and `--status blocked` only
+   when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_WORKER":"<id>"}}`.
+5. **The launch**, for a worker that starts: `git worktree add -b wk/<phase>-<slug>
+   .claude/worktrees/wk-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
+   a dependency install, is the worker's own first step), the `.worktreeinclude` files copied
+   (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
+   checkout `claude --bg -w wk-<phase>-<slug> --name "W <tag> <phase> <slug>" --model <m> --effort
+   <e> --permission-mode auto --autocompact auto --settings <settings.json> "<first line>"`. The
+   first line names the worker, its lead and the brief's path; it holds no `"` or `%`, which a
+   `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: the kit knows no model's window
+   (`gateway.json` holds none for a backend), so Claude Code's own stands. The settings are a
+   **file** on every platform. On Windows a `claude.cmd` runs through `cmd /d /s /v:off /c` with
+   one quoted line (`windowsRun`, the hooks' own quoting); a `claude.exe` runs as it is.
+6. **The one check**: the short id is read from `backgrounded · <id> · <name>` (`--session-id` is
+   ignored with `--bg`), then `claude agents --json --all` is read once: the session's row must
+   name the worktree as its `cwd`. The worker is then `working`, with its session id. Otherwise it
+   is `failed`, with the reason: a session in another folder is stopped at once (`claude stop`:
+   the store records it, and a worker outside its worktree would edit another checkout); a row
+   that is missing, or a list that does not read, is failed with no retry. When nothing started —
+   `claude` refused (`Workspace not trusted`: open the repo once with `claude` and accept the trust
+   prompt), or `claude --bg` failed — the worktree and its branch are taken back (the branch only
+   while it still points at its base), so a second try finds the name free. When a session may
+   have started — no `backgrounded` line, or no answer in time — the worktree stays.
 
 ## Sessions and worktrees
 

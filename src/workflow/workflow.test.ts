@@ -72,6 +72,7 @@ describe("the workflow schema", () => {
         handoffPercent: 70,
         idleStopMinutes: 10,
         max: 4,
+        maxOpus: 2,
         maxHours: 4,
         memoryGb: 0.5,
         quietMinutes: 20,
@@ -87,6 +88,8 @@ describe("the workflow schema", () => {
     for (const [field, bad] of [
       ["max", 0],
       ["max", 1.5],
+      ["maxOpus", 0],
+      ["maxOpus", 2.5],
       ["idleStopMinutes", 0],
       ["quietMinutes", -1],
       ["handoffPercent", 0],
@@ -176,6 +179,11 @@ describe("one value, as a person types it", () => {
     expect(parseWorkflowValue("workers.idleStopMinutes", "2.5")).toEqual({
       ok: false,
       why: "workers.idleStopMinutes is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("workers.maxOpus", "1")).toEqual({ ok: true, value: 1 });
+    expect(parseWorkflowValue("workers.maxOpus", "0")).toEqual({
+      ok: false,
+      why: "workers.maxOpus is a whole number, 1 or more",
     });
     expect(parseWorkflowValue("workers.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
     expect(parseWorkflowValue("workers.handoffPercent", "101")).toEqual({
@@ -289,13 +297,14 @@ describe("resolveWorkflow: the order", () => {
     );
   });
 
-  test("D34, D35: workers are off by default, with the lead's limits; D17's limits 200/10/20", () => {
+  test("D34, D35, D37: workers are off by default, with the lead's limits; D17's limits 200/10/20", () => {
     const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
     expect(resolved.workers).toEqual({
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
-      max: { value: 4, source: "default" },
+      max: { value: 6, source: "default" },
+      maxOpus: { value: 2, source: "default" },
       maxHours: { value: 4, source: "default" },
       memoryGb: { value: 2, source: "default" },
       quietMinutes: { value: 20, source: "default" },

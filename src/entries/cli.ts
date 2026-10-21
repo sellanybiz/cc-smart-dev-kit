@@ -63,6 +63,8 @@ import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { runWorker } from "../workers/command";
+import { realWorkerContext } from "../workers/context";
 import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
@@ -747,6 +749,8 @@ async function main(argv: string[]): Promise<number> {
       );
     case "search":
       return runSearch(rest, { paths });
+    case "worker":
+      return await runWorker(rest, realWorkerContext(paths));
     case "job":
       return runJobCommand(rest, {
         paths,

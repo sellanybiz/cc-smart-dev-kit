@@ -15480,6 +15480,8 @@ function withWorkers(kind, command, workers) {
 // src/workers/names.ts
 var MAX_SESSION_NAME = 60;
 var MAX_TAG = 12;
+var MAX_PHASE = 8;
+var MAX_SLUG = 32;
 var LEAD_ROLE = "LEAD";
 var WORKER_ROLE = "W";
 function cleanSessionName(raw) {
@@ -15501,6 +15503,8 @@ var TAG_RULE = partRule(MAX_TAG);
 function isNameTag(value) {
   return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
 }
+var SLUG_RULE = partRule(MAX_SLUG);
+var PHASE_RULE = partRule(MAX_PHASE);
 function withoutListRef(name) {
   return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 }
@@ -15525,6 +15529,7 @@ var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
   "workers.idleStopMinutes": AT_LEAST_ONE,
   "workers.max": AT_LEAST_ONE,
+  "workers.maxOpus": AT_LEAST_ONE,
   "workers.memoryGb": ABOVE_ZERO,
   "workers.quietMinutes": AT_LEAST_ONE,
   "workers.handoffPercent": PERCENT,
@@ -15562,6 +15567,7 @@ var workflowSchema = strictObject({
     enabled: boolean2().optional(),
     idleStopMinutes: numberField("workers.idleStopMinutes"),
     max: numberField("workers.max"),
+    maxOpus: numberField("workers.maxOpus"),
     memoryGb: numberField("workers.memoryGb"),
     quietMinutes: numberField("workers.quietMinutes"),
     handoffPercent: numberField("workers.handoffPercent"),
@@ -15593,7 +15599,8 @@ var workflowDefaults = {
   workers: {
     enabled: false,
     idleStopMinutes: 10,
-    max: 4,
+    max: 6,
+    maxOpus: 2,
     memoryGb: 2,
     quietMinutes: 20,
     handoffPercent: 70,
@@ -15622,6 +15629,7 @@ var POLICY_KEYS = [
   "workers.enabled",
   "workers.idleStopMinutes",
   "workers.max",
+  "workers.maxOpus",
   "workers.memoryGb",
   "workers.quietMinutes",
   "workers.handoffPercent",
@@ -19770,6 +19778,7 @@ var RESOLVED = {
   "workers.enabled": (r) => r.workers.enabled,
   "workers.idleStopMinutes": (r) => r.workers.idleStopMinutes,
   "workers.max": (r) => r.workers.max,
+  "workers.maxOpus": (r) => r.workers.maxOpus,
   "workers.memoryGb": (r) => r.workers.memoryGb,
   "workers.quietMinutes": (r) => r.workers.quietMinutes,
   "workers.handoffPercent": (r) => r.workers.handoffPercent,
@@ -19814,6 +19823,7 @@ function resolveWorkflow(paths, projectConfig) {
       enabled: of("workers.enabled", workers.enabled ?? workflowDefaults.workers.enabled),
       idleStopMinutes: of("workers.idleStopMinutes", workers.idleStopMinutes ?? workflowDefaults.workers.idleStopMinutes),
       max: of("workers.max", workers.max ?? workflowDefaults.workers.max),
+      maxOpus: of("workers.maxOpus", workers.maxOpus ?? workflowDefaults.workers.maxOpus),
       memoryGb: of("workers.memoryGb", workers.memoryGb ?? workflowDefaults.workers.memoryGb),
       quietMinutes: of("workers.quietMinutes", workers.quietMinutes ?? workflowDefaults.workers.quietMinutes),
       handoffPercent: of("workers.handoffPercent", workers.handoffPercent ?? workflowDefaults.workers.handoffPercent),
@@ -22058,15 +22068,12 @@ function parentPidFromStat(stat) {
   const ppid = Number(fields[1]);
   return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
 }
-function ancestorPids(pid, readStat) {
+function ancestorsBy(pid, parentOf) {
   const ancestors = [];
   const seen = new Set([pid]);
   let current = pid;
   while (ancestors.length < MAX_DEPTH) {
-    const stat = readStat(current);
-    if (stat === null)
-      break;
-    const parent = parentPidFromStat(stat);
+    const parent = parentOf(current);
     if (parent === null || parent === 0 || seen.has(parent))
       break;
     ancestors.push(parent);
@@ -22074,6 +22081,12 @@ function ancestorPids(pid, readStat) {
     current = parent;
   }
   return ancestors;
+}
+function ancestorPids(pid, readStat) {
+  return ancestorsBy(pid, (one) => {
+    const stat = readStat(one);
+    return stat === null ? null : parentPidFromStat(stat);
+  });
 }
 async function isInsideHeavyJob(facts) {
   if (facts.platform !== "linux")

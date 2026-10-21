@@ -58,6 +58,7 @@ const NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
   "workers.idleStopMinutes": AT_LEAST_ONE,
   "workers.max": AT_LEAST_ONE,
+  "workers.maxOpus": AT_LEAST_ONE,
   "workers.memoryGb": ABOVE_ZERO,
   "workers.quietMinutes": AT_LEAST_ONE,
   "workers.handoffPercent": PERCENT,
@@ -134,9 +135,10 @@ export const workflowSchema = z.strictObject({
     })
     .optional(),
   /**
-   * Lead and worker sessions (decisions D34, D35): the switch, the limits a lead keeps its
+   * Lead and worker sessions (decisions D34, D35, D37): the switch, the limits a lead keeps its
    * workers to, and the tag in their names. In the person's file it is every project's default;
-   * a project's file wins field by field. Nothing reads it for a decision yet.
+   * a project's file wins field by field. `worker lead` and `worker start` read `enabled`, `max`,
+   * `maxOpus`, `memoryGb` and `tag` (`src/workers/`); the rest is for the parts after them.
    */
   workers: z
     .strictObject({
@@ -144,8 +146,10 @@ export const workflowSchema = z.strictObject({
       enabled: z.boolean().optional(),
       /** Minutes a blocked worker waits before its session is stopped; an answer brings it back. Default: 10. */
       idleStopMinutes: numberField("workers.idleStopMinutes"),
-      /** At most this many workers run on this machine at once, across leads. Default: 4. */
+      /** At most this many workers run on this machine at once, across leads (D37). Default: 6. */
       max: numberField("workers.max"),
+      /** At most this many of them on the opus tier, inside `max` (D37). Default: 2. */
+      maxOpus: numberField("workers.maxOpus"),
       /** The free memory, in GB, a new worker needs; below it, the worker waits in the queue. Default: 2. */
       memoryGb: numberField("workers.memoryGb"),
       /** Minutes a working worker's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
@@ -191,7 +195,8 @@ export const workflowDefaults = {
   workers: {
     enabled: false,
     idleStopMinutes: 10,
-    max: 4,
+    max: 6,
+    maxOpus: 2,
     memoryGb: 2,
     quietMinutes: 20,
     handoffPercent: 70,
@@ -232,6 +237,7 @@ export type WorkflowKey =
   | "workers.enabled"
   | "workers.idleStopMinutes"
   | "workers.max"
+  | "workers.maxOpus"
   | "workers.memoryGb"
   | "workers.quietMinutes"
   | "workers.handoffPercent"
@@ -260,6 +266,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "workers.enabled",
   "workers.idleStopMinutes",
   "workers.max",
+  "workers.maxOpus",
   "workers.memoryGb",
   "workers.quietMinutes",
   "workers.handoffPercent",

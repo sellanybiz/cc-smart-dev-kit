@@ -27,6 +27,7 @@ import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
 import { USAGE as SEARCH_USAGE } from "../search/command";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { WORKER_USAGE } from "../workers/command";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import { PROJECT_INIT_USAGE } from "./project-init";
@@ -270,6 +271,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "mcp", listed: "more", help: MCP_HELP },
   { name: "omniroute", listed: "more", help: OMNIROUTE_USAGE },
   { name: "job", listed: "more", help: JOB_USAGE },
+  { name: "worker", listed: "more", help: WORKER_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },
   { name: "statusline", listed: "more", help: STATUSLINE_HELP },
   { name: "version", listed: "more", help: VERSION_HELP },

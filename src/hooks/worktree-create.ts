@@ -23,11 +23,11 @@
  *
  * stdout is the folder and nothing else. A failure exits 1 with the reason on stderr.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CcSmartDevKitConfig, WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
-import { gitEnv } from "../project/git-env";
+import { copyWorktreeInclude } from "../worktrees/include";
 import { withCreateLock } from "./create-lock";
 import {
   hasRef,
@@ -235,42 +235,6 @@ export function subagentBase(
   return hasRef(repo, ref, env)
     ? git(repo, ["rev-parse", "--verify", `${ref}^{commit}`], env)
     : head();
-}
-
-/**
- * Copies the gitignored files `.worktreeinclude` names from `source` into `target`, the way
- * Claude Code does for the worktrees it makes itself: `.gitignore` syntax, and only files
- * that are also gitignored, so a tracked file is never copied. A file already in `target`
- * stays. Returns the copied paths.
- */
-export function copyWorktreeInclude(source: string, target: string, env: Env): string[] {
-  const includeFile = join(source, ".worktreeinclude");
-  if (!existsSync(includeFile)) return [];
-  const listed = runGit(
-    source,
-    ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`],
-    env,
-    60_000,
-  );
-  if (!listed.ok || listed.out === "") return [];
-  const candidates = listed.out.split("\0").filter((path) => path !== "");
-  const ignored = Bun.spawnSync(["git", "check-ignore", "-z", "--stdin"], {
-    cwd: source,
-    env: gitEnv(env),
-    stdin: Buffer.from(`${candidates.join("\0")}\0`),
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: 60_000,
-  });
-  // check-ignore exits 1 when nothing is ignored.
-  const copied: string[] = [];
-  for (const path of ignored.stdout.toString().split("\0")) {
-    if (path === "" || existsSync(join(target, path))) continue;
-    mkdirSync(dirname(join(target, path)), { recursive: true });
-    copyFileSync(join(source, path), join(target, path));
-    copied.push(path);
-  }
-  return copied;
 }
 
 /** Runs the project's setup in a new worktree; throws with its last lines when it fails. */

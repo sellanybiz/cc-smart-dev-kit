@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { cmdArgument, detachedArgv, startDetached, windowsStart } from "./detached";
+import { cmdArgument, detachedArgv, startDetached, windowsRun, windowsStart } from "./detached";
 
 /** Waits for `check` to say yes, up to `timeoutMs`; false when it never does. */
 async function until(check: () => boolean, timeoutMs = 5_000): Promise<boolean> {
@@ -74,6 +74,26 @@ describe("detachedArgv", () => {
       argument: "",
       ok: false,
       reason: "there is no program to start",
+    });
+  });
+
+  test("windowsRun: the same quoting, with no start trampoline: cmd waits for the .cmd", () => {
+    const argv = ["C:\\Program Files\\nodejs\\claude.cmd", "--bg", "-w", "wk-K-x", "do it; now"];
+    expect(windowsRun(argv)).toEqual({
+      argv: [
+        "cmd",
+        "/d",
+        "/s",
+        "/v:off",
+        "/c",
+        String.raw`""C:\Program Files\nodejs\claude.cmd" "--bg" "-w" "wk-K-x" "do it; now""`,
+      ],
+      ok: true,
+    });
+    expect(windowsRun(["C:\\a%b\\claude.cmd"])).toEqual({
+      argument: "C:\\a%b\\claude.cmd",
+      ok: false,
+      reason: "a % is read as a variable name, inside double quotes too",
     });
   });
 });

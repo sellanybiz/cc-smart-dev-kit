@@ -134,6 +134,9 @@ function cmdArgument(argument) {
   return { ok: true, text: `"${kept}${trailing}${trailing}"` };
 }
 function windowsStart(argv) {
+  return cmdLine('start "" /b ', argv);
+}
+function cmdLine(head, argv) {
   if (argv[0] === undefined) {
     return { argument: "", ok: false, reason: "there is no program to start" };
   }
@@ -144,7 +147,7 @@ function windowsStart(argv) {
       return { argument, ok: false, reason: one.reason };
     quoted.push(one.text);
   }
-  return { argv: [CMD, ...CMD_ARGUMENTS, `"start "" /b ${quoted.join(" ")}"`], ok: true };
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
 }
 function forMessage(argument) {
   return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");

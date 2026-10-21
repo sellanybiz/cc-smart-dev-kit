@@ -4,6 +4,7 @@
  *   <stateDir>/workers/<repo key>/workers/<worker id>.json   one record per worker
  *   <stateDir>/workers/<repo key>/leads/<session id>.json    one record per lead
  *   <stateDir>/workers/<repo key>/reports/<worker id>.json   a worker's hand-back report
+ *   <stateDir>/workers/<repo key>/files/<worker id>/         its brief and its settings file
  *   <stateDir>/workers/<repo key>/events.jsonl               every change, one line each, append-only
  *   <stateDir>/workers/<repo key>/lock                       held for a moment by each write
  *
@@ -29,8 +30,8 @@
  * this kit needs is broken: a single read throws (`WorkerStoreError`, naming the file and the
  * field), and a list names it under `broken` and goes on.
  *
- * Contracts only: no command and no hook reads this yet (the launcher, `worker watch` and the
- * worker hooks are later phases).
+ * `worker lead` and `worker start` (`lead.ts`, `start.ts`) write it; `worker watch` and the worker
+ * hooks are later phases.
  */
 
 import {
@@ -98,8 +99,8 @@ export function isKnownState(state: string): state is WorkerState {
   return (WORKER_STATES as readonly string[]).includes(state);
 }
 
-/** What one line of the events log says happened. */
-export const WORKER_EVENT_TYPES = ["created", "state", "step", "report"] as const;
+/** What one line of the events log says happened: `question` is a worker asking its lead (D36). */
+export const WORKER_EVENT_TYPES = ["created", "state", "step", "report", "question"] as const;
 export type WorkerEventType = (typeof WORKER_EVENT_TYPES)[number];
 
 /** How a worker's hand-back ends. */
@@ -128,9 +129,17 @@ function fileId(id: string, what: string): string {
   return id;
 }
 
+/**
+ * Every repository's store, side by side: `<stateDir>/workers`. The machine-wide lock a start
+ * decision holds lives here too (`withPlacesLock`, `places.ts`).
+ */
+export function workersRootDir(stateDir: string): string {
+  return join(stateDir, "workers");
+}
+
 /** One repository's store: `<stateDir>/workers/<repo key>`. */
 export function workerStoreDir(stateDir: string, repo: string): string {
-  return join(stateDir, "workers", repoKey(repo));
+  return join(workersRootDir(stateDir), repoKey(repo));
 }
 
 /** One worker's record. */
@@ -148,6 +157,24 @@ export function workerReportFile(stateDir: string, repo: string, id: string): st
   return join(workerStoreDir(stateDir, repo), "reports", `${fileId(id, "worker id")}.json`);
 }
 
+/**
+ * One worker's own files: the brief its session reads, and the settings file its launch passes
+ * (`--settings`). Beside the records, never in the worktree: the worker cannot commit them.
+ */
+export function workerFilesDir(stateDir: string, repo: string, id: string): string {
+  return join(workerStoreDir(stateDir, repo), "files", fileId(id, "worker id"));
+}
+
+/** The brief a worker's session reads first: what `worker start --brief` gave, and its frame. */
+export function workerBriefFile(stateDir: string, repo: string, id: string): string {
+  return join(workerFilesDir(stateDir, repo, id), "brief.md");
+}
+
+/** The settings file a worker's launch passes: it names the worker to its own session. */
+export function workerSettingsFile(stateDir: string, repo: string, id: string): string {
+  return join(workerFilesDir(stateDir, repo, id), "settings.json");
+}
+
 /** The repository's events log. */
 export function workerEventsFile(stateDir: string, repo: string): string {
   return join(workerStoreDir(stateDir, repo), "events.jsonl");
@@ -159,6 +186,45 @@ const sha = z.string().regex(COMMIT_SHA, "a full commit sha");
 const count = z.number().int().min(0);
 /** A word of a known list, or a newer kit's word, read as itself. */
 const word = <T extends string>() => text.transform((value): KnownOr<T> => value);
+
+/**
+ * One question a worker asked its lead (D36): a worker never asks the person itself. The lead
+ * answers it, or asks the person; the worker goes on with whatever the question does not block.
+ * `recommended` is the option the worker recommends, counted from 1; `answer` and `answeredAt`
+ * stay null until the lead answers.
+ */
+const workerQuestionFields = z.looseObject({
+  question: text,
+  options: z.array(text).min(2),
+  recommended: z.number().int().min(1).nullable(),
+  askedAt: text,
+  answeredAt: text.nullable(),
+  answer: text.nullable(),
+});
+
+/** A question as recorded: its recommendation is one of its options, its answer has its time. */
+const workerQuestion = workerQuestionFields.superRefine((asked, context) => {
+  if (asked.recommended !== null && asked.recommended > asked.options.length) {
+    context.addIssue({
+      code: "custom",
+      message: `recommends option ${asked.recommended} of ${asked.options.length}`,
+      path: ["recommended"],
+    });
+  }
+  if ((asked.answer === null) !== (asked.answeredAt === null)) {
+    context.addIssue({
+      code: "custom",
+      message: "an answer and its time are given together",
+      path: ["answeredAt"],
+    });
+  }
+});
+
+/** One question a worker asked (`workerQuestion`). */
+export type WorkerQuestion = z.infer<typeof workerQuestionFields>;
+
+/** What a worker gives when it asks: the store adds when, and the answer comes later. */
+export type NewWorkerQuestion = Pick<WorkerQuestion, "options" | "question" | "recommended">;
 
 /** The fields of a worker record. */
 const workerFields = z.object({
@@ -184,8 +250,17 @@ const workerFields = z.object({
   slug: text,
   /** Its kind (`WORKER_KINDS`): the model and effort it runs on. */
   kind: word<WorkerKind>(),
-  /** The model as the launch named it, the gateway slot that answers it (null: Claude), and the model that does. */
-  model: z.looseObject({ named: text, slot: text.nullable(), resolved: text }),
+  /**
+   * The model as the launch named it, the gateway slot that answers it (null: Claude), the model
+   * that does, and the premium tier the name stands for (`opus`, `fable`; null for none) — the
+   * opus cap counts it (D37).
+   */
+  model: z.looseObject({
+    named: text,
+    slot: text.nullable(),
+    resolved: text,
+    tier: text.nullable(),
+  }),
   /** The effort it runs at. */
   effort: text,
   /** Its permission mode (`auto` by default). */
@@ -193,10 +268,16 @@ const workerFields = z.object({
   /** Its worktree's folder and branch. */
   worktree: text,
   branch: text,
+  /** The ref it starts from: `--base`, or the branch the lead was on (its commit, when detached). */
+  baseRef: text,
   /** The branch it started from and that branch's commit then; null until it starts. */
   base: z.looseObject({ ref: text, sha }).nullable(),
+  /** The phases it waits for (`--waits-for`): it stays queued until each is done or merged. */
+  waitsFor: z.array(text),
   /** The files its brief names. */
   files: z.array(text),
+  /** The questions it asked its lead, oldest first (D36). */
+  questions: z.array(workerQuestion),
   /** Where it is now (`WORKER_STATES`). */
   state: word<WorkerState>(),
   /** The last line its session wrote at the end of a turn; null before the first. */
@@ -233,6 +314,8 @@ const leadFields = z.object({
   repo: text,
   /** The plan it leads. */
   plan: text,
+  /** The tag of its name, which its workers' names carry too (`workerTag`, or `worker lead --tag`). */
+  tag: text,
   /** The folder the lead works in. */
   cwd: text,
   createdAt: text,
@@ -392,10 +475,15 @@ function listRecords<T extends { createdAt: string }>(
   return listed;
 }
 
-/** Writes `value` whole: its folder 0700, the file 0600, through the kit's atomic write. */
-function writeRecord(file: string, value: unknown): void {
+/** Writes `text` whole: its folder 0700, the file 0600, through the kit's atomic write. */
+export function writeStoreFile(file: string, text: string): void {
   mkdirSync(dirname(file), { mode: 0o700, recursive: true });
-  atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`, 0o600);
+  atomicWrite(file, text, 0o600);
+}
+
+/** Writes `value` whole, as JSON (`writeStoreFile`). */
+function writeRecord(file: string, value: unknown): void {
+  writeStoreFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 /** Appends one event line (0600 when it makes the file). Call it under the store's lock. */
@@ -425,7 +513,7 @@ export function listWorkers(stateDir: string, repo: string): Listed<WorkerRecord
 
 /** Every worker on this machine, of every repository, oldest first: what a machine-wide cap counts. */
 export function listAllWorkers(stateDir: string): Listed<WorkerRecord> {
-  const root = join(stateDir, "workers");
+  const root = workersRootDir(stateDir);
   const all: Listed<WorkerRecord> = { broken: [], records: [] };
   if (!existsSync(root)) return all;
   for (const key of readdirSync(root).sort()) {
@@ -460,16 +548,7 @@ export async function createWorker(
       );
     }
     writeRecord(file, record);
-    appendEvent(stateDir, worker.repo, {
-      at,
-      lead: record.leadSessionId,
-      name: record.name,
-      state: record.state,
-      text: null,
-      type: "created",
-      version: WORKER_STORE_VERSION,
-      worker: record.id,
-    });
+    appendEvent(stateDir, worker.repo, eventOf(record, at, "created", null));
     return record;
   });
 }
@@ -488,6 +567,96 @@ export async function updateWorker(
   atMs: number,
   text: null | string = null,
 ): Promise<WorkerRecord> {
+  return await changeWorker(stateDir, repo, id, atMs, (before, at) => ({
+    change,
+    event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
+  }));
+}
+
+/**
+ * Records a question worker `id` asks its lead (D36), and its `question` event, under one hold:
+ * the question goes at the end of its `questions`, with no answer yet, and the event's line is
+ * the question. Throws when the worker is not recorded, or the question breaks the schema (fewer
+ * than two options, a recommendation that is not one of them): then nothing is written.
+ */
+export async function addWorkerQuestion(
+  stateDir: string,
+  repo: string,
+  id: string,
+  asked: NewWorkerQuestion,
+  atMs: number,
+): Promise<WorkerRecord> {
+  return await changeWorker(stateDir, repo, id, atMs, (before, at) => ({
+    change: {
+      questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }],
+    },
+    event: (after) => eventOf(after, at, "question", asked.question),
+  }));
+}
+
+/**
+ * Records the lead's answer to question `index` (counted from 0, in `questions`) of worker `id`.
+ * Throws when there is no such question, or it has its answer already: an answer is given once.
+ */
+export async function answerWorkerQuestion(
+  stateDir: string,
+  repo: string,
+  id: string,
+  index: number,
+  answer: string,
+  atMs: number,
+): Promise<WorkerRecord> {
+  return await changeWorker(stateDir, repo, id, atMs, (before, at) => {
+    const asked = before.questions[index];
+    if (asked === undefined) throw new WorkerStoreError(`worker "${id}" has no question ${index}`);
+    if (asked.answer !== null) {
+      throw new WorkerStoreError(`question ${index} of worker "${id}" has its answer already`);
+    }
+    const questions = before.questions.map((one, which) =>
+      which === index ? { ...one, answer, answeredAt: at } : one,
+    );
+    return { change: { questions }, event: () => null };
+  });
+}
+
+/** One line of the events log about `worker`, of `type`, with `text` as its line. */
+function eventOf(
+  worker: WorkerRecord,
+  at: string,
+  type: WorkerEventType,
+  text: null | string,
+): WorkerEvent {
+  return {
+    at,
+    lead: worker.leadSessionId,
+    name: worker.name,
+    state: worker.state,
+    text,
+    type,
+    version: WORKER_STORE_VERSION,
+    worker: worker.id,
+  };
+}
+
+/** What one change of a worker record is: the fields, and the event (if any) that goes with it. */
+interface PlannedChange {
+  change: WorkerChange;
+  event: (after: WorkerRecord) => WorkerEvent | null;
+}
+
+/**
+ * The one read-modify-write of a worker record, under the store's lock: `plan` reads the record
+ * as it is now and says what changes. Every field this kit does not know is kept, and so is a
+ * higher schema version; who the worker is never moves. Nothing is written when the result breaks
+ * the schema, or `plan` throws.
+ */
+async function changeWorker(
+  stateDir: string,
+  repo: string,
+  id: string,
+  atMs: number,
+  plan: (before: WorkerRecord, at: string) => PlannedChange,
+): Promise<WorkerRecord> {
   const file = workerFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
     const before = readRecord(workerRecordSchema, file);
@@ -495,6 +664,7 @@ export async function updateWorker(
       throw new WorkerStoreError(`no worker "${id}" is recorded for ${repo} (${file})`);
     }
     const at = iso(atMs);
+    const { change, event } = plan(before, at);
     const after = checked(
       workerRecordSchema,
       {
@@ -510,18 +680,8 @@ export async function updateWorker(
       file,
     );
     writeRecord(file, after);
-    if (after.state !== before.state) {
-      appendEvent(stateDir, repo, {
-        at,
-        lead: after.leadSessionId,
-        name: after.name,
-        state: after.state,
-        text,
-        type: "state",
-        version: WORKER_STORE_VERSION,
-        worker: after.id,
-      });
-    }
+    const line = event(after);
+    if (line !== null) appendEvent(stateDir, repo, line);
     return after;
   });
 }

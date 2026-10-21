@@ -105,6 +105,24 @@ export type WindowsStart =
  * `ok: false` with the argument and the reason, and then no argv starts it safely.
  */
 export function windowsStart(argv: string[]): WindowsStart {
+  // The quotes around the whole line are the pair `/s` strips; the text after them is
+  // `start`, never a quote, so cmd's own "first character is a quote" rule cannot apply.
+  return cmdLine('start "" /b ', argv);
+}
+
+/**
+ * The argv that runs `argv` through cmd.exe and waits for it — how a program starts a `.cmd`
+ * (npm's `claude.cmd`, say), which is no executable: `cmd`, its switches, and one quoted
+ * command line, every argument quoted (`cmdArgument`). `/s` strips exactly the outer pair and
+ * runs the rest unchanged, so a first argument that is itself quoted (a path with a space) is
+ * kept whole. Spawn it with `windowsVerbatimArguments`.
+ */
+export function windowsRun(argv: string[]): WindowsStart {
+  return cmdLine("", argv);
+}
+
+/** `cmd` with its switches and one line: `head`, then every argument of `argv`, quoted. */
+function cmdLine(head: string, argv: string[]): WindowsStart {
   if (argv[0] === undefined) {
     return { argument: "", ok: false, reason: "there is no program to start" };
   }
@@ -114,9 +132,7 @@ export function windowsStart(argv: string[]): WindowsStart {
     if (!one.ok) return { argument, ok: false, reason: one.reason };
     quoted.push(one.text);
   }
-  // The quotes around the whole line are the pair `/s` strips; the text after them is
-  // `start`, never a quote, so cmd's own "first character is a quote" rule cannot apply.
-  return { argv: [CMD, ...CMD_ARGUMENTS, `"start "" /b ${quoted.join(" ")}"`], ok: true };
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
 }
 
 /** `argument` as one line for a message: a line break or a NUL shown as a space. */
