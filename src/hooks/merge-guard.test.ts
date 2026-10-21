@@ -192,12 +192,12 @@ function branchesOf(config: unknown, over: Record<string, string>): Set<string> 
 }
 
 /** The input Claude Code sends for one Bash command. */
-function input(cwd: string, command: string): Record<string, unknown> {
+function input(cwd: string, command: string, tool = "Bash"): Record<string, unknown> {
   return {
     hook_event_name: "PreToolUse",
     session_id: "11111111-2222-3333-4444-555555555555",
     cwd,
-    tool_name: "Bash",
+    tool_name: tool,
     tool_input: { command },
   };
 }
@@ -690,14 +690,28 @@ describe("a gh api merge is never judged: it asks with the reason", () => {
     });
   });
 
-  test("an UNQUOTED path with placeholders: the guard cannot read it whole, so it asks", async () => {
-    // The lexer splits a line at braces (`shell-command.ts`: the braces of `if (…) { … }`),
-    // so `repos/{owner}/…` reaches the guard as `repos/`: a path it cannot read must ask.
+  test("an UNQUOTED path with placeholders in Bash: one word, so it names the pull request", async () => {
+    // In bash a brace groups commands only as a word of its own: `repos/{owner}/…` is one word.
     const { env, repo } = ready();
     expect(
       await runHook(
         mergeGuardHook,
         input(repo, "gh api -X PUT repos/{owner}/{repo}/pulls/7/merge"),
+        env,
+      ),
+    ).toEqual({
+      stdout: willNotMerge("#7", "it merges with `gh api`, a form this guard does not judge"),
+    });
+  });
+
+  test("an UNQUOTED path with placeholders in PowerShell: cut short, so it asks", async () => {
+    // In PowerShell every brace ends a command (a script block), so `repos/{owner}/…` reaches
+    // the guard as `repos/`: a path it cannot read must ask.
+    const { env, repo } = ready();
+    expect(
+      await runHook(
+        mergeGuardHook,
+        input(repo, "gh api -X PUT repos/{owner}/{repo}/pulls/7/merge", "PowerShell"),
         env,
       ),
     ).toEqual({
@@ -993,7 +1007,7 @@ describe("a merge run by another program", () => {
     ],
     [
       "xargs -I{} gh pr merge {}",
-      "an earlier `xargs` in the same command may feed the merge its arguments from outside the line",
+      "the merge runs from `xargs`, whose arguments come from outside the line",
     ],
     [
       "parallel gh pr merge ::: 7 8",
@@ -1021,6 +1035,53 @@ describe("a merge run by another program", () => {
     const { env, gh, repo } = ready();
     expect(await runHook(mergeGuardHook, input(repo, "sudo -u me git push -f"), env)).toEqual({});
     expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("in PowerShell, `xargs -I{}` is cut at its braces, and still asks", async () => {
+    const { env, gh, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    const command = "xargs -I{} gh pr merge {}";
+    const result = await runHook(mergeGuardHook, input(repo, command, "PowerShell"), env);
+    const said = JSON.parse(result.stdout ?? "{}").hookSpecificOutput
+      .permissionDecisionReason as string;
+    expect(said).toContain(
+      "an earlier `xargs` in the same command may feed the merge its arguments from outside the line",
+    );
+    expect(ghCalls(gh)).toEqual([]);
+  });
+});
+
+describe("the merge reader's bypasses of the 0.6.0 audit: each spelling asks about --admin", () => {
+  /** The reason the guard gives for `command` run by `tool`, or undefined when it is silent. */
+  async function reason(command: string, tool = "Bash"): Promise<string | undefined> {
+    const { env, repo } = ready();
+    const result = await runHook(mergeGuardHook, input(repo, command, tool), env);
+    return result.stdout === undefined
+      ? undefined
+      : (JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason as string);
+  }
+
+  test("HK-2: a merge inside an unquoted here-doc body is read", async () => {
+    expect(await reason("cat <<EOF\n$(gh pr merge --admin 7)\nEOF")).toContain("--admin");
+    expect(await reason("cat <<'EOF'\n$(gh pr merge --admin 7)\nEOF")).toBeUndefined();
+  });
+
+  test("HK-3: a PowerShell line is read with PowerShell's quoting", async () => {
+    const paths = 'cd "C:\\a\\"; gh pr merge --admin 7; cd "C:\\b\\"';
+    expect(await reason(paths, "PowerShell")).toContain("--admin");
+    expect(await reason("<# x #> gh pr merge --admin 7", "PowerShell")).toContain("--admin");
+  });
+
+  test("HK-5: a line that ends in `\\` is read both joined and not", async () => {
+    // In PowerShell, and at the end of a Windows path, the backslash joins nothing.
+    const command = "cd C:\\repo\\\ngh pr merge --admin 7";
+    expect(await reason(command, "PowerShell")).toContain("--admin");
+    expect(await reason(command)).toContain("--admin");
+  });
+
+  test("HK hunch 6: the merge inside a queued `job run` line is read", async () => {
+    const queued = `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind test -- bash -c 'bun test && gh pr merge --admin 7'`;
+    expect(await reason(queued)).toContain("--admin");
   });
 });
 

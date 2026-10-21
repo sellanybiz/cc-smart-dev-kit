@@ -6,6 +6,8 @@
  */
 import { describe, expect, it } from "bun:test";
 import { mergeKinds } from "../jobs/kinds";
+import { pullRequestMerges } from "./after-merge";
+import { guardQuestions } from "./git-guard";
 import {
   jobRunCommand,
   rewriteAnswer,
@@ -119,6 +121,28 @@ describe("which commands are routed", () => {
   it("a nested heavy command in a shell string is routed too (the whole line goes)", () => {
     expect(routeHeavyCommand("sh -c 'bunx vitest run'", KINDS, SHELL)?.kind).toBe("test:run");
     expect(routeHeavyCommand('bash -c "npx next build"', KINDS, SHELL)?.kind).toBe("build");
+  });
+
+  // HK hunch 1 (the fix is phase A4b's): the plugin's own readers see the inner command of a
+  // routed line, but the person's own Bash rules are matched against the rewritten line, which
+  // starts with the launcher and holds the person's line as one quoted word. Whether Claude
+  // Code's rule matcher reads into `job run -- <shell> -c '…'` is not proved here.
+  it("HK hunch 1: a `bash -c` line is routed byte for byte, and the guards still read inside it", () => {
+    const plain = routeHeavyCommand("bash -c 'bunx tsc --noEmit'", KINDS, SHELL);
+    // One quoted word with no shell meaning: the argv form, the person's `bash -c` kept.
+    expect(plain?.command).toBe(`${LAUNCHER} job run --kind tsc -- bash -c 'bunx tsc --noEmit'`);
+    const risky = "bash -c 'bunx tsc --noEmit && git push --force origin main'";
+    const routed = routeHeavyCommand(risky, KINDS, SHELL);
+    // The `&&` inside the quote sends the whole line through the person's shell: two shells deep.
+    expect(routed?.command).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bash -c '\\''bunx tsc --noEmit && git push --force origin main'\\'''`,
+    );
+    const options = { protectedBranches: ["main"], sharedStash: false, env: {} };
+    const asked = guardQuestions(risky, "/nowhere", options);
+    expect(asked.length).toBe(2);
+    expect(guardQuestions(routed?.command ?? "", "/nowhere", options)).toEqual(asked);
+    const merge = routeHeavyCommand('sh -c "bunx tsc --noEmit; gh pr merge 5"', KINDS, SHELL);
+    expect(pullRequestMerges(merge?.command ?? "").map((one) => one.target?.ref)).toEqual(["5"]);
   });
 });
 

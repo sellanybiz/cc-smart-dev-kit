@@ -1,18 +1,29 @@
 /**
  * Which heavy-job kind does a Bash command run, if any? `classifyHeavyCommand` reads the
- * command with the shell lexer (`src/shell/command.ts`), so a tool named inside quotes,
- * a here-doc, a comment or an `echo` is text, not a run.
+ * command with the one shell reader the guards use too (`src/shell/command.ts`), so a tool
+ * named inside quotes, a quoted here-doc, a comment or an `echo` is text, not a run, and a
+ * tool a substitution, a here-doc fed to `sh` or a pipe into `sh` runs is a run.
  *
  * It finds the tool behind the usual runners: `bunx`, `bun x`, `bun run`, `bun <name>`,
  * `npx`, `npm exec`, `npm run`, `pnpm`, `yarn`, a `node_modules/.bin/` path, `node <script
- * path>`, and the wrappers `time`, `timeout`, `nice`, `env`, `sudo`, `bash -c "…"`. A
- * `package.json` script is matched only by a kind's `{ "script": … }` rule: the classifier
- * reads no file, so it cannot know what a script runs.
+ * path>`, the wrappers the shell reader steps over (`time -p`, `timeout`, `nice`, `env -i`,
+ * `sudo -u x`, `xargs`, …, with their options), and `bash -c "…"`. A `package.json` script is
+ * matched only by a kind's `{ "script": … }` rule: the classifier reads no file, so it
+ * cannot know what a script runs.
  *
  * Pure: no file, no environment. A later hook routes what it finds through `job run`.
  */
 
-import { invocationOf, MAX_NESTING, nestedCommand, shellSegments, wordsOf } from "../shell/command";
+import {
+  type Dialect,
+  invocationOf,
+  MAX_NESTING,
+  nestedCommand,
+  nestedDialect,
+  shellSteps,
+  withoutRedirections,
+  wordsOf,
+} from "../shell/command";
 import type { KindSpec, Kinds, MatchRule } from "./kinds";
 
 /** What a command really runs: a program (by name) and its arguments. */
@@ -28,7 +39,6 @@ export interface ToolCall {
 const BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
 const NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
 const PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
-const TIMEOUT_VALUED = ["--kill-after", "--signal", "-k", "-s"];
 /** `node` options that take the next word (a module, or code): it is not the script. */
 const NODE_VALUED = [
   "--conditions",
@@ -137,19 +147,14 @@ function scriptOrTool(word: string, args: string[]): ToolCall {
     : { name: toolName(word), args, script: word };
 }
 
-/** The program a command really runs, behind the runners and wrappers in the header. */
+/**
+ * The program a command really runs, behind the runners in the header. The wrappers before a
+ * program (`timeout`, `nice`, `env`, …) are already stepped over by `invocationOf`.
+ */
 export function toolOf(program: string, args: string[], depth = 0): ToolCall | undefined {
   if (depth > 4) return undefined;
-  const again = (words: string[]) => {
-    const inner = invocationOf(words);
-    return inner === undefined ? undefined : toolOf(inner.program, inner.args, depth + 1);
-  };
   const at = (valued: readonly string[], from = 0) => firstWord(args, from, valued);
   switch (program) {
-    case "timeout":
-      return again(args.slice(at(TIMEOUT_VALUED) + 1));
-    case "nice":
-      return again(args.slice(at(["-n"])));
     case "bunx":
     case "npx": {
       const index = at(program === "npx" ? NPX_VALUED : NPX_VALUED.slice(0, 2));
@@ -263,18 +268,27 @@ function kindOfCall(call: ToolCall, kinds: Kinds): { name: string; gb: number } 
   return best;
 }
 
-function inspect(command: string, kinds: Kinds, depth: number): { name: string; gb: number }[] {
+function inspect(
+  command: string,
+  kinds: Kinds,
+  dialect: Dialect,
+  depth: number,
+): { name: string; gb: number }[] {
   const found: { name: string; gb: number }[] = [];
   // A quote left open is read blind: more pieces, so nothing hides inside it.
-  for (const segment of shellSegments(command, { blindWhenOpen: true, joinLines: true })) {
-    const invocation = invocationOf(wordsOf(segment));
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  for (const step of steps) {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
     if (invocation === undefined) continue;
     const { program, args } = invocation;
-    const call = toolOf(program, args);
+    // A redirection (`> out.txt`) is the shell's, never the tool's argument.
+    const call = toolOf(program, withoutRedirections(args));
     const kind = call === undefined ? null : kindOfCall(call, kinds);
     if (kind !== null) found.push(kind);
-    const inner = nestedCommand(program, args);
-    if (inner !== undefined && depth < MAX_NESTING) found.push(...inspect(inner, kinds, depth + 1));
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING) {
+      found.push(...inspect(inner, kinds, nestedDialect(program), depth + 1));
+    }
   }
   return found;
 }
@@ -286,7 +300,7 @@ function inspect(command: string, kinds: Kinds, depth: number): { name: string; 
  */
 export function classifyHeavyCommand(bashCommand: string, kinds: Kinds): string | null {
   let best: { name: string; gb: number } | null = null;
-  for (const kind of inspect(bashCommand, kinds, 0)) {
+  for (const kind of inspect(bashCommand, kinds, "bash", 0)) {
     if (best === null || kind.gb > best.gb) best = kind;
   }
   return best?.name ?? null;

@@ -33,6 +33,17 @@ describe("did the command merge a pull request?", () => {
     ['sh <<< "gh pr merge 2"', true],
     ['echo "gh pr merge 3" | sh', true],
     ["cat <<EOF\ngh pr merge 1\nEOF", false],
+    // HK-2: bash runs the substitutions of an unquoted here-doc body; a quoted one is text.
+    ["cat <<EOF\n$(gh pr merge 1)\nEOF", true],
+    ["cat <<'EOF'\n$(gh pr merge 1)\nEOF", false],
+    // HK-5: a trailing `\` may end a Windows path, so the line is also read unjoined.
+    ["cd C:\\repo\\\ngh pr merge 5", true],
+    // HK hunch 6: the line job-route queues is read through `job run`.
+    [
+      `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind test -- bash -c 'bun test && gh pr merge 5'`,
+      true,
+    ],
+    ["cc-smart-dev-kit job run --kind test -- gh pr merge 5", true],
     ["gh pr view 1", false],
     // gh's own flags may come before the command word (both are live gh 2.102.0 forms).
     ["gh -R org/app pr merge 18", true],

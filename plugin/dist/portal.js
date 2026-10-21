@@ -16420,21 +16420,77 @@ function allWiredHandlers(file) {
 }
 
 // src/shell/command.ts
+function dialectOfTool(tool) {
+  if (tool === "Bash")
+    return "bash";
+  if (tool === "PowerShell")
+    return "powershell";
+  return;
+}
+var DIALECTS = ["bash", "powershell"];
 var MAX_NESTING = 3;
+var ESCAPE = { bash: "\\", powershell: "`" };
+var SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
+var DOUBLE = { bash: '"', powershell: '"\u201C\u201D\u201E' };
+var oneOf = (chars, char) => char !== "" && chars.includes(char);
+var CONTINUATION = {
+  bash: /\\[ \t]*\r?\n/y,
+  powershell: /`[ \t]*\r?\n/y
+};
 var SEPARATORS = new Set([`
-`, "\r", "&", "(", ")", ";", "{", "|", "}"]);
-var CONTINUATION = /[\\`][ \t]*\r?\n/y;
-var HERE_DOC = /<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s"'<>;&|()]+))/y;
-var HERE_STRING = /@(["'])\r?\n[\s\S]*?\r?\n\1@/y;
-function lex(text, { blind, join }) {
+`, "\r", "&", "(", ")", ";", "|"]);
+var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
+function readingsOf(command, dialect) {
+  const readings = [];
+  for (const one of dialect === undefined ? DIALECTS : [dialect]) {
+    readings.push({ dialect: one, joinLines: false });
+    if (new RegExp(CONTINUATION[one].source).test(command)) {
+      readings.push({ dialect: one, joinLines: true });
+    }
+  }
+  return readings;
+}
+var MAX_INNER = 8;
+var isBlank = (char) => char === " " || char === "\t";
+function lex(text, options) {
+  const { blind, dialect, join } = options;
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
   const segments = [];
+  const piped = [];
   const owed = [];
   let open = false;
+  let unparsable = false;
   let at = 0;
+  let afterPipe = false;
+  let matching = null;
+  let semicolons = null;
+  const push = (piece, from) => {
+    segments.push(piece);
+    piped.push(from);
+  };
+  function addInner(inner, body) {
+    const depth = (options.depth ?? 0) + 1;
+    if (depth > MAX_INNER) {
+      open = true;
+      return;
+    }
+    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth });
+    if (read.open)
+      open = true;
+    if (read.unparsable)
+      unparsable = true;
+    for (let i = 0;i < read.segments.length; i++) {
+      push(read.segments[i] ?? "", read.piped[i] ?? null);
+    }
+  }
   function skipBodies() {
-    for (const { stripTabs, word } of owed.splice(0)) {
+    for (const { quoted, script, stripTabs, word } of owed.splice(0)) {
       let line = at;
       let closedAt = -1;
+      let bodyEnd = text.length;
       while (line < text.length) {
         const end = text.indexOf(`
 `, line);
@@ -16442,36 +16498,73 @@ function lex(text, { blind, join }) {
         const content = text.slice(line, stop).replace(/\r$/, "");
         if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
           closedAt = Math.min(stop + 1, text.length);
+          bodyEnd = line;
           break;
         }
         line = stop + 1;
       }
-      if (closedAt !== -1) {
-        at = closedAt;
-      } else if (!blind) {
+      if (closedAt === -1 && blind)
+        continue;
+      if (script)
+        addInner(text.slice(at, bodyEnd), false);
+      else if (!quoted)
+        addInner(text.slice(at, bodyEnd), true);
+      if (closedAt === -1) {
         open = true;
         at = text.length;
+      } else {
+        at = closedAt;
       }
     }
   }
   function arithmeticEnd(from) {
     if (text.charAt(from + 1) !== "(")
       return -1;
-    let depth = 0;
-    for (let i = from;i < text.length; i++) {
-      if (text.charAt(i) === "(")
-        depth++;
-      else if (text.charAt(i) === ")" && --depth === 0) {
-        const closes = text.charAt(i - 1) === ")" && i - 1 > from + 1;
-        return closes && !text.slice(from, i).includes(";") ? i + 1 : -1;
+    if (matching === null || semicolons === null) {
+      matching = new Int32Array(text.length).fill(-1);
+      semicolons = new Int32Array(text.length + 1);
+      const stack = [];
+      for (let i = 0;i < text.length; i++) {
+        const char = text.charAt(i);
+        semicolons[i + 1] = (semicolons[i] ?? 0) + (char === ";" ? 1 : 0);
+        if (char === "(")
+          stack.push(i);
+        else if (char === ")") {
+          const opened = stack.pop();
+          if (opened !== undefined)
+            matching[opened] = i;
+        }
       }
     }
-    return -1;
+    const close = matching[from] ?? -1;
+    if (close === -1)
+      return -1;
+    const closes = text.charAt(close - 1) === ")" && close - 1 > from + 1;
+    const plain = (semicolons[close] ?? 0) === (semicolons[from] ?? 0);
+    return closes && plain ? close + 1 : -1;
+  }
+  function readArithmetic(end) {
+    addInner(text.slice(at + 3, end - 2), true);
+    const piece = text.slice(at, end);
+    at = end;
+    return piece;
   }
   function readSingle(ansi) {
     let end = at + 1;
-    while (end < text.length && text.charAt(end) !== "'") {
-      end += ansi && text.charAt(end) === "\\" ? 2 : 1;
+    while (end < text.length) {
+      const char = text.charAt(end);
+      if (ansi && char === "\\") {
+        end += 2;
+        continue;
+      }
+      if (oneOf(single, char)) {
+        if (!bash && oneOf(single, text.charAt(end + 1))) {
+          end += 2;
+          continue;
+        }
+        break;
+      }
+      end++;
     }
     if (end >= text.length)
       open = true;
@@ -16479,114 +16572,218 @@ function lex(text, { blind, join }) {
     at = Math.min(end + 1, text.length);
     return piece;
   }
-  function readDouble() {
+  function readBacktick() {
+    let end = at + 1;
+    while (end < text.length && text.charAt(end) !== "`") {
+      end += text.charAt(end) === "\\" ? 2 : 1;
+    }
+    if (end >= text.length) {
+      open = true;
+      const piece = text.slice(at);
+      at = text.length;
+      return piece;
+    }
+    addInner(text.slice(at + 1, end).replace(/\\([`\\$])/g, "$1"), false);
+    const piece = text.slice(at, end + 1);
+    at = end + 1;
+    return piece;
+  }
+  function readDouble(closes) {
     const mark = segments.length;
-    let raw = '"';
-    at++;
+    let raw = "";
+    if (closes) {
+      raw = text.charAt(at);
+      at++;
+    }
     while (at < text.length) {
       const char = text.charAt(at);
       const next = text.charAt(at + 1);
-      if (char === '"') {
+      if (closes && oneOf(double, char)) {
+        if (!bash && oneOf(double, next)) {
+          raw += char + next;
+          at += 2;
+          continue;
+        }
         at++;
         return raw + char;
       }
-      if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char || char === "\\" && next === "$")) {
+      if (char === escaper && next !== "") {
         raw += char + next;
         at += 2;
       } else if (char === "$" && next === "(") {
-        const end = arithmeticEnd(at + 1);
+        const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
           raw += `$(${read(true)}`;
         } else {
-          raw += text.slice(at, end);
-          at = end;
+          raw += readArithmetic(end);
         }
+      } else if (bash && char === "`") {
+        raw += readBacktick();
       } else {
         raw += char;
         at++;
       }
     }
+    if (!closes)
+      return raw;
     open = true;
     segments.length = mark;
+    piped.length = mark;
     return raw;
+  }
+  function hereDocOpener() {
+    let pos = at + 2;
+    const stripTabs = text.charAt(pos) === "-";
+    if (stripTabs)
+      pos++;
+    while (isBlank(text.charAt(pos)))
+      pos++;
+    let word = "";
+    let quoted = false;
+    while (pos < text.length) {
+      const char = text.charAt(pos);
+      if (/\s/.test(char) || "<>;&|()".includes(char))
+        break;
+      if (char === "'" || char === '"') {
+        const close = text.indexOf(char, pos + 1);
+        if (close === -1)
+          return null;
+        word += text.slice(pos + 1, close);
+        quoted = true;
+        pos = close + 1;
+      } else if (char === "\\") {
+        word += text.charAt(pos + 1);
+        quoted = true;
+        pos += 2;
+      } else {
+        word += char;
+        pos++;
+      }
+    }
+    return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
+  }
+  function isGroupBrace(char, wordStart) {
+    if (char !== "{" && char !== "}")
+      return false;
+    if (!bash)
+      return true;
+    const after = text.charAt(at + 1);
+    return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
   }
   function read(nested) {
     let raw = "";
     let current = "";
     let depth = 0;
-    const take = (piece) => {
+    let wordStart = true;
+    let afterClose = false;
+    let stdinShell = null;
+    const take = (piece, blank = false) => {
       current += piece;
       raw += piece;
+      wordStart = blank;
+      afterClose = false;
     };
     while (at < text.length) {
       const char = text.charAt(at);
       const next = text.charAt(at + 1);
-      if (join && (char === "\\" || char === "`")) {
-        CONTINUATION.lastIndex = at;
-        if (CONTINUATION.test(text)) {
-          take(" ");
-          at = CONTINUATION.lastIndex;
+      if (join && char === escaper) {
+        const continuation = CONTINUATION[dialect];
+        continuation.lastIndex = at;
+        if (continuation.test(text)) {
+          take(" ", true);
+          at = continuation.lastIndex;
           continue;
         }
       }
       if (!blind) {
-        if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char)) {
+        if (char === escaper && next !== "" && next !== `
+` && next !== "\r") {
           take(char + next);
           at += 2;
           continue;
         }
-        if (char === "'") {
+        if (oneOf(single, char)) {
           take(readSingle(false));
           continue;
         }
-        if (char === '"') {
-          take(readDouble());
+        if (oneOf(double, char)) {
+          take(readDouble(true));
           continue;
         }
-        if (char === "$" && next === "'") {
+        if (bash && char === "$" && next === "'") {
           at++;
           take(`$${readSingle(true)}`);
           continue;
         }
-        const arithmetic = char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
-        if (arithmetic !== -1) {
-          take(text.slice(at, arithmetic));
-          at = arithmetic;
+        if (bash && char === "`") {
+          take(readBacktick());
           continue;
         }
-        if (char === "#" && (at === 0 || /[\s;&|(]/.test(text.charAt(at - 1)))) {
+        const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
+        if (arithmetic !== -1) {
+          take(readArithmetic(arithmetic));
+          continue;
+        }
+        if (char === "#" && wordStart && !afterClose) {
           const end = text.indexOf(`
 `, at);
           at = end === -1 ? text.length : end;
           continue;
         }
+        if (!bash && char === "<" && next !== "#")
+          unparsable = true;
+        if (!bash && char === "<" && next === "#" && wordStart) {
+          const end = text.indexOf("#>", at + 2);
+          if (end === -1)
+            open = true;
+          at = end === -1 ? text.length : end + 2;
+          take(" ", true);
+          continue;
+        }
+        if (!bash && wordStart && text.startsWith("--%", at) && /^\s?$/.test(text.charAt(at + 3))) {
+          let end = at;
+          while (end < text.length && text.charAt(end) !== `
+` && text.charAt(end) !== "|")
+            end++;
+          take(text.slice(at, end));
+          at = end;
+          continue;
+        }
       }
-      if (char === "<" && next === "<") {
-        HERE_DOC.lastIndex = at;
-        const opener = HERE_DOC.exec(text);
-        const word = opener?.[2] ?? opener?.[3] ?? opener?.[4];
-        if (opener !== null && word !== undefined) {
-          owed.push({ stripTabs: opener[1] === "-", word });
-          take(opener[0]);
-          at = HERE_DOC.lastIndex;
-        } else {
+      if (bash && char === "<" && next === "<") {
+        if (text.charAt(at + 2) === "<") {
+          take("<<<");
+          at += 3;
+          continue;
+        }
+        const opener = hereDocOpener();
+        if (opener === null) {
           take("<<");
           at += 2;
+          continue;
         }
+        stdinShell ??= readsStdinShell(current);
+        owed.push({ ...opener, script: stdinShell });
+        take(text.slice(at, opener.end));
+        at = opener.end;
         continue;
       }
-      if (char === "@" && (next === '"' || next === "'")) {
+      if (!bash && char === "@" && (next === '"' || next === "'")) {
         HERE_STRING.lastIndex = at;
-        if (HERE_STRING.exec(text) !== null) {
+        const quoted = HERE_STRING.exec(text);
+        if (quoted !== null) {
+          if (next === '"' || blind)
+            addInner(quoted[2] ?? "", true);
           take(`${next}${next}`);
           at = HERE_STRING.lastIndex;
           continue;
         }
       }
-      if (SEPARATORS.has(char)) {
+      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
+        push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+        afterPipe = char === "|";
         if (nested && char === ")" && depth === 0) {
-          segments.push(current);
           at++;
           return `${raw})`;
         }
@@ -16594,56 +16791,421 @@ function lex(text, { blind, join }) {
           depth++;
         if (nested && char === ")")
           depth--;
-        segments.push(current);
         current = "";
+        stdinShell = null;
         raw += char;
         at++;
+        wordStart = true;
+        afterClose = char === ")";
         if (char === `
 `)
           skipBodies();
         continue;
       }
-      take(char);
+      take(char, isBlank(char));
       at++;
     }
-    segments.push(current);
+    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
     return raw;
   }
-  read(false);
-  return { open, segments };
+  if (options.body === true)
+    readDouble(false);
+  else
+    read(false);
+  return { open, piped, segments, unparsable };
+}
+function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
+  const read = lex(command, { blind: false, dialect, join: joinLines });
+  if (read.unparsable)
+    return [];
+  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
+  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
 }
 function shellSegments(command, options = {}) {
-  const join = options.joinLines ?? false;
-  const read = lex(command, { blind: false, join });
-  if (read.open && options.blindWhenOpen === true) {
-    return lex(command, { blind: true, join }).segments;
+  return shellSteps(command, options).map((step) => step.text);
+}
+var ANSI_ESCAPES = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1B",
+  E: "\x1B",
+  f: "\f",
+  n: `
+`,
+  r: "\r",
+  t: "\t",
+  v: "\v"
+};
+function ansiText(body) {
+  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs, (_, code) => {
+    const kind = code.charAt(0);
+    if (kind === "x" || kind === "u" || kind === "U") {
+      return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
+    }
+    if (/[0-7]/.test(kind))
+      return String.fromCharCode(Number.parseInt(code, 8) & 255);
+    if (kind === "c")
+      return String.fromCharCode(code.charCodeAt(1) & 31);
+    return ANSI_ESCAPES[code] ?? code;
+  });
+}
+var POWERSHELL_ESCAPES = {
+  "0": "\x00",
+  a: "\x07",
+  b: "\b",
+  e: "\x1B",
+  f: "\f",
+  n: `
+`,
+  r: "\r",
+  t: "\t",
+  v: "\v"
+};
+function wordsOf(segment, dialect = "bash") {
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
+  const words = [];
+  let word = "";
+  let inWord = false;
+  let quoted = false;
+  const end = () => {
+    if (inWord)
+      words.push(word);
+    word = "";
+    inWord = false;
+    quoted = false;
+  };
+  const add = (piece) => {
+    word += piece;
+    inWord = true;
+  };
+  let i = 0;
+  while (i < segment.length) {
+    const char = segment.charAt(i);
+    const next = segment.charAt(i + 1);
+    if (/\s/.test(char)) {
+      end();
+      i++;
+    } else if (char === escaper && next === `
+`) {
+      i += 2;
+    } else if (char === escaper) {
+      quoted = true;
+      add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
+      i += 2;
+    } else if (char === "<" || char === ">") {
+      if (quoted || !/^\d+$/.test(word))
+        end();
+      while (oneOf("<>", segment.charAt(i)))
+        add(segment.charAt(i++));
+      if (oneOf("&|", segment.charAt(i)))
+        add(segment.charAt(i++));
+    } else if (bash && char === "$" && next === "'") {
+      let close = i + 2;
+      while (close < segment.length && segment.charAt(close) !== "'") {
+        close += segment.charAt(close) === "\\" ? 2 : 1;
+      }
+      add(ansiText(segment.slice(i + 2, Math.min(close, segment.length))));
+      quoted = true;
+      i = close + 1;
+    } else if (bash && char === "$" && next === '"') {
+      i++;
+    } else if (oneOf(single, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        if (oneOf(single, inside)) {
+          if (bash || !oneOf(single, segment.charAt(i + 1)))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        add(inside);
+        i++;
+      }
+      i++;
+    } else if (oneOf(double, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        const after = segment.charAt(i + 1);
+        if (oneOf(double, inside)) {
+          if (bash || !oneOf(double, after))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        if (inside === escaper && after !== "") {
+          if (!bash)
+            add(POWERSHELL_ESCAPES[after] ?? after);
+          else if ('$`"\\'.includes(after))
+            add(after);
+          else if (after !== `
+`)
+            add(inside + after);
+          i += 2;
+          continue;
+        }
+        add(inside);
+        i++;
+      }
+      i++;
+    } else {
+      add(char);
+      i++;
+    }
   }
-  return read.segments;
+  end();
+  return words;
 }
-var PREFIX_WORDS = new Set(["builtin", "command", "env", "exec", "nohup", "sudo", "time"]);
+var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
 var ASSIGNMENT = /^[A-Za-z_]\w*=/;
-function wordsOf(segment) {
-  const words = segment.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'])+/g) ?? [];
-  return words.map((word) => word.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_, double, single) => double === undefined ? String(single) : double.replace(/\\(["\\$`])/g, "$1")));
+var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
+var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
+var WRAPPERS = {
+  builtin: { long: [], short: "" },
+  command: { inert: ["-v", "-V"], long: [], short: "" },
+  doas: { long: [], short: "uC" },
+  env: {
+    long: ["--unset", "--chdir", "--split-string"],
+    short: "uCS",
+    split: { long: "--split-string", short: "S" }
+  },
+  exec: { long: [], short: "a" },
+  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
+  nice: { long: ["--adjustment"], short: "n" },
+  nohup: { long: [], short: "" },
+  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
+  sudo: {
+    long: [
+      "--user",
+      "--group",
+      "--host",
+      "--prompt",
+      "--close-from",
+      "--chdir",
+      "--chroot",
+      "--command-timeout",
+      "--other-user"
+    ],
+    short: "ughpCDRTU"
+  },
+  time: { long: [], short: "" },
+  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+  xargs: {
+    long: [
+      "--arg-file",
+      "--delimiter",
+      "--eof",
+      "--max-args",
+      "--max-chars",
+      "--max-lines",
+      "--max-procs",
+      "--replace",
+      "--process-slot-var"
+    ],
+    short: "adEILnPs"
+  }
+};
+var SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
 }
-function invocationOf(words) {
-  let index = 0;
+function shortFlags(arg, valued) {
+  let flags = "";
+  for (let i = 1;i < arg.length; i++) {
+    const letter = arg.charAt(i);
+    flags += letter;
+    if (valued.includes(letter))
+      return { flags, wantsNext: i === arg.length - 1 };
+  }
+  return { flags, wantsNext: false };
+}
+function isShort(arg) {
+  return /^-[^-]/.test(arg);
+}
+function afterWrapper(words, from, spec) {
+  let index = from;
   while (index < words.length) {
     const word = words[index] ?? "";
-    if (!ASSIGNMENT.test(word) && !PREFIX_WORDS.has(word))
+    if (word === "--")
+      return { index: index + 1 };
+    if (!isShort(word) && !word.startsWith("--"))
       break;
-    index++;
+    const name = word.split("=")[0] ?? word;
+    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
+      return;
+    if (word.startsWith("--")) {
+      const valued = spec.long.includes(name) && !word.includes("=");
+      if (spec.split !== undefined && name === spec.split.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        const to = index + (valued ? 2 : 1);
+        return { index, split: { from: index, to, value, keep: null } };
+      }
+      index += valued ? 2 : 1;
+      continue;
+    }
+    const { flags, wantsNext } = shortFlags(word, spec.short);
+    if (spec.split !== undefined && flags.endsWith(spec.split.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      const before = flags.slice(0, -1);
+      const to = index + (wantsNext ? 2 : 1);
+      return {
+        index,
+        split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
+      };
+    }
+    index += wantsNext ? 2 : 1;
   }
-  const first = words[index];
+  return { index: spec.skip?.(words[index] ?? "") === true ? index + 1 : index };
+}
+function invocationOf(words) {
+  let list = [...words];
+  let splits = 0;
+  let index = 0;
+  while (index < list.length) {
+    const word = list[index] ?? "";
+    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
+      index++;
+      continue;
+    }
+    const redirection = REDIRECTION.exec(word);
+    if (redirection !== null) {
+      index += (redirection[2] ?? "") === "" ? 2 : 1;
+      continue;
+    }
+    const spec = WRAPPERS[programName(word)];
+    if (spec === undefined)
+      break;
+    const after = afterWrapper(list, index + 1, spec);
+    if (after === undefined)
+      return;
+    if (after.split !== undefined && splits < MAX_NESTING) {
+      const { from, keep, to, value } = after.split;
+      const kept = keep === null ? [] : [keep];
+      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
+      splits++;
+      continue;
+    }
+    index = after.split === undefined ? after.index : after.split.to;
+  }
+  const first = list[index];
   if (first === undefined)
     return;
-  const program = (first.split(/[\\/]/).pop() ?? first).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-  return { args: words.slice(index + 1), program };
+  return { args: list.slice(index + 1), prefix: list.slice(0, index), program: programName(first) };
 }
-function nestedCommand(program, args) {
-  if (["bash", "dash", "sh", "zsh"].includes(program)) {
-    const at = args.findIndex((arg) => /^-[a-z]*c$/.test(arg));
-    return at === -1 ? undefined : args[at + 1];
+function withoutRedirections(args) {
+  const kept = [];
+  for (let index = 0;index < args.length; index++) {
+    const redirection = REDIRECTION.exec(args[index] ?? "");
+    if (redirection === null)
+      kept.push(args[index] ?? "");
+    else if ((redirection[2] ?? "") === "")
+      index++;
+  }
+  return kept;
+}
+function shellTakesStdin(args) {
+  let stdin = false;
+  let scriptFile = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      if ((redirection[1] ?? "").startsWith("<<"))
+        stdin = true;
+      continue;
+    }
+    if (arg === "-") {
+      stdin = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (isShort(arg) || arg.startsWith("+")) {
+      const letters = arg.replace(/^[-+]+/, "");
+      if (letters.includes("c"))
+        return false;
+      if (letters.includes("s"))
+        stdin = true;
+      if (letters === "o")
+        index++;
+      continue;
+    }
+    scriptFile = true;
+  }
+  return stdin || !scriptFile;
+}
+function shellCommandString(args) {
+  let commandMode = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--")
+      return commandMode ? args[index + 1] : undefined;
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (/^[-+][A-Za-z]+$/.test(arg)) {
+      const letters = arg.slice(1);
+      if (arg.startsWith("-") && letters.includes("c"))
+        commandMode = true;
+      if (/[oO]$/.test(letters))
+        index++;
+      continue;
+    }
+    return commandMode ? arg : undefined;
+  }
+  return;
+}
+function readsStdinShell(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
+}
+function writtenText(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  if (invocation === undefined || invocation.args.length === 0)
+    return null;
+  const text = invocation.args.join(" ");
+  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
+}
+function nestedCommand(program, args, pipedFrom = null) {
+  if (SHELLS.has(program)) {
+    const script = shellCommandString(args);
+    if (script !== undefined)
+      return script;
+    if (!shellTakesStdin(args))
+      return;
+    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
+    if (here !== -1) {
+      const word = args[here] ?? "";
+      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
+    }
+    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
+  }
+  if (program === COMMAND && args[0] === "job" && args[1] === "run") {
+    const dashes = args.indexOf("--");
+    return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
   }
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
@@ -16658,12 +17220,45 @@ function nestedCommand(program, args) {
   }
   return;
 }
+function nestedDialect(program) {
+  return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
+}
+function programsOf(command, dialect) {
+  if (dialect !== undefined)
+    return programsIn(command, dialect);
+  const found = programsIn(command, "bash");
+  const left = [...found];
+  for (const program of programsIn(command, "powershell")) {
+    const at = left.indexOf(program);
+    if (at === -1)
+      found.push(program);
+    else
+      left.splice(at, 1);
+  }
+  return found;
+}
+function programsIn(command, dialect) {
+  const found = [];
+  const walk = (line, one, depth) => {
+    for (const step of shellSteps(line, { blindWhenOpen: true, dialect: one, joinLines: true })) {
+      const invocation = invocationOf(wordsOf(step.text, one));
+      if (invocation === undefined)
+        continue;
+      found.push(invocation.program);
+      const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      if (inner !== undefined && depth < MAX_NESTING) {
+        walk(inner, nestedDialect(invocation.program), depth + 1);
+      }
+    }
+  };
+  walk(command, dialect, 0);
+  return found;
+}
 
 // src/jobs/classify.ts
 var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
 var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
 var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
-var TIMEOUT_VALUED = ["--kill-after", "--signal", "-k", "-s"];
 var NODE_VALUED = [
   "--conditions",
   "--eval",
@@ -16754,16 +17349,8 @@ function scriptOrTool(word, args) {
 function toolOf(program, args, depth = 0) {
   if (depth > 4)
     return;
-  const again = (words) => {
-    const inner = invocationOf(words);
-    return inner === undefined ? undefined : toolOf(inner.program, inner.args, depth + 1);
-  };
   const at = (valued, from = 0) => firstWord(args, from, valued);
   switch (program) {
-    case "timeout":
-      return again(args.slice(at(TIMEOUT_VALUED) + 1));
-    case "nice":
-      return again(args.slice(at(["-n"])));
     case "bunx":
     case "npx": {
       const index = at(program === "npx" ? NPX_VALUED : NPX_VALUED.slice(0, 2));
@@ -16873,26 +17460,28 @@ function kindOfCall(call, kinds) {
   }
   return best;
 }
-function inspect(command, kinds, depth) {
+function inspect(command, kinds, dialect, depth) {
   const found = [];
-  for (const segment of shellSegments(command, { blindWhenOpen: true, joinLines: true })) {
-    const invocation = invocationOf(wordsOf(segment));
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  for (const step of steps) {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
     if (invocation === undefined)
       continue;
     const { program, args } = invocation;
-    const call = toolOf(program, args);
+    const call = toolOf(program, withoutRedirections(args));
     const kind = call === undefined ? null : kindOfCall(call, kinds);
     if (kind !== null)
       found.push(kind);
-    const inner = nestedCommand(program, args);
-    if (inner !== undefined && depth < MAX_NESTING)
-      found.push(...inspect(inner, kinds, depth + 1));
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING) {
+      found.push(...inspect(inner, kinds, nestedDialect(program), depth + 1));
+    }
   }
   return found;
 }
 function classifyHeavyCommand(bashCommand, kinds) {
   let best = null;
-  for (const kind of inspect(bashCommand, kinds, 0)) {
+  for (const kind of inspect(bashCommand, kinds, "bash", 0)) {
     if (best === null || kind.gb > best.gb)
       best = kind;
   }
@@ -17045,415 +17634,375 @@ import { existsSync as existsSync32, mkdirSync as mkdirSync10, writeFileSync as 
 import { tmpdir as tmpdir4 } from "os";
 import { join as join28 } from "path";
 
-// src/hooks/shell-command.ts
-var MAX_NESTING2 = 3;
-var SEPARATORS2 = new Set([`
-`, "\r", "&", "(", ")", ";", "{", "|", "}"]);
-var CONTINUATION2 = /[\\`][ \t]*\r?\n/y;
-var HERE_DOC2 = /<<(-?)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([^\s"'<>;&|()]+))/y;
-var HERE_STRING2 = /@(["'])\r?\n[\s\S]*?\r?\n\1@/y;
-function lex2(text, { blind, join }) {
-  const segments = [];
-  const piped = [];
-  const owed = [];
-  let open = false;
-  let at = 0;
-  let afterPipe = false;
-  const push = (piece, from) => {
-    segments.push(piece);
-    piped.push(from);
+// src/hooks/git-guard.ts
+import { isAbsolute, resolve as resolve5 } from "path";
+var DEFAULT_PROTECTED_BRANCHES = ["main"];
+var PUSH_VALUE_OPTIONS = [
+  ["--exec", 4],
+  ["--push-option", 4],
+  ["--receive-pack", 5],
+  ["--repo", 6]
+];
+var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+function longOption(arg, full, min) {
+  const name = arg.split("=")[0] ?? arg;
+  return name.length >= min && name.length <= full.length && full.startsWith(name);
+}
+function movedTo(program, folder, args) {
+  if (program === "popd")
+    return null;
+  const target = args.find((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
+  if (target === undefined || /^[~%]|[$`]/.test(target))
+    return null;
+  const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
+  if (isAbsolute(path))
+    return resolve5(path);
+  return folder === null ? null : resolve5(folder, path);
+}
+function currentBranch(where, run) {
+  if (!run.branches.has(where)) {
+    const read = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], run.options.env, GUARD_GIT_TIMEOUT_MS);
+    run.branches.set(where, read.ok && read.out !== "" ? read.out : undefined);
+  }
+  return run.branches.get(where);
+}
+var PUSH_CONFIG_KEYS = "^(push\\.default|remote\\.pushdefault|branch\\..*\\.(remote|pushremote|merge)|remote\\..*\\.push)$";
+function pushConfig(where, run) {
+  const cached = run.pushConfigs.get(where);
+  if (cached !== undefined)
+    return cached;
+  const read = runGit(where, ["config", "--get-regexp", PUSH_CONFIG_KEYS], run.options.env, GUARD_GIT_TIMEOUT_MS);
+  const config = new Map;
+  for (const line of read.ok ? read.out.split(`
+`) : []) {
+    const space = line.indexOf(" ");
+    const key = space === -1 ? line : line.slice(0, space);
+    if (key !== "")
+      config.set(key, [...config.get(key) ?? [], space === -1 ? "" : line.slice(space + 1)]);
+  }
+  run.pushConfigs.set(where, config);
+  return config;
+}
+function configKey(raw) {
+  const parts = raw.split(".");
+  if (parts.length < 2)
+    return raw.toLowerCase();
+  const first = (parts[0] ?? "").toLowerCase();
+  const last = (parts[parts.length - 1] ?? "").toLowerCase();
+  return [first, ...parts.slice(1, -1), last].join(".");
+}
+function bareRefspecs(remote, branch, config, onLine) {
+  let unknown = false;
+  const values = (key) => {
+    if (!onLine.has(key))
+      return config.get(key) ?? [];
+    const value = onLine.get(key);
+    if (value === null || value === undefined)
+      unknown = true;
+    return value === null || value === undefined ? [] : [value];
   };
-  function skipBodies() {
-    for (const { stripTabs, script, word } of owed.splice(0)) {
-      let line = at;
-      let closedAt = -1;
-      let bodyEnd = -1;
-      while (line < text.length) {
-        const end = text.indexOf(`
-`, line);
-        const stop = end === -1 ? text.length : end;
-        const content = text.slice(line, stop).replace(/\r$/, "");
-        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
-          closedAt = Math.min(stop + 1, text.length);
-          bodyEnd = line;
-          break;
-        }
-        line = stop + 1;
-      }
-      if (closedAt !== -1) {
-        if (script) {
-          const body = lex2(text.slice(at, bodyEnd), { blind, join });
-          for (let i = 0;i < body.segments.length; i++) {
-            push(body.segments[i] ?? "", body.piped[i] ?? null);
-          }
-        }
-        at = closedAt;
-      } else if (!blind) {
-        open = true;
-        at = text.length;
-      }
-    }
+  const one = (key) => values(key)[0];
+  const target = remote ?? one(`branch.${branch}.pushremote`) ?? one("remote.pushdefault") ?? one(`branch.${branch}.remote`) ?? "origin";
+  const configured = values(`remote.${target}.push`);
+  const mode = (one("push.default") ?? "simple").toLowerCase();
+  const merge = one(`branch.${branch}.merge`);
+  if (unknown)
+    return [":"];
+  if (configured.length > 0)
+    return configured;
+  if (mode === "nothing")
+    return [];
+  if (mode === "matching")
+    return [":"];
+  if (mode === "upstream" || mode === "tracking") {
+    return merge === undefined ? [] : [`${branch}:${merge}`];
   }
-  function arithmeticEnd(from) {
-    if (text.charAt(from + 1) !== "(")
-      return -1;
-    let depth = 0;
-    for (let i = from;i < text.length; i++) {
-      if (text.charAt(i) === "(")
-        depth++;
-      else if (text.charAt(i) === ")" && --depth === 0) {
-        const closes = text.charAt(i - 1) === ")" && i - 1 > from + 1;
-        return closes && !text.slice(from, i).includes(";") ? i + 1 : -1;
-      }
-    }
-    return -1;
-  }
-  function readSingle(ansi) {
-    let end = at + 1;
-    while (end < text.length && text.charAt(end) !== "'") {
-      end += ansi && text.charAt(end) === "\\" ? 2 : 1;
-    }
-    if (end >= text.length)
-      open = true;
-    const piece = text.slice(at, end + 1);
-    at = Math.min(end + 1, text.length);
-    return piece;
-  }
-  function readDouble() {
-    const mark = segments.length;
-    let raw = '"';
-    at++;
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (char === '"') {
-        at++;
-        return raw + char;
-      }
-      if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char || char === "\\" && next === "$")) {
-        raw += char + next;
-        at += 2;
-      } else if (char === "$" && next === "(") {
-        const end = arithmeticEnd(at + 1);
-        if (end === -1) {
-          at += 2;
-          raw += `$(${read(true).raw}`;
-        } else {
-          raw += text.slice(at, end);
-          at = end;
-        }
-      } else {
-        raw += char;
-        at++;
-      }
-    }
-    open = true;
-    segments.length = mark;
-    piped.length = mark;
-    return raw;
-  }
-  function read(nested) {
-    let raw = "";
-    let current = "";
-    let depth = 0;
-    const take = (piece) => {
-      current += piece;
-      raw += piece;
-    };
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (join && (char === "\\" || char === "`")) {
-        CONTINUATION2.lastIndex = at;
-        if (CONTINUATION2.test(text)) {
-          take(" ");
-          at = CONTINUATION2.lastIndex;
-          continue;
-        }
-      }
-      if (!blind) {
-        if ((char === "\\" || char === "`") && (next === '"' || next === "'" || next === char)) {
-          take(char + next);
-          at += 2;
-          continue;
-        }
-        if (char === "'") {
-          take(readSingle(false));
-          continue;
-        }
-        if (char === '"') {
-          take(readDouble());
-          continue;
-        }
-        if (char === "$" && next === "'") {
-          at++;
-          take(`$${readSingle(true)}`);
-          continue;
-        }
-        const arithmetic = char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
-        if (arithmetic !== -1) {
-          take(text.slice(at, arithmetic));
-          at = arithmetic;
-          continue;
-        }
-        if (char === "#" && (at === 0 || /[\s;&|(]/.test(text.charAt(at - 1)))) {
-          const end = text.indexOf(`
-`, at);
-          at = end === -1 ? text.length : end;
-          continue;
-        }
-      }
-      if (char === "<" && next === "<") {
-        HERE_DOC2.lastIndex = at;
-        const opener = HERE_DOC2.exec(text);
-        const word = opener?.[2] ?? opener?.[3] ?? opener?.[4];
-        if (opener !== null && word !== undefined) {
-          owed.push({ stripTabs: opener[1] === "-", script: readsStdinShell(current), word });
-          take(opener[0]);
-          at = HERE_DOC2.lastIndex;
-        } else {
-          take("<<");
-          at += 2;
-        }
-        continue;
-      }
-      if (char === "@" && (next === '"' || next === "'")) {
-        HERE_STRING2.lastIndex = at;
-        const quoted = HERE_STRING2.exec(text);
-        if (quoted !== null) {
-          take(`${next}${next}`);
-          at = HERE_STRING2.lastIndex;
-          continue;
-        }
-      }
-      if (SEPARATORS2.has(char)) {
-        const wasPiped = afterPipe;
-        push(current, wasPiped ? segments[segments.length - 1] ?? null : null);
-        afterPipe = char === "|";
-        if (nested && char === ")" && depth === 0) {
-          at++;
-          return { raw: `${raw})` };
-        }
-        if (nested && char === "(")
-          depth++;
-        if (nested && char === ")")
-          depth--;
-        current = "";
-        raw += char;
-        at++;
-        if (char === `
-`)
-          skipBodies();
-        continue;
-      }
-      take(char);
-      at++;
-    }
-    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
-    return { raw };
-  }
-  read(false);
-  return { open, piped, segments };
+  return [branch];
 }
-function shellSteps(command, { blindWhenOpen = false, joinLines = false } = {}) {
-  const read = lex2(command, { blind: false, join: joinLines });
-  const chosen = read.open && blindWhenOpen ? lex2(command, { blind: true, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+function protectedMatch(destination, protectedBranches) {
+  const name = destination.replace(/^refs\/heads\//, "");
+  if (!destination.includes("*"))
+    return protectedBranches.find((branch) => branch === name);
+  const glob = (pattern) => new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+  const asRef = glob(destination);
+  const asName = glob(name);
+  return protectedBranches.find((branch) => asRef.test(`refs/heads/${branch}`) || asName.test(branch));
 }
-var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
-var ASSIGNMENT2 = /^[A-Za-z_]\w*=/;
-var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
-var WRAPPERS = {
-  builtin: { long: [], short: "" },
-  command: { inert: ["-v", "-V"], long: [], short: "" },
-  env: { long: ["--unset", "--chdir", "--split-string"], short: "uCS" },
-  exec: { long: [], short: "a" },
-  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
-  nice: { long: ["--adjustment"], short: "n" },
-  nohup: { long: [], short: "" },
-  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
-  sudo: {
-    long: [
-      "--user",
-      "--group",
-      "--host",
-      "--prompt",
-      "--close-from",
-      "--chdir",
-      "--chroot",
-      "--command-timeout",
-      "--other-user"
-    ],
-    short: "ughpCDRTU"
-  },
-  time: { long: [], short: "" },
-  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
-  xargs: {
-    long: [
-      "--arg-file",
-      "--delimiter",
-      "--eof",
-      "--max-args",
-      "--max-chars",
-      "--max-lines",
-      "--max-procs",
-      "--replace",
-      "--process-slot-var"
-    ],
-    short: "adEILnPs"
-  }
-};
-var SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
-var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/;
-function programName(word) {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-}
-function shortFlags(arg, valued) {
-  let flags = "";
-  for (let i = 1;i < arg.length; i++) {
-    const letter = arg.charAt(i);
-    flags += letter;
-    if (valued.includes(letter))
-      return { flags, wantsNext: i === arg.length - 1 };
-  }
-  return { flags, wantsNext: false };
-}
-function isShort(arg) {
-  return /^-[^-]/.test(arg);
-}
-function afterWrapper(words, from, spec) {
-  let index = from;
-  while (index < words.length) {
-    const word = words[index] ?? "";
-    if (word === "--")
-      return index + 1;
-    if (!isShort(word) && !word.startsWith("--"))
+function pushQuestions(args, place, protectedBranches) {
+  const found = [];
+  const positional = [];
+  let dryRun = false;
+  let force = false;
+  let deleting = false;
+  let everyBranch = false;
+  let repo = null;
+  let repoGiven = false;
+  let tagsOnly = false;
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(i + 1));
       break;
-    const name = word.split("=")[0] ?? word;
-    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
-      return;
-    if (word.startsWith("--")) {
-      index += spec.long.includes(name) && !word.includes("=") ? 2 : 1;
-      continue;
-    }
-    index += shortFlags(word, spec.short).wantsNext ? 2 : 1;
-  }
-  return spec.skip?.(words[index] ?? "") === true ? index + 1 : index;
-}
-function wordsOf2(segment) {
-  const words = segment.match(/(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s"'])+/g) ?? [];
-  return words.map((word) => word.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g, (_, double, single) => double === undefined ? String(single) : double.replace(/\\(["\\$`])/g, "$1")));
-}
-function invocationOf2(words) {
-  let index = 0;
-  while (index < words.length) {
-    const word = words[index] ?? "";
-    if (ASSIGNMENT2.test(word) || KEYWORDS.has(word)) {
-      index++;
-      continue;
-    }
-    const spec = WRAPPERS[programName(word)];
-    if (spec === undefined)
-      break;
-    const after = afterWrapper(words, index + 1, spec);
-    if (after === undefined)
-      return;
-    index = after;
-  }
-  const first = words[index];
-  if (first === undefined)
-    return;
-  return { args: words.slice(index + 1), program: programName(first) };
-}
-function shellTakesStdin(args) {
-  let stdin = false;
-  let scriptFile = false;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    const redirection = REDIRECTION.exec(arg);
-    if (redirection !== null) {
-      if ((redirection[2] ?? "") === "")
-        index++;
-      if ((redirection[1] ?? "").startsWith("<<"))
-        stdin = true;
-      continue;
-    }
-    if (arg === "-") {
-      stdin = true;
-      continue;
     }
     if (arg.startsWith("--")) {
-      if (arg === "--init-file" || arg === "--rcfile")
-        index++;
-      continue;
+      if (longOption(arg, "--force", 6) || longOption(arg, "--force-if-includes", 9) || longOption(arg, "--force-with-lease", 9)) {
+        force = true;
+      }
+      if (longOption(arg, "--all", 4) || longOption(arg, "--mirror", 6))
+        everyBranch = true;
+      if (longOption(arg, "--dry-run", 4))
+        dryRun = true;
+      if (longOption(arg, "--tags", 4))
+        tagsOnly = true;
+      if (longOption(arg, "--delete", 5))
+        deleting = true;
+      if (longOption(arg, "--repo", 6)) {
+        repoGiven = true;
+        repo = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : args[i + 1] ?? null;
+      }
+      if (!arg.includes("=") && PUSH_VALUE_OPTIONS.some(([full, min]) => longOption(arg, full, min)))
+        i++;
+    } else if (isShort(arg)) {
+      const { flags, wantsNext } = shortFlags(arg, "o");
+      if (flags.includes("f"))
+        force = true;
+      if (flags.includes("n"))
+        dryRun = true;
+      if (flags.includes("d"))
+        deleting = true;
+      if (wantsNext)
+        i++;
+    } else {
+      positional.push(arg);
     }
-    if (isShort(arg) || arg.startsWith("+")) {
-      const letters = arg.replace(/^[-+]+/, "");
-      if (letters.includes("c"))
-        return false;
-      if (letters.includes("s"))
-        stdin = true;
-      if (letters === "o")
-        index++;
-      continue;
+  }
+  if (dryRun)
+    return found;
+  const given = repoGiven ? positional : positional.slice(1);
+  const remote = repoGiven ? repo : positional[0] ?? null;
+  const refspecs = given.length === 0 && !tagsOnly && !everyBranch ? place.bare(remote) : given;
+  if (force || refspecs.some((refspec) => refspec.startsWith("+"))) {
+    found.push("This is a force-push: it can overwrite commits that other people or other sessions " + "already pushed, and those commits can be lost. Approve only if you meant it.");
+  }
+  if (everyBranch) {
+    found.push(`\`git push --all\` / \`--mirror\` pushes every branch, ${protectedBranches.map((b) => `\`${b}\``).join(", ")} included.`);
+  }
+  const deleted = (deleting ? given : refspecs).map((refspec) => refspec.replace(/^\+/, "")).map((spec) => deleting ? spec : spec.startsWith(":") && spec.length > 1 ? spec.slice(1) : "").filter((name) => name !== "").map((name) => name.replace(/^refs\/heads\//, ""));
+  if (deleted.length > 0) {
+    found.push(`This deletes ${deleted.map((name) => `\`${name}\``).join(", ")} on the remote: the ` + "commits on it are gone for everyone, and a teammate may still be working on it. " + "Approve only if you meant to delete it.");
+  }
+  const targets = [];
+  for (const refspec of refspecs) {
+    const spec = refspec.replace(/^\+/, "");
+    const colon = spec.indexOf(":");
+    const destination = colon === -1 ? spec : spec.slice(colon + 1);
+    if (spec === ":") {
+      targets.push(...protectedBranches);
+    } else if (colon === -1 && (spec === "HEAD" || spec === "@")) {
+      const here = place.branch();
+      if (here !== undefined)
+        targets.push(here);
+    } else {
+      targets.push(destination);
     }
-    scriptFile = true;
   }
-  return stdin || !scriptFile;
-}
-function readsStdinShell(segment) {
-  const invocation = invocationOf2(wordsOf2(segment));
-  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
-}
-function writtenText(segment) {
-  const invocation = invocationOf2(wordsOf2(segment));
-  if (invocation === undefined || invocation.args.length === 0)
-    return null;
-  const text = invocation.args.join(" ");
-  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
-}
-function nestedCommand2(program, args, pipedFrom = null) {
-  if (SHELLS.has(program)) {
-    const at = args.findIndex((arg) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(arg));
-    if (at !== -1)
-      return args[at + 1];
-    if (!shellTakesStdin(args))
-      return;
-    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
-    if (here !== -1) {
-      const word = args[here] ?? "";
-      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
-    }
-    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
+  const protectedTarget = targets.map((target) => protectedMatch(target, protectedBranches)).find((match) => match !== undefined);
+  if (protectedTarget !== undefined) {
+    found.push(`This pushes straight to \`${protectedTarget}\`, a protected branch: work usually reaches ` + "it through a pull request. Approve only if you meant to push there.");
   }
-  if (program === "cmd") {
-    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
-  }
-  if (program === "powershell" || program === "pwsh") {
-    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
-  }
-  if (program === "eval" || program === "iex" || program === "invoke-expression") {
-    return args.join(" ");
-  }
-  return;
-}
-function programsOf(command) {
-  const found = [];
-  const walk = (line, depth) => {
-    for (const step of shellSteps(line, { blindWhenOpen: true, joinLines: true })) {
-      const invocation = invocationOf2(wordsOf2(step.text));
-      if (invocation === undefined)
-        continue;
-      found.push(invocation.program);
-      const inner = nestedCommand2(invocation.program, invocation.args, step.pipedFrom);
-      if (inner !== undefined && depth < MAX_NESTING2)
-        walk(inner, depth + 1);
-    }
-  };
-  walk(command, 0);
   return found;
+}
+function stashQuestions(args, sharedStash) {
+  const sub = args[0];
+  const named = args.slice(1).some((arg) => !arg.startsWith("-"));
+  if (sub === "clear") {
+    return [
+      "`git stash clear` throws away every stash for good: git cannot bring them back. " + "`git stash list` shows what they hold, `git stash show -p` one of them."
+    ];
+  }
+  if (sub === "drop" && !named) {
+    return [
+      "`git stash drop` with no stash named drops the newest one, whoever made it. " + "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean."
+    ];
+  }
+  if (!sharedStash)
+    return [];
+  const tagged = args.some((arg) => longOption(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
+  const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
+  const saveWithoutMessage = sub === "save" && !named;
+  if (sub !== "pop" && !untaggedPush && !saveWithoutMessage)
+    return [];
+  return [
+    "The git stash is shared by every worktree of this repo, so a bare `git stash` or " + "`git stash pop` can take or restore another session's work. A WIP commit is safer; " + "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`."
+  ];
+}
+function discardsChanges(sub, rest) {
+  if (sub === "switch") {
+    return rest.some((arg) => longOption(arg, "--force", 6) || longOption(arg, "--discard-changes", 8) || isShort(arg) && shortFlags(arg, "cC").flags.includes("f"));
+  }
+  if (sub === "checkout") {
+    const dashes = rest.indexOf("--");
+    const pathsGiven = dashes !== -1 && dashes < rest.length - 1;
+    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "bB").flags.includes("f"));
+    return pathsGiven || force || rest.slice(0, dashes === -1 ? undefined : dashes).includes(".");
+  }
+  const staged = rest.some((arg) => longOption(arg, "--staged", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("S"));
+  const worktree = rest.some((arg) => longOption(arg, "--worktree", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("W"));
+  return !staged || worktree;
+}
+function forceDeletesBranch(rest) {
+  const has = (long, min, short) => rest.some((arg) => long !== undefined && longOption(arg, long, min) || isShort(arg) && shortFlags(arg, "").flags.includes(short));
+  return has(undefined, 0, "D") || has("--delete", 5, "d") && has("--force", 6, "f");
+}
+var GIT_VALUE_OPTIONS = new Set([
+  "-C",
+  "-c",
+  "--attr-source",
+  "--config-env",
+  "--git-dir",
+  "--namespace",
+  "--super-prefix",
+  "--work-tree"
+]);
+var GIT_FLAGS = new Set([
+  "-P",
+  "-p",
+  "--bare",
+  "--glob-pathspecs",
+  "--icase-pathspecs",
+  "--literal-pathspecs",
+  "--no-advice",
+  "--no-lazy-fetch",
+  "--no-optional-locks",
+  "--no-pager",
+  "--no-replace-objects",
+  "--noglob-pathspecs",
+  "--paginate"
+]);
+var GIT_PRINTS = new Set([
+  "-h",
+  "-v",
+  "--exec-path",
+  "--help",
+  "--html-path",
+  "--info-path",
+  "--man-path",
+  "--version"
+]);
+function gitCalls(args) {
+  const dirs = [];
+  const config = new Map;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const name = arg.startsWith("--") ? arg.split("=")[0] ?? arg : arg;
+    const attached = arg.startsWith("--") && arg.includes("=");
+    if (arg === "-C") {
+      const dir = args[++index];
+      if (dir !== undefined)
+        dirs.push(dir);
+    } else if (arg === "-c" || name === "--config-env") {
+      const setting = attached ? arg.slice(name.length + 1) : args[++index] ?? "";
+      const equals = setting.indexOf("=");
+      const key = configKey(equals === -1 ? setting : setting.slice(0, equals));
+      config.set(key, arg === "-c" ? equals === -1 ? "true" : setting.slice(equals + 1) : null);
+    } else if (GIT_VALUE_OPTIONS.has(arg)) {
+      index++;
+    } else if (GIT_PRINTS.has(arg) || name === "--list-cmds") {
+      return [];
+    } else if (attached && GIT_VALUE_OPTIONS.has(name) || name === "--exec-path") {} else if (!GIT_FLAGS.has(arg) && arg.startsWith("-")) {
+      const later = args.slice(index + 1);
+      return later.flatMap((word, at) => word.startsWith("-") ? [] : [{ config, dirs: [...dirs], rest: later.slice(at + 1), sub: word }]);
+    } else if (!arg.startsWith("-")) {
+      return [{ config, dirs, rest: args.slice(index + 1), sub: arg }];
+    }
+  }
+  return [];
+}
+function gitQuestions(args, folder, run) {
+  return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+}
+function callQuestions(call, folder, run) {
+  const { options } = run;
+  const { rest, sub } = call;
+  if (sub === "push") {
+    const where = folder === null ? null : resolve5(folder, ...call.dirs);
+    const place = {
+      branch: () => where === null ? undefined : currentBranch(where, run),
+      bare: (remote) => {
+        const branch = where === null ? undefined : currentBranch(where, run);
+        if (where === null || branch === undefined)
+          return [];
+        return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
+      }
+    };
+    return pushQuestions(rest, place, options.protectedBranches);
+  }
+  if (sub === "stash")
+    return stashQuestions(rest, options.sharedStash);
+  if (sub === "worktree" && rest[0] === "remove") {
+    const force = rest.slice(1).some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
+    if (force) {
+      return [
+        "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " + "untracked work, and git cannot bring that back. Look in it first."
+      ];
+    }
+  }
+  if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
+    return [
+      `\`git ${sub}\` here overwrites files in this folder with another version, and any ` + "uncommitted change in them is lost for good. Approve only if you want them gone; a " + "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask."
+    ];
+  }
+  if (sub === "branch" && forceDeletesBranch(rest)) {
+    return [
+      "`git branch -D` deletes a branch even if it was never merged: its commits are then " + "only in the reflog. `git branch -d` deletes a merged branch, and does not ask."
+    ];
+  }
+  if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
+    return [
+      "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first."
+    ];
+  }
+  if (sub === "clean") {
+    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
+    const dryRun = rest.some((arg) => longOption(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
+    if (force && !dryRun) {
+      return [
+        "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting."
+      ];
+    }
+  }
+  return [];
+}
+function inspect2(command, cwd, reading, run, depth = 0) {
+  const found = [];
+  let folder = cwd;
+  const { dialect, joinLines } = reading;
+  for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined)
+      continue;
+    const { args, program } = invocation;
+    const operands = withoutRedirections(args);
+    if (program === "git")
+      found.push(...gitQuestions(operands, folder, run));
+    if (CHANGE_DIR.has(program))
+      folder = movedTo(program, folder, operands);
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING) {
+      for (const nested of readingsOf(inner, nestedDialect(program))) {
+        found.push(...inspect2(inner, folder, nested, run, depth + 1));
+      }
+    }
+  }
+  return found;
+}
+function guardQuestions(command, cwd, options) {
+  const run = { options, branches: new Map, pushConfigs: new Map };
+  const found = readingsOf(command, options.dialect).flatMap((reading) => inspect2(command, cwd, reading, run));
+  return [...new Set(found)];
+}
+function runsGit(command, dialect) {
+  return programsOf(command, dialect).includes("git");
 }
 
 // src/hooks/after-merge.ts
@@ -17514,55 +18063,72 @@ function call(fields = {}) {
     ...fields
   };
 }
-var CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
+var CHANGE_DIR2 = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
 var ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
 var GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
 var GH_POINTING = /^GH_(?:REPO|HOST)=/;
 var isAutoFlag = (word) => /^--auto(?:=|$)/.test(word);
 var isDisableAutoFlag = (word) => /^--disable-auto(?:=|$)/.test(word);
-function pullRequestMerges(command, aliases = null, depth = 0, movedBefore = null) {
+function pullRequestMerges(command, aliases = null, dialect) {
+  const seen = new Set;
+  const calls = [];
+  for (const reading of readingsOf(command, dialect)) {
+    for (const one of readMerges(command, reading.dialect, reading.joinLines, aliases, 0, null)) {
+      const key = JSON.stringify(one);
+      if (seen.has(key))
+        continue;
+      seen.add(key);
+      calls.push(one);
+    }
+  }
+  return calls;
+}
+function readMerges(command, dialect, joinLines, aliases, depth, movedBefore) {
   const calls = [];
   let moved = movedBefore;
-  for (const step of shellSteps(command, { joinLines: true })) {
-    const words = wordsOf2(step.text);
+  for (const step of shellSteps(command, { dialect, joinLines })) {
+    const words = wordsOf(step.text, dialect);
     if (words.some((word) => GH_POINTING_TEXT.test(word))) {
       moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
-    const invocation = invocationOf2(words);
+    const invocation = invocationOf(words);
     const runnerWord = RUNNERS[programName(words[0] ?? "")];
     if (invocation === undefined) {
       if (runnerWord !== undefined)
         moved ??= runnerWord.moved;
       continue;
     }
-    const { args, program } = invocation;
+    const { program } = invocation;
+    const args = withoutRedirections(invocation.args);
     if (program === "git")
       moved ??= gitMoved(args);
-    else if (CHANGE_DIR.has(program)) {
+    else if (CHANGE_DIR2.has(program)) {
       moved ??= `an earlier \`${program}\` in the same command changes the folder it runs in`;
     }
-    const runner = runnerOf(program, prefixWords(words, args));
+    const runner = runnerOf(program, invocation.prefix);
     if (runner === null && runnerWord !== undefined)
       moved ??= runnerWord.moved;
+    const prefix = prefixMoved(invocation.prefix);
     if (program === "gh" && runner === null) {
-      calls.push(...dispatch(args, moved ?? prefixMoved(words, args), aliases, depth));
+      calls.push(...dispatch(args, moved ?? prefix, aliases, depth));
       moved ??= ghSwitchReason(args, aliases, depth);
     } else if (runner !== null) {
-      calls.push(...runnerCalls(words, runner, moved ?? prefixMoved(words, args), aliases, depth));
+      calls.push(...runnerCalls(words, runner, aliases, depth, dialect));
     }
-    const inner = nestedCommand2(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING2) {
-      calls.push(...pullRequestMerges(inner, aliases, depth + 1, moved));
+    const nested = nestedCommand(program, invocation.args, step.pipedFrom);
+    if (nested !== undefined && depth < MAX_NESTING) {
+      calls.push(...lineMerges(nested, nestedDialect(program), aliases, depth + 1, moved));
     }
     const script = suScript(program, args);
-    if (script !== undefined && depth < MAX_NESTING2) {
-      calls.push(...runnerCallsOfScript(script, runner ?? SU_RUNNER, moved, aliases, depth));
+    if (script !== undefined && depth < MAX_NESTING) {
+      const merges = lineMerges(script, "bash", aliases, depth + 1, moved);
+      calls.push(...refuseRunner(merges, runner ?? SU_RUNNER));
     }
   }
   return calls;
 }
-function prefixWords(words, args) {
-  return words.slice(0, Math.max(0, words.length - args.length - 1));
+function lineMerges(line, dialect, aliases, depth, moved) {
+  return readingsOf(line, dialect).flatMap((reading) => readMerges(line, reading.dialect, reading.joinLines, aliases, depth, moved));
 }
 function suScript(program, args) {
   if (program !== "su")
@@ -17621,45 +18187,32 @@ function runnerOf(program, before) {
   }
   return null;
 }
-function runnerCalls(words, runner, moved, aliases, depth) {
+function runnerCalls(words, runner, aliases, depth, dialect) {
   const at = words.findIndex((word) => programName(word) === "gh");
-  if (at !== -1)
-    return refuseRunner(dispatch(words.slice(at + 1), null, aliases, depth), runner);
+  if (at !== -1) {
+    const ghWords = withoutRedirections(words.slice(at + 1));
+    return refuseRunner(dispatch(ghWords, null, aliases, depth), runner);
+  }
   const held = words.find((word) => /\bgh\b/i.test(word) && /\bmerge\b/i.test(word));
   if (held === undefined)
     return [];
-  return refuseRunner(pullRequestMerges(held, aliases, depth + 1, moved), runner);
-}
-function runnerCallsOfScript(script, runner, moved, aliases, depth) {
-  return refuseRunner(pullRequestMerges(script, aliases, depth + 1, moved), runner);
+  return refuseRunner(lineMerges(held, dialect, aliases, depth + 1, null), runner);
 }
 function refuseRunner(calls, runner) {
   return calls.filter((one) => !one.disarms).map((one) => call({ target: runner.feeds ? null : one.target, refusal: runner.reason }));
 }
 function gitMoved(args) {
-  let index = 0;
-  let otherFolder = false;
-  for (;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-C") {
-      otherFolder = true;
-      index += 1;
-    } else if (["--git-dir", "--namespace", "--work-tree", "-c"].includes(arg)) {
-      index += 1;
-    } else if (!arg.startsWith("-")) {
-      break;
-    }
-  }
-  if (otherFolder)
+  const calls = gitCalls(args);
+  if (calls.some((one) => one.dirs.length > 0)) {
     return "an earlier `git -C` in the same command runs in another folder";
-  const sub = args[index];
-  if (sub === "switch" || sub === "checkout") {
-    return `an earlier \`git ${sub}\` in the same command may change the branch it merges from`;
+  }
+  const switched = calls.find((one) => one.sub === "switch" || one.sub === "checkout");
+  if (switched !== undefined) {
+    return `an earlier \`git ${switched.sub}\` in the same command may change the branch it merges from`;
   }
   return null;
 }
-function prefixMoved(words, args) {
-  const before = words.slice(0, Math.max(0, words.length - args.length - 1));
+function prefixMoved(before) {
   if (before.some((word) => GH_POINTING.test(word))) {
     return "the merge sets `GH_REPO`/`GH_HOST` itself, so which repository it merges in is not certain";
   }
@@ -17737,17 +18290,17 @@ function dispatch(words, moved, aliases, depth, repo = null) {
       call({ refusal: `\`gh ${command}\` is a shell alias, so what it runs cannot be read` })
     ];
   }
-  if (depth >= MAX_NESTING2) {
+  if (depth >= MAX_NESTING) {
     return [
       call({
         refusal: `\`gh ${command}\` expands to further commands, which this guard does not follow`
       })
     ];
   }
-  return dispatch([...wordsOf2(expansion), ...rest], moved, aliases, depth + 1, carried);
+  return dispatch([...wordsOf(expansion), ...rest], moved, aliases, depth + 1, carried);
 }
 function ghSwitchReason(words, aliases, depth) {
-  if (depth > MAX_NESTING2)
+  if (depth > MAX_NESTING)
     return null;
   const leading = leadingFlags(words);
   if (leading.unknown !== null)
@@ -17768,7 +18321,7 @@ function ghSwitchReason(words, aliases, depth) {
   const expansion = aliases?.get(command);
   if (expansion === undefined || expansion.startsWith("!"))
     return null;
-  return ghSwitchReason([...wordsOf2(expansion), ...args], aliases, depth + 1);
+  return ghSwitchReason([...wordsOf(expansion), ...args], aliases, depth + 1);
 }
 function prCalls(rest, moved, carried) {
   let repo = null;
@@ -18002,15 +18555,15 @@ function pullRequestMergePath(endpoint) {
     repo: placeholder(owner) || placeholder(name) ? null : `${owner}/${name}`
   };
 }
-function mergeCalls(command, folder, env, timeoutMs = ALIAS_TIMEOUT_MS) {
-  const unread = pullRequestMerges(command);
+function mergeCalls(command, folder, env, timeoutMs = ALIAS_TIMEOUT_MS, dialect) {
+  const unread = pullRequestMerges(command, null, dialect);
   if (!unread.some((one) => one.unknown !== null))
     return unread;
   const aliases = readGhAliases(folder, env, timeoutMs);
   if (aliases === null) {
     return [...unread.filter((one) => one.unknown === null), call({ unread: "its aliases" })];
   }
-  return pullRequestMerges(command, aliases);
+  return pullRequestMerges(command, aliases, dialect);
 }
 var GH_TIMEOUT_MS = 1e4;
 var ALIAS_TIMEOUT_MS = 3000;
@@ -18063,11 +18616,11 @@ function unquoteYaml(value) {
     return null;
   return value;
 }
-function mergesPullRequest(command) {
-  return pullRequestMerges(command).some((one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null));
+function mergesPullRequest(command, dialect) {
+  return pullRequestMerges(command, null, dialect).some((one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null));
 }
-function requestsMerge(command) {
-  return pullRequestMerges(command).some((one) => !one.disarms);
+function requestsMerge(command, dialect) {
+  return pullRequestMerges(command, null, dialect).some((one) => !one.disarms);
 }
 function mergeTargetOf(calls) {
   const named = calls.filter((one) => one.target !== null);
@@ -18184,7 +18737,8 @@ function afterMerge(context) {
   const command = stringField(toolInput(input).command);
   if (command === null)
     return SILENT;
-  const calls = mergeCalls(command, cwd, env).filter((one) => !one.arms && !one.disarms);
+  const dialect = dialectOfTool(input.tool_name);
+  const calls = mergeCalls(command, cwd, env, ALIAS_TIMEOUT_MS, dialect).filter((one) => !one.arms && !one.disarms);
   const target = mergeTargetOf(calls);
   if (target === null)
     return SILENT;
@@ -18401,7 +18955,7 @@ var WORKER_KIND_NAMES = Object.keys(WORKER_KINDS);
 
 // src/hooks/agent-guard-workflows.ts
 import { existsSync as existsSync33, readdirSync as readdirSync11, readFileSync as readFileSync35, statSync as statSync9 } from "fs";
-import { dirname as dirname11, isAbsolute, join as join29, resolve as resolve5, sep as sep3 } from "path";
+import { dirname as dirname11, isAbsolute as isAbsolute2, join as join29, resolve as resolve6, sep as sep3 } from "path";
 var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
 function stringAt(text, from) {
   const quote = text[from];
@@ -18564,12 +19118,12 @@ function normalized(text) {
 `);
 }
 function scriptAtPath(path, cwd) {
-  if (cwd === "" && !isAbsolute(path)) {
+  if (cwd === "" && !isAbsolute2(path)) {
     return {
       unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
     };
   }
-  const file = resolve5(cwd, path);
+  const file = resolve6(cwd, path);
   let size;
   try {
     const stat = statSync9(file);
@@ -18613,7 +19167,7 @@ function claiming(files, name) {
   }
   return found;
 }
-function oneOf(found, name) {
+function oneOf2(found, name) {
   const [first] = found;
   if (first === undefined)
     return null;
@@ -18626,8 +19180,8 @@ function oneOf(found, name) {
 }
 function savedFolders(place) {
   const folders = [];
-  let at = resolve5(place.cwd);
-  const home = resolve5(place.home);
+  let at = resolve6(place.cwd);
+  const home = resolve6(place.home);
   while (place.cwd !== "" && at !== home) {
     folders.push(join29(at, ".claude", "workflows"));
     if (existsSync33(join29(at, ".git")))
@@ -18646,8 +19200,8 @@ function noFile(name) {
   };
 }
 function within(folder, inside) {
-  const root = resolve5(inside);
-  const path = resolve5(folder);
+  const root = resolve6(inside);
+  const path = resolve6(folder);
   return path === root || path.startsWith(root.endsWith(sep3) ? root : `${root}${sep3}`);
 }
 function pluginFolder(plugin, place) {
@@ -18670,7 +19224,7 @@ function pluginWorkflowFiles(root) {
   if (paths === null)
     return workflowFiles(join29(root, "workflows"));
   return paths.filter((one) => typeof one === "string").flatMap((one) => {
-    const path = resolve5(root, one);
+    const path = resolve6(root, one);
     try {
       if (statSync9(path).isDirectory())
         return workflowFiles(path);
@@ -18691,12 +19245,12 @@ function scriptByName(name, place) {
         unreadable: `The workflow \`${name}\` belongs to the plugin \`${plugin}\`, and Claude Code's installed_plugins.json names no installed folder for it.`
       };
     }
-    return oneOf(claiming(pluginWorkflowFiles(root), own), name) ?? {
+    return oneOf2(claiming(pluginWorkflowFiles(root), own), name) ?? {
       unreadable: `The workflow \`${name}\`: the plugin's folder \`${root}\` holds no workflow named \`${own}\`.`
     };
   }
   for (const folder of savedFolders(place)) {
-    const found = oneOf(claiming(workflowFiles(folder), name), name);
+    const found = oneOf2(claiming(workflowFiles(folder), name), name);
     if (found !== null)
       return found;
   }
@@ -19802,246 +20356,6 @@ function fableSession(input, env, paths) {
   return systemMessage(fableSessionMessage(fableSessionModelName(real)));
 }
 
-// src/hooks/git-guard.ts
-import { isAbsolute as isAbsolute2, resolve as resolve6 } from "path";
-var DEFAULT_PROTECTED_BRANCHES = ["main"];
-var PUSH_VALUE_OPTIONS = [
-  ["--exec", 4],
-  ["--push-option", 4],
-  ["--receive-pack", 5],
-  ["--repo", 6]
-];
-var CHANGE_DIR2 = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
-function longOption(arg, full, min) {
-  const name = arg.split("=")[0] ?? arg;
-  return name.length >= min && name.length <= full.length && full.startsWith(name);
-}
-function movedTo(program, folder, args) {
-  if (program === "popd")
-    return null;
-  const target = args.find((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
-  if (target === undefined || /^[~%]|[$`]/.test(target))
-    return null;
-  const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
-  if (isAbsolute2(path))
-    return resolve6(path);
-  return folder === null ? null : resolve6(folder, path);
-}
-function currentBranch(folder, dir, env) {
-  if (folder === null)
-    return;
-  const where = dir === undefined ? folder : resolve6(folder, dir);
-  const run = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], env, GUARD_GIT_TIMEOUT_MS);
-  return run.ok && run.out !== "" ? run.out : undefined;
-}
-function pushQuestions(args, branchHere, protectedBranches) {
-  const found = [];
-  const positional = [];
-  let dryRun = false;
-  let force = false;
-  let deleting = false;
-  let everyBranch = false;
-  let repoGiven = false;
-  let tagsOnly = false;
-  for (let i = 0;i < args.length; i++) {
-    const arg = args[i] ?? "";
-    if (arg === "--") {
-      positional.push(...args.slice(i + 1));
-      break;
-    }
-    if (arg.startsWith("--")) {
-      if (longOption(arg, "--force", 6) || longOption(arg, "--force-if-includes", 9) || longOption(arg, "--force-with-lease", 9)) {
-        force = true;
-      }
-      if (longOption(arg, "--all", 4) || longOption(arg, "--mirror", 6))
-        everyBranch = true;
-      if (longOption(arg, "--dry-run", 4))
-        dryRun = true;
-      if (longOption(arg, "--tags", 4))
-        tagsOnly = true;
-      if (longOption(arg, "--delete", 5))
-        deleting = true;
-      if (longOption(arg, "--repo", 6))
-        repoGiven = true;
-      if (!arg.includes("=") && PUSH_VALUE_OPTIONS.some(([full, min]) => longOption(arg, full, min)))
-        i++;
-    } else if (isShort(arg)) {
-      const { flags, wantsNext } = shortFlags(arg, "o");
-      if (flags.includes("f"))
-        force = true;
-      if (flags.includes("n"))
-        dryRun = true;
-      if (flags.includes("d"))
-        deleting = true;
-      if (wantsNext)
-        i++;
-    } else {
-      positional.push(arg);
-    }
-  }
-  if (dryRun)
-    return found;
-  const refspecs = repoGiven ? positional : positional.slice(1);
-  if (force || refspecs.some((refspec) => refspec.startsWith("+"))) {
-    found.push("This is a force-push: it can overwrite commits that other people or other sessions " + "already pushed, and those commits can be lost. Approve only if you meant it.");
-  }
-  if (everyBranch) {
-    found.push(`\`git push --all\` / \`--mirror\` pushes every branch, ${protectedBranches.map((b) => `\`${b}\``).join(", ")} included.`);
-  }
-  const deleted = refspecs.map((refspec) => refspec.replace(/^\+/, "")).map((spec) => deleting ? spec : spec.startsWith(":") && spec.length > 1 ? spec.slice(1) : "").filter((name) => name !== "").map((name) => name.replace(/^refs\/heads\//, ""));
-  if (deleted.length > 0) {
-    found.push(`This deletes ${deleted.map((name) => `\`${name}\``).join(", ")} on the remote: the ` + "commits on it are gone for everyone, and a teammate may still be working on it. " + "Approve only if you meant to delete it.");
-  }
-  const targets = [];
-  for (const refspec of refspecs) {
-    const spec = refspec.replace(/^\+/, "");
-    const colon = spec.indexOf(":");
-    const destination = colon === -1 ? spec : spec.slice(colon + 1);
-    if (colon === -1 && (spec === "HEAD" || spec === "@")) {
-      const here = branchHere();
-      if (here !== undefined)
-        targets.push(here);
-    } else {
-      targets.push(destination.replace(/^refs\/heads\//, ""));
-    }
-  }
-  if (refspecs.length === 0 && !tagsOnly) {
-    const here = branchHere();
-    if (here !== undefined)
-      targets.push(here);
-  }
-  const protectedTarget = targets.find((target) => protectedBranches.includes(target));
-  if (protectedTarget !== undefined) {
-    found.push(`This pushes straight to \`${protectedTarget}\`, a protected branch: work usually reaches ` + "it through a pull request. Approve only if you meant to push there.");
-  }
-  return found;
-}
-function stashQuestions(args, sharedStash) {
-  const sub = args[0];
-  const named = args.slice(1).some((arg) => !arg.startsWith("-"));
-  if (sub === "clear") {
-    return [
-      "`git stash clear` throws away every stash for good: git cannot bring them back. " + "`git stash list` shows what they hold, `git stash show -p` one of them."
-    ];
-  }
-  if (sub === "drop" && !named) {
-    return [
-      "`git stash drop` with no stash named drops the newest one, whoever made it. " + "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean."
-    ];
-  }
-  if (!sharedStash)
-    return [];
-  const tagged = args.some((arg) => longOption(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
-  const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
-  const saveWithoutMessage = sub === "save" && !named;
-  if (sub !== "pop" && !untaggedPush && !saveWithoutMessage)
-    return [];
-  return [
-    "The git stash is shared by every worktree of this repo, so a bare `git stash` or " + "`git stash pop` can take or restore another session's work. A WIP commit is safer; " + "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`."
-  ];
-}
-function discardsChanges(sub, rest) {
-  if (sub === "switch") {
-    return rest.some((arg) => longOption(arg, "--force", 6) || longOption(arg, "--discard-changes", 8) || isShort(arg) && shortFlags(arg, "cC").flags.includes("f"));
-  }
-  if (sub === "checkout") {
-    const dashes = rest.indexOf("--");
-    const pathsGiven = dashes !== -1 && dashes < rest.length - 1;
-    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "bB").flags.includes("f"));
-    return pathsGiven || force || rest.slice(0, dashes === -1 ? undefined : dashes).includes(".");
-  }
-  const staged = rest.some((arg) => longOption(arg, "--staged", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("S"));
-  const worktree = rest.some((arg) => longOption(arg, "--worktree", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("W"));
-  return !staged || worktree;
-}
-function forceDeletesBranch(rest) {
-  const has = (long, min, short) => rest.some((arg) => long !== undefined && longOption(arg, long, min) || isShort(arg) && shortFlags(arg, "").flags.includes(short));
-  return has(undefined, 0, "D") || has("--delete", 5, "d") && has("--force", 6, "f");
-}
-function gitQuestions(args, folder, options) {
-  let dir;
-  let index = 0;
-  for (;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-C")
-      dir = args[++index];
-    else if (["--git-dir", "--namespace", "--work-tree", "-c"].includes(arg))
-      index++;
-    else if (!arg.startsWith("-"))
-      break;
-  }
-  const sub = args[index];
-  const rest = args.slice(index + 1);
-  if (sub === "push") {
-    return pushQuestions(rest, () => currentBranch(folder, dir, options.env), options.protectedBranches);
-  }
-  if (sub === "stash")
-    return stashQuestions(rest, options.sharedStash);
-  if (sub === "worktree" && rest[0] === "remove") {
-    const force = rest.slice(1).some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
-    if (force) {
-      return [
-        "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " + "untracked work, and git cannot bring that back. Look in it first."
-      ];
-    }
-  }
-  if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return [
-      `\`git ${sub}\` here overwrites files in this folder with another version, and any ` + "uncommitted change in them is lost for good. Approve only if you want them gone; a " + "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask."
-    ];
-  }
-  if (sub === "branch" && forceDeletesBranch(rest)) {
-    return [
-      "`git branch -D` deletes a branch even if it was never merged: its commits are then " + "only in the reflog. `git branch -d` deletes a merged branch, and does not ask."
-    ];
-  }
-  if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
-    return [
-      "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first."
-    ];
-  }
-  if (sub === "clean") {
-    const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
-    const dryRun = rest.some((arg) => longOption(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
-    if (force && !dryRun) {
-      return [
-        "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting."
-      ];
-    }
-  }
-  return [];
-}
-function inspect2(command, cwd, joinLines, options, depth = 0) {
-  const found = [];
-  let folder = cwd;
-  for (const step of shellSteps(command, { blindWhenOpen: true, joinLines })) {
-    const invocation = invocationOf2(wordsOf2(step.text));
-    if (invocation === undefined)
-      continue;
-    const { args, program } = invocation;
-    if (program === "git")
-      found.push(...gitQuestions(args, folder, options));
-    if (CHANGE_DIR2.has(program))
-      folder = movedTo(program, folder, args);
-    const inner = nestedCommand2(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING2) {
-      found.push(...inspect2(inner, folder, joinLines, options, depth + 1));
-    }
-  }
-  return found;
-}
-function guardQuestions(command, cwd, options) {
-  const continues = /[\\`][ \t]*\r?\n/.test(command);
-  const found = [
-    ...inspect2(command, cwd, false, options),
-    ...continues ? inspect2(command, cwd, true, options) : []
-  ];
-  return [...new Set(found)];
-}
-function runsGit(command) {
-  return programsOf(command).includes("git");
-}
-
 // src/hooks/job-route.ts
 var PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 var SHELL_MEANING = /[$`*?[\]{}~<>|&;\n\\]/;
@@ -20843,12 +21157,13 @@ function numericRef(ref) {
 function mergeGuard(context) {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
-  if (command === null || !requestsMerge(command))
+  const dialect = dialectOfTool(input.tool_name);
+  if (command === null || !requestsMerge(command, dialect))
     return SILENT;
   const config = project.config;
   if (config === null)
     return SILENT;
-  const admin = adminMerge(pullRequestMerges(command));
+  const admin = adminMerge(pullRequestMerges(command, null, dialect));
   if (admin !== undefined) {
     return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
   }
@@ -20885,7 +21200,7 @@ function mergeGuard(context) {
     if (off !== null)
       return toolDecision("ask", notByItself(off));
   }
-  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS)).filter((one) => !one.disarms);
+  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect).filter((one) => !one.disarms);
   const defaultBranches = new Map;
   let own = null;
   let ownRead = false;
@@ -21077,7 +21392,6 @@ async function reviewRecord(context) {
   }
   return SILENT;
 }
-
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync43, statSync as statSync12 } from "fs";
 import { basename as basename6, isAbsolute as isAbsolute4, join as join39, resolve as resolve9 } from "path";

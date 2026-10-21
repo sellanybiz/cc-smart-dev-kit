@@ -379,13 +379,22 @@ Optional. Unknown fields are an error that names the file and the field.
 
 `classifyHeavyCommand(bashCommand, kinds)` (`src/jobs/classify.ts`) says which kind a
 Bash command runs, or null: it is what the `job-route` hook routes by (§ The route).
-It reads the line with the shell lexer (`src/shell/command.ts`): a tool inside quotes,
-an `echo`, a here-doc, a comment or a commit message is text, not a run. It finds the
-tool behind `bunx`, `bun x`, `bun run`, `bun <name>`, `npx`, `npm exec`, `npm run`,
-`pnpm`, `yarn`, `node_modules/.bin/` paths, `node <script path>`, and the wrappers `time`,
-`timeout`, `nice`, `env`, `sudo`, `bash -c`. When a line runs several heavy steps, it
-names the one that reserves the most. It reads no file: a `package.json` script is found
-only through a kind's `{ "script": "<name>" }` rule.
+It reads the line with the one shell reader the guards use too (`src/shell/command.ts`), so
+the queue and the guards see the same commands: a tool inside quotes, an `echo`, a quoted
+here-doc, a comment or a commit message is text, not a run; a substitution (`$( … )`, a
+backtick, the body of an unquoted here-doc) is a run. It finds the tool behind `bunx`,
+`bun x`, `bun run`, `bun <name>`, `npx`, `npm exec`, `npm run`, `pnpm`, `yarn`,
+`node_modules/.bin/` paths and `node <script path>`; behind a shell keyword (`if`, `while`,
+`!`); behind the wrappers `time`, `timeout`, `nice`, `ionice`, `nohup`, `stdbuf`, `env`,
+`sudo`, `doas`, `exec`, `command`, `builtin` and `xargs`, **with their own options**
+(`time -p`, `env -i`, `env -u HOME`, `sudo -u x`, `timeout -s KILL 60`); inside
+`bash -c '…'` (`-c` among other options, `--` too), `env -S '…'`, a here-doc or a pipe fed
+to a shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). A line with a
+wrapper or a keyword goes through the person's shell (§ The route), since only the first
+word of argv words is run as the program. When a line runs several heavy steps, it names
+the one that reserves the most. It reads no file: a `package.json` script is found only
+through a kind's `{ "script": "<name>" }` rule. Every case is pinned in
+`src/jobs/shell-parity.test.ts`.
 
 ## Limits
 

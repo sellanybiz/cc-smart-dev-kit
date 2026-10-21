@@ -52,9 +52,9 @@
  * Everything it reads is read-only — `gh pr view`, `gh repo view`, `gh pr checks`, `gh alias
  * list` when a `gh <word>` needs it — and a `gh` that is missing, fails, or answers
  * something it cannot read **asks instead of guessing**: a guard fails closed. Those calls
- * run only for a command that really asks for a merge (the line is read with the one lexer
- * every guard uses, `shell-command.ts`, through `after-merge.ts`), so an ordinary Bash call
- * pays nothing and touches no network.
+ * run only for a command that really asks for a merge (the line is read with the one shell
+ * reader every guard uses, `src/shell/command.ts`, through `after-merge.ts`, in the dialect
+ * of the tool that runs it), so an ordinary Bash call pays nothing and touches no network.
  *
  * Timeouts: each `gh` call gets 10 s and this hook has 30 s of its own
  * (`plugin/hooks/hooks.json`). A one-merge command reads three facts; a command that merges
@@ -63,6 +63,7 @@
  */
 import type { CcSmartDevKitConfig } from "../project/config";
 import type { Project } from "../project/resolve";
+import { dialectOfTool } from "../shell/command";
 import { autoMergeOff, autoMergeRefusal } from "../workflow/auto-merge";
 import { type GateRead, resolveGate } from "../workflow/resolve";
 import { hasReview, reviewsFile } from "../workflow/reviews";
@@ -406,8 +407,10 @@ function numericRef(ref: string | null): number | null {
 export function mergeGuard(context: HookContext): HookResult {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
+  // The line in the dialect of the tool that runs it: Bash and PowerShell quote differently.
+  const dialect = dialectOfTool(input.tool_name);
   // The cheap pure read first: an ordinary Bash call finds nothing here and pays nothing.
-  if (command === null || !requestsMerge(command)) return SILENT;
+  if (command === null || !requestsMerge(command, dialect)) return SILENT;
   const config: CcSmartDevKitConfig | null = project.config;
   // A project that never opted in must not notice the plugin (`.claude/rules/hooks.md`):
   // the policy it would judge with lives in the project's own file.
@@ -415,7 +418,7 @@ export function mergeGuard(context: HookContext): HookResult {
   // `--admin` asks whatever the policy says, so it is read first, from the line alone: no
   // policy, no gh, and the question names the real risk even where the policy would ask anyway.
   // (A merge an alias runs is read below, once its expansion is known.)
-  const admin = adminMerge(pullRequestMerges(command));
+  const admin = adminMerge(pullRequestMerges(command, null, dialect));
   if (admin !== undefined) {
     return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
   }
@@ -463,7 +466,7 @@ export function mergeGuard(context: HookContext): HookResult {
 
   // Every merge the command runs, in order, its aliases read when a `gh <word>` needs them.
   // A `--disable-auto` takes an armed merge back: it merges nothing, so it is not judged.
-  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS)).filter(
+  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect).filter(
     (one) => !one.disarms,
   );
   const defaultBranches = new Map<string, string | null>();

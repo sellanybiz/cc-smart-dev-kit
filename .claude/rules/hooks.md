@@ -286,6 +286,24 @@ goes into the session's context.
   the programs of the command line), so a live check proves a guard **answered**, not only
   that it ran. It never changes the answer, and never goes on stdout.
 
+## Reading a shell line: one reader
+
+Every hook that asks what a Bash or PowerShell line runs reads it with `src/shell/command.ts`
+(the git guard, the merge reader in `after-merge.ts`, job-route, the classifier). Never write a
+second lexer or a split on `;` beside it: a guard and the queue must see the same commands.
+
+- **The dialect comes from the input's `tool_name`** (`dialectOfTool`): Bash and PowerShell
+  quote differently (`"C:\repo\"` ends at its last quote only in PowerShell). Not told the
+  tool, a guard reads both (`readingsOf`); PowerShell runs nothing of a line with a bare `<`,
+  so a bash here-doc read that way adds no question.
+- **A guard reads every way a line may run**: both dialects when unknown, joined at a
+  trailing escape and not, and blind when a quote never closes. A check for something
+  that RAN (the after-merge note) reads the open quote as text.
+- **A new spelling that gets past a guard is fixed in the reader**, with a test named after
+  the finding, never with a special case in one guard.
+- A 64 KB line stays well inside the guard's time (`git-guard.test.ts`): no step may cost
+  more than linear time, and git is asked once a folder per run.
+
 ## Timeouts
 
 - Set `timeout` (seconds) on every hook in `hooks.json`. Do not rely on Claude Code's default.

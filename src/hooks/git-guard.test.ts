@@ -10,8 +10,9 @@ import { afterAll, beforeAll, describe, expect, test as it } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import type { Dialect } from "../shell/command";
 import { hookEnv, makeRepo, runHook, wireProjectHook, writeClaudeFile } from "../testing/hooks";
-import { cleanGitEnv, git } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
 import { gitGuardHook } from "./specs";
 
@@ -37,9 +38,18 @@ afterAll(() => rmSync(base, { recursive: true, force: true }));
 
 const OPTIONS = { protectedBranches: ["dev", "main"], sharedStash: true };
 
-/** The one question string the hook would ask, or undefined when it asks nothing. */
-function guard(command: string, cwd: string = neutral, sharedStash = true): string | undefined {
-  const questions = guardQuestions(command, cwd, { ...OPTIONS, sharedStash, env: cleanGitEnv() });
+/**
+ * The one question string the hook would ask, or undefined when it asks nothing. `dialect`:
+ * the tool's (`Bash` or `PowerShell`); not given, the guard reads the line both ways.
+ */
+function guard(
+  command: string,
+  cwd: string = neutral,
+  sharedStash = true,
+  dialect?: Dialect,
+): string | undefined {
+  const env = cleanGitEnv();
+  const questions = guardQuestions(command, cwd, { ...OPTIONS, sharedStash, env, dialect });
   return questions.length === 0 ? undefined : questions.join("\n");
 }
 
@@ -246,12 +256,13 @@ describe("a heredoc or here-string body is data, whatever its last line ends in"
       "git commit -F - <<'EOF'\nfix\n\ngit push --force is gone\nRun `bun run test`\nEOF",
     ],
     ["backslash", "git commit -F - <<'EOF'\nfix\n\ngit reset --hard is gone\nSee C:\\work\\\nEOF"],
-    [
-      "PowerShell here-string, backtick, with an apostrophe",
-      "git commit -m @'\nIt's fixed\ngit stash pop is gone\nRun `bun run test`\n'@",
-    ],
   ])("lets a body ending in a %s through", (_name, command) => {
     expect(guard(command)).toBeUndefined();
+  });
+
+  it("lets a PowerShell here-string through in the PowerShell tool, an apostrophe and a backtick in it", () => {
+    const command = "git commit -m @'\nIt's fixed\ngit stash pop is gone\nRun `bun run test`\n'@";
+    expect(guard(command, neutral, true, "powershell")).toBeUndefined();
   });
 
   it("still reads a real command after such a body", () => {
@@ -674,5 +685,193 @@ describe("the hook", () => {
     wireProjectHook(repo, "PreToolUse", "Bash", "settings.local.json");
     const result = await runHook(gitGuardHook, input(repo, "git push -f"), hookEnv());
     expect(result.stdout).toContain('"permissionDecision":"ask"');
+  });
+});
+
+/** Every hook in `hooks.json` gets 10 s; the guard must answer well within that. */
+const GUARD_TIME_LIMIT_MS = 3_000;
+
+/** The force-push question's own words. */
+const FORCE = "This is a force-push";
+
+describe("the guard bypasses of the 0.6.0 audit: each spelling asks", () => {
+  const asks = (command: string, dialect?: Dialect) => guard(command, neutral, true, dialect);
+
+  it("HK-2: a command inside an unquoted here-doc body is read", () => {
+    expect(asks("cat <<EOF\n$(git push --force origin x)\nEOF")).toContain(FORCE);
+    expect(asks("git commit -F - <<EOF\nfix: `git reset --hard`\nEOF")).toContain("reset --hard");
+    // With no closing line bash still expands the body, to the end of the text.
+    expect(asks("cat <<EOF\n$(git push --force origin x)")).toContain(FORCE);
+    // A quoted word, in any of its spellings, keeps the body text.
+    expect(asks("cat <<'EOF'\n$(git push --force origin x)\nEOF")).toBeUndefined();
+    expect(asks('cat <<"EOF"\n$(git push --force origin x)\nEOF')).toBeUndefined();
+    expect(asks("cat <<\\EOF\n$(git push --force origin x)\nEOF")).toBeUndefined();
+    expect(asks('cat <<E"O"F\n$(git push --force origin x)\nEOF')).toBeUndefined();
+  });
+
+  it("HK-3: a PowerShell line is read with PowerShell's quoting", () => {
+    // A backslash is a plain character in PowerShell, so each path ends at its quote.
+    const paths = 'cd "C:\\a\\"; git push --force origin x; cd "C:\\b\\"';
+    expect(asks(paths, "powershell")).toContain(FORCE);
+    // `<# … #>` is a block comment; the command after it runs.
+    expect(asks("<# tidy up #> git push --force origin x", "powershell")).toContain(FORCE);
+    // A typographic quote closes a string in PowerShell.
+    const typographic = "echo 'a\u2018 ; git push --force origin x ; \u2018b'";
+    expect(asks(typographic, "powershell")).toContain(FORCE);
+    // `@"…"@` expands its `$( … )`; `@'…'@` does not.
+    expect(asks('echo @"\n$(git push --force origin x)\n"@', "powershell")).toContain(FORCE);
+    expect(asks("echo @'\n$(git push --force origin x)\n'@", "powershell")).toBeUndefined();
+    // Not told the tool, the guard reads both ways: PowerShell's reading finds it.
+    expect(asks(paths)).toContain(FORCE);
+  });
+
+  it("HK-4: a brace inside a word does not cut the line", () => {
+    expect(asks("git push origin HEAD@{0}:main")).toContain("straight to `main`");
+    expect(asks("f(){ git push --force origin x; }; f")).toContain(FORCE);
+  });
+
+  it("HK-7: git's own options that take a value, and one the guard does not know", () => {
+    expect(asks("git --config-env x.y=HOME push --force origin x")).toContain(FORCE);
+    expect(asks("git --config-env=x.y=HOME push --force origin x")).toContain(FORCE);
+    expect(asks("git --attr-source HEAD push --force origin x")).toContain(FORCE);
+    expect(asks("git --future-option some-value push --force origin x")).toContain(FORCE);
+    expect(asks("git --no-pager -P push --force origin x")).toContain(FORCE);
+    // git only prints, and runs no subcommand.
+    expect(asks("git --version push --force")).toBeUndefined();
+    expect(asks("git --exec-path push --force")).toBeUndefined();
+  });
+
+  it("HK-8: a program name spelled with an escape or an ANSI-C quote", () => {
+    expect(asks("g\\it push --force origin x")).toContain(FORCE);
+    expect(asks("$'git' push --force origin x")).toContain(FORCE);
+    expect(asks("$'\\x67it' push --force origin x")).toContain(FORCE);
+    expect(asks("git push origin ma\\in")).toContain("straight to `main`");
+  });
+
+  it("HK-9: `bash -c --` and `env -S`", () => {
+    expect(asks("bash -c -- 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("bash -c -e 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("bash -O extglob -c 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("env -S 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("env -S'git push --force origin x'")).toContain(FORCE);
+    expect(asks("env --split-string='git push --force' origin x")).toContain(FORCE);
+    expect(asks("env -iS 'GIT_TRACE=1 git push --force origin x'")).toContain(FORCE);
+  });
+
+  it("HK-10: doas runs the command after it", () => {
+    expect(asks("doas git push --force origin x")).toContain(FORCE);
+    expect(asks("doas -u me git push --force origin x")).toContain(FORCE);
+  });
+
+  it("a backtick substitution, an arithmetic expansion and an escaped space before a #", () => {
+    expect(asks("echo `git push --force origin x`")).toContain(FORCE);
+    expect(asks('echo "`git push --force origin x`"')).toContain(FORCE);
+    expect(asks("echo $(( $(git push --force origin x) ))")).toContain(FORCE);
+    expect(asks("echo \\ #; git push --force origin x")).toContain(FORCE);
+    expect(asks("echo $(true)#; git push --force origin x")).toContain(FORCE);
+    // A PowerShell here-string means nothing to bash: its `$( … )` runs there.
+    expect(asks('echo @"\n$(git push --force origin x)\n"@', "bash")).toContain(FORCE);
+  });
+
+  it("a redirection is never a refspec, before the program or after it", () => {
+    expect(asks("2>/dev/null git push --force origin x")).toContain(FORCE);
+    expect(guard("git push origin 2>&1", onDev)).toContain("straight to `dev`");
+    expect(guard("git push origin > /dev/null", onDev)).toContain("straight to `dev`");
+    expect(asks("git push origin main>log")).toContain("straight to `main`");
+  });
+
+  it("a CRLF line, and a line that goes on with CRLF, are read", () => {
+    expect(asks("git status\r\ngit push --force origin x\r\n")).toContain(FORCE);
+    expect(asks("git push \\\r\n  --force origin x")).toContain(FORCE);
+  });
+
+  it("HK: `claude plugin eval` is not the shell's eval", () => {
+    expect(asks("claude plugin eval . --eval-dir evals/cases")).toBeUndefined();
+    expect(asks("claude plugin eval 'git push --force origin x'")).toBeUndefined();
+    // The shell's own eval still runs the line it is given.
+    expect(asks('eval "git push --force origin x"')).toContain(FORCE);
+  });
+
+  it("job run's queued command is read", () => {
+    const queued = `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind test -- bash -c 'bun test && git push --force origin x'`;
+    expect(asks(queued)).toContain(FORCE);
+  });
+});
+
+describe("a push sends what git would send", () => {
+  /** A repo on `branch`, with each `key value` set in its own git config. */
+  function repoOn(branch: string, config: [string, string][] = []): string {
+    const dir = tempDir("guard-push");
+    git(dir, "init", "-q", "-b", branch);
+    for (const [key, value] of config) git(dir, "config", key, value);
+    return dir;
+  }
+
+  it("HK hunch 7: with push.default=upstream, a bare push goes to the branch it tracks", () => {
+    const repo = repoOn("feature", [
+      ["push.default", "upstream"],
+      ["branch.feature.remote", "origin"],
+      ["branch.feature.merge", "refs/heads/main"],
+    ]);
+    expect(guard("git push", repo)).toContain("straight to `main`");
+    expect(guard("git push origin", repo)).toContain("straight to `main`");
+    // `HEAD` is the branch's own name, whatever push.default says.
+    expect(guard("git push origin HEAD", repo)).toBeUndefined();
+  });
+
+  it("a push.default set on the line counts, and one read from the environment asks", () => {
+    const repo = repoOn("feature", [["branch.feature.merge", "refs/heads/main"]]);
+    expect(guard("git push", repo)).toBeUndefined();
+    expect(guard("git -c push.default=upstream push", repo)).toContain("straight to `main`");
+    expect(guard("git --config-env push.default=MODE push", repo)).toContain("straight to `");
+  });
+
+  it("push.default=matching and the matching refspec `:` send every branch both sides have", () => {
+    const matching = repoOn("feature", [["push.default", "matching"]]);
+    expect(guard("git push", matching)).toContain("straight to `");
+    expect(guard("git push origin :", onFeature)).toContain("straight to `");
+    expect(guard("git push", repoOn("feature", [["push.default", "nothing"]]))).toBeUndefined();
+  });
+
+  it("a remote's own push refspecs are what a bare push sends", () => {
+    const forced = repoOn("feature", [["remote.origin.push", "+refs/heads/*:refs/heads/*"]]);
+    const answer = guard("git push", forced);
+    expect(answer).toContain(FORCE);
+    expect(answer).toContain("straight to `");
+    const narrow = repoOn("feature", [
+      ["remote.origin.push", "refs/heads/feature:refs/heads/review"],
+    ]);
+    expect(guard("git push", narrow)).toBeUndefined();
+  });
+
+  it("HK improvement 7: a wildcard refspec that reaches a protected branch asks", () => {
+    expect(guard("git push origin 'refs/heads/*:refs/heads/*'")).toContain("straight to `");
+    expect(guard("git push origin '*:*'")).toContain("straight to `");
+    expect(guard("git push origin 'refs/heads/fix-*:refs/heads/fix-*'")).toBeUndefined();
+  });
+
+  it("reads git once a folder, however many pushes the line has", () => {
+    const line = Array.from({ length: 200 }, () => "git push").join("; ");
+    const started = Date.now();
+    expect(guard(line, onFeature)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(GUARD_TIME_LIMIT_MS);
+  });
+});
+
+describe("a 64 KB command line is read within the guard's time", () => {
+  const SIZE = 64 * 1024;
+  const fill = (piece: string) => piece.repeat(Math.ceil(SIZE / piece.length)).slice(0, SIZE);
+  it.each([
+    ["a long commit message", `git commit -m "${fill("word; git push --force ")}"`],
+    ["many commands", fill("git status; ")],
+    ["many here-docs", fill("cat <<A ")],
+    ["deep arithmetic", `echo ${"$((".repeat(SIZE / 6)}1${"))".repeat(SIZE / 6)}`],
+    ["nested quotes and substitutions", fill("\"$(echo `a` 'b')\" ")],
+    ["many PowerShell comments", fill("<# x #> ")],
+    ["an unclosed quote", `echo "${fill("a; b ")}`],
+  ])("%s", (_name, command) => {
+    const started = Date.now();
+    guard(command);
+    expect(Date.now() - started).toBeLessThan(GUARD_TIME_LIMIT_MS);
   });
 });
