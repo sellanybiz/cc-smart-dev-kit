@@ -31,7 +31,7 @@ Done in this release:
   from `origin/HEAD`, else the repo's only branch, else `main`, else `master`; the setup
   command from the lockfile; the protected branches from git and `gh`), a flag for every question, the diff shown before anything is written, a backup
   first, and a line saying to commit them. The worktree engine's three hook lines come from
-  the one home that owns them (`src/hooks/project-wiring.ts`).
+  the one home that owned them (`src/hooks/project-wiring.ts`, deleted with the engine in 1.0.0).
 - **The workflow** (`design.md` § The workflow): what cc-smart-dev-kit may do by itself —
   commit, push, open a pull request, merge — held by the project's committed file over the
   person's own `~/.config/cc-smart-dev-kit/workflow.json` over the safe built-in defaults, each

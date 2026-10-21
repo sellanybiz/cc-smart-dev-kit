@@ -65,27 +65,25 @@ On Windows it runs under Git Bash, where
 A hook still never needs bun: with none found, `--missing=ask` prints the PreToolUse ask and
 `--missing=quiet` writes one line, both exit 0.
 
-## The project's own hook lines
+## The user's own hook line
 
-A project that turns the worktree engine on wires the launcher in its own
-`.claude/settings.json`:
+The **user-level notification hook** `setup` writes uses shell form, with the launcher and
+the same reasoning:
 
 ```json
-{ "type": "command", "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook worktree-create", "timeout": 600 }
+{ "type": "command", "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook notify", "timeout": 10 }
 ```
 
-That is shell form too (no `args`), and the quoting wraps the whole path including `$HOME`.
-On Windows the shell is Git Bash: it sets `$HOME`, and it runs the extensionless launcher
-because the file starts with `#!` — MSYS2 marks a file executable by its first two
-characters as well as by extension, which matters because Windows has no execute bit for
-`setup` to set. The Windows CI job runs this exact line against a stand-in launcher, so the
-form is proved there; the real launcher's own body (bun from its baked path, the installed
-plugin's CLI) is proved on Linux and macOS and is owed one Windows run.
+No `args`, and the quoting wraps the whole path including `$HOME`. On Windows the shell is
+Git Bash: it sets `$HOME`, and it runs the extensionless launcher because the file starts
+with `#!` — MSYS2 marks a file executable by its first two characters as well as by
+extension, which matters because Windows has no execute bit for `setup` to set. The Windows
+CI job runs this exact line against a stand-in launcher, so the form is proved there; the
+real launcher's own body (bun from its baked path, the installed plugin's CLI) is proved on
+Linux and macOS and is owed one Windows run.
 
-The **user-level notification hook** `setup` writes uses the same form, with the same
-launcher and the same reasoning: `"$HOME/.local/bin/cc-smart-dev-kit" hook notify`. It sits
-in Claude Code's user settings, not a project's, and agent view runs it there on Windows
-through Git Bash like any other shell-form hook.
+The line sits in Claude Code's user settings, not a project's, and agent view runs it there
+on Windows through Git Bash like any other shell-form hook.
 
 ## What Windows costs these hooks
 

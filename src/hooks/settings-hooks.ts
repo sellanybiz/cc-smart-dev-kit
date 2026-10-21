@@ -16,8 +16,8 @@ import { COMMAND } from "../build-info/names";
  * The hooks the plugin's worktree engine had a project wire itself, as
  * `cc-smart-dev-kit hook <name>`. They retired with the engine (`WORKTREE_ENGINE_RETIRED_IN`
  * in `src/project/config.ts`): `cc-smart-dev-kit hook <name>` now prints the fix and exits 2,
- * `doctor` names a leftover line, and `project init` removes it. Known by name here, never
- * through the engine's own specs, so the list outlives the engine's code.
+ * `doctor` names a leftover line, and `project init` removes it. Known by name here: the
+ * engine's own specs are gone.
  */
 export const RETIRED_ENGINE_HOOKS = [
   "worktree-create",

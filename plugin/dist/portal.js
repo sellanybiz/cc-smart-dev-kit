@@ -21005,60 +21005,7 @@ function messageGuard(context) {
   return folder === null ? SILENT : toolDecision("deny", otherProjectRefusal(to, folder));
 }
 
-// src/hooks/local-files.ts
-import { lstatSync as lstatSync3, readdirSync as readdirSync14, readFileSync as readFileSync42, readlinkSync as readlinkSync4 } from "fs";
-import { join as join38 } from "path";
-var REBUILDABLE = [
-  /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
-  /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
-  /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
-  /\.(?:tsbuildinfo|pyc|pyo)$/,
-  /(?:^|\/)\.DS_Store$/,
-  /(?:^|\/)Thumbs\.db$/,
-  /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/
-];
-var MAX_COMPARED = 2000;
-function parseIgnored(porcelain) {
-  return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
-}
-function sameAsMain(worktree, mainCheckout, path) {
-  let budget = MAX_COMPARED;
-  const same = (relative) => {
-    if (--budget < 0)
-      return false;
-    const here = join38(worktree, relative);
-    const there = join38(mainCheckout, relative);
-    try {
-      const a = lstatSync3(here);
-      const b = lstatSync3(there);
-      if (a.isSymbolicLink() || b.isSymbolicLink()) {
-        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync4(here) === readlinkSync4(there);
-      }
-      if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync14(here).every((entry) => same(join38(relative, entry)));
-      }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync42(here).equals(readFileSync42(there));
-    } catch {
-      return false;
-    }
-  };
-  return same(path.replace(/\/$/, ""));
-}
-function localFiles(worktree, mainCheckout, env) {
-  const status = runGit(worktree, [
-    "--no-optional-locks",
-    "status",
-    "--porcelain",
-    "-z",
-    "--ignored=traditional",
-    "--untracked-files=normal"
-  ], env, 30000);
-  if (!status.ok)
-    return null;
-  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
-}
-
-// src/hooks/worktree-remove.ts
+// src/hooks/subagent-worktree.ts
 function subagentWorktreeOf(cwd, agentId) {
   if (agentId === null || !/^[0-9a-f]+$/.test(agentId))
     return null;
@@ -21130,12 +21077,64 @@ async function reviewRecord(context) {
   return SILENT;
 }
 
-// src/hooks/worktree-create.ts
-var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
-
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync43, statSync as statSync12 } from "fs";
 import { basename as basename6, isAbsolute as isAbsolute4, join as join39, resolve as resolve9 } from "path";
+
+// src/hooks/local-files.ts
+import { lstatSync as lstatSync3, readdirSync as readdirSync14, readFileSync as readFileSync42, readlinkSync as readlinkSync4 } from "fs";
+import { join as join38 } from "path";
+var REBUILDABLE = [
+  /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
+  /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
+  /(?:^|\/)(?:\.cache|\.vite|\.eslintcache|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.hypothesis|\.terraform|\.dart_tool)\/?$/,
+  /\.(?:tsbuildinfo|pyc|pyo)$/,
+  /(?:^|\/)\.DS_Store$/,
+  /(?:^|\/)Thumbs\.db$/,
+  /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/
+];
+var MAX_COMPARED = 2000;
+function parseIgnored(porcelain) {
+  return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
+}
+function sameAsMain(worktree, mainCheckout, path) {
+  let budget = MAX_COMPARED;
+  const same = (relative) => {
+    if (--budget < 0)
+      return false;
+    const here = join38(worktree, relative);
+    const there = join38(mainCheckout, relative);
+    try {
+      const a = lstatSync3(here);
+      const b = lstatSync3(there);
+      if (a.isSymbolicLink() || b.isSymbolicLink()) {
+        return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync4(here) === readlinkSync4(there);
+      }
+      if (a.isDirectory()) {
+        return b.isDirectory() && readdirSync14(here).every((entry) => same(join38(relative, entry)));
+      }
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync42(here).equals(readFileSync42(there));
+    } catch {
+      return false;
+    }
+  };
+  return same(path.replace(/\/$/, ""));
+}
+function localFiles(worktree, mainCheckout, env) {
+  const status = runGit(worktree, [
+    "--no-optional-locks",
+    "status",
+    "--porcelain",
+    "-z",
+    "--ignored=traditional",
+    "--untracked-files=normal"
+  ], env, 30000);
+  if (!status.ok)
+    return null;
+  return parseIgnored(status.out).filter((entry) => !REBUILDABLE.some((pattern) => pattern.test(entry)) && !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)));
+}
+
+// src/hooks/worktree-leftovers.ts
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
@@ -21227,7 +21226,6 @@ function cannotCheck(what, message) {
 var gitGuardHook = {
   name: "git-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     return command !== null && runsGit(command) ? toolDecision("ask", cannotCheck("this git command", message)) : SILENT;
@@ -21255,7 +21253,6 @@ var gitGuardHook = {
 var mergeGuardHook = {
   name: "merge-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     return command !== null && requestsMerge(command) ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message)) : SILENT;
@@ -21269,7 +21266,6 @@ var mergeGuardHook = {
 var mainFolderGuardHook = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input, _event, checkout) => {
     const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
     const repo = checkout.mainCheckout ?? checkout.root;
@@ -21280,14 +21276,12 @@ var mainFolderGuardHook = {
 var messageGuardHook = {
   name: "message-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message) => toolDecision("ask", cannotCheck("whether this message stays in this repo", message)),
   run: messageGuard
 };
 var afterMergeHook = {
   name: "after-merge",
   events: ["PostToolUse", "PostToolUseFailure"],
-  wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     const command = stringField(toolInput(input).command);
     return command !== null && mergesPullRequest(command) ? addContext(event, `cc-smart-dev-kit: ${message}`) : SILENT;
@@ -21297,7 +21291,6 @@ var afterMergeHook = {
 var reviewRecordHook = {
   name: "review-record",
   events: ["SubagentStart", "SubagentStop"],
-  wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     const agent = agentTypeOf(input);
     return event === "SubagentStop" && agent !== null && recordsReview(agent, workflowDefaults.reviewAgents) ? { stderr: `cc-smart-dev-kit review-record: ${message}` } : SILENT;
@@ -21307,21 +21300,18 @@ var reviewRecordHook = {
 var worktreeLeftoversHook = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
-  wiring: "plugin",
   onConfigProblem: (message, _input, event) => addContext(event, `cc-smart-dev-kit: ${message}`),
   run: worktreeLeftovers
 };
 var sessionNameHook = {
   name: "session-name",
   events: ["SessionStart", "UserPromptSubmit"],
-  wiring: "plugin",
   onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit session-name: ${message}` }),
   run: sessionName
 };
 var agentGuardHook = {
   name: "agent-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (_message, input, _event, _checkout, context) => agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) => agentGuard(input, context.env, context.paths, cwdOf(input)),
   logFacts: guardFacts,
@@ -21330,7 +21320,6 @@ var agentGuardHook = {
 var fableSessionHook = {
   name: "fable-session",
   events: ["SessionStart", "PostModelSwitch", "Stop"],
-  wiring: "plugin",
   onConfigProblem: (_message, input, _event, _checkout, context) => fableSession(input, context.env, context.paths),
   outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
   run: ({ input, env, paths }) => fableSession(input, env, paths)
@@ -21338,7 +21327,6 @@ var fableSessionHook = {
 var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     return command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null ? SILENT : toolDecision("ask", cannotCheck("whether this project routes heavy commands through its job queue", message));

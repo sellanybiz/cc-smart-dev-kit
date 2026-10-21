@@ -5,9 +5,10 @@
 #   1. a hook bundle runs through the shim, through Git Bash — the shell Claude Code gives a
 #      shell-form hook on Windows — and the git guard answers;
 #   2. with no bun anywhere, the guard still fails closed: the shim's `--missing=ask` answer;
-#   3. the line `cc-smart-dev-kit hook` prints for a project runs: the shell expands `$HOME`, and
-#      Git Bash runs the extensionless `#!/bin/sh` launcher under it (Windows has no execute
-#      bit, so what runs it is Git Bash's own rule for a file starting with `#!`).
+#   3. the line `cc-smart-dev-kit setup` writes into the person's own settings runs: the shell
+#      expands `$HOME`, and Git Bash runs the extensionless `#!/bin/sh` launcher under it
+#      (Windows has no execute bit, so what runs it is Git Bash's own rule for a file
+#      starting with `#!`).
 #
 # The same shell and the same checks run on Linux and macOS, so this is not Windows-only code
 # that nothing else exercises: `bash scripts/windows-hook-smoke.sh`.
@@ -82,19 +83,19 @@ case "$answer" in
   *) fail "with no bun the shim did not say so: $answer" ;;
 esac
 
-# 3. The line a project wires (src/hooks/project-wiring.ts, printed by `cc-smart-dev-kit hook`
-#    and shown in the README), taken from that code rather than copied, so this check follows
-#    the source. The launcher here is a stand-in: what is proved is the LINE — `$HOME`
+# 3. The line `cc-smart-dev-kit setup` writes into the person's own settings
+#    (src/setup/user-notify-hook.ts), taken from that code rather than copied, so this check
+#    follows the source. The launcher here is a stand-in: what is proved is the LINE — `$HOME`
 #    expanding, and Git Bash running the extensionless `#!/bin/sh` file it points at.
 mkdir -p "$home/.local/bin"
 printf '#!/bin/sh\nprintf "launcher ran: %%s\\n" "$*"\n' >"$home/.local/bin/cc-smart-dev-kit"
 chmod +x "$home/.local/bin/cc-smart-dev-kit"
-line="$(cd "$root" && bun -e 'const { projectHookCommand } = await import("./src/hooks/project-wiring.ts"); process.stdout.write(projectHookCommand("worktree-create"));')"
+line="$(cd "$root" && bun -e 'const { USER_NOTIFY_COMMAND } = await import("./src/setup/user-notify-hook.ts"); process.stdout.write(USER_NOTIFY_COMMAND);')"
 case "$line" in
-  '"$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create') ;;
-  *) fail "the project-hook line changed shape, so this check no longer checks it: $line" ;;
+  '"$HOME/.local/bin/cc-smart-dev-kit" hook notify') ;;
+  *) fail "the user-hook line changed shape, so this check no longer checks it: $line" ;;
 esac
 ran="$(HOME="$home" "$bash_bin" -c "$line")"
-[ "$ran" = "launcher ran: hook worktree-create" ] || fail "the project-wired line did not run the launcher: $ran"
+[ "$ran" = "launcher ran: hook notify" ] || fail "the user-wired line did not run the launcher: $ran"
 
-echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, and the project-wired line ran"
+echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, and the user-wired line ran"

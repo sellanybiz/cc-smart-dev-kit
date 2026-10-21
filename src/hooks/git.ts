@@ -6,7 +6,6 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { isInside } from "../path-compare";
 import { gitEnv } from "../project/git-env";
-import { BATCH_SSH_COMMAND, hasOwnSshCommand } from "../setup/marketplace-access";
 import type { Env } from "./run";
 
 // The path tests live in their one home, `src/path-compare.ts`; the hooks have always imported
@@ -25,8 +24,8 @@ export interface GitRun {
 
 /**
  * How long one git call inside a PreToolUse guard may take. The guard hook's own timeout is
- * 10 s (`plugin/hooks/hooks.json`, `project-wiring.ts`), so every git call it makes has to
- * answer well inside that: a guard that hangs stops the call it guards.
+ * 10 s (`plugin/hooks/hooks.json`), so every git call it makes has to answer well inside
+ * that: a guard that hangs stops the call it guards.
  */
 export const GUARD_GIT_TIMEOUT_MS = 5_000;
 
@@ -58,17 +57,6 @@ export function runGit(
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };
   }
-}
-
-/**
- * The environment for a git command that reaches the network: it never asks for a password
- * (GIT_TERMINAL_PROMPT=0), and ssh gets BatchMode unless the user has an ssh command of
- * their own (which would then be hidden).
- */
-export function noPromptEnv(env: Env): Env {
-  const quiet: Env = { ...env, GIT_TERMINAL_PROMPT: "0" };
-  if (!hasOwnSshCommand(quiet)) quiet.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
-  return quiet;
 }
 
 /**
@@ -160,27 +148,4 @@ export function hasChanges(folder: string, env: Env): boolean {
     env,
   );
   return !status.ok || status.out !== "";
-}
-
-/** The commits on a branch that no other branch, local or remote, has. Null when git cannot tell. */
-export function ownCommits(repo: string, branch: string, env: Env): number | null {
-  const own = runGit(
-    repo,
-    [
-      "rev-list",
-      "--count",
-      `refs/heads/${branch}`,
-      "--not",
-      `--exclude=${branch}`,
-      "--branches",
-      "--remotes",
-    ],
-    env,
-  );
-  return own.ok && /^\d+$/.test(own.out) ? Number(own.out) : null;
-}
-
-/** True when `ref` names something in the repo. */
-export function hasRef(repo: string, ref: string, env: Env): boolean {
-  return runGit(repo, ["rev-parse", "--verify", "--quiet", ref], env).ok;
 }

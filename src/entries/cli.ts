@@ -43,10 +43,8 @@ import {
 } from "../hooks/desktop-alert";
 import { runtimeDir } from "../hooks/notify";
 import { runNotifyEntry } from "../hooks/notify-entry";
-import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
-import { PROJECT_HOOKS } from "../hooks/specs";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
@@ -393,15 +391,11 @@ async function main(argv: string[]): Promise<number> {
         );
         return 2;
       }
-      const spec = PROJECT_HOOKS.find((one) => one.name === name);
-      if (spec === undefined || extra.length > 0) {
-        console.error(
-          `Unknown hook: ${[name, ...extra].join(" ")}\n\n${usageError(`Usage: ${COMMAND} hook <${HOOK_NAMES}>`, "hook")}`,
-        );
-        return 2;
-      }
-      // Reads stdin, answers, and exits with the hook's code.
-      return runHookEntry(spec);
+      // The only hook left is the notifier, which ran above. Every other name is unknown.
+      console.error(
+        `Unknown hook: ${[name, ...extra].join(" ")}\n\n${usageError(`Usage: ${COMMAND} hook <${HOOK_NAMES}>`, "hook")}`,
+      );
+      return 2;
     }
     case "project": {
       const [sub, ...flags] = rest;

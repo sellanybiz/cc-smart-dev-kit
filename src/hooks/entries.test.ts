@@ -1,8 +1,8 @@
 /**
  * The plugin's hooks as Claude Code runs them: `plugin/hooks/hooks.json` names each bundle in
  * shell form, through the bun shim `bin/cc-smart-dev-kit-bun.sh`, and each `src/entries/<name>.ts`
- * reads its JSON on stdin and answers on stdout. (The worktree engine a project wires itself
- * runs as `cc-smart-dev-kit hook <name>`: `src/cli/hook-commands.test.ts`.)
+ * reads its JSON on stdin and answers on stdout. (`cc-smart-dev-kit hook notify` is the one
+ * hook a person's settings wire: `src/cli/hook-commands.test.ts`.)
  */
 import { describe, expect, test } from "bun:test";
 import {
@@ -21,8 +21,6 @@ import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { GH_TIMEOUT_MS } from "./merge-guard";
 import { HOOK_LOG_ENV } from "./run";
 import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
-import { ADD_TIMEOUT_MS, SETUP_TIMEOUT_MS } from "./worktree-create";
-import { REMOVE_TIMEOUT_MS } from "./worktree-remove";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -155,10 +153,11 @@ esac
   });
 
   test("no worktree hook: a plugin WorktreeCreate would replace Claude Code's worktrees everywhere", () => {
-    // `SubagentStop` is allowed only for a hook that touches no worktree: the engine's
-    // `subagent-stop` (which removes one) must stay the project's own wiring, so every
-    // SubagentStop entry here is checked to be `review-record` and nothing else. SubagentStart
-    // is the same hook's start (it notes the commit a review agent starts on) and nothing else.
+    // `WorktreeCreate` and `WorktreeRemove` are never wired: they would replace Claude Code's
+    // own worktrees in every project. `SubagentStop` is allowed only for a hook that touches no
+    // worktree, so every SubagentStop entry here is checked to be `review-record` and nothing
+    // else. SubagentStart is the same hook's start (it notes the commit a review agent starts
+    // on) and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
       "Notification",
       "PostModelSwitch",
@@ -177,7 +176,6 @@ esac
         .filter(({ event }) => event === subagentEvent)
         .map(({ handler }) => bundleOf(handler));
       expect(bundles).toEqual(["review-record"]);
-      expect(bundles).not.toContain("subagent-stop");
     }
   });
 
@@ -209,12 +207,8 @@ esac
   test("every git call inside a hook stays well inside that hook's own timeout", () => {
     // The merge guard: two `gh` calls of its own timeout, inside the 30 s hooks.json gives it.
     expect(GH_TIMEOUT_MS).toBeLessThan(30_000 / 2);
-    // The project's own hooks: the worktree engine (`project-wiring.ts`).
     expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // git-guard, main-folder-guard, message-guard
     expect(RESOLVE_GIT_TIMEOUT_MS).toBeLessThan(10_000); // the frame's project lookup, in every hook
-    expect(ADD_TIMEOUT_MS).toBeLessThan(600_000); // worktree-create
-    expect(SETUP_TIMEOUT_MS).toBeLessThan(600_000); // the setup inside it
-    expect(REMOVE_TIMEOUT_MS).toBeLessThan(60_000); // worktree-remove, subagent-stop
   });
 });
 

@@ -25,7 +25,7 @@ graders:
   - name: edit-in-a-worktree
     type: tool_used
     tool: 'Edit'
-    input_match: '"file_path"\s*:\s*"[^"]*(?:/\.claude/worktrees/|/app-wt-|/worktrees?/)'
+    input_match: '"file_path"\s*:\s*"[^"]*(?:/\.claude/worktrees/|/worktrees?/)'
   - name: no-edit-in-main
     type: tool_used
     tool: 'Edit'

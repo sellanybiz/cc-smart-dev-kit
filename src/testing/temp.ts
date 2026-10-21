@@ -73,28 +73,6 @@ export function git(cwd: string, ...args: string[]): string {
 }
 
 /**
- * The environment with a `git` first on PATH that hangs on one subcommand (`["worktree",
- * "remove"]`) and runs the real git for everything else: how a timeout is tested without
- * waiting for the real timeout. The fake `exec`s `sleep`, so the process killed at the
- * timeout is the sleeping one.
- */
-export function withSlowGit(
-  env: Record<string, string>,
-  hangsOn: string[],
-  seconds = 30,
-): Record<string, string> {
-  const dir = tempDir("slow-git");
-  const real = Bun.which("git") ?? "/usr/bin/git";
-  const matches = hangsOn.map((word, index) => `[ "$${index + 1}" = "${word}" ]`).join(" && ");
-  writeFileSync(
-    join(dir, "git"),
-    `#!/bin/sh\nif ${matches}; then exec sleep ${seconds}; fi\nexec "${real}" "$@"\n`,
-  );
-  chmodSync(join(dir, "git"), 0o755);
-  return { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
-}
-
-/**
  * The environment with a `git` first on PATH that says it is `version` (`git --version`) and
  * runs the real git for everything else: how a check for an older git is tested on a new one.
  */

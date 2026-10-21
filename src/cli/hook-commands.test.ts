@@ -53,13 +53,10 @@ not a project hook: it needs no settings from a project, and it works in every f
     );
   });
 
-  test("the README and the help name the same hook commands", () => {
-    // The engine's names are deprecated: the README still names them for the projects that wire
-    // the engine, and goes with the engine. The help names the one hook left, from its constant.
+  test("the README and the help name the same hook command", () => {
+    // The help names the one hook left, from its constant; the README names it too.
     const readme = readFileSync(join(import.meta.dir, "..", "..", "README.md"), "utf8");
-    expect(readme).toContain(
-      "`cc-smart-dev-kit hook <worktree-create\\|worktree-remove\\|subagent-stop\\|notify>`",
-    );
+    expect(readme).toContain(`\`cc-smart-dev-kit hook <${USER_NOTIFY_HOOK_NAME}>\``);
     expect(cli(["hook"]).stdout.split("\n")[0]).toBe(
       `Usage: cc-smart-dev-kit hook <${USER_NOTIFY_HOOK_NAME}>`,
     );

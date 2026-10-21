@@ -2,9 +2,8 @@
  * Which git worktrees are finished, and may be removed.
  *
  * Every session works in a worktree of its own, and is meant to remove it once its work is
- * merged. Claude Code makes them under `<repo>/.claude/worktrees/`; the plugin's deprecated
- * engine made its own beside the main checkout. Sessions forget, crash, or end before the
- * merge, so finished worktrees pile up.
+ * merged. Claude Code makes them under `<repo>/.claude/worktrees/`. Sessions forget, crash, or
+ * end before the merge, so finished worktrees pile up.
  *
  * A worktree is FINISHED when removing it can lose nothing and disturb no one:
  *   - no running Claude session works in it;

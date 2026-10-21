@@ -161,13 +161,12 @@ export function sessionWorkFolders(projectsDir: string): string[] {
 export function savedSessions(
   projectsDir: string,
   mainCheckout: string,
-  prefix: null | string,
   since: number,
 ): SavedSession[] {
   if (!existsSync(projectsDir)) return [];
   const sessions: SavedSession[] = [];
   for (const folder of readdirSync(projectsDir)) {
-    if (!belongsToRepo(folder, mainCheckout, prefix)) continue;
+    if (!belongsToRepo(folder, mainCheckout)) continue;
     for (const file of sessionFiles(projectsDir, folder)) {
       if (file.lastWrite < since) continue;
       const session = readSession(file);
@@ -347,14 +346,7 @@ export async function runSessions(
 
   const projectsDir = paths.projectsDir;
   const machineStartedAt = deps.now - deps.uptimeSeconds * 1000;
-  const sessions = savedSessions(
-    projectsDir,
-    mainCheckout,
-    // The retired engine's `worktrees.prefix` named its folders beside the repo; no project
-    // file holds one now, so only `.claude/worktrees/` counts.
-    null,
-    deps.now - PIN_HOURS * 3_600_000,
-  );
+  const sessions = savedSessions(projectsDir, mainCheckout, deps.now - PIN_HOURS * 3_600_000);
 
   /**
    * The sessions running right now, from Claude Code's own records. A resumed session may not

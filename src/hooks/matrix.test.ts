@@ -1,8 +1,8 @@
 /**
  * Every hook through the same frame (`run.ts`), in a table:
- * - with no cc-smart-dev-kit.json: every plugin hook silent; the worktree engine a project wires
- *   fails closed (it needs `worktrees`);
- * - the project's own copy: a plugin hook its cc-smart-dev-kit.json lists in `ownHooks` is silent,
+ * - with no cc-smart-dev-kit.json: every hook silent, except the machine-wide ones, which
+ *   judge the same way;
+ * - the project's own copy: a hook its cc-smart-dev-kit.json lists in `ownHooks` is silent,
  *   even when the rest of the file is broken or too new; a project hook on the same event
  *   that is not listed silences nothing;
  * - `requires` not met (and a broken cc-smart-dev-kit.json): each fails closed its own way;
@@ -37,13 +37,9 @@ import {
   mainFolderGuardHook,
   mergeGuardHook,
   messageGuardHook,
-  PROJECT_HOOKS,
   reviewRecordHook,
   sessionNameHook,
-  subagentStopHook,
-  worktreeCreateHook,
   worktreeLeftoversHook,
-  worktreeRemoveHook,
 } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -119,71 +115,6 @@ const contextLine = (result: HookResult) => {
 };
 
 const CASES: Case[] = [
-  {
-    spec: worktreeCreateHook,
-    own: { event: "WorktreeCreate" },
-    setup: (config) => ({
-      input: {
-        hook_event_name: "WorktreeCreate",
-        session_id: SESSION,
-        cwd: project(config),
-        // A subagent's name: a session's worktree retired with the engine's worktrees.prefix.
-        name: "agent-0a1b",
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: (result) => {
-      expect(result.exitCode).toBe(1);
-      expect(result.stdout).toBeUndefined();
-      expect(result.stderr).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
-    },
-  },
-  {
-    spec: worktreeRemoveHook,
-    own: { event: "WorktreeRemove" },
-    setup: (config) => {
-      const repo = project(config);
-      const folder = join(repo, ".claude", "worktrees", "x");
-      git(repo, "worktree", "add", "-q", "-b", "worktree-x", folder);
-      return {
-        input: {
-          hook_event_name: "WorktreeRemove",
-          session_id: SESSION,
-          cwd: folder,
-          worktree_path: folder,
-        },
-        env: hookEnv(),
-      };
-    },
-    failsClosed: (result) => {
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
-    },
-  },
-  {
-    spec: subagentStopHook,
-    own: { event: "SubagentStop", matcher: "general-purpose" },
-    setup: (config) => {
-      const repo = project(config);
-      const folder = join(repo, ".claude", "worktrees", `agent-${AGENT}`);
-      git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${AGENT}`, folder);
-      return {
-        input: {
-          hook_event_name: "SubagentStop",
-          session_id: SESSION,
-          cwd: folder,
-          agent_id: AGENT,
-          agent_type: "general-purpose",
-        },
-        env: hookEnv(),
-      };
-    },
-    failsClosed: (result) => {
-      expect(result.exitCode ?? 0).toBe(0);
-      expect(result.stdout).toBeUndefined();
-      expect(result.stderr).toStartWith("subagent worktree kept: ");
-    },
-  },
   {
     spec: gitGuardHook,
     own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
@@ -402,12 +333,8 @@ const CASES: Case[] = [
   },
 ];
 
-test("the table covers every hook, the plugin's and the project's", () => {
-  expect(CASES.map((c) => c.spec.name).sort()).toEqual(
-    [...HOOKS, ...PROJECT_HOOKS].map((spec) => spec.name).sort(),
-  );
-  expect(HOOKS.every((spec) => spec.wiring === "plugin")).toBe(true);
-  expect(PROJECT_HOOKS.every((spec) => spec.wiring === "project")).toBe(true);
+test("the table covers every hook", () => {
+  expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
 });
 
 test("ownHooks accepts exactly the plugin's hooks", () => {
@@ -415,9 +342,9 @@ test("ownHooks accepts exactly the plugin's hooks", () => {
   expect(listed.sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
 });
 
-/** The full config, with `ownHooks` listing this hook when the plugin wires it. */
+/** The full config, with `ownHooks` listing this hook. */
 function listing(c: Case, config: Record<string, unknown> = FULL_CONFIG) {
-  return c.spec.wiring === "plugin" ? { ...config, ownHooks: [c.spec.name] } : config;
+  return { ...config, ownHooks: [c.spec.name] };
 }
 
 /** What a hook says: anything at all on stdout or stderr. */
@@ -443,7 +370,6 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
   );
 
   test("listed in ownHooks: a plugin hook stays silent (the project's copy answers)", async () => {
-    if (c.spec.wiring !== "plugin") return;
     const { input, env } = c.setup(listing(c));
     expect(await runHook(c.spec, input, env)).toEqual({});
   });
@@ -474,12 +400,10 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     expect(said).toContain("cc-smart-dev-kit.json: worktree: unknown field");
   });
 
-  test("requires not met, and listed in ownHooks: a plugin hook stays silent (the project's copy runs), a project-wired one fails closed", async () => {
+  test("requires not met, and listed in ownHooks: the hook stays silent (the project's copy runs)", async () => {
     const { input, env } = c.setup(listing(c, { requires: ">=99", fieldFromTheFuture: true }));
     wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
-    const result = await runHook(c.spec, input, env);
-    if (c.spec.wiring === "plugin") expect(result).toEqual({});
-    else c.failsClosed(result);
+    expect(await runHook(c.spec, input, env)).toEqual({});
   });
 
   test("requires not met, another hook for the same event, not listed: fails closed all the same", async () => {
@@ -490,42 +414,19 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
 });
 
 describe("no cc-smart-dev-kit.json", () => {
-  test.each(
-    CASES.filter((c) => c.spec.wiring === "plugin" && c.machineWide !== true).map(
-      (c) => [c.spec.name, c] as const,
-    ),
-  )("the plugin's %s is silent", async (_name, c) => {
-    const { input, env } = c.setup(undefined);
-    expect(await runHook(c.spec, input, env)).toEqual({});
-  });
+  test.each(CASES.filter((c) => c.machineWide !== true).map((c) => [c.spec.name, c] as const))(
+    "the plugin's %s is silent",
+    async (_name, c) => {
+      const { input, env } = c.setup(undefined);
+      expect(await runHook(c.spec, input, env)).toEqual({});
+    },
+  );
 
   test.each(CASES.filter((c) => c.machineWide === true).map((c) => [c.spec.name, c] as const))(
     "the machine-wide %s judges the same without cc-smart-dev-kit.json",
     async (_name, c) => {
       const { input, env } = c.setup(undefined);
       c.failsClosed(await runHook(c.spec, input, env));
-    },
-  );
-
-  const NEEDS =
-    "this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json. " +
-    'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of .claude/settings.json (the cc-smart-dev-kit README, § Worktrees)';
-
-  test.each([
-    [
-      "worktree-create",
-      worktreeCreateHook,
-      { exitCode: 1, stderr: `worktree not created: ${NEEDS}` },
-    ],
-    ["worktree-remove", worktreeRemoveHook, { exitCode: 1, stderr: `worktree kept: ${NEEDS}` }],
-    ["subagent-stop", subagentStopHook, { stderr: `subagent worktree kept: ${NEEDS}` }],
-  ] as const)(
-    "the project-wired %s fails closed: it needs worktrees",
-    async (_name, spec, expected) => {
-      const c = CASES.find((one) => one.spec === spec);
-      if (c === undefined) throw new Error("no case");
-      const { input, env } = c.setup(undefined);
-      expect(await runHook(c.spec, input, env)).toEqual(expected);
     },
   );
 });

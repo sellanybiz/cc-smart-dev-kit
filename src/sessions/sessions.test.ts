@@ -104,13 +104,9 @@ describe("reading a saved session", () => {
     expect(belongsToRepo("C--work-my-app--claude-worktrees-fix-login", "C:\\work\\my-app")).toBe(
       true,
     );
-    // The plugin's deprecated prefix worktree, beside the checkout: this project's while set.
-    expect(belongsToRepo("-work-my-app", "/work/my-app", "app-wt-")).toBe(true);
-    expect(belongsToRepo("-work-app-wt-fix-login", "/work/my-app", "app-wt-")).toBe(true);
-    expect(belongsToRepo("-work-app-wt-fix-login", "/work/my-app")).toBe(false);
-    // Another project's folder is never this one's, prefix or not.
-    expect(belongsToRepo("-work-another-project", "/work/my-app", "app-wt-")).toBe(false);
-    expect(belongsToRepo("-work-my-app-notes", "/work/my-app", "")).toBe(false);
+    // Another project's folder is never this one's.
+    expect(belongsToRepo("-work-another-project", "/work/my-app")).toBe(false);
+    expect(belongsToRepo("-work-my-app-notes", "/work/my-app")).toBe(false);
   });
 });
 
@@ -447,18 +443,15 @@ describe("the sessions command", () => {
     mkdirSync(other, { recursive: true });
     writeFileSync(join(other, "cccccccc.jsonl"), line({ agentName: "other", type: "agent-name" }));
     expect(
-      savedSessions(
-        join(w.paths.claudeConfigDir, "projects"),
-        w.project,
-        "app-wt-",
-        now - 48 * 3_600_000,
-      ).map((read) => read.name),
+      savedSessions(join(w.paths.claudeConfigDir, "projects"), w.project, now - 48 * 3_600_000).map(
+        (read) => read.name,
+      ),
     ).toEqual(["recent"]);
     // A session whose name is missing entirely (a one-shot run) is left out too.
     expect(existsSync(w.folder)).toBe(true);
   });
 
-  test("a session in Claude Code's own worktree is this project's; a prefix one only while set", () => {
+  test("a session in Claude Code's own worktree is this project's; a folder beside it is not", () => {
     const now = 100 * 3_600_000;
     const w = world([]);
     const projects = join(w.paths.claudeConfigDir, "projects");
@@ -469,20 +462,17 @@ describe("the sessions command", () => {
       join(nested, "bbbbbbbb-1111-2222-3333-444444444444.jsonl"),
       line({ agentName: "nested", type: "agent-name" }),
     );
-    // The deprecated engine's worktree, beside the checkout: found only while prefix is set.
+    // A folder beside the checkout: the retired engine made its worktrees there.
     const sibling = join(projects, projectFolderName("/work/app-wt-fix-login"));
     mkdirSync(sibling, { recursive: true });
     writeFileSync(
       join(sibling, "dddddddd-1111-2222-3333-444444444444.jsonl"),
       line({ agentName: "sibling", type: "agent-name" }),
     );
-    const since = now - 48 * 3_600_000;
-    const names = (prefix: null | string) =>
-      savedSessions(projects, w.project, prefix, since)
-        .map((read) => read.name)
-        .sort();
-    expect(names(null)).toEqual(["nested"]);
-    expect(names("app-wt-")).toEqual(["nested", "sibling"]);
+    const names = savedSessions(projects, w.project, now - 48 * 3_600_000)
+      .map((read) => read.name)
+      .sort();
+    expect(names).toEqual(["nested"]);
   });
 
   test("a file whose name is not a session id is left out: the id goes into a shell command", () => {
@@ -502,12 +492,9 @@ describe("the sessions command", () => {
       },
     ]);
     expect(
-      savedSessions(
-        join(w.paths.claudeConfigDir, "projects"),
-        w.project,
-        "app-wt-",
-        now - 48 * 3_600_000,
-      ).map((read) => read.id),
+      savedSessions(join(w.paths.claudeConfigDir, "projects"), w.project, now - 48 * 3_600_000).map(
+        (read) => read.id,
+      ),
     ).toEqual(["aaaaaaaa-1111-2222-3333-444444444444"]);
   });
 

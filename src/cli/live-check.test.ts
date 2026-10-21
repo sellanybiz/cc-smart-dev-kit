@@ -1,11 +1,9 @@
 /**
  * `doctor --live` with a fake `claude` first on PATH: it never reaches a model. The fake
  * plays Claude Code's part for `-p`: the plugin's SessionStart hook; then the worktree,
- * made by the project's own WorktreeCreate hook when its `.claude/settings.json` wires one
- * (run with `sh -c`, as Claude Code runs a command string), else by Claude Code itself
- * (`.claude/worktrees/<name>`); the plugin's git guard before a Bash call in that worktree;
- * then the removal, by the project's WorktreeRemove hook, else by Claude Code. So the check
- * reads real hook runs from the log. The test HOME holds a launcher that runs this repo's CLI.
+ * made by Claude Code itself (`.claude/worktrees/<name>`); the plugin's git guard before a
+ * Bash call in that worktree; then the removal, by Claude Code. So the check reads real hook
+ * runs from the log. The test HOME holds a launcher that runs this repo's CLI.
  */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -44,36 +42,16 @@ const spawn = (argv, at, input) => Bun.spawnSync(argv, {
   cwd: at, env, stdin: Buffer.from(JSON.stringify(input ?? {})), stdout: "pipe", stderr: "pipe",
 });
 const plugin = (name, input, at) => spawn(["bun", ...guardArgs, env.FAKE_ENTRIES + "/" + name + ".ts"], at, input);
-let settings = {};
-try { settings = JSON.parse(fs.readFileSync(cwd + "/.claude/settings.json", "utf8")); } catch {}
-const project = (event, input, at) => {
-  const handler = settings.hooks?.[event]?.[0]?.hooks?.[0];
-  if (!handler) return null;
-  const r = spawn(["sh", "-c", handler.command], at, input);
-  return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
-};
 const git = (at, ...a) => spawn(["git", ...a], at);
 const name = /name "([^"]+)"/.exec(args.at(-1))[1];
 plugin("worktree-leftovers", { hook_event_name: "SessionStart", session_id: "s", cwd, source: "startup" }, cwd);
-let folder;
-const made = project("WorktreeCreate", { hook_event_name: "WorktreeCreate", session_id: "s", cwd, name }, cwd);
-if (made === null) {
-  folder = cwd + "/.claude/worktrees/" + name;
-  git(cwd, "worktree", "add", "-q", "-b", "worktree-" + name, folder);
-} else if (made.code !== 0) {
-  console.log("WorktreeCreate failed: " + made.err);
-  process.exit(1);
-} else {
-  folder = made.out;
-}
+const folder = cwd + "/.claude/worktrees/" + name;
+git(cwd, "worktree", "add", "-q", "-b", "worktree-" + name, folder);
 const at = mode === "stay" ? cwd : folder;
 plugin("git-guard", { hook_event_name: "PreToolUse", session_id: "s", cwd: at, tool_name: "Bash", tool_input: { command: "git status" } }, at);
 if (mode !== "keep") {
-  const removed = project("WorktreeRemove", { hook_event_name: "WorktreeRemove", session_id: "s", cwd: folder, worktree_path: folder }, folder);
-  if (removed === null) {
-    git(cwd, "worktree", "remove", folder);
-    git(cwd, "branch", "-D", "worktree-" + name);
-  }
+  git(cwd, "worktree", "remove", folder);
+  git(cwd, "branch", "-D", "worktree-" + name);
 }
 console.log("done");
 `;
@@ -149,7 +127,7 @@ describe("doctor --live", () => {
       plugin: VERSION,
       passedAt: expect.any(String),
     });
-    // The one repo wires no hook of its own: Claude Code makes the worktree.
+    // The repo the check makes wires no hook of its own: Claude Code makes the worktree.
     expect(settings).toEqual([]);
     // Each session: this plugin folder, three tools, permission for exactly the calls it
     // makes (no mode that skips the checks), no MCP servers, the prompt last.

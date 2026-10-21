@@ -24,9 +24,10 @@ session's commits too. Under `fresh` (Claude Code's default), a worktree and its
 start from `origin`'s default branch.
 
 The plugin's old worktree engine — the `worktree-create`, `worktree-remove` and
-`subagent-stop` hooks, and the `worktrees.prefix` and `worktrees.setup` fields — is
-deprecated and retires in the next minor version. A project still wired to it keeps working
-until then, and `cc-smart-dev-kit doctor` names the steps to move.
+`subagent-stop` hooks, and the `worktrees.prefix` and `worktrees.setup` fields — was retired
+in 1.0.0. A project still carrying one of them fixes it with one run of
+`cc-smart-dev-kit project init`, which takes the fields and the hook lines out; `doctor`
+names whatever is left.
 
 ## One session, one worktree, one branch
 

@@ -61,7 +61,7 @@ import {
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
-import { subagentWorktreeOf } from "./worktree-remove";
+import { subagentWorktreeOf } from "./subagent-worktree";
 
 /** The agent type a starting or stopping subagent names (`agent_type`), or null when it names none. */
 export function agentTypeOf(input: { agent_type?: unknown }): string | null {

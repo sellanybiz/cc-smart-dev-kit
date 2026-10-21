@@ -3,7 +3,7 @@
  *
  * `git worktree remove` (without `--force`) refuses a worktree with changed or untracked
  * files, but deletes ignored files without a word: a `.env.local` edited after the copy, a
- * local notes file, a key. So the engine asks git for the ignored files too
+ * local notes file, a key. So the plugin asks git for the ignored files too
  * (`git status --porcelain --ignored`), and drops only what is safe to lose:
  *
  * - what comes back by itself: dependency folders, build output, caches, logs
@@ -114,10 +114,4 @@ export function localFiles(
       !REBUILDABLE.some((pattern) => pattern.test(entry)) &&
       !(mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry)),
   );
-}
-
-/** "a, b, c and 4 more": the first few entries of a list, for a message. */
-export function listSome(entries: string[], shown = 5): string {
-  const head = entries.slice(0, shown).join(", ");
-  return entries.length > shown ? `${head} and ${entries.length - shown} more` : head;
 }

@@ -51,24 +51,15 @@ export function projectFolderName(path: string): string {
 /**
  * Is this project folder the repo's main checkout, or one of its worktrees? Claude Code makes
  * a session's own worktree inside the repo, `<main checkout>/.claude/worktrees/<name>`, and a
- * session launched with `claude -w <name>` works there. A project still on the plugin's
- * deprecated engine has its worktrees beside the main checkout as `<prefix><topic>`
- * (`worktrees.prefix`); those count too while the field is set.
+ * session launched with `claude -w <name>` works there.
  */
-export function belongsToRepo(
-  projectFolder: string,
-  mainCheckout: string,
-  prefix?: null | string,
-): boolean {
+export function belongsToRepo(projectFolder: string, mainCheckout: string): boolean {
   const main = projectFolderName(mainCheckout);
   if (projectFolder === main) return true;
   // The folder name of a path under `<main>/.claude/worktrees/`, built the same way Claude
   // Code names a project folder: every character that is not a letter or a digit is a dash.
   const claudeOwn = `${projectFolderName(join(mainCheckout, ".claude", "worktrees"))}-`;
-  if (projectFolder.startsWith(claudeOwn)) return true;
-  if (prefix === undefined || prefix === null || prefix === "") return false;
-  const parent = projectFolderName(mainCheckout.replace(/[\\/][^\\/]+[\\/]?$/, ""));
-  return projectFolder.startsWith(`${parent}-${projectFolderName(prefix)}`);
+  return projectFolder.startsWith(claudeOwn);
 }
 
 /**

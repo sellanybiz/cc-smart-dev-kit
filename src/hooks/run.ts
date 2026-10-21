@@ -3,22 +3,17 @@
  *
  * 1. Read the input. Not a JSON object, a wrong event, or a `cwd` that is not a folder in
  *    git: nothing to do.
- * 2. **The project's own copy**, for a hook the plugin wires (`wiring: "plugin"`): when
- *    the project's cc-smart-dev-kit.json lists the hook in `ownHooks`, exit 0 and print nothing, so
- *    the project's copy runs alone. Only that field is read here (`ownHooksOf`), so it
- *    works even when the rest of the file is broken or needs a newer plugin. Nothing else
- *    silences a plugin hook: a project hook on the same event does not (it may be a logger,
- *    and a guard must not go quiet for it). A hook the project wires itself
- *    (`wiring: "project"`, run as `cc-smart-dev-kit hook <name>`) skips this step: that wiring is
- *    the project's opt-in.
- * 3. Read the project's cc-smart-dev-kit.json. When it is broken, needs a newer plugin, or lacks
- *    what the hook `needs`, the hook **fails closed** in its own way (`onConfigProblem`):
- *    a guard asks, WorktreeCreate fails with the reason, an informational hook prints one
- *    line.
+ * 2. **The project's own copy**: when the project's cc-smart-dev-kit.json lists the hook in
+ *    `ownHooks`, exit 0 and print nothing, so the project's copy runs alone. Only that field
+ *    is read here (`ownHooksOf`), so it works even when the rest of the file is broken or
+ *    needs a newer plugin. Nothing else silences a plugin hook: a project hook on the same
+ *    event does not (it may be a logger, and a guard must not go quiet for it).
+ * 3. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
+ *    hook **fails closed** in its own way (`onConfigProblem`): a guard asks, an informational
+ *    hook prints one line.
  * 4. Run the hook.
  *
- * A bug never stops a person's work: any error is one line on stderr and exit 0, except
- * where the hook says otherwise (WorktreeCreate cannot succeed without a folder).
+ * A bug never stops a person's work: any error is one line on stderr and exit 0.
  *
  * A **machine-wide** hook (`agent-guard`, and the notifier) answers about the machine, not a
  * project: it runs with or without `cc-smart-dev-kit.json`, and its answer never depends on the
@@ -31,7 +26,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { type CliPaths, cliPaths } from "../cli/paths";
-import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
+import { CcSmartDevKitConfigError } from "../project/config";
 import {
   type Checkout,
   loadProjectConfig,
@@ -73,20 +68,9 @@ export interface HookSpec {
   /** The events it is wired for. Any other event: nothing to do. */
   events: string[];
   /**
-   * Who wires it. "plugin": `plugin/hooks/hooks.json`, so it runs in every project, and
-   * stays silent in one whose cc-smart-dev-kit.json lists it in `ownHooks`. "project": the project
-   * wires `cc-smart-dev-kit hook <name>` in its own settings; that is its opt-in.
-   */
-  wiring: "plugin" | "project";
-  /**
-   * What the hook needs from cc-smart-dev-kit.json: null when it is there, else why not (the
-   * hook then fails closed with `onConfigProblem`). Left out: it needs nothing.
-   */
-  needs?: (config: CcSmartDevKitConfig | null) => string | null;
-  /**
-   * The answer when cc-smart-dev-kit.json is broken, needs a newer plugin, or lacks what the hook
-   * `needs`: fail closed. `context` (the environment and paths): for a hook whose answer
-   * does not depend on the project's file, so it can judge the same way (`agent-guard`).
+   * The answer when cc-smart-dev-kit.json is broken or needs a newer plugin: fail closed.
+   * `context` (the environment and paths): for a hook whose answer does not depend on the
+   * project's file, so it can judge the same way (`agent-guard`).
    */
   onConfigProblem: (
     message: string,
@@ -144,7 +128,7 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
     }
     if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`, context);
 
-    if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name)) return SILENT;
+    if (ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
     let project: Project;
     try {
@@ -155,8 +139,6 @@ export async function handleHook(spec: HookSpec, text: string, env: Env): Promis
       }
       throw error;
     }
-    const missing = spec.needs?.(project.config) ?? null;
-    if (missing !== null) return spec.onConfigProblem(missing, input, event, checkout, context);
     return await spec.run({ input, event, cwd, project, env, paths: context.paths });
   } catch (error) {
     return {

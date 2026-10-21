@@ -1,7 +1,6 @@
 /**
- * Every hook: what it runs, who wires it, what silences it (the defer check, for the hooks
- * the plugin wires), and how it fails closed when the project's cc-smart-dev-kit.json is broken,
- * needs a newer plugin, or lacks what the hook needs.
+ * Every hook: what it runs, what silences it (the defer check), and how it fails closed when
+ * the project's cc-smart-dev-kit.json is broken or needs a newer plugin.
  *
  * The plugin wires these in `plugin/hooks/hooks.json` (`HOOKS`):
  *
@@ -27,22 +26,14 @@
  * instructions copy), `notify` (the alerts: desktop, SSH terminal, Warp; `notify.ts`) and
  * `playwright-output` (a caller-named screenshot goes into the browser's output folder,
  * `playwright-output.ts`).
- * A project wires these itself, as `cc-smart-dev-kit hook <name>` (`PROJECT_HOOKS`): the worktree
- * engine. A plugin WorktreeCreate would replace Claude Code's own worktrees in every
- * project, so the engine is opt-in (`docs/design.md` § The worktree engine). Each needs
- * `worktrees` in cc-smart-dev-kit.json, and fails closed without it:
  *
- * | Hook | Event | Fails closed by |
- * |---|---|---|
- * | worktree-create | WorktreeCreate | failing: exit 1, the reason on stderr |
- * | worktree-remove | WorktreeRemove | keeping the worktree: exit 1, the reason on stderr |
- * | subagent-stop | SubagentStop | keeping the worktree (exit 0: a subagent must finish) |
+ * Every hook here is wired by the plugin, in `plugin/hooks/hooks.json`. The worktree engine
+ * a project used to wire itself is retired (1.0.0): its three hook names only print the fix
+ * (`src/hooks/settings-hooks.ts`).
  */
 
-import { existsSync } from "node:fs";
 import { classifyHeavyCommand } from "../jobs/classify";
 import { mergeKinds } from "../jobs/kinds";
-import type { CcSmartDevKitConfig } from "../project/config";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsMerge } from "./after-merge";
@@ -67,73 +58,16 @@ import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
 import { sessionName } from "./session-name";
 import { programsOf } from "./shell-command";
-import { worktreeCreate } from "./worktree-create";
 import { worktreeLeftovers } from "./worktree-leftovers";
-import { subagentStop, worktreeRemove } from "./worktree-remove";
 
 /** Said to the person when a guard cannot read the project's cc-smart-dev-kit.json. */
 function cannotCheck(what: string, message: string): string {
   return `cc-smart-dev-kit cannot check ${what}: ${message}`;
 }
 
-/**
- * The worktree engine's need: `worktrees` in cc-smart-dev-kit.json. A project that wires the hooks
- * without it gets this reason, never a worktree of some other shape.
- */
-export function needsWorktrees(config: CcSmartDevKitConfig | null): string | null {
-  if (config?.worktrees !== undefined) return null;
-  const lacks =
-    config === null
-      ? "has no .claude/cc-smart-dev-kit.json"
-      : 'its .claude/cc-smart-dev-kit.json has no "worktrees"';
-  return (
-    `this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but ${lacks}. ` +
-    'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of ' +
-    ".claude/settings.json (the cc-smart-dev-kit README, § Worktrees)"
-  );
-}
-
-export const worktreeCreateHook: HookSpec = {
-  name: "worktree-create",
-  events: ["WorktreeCreate"],
-  wiring: "project",
-  needs: needsWorktrees,
-  onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree not created: ${message}` }),
-  outsideGit: (_input, _event, why) => ({ exitCode: 1, stderr: `worktree not created: ${why}` }),
-  run: worktreeCreate,
-  crashExitCode: 1,
-};
-
-export const worktreeRemoveHook: HookSpec = {
-  name: "worktree-remove",
-  events: ["WorktreeRemove"],
-  wiring: "project",
-  needs: needsWorktrees,
-  onConfigProblem: (message) => ({ exitCode: 1, stderr: `worktree kept: ${message}` }),
-  // Claude Code starts the hook inside the worktree; when that folder is gone, so is the worktree.
-  outsideGit: (input, _event, why) => {
-    const path = stringField(input.worktree_path);
-    return path !== null && !existsSync(path)
-      ? SILENT
-      : { exitCode: 1, stderr: `worktree kept: ${why}` };
-  },
-  run: worktreeRemove,
-  crashExitCode: 1,
-};
-
-export const subagentStopHook: HookSpec = {
-  name: "subagent-stop",
-  events: ["SubagentStop"],
-  wiring: "project",
-  needs: needsWorktrees,
-  onConfigProblem: (message) => ({ stderr: `subagent worktree kept: ${message}` }),
-  run: subagentStop,
-};
-
 export const gitGuardHook: HookSpec = {
   name: "git-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     return command !== null && runsGit(command)
@@ -169,7 +103,6 @@ export const gitGuardHook: HookSpec = {
 export const mergeGuardHook: HookSpec = {
   name: "merge-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     return command !== null && requestsMerge(command)
@@ -188,7 +121,6 @@ export const mergeGuardHook: HookSpec = {
 export const mainFolderGuardHook: HookSpec = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input, _event, checkout) => {
     const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
     const repo = checkout.mainCheckout ?? checkout.root;
@@ -202,7 +134,6 @@ export const mainFolderGuardHook: HookSpec = {
 export const messageGuardHook: HookSpec = {
   name: "message-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message) =>
     toolDecision("ask", cannotCheck("whether this message stays in this repo", message)),
   run: messageGuard,
@@ -211,7 +142,6 @@ export const messageGuardHook: HookSpec = {
 export const afterMergeHook: HookSpec = {
   name: "after-merge",
   events: ["PostToolUse", "PostToolUseFailure"],
-  wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     const command = stringField(toolInput(input).command);
     return command !== null && mergesPullRequest(command)
@@ -227,15 +157,13 @@ export const afterMergeHook: HookSpec = {
  * stops on that same commit — what the merge guard reads before a merge it would make with
  * no person watching (`src/hooks/review-record.ts`, the whole story).
  *
- * A plugin-wired SubagentStop is safe for THIS hook because it never touches a worktree: the
- * engine's own `subagent-stop` stays the project's opt-in (`.claude/rules/hooks.md`).
- * SubagentStart cannot block a launch, and this hook adds no context to either event, so its
- * answers are silence and stderr only.
+ * A plugin-wired SubagentStop is safe for THIS hook because it never touches a worktree
+ * (`.claude/rules/hooks.md`). SubagentStart cannot block a launch, and this hook adds no
+ * context to either event, so its answers are silence and stderr only.
  */
 export const reviewRecordHook: HookSpec = {
   name: "review-record",
   events: ["SubagentStart", "SubagentStop"],
-  wiring: "plugin",
   onConfigProblem: (message, input, event) => {
     // Which agents record is in the project's file, so with no usable file the built-in list
     // decides whether this is even about a review: one stderr line when it is, silence when
@@ -254,7 +182,6 @@ export const reviewRecordHook: HookSpec = {
 export const worktreeLeftoversHook: HookSpec = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
-  wiring: "plugin",
   onConfigProblem: (message, _input, event) => addContext(event, `cc-smart-dev-kit: ${message}`),
   run: worktreeLeftovers,
 };
@@ -262,7 +189,6 @@ export const worktreeLeftoversHook: HookSpec = {
 export const sessionNameHook: HookSpec = {
   name: "session-name",
   events: ["SessionStart", "UserPromptSubmit"],
-  wiring: "plugin",
   onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit session-name: ${message}` }),
   run: sessionName,
 };
@@ -279,7 +205,6 @@ export const sessionNameHook: HookSpec = {
 export const agentGuardHook: HookSpec = {
   name: "agent-guard",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (_message, input, _event, _checkout, context) =>
     agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) =>
@@ -305,7 +230,6 @@ export const agentGuardHook: HookSpec = {
 export const fableSessionHook: HookSpec = {
   name: "fable-session",
   events: ["SessionStart", "PostModelSwitch", "Stop"],
-  wiring: "plugin",
   onConfigProblem: (_message, input, _event, _checkout, context) =>
     fableSession(input, context.env, context.paths),
   outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
@@ -322,7 +246,6 @@ export const fableSessionHook: HookSpec = {
 export const jobRouteHook: HookSpec = {
   name: "job-route",
   events: ["PreToolUse"],
-  wiring: "plugin",
   onConfigProblem: (message, input) => {
     // Broken file: whether this project routes heavy commands cannot be read. The guard asks
     // about the commands in its domain, the way the other guards do, and about no others.
@@ -401,11 +324,4 @@ export const MACHINE_WIDE_HOOKS: readonly string[] = [
   ...USER_HOOKS,
   "agent-guard",
   "fable-session",
-];
-
-/** The hooks a project wires itself, as `cc-smart-dev-kit hook <name>`: the worktree engine. */
-export const PROJECT_HOOKS: readonly HookSpec[] = [
-  worktreeCreateHook,
-  worktreeRemoveHook,
-  subagentStopHook,
 ];

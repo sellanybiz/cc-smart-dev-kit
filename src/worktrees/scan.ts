@@ -1,7 +1,7 @@
 /**
  * Gathering the facts `verdict.ts` judges, removing a finished worktree, and keeping the main
- * checkout on the base branch after a merge. Used by `worktrees` (`command.ts`); the project
- * hooks that keep sessions from leaving worktrees behind judge through
+ * checkout on the base branch after a merge. Used by `worktrees` (`command.ts`); the note that
+ * keeps sessions from leaving worktrees behind judges through
  * `hooks/worktree-leftovers.ts`, which names the questions again in its own words and says
  * there why it leaves the machine's facts out.
  */
