@@ -47,7 +47,7 @@ export const START_KEPT_MS = 24 * 60 * 60 * 1000;
 export const BY_HAND = "workflow review-done";
 
 /** A commit as git writes one: 40 hex characters, or 64 in a sha256 repository. */
-const COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+export const COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 
 /** One recorded commit: when it was first recorded, and every writer that recorded it. */
 export interface ReviewEntry {

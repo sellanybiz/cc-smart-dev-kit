@@ -37,6 +37,7 @@ import {
   readCommittedConfig,
 } from "../project/resolve";
 import { isHeld, updateFiles } from "../update/state";
+import { describeIssues } from "../zod-issues";
 import {
   type AlertEvent,
   type Workflow,
@@ -63,11 +64,28 @@ export interface ResolvedWorkflow {
   deleteBranch: ResolvedValue<boolean>;
   reviewBeforePush: ResolvedValue<boolean>;
   reviewAgents: ResolvedValue<string[]>;
+  fixesAfterReview: {
+    lines: ResolvedValue<number>;
+    files: ResolvedValue<number>;
+    percent: ResolvedValue<number>;
+  };
   clearWorktreeAfterMerge: ResolvedValue<boolean>;
   alerts: {
     events: ResolvedValue<AlertEvent[]>;
     sound: ResolvedValue<boolean>;
     usagePercent: ResolvedValue<number>;
+  };
+  workers: {
+    enabled: ResolvedValue<boolean>;
+    idleStopMinutes: ResolvedValue<number>;
+    max: ResolvedValue<number>;
+    memoryGb: ResolvedValue<number>;
+    quietMinutes: ResolvedValue<number>;
+    handoffPercent: ResolvedValue<number>;
+    softHours: ResolvedValue<number>;
+    maxHours: ResolvedValue<number>;
+    /** Null: no tag is set, and the main checkout's folder name stands in. */
+    tag: ResolvedValue<null | string>;
   };
   switches: {
     statusLine: ResolvedValue<boolean>;
@@ -99,22 +117,30 @@ export function loadWorkflow(file: string): Workflow {
   }
   const parsed = workflowSchema.safeParse(raw);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((issue) => {
-      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-      return issue.code === "unrecognized_keys"
-        ? `${issue.keys.join(", ")}: unknown field`
-        : `${field}: ${issue.message}`;
-    });
-    throw new WorkflowConfigError(`Invalid ${file}: ${issues.join("; ")}`);
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
   return parsed.data;
 }
 
-/** The project's workflow object and the person's, the project's over it, field by field. */
+/** One group of both objects, the project's fields over the person's. */
+function mergedGroup<T extends object>(personal: T | undefined, project: T | undefined) {
+  if (personal === undefined) return project;
+  if (project === undefined) return personal;
+  return { ...personal, ...project };
+}
+
+/**
+ * The project's workflow object and the person's, the project's over it, field by field — a
+ * group's fields too (`alerts`, `fixesAfterReview`, `workers`).
+ */
 export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow {
   const merged: Workflow = { ...personal, ...project };
-  const alerts = { ...personal.alerts, ...project.alerts };
-  if (Object.keys(alerts).length > 0) merged.alerts = alerts;
+  const alerts = mergedGroup(personal.alerts, project.alerts);
+  if (alerts !== undefined) merged.alerts = alerts;
+  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
+  if (fixes !== undefined) merged.fixesAfterReview = fixes;
+  const workers = mergedGroup(personal.workers, project.workers);
+  if (workers !== undefined) merged.workers = workers;
   return merged;
 }
 
@@ -249,6 +275,51 @@ export function resolveGate(
   return { ok: true, gate: { branch, config: committed.config, resolved } };
 }
 
+/** Where each key's value sits in a resolved workflow: one entry per key, so none is missed. */
+const RESOLVED: {
+  readonly [K in WorkflowKey]: (resolved: ResolvedWorkflow) => ResolvedValue<unknown>;
+} = {
+  autoCommit: (r) => r.autoCommit,
+  autoPush: (r) => r.autoPush,
+  openPr: (r) => r.openPr,
+  autoMerge: (r) => r.autoMerge,
+  mergeMethod: (r) => r.mergeMethod,
+  deleteBranch: (r) => r.deleteBranch,
+  reviewBeforePush: (r) => r.reviewBeforePush,
+  reviewAgents: (r) => r.reviewAgents,
+  "fixesAfterReview.lines": (r) => r.fixesAfterReview.lines,
+  "fixesAfterReview.files": (r) => r.fixesAfterReview.files,
+  "fixesAfterReview.percent": (r) => r.fixesAfterReview.percent,
+  clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
+  "alerts.events": (r) => r.alerts.events,
+  "alerts.sound": (r) => r.alerts.sound,
+  "alerts.usagePercent": (r) => r.alerts.usagePercent,
+  "workers.enabled": (r) => r.workers.enabled,
+  "workers.idleStopMinutes": (r) => r.workers.idleStopMinutes,
+  "workers.max": (r) => r.workers.max,
+  "workers.memoryGb": (r) => r.workers.memoryGb,
+  "workers.quietMinutes": (r) => r.workers.quietMinutes,
+  "workers.handoffPercent": (r) => r.workers.handoffPercent,
+  "workers.softHours": (r) => r.workers.softHours,
+  "workers.maxHours": (r) => r.workers.maxHours,
+  "workers.tag": (r) => r.workers.tag,
+  "switches.statusLine": (r) => r.switches.statusLine,
+  "switches.sessionNames": (r) => r.switches.sessionNames,
+  "switches.jobRoute": (r) => r.switches.jobRoute,
+  "switches.updateHold": (r) => r.switches.updateHold,
+};
+
+/**
+ * The value and source the resolver holds for one key. The one map from a key to its value:
+ * `workflow show` and the portal's Settings page both read through it.
+ */
+export function resolvedValueOf(
+  resolved: ResolvedWorkflow,
+  key: WorkflowKey,
+): ResolvedValue<unknown> {
+  return RESOLVED[key](resolved);
+}
+
 /**
  * Every workflow value, resolved. Reads the person's file and the three settings a switch
  * maps onto; throws `WorkflowConfigError` when the person's file is broken.
@@ -264,6 +335,8 @@ export function resolveWorkflow(
     value,
     source: sourceOf(personal, project, key),
   });
+  const fixes = merged.fixesAfterReview ?? {};
+  const workers = merged.workers ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -276,12 +349,40 @@ export function resolveWorkflow(
       merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush,
     ),
     reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
+    fixesAfterReview: {
+      lines: of("fixesAfterReview.lines", fixes.lines ?? workflowDefaults.fixesAfterReview.lines),
+      files: of("fixesAfterReview.files", fixes.files ?? workflowDefaults.fixesAfterReview.files),
+      percent: of(
+        "fixesAfterReview.percent",
+        fixes.percent ?? workflowDefaults.fixesAfterReview.percent,
+      ),
+    },
     clearWorktreeAfterMerge: of(
       "clearWorktreeAfterMerge",
       merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge,
     ),
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
+    workers: {
+      enabled: of("workers.enabled", workers.enabled ?? workflowDefaults.workers.enabled),
+      idleStopMinutes: of(
+        "workers.idleStopMinutes",
+        workers.idleStopMinutes ?? workflowDefaults.workers.idleStopMinutes,
+      ),
+      max: of("workers.max", workers.max ?? workflowDefaults.workers.max),
+      memoryGb: of("workers.memoryGb", workers.memoryGb ?? workflowDefaults.workers.memoryGb),
+      quietMinutes: of(
+        "workers.quietMinutes",
+        workers.quietMinutes ?? workflowDefaults.workers.quietMinutes,
+      ),
+      handoffPercent: of(
+        "workers.handoffPercent",
+        workers.handoffPercent ?? workflowDefaults.workers.handoffPercent,
+      ),
+      softHours: of("workers.softHours", workers.softHours ?? workflowDefaults.workers.softHours),
+      maxHours: of("workers.maxHours", workers.maxHours ?? workflowDefaults.workers.maxHours),
+      tag: of("workers.tag", workers.tag ?? workflowDefaults.workers.tag),
+    },
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),

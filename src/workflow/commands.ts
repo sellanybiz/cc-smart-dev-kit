@@ -26,15 +26,22 @@ import type { CcSmartDevKitConfig } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import {
   type Gate,
-  type ResolvedValue,
   type ResolvedWorkflow,
+  resolvedValueOf,
   resolveGate,
   resolveWorkflow,
   sourceLabel,
 } from "./resolve";
-import { BY_HAND, hasReview, type RecordedReview, recordReview, reviewsFile } from "./reviews";
+import {
+  BY_HAND,
+  COMMIT_SHA,
+  hasReview,
+  type RecordedReview,
+  recordReview,
+  reviewsFile,
+} from "./reviews";
 import type { WorkflowKey } from "./schema";
-import { parseWorkflowValue, REVIEW_GATE_KEYS, WORKFLOW_KEYS } from "./schema";
+import { parseWorkflowValue, REVIEW_GATE_KEYS, showValue, WORKFLOW_KEYS } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
 
 type Env = Record<string, string | undefined>;
@@ -66,33 +73,6 @@ had its one premium review and its fixes. The merge guard reads it before a merg
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
 hook writes it, when a review agent (the reviewAgents setting) returns, so review-done
 refuses there: it is for your own terminal.`;
-
-/** One line of `show`: the setting, its value now, and where that value came from. */
-const ROWS: ReadonlyArray<
-  readonly [WorkflowKey, (resolved: ResolvedWorkflow) => ResolvedValue<unknown>]
-> = [
-  ["autoCommit", (r) => r.autoCommit],
-  ["autoPush", (r) => r.autoPush],
-  ["openPr", (r) => r.openPr],
-  ["autoMerge", (r) => r.autoMerge],
-  ["mergeMethod", (r) => r.mergeMethod],
-  ["deleteBranch", (r) => r.deleteBranch],
-  ["reviewBeforePush", (r) => r.reviewBeforePush],
-  ["reviewAgents", (r) => r.reviewAgents],
-  ["clearWorktreeAfterMerge", (r) => r.clearWorktreeAfterMerge],
-  ["alerts.events", (r) => r.alerts.events],
-  ["alerts.sound", (r) => r.alerts.sound],
-  ["alerts.usagePercent", (r) => r.alerts.usagePercent],
-  ["switches.statusLine", (r) => r.switches.statusLine],
-  ["switches.sessionNames", (r) => r.switches.sessionNames],
-  ["switches.jobRoute", (r) => r.switches.jobRoute],
-  ["switches.updateHold", (r) => r.switches.updateHold],
-];
-
-/** A value as `show` prints it: a list of alerts, a number, a boolean, a word. */
-function shown(value: unknown): string {
-  return Array.isArray(value) ? value.join(", ") : String(value);
-}
 
 /** One git call a `workflow` run makes (a `rev-parse`): milliseconds, never a hang. */
 const WORKFLOW_GIT_TIMEOUT_MS = 5_000;
@@ -128,7 +108,7 @@ function commitOf(folder: string, rev: string, env: Env): string | null {
     env,
     WORKFLOW_GIT_TIMEOUT_MS,
   );
-  return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
 }
 
 /** The repository a checkout belongs to: the main checkout of every worktree of it. */
@@ -188,10 +168,9 @@ function gateLines(
   const lines = [
     `gate: what the merge guard judges with, from origin/${base}:${CONFIG_PATH} as committed (this checkout's own copy does not count)`,
   ];
-  for (const [key, of] of ROWS) {
-    if (!REVIEW_GATE_KEYS.includes(key)) continue;
-    const value = of(gate.resolved);
-    lines.push(`gate ${key} = ${shown(value.value)} (${sourceLabel(value, gate.branch)})`);
+  for (const key of REVIEW_GATE_KEYS) {
+    const value = resolvedValueOf(gate.resolved, key);
+    lines.push(`gate ${key} = ${showValue(key, value.value)} (${sourceLabel(value, gate.branch)})`);
   }
   return { lines, gate };
 }
@@ -211,9 +190,9 @@ function show(context: WorkflowContext): number {
   print(
     `your own defaults: ${tildify(paths.workflowConfigFile, paths.home)}; a project's .claude/cc-smart-dev-kit.json wins field by field`,
   );
-  for (const [key, of] of ROWS) {
-    const { value, source } = of(resolved);
-    print(`${key} = ${shown(value)} (${source})`);
+  for (const key of WORKFLOW_KEYS) {
+    const { value, source } = resolvedValueOf(resolved, key);
+    print(`${key} = ${showValue(key, value)} (${source})`);
   }
   for (const line of gate.lines) print(line);
   const agents = (gate.gate?.resolved ?? resolved).reviewAgents.value;

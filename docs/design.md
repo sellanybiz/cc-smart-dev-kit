@@ -1318,7 +1318,12 @@ whole call (`workflowRefusal`), because no rule can hold for a launch the guard 
 passed around), and a call whose options are built at run time (a `...spread`, a computed
 `[…]` key, the same key twice). The strictest launch of the call answers for the whole call.
 
-The rules are in one table in `src/hooks/agent-guard.ts` (its header), the one list a person
+The rules are in one table in `src/hooks/agent-guard.ts` (its header). The policy under them —
+which model a launch really runs on (`resolveLaunchModel`), the effort levels
+(`ALLOWED_EFFORTS`), the Fable reason words and the worker kinds (§ Lead and workers) — is one
+pure module, `src/models/launch-policy.ts`, which the guard imports and the worker launcher and
+the Bash judge share; the guard keeps the hook's own parts (reading a Workflow script, the agent
+types, the record, the messages). The one list a person
 may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
 read-only agent types the Fable rule reads), and the answer is a PreToolUse `deny` (the rule, in
 words, to Claude) or an `ask` (a Fable launch, and an `opus`-tier launch at effort `max`; the
@@ -1648,7 +1653,9 @@ default:
 
 `resolveWorkflow(paths, projectConfig)` returns every value with the source it came from, so
 `cc-smart-dev-kit workflow show` (and the portal's settings page) can say *why* a value is what
-it is. The one schema is reused by `src/project/config.ts` for the project's `workflow`
+it is; both read a key's value through one map, `resolvedValueOf`, so a new setting is one
+entry there (the type checker refuses a key without one). A group (`alerts`,
+`fixesAfterReview`, `workers`) merges field by field like the rest. The one schema is reused by `src/project/config.ts` for the project's `workflow`
 object, so a field can never mean two things in the two files. A broken personal file throws
 `WorkflowConfigError`, which names the file and the field: the person must hear it. A field
 with a wrong kind can never be written (`write.ts` validates the whole file before the
@@ -1694,6 +1701,7 @@ place (`auto-merge.ts`).
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:reviewer` by default). |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
+| `fixesAfterReview.*`, `workers.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The merge guard's rule for the fixes after a review (D17) and the lead and worker sessions (§ Lead and workers) are the parts that will read them. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through
 with no question only when **all** of these hold: `autoMerge` is on (`autoMergeOff` is the first
@@ -1707,7 +1715,8 @@ the head commit from `gh pr view` has a recorded review that counts.
 
 **The review gate is read as committed on the pull request's base**, never from a checkout's
 working copy. Every value the guard judges with — `autoMerge`, `reviewBeforePush`,
-`reviewAgents`, `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
+`reviewAgents`, `fixesAfterReview.*` (the limits a fix after a review may reach and still count,
+D17 — read and shown with the gate, not judged yet), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
 hands the merge to the project's own guard — comes from the built-in default, the person's
 `workflow.json`, and `.claude/cc-smart-dev-kit.json` as `git` holds it at `origin/<base>`
 (`resolveGate` in `src/workflow/resolve.ts`, over `readCommittedConfig` in
@@ -2004,6 +2013,107 @@ filter that made each session's windows its own.
   one a caller names, an upload, a download, and `browser_close`. Its prerequisites (Chrome,
   profile, extension, token) are checked first, so a missing piece is one clear line instead of a
   30-second wait; what it opens and what stays behind is printed before it starts.
+
+## Lead and workers
+
+A person talks to one small **lead** session. It plans, and starts each phase of the plan as a
+**worker**: a background session (`claude --bg`) in its own worktree, on its own branch, that
+builds, tests, reviews and commits the phase and hands back a report. The lead never waits on a
+worker — the news arrives by itself — and merges the finished branches locally. Background
+sessions win over subagents alone (every hand-back lands in the lead's context, and a long phase
+rots it) and over agent teams (no worktree isolation, no resume).
+
+This section holds the contracts every part of it builds on: the switch, the kinds, the names
+and the store. Nothing acts on them yet; the launcher (`worker start`), the watch that brings the
+lead its news, and the worker and lead hooks are later parts, and extend this section.
+
+**The switch** (D34) is `workflow.workers.enabled`, off by default, in the person's
+`workflow.json` (every project's default) and in a project's `.claude/cc-smart-dev-kit.json`,
+which wins field by field like every workflow setting (§ The workflow). Beside it in the same
+group sit the limits a lead keeps its workers to — how many run on the machine at once, the
+free memory a new one needs, when a quiet one is reported, when a long one hands off, when a
+blocked one is stopped (D35: a worker never outlives its work) — and the `tag` of their names.
+`workflow show` prints each with its source.
+
+**The kinds** (D21) say what a phase needs, and so the model and effort its worker runs on:
+`WORKER_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
+guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`, `tests` — runs on
+`sonnet`, the worker slot: at `max` when an affordable gateway slot answers it, at `high` when
+Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Work that needs
+judgment — `security`, `money`, `permissions`, `schema`, `deploy`, `architecture`, `ui` — runs on
+`opus` at `xhigh`, whatever answers the tier. `workerLaunch(kind, gateway, env)` makes that
+choice from the same reading of the gateway the guard makes, so a worker never starts on a model
+or an effort the guard would refuse a subagent; a test runs every kind through the guard.
+
+**The names** (D26, `src/workers/names.ts`) show the role, because agent view has no parent link
+and no grouping by lead — the name is how a person, and the portal, groups the sessions:
+
+| Session | Name |
+|---|---|
+| a lead | `LEAD <tag> <plan>` |
+| a worker | `W <tag> <phase> <slug>`, and ` 2`, ` 3` for a hand-off's next worker |
+
+- **Role and phase first**, so a list that cuts a name still shows them. A tag is at most
+  `MAX_TAG` (12) characters and a phase `MAX_PHASE` (8), so `W <tag> <phase>` always fits in the
+  first `NAME_VIEW` (24) characters (the width agent view really shows is not proved live yet),
+  and the whole name fits in `MAX_SESSION_NAME` (60): the clean title every session's name goes
+  through (`cleanSessionName`, which moved here from the session-name hook). What a long name
+  loses is the end of its slug or plan, never the hand-off number.
+- **ASCII only, no brackets or quotes**, so a name is safe in a title bar, a shell line and a file
+  name, and it **never ends in `]`**: the message guard drops the ` [ref]` ListAgents prints after
+  a name before it looks the name up (`withoutListRef`, one home), so a name of ours that ended in
+  `]` would not match itself there. Every part goes through `namePart`: accents dropped, any other
+  character a `-`, no `--`, a letter or a digit at each end. A phase is the worker's identity, so
+  one that is not already clean is refused rather than changed (`isPhase`).
+- **The tag** names the repository: the main checkout's folder name, made clean and short, or
+  `workflow.workers.tag` (`workerTag`). A folder name that leaves nothing (one of non-Latin
+  letters only) is refused with the line to set the tag.
+- `roleOf(name)` reads the shape only — `lead`, `worker`, or null for any other name, a ListAgents
+  ` [ref]` read past. A person may name a session in that shape by hand, so **the store, never the
+  name, is what anything that stops or removes a session goes by.**
+
+**The store** (`src/workers/store.ts`) is what the kit knows of each lead and worker, per
+repository, under the state folder:
+
+```
+<stateDir>/workers/<repo key>/workers/<worker id>.json   one record per worker
+<stateDir>/workers/<repo key>/leads/<session id>.json    one record per lead
+<stateDir>/workers/<repo key>/reports/<worker id>.json   a worker's hand-back report
+<stateDir>/workers/<repo key>/events.jsonl               every change, one line each, append-only
+```
+
+- **The key is the review record's** (`repoKey`, a hash of the main checkout's folder), so every
+  worktree of a repository shares one store, as it shares one review record. It is the kit's own
+  state: folders 0700, files 0600, each record written whole through the kit's atomic write.
+- **Every write holds the store's own lock** (`withLock` on the repository's folder, 3 s at most),
+  not the state folder's shared one: two leads, or a lead and a worker reporting at once, both
+  land. A state change and its `state` event are written under one hold, so the log never misses
+  a change; a new worker is one `created` event, a step or a report one line each.
+- **A worker record** holds who it is (its id — a plain file name, known before any session
+  exists —, its name, its session's id and short id, its lead), what it does (the repository,
+  the plan, the phase and slug, the kind, the model as named with the slot and the model that
+  answer it, the effort, the permission mode, the worktree, the branch, the base and its commit,
+  the files of its brief) and where it is: its state, its last line, its report, its pull request,
+  its memory, and when it was recorded and changed. The states are `queued`, `starting`,
+  `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
+  `removed` (`WORKER_STATES`, each one's meaning in the file). **A lead record** holds its session
+  id, name, repository, plan and folder.
+- **The hand-back report** is what a worker gives the lead when its phase ends: its status (`done`,
+  `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
+  diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
+  the other checks, the one review (agent, model, effort, the commit it read, each finding and its
+  fix), the docs it changed, what only the lead may do, what is still open — and, when blocked,
+  the question it waits on (a blocked report without one is refused).
+- **The events log is read from an offset**, whole lines only: a line a writer has not finished
+  is left for the next read, a line that cannot be read is counted and skipped, and a log shorter
+  than the offset (replaced) is read from its start.
+- **Older and newer kits share the store.** A daemon's spare process, or a session started before
+  an update, runs older code. Every record, event and report carries the schema `version` it was
+  written with; a reader keeps every field it does not know and reads a state, kind, event type
+  or report status it does not know as itself; an update by an older kit keeps what a newer one
+  wrote, and the newer version number. A record that lacks a field this kit needs is broken: a
+  single read throws, naming the file and the field, and a list names it under `broken` and
+  goes on.
 
 ## Sessions and worktrees
 

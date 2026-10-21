@@ -38,6 +38,7 @@ export function defaultResolved(): ResolvedWorkflow {
     autoPush: at(false),
     clearWorktreeAfterMerge: at(false),
     deleteBranch: at(false),
+    fixesAfterReview: { files: at(10), lines: at(200), percent: at(20) },
     mergeMethod: at("merge"),
     openPr: at("off"),
     reviewBeforePush: at(true),
@@ -47,6 +48,17 @@ export function defaultResolved(): ResolvedWorkflow {
       sessionNames: at(false),
       statusLine: at(false),
       updateHold: at(false),
+    },
+    workers: {
+      enabled: at(false),
+      handoffPercent: at(70),
+      idleStopMinutes: at(10),
+      max: at(4),
+      maxHours: at(4),
+      memoryGb: at(2),
+      quietMinutes: at(20),
+      softHours: at(2),
+      tag: at<null | string>(null),
     },
   };
 }

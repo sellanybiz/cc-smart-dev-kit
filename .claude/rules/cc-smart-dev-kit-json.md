@@ -40,6 +40,8 @@ a clear error that says what is wrong.
 | `worktrees.bases` | object: a branch-name prefix (ending in `/`) to a base branch | The base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`), over `worktrees.base`; the longest prefix that matches wins. Auto-merge and the after-merge note read it (`src/workflow/auto-merge.ts`, `src/hooks/after-merge.ts`); the deprecated engine also starts such a branch from it. |
 | `worktrees.engine` | `"plugin"` or `"own"`, **deprecated** | Who made this project's worktrees. Accepted and ignored until the engine retires in the next minor version; `doctor` warns and names the steps to move (`src/cli/project-checks.ts`). |
 | `workflow` | object (`src/workflow/schema.ts`) | What cc-smart-dev-kit may do by itself here (commit, push, open a pull request, merge), over the person's own `~/.config/cc-smart-dev-kit/workflow.json`. Each field is optional, and the project's value wins field by field (`src/workflow/resolve.ts`). |
+| `workflow.fixesAfterReview` | object: `lines`, `files`, `percent`, each a whole number 0 or more | How much a branch may change after its review and still count as reviewed (D17): the change since the reviewed commit, the base's own changes taken out, is covered while its lines stay within `lines` or `percent`% of the reviewed lines (whichever is more), and its files within `files` or `percent`% of the reviewed files. `0`/`0`/`0`: the exact reviewed commit only. Default `200`/`10`/`20`. A review-gate key (`REVIEW_GATE_KEYS`): read from the base's committed file, and `workflow set` refuses it inside Claude Code. Nothing reads it for a decision yet. |
+| `workflow.workers` | object: `enabled` (boolean), `idleStopMinutes`, `max`, `quietMinutes` (whole numbers, 1 or more), `handoffPercent` (1–100), `memoryGb`, `softHours`, `maxHours` (numbers above 0), `tag` (string) | Lead and worker sessions (D34, D35): the one switch (`enabled`, off by default), the limits a lead keeps its workers to (their defaults: `workflowDefaults`, listed in README § The workflow), and the tag in their names (D26's rules: `isNameTag` in `src/workers/names.ts`; default: the main checkout's folder name). The person's file holds every project's default; a project's file wins field by field. Nothing reads it for a decision yet. |
 | `protectedBranches` | string array | The branches the git guard asks about before a push. Default `["main"]`. |
 | `sessionNames` | boolean | Each session names itself after its task (the session-name hook). Off when left out. |
 | `ownHooks` | array of plugin hook names | The plugin hooks this project still runs as its own copy (`["git-guard"]`): exactly those stay silent here, so two copies never both answer. Emptied once the project removed its copies (`docs/design.md` § The safe switch). A name that is not a plugin hook is refused by the strict parse (`PLUGIN_HOOK_NAMES` in `src/project/config.ts`); a retired one (`RETIRED_HOOK_NAMES`: `serena-root`, 0.6.0) is still accepted and silences nothing. |
@@ -52,7 +54,9 @@ The schema is `ccSmartDevKitConfigSchema` in `src/project/config.ts` (zod). The 
 example; keep it in step.
 
 `worktrees.bases`, `worktrees.engine` and `workflow` came with 0.4.0: a project that uses one
-raises `requires` to `>=0.4`. `worktrees.guardMainFolder`, `protectedBranches`,
+raises `requires` to `>=0.4`. `workflow.workers` and `workflow.fixesAfterReview` come with
+1.0.0 (optional fields: a minor change to the contract); a project that uses one raises
+`requires` to `>=1.0`. `worktrees.guardMainFolder`, `protectedBranches`,
 `sessionNames` and `ownHooks` came with the hooks: a project that uses one raises its
 `requires` to the release that ships them. `worktrees.prefix` became optional in 0.5.2 with
 the engine's deprecation: a file written without it raises `requires` to `>=0.5.2` (one

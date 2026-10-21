@@ -52,10 +52,22 @@ describe("workflow show", () => {
       "deleteBranch = false (default)",
       "reviewBeforePush = true (default)",
       "reviewAgents = cc-smart-dev-kit:reviewer (default)",
+      "fixesAfterReview.lines = 200 (default)",
+      "fixesAfterReview.files = 10 (default)",
+      "fixesAfterReview.percent = 20 (default)",
       "clearWorktreeAfterMerge = false (default)",
       "alerts.events = needs-you, question, finished, failed (default)",
       "alerts.sound = false (default)",
       "alerts.usagePercent = 85 (default)",
+      "workers.enabled = false (default)",
+      "workers.idleStopMinutes = 10 (default)",
+      "workers.max = 4 (default)",
+      "workers.memoryGb = 2 (default)",
+      "workers.quietMinutes = 20 (default)",
+      "workers.handoffPercent = 70 (default)",
+      "workers.softHours = 2 (default)",
+      "workers.maxHours = 4 (default)",
+      "workers.tag = (the main checkout's folder name) (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
@@ -545,6 +557,9 @@ describe("the review gate (CM-1)", () => {
     ["set", "reviewBeforePush", ["false"]],
     ["set", "reviewAgents", ["general-purpose"]],
     ["unset", "reviewBeforePush", []],
+    ["set", "fixesAfterReview.lines", ["0"]],
+    ["set", "fixesAfterReview.files", ["50"]],
+    ["unset", "fixesAfterReview.percent", []],
   ] as const)(
     "CM-1: workflow %s %s refuses inside Claude Code, in both files",
     async (sub, key, value) => {
@@ -572,24 +587,52 @@ describe("the review gate (CM-1)", () => {
     expect(run.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft"]);
   });
 
+  test("D34: the workers' switch is not part of the gate: set in both files, shown with its source", async () => {
+    const env = { ...hookEnv(), CLAUDECODE: "1" };
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const mine = context(repo, env);
+    expect(await runWorkflow(["set", "workers.max", "2"], mine.context)).toBe(0);
+    expect(mine.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: workers.max = 2"]);
+    const theirs = context(repo, env);
+    expect(await runWorkflow(["set", "workers.enabled", "true", "--project"], theirs.context)).toBe(
+      0,
+    );
+    expect(theirs.lines).toEqual([`~ ${file}: workers.enabled = true`]);
+    expect(JSON.parse(readFileSync(file, "utf8")).workflow).toEqual({ workers: { enabled: true } });
+    const show = context(repo, env);
+    await runWorkflow(["show"], show.context);
+    expect(show.lines).toContain("workers.enabled = true (project)");
+    expect(show.lines).toContain("workers.max = 2 (personal)");
+    // Not a gate key: no gate line names it.
+    expect(show.lines.filter((line) => line.startsWith("gate workers."))).toEqual([]);
+  });
+
   test("CM-1: show prints the gate as the merge guard reads it, from the committed file", async () => {
     const env = hookEnv();
     const repo = makeRepo();
-    committed(repo, { ...SETTINGS, workflow: { autoMerge: true } });
+    committed(repo, {
+      ...SETTINGS,
+      workflow: { autoMerge: true, fixesAfterReview: { lines: 50 } },
+    });
     // This checkout's own copy says otherwise: the guard does not read it.
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       ...SETTINGS,
-      workflow: { autoMerge: false, reviewBeforePush: false },
+      workflow: { autoMerge: false, fixesAfterReview: { lines: 0 }, reviewBeforePush: false },
     });
     const run = context(repo, env);
     expect(await runWorkflow(["show"], run.context)).toBe(0);
     expect(run.lines).toContain("autoMerge = false (project)");
+    expect(run.lines).toContain("fixesAfterReview.lines = 0 (project)");
     const gate = run.lines.filter((line) => line.startsWith("gate"));
     expect(gate).toEqual([
       "gate: what the merge guard judges with, from origin/main:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)",
       "gate autoMerge = true (project, committed on origin/main)",
       "gate reviewBeforePush = true (default)",
       "gate reviewAgents = cc-smart-dev-kit:reviewer (default)",
+      "gate fixesAfterReview.lines = 50 (project, committed on origin/main)",
+      "gate fixesAfterReview.files = 10 (default)",
+      "gate fixesAfterReview.percent = 20 (default)",
     ]);
   });
 

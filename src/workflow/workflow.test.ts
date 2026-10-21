@@ -64,6 +64,56 @@ describe("the workflow schema", () => {
       true,
     );
   });
+
+  test("D34: workflow.workers takes the switch, the limits and a tag, and nothing else", () => {
+    const every = {
+      workers: {
+        enabled: true,
+        handoffPercent: 70,
+        idleStopMinutes: 10,
+        max: 4,
+        maxHours: 4,
+        memoryGb: 0.5,
+        quietMinutes: 20,
+        softHours: 1.5,
+        tag: "my-app",
+      },
+    };
+    expect(workflowSchema.parse(every)).toEqual(every);
+    const refused = (workers: Record<string, unknown>) =>
+      workflowSchema.safeParse({ workers }).success;
+    expect(refused({ count: 3 })).toBe(false);
+    expect(refused({ enabled: "yes" })).toBe(false);
+    for (const [field, bad] of [
+      ["max", 0],
+      ["max", 1.5],
+      ["idleStopMinutes", 0],
+      ["quietMinutes", -1],
+      ["handoffPercent", 0],
+      ["handoffPercent", 101],
+      ["softHours", 0],
+      ["maxHours", -2],
+      ["memoryGb", 0],
+      ["tag", "My App"],
+      ["tag", "a-very-long-tag"],
+      ["tag", "kit]"],
+      ["tag", ""],
+    ] as const) {
+      expect(`${field}=${bad}: ${refused({ [field]: bad })}`).toBe(`${field}=${bad}: false`);
+    }
+  });
+
+  test("D17: fixesAfterReview takes lines, files and percent, each a whole number 0 or more", () => {
+    expect(workflowSchema.parse({ fixesAfterReview: { files: 0, lines: 0, percent: 0 } })).toEqual({
+      fixesAfterReview: { files: 0, lines: 0, percent: 0 },
+    });
+    expect(workflowSchema.parse({ fixesAfterReview: { percent: 150 } })).toEqual({
+      fixesAfterReview: { percent: 150 },
+    });
+    for (const fixes of [{ lines: -1 }, { files: 2.5 }, { percent: "20" }, { bytes: 1 }]) {
+      expect(workflowSchema.safeParse({ fixesAfterReview: fixes }).success).toBe(false);
+    }
+  });
 });
 
 describe("one value, as a person types it", () => {
@@ -113,6 +163,50 @@ describe("one value, as a person types it", () => {
     expect(parseWorkflowValue("alerts.events", " ")).toEqual({
       ok: false,
       why: "alerts.events is a list of needs-you, question, finished, failed",
+    });
+  });
+
+  test("D34: the workers' numbers, each with its own range", () => {
+    expect(parseWorkflowValue("workers.enabled", "true")).toEqual({ ok: true, value: true });
+    expect(parseWorkflowValue("workers.max", "3")).toEqual({ ok: true, value: 3 });
+    expect(parseWorkflowValue("workers.max", "0")).toEqual({
+      ok: false,
+      why: "workers.max is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("workers.idleStopMinutes", "2.5")).toEqual({
+      ok: false,
+      why: "workers.idleStopMinutes is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("workers.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
+    expect(parseWorkflowValue("workers.handoffPercent", "101")).toEqual({
+      ok: false,
+      why: "workers.handoffPercent is a whole number 1-100",
+    });
+    expect(parseWorkflowValue("workers.softHours", "1.5")).toEqual({ ok: true, value: 1.5 });
+    expect(parseWorkflowValue("workers.memoryGb", "0")).toEqual({
+      ok: false,
+      why: "workers.memoryGb is a number above 0",
+    });
+    expect(parseWorkflowValue("workers.maxHours", "four")).toEqual({
+      ok: false,
+      why: "workers.maxHours is a number above 0",
+    });
+  });
+
+  test("D26: the workers' tag is refused unless it is already clean", () => {
+    expect(parseWorkflowValue("workers.tag", "kit")).toEqual({ ok: true, value: "kit" });
+    expect(parseWorkflowValue("workers.tag", "My App")).toEqual({
+      ok: false,
+      why: 'workers.tag is 1-12 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
+    });
+  });
+
+  test("D17: the limits after a review are whole numbers, 0 or more", () => {
+    expect(parseWorkflowValue("fixesAfterReview.lines", "0")).toEqual({ ok: true, value: 0 });
+    expect(parseWorkflowValue("fixesAfterReview.percent", "150")).toEqual({ ok: true, value: 150 });
+    expect(parseWorkflowValue("fixesAfterReview.files", "-1")).toEqual({
+      ok: false,
+      why: "fixesAfterReview.files is a whole number, 0 or more",
     });
   });
 });
@@ -193,6 +287,52 @@ describe("resolveWorkflow: the order", () => {
     expect(() => resolveWorkflow(pathsFor(env), null)).toThrow(
       `Invalid ${file}: autoCommit: Invalid input: expected boolean, received string`,
     );
+  });
+
+  test("D34, D35: workers are off by default, with the lead's limits; D17's limits 200/10/20", () => {
+    const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
+    expect(resolved.workers).toEqual({
+      enabled: { value: false, source: "default" },
+      handoffPercent: { value: 70, source: "default" },
+      idleStopMinutes: { value: 10, source: "default" },
+      max: { value: 4, source: "default" },
+      maxHours: { value: 4, source: "default" },
+      memoryGb: { value: 2, source: "default" },
+      quietMinutes: { value: 20, source: "default" },
+      softHours: { value: 2, source: "default" },
+      tag: { value: null, source: "default" },
+    });
+    expect(resolved.fixesAfterReview).toEqual({
+      files: { value: 10, source: "default" },
+      lines: { value: 200, source: "default" },
+      percent: { value: 20, source: "default" },
+    });
+  });
+
+  test("D34: the person's switch is every project's default; a project's value wins, field by field", () => {
+    const env = hookEnv();
+    writePersonal(env, {
+      fixesAfterReview: { lines: 50 },
+      workers: { enabled: true, max: 2, tag: "mine" },
+    });
+    const config = ccSmartDevKitConfigSchema.parse({
+      workflow: { fixesAfterReview: { files: 0 }, workers: { max: 3 } },
+    });
+    const resolved = resolveWorkflow(pathsFor(env), config);
+    expect(resolved.workers.enabled).toEqual({ value: true, source: "personal" });
+    expect(resolved.workers.max).toEqual({ value: 3, source: "project" });
+    expect(resolved.workers.tag).toEqual({ value: "mine", source: "personal" });
+    expect(resolved.workers.quietMinutes).toEqual({ value: 20, source: "default" });
+    expect(resolved.fixesAfterReview).toEqual({
+      files: { value: 0, source: "project" },
+      lines: { value: 50, source: "personal" },
+      percent: { value: 20, source: "default" },
+    });
+    const off = ccSmartDevKitConfigSchema.parse({ workflow: { workers: { enabled: false } } });
+    expect(resolveWorkflow(pathsFor(env), off).workers.enabled).toEqual({
+      value: false,
+      source: "project",
+    });
   });
 
   test("a personal file that is not JSON throws, naming the file", () => {

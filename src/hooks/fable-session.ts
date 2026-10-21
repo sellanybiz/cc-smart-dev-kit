@@ -47,13 +47,8 @@ import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { claudeFamily, MODEL_SLOTS, withoutContextSuffix } from "../gateway/targets";
-import {
-  familyEnv,
-  gatewayFactsOf,
-  type LaunchModel,
-  resolveLaunchModel,
-  sessionModelOf,
-} from "./agent-guard";
+import { familyEnv, type LaunchModel, resolveLaunchModel } from "../models/launch-policy";
+import { gatewayFactsOf, sessionModelOf } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField, systemMessage } from "./io";
 import type { Env } from "./run";
 import { isSessionId, namesDir } from "./session-name";

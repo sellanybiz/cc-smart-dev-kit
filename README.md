@@ -2184,16 +2184,21 @@ autoCommit = false (default)
 openPr = draft (project)
 alerts.events = needs-you, question, finished, failed (default)
 alerts.usagePercent = 85 (default)
+workers.enabled = true (personal)
+workers.tag = (the main checkout's folder name) (default)
 switches.sessionNames = true (project)
 gate: what the merge guard judges with, from origin/dev:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)
 gate autoMerge = true (project, committed on origin/dev)
 gate reviewBeforePush = true (default)
 gate reviewAgents = cc-smart-dev-kit:reviewer (default)
+gate fixesAfterReview.lines = 200 (default)
+gate fixesAfterReview.files = 10 (default)
+gate fixesAfterReview.percent = 20 (default)
 review-done = no (HEAD 1a2b3c4)
 ```
 
-The `gate` lines are **the review gate**: `autoMerge`, `reviewBeforePush` and `reviewAgents` as
-the merge guard reads them. The guard reads the project's part from the file **as committed
+The `gate` lines are **the review gate**: `autoMerge`, `reviewBeforePush`, `reviewAgents` and
+`fixesAfterReview.*` as the merge guard reads them. The guard reads the project's part from the file **as committed
 on the pull request's base** (`origin/<base>`, as last fetched; nothing is fetched for it),
 never from a checkout's working copy — so a change to the gate counts once you commit it to
 the base, push it, and the checkout has fetched it. The other rows show this checkout's file,
@@ -2211,10 +2216,22 @@ merge.
 | `deleteBranch` | `false` | Delete the branch after its merge. |
 | `reviewBeforePush` | `true` | Run the review before a push. |
 | `reviewAgents` | `["cc-smart-dev-kit:reviewer"]` | The subagent types whose return records a review (§ The review record), by the exact name Claude Code reports: `plugin:name` for a plugin's agent, the frontmatter `name` for a project's own. |
+| `fixesAfterReview.lines` | `200` | How many lines may change after a review while it still counts — or `fixesAfterReview.percent` of the reviewed change's lines, when that is more. A whole number, 0 or more. |
+| `fixesAfterReview.files` | `10` | The same for files changed after the review. |
+| `fixesAfterReview.percent` | `20` | The share, in percent of the reviewed change, a fix round may reach in lines and in files. `0` for all three: only the exact reviewed commit counts. |
 | `clearWorktreeAfterMerge` | `false` | Clear the worktree once its pull request merged. |
 | `alerts.events` | all four | Which moments alert: `needs-you`, `question`, `finished`, `failed`. |
 | `alerts.sound` | `false` | A sound with the alert. |
 | `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
+| `workers.enabled` | `false` | Lead and worker sessions may run here: a lead starts background workers for its plan's phases. Off: a lead uses subagents only. Set it in your own file for every project, or in a project's file for that one. |
+| `workers.idleStopMinutes` | `10` | Minutes a blocked worker waits before its session is stopped; an answer brings it back. |
+| `workers.max` | `4` | At most this many workers run on this machine at once, across every lead. |
+| `workers.memoryGb` | `2` | The free memory, in GB, a new worker needs; below it, the worker waits in the queue. |
+| `workers.quietMinutes` | `20` | Minutes a working worker may write nothing before the lead hears it is quiet (an alert only). |
+| `workers.handoffPercent` | `70` | The share of its context, in percent (1–100), at which a worker hands off to a next one. |
+| `workers.softHours` | `2` | Hours after which the lead gets a note about a worker still running. |
+| `workers.maxHours` | `4` | Hours after which a worker hands off. |
+| `workers.tag` | the main checkout's folder name | The word that names the repository in every lead's and worker's session name (`LEAD <tag> <plan>`, `W <tag> <phase> <slug>`): 1–12 ASCII letters, digits, `.`, `_` and `-`, a letter or a digit at each end. |
 
 **Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
 itself only when the pull request's base **is** the project's integration base
@@ -2243,6 +2260,7 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the base names the agent that wrote it. |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ Notifications). |
 | `alerts.usagePercent` | the status line: from that share of a plan window it warns. |
+| `fixesAfterReview.*`, `workers.*` | nothing yet: they are read and shown, and the parts that act on them come later. |
 
 **The review record.** The record says one thing: the commit the change set was on had its one
 premium review. It is one small JSON file per repository under
@@ -2264,7 +2282,8 @@ committed `reviewAgents` names (or by you), and the merge asks you. A record an 
 wrote names no agent, so its commit asks once.
 
 **Inside Claude Code, `workflow set` and `unset` of a gate setting** (`autoMerge`,
-`reviewBeforePush`, `reviewAgents`) **refuse**, in both files: the gate is yours to change.
+`reviewBeforePush`, `reviewAgents`, `fixesAfterReview.*`) **refuse**, in both files: the gate
+is yours to change.
 Run them in your own terminal; for the project's part, commit `.claude/cc-smart-dev-kit.json`
 to the base and push it.
 
@@ -2350,6 +2369,8 @@ every question it holds.
 | `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). |
 | `jobs.route` | `true`: the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (§ The hooks). Off when left out. |
 | `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field. |
+| `workflow.fixesAfterReview` | How much a branch may change after its review and still count as reviewed: `lines`, `files` and `percent` (§ [The workflow](#the-workflow)). Part of the review gate, so the merge guard reads it as committed on the base. |
+| `workflow.workers` | Lead and worker sessions here: `enabled` (off by default), the limits a lead keeps its workers to, and the `tag` in their names (§ [The workflow](#the-workflow)). It wins over the same fields in your own file. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the
 plugin says so and asks you to run `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`. A project that

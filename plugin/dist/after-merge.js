@@ -6051,9 +6051,67 @@ function mergeKinds(projectKinds) {
   return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
 }
 
+// src/workers/names.ts
+var MAX_SESSION_NAME = 60;
+var MAX_TAG = 12;
+var LEAD_ROLE = "LEAD";
+var WORKER_ROLE = "W";
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
+function namePart(raw, max) {
+  const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
+  return plain.slice(0, Math.max(0, max)).replace(EDGE_SEPARATORS, "");
+}
+function partRule(max) {
+  return `1-${max} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+}
+var TAG_RULE = partRule(MAX_TAG);
+function isNameTag(value) {
+  return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
+}
+function withoutListRef(name) {
+  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+}
+var PART = "[A-Za-z0-9._-]+";
+var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
+var WORKER_SHAPE = new RegExp(`^${WORKER_ROLE}( ${PART}){2,4}$`);
+
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
 var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
+var PERCENT = { kind: "whole", max: 100, min: 1 };
+var AT_LEAST_ONE = { kind: "whole", min: 1 };
+var AT_LEAST_ZERO = { kind: "whole", min: 0 };
+var ABOVE_ZERO = { kind: "positive" };
+function numberSchema(rule) {
+  if (rule.kind === "positive")
+    return number2().positive();
+  const whole = number2().int().min(rule.min);
+  return rule.max === undefined ? whole : whole.max(rule.max);
+}
+var NUMBER_RULES = {
+  "alerts.usagePercent": PERCENT,
+  "workers.idleStopMinutes": AT_LEAST_ONE,
+  "workers.max": AT_LEAST_ONE,
+  "workers.memoryGb": ABOVE_ZERO,
+  "workers.quietMinutes": AT_LEAST_ONE,
+  "workers.handoffPercent": PERCENT,
+  "workers.softHours": ABOVE_ZERO,
+  "workers.maxHours": ABOVE_ZERO,
+  "fixesAfterReview.lines": AT_LEAST_ZERO,
+  "fixesAfterReview.files": AT_LEAST_ZERO,
+  "fixesAfterReview.percent": AT_LEAST_ZERO
+};
+function numberField(key) {
+  return numberSchema(NUMBER_RULES[key]).optional();
+}
+var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -6063,11 +6121,27 @@ var workflowSchema = strictObject({
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
   reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
+  fixesAfterReview: strictObject({
+    lines: numberField("fixesAfterReview.lines"),
+    files: numberField("fixesAfterReview.files"),
+    percent: numberField("fixesAfterReview.percent")
+  }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
     sound: boolean2().optional(),
-    usagePercent: number2().int().min(1).max(100).optional()
+    usagePercent: numberField("alerts.usagePercent")
+  }).optional(),
+  workers: strictObject({
+    enabled: boolean2().optional(),
+    idleStopMinutes: numberField("workers.idleStopMinutes"),
+    max: numberField("workers.max"),
+    memoryGb: numberField("workers.memoryGb"),
+    quietMinutes: numberField("workers.quietMinutes"),
+    handoffPercent: numberField("workers.handoffPercent"),
+    softHours: numberField("workers.softHours"),
+    maxHours: numberField("workers.maxHours"),
+    tag: tagSchema.optional()
   }).optional()
 });
 var workflowDefaults = {
@@ -6079,11 +6153,27 @@ var workflowDefaults = {
   deleteBranch: false,
   reviewBeforePush: true,
   reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  fixesAfterReview: {
+    lines: 200,
+    files: 10,
+    percent: 20
+  },
   clearWorktreeAfterMerge: false,
   alerts: {
     events: [...ALERT_EVENTS],
     sound: false,
     usagePercent: 85
+  },
+  workers: {
+    enabled: false,
+    idleStopMinutes: 10,
+    max: 4,
+    memoryGb: 2,
+    quietMinutes: 20,
+    handoffPercent: 70,
+    softHours: 2,
+    maxHours: 4,
+    tag: null
   }
 };
 var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
@@ -6096,10 +6186,22 @@ var POLICY_KEYS = [
   "deleteBranch",
   "reviewBeforePush",
   "reviewAgents",
+  "fixesAfterReview.lines",
+  "fixesAfterReview.files",
+  "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
   "alerts.events",
   "alerts.sound",
-  "alerts.usagePercent"
+  "alerts.usagePercent",
+  "workers.enabled",
+  "workers.idleStopMinutes",
+  "workers.max",
+  "workers.memoryGb",
+  "workers.quietMinutes",
+  "workers.handoffPercent",
+  "workers.softHours",
+  "workers.maxHours",
+  "workers.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -8948,6 +9050,154 @@ function settingsReport(settingsPath) {
   return { baseUrl, loginOverrides, subagentOverrides };
 }
 
+// src/models/launch-policy.ts
+var FABLE_BUILD_REASON = "build";
+var FABLE_REASONS = [
+  "hard",
+  "rewrite",
+  "ui-design",
+  "architecture",
+  "review",
+  "plan",
+  "unsatisfied"
+];
+var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
+var OPUS_ASK_EFFORT = "max";
+var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
+var AFFORDABLE_EFFORT = "max";
+function effortAllowed(effort) {
+  return ALLOWED_EFFORTS.includes(effort.toLowerCase());
+}
+function premiumTier(family) {
+  return family === "fable" || family === "opus" ? family : null;
+}
+function tierOfReading(family) {
+  return family === null ? "opus" : premiumTier(family);
+}
+function familyEnv(family) {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
+function familyFirstTarget(gateway, family) {
+  if (!gateway.gatewayOn || gateway.config === null || family === null)
+    return null;
+  const slot = familySlotKey(family);
+  if (slot === null || !Object.hasOwn(gateway.config.slots, slot))
+    return null;
+  return gateway.config.slots[slot]?.[0] ?? null;
+}
+function tierOfMappedId(model, gateway, env) {
+  for (const premium of ["fable", "opus"]) {
+    const override = stringField(env[familyEnv(premium)]);
+    if (override !== null && withoutContextSuffix(override.trim()) === model)
+      return premium;
+    if (familyFirstTarget(gateway, premium) === model)
+      return premium;
+  }
+  return null;
+}
+function tierRank(tier) {
+  return tier === "fable" ? 2 : tier === "opus" ? 1 : 0;
+}
+function asNamed(answered, family, tier) {
+  const real = premiumTier(answered.family);
+  return tierRank(real) > tierRank(tier) ? { ...answered, tier: real } : { ...answered, family, tier };
+}
+function throughFamilySlot(claude, family, gateway) {
+  const tier = tierOfReading(family);
+  const first = familyFirstTarget(gateway, family);
+  if (first === null)
+    return { claude: true, family, model: claude, tier };
+  return asNamed(resolveTarget(first), family, tier);
+}
+function resolveName(text, gateway) {
+  const family = claudeFamily(text);
+  if (family !== null || text.startsWith("claude-")) {
+    return throughFamilySlot(text, family, gateway);
+  }
+  if (isSlotKey(text)) {
+    const first = gateway.config?.slots[text]?.[0];
+    const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
+    const slotFamily = MODEL_SLOTS[text];
+    return slotFamily === "fable" || slotFamily === "opus" ? { ...model, family: slotFamily, tier: slotFamily } : model;
+  }
+  const parsed = parseTarget(text);
+  if ("target" in parsed && parsed.target.kind === "backend") {
+    return { claude: false, family: null, model: text, tier: null };
+  }
+  return { claude: true, family: null, model: text, tier: "opus" };
+}
+function resolveTarget(text) {
+  const parsed = parseTarget(text);
+  if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
+    return { claude: false, family: null, model: text, tier: null };
+  }
+  const family = claudeFamily(parsed.target.model);
+  return { claude: true, family, model: parsed.target.model, tier: tierOfReading(family) };
+}
+function resolveLaunchModel(name, gateway, env) {
+  const text = withoutContextSuffix(name.trim());
+  const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
+  if (family === undefined) {
+    const mapped = tierOfMappedId(text, gateway, env);
+    const resolved = resolveName(text, gateway);
+    if (mapped === null || resolved.tier !== null && resolved.family !== null)
+      return resolved;
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
+  }
+  const tier = premiumTier(family);
+  const override = stringField(env[familyEnv(family)]);
+  if (override !== null) {
+    return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
+  }
+  return throughFamilySlot(text, family, gateway);
+}
+function isAffordable(real) {
+  return !real.claude && real.tier === null;
+}
+var WORKER_KINDS = {
+  build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
+  docs: {
+    about: "docs and their updates",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
+  },
+  tests: { about: "tests and test runs", affordableEffort: "max", effort: "high", model: "sonnet" },
+  security: {
+    about: "code that touches security",
+    affordableEffort: "xhigh",
+    effort: "xhigh",
+    model: "opus"
+  },
+  money: {
+    about: "code that touches money",
+    affordableEffort: "xhigh",
+    effort: "xhigh",
+    model: "opus"
+  },
+  permissions: {
+    about: "code that touches permissions",
+    affordableEffort: "xhigh",
+    effort: "xhigh",
+    model: "opus"
+  },
+  schema: {
+    about: "a schema or a contract",
+    affordableEffort: "xhigh",
+    effort: "xhigh",
+    model: "opus"
+  },
+  deploy: { about: "deploy plumbing", affordableEffort: "xhigh", effort: "xhigh", model: "opus" },
+  architecture: {
+    about: "architecture and design",
+    affordableEffort: "xhigh",
+    effort: "xhigh",
+    model: "opus"
+  },
+  ui: { about: "UI and UX judgment", affordableEffort: "xhigh", effort: "xhigh", model: "opus" }
+};
+var WORKER_KIND_NAMES = Object.keys(WORKER_KINDS);
+
 // src/hooks/agent-launches.ts
 import { appendFileSync as appendFileSync2, readFileSync as readFileSync7 } from "fs";
 import { join as join9 } from "path";
@@ -9063,25 +9313,9 @@ function lastClaudeModel(transcriptPath) {
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
 var FORK = "fork";
-var FABLE_BUILD_REASON = "build";
 var BUILDER_WORDS = [FABLE_BUILD_REASON];
-var FABLE_REASONS = [
-  "hard",
-  "rewrite",
-  "ui-design",
-  "architecture",
-  "review",
-  "plan",
-  "unsatisfied"
-];
 var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore"];
 var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
-var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
-var OPUS_ASK_EFFORT = "max";
-var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
-function effortAllowed(effort) {
-  return ALLOWED_EFFORTS.includes(effort.toLowerCase());
-}
 function agentKey(type) {
   const base = type.includes(":") ? type.split(":").pop() ?? type : type;
   return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
@@ -9089,89 +9323,6 @@ function agentKey(type) {
 function agentList(from, env, name) {
   const listed = (env[name] ?? "").split(",").map((one) => one.trim()).filter((one) => one !== "");
   return new Set([...from, ...listed].map(agentKey));
-}
-function premiumTier(family) {
-  return family === "fable" || family === "opus" ? family : null;
-}
-function tierOfReading(family) {
-  return family === null ? "opus" : premiumTier(family);
-}
-function familyEnv(family) {
-  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
-}
-function familyFirstTarget(gateway, family) {
-  if (!gateway.gatewayOn || gateway.config === null || family === null)
-    return null;
-  const slot = familySlotKey(family);
-  if (slot === null || !Object.hasOwn(gateway.config.slots, slot))
-    return null;
-  return gateway.config.slots[slot]?.[0] ?? null;
-}
-function tierOfMappedId(model, gateway, env) {
-  for (const premium of ["fable", "opus"]) {
-    const override = stringField(env[familyEnv(premium)]);
-    if (override !== null && withoutContextSuffix(override.trim()) === model)
-      return premium;
-    if (familyFirstTarget(gateway, premium) === model)
-      return premium;
-  }
-  return null;
-}
-function tierRank(tier) {
-  return tier === "fable" ? 2 : tier === "opus" ? 1 : 0;
-}
-function asNamed(answered, family, tier) {
-  const real = premiumTier(answered.family);
-  return tierRank(real) > tierRank(tier) ? { ...answered, tier: real } : { ...answered, family, tier };
-}
-function throughFamilySlot(claude, family, gateway) {
-  const tier = tierOfReading(family);
-  const first = familyFirstTarget(gateway, family);
-  if (first === null)
-    return { claude: true, family, model: claude, tier };
-  return asNamed(resolveTarget(first), family, tier);
-}
-function resolveName(text, gateway) {
-  const family = claudeFamily(text);
-  if (family !== null || text.startsWith("claude-")) {
-    return throughFamilySlot(text, family, gateway);
-  }
-  if (isSlotKey(text)) {
-    const first = gateway.config?.slots[text]?.[0];
-    const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
-    const slotFamily = MODEL_SLOTS[text];
-    return slotFamily === "fable" || slotFamily === "opus" ? { ...model, family: slotFamily, tier: slotFamily } : model;
-  }
-  const parsed = parseTarget(text);
-  if ("target" in parsed && parsed.target.kind === "backend") {
-    return { claude: false, family: null, model: text, tier: null };
-  }
-  return { claude: true, family: null, model: text, tier: "opus" };
-}
-function resolveTarget(text) {
-  const parsed = parseTarget(text);
-  if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
-    return { claude: false, family: null, model: text, tier: null };
-  }
-  const family = claudeFamily(parsed.target.model);
-  return { claude: true, family, model: parsed.target.model, tier: tierOfReading(family) };
-}
-function resolveLaunchModel(name, gateway, env) {
-  const text = withoutContextSuffix(name.trim());
-  const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
-  if (family === undefined) {
-    const mapped = tierOfMappedId(text, gateway, env);
-    const resolved = resolveName(text, gateway);
-    if (mapped === null || resolved.tier !== null && resolved.family !== null)
-      return resolved;
-    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
-  }
-  const tier = premiumTier(family);
-  const override = stringField(env[familyEnv(family)]);
-  if (override !== null) {
-    return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
-  }
-  return throughFamilySlot(text, family, gateway);
 }
 function readLaunch(input) {
   const tool = stringField(input.tool_name);
@@ -9695,11 +9846,11 @@ function judgeLaunch(launch, ctx, env) {
       why
     };
   }
-  if (!real.claude) {
-    if (ctx.gatewayOn && launch.effort?.toLowerCase() !== "max") {
+  if (isAffordable(real)) {
+    if (ctx.gatewayOn && launch.effort?.toLowerCase() !== AFFORDABLE_EFFORT) {
       return deny(real, [
         `This launch runs on ${real.model}, an affordable gateway slot.`,
-        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.'
+        `An affordable slot runs at effort \`${AFFORDABLE_EFFORT}\` (its reasoning costs cents): pass \`effort: "${AFFORDABLE_EFFORT}"\`.`
       ].join(`
 `));
     }
@@ -9848,16 +9999,8 @@ import { dirname as dirname4, join as join11 } from "path";
 import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
 import { join as join10 } from "path";
-var MAX_SESSION_NAME = 60;
 function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
-}
-function cleanSessionName(raw) {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (plain === "")
-    return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 function namesDir(env) {
   return join10(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
@@ -10458,6 +10601,14 @@ function isHeld(files) {
   return existsSync8(files.hold);
 }
 
+// src/zod-issues.ts
+function describeIssues(issues) {
+  return issues.map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+    return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
+  }).join("; ");
+}
+
 // src/workflow/resolve.ts
 class WorkflowConfigError extends Error {
   name = "WorkflowConfigError";
@@ -10477,19 +10628,28 @@ function loadWorkflow(file) {
   }
   const parsed = workflowSchema.safeParse(raw);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((issue) => {
-      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-      return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
-    });
-    throw new WorkflowConfigError(`Invalid ${file}: ${issues.join("; ")}`);
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
   return parsed.data;
 }
+function mergedGroup(personal, project) {
+  if (personal === undefined)
+    return project;
+  if (project === undefined)
+    return personal;
+  return { ...personal, ...project };
+}
 function mergeWorkflows(personal, project) {
   const merged = { ...personal, ...project };
-  const alerts = { ...personal.alerts, ...project.alerts };
-  if (Object.keys(alerts).length > 0)
+  const alerts = mergedGroup(personal.alerts, project.alerts);
+  if (alerts !== undefined)
     merged.alerts = alerts;
+  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
+  if (fixes !== undefined)
+    merged.fixesAfterReview = fixes;
+  const workers = mergedGroup(personal.workers, project.workers);
+  if (workers !== undefined)
+    merged.workers = workers;
   return merged;
 }
 function sourceOf(personal, project, key) {
@@ -10553,6 +10713,8 @@ function resolveWorkflow(paths, projectConfig) {
     value,
     source: sourceOf(personal, project, key)
   });
+  const fixes = merged.fixesAfterReview ?? {};
+  const workers = merged.workers ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -10562,8 +10724,24 @@ function resolveWorkflow(paths, projectConfig) {
     deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
     reviewBeforePush: of("reviewBeforePush", merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush),
     reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
+    fixesAfterReview: {
+      lines: of("fixesAfterReview.lines", fixes.lines ?? workflowDefaults.fixesAfterReview.lines),
+      files: of("fixesAfterReview.files", fixes.files ?? workflowDefaults.fixesAfterReview.files),
+      percent: of("fixesAfterReview.percent", fixes.percent ?? workflowDefaults.fixesAfterReview.percent)
+    },
     clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
     alerts: alertsFrom(personal, project),
+    workers: {
+      enabled: of("workers.enabled", workers.enabled ?? workflowDefaults.workers.enabled),
+      idleStopMinutes: of("workers.idleStopMinutes", workers.idleStopMinutes ?? workflowDefaults.workers.idleStopMinutes),
+      max: of("workers.max", workers.max ?? workflowDefaults.workers.max),
+      memoryGb: of("workers.memoryGb", workers.memoryGb ?? workflowDefaults.workers.memoryGb),
+      quietMinutes: of("workers.quietMinutes", workers.quietMinutes ?? workflowDefaults.workers.quietMinutes),
+      handoffPercent: of("workers.handoffPercent", workers.handoffPercent ?? workflowDefaults.workers.handoffPercent),
+      softHours: of("workers.softHours", workers.softHours ?? workflowDefaults.workers.softHours),
+      maxHours: of("workers.maxHours", workers.maxHours ?? workflowDefaults.workers.maxHours),
+      tag: of("workers.tag", workers.tag ?? workflowDefaults.workers.tag)
+    },
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),
@@ -10954,7 +11132,7 @@ function liveSessions(claudeConfigDir) {
 
 // src/hooks/message-guard.ts
 function messageLeavesRepo(to, sessions, repoFolders) {
-  const name = to.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+  const name = withoutListRef(to);
   const named = sessions.filter((session) => session.name === name);
   const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
   return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;

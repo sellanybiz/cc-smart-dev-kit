@@ -20,7 +20,6 @@
  */
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { z } from "zod";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
 import { STATUSLINE_KEY, statuslineSetting } from "../cli/setup";
 import { CcSmartDevKitConfigError, ccSmartDevKitConfigSchema } from "../project/config";
@@ -28,6 +27,7 @@ import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
 import { atomicWrite, backupFile, realTarget } from "../setup/write";
 import { heldSince, hold, resume, updateFiles } from "../update/state";
+import { describeIssues } from "../zod-issues";
 import { personalWorkflowFile, WorkflowConfigError } from "./resolve";
 import {
   isSwitchKey,
@@ -49,18 +49,6 @@ function unknownKey(key: string): Error {
 function requireKey(key: string): WorkflowKey {
   if (!WORKFLOW_KEYS.includes(key as WorkflowKey)) throw unknownKey(key);
   return key as WorkflowKey;
-}
-
-/** The issue list of a failed parse, in the shape the other config files report one. */
-function describeIssues(issues: readonly z.core.$ZodIssue[]): string {
-  return issues
-    .map((issue) => {
-      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-      return issue.code === "unrecognized_keys"
-        ? `${(issue.keys ?? []).join(", ")}: unknown field`
-        : `${field}: ${issue.message}`;
-    })
-    .join("; ");
 }
 
 /** `data` with `path` set to `value`; the objects along the way are made when missing. */

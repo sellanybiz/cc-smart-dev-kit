@@ -46,6 +46,7 @@ import { autoMergeAllowed } from "../workflow/auto-merge";
 import {
   type ResolvedValue,
   type ResolvedWorkflow,
+  resolvedValueOf,
   resolveWorkflow,
   type WorkflowSource,
 } from "../workflow/resolve";
@@ -68,6 +69,12 @@ export type {
   WorkflowKey,
   WorkflowSource,
 };
+
+/**
+ * The module's one map from a key to its resolved value: pure, so it needs no seam of its own,
+ * and the page reads a value exactly where `workflow show` reads it.
+ */
+export { resolvedValueOf };
 
 /** The defaults the Project card's form starts with: the CLI's answers, and the repo's branch. */
 export interface ProjectInitDefaults {

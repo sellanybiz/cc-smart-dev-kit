@@ -11,9 +11,9 @@ import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
 import type { GatewayConfig } from "../gateway/config";
+import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
 import { tempDir } from "../testing/temp";
 import {
-  ALLOWED_EFFORTS,
   agentGuard,
   type GuardContext,
   guardFacts,
@@ -23,7 +23,6 @@ import {
   readLaunch,
   readWorkflowScript,
   reasonLine,
-  resolveLaunchModel,
   workflowRefusal,
 } from "./agent-guard";
 import { agentLaunchesFile, parseAgentLaunch, readAgentLaunches } from "./agent-launches";

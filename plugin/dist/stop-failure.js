@@ -6437,9 +6437,56 @@ var kindSpecSchema = strictObject({
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
 
+// src/workers/names.ts
+var MAX_TAG = 12;
+var LEAD_ROLE = "LEAD";
+var WORKER_ROLE = "W";
+var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
+function namePart(raw, max) {
+  const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
+  return plain.slice(0, Math.max(0, max)).replace(EDGE_SEPARATORS, "");
+}
+function partRule(max) {
+  return `1-${max} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+}
+var TAG_RULE = partRule(MAX_TAG);
+function isNameTag(value) {
+  return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
+}
+var PART = "[A-Za-z0-9._-]+";
+var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
+var WORKER_SHAPE = new RegExp(`^${WORKER_ROLE}( ${PART}){2,4}$`);
+
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
 var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
+var PERCENT = { kind: "whole", max: 100, min: 1 };
+var AT_LEAST_ONE = { kind: "whole", min: 1 };
+var AT_LEAST_ZERO = { kind: "whole", min: 0 };
+var ABOVE_ZERO = { kind: "positive" };
+function numberSchema(rule) {
+  if (rule.kind === "positive")
+    return number2().positive();
+  const whole = number2().int().min(rule.min);
+  return rule.max === undefined ? whole : whole.max(rule.max);
+}
+var NUMBER_RULES = {
+  "alerts.usagePercent": PERCENT,
+  "workers.idleStopMinutes": AT_LEAST_ONE,
+  "workers.max": AT_LEAST_ONE,
+  "workers.memoryGb": ABOVE_ZERO,
+  "workers.quietMinutes": AT_LEAST_ONE,
+  "workers.handoffPercent": PERCENT,
+  "workers.softHours": ABOVE_ZERO,
+  "workers.maxHours": ABOVE_ZERO,
+  "fixesAfterReview.lines": AT_LEAST_ZERO,
+  "fixesAfterReview.files": AT_LEAST_ZERO,
+  "fixesAfterReview.percent": AT_LEAST_ZERO
+};
+function numberField(key) {
+  return numberSchema(NUMBER_RULES[key]).optional();
+}
+var tagSchema = string2().refine(isNameTag, TAG_RULE);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -6449,11 +6496,27 @@ var workflowSchema = strictObject({
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
   reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
+  fixesAfterReview: strictObject({
+    lines: numberField("fixesAfterReview.lines"),
+    files: numberField("fixesAfterReview.files"),
+    percent: numberField("fixesAfterReview.percent")
+  }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
   alerts: strictObject({
     events: alertEventsSchema.optional(),
     sound: boolean2().optional(),
-    usagePercent: number2().int().min(1).max(100).optional()
+    usagePercent: numberField("alerts.usagePercent")
+  }).optional(),
+  workers: strictObject({
+    enabled: boolean2().optional(),
+    idleStopMinutes: numberField("workers.idleStopMinutes"),
+    max: numberField("workers.max"),
+    memoryGb: numberField("workers.memoryGb"),
+    quietMinutes: numberField("workers.quietMinutes"),
+    handoffPercent: numberField("workers.handoffPercent"),
+    softHours: numberField("workers.softHours"),
+    maxHours: numberField("workers.maxHours"),
+    tag: tagSchema.optional()
   }).optional()
 });
 var workflowDefaults = {
@@ -6465,11 +6528,27 @@ var workflowDefaults = {
   deleteBranch: false,
   reviewBeforePush: true,
   reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  fixesAfterReview: {
+    lines: 200,
+    files: 10,
+    percent: 20
+  },
   clearWorktreeAfterMerge: false,
   alerts: {
     events: [...ALERT_EVENTS],
     sound: false,
     usagePercent: 85
+  },
+  workers: {
+    enabled: false,
+    idleStopMinutes: 10,
+    max: 4,
+    memoryGb: 2,
+    quietMinutes: 20,
+    handoffPercent: 70,
+    softHours: 2,
+    maxHours: 4,
+    tag: null
   }
 };
 var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
@@ -6482,10 +6561,22 @@ var POLICY_KEYS = [
   "deleteBranch",
   "reviewBeforePush",
   "reviewAgents",
+  "fixesAfterReview.lines",
+  "fixesAfterReview.files",
+  "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
   "alerts.events",
   "alerts.sound",
-  "alerts.usagePercent"
+  "alerts.usagePercent",
+  "workers.enabled",
+  "workers.idleStopMinutes",
+  "workers.max",
+  "workers.memoryGb",
+  "workers.quietMinutes",
+  "workers.handoffPercent",
+  "workers.softHours",
+  "workers.maxHours",
+  "workers.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -6824,6 +6915,14 @@ var LOG_MAX_BYTES = 256 * 1024;
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 
+// src/zod-issues.ts
+function describeIssues(issues) {
+  return issues.map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+    return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
+  }).join("; ");
+}
+
 // src/workflow/resolve.ts
 class WorkflowConfigError extends Error {
   name = "WorkflowConfigError";
@@ -6843,19 +6942,28 @@ function loadWorkflow(file) {
   }
   const parsed = workflowSchema.safeParse(raw);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((issue) => {
-      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-      return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
-    });
-    throw new WorkflowConfigError(`Invalid ${file}: ${issues.join("; ")}`);
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
   return parsed.data;
 }
+function mergedGroup(personal, project) {
+  if (personal === undefined)
+    return project;
+  if (project === undefined)
+    return personal;
+  return { ...personal, ...project };
+}
 function mergeWorkflows(personal, project) {
   const merged = { ...personal, ...project };
-  const alerts = { ...personal.alerts, ...project.alerts };
-  if (Object.keys(alerts).length > 0)
+  const alerts = mergedGroup(personal.alerts, project.alerts);
+  if (alerts !== undefined)
     merged.alerts = alerts;
+  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
+  if (fixes !== undefined)
+    merged.fixesAfterReview = fixes;
+  const workers = mergedGroup(personal.workers, project.workers);
+  if (workers !== undefined)
+    merged.workers = workers;
   return merged;
 }
 function sourceOf(personal, project, key) {

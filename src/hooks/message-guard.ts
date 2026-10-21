@@ -11,6 +11,7 @@
  * does anything it cannot work out: a guard that failed on its own bug would stop every
  * message. It does not judge what a message says.
  */
+import { withoutListRef } from "../workers/names";
 import { GUARD_GIT_TIMEOUT_MS, isInside, listWorktrees, realPath } from "./git";
 import { type HookResult, SILENT, stringField, toolDecision, toolInput } from "./io";
 import type { HookContext } from "./run";
@@ -30,7 +31,7 @@ export function messageLeavesRepo(
   sessions: SessionRecord[],
   repoFolders: string[],
 ): string | null {
-  const name = to.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+  const name = withoutListRef(to);
   const named = sessions.filter((session) => session.name === name);
   const outside = named.filter(
     (session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)),
