@@ -2158,6 +2158,47 @@ asked for (`src/sessions/`, `src/worktrees/`):
   this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
   general rule is a program running from the worktree, or working in it.
 
+### The flow report
+
+`cc-smart-dev-kit report` answers what a week of sessions cost in a person's time, from the
+transcripts Claude Code already writes. One reader, `src/sessions/flow.ts`, for the command
+(`src/cli/report.ts`) and later for the portal; it counts, and prints counts, times, tool names
+and hook names — never a word of a message, the same rule as `usage`.
+
+- **What it reads.** The same files as `usage`: `<config folder>/projects/<project folder>/<session
+  id>.jsonl`, and each subagent's own transcript beside it. A session includes its subagents: a
+  nested launch is a launch in the session. The fields are undocumented, so their contract rows
+  are marked "seen, may change" (`docs/claude-code-contract.md`); a missing or renamed field
+  skips that record into "records skipped" instead of guessing.
+- **The measures.** Agent launches per reply (`message.id` groups a reply's lines; `Agent` and
+  `Task` are launches), the replies with two or more, and the parallel share; "most at once" is
+  the overlap of the subagent transcripts' first and last timestamps. A permission prompt is a
+  tool result whose `permissionDecision.source` starts with `user`; its wait is the result's time
+  minus the tool call's line — an **upper bound**, and the report says so. The asker is the hook
+  whose PreToolUse `hook_success` attachment carries the same `toolUseID` and an `ask` answer,
+  named from the script in its `command`; with none, Claude Code's own prompt. `AskUserQuestion`
+  and `ExitPlanMode` are questions, counted apart. A turn's `turn_duration` plus the next user
+  line's `turnOrigin` gives the idle time until the person wrote and the waits on background work
+  (grouped by what woke them). Compactions come from `compact_boundary` with its trigger and
+  tokens; auto-mode blocks are a `reject` from `config`, labelled by the bracketed rule in the
+  result (the label only) or by its `reasonType`; a merge that asked is a `gh pr merge` Bash call
+  whose result came after a person's answer.
+- **The ask log.** When the hook frame's `guard-asks.jsonl` exists (`{at, hook, kind,
+  tool_use_id, session_id}`), it is preferred to the attachment for the asker and the reason kind.
+  It is written before the tool's result, so the run that counts a prompt already has it. Without
+  it the attachments answer, and the merge's reason is "not recorded".
+- **The cache.** `<stateDir>/flow/<project folder>.json`, mode 0600, written atomically: per
+  transcript, its inode, size and mtime, the byte offset after the last whole line, the open state
+  (pending calls, the last reply, the last turn end), and hourly buckets for eight days. A grown
+  file is read from its offset; one that shrank or was replaced starts its session's counts again.
+  The cache is derived data — last writer wins, no lock, and a failed write never fails the report.
+  Its version changes when the buckets' meaning does.
+- **The limits.** The window is at most eight days, because that is what the buckets keep. A
+  prompt's wait is an upper bound and includes the person's own reading time. "Waiting on you now"
+  lists calls asked and unanswered in the last 24 hours; an older one belongs to a session that is
+  gone. A measure the version never wrote — no `turn_duration`, no `permissionDecision`, no hook
+  ask — prints "not recorded by this version", never a zero.
+
 ## MCP servers at user scope
 
 `setup` registers MCP servers at user scope, through Claude Code's own

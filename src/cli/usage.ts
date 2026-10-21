@@ -71,7 +71,7 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** The entries of a folder, by kind; empty when it is not there or not readable. */
-function entries(path: string): { dirs: string[]; files: string[] } {
+export function entries(path: string): { dirs: string[]; files: string[] } {
   try {
     const all = readdirSync(path, { withFileTypes: true });
     return {
@@ -155,7 +155,11 @@ function readTranscript(
   return { cwd, replies };
 }
 
-function matches(project: null | string, folder: string, cwd: null | string): boolean {
+/**
+ * Whether a session belongs to `project`: its folder, its last part, or the session's `cwd`.
+ * `flow.ts` reads the same transcripts and matches a project the same way.
+ */
+export function matches(project: null | string, folder: string, cwd: null | string): boolean {
   if (project === null) return true;
   if (folder === project) return true;
   if (cwd === null) return false;

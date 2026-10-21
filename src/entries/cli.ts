@@ -23,6 +23,7 @@ import type { LiveRunner } from "../cli/live-check";
 import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
 import { runProjectInit } from "../cli/project-init";
+import { runReport } from "../cli/report";
 import { runRestore } from "../cli/restore";
 import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
@@ -305,6 +306,9 @@ async function main(argv: string[]): Promise<number> {
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
+    case "report":
+      // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
+      return runReport(paths, rest, Date.now());
     case ALERT_WORKER_COMMAND: {
       // Not in --help: the two alert hooks start it, detached, through the launcher, so the
       // wait for a click — a minute on screen, half an hour for the usage-limit alert —

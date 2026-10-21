@@ -30,6 +30,7 @@ import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import { PROJECT_INIT_USAGE } from "./project-init";
+import { REPORT_USAGE } from "./report";
 import { UPDATE_USAGE } from "./update";
 
 /** The command that prints another command's help: `${COMMAND} help <command>`. */
@@ -263,6 +264,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "sessions", listed: "more", help: SESSIONS_HELP },
   { name: "worktrees", listed: "more", help: WORKTREES_HELP },
   { name: "usage", listed: "more", help: USAGE_HELP },
+  { name: "report", listed: "more", help: REPORT_USAGE },
   { name: "search", listed: "more", help: SEARCH_USAGE },
   { name: "portal", listed: "more", help: PORTAL_USAGE },
   { name: "mcp", listed: "more", help: MCP_HELP },
