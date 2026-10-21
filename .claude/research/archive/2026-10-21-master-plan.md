@@ -439,3 +439,50 @@ launch. Biome must skip `plugin/workflows` (a top-level `return` with `export`);
 `check:duplicates` learns to read the scripts' strings. Live proofs P1–P9 first (what the tool
 input holds for a named run; whether SubagentStart/Stop fire for workflow agents; nesting;
 whether `plugin validate` checks scripts; context cost; the override order; the mod hook).
+
+## L1a.1 — Worker proofs, run live on 2.1.306 (2026-10-21)
+
+Probe sessions on `--model haiku --effort max`; the person's settings run every session in
+`auto` permission mode by default.
+- **Launch (P1): proved.** `claude --bg --name … --settings '{"env":{"CC_SMART_DEV_KIT_WORKER":"probe"}}' …`
+  returned in 0.9 s; the worker's Bash saw the variable, `CLAUDE_JOB_DIR`, `CLAUDE_CODE_CHILD_SESSION=1`
+  and `CLAUDE_CODE_MESSAGING_SOCKET`. `--session-id` with `--bg` is ignored with a warning: the
+  launcher reads the id from `backgrounded · <id> · <name>` (the short id is the first 8
+  characters of `sessionId`). An `agents --json` row: `pid, id, cwd, kind, startedAt, sessionId,
+  name, status, state` (`waitingFor` when waiting).
+- **Lead identity (P13): proved.** The nearest ancestor process with a
+  `~/.claude/sessions/<pid>.json` is the session; that file holds `sessionId`, `jobId`, `kind`,
+  `name`, `messagingSocketPath`, `status`. A lead in a background session is `kind: "bg"`.
+- **Worktree (P7): proved with `-p`.** `-w <name>` opens the EXISTING launcher-made worktree
+  (`.claude/worktrees/wk-probe`, branch `wk/probe`), a commit needs no prompt, a write into the
+  main checkout is refused ("This session is isolated in the worktree …"). EnterWorktree by NAME
+  resumes it too (its message names the branch wrongly); a relative path resolves against the
+  cwd — use an absolute one. **Claude Code git-locks the worktree and leaves the lock** after a
+  clean exit: `worker rm` and the worktree verdict must unlock it. Owed: `--bg -w` in a trusted
+  repo — `claude --bg` refuses a git repo the person never opened ("Workspace not trusted"; trust
+  is not inherited from a parent folder).
+- **Auto mode (P3): proved.** The whole suite and `git commit` ran with no prompt (`--bg` in a
+  non-git folder; `-p` in a git repo).
+- **Monitors (P4): proved in a `--bg` session**, despite the docs' "interactive sessions only": a
+  monitor line arrives as a task notification, is held while a turn is busy, and **wakes an idle
+  session** (a new turn 22 s after the line). `on-skill-invoke:<plugin>:<skill>` starts it.
+  **`DISABLE_TELEMETRY=1` stops every monitor** — the fallback (`worker watch --once` in the
+  background) is for that case.
+- **Auto-background (P5): proved.** A PreToolUse `updatedInput` that adds
+  `run_in_background: true` moves the command to the background ("Command running in background
+  with ID: …"), and its exit starts a new turn; the same command without the hook ran 34 s in the
+  foreground.
+- **Reminder events (P6): proved.** A hand-back arrives as a turn whose prompt is the
+  `<agent-message …>` peer text, and **UserPromptSubmit fires on it** (its `additionalContext`
+  reaches the model). SessionStart fires with `compact` after a compaction. The parent gets no
+  PostToolBatch on a hand-back turn. SubagentStop also fires for internal agents
+  (`agent_type: ""`): filter them. **A Stop hook that returns `additionalContext` keeps the turn
+  going and starves hand-backs: no Stop hook gives context.**
+- **`--bg -w` in a trusted repo: proved by the lead.** In this repo (trusted), after
+  `git worktree add -b wk/probe-trust .claude/worktrees/wk-probe-trust HEAD`,
+  `claude --bg -w wk-probe-trust --name "W probe trust" …` ran with `cwd` that worktree and
+  branch `wk/probe-trust` (`claude agents --json`, its own `pwd`). `claude rm <id>` then
+  refused: "exit that session, or run 'git worktree unlock' on the worktree … then run 'claude
+  rm' again" — the worktree was locked "claude session wk-probe-trust (pid … start …)" after a
+  `claude stop`. So `worker rm`: stop, unlock, the kit's own verdict and removal, then
+  `claude rm`.
