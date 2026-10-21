@@ -797,6 +797,9 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
     (`.claude/anymodel.json`, a `.claude/anymodel/` folder, a settings hook that calls
     `~/.local/bin/anymodel`): each names the new file, folder or command (§ Projects that
     used the old name);
+  - `!` in a project with a `cc-smart-dev-kit.json`, when git is older than 2.40: a fix made
+    after a review cannot be measured there, so each fix needs a review of the exact new head
+    (§ The review record);
 - the last live check, as information (`·`), when `doctor --live` passed on this machine
   before: the Claude Code version it passed on, and "run it again" when the installed
   Claude Code is another version.
@@ -1561,7 +1564,7 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `fable-session` | a session starts; a model switch; each answer ends | **Machine-wide**: when the session's own model is the `fable` tier — Claude Fable, or a model an override points that tier at — it shows *you* one line, once a session: the premium tier uses your plan's limits faster than Opus, so switch with `/model` if you did not mean to. Nothing goes to Claude, never an error and never a block. A session start judges only the `model` the start names; a switch judges `to_model` — the model the session moved TO — so the line appears AT the switch; a finished answer is judged by the model that answered it, which is the catch-all for a Claude Code that fires no `PostModelSwitch`, and can never fire for a model the session has already left (the old `UserPromptSubmit` read was one turn behind: it missed the switch to Fable and warned after the switch back). The line was seen live on a real session (2026-10-17); that `systemMessage` shows on `PostModelSwitch` and `Stop` is not proved yet (the contract's § Relied on, not proved yet). |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
 | `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. |
-| `review-record` | when a subagent starts, and when it finishes | When the agent is one `reviewAgents` lists (the plugin's reviewer by default): notes the commit the session's working folder is on at its start, and records it at its end — only when the folder is still on that commit. It is the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree, or on another commit than it started on. |
+| `review-record` | when a subagent starts, and when it finishes | When the agent is one `reviewAgents` lists (the plugin's reviewer by default): notes the commit the session's working folder is on at its start, and its branch, and records that start commit on that branch at its end: commits made while it read count as change after the review. It is the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
 
@@ -2199,9 +2202,9 @@ merge.
 | `deleteBranch` | `false` | Delete the branch after its merge. |
 | `reviewBeforePush` | `true` | Run the review before a push. |
 | `reviewAgents` | `["cc-smart-dev-kit:reviewer"]` | The subagent types whose return records a review (§ The review record), by the exact name Claude Code reports: `plugin:name` for a plugin's agent, the frontmatter `name` for a project's own. |
-| `fixesAfterReview.lines` | `200` | How many lines may change after a review while it still counts — or `fixesAfterReview.percent` of the reviewed change's lines, when that is more. A whole number, 0 or more. |
-| `fixesAfterReview.files` | `10` | The same for files changed after the review. |
-| `fixesAfterReview.percent` | `20` | The share, in percent of the reviewed change, a fix round may reach in lines and in files. `0` for all three: only the exact reviewed commit counts. |
+| `fixesAfterReview.lines` | `200` | How many lines (added plus deleted) may change on the branch after its review while the review still counts — or `fixesAfterReview.percent` of the reviewed change's lines, when that is more. The base's own changes, and files the base marks `linguist-generated`, are not counted (§ The review record). A whole number, 0 or more. |
+| `fixesAfterReview.files` | `10` | The same for the files changed after the review: both limits must hold. |
+| `fixesAfterReview.percent` | `20` | The share, in percent of the reviewed change, a fix round may reach in lines and in files, when that is more than `lines` and `files`. `0` for all three: only the exact reviewed commit counts. |
 | `clearWorktreeAfterMerge` | `false` | Clear the worktree once its pull request merged. |
 | `alerts.events` | all four | Which moments alert: `needs-you`, `question`, `finished`, `failed`. |
 | `alerts.sound` | `false` | A sound with the alert. |
@@ -2243,7 +2246,8 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the base names the agent that wrote it. |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ Notifications). |
 | `alerts.usagePercent` | the status line: from that share of a plan window it warns. |
-| `fixesAfterReview.*`, `workers.*` | nothing yet: they are read and shown, and the parts that act on them come later. |
+| `fixesAfterReview.*` | how much a branch may change after its review and still count as reviewed (§ The review record, below). Read and shown with the gate; the merge guard judges with them once it moves onto that rule. |
+| `workers.*` | nothing yet: they are read and shown, and the parts that act on them come later. |
 
 **The review record.** The record says one thing: the commit the change set was on had its one
 premium review. It is one small JSON file per repository under
@@ -2251,9 +2255,25 @@ premium review. It is one small JSON file per repository under
 whether the commit here has a record the gate trusts. It is written **by the review-record
 hook**: Claude Code tells it when a subagent starts and when it finishes, and if that agent is
 one `reviewAgents` lists (by default the plugin's own reviewer) it notes the commit the
-working folder is on at the start, and records it at the end — **only when the folder is still
-on that commit**. A fix committed while the reviewer read moves the commit, and then nothing is
-recorded: run the review again with every fix already committed. A name matches exactly: a
+working folder is on at the start, and its branch, and records **that start commit, on that
+branch**, at the end. A fix committed while the reviewer read is a fix it never saw: it counts
+as change after the review, like every later fix.
+
+**A review counts for its branch and the fixes after it.** A review of an earlier commit of the
+same branch covers the branch's new head while the change made since the review — the base's
+own changes taken out — stays within `fixesAfterReview` (by default 200 lines, 10 files, or 20%
+of the reviewed change when that is more; `0`/`0`/`0`: the exact reviewed commit only). Merging
+the base into the branch, or a rebase that only moves it, adds nothing; a fix commit, a rebase
+that edits, a conflict resolved by hand and a new file all count. Files your base branch marks
+`linguist-generated` in its `.gitattributes` are listed, not counted (a pull request's own
+`.gitattributes` hides nothing); a binary file changed after the review is never covered. A
+review on another branch never counts, nor one whose change is already in the base (a
+squash-merged branch whose name is used again). It needs git 2.40 or newer: `doctor` warns on an
+older one, and then only a review of the exact head counts. A record without a branch (written by
+0.6.0, on a detached HEAD, or by hand) counts for its exact commit only. The merge guard still
+asks for a record of the exact head commit until it moves onto this rule.
+
+A name matches exactly: a
 `plugin:name` only that plugin's agent, a bare name only an agent with no plugin prefix, so
 another plugin's `reviewer` never counts for `cc-smart-dev-kit:reviewer`. An agent that stopped
 inside its own worktree records nothing: that worktree's branch is a fresh one from the base,

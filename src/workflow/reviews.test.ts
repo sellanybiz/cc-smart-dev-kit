@@ -16,7 +16,9 @@ import {
   repoKey,
   reviewStartsFile,
   reviewsFile,
+  reviewsOn,
   takeReviewStart,
+  trustedReviews,
 } from "./reviews";
 
 /** The key of one repo, written the way the module does: a sha256 of its folder, 16 characters. */
@@ -251,7 +253,7 @@ describe("where a review agent started (HK-6: HEAD at its start)", () => {
     await noteReviewStart(file, "0a1b2c3d4e5f60718", SHA_A, Date.parse("2026-10-16T10:00:00.000Z"));
     // A resumed agent starts again: the first start stays, a later HEAD never replaces it.
     await noteReviewStart(file, "0a1b2c3d4e5f60718", SHA_B, Date.parse("2026-10-16T10:05:00.000Z"));
-    expect(await takeReviewStart(file, "0a1b2c3d4e5f60718")).toBe(SHA_A);
+    expect(await takeReviewStart(file, "0a1b2c3d4e5f60718")).toEqual({ head: SHA_A, branch: null });
     expect(await takeReviewStart(file, "0a1b2c3d4e5f60718")).toBeNull();
   });
 
@@ -259,7 +261,7 @@ describe("where a review agent started (HK-6: HEAD at its start)", () => {
     // SubagentStart's documented example says `agent-abc123`; SubagentStop's proved id is bare.
     const file = reviewStartsFile(tempDir("state"), "/home/user/app");
     await noteReviewStart(file, "agent-0a1b2c", SHA_A, Date.parse("2026-10-16T10:00:00.000Z"));
-    expect(await takeReviewStart(file, "0a1b2c")).toBe(SHA_A);
+    expect(await takeReviewStart(file, "0a1b2c")).toEqual({ head: SHA_A, branch: null });
   });
 
   test("an agent that never started here has no start", async () => {
@@ -273,6 +275,83 @@ describe("where a review agent started (HK-6: HEAD at its start)", () => {
     await noteReviewStart(file, "old", SHA_A, Date.parse("2026-10-14T10:00:00.000Z"));
     await noteReviewStart(file, "new", SHA_B, Date.parse("2026-10-16T10:00:00.000Z"));
     expect(await takeReviewStart(file, "old")).toBeNull();
-    expect(await takeReviewStart(file, "new")).toBe(SHA_B);
+    expect(await takeReviewStart(file, "new")).toEqual({ head: SHA_B, branch: null });
+  });
+});
+
+describe("D17: the branch a review was on", () => {
+  test("D17: the start notes the branch, and the stop gives it back with the commit", async () => {
+    const file = reviewStartsFile(tempDir("state"), "/home/user/app");
+    await noteReviewStart(file, "0a1b2c", SHA_A, Date.parse("2026-10-16T10:00:00.000Z"), "feat");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      "0a1b2c": { head: SHA_A, at: Date.parse("2026-10-16T10:00:00.000Z"), branch: "feat" },
+    });
+    expect(await takeReviewStart(file, "0a1b2c")).toEqual({ head: SHA_A, branch: "feat" });
+  });
+
+  test("D17: a review recorded on a branch keeps it; the same writer on a new branch adds it", async () => {
+    const file = fileWith(null);
+    const at = Date.parse("2026-10-16T10:00:00.000Z");
+    expect(await recordReview(file, SHA_A, REVIEWER, at, "feat")).toEqual({
+      added: true,
+      at: "2026-10-16T10:00:00.000Z",
+    });
+    expect(await recordReview(file, SHA_A, REVIEWER, at + 1000, "feat")).toEqual({
+      added: false,
+      at: "2026-10-16T10:00:00.000Z",
+    });
+    expect(await recordReview(file, SHA_A, REVIEWER, at + 2000, "feat-2")).toEqual({
+      added: true,
+      at: "2026-10-16T10:00:00.000Z",
+    });
+    expect(readFileSync(file, "utf8")).toBe(
+      text({
+        [SHA_A]: { at: "2026-10-16T10:00:00.000Z", by: [REVIEWER], branches: ["feat", "feat-2"] },
+      }),
+    );
+  });
+
+  test("D17: reviewsOn lists a branch's reviews by a writer that counts, the newest first", () => {
+    const file = fileWith(
+      JSON.stringify({
+        [SHA_A]: { at: "2026-10-16T10:00:00.000Z", by: [REVIEWER], branches: ["feat"] },
+        [SHA_B]: { at: "2026-10-16T11:00:00.000Z", by: [BY_HAND], branches: ["feat", "other"] },
+        ["c".repeat(40)]: {
+          at: "2026-10-16T12:00:00.000Z",
+          by: ["other-plugin:reviewer"],
+          branches: ["feat"],
+        },
+        ["d".repeat(40)]: { at: "2026-10-16T13:00:00.000Z", by: [REVIEWER], branches: ["other"] },
+      }),
+    );
+    expect(reviewsOn(file, "feat", AGENTS)).toEqual([
+      { sha: SHA_B, at: "2026-10-16T11:00:00.000Z", branches: ["feat", "other"] },
+      { sha: SHA_A, at: "2026-10-16T10:00:00.000Z", branches: ["feat"] },
+    ]);
+    expect(reviewsOn(file, "nothing", AGENTS)).toEqual([]);
+  });
+
+  test("D17: a 0.6.0 record without a branch still reads, counts exactly, and is on no branch", () => {
+    const file = fileWith(
+      JSON.stringify({ [SHA_A]: { at: "2026-10-16T10:00:00.000Z", by: [REVIEWER] } }),
+    );
+    expect(hasReview(file, SHA_A, AGENTS)).toBe(true);
+    expect(trustedReviews(file, AGENTS)).toEqual([
+      { sha: SHA_A, at: "2026-10-16T10:00:00.000Z", branches: [] },
+    ]);
+    expect(reviewsOn(file, "main", AGENTS)).toEqual([]);
+  });
+
+  test("D17: a branch list that cannot be read names no branch, and the entry still counts", () => {
+    const file = fileWith(
+      JSON.stringify({
+        [SHA_A]: { at: "2026-10-16T10:00:00.000Z", by: [REVIEWER], branches: "feat" },
+        [SHA_B]: { at: "2026-10-16T10:00:00.000Z", by: [REVIEWER], branches: ["feat", 3] },
+      }),
+    );
+    expect(readReviews(file)).toEqual({
+      [SHA_A]: { at: "2026-10-16T10:00:00.000Z", by: [REVIEWER] },
+      [SHA_B]: { at: "2026-10-16T10:00:00.000Z", by: [REVIEWER] },
+    });
   });
 });

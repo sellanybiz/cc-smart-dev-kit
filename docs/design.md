@@ -1273,7 +1273,7 @@ as the fix (§ Per-project opt-in).
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. A form that names no pull request gets no note. |
-| `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on; when it stops on that same commit, records it — the record the merge guard reads. Nothing for an agent that stopped inside its own worktree, or on another commit. § The review record. |
+| `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone. Removes nothing. |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
 
@@ -1751,7 +1751,8 @@ place (`auto-merge.ts`).
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:reviewer` by default). |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
-| `fixesAfterReview.*`, `workers.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The merge guard's rule for the fixes after a review (D17) and the lead and worker sessions (§ Lead and workers) are the parts that will read them. |
+| `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source, and written by `workflow set`; the merge guard judges with them once its call site moves onto `readCover` (D17b). |
+| `workers.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The lead and worker sessions (§ Lead and workers) are the part that will read them. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through
 with no question only when **all** of these hold: `autoMerge` is on (`autoMergeOff` is the first
@@ -1766,7 +1767,7 @@ the head commit from `gh pr view` has a recorded review that counts.
 **The review gate is read as committed on the pull request's base**, never from a checkout's
 working copy. Every value the guard judges with — `autoMerge`, `reviewBeforePush`,
 `reviewAgents`, `fixesAfterReview.*` (the limits a fix after a review may reach and still count,
-D17 — read and shown with the gate, not judged yet), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
+D17, § The review record — read and shown with the gate; the guard judges with them from D17b), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
 hands the merge to the project's own guard — comes from the built-in default, the person's
 `workflow.json`, and `.claude/cc-smart-dev-kit.json` as `git` holds it at `origin/<base>`
 (`resolveGate` in `src/workflow/resolve.ts`, over `readCommittedConfig` in
@@ -1813,13 +1814,52 @@ the checkout's file, for every plugin hook alike: `src/hooks/run.ts`.)
 **The review record** (`src/workflow/reviews.ts`) is what "the review is done" means to a hook.
 One small JSON file per repository, `<stateDir>/reviews/<key>.json` (mode 0600, written
 atomically, the newest 50 commits kept), where the key is a hash of the main checkout — the same
-key the after-merge note makes, so every worktree of a repository shares one record. It records
-**exactly** one commit: a review of an older commit does not cover a newer one, which is the
-point — the merge guard asks about the pull request's head commit, and a commit pushed after the
-review is a commit nobody read. Each entry is `sha → { at, by }`: when it was first recorded,
-and every writer that recorded it (an agent type, or `workflow review-done` for the person by
-hand). An entry an older plugin wrote (`sha → time`) names no writer and counts for nothing:
-that commit asks once. **Every write holds the record's own lock** (`withLock` on the
+key the after-merge note makes, so every worktree of a repository shares one record. Each entry
+is `sha → { at, by, branches? }`: when it was first recorded, every writer that recorded it (an
+agent type, or `workflow review-done` for the person by hand), and the branches the reviewer was
+on (since 1.0.0). An entry without `branches` — a 0.6.0 record, a review on a detached HEAD, one
+written by hand — still reads and counts for its exact commit only. An entry an older plugin
+wrote (`sha → time`) names no writer and counts for nothing: that commit asks once.
+
+**A review counts for its branch and the fixes after it (D17).** A review of commit R covers a
+later head H when R's record names H's branch and the change made since R, **the base's own
+changes taken out**, stays within the limits the base commits (`workflow.fixesAfterReview`,
+default 200 lines, 10 files, 20%): covered while its lines are at most `lines` or `percent`% of
+the reviewed change's lines, whichever is more, **and** its files at most `files` or `percent`%
+of the reviewed files, whichever is more. `0`/`0`/`0` means the exact reviewed commit only. A
+review of H itself covers H on any branch, as before. The one home is
+`src/workflow/review-cover.ts` (`readCover`, and the pure `coverRefusal`):
+
+- `B = git merge-base H origin/<base>`, then `T = git merge-tree --write-tree B R` — the reviewed
+  change replayed on the base H's branch is on. merge-tree writes the objects it makes, so it runs
+  with a **temporary object folder** (`GIT_OBJECT_DIRECTORY`, the repository's own objects read
+  through `GIT_ALTERNATE_OBJECT_DIRECTORIES`), removed after: nothing is written into the
+  repository. A conflicted replay (exit 1) still prints a valid tree, with the conflict markers in
+  its files, so a conflict resolved by hand counts as change.
+- The change after the review is `git diff --numstat -z -M T H` (no textconv, no external diff);
+  the reviewed size is the same count over `merge-base(R, origin/<base>)..R`. Lines are added plus
+  deleted; files are paths.
+- So the base merged into the branch, or a rebase that only moved it, counts for nothing; a fix
+  commit, a rebase that edits, a hand-resolved conflict and a new file count. A revert of the
+  reviewed change counts its whole size. A review on another branch never covers, so a stacked
+  pull request is not covered by the review of the branch below it.
+- A review whose change is already all in the base (`git diff --quiet B T`: its branch was
+  squash-merged and the name used again) is no candidate. Of several candidates, the covered one
+  with the smallest change is named; when none is covered, the reason is about the smallest.
+- Files the base marks `linguist-generated` (`git check-attr --source=origin/<base>`: the base's
+  attributes, so a pull request's own `.gitattributes` hides nothing; this repo marks
+  `plugin/dist/**`) are listed, not counted. A binary file in the change is never covered.
+- Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not in
+  this checkout ("fetch it"), no `origin/<base>`, the caller's time running out, or git older than
+  2.40 (`check-attr --source` came in 2.40; `doctor` warns with one `!` line, and such a machine
+  matches the exact head only). It never fetches.
+
+The limits come from this repo's own fix rounds: 10% of the reviewed change is covered, 105% and
+160% ask. A limit is a trade: up to 200 lines written after the review merge unread, which is the
+point of not paying a second review for a small fix. The merge guard still asks for a record of
+the exact head (`hasReview`) until its call site moves onto `readCover` (D17b).
+
+**Every write holds the record's own lock** (`withLock` on the
 `reviews/` folder, a 3 s wait): two reviewers that finish at once both land. It is not the
 state folder's shared lock, whose 10 s wait is as long as the hook may run.
 
@@ -1828,12 +1868,13 @@ state folder's shared lock, whose 10 s wait is as long as the hook may run.
 session's word — any caller could name a commit nobody read — so the one writer is the hook
 Claude Code tells when a subagent starts and is done. At the start, when the agent's
 `agent_type` is one the workflow's `reviewAgents` lists, it notes the commit the input's `cwd`
-is on, keyed by `agent_id` (`<key>.starts.json`; Claude Code's `agent-` prefix and the bare id
-are one agent; the first start stays when a resumed agent starts again; a day-old start is
-dropped). At the end it takes that start back and records the commit **only when HEAD is
-still the one the agent started on**: a fix committed while the reviewer read moves HEAD, and
-then the record says nothing (one stderr line says to run the review again with every fix
-committed); a stop with no start seen records nothing either. The names are compared by
+is on and its branch (`git symbolic-ref --quiet --short HEAD`; none on a detached HEAD), keyed
+by `agent_id` (`<key>.starts.json`; Claude Code's `agent-` prefix and the bare id are one agent;
+the first start stays when a resumed agent starts again; a day-old start is dropped). At the end
+it takes that start back and records **the start commit, on its branch** — never the commit the
+folder is on at the stop: a fix committed while the reviewer read is a fix it never saw, and it
+counts as change after the review like every later fix (D17, above). A stop with no start seen
+records nothing (one stderr line says to run the review again). The names are compared by
 `recordsReview` in `reviews.ts`, the one home of that question: a `plugin:name` exactly, a bare
 name only for an agent with no plugin prefix — Claude Code reports a plugin agent as
 `plugin:name` (code.claude.com/docs/en/hooks § SubagentStart), so another plugin's

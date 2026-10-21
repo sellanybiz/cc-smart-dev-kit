@@ -19,6 +19,8 @@ export interface GitRun {
   out: string;
   /** stderr, trimmed; "timed out" when the timeout stopped it. */
   err: string;
+  /** git's exit code; null when it did not exit on its own (a timeout, or it never started). */
+  code: number | null;
 }
 
 /**
@@ -28,21 +30,33 @@ export interface GitRun {
  */
 export const GUARD_GIT_TIMEOUT_MS = 5_000;
 
-/** A git command in `cwd`, without the GIT_* variables that point at another repo. */
-export function runGit(cwd: string, args: string[], env: Env, timeoutMs = 15_000): GitRun {
+/**
+ * A git command in `cwd`, without the GIT_* variables that point at another repo. `own` is set
+ * after those are dropped: the variables this one call needs on purpose (a temporary object
+ * folder, `src/workflow/review-cover.ts`), never ones inherited from outside.
+ */
+export function runGit(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs = 15_000,
+  own: Record<string, string> = {},
+): GitRun {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
-      env: gitEnv(env),
+      env: { ...gitEnv(env), ...own },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err };
+    const code = result.signalCode ? null : result.exitCode;
+    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
   } catch (error) {
-    return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
   }
 }
 

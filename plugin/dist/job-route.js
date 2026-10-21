@@ -7447,30 +7447,39 @@ function readReviews(file) {
   for (const [sha, entry] of Object.entries(readObject(file))) {
     if (!COMMIT_SHA.test(sha) || typeof entry !== "object" || entry === null)
       continue;
-    const { at, by } = entry;
+    const { at, by, branches } = entry;
     const writers = stringList(by);
-    if (typeof at === "string" && writers !== null)
-      record[sha] = { at, by: writers };
+    if (typeof at !== "string" || writers === null)
+      continue;
+    const named = stringList(branches);
+    record[sha] = named === null ? { at, by: writers } : { at, by: writers, branches: named };
   }
   return record;
 }
+function trusted(entry, agents) {
+  return entry.by.some((by) => by === BY_HAND || recordsReview(by, agents));
+}
 function hasReview(file, sha, agents) {
   const entry = readReviews(file)[sha];
-  return entry?.by.some((by) => by === BY_HAND || recordsReview(by, agents)) ?? false;
+  return entry !== undefined && trusted(entry, agents);
 }
 async function underRecordLock(file, write) {
   const folder = dirname2(file);
   mkdirSync3(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
 }
-async function recordReview(file, sha, by, atMs) {
+async function recordReview(file, sha, by, atMs, branch = null) {
   return await underRecordLock(file, () => {
     const record = readReviews(file);
     const before = record[sha];
-    if (before?.by.includes(by))
+    const branches = before?.branches ?? [];
+    const newBranch = branch !== null && branch !== "" && !branches.includes(branch);
+    if (before?.by.includes(by) && !newBranch)
       return { added: false, at: before.at };
     const at = before?.at ?? new Date(atMs).toISOString();
-    record[sha] = { at, by: [...before?.by ?? [], by] };
+    const writers = before?.by.includes(by) ? before.by : [...before?.by ?? [], by];
+    const named = newBranch ? [...branches, branch] : branches;
+    record[sha] = named.length === 0 ? { at, by: writers } : { at, by: writers, branches: named };
     const kept = {};
     for (const [commit, entry] of Object.entries(record).sort(([, a], [, b]) => b.at.localeCompare(a.at)).slice(0, REVIEWS_KEPT)) {
       kept[commit] = entry;
@@ -7489,14 +7498,14 @@ function readStarts(file) {
   for (const [key, entry] of Object.entries(readObject(file))) {
     if (typeof entry !== "object" || entry === null)
       continue;
-    const { head, at } = entry;
+    const { head, at, branch } = entry;
     if (typeof head === "string" && COMMIT_SHA.test(head) && typeof at === "number") {
-      starts[key] = { head, at };
+      starts[key] = typeof branch === "string" && branch !== "" ? { head, at, branch } : { head, at };
     }
   }
   return starts;
 }
-async function noteReviewStart(file, agentId, head, atMs) {
+async function noteReviewStart(file, agentId, head, atMs, branch = null) {
   const key = agentIdKey(agentId);
   if (key === null)
     return;
@@ -7509,7 +7518,7 @@ async function noteReviewStart(file, agentId, head, atMs) {
     }
     if (kept[key] !== undefined)
       return;
-    kept[key] = { head, at: atMs };
+    kept[key] = branch === null || branch === "" ? { head, at: atMs } : { head, at: atMs, branch };
     atomicWrite(file, `${JSON.stringify(kept, null, 2)}
 `, 384);
   });
@@ -7526,7 +7535,7 @@ async function takeReviewStart(file, agentId) {
     delete starts[key];
     atomicWrite(file, `${JSON.stringify(starts, null, 2)}
 `, 384);
-    return start.head;
+    return { head: start.head, branch: start.branch ?? null };
   });
 }
 
@@ -7558,20 +7567,22 @@ var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/hooks/git.ts
 var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000) {
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
-      env: gitEnv(env),
+      env: { ...gitEnv(env), ...own },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err };
+    const code = result.signalCode ? null : result.exitCode;
+    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
   } catch (error) {
-    return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
   }
 }
 function realPath(path) {
@@ -11346,6 +11357,10 @@ function subagentWorktreeOf(cwd, agentId) {
 function agentTypeOf(input) {
   return stringField(input.agent_type);
 }
+function headBranch(folder, env) {
+  const run = runGit(folder, ["symbolic-ref", "--quiet", "--short", "HEAD"], env, GUARD_GIT_TIMEOUT_MS);
+  return run.ok && run.out !== "" ? run.out : null;
+}
 function headCommit(folder, env) {
   const run = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], env, GUARD_GIT_TIMEOUT_MS);
   return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
@@ -11385,7 +11400,7 @@ async function reviewRecord(context) {
   try {
     if (event === "SubagentStart") {
       if (commit !== null) {
-        await noteReviewStart(reviewStartsFile(paths.stateDir, repository), agentId, commit, Date.now());
+        await noteReviewStart(reviewStartsFile(paths.stateDir, repository), agentId, commit, Date.now(), headBranch(cwd, env));
       }
       return SILENT;
     }
@@ -11395,10 +11410,7 @@ async function reviewRecord(context) {
     if (start === null) {
       return said("no start was seen for this review agent, so no review is recorded: run the review again");
     }
-    if (start !== commit) {
-      return said(`the review agent started on ${start.slice(0, 7)} and stopped on ${commit.slice(0, 7)}, so no review is recorded: run the review again with every fix already committed`);
-    }
-    await recordReview(reviewsFile(paths.stateDir, repository), commit, agent, Date.now());
+    await recordReview(reviewsFile(paths.stateDir, repository), start.head, agent, Date.now(), start.branch);
   } catch (error) {
     return said(`cannot write the record (${error instanceof Error ? error.message : String(error)})`);
   }

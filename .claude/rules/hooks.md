@@ -58,8 +58,9 @@ the project's decision, so it stays wired by the project. The engine itself is d
 (owner, 2026-10-18): it is deleted in the next minor version, and no new project wires it.
 
 **A plugin SubagentStop hook that touches no worktree is fine** (today: `review-record`
-only, which also runs on SubagentStart to note the commit a review agent starts on, and
-records a review at the stop only when HEAD is still that commit). It can be silent for a
+only, which also runs on SubagentStart to note the commit and branch a review agent starts
+on, and records the review of that start commit, on that branch, at the stop — commits made
+while it read count as change after the review, `src/workflow/review-cover.ts`). It can be silent for a
 project that never opted in, it removes nothing, and no other SubagentStop hook competes with
 it. `entries.test.ts` fails when `hooks.json` wires WorktreeCreate, WorktreeRemove, or a
 SubagentStart or SubagentStop entry that runs anything but `review-record` — so

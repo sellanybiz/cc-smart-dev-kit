@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
+import { tempDir, withGitVersion } from "../testing/temp";
 import { cliPaths } from "./paths";
 import { projectChecks, renamedCommand } from "./project-checks";
 
@@ -438,5 +438,22 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     const lines = check(repo, hookEnv(), missing);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith(`✗ cannot read the plugin's hooks (${missing}): `);
+  });
+});
+
+describe("D17: a git too old to measure fixes after a review", () => {
+  test("D17: git older than 2.40 in a project: one ! line saying fixes need an exact re-review", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
+    expect(check(repo, withGitVersion(hookEnv(), "2.39.2"))).toEqual([
+      "! project: git 2.39.2 is older than 2.40, so fixes made after a review cannot be measured here: each fix then needs a review of the exact new head (update git)",
+    ]);
+  });
+
+  test("D17: git 2.40 or newer, or a project that never opted in: nothing to say", () => {
+    const repo = makeRepo();
+    expect(check(repo, withGitVersion(hookEnv(), "2.39.2"))).toEqual([]);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
+    expect(check(repo, withGitVersion(hookEnv(), "2.40.0"))).toEqual([]);
   });
 });

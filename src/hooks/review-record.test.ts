@@ -41,6 +41,17 @@ function recorded(env: Record<string, string>, repo: string): Record<string, str
   return Object.fromEntries(Object.entries(record).map(([sha, entry]) => [sha, entry.by]));
 }
 
+/** The branches the record names for each sha; null where it names none. */
+function branchesOf(env: Record<string, string>, repo: string): Record<string, string[] | null> {
+  const record = JSON.parse(readFileSync(recordFile(env, repo), "utf8")) as Record<
+    string,
+    { branches?: string[] }
+  >;
+  return Object.fromEntries(
+    Object.entries(record).map(([sha, entry]) => [sha, entry.branches ?? null]),
+  );
+}
+
 /** The input Claude Code sends when a subagent starts (`agent-` prefixed, as the docs show). */
 function started(cwd: string, fields: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -143,7 +154,9 @@ describe("which agents record a review", () => {
 });
 
 describe("the commit it records is the one the reviewer read (HK-6)", () => {
-  test("HK-6: HEAD moved while the reviewer ran: nothing recorded, and one line says why", async () => {
+  test("D17: HEAD moved while the reviewer ran: the START commit is recorded, silently, on its branch", async () => {
+    // A commit made while the reviewer read is a fix it never saw: it counts as change after
+    // the review (review-cover.ts), so the record names the commit the reviewer began on.
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
@@ -151,11 +164,39 @@ describe("the commit it records is the one the reviewer read (HK-6)", () => {
     expect(await runHook(reviewRecordHook, started(repo, { agent_type: REVIEWER }), env)).toEqual(
       {},
     );
-    const second = commitAgain(repo);
-    expect(await runHook(reviewRecordHook, stopped(repo, { agent_type: REVIEWER }), env)).toEqual({
-      stderr: `cc-smart-dev-kit review-record: the review agent started on ${first.slice(0, 7)} and stopped on ${second.slice(0, 7)}, so no review is recorded: run the review again with every fix already committed`,
-    });
-    expect(recorded(env, repo)).toEqual({});
+    commitAgain(repo);
+    expect(await runHook(reviewRecordHook, stopped(repo, { agent_type: REVIEWER }), env)).toEqual(
+      {},
+    );
+    expect(recorded(env, repo)).toEqual({ [first]: [REVIEWER] });
+    expect(branchesOf(env, repo)).toEqual({ [first]: ["main"] });
+  });
+
+  test("D17: the start notes the branch the folder is on", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    git(repo, "checkout", "-q", "-b", "feature/one");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    await runHook(reviewRecordHook, started(repo, { agent_type: REVIEWER }), env);
+    const starts = JSON.parse(readFileSync(recordFile(env, repo, ".starts.json"), "utf8"));
+    expect(starts[AGENT_ID]).toMatchObject({ head, branch: "feature/one" });
+    await runHook(reviewRecordHook, stopped(repo, { agent_type: REVIEWER }), env);
+    expect(branchesOf(env, repo)).toEqual({ [head]: ["feature/one"] });
+  });
+
+  test("D17: on a detached HEAD the start notes no branch, and the record counts exactly", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    git(repo, "checkout", "-q", "--detach");
+    await runHook(reviewRecordHook, started(repo, { agent_type: REVIEWER }), env);
+    const starts = JSON.parse(readFileSync(recordFile(env, repo, ".starts.json"), "utf8"));
+    expect(starts[AGENT_ID]).toEqual({ head, at: expect.any(Number) });
+    await runHook(reviewRecordHook, stopped(repo, { agent_type: REVIEWER }), env);
+    expect(recorded(env, repo)).toEqual({ [head]: [REVIEWER] });
+    expect(branchesOf(env, repo)).toEqual({ [head]: null });
   });
 
   test("HK-6: a stop whose start was never seen: nothing recorded, and one line says why", async () => {

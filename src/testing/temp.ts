@@ -93,3 +93,21 @@ export function withSlowGit(
   chmodSync(join(dir, "git"), 0o755);
   return { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
 }
+
+/**
+ * The environment with a `git` first on PATH that says it is `version` (`git --version`) and
+ * runs the real git for everything else: how a check for an older git is tested on a new one.
+ */
+export function withGitVersion(
+  env: Record<string, string>,
+  version: string,
+): Record<string, string> {
+  const dir = tempDir("old-git");
+  const real = Bun.which("git") ?? "/usr/bin/git";
+  writeFileSync(
+    join(dir, "git"),
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version ${version}"; exit 0; fi\nexec "${real}" "$@"\n`,
+  );
+  chmodSync(join(dir, "git"), 0o755);
+  return { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
+}

@@ -16,11 +16,13 @@
  * one kind `.claude/rules/hooks.md` allows from `hooks.json`.
  *
  * **SubagentStart is the beginning:** it notes the commit the folder is on when the review
- * agent starts (`noteReviewStart`, keyed by `agent_id`), and the stop records a review only
- * when the folder is on that same commit (`takeReviewStart`). A commit made while the
- * reviewer read — a fix it never saw — moves HEAD, and then nothing is recorded: the record
- * names only a commit the reviewer could have read whole. A stop with no start seen (the
- * plugin was updated mid-review) records nothing either.
+ * agent starts, and the branch (`symbolic-ref`; none on a detached HEAD), keyed by `agent_id`
+ * (`noteReviewStart`). The stop records the review of that START commit, on that branch
+ * (`takeReviewStart`) — always the start, never the commit the folder is on at the stop: a
+ * commit made while the reviewer read is a fix it never saw. Such commits count as change
+ * after the review, as every later fix does, when the merge guard asks whether the review
+ * still covers the branch's head (`src/workflow/review-cover.ts`, D17). A stop with no start
+ * seen (the plugin was updated mid-review) records nothing.
  *
  * Which agents count is the workflow's `reviewAgents` (default `["cc-smart-dev-kit:reviewer"]`,
  * the plugin's own reviewer), compared by `recordsReview`: a `plugin:name` exactly, a bare
@@ -36,7 +38,7 @@
  * What it never records, on purpose: an agent that is not on the list; a run whose `cwd` is
  * inside a subagent's own worktree (`.claude/worktrees/agent-<hex>`, the engine's shape: its
  * branch is a fresh one from the base, never the commit under review); a folder with no
- * commit yet; a stop on another commit than the start; and a stopped agent that failed —
+ * commit yet; and a stopped agent that failed —
  * `SubagentStop` is not told, and a review that did not finish is no review, so the guard
  * asks the person.
  *
@@ -64,6 +66,17 @@ import { subagentWorktreeOf } from "./worktree-remove";
 /** The agent type a starting or stopping subagent names (`agent_type`), or null when it names none. */
 export function agentTypeOf(input: { agent_type?: unknown }): string | null {
   return stringField(input.agent_type);
+}
+
+/** The branch `folder` is on, or null on a detached HEAD (or when git cannot say). */
+function headBranch(folder: string, env: Env): string | null {
+  const run = runGit(
+    folder,
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    env,
+    GUARD_GIT_TIMEOUT_MS,
+  );
+  return run.ok && run.out !== "" ? run.out : null;
 }
 
 /** The commit `folder` is on, or null when git cannot name one (no commit yet). */
@@ -127,6 +140,7 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
           agentId,
           commit,
           Date.now(),
+          headBranch(cwd, env),
         );
       }
       return SILENT;
@@ -138,12 +152,15 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
         "no start was seen for this review agent, so no review is recorded: run the review again",
       );
     }
-    if (start !== commit) {
-      return said(
-        `the review agent started on ${start.slice(0, 7)} and stopped on ${commit.slice(0, 7)}, so no review is recorded: run the review again with every fix already committed`,
-      );
-    }
-    await recordReview(reviewsFile(paths.stateDir, repository), commit, agent, Date.now());
+    // The commit the reviewer started on is the one it read: commits made since are change
+    // after the review, which the merge guard measures (D17).
+    await recordReview(
+      reviewsFile(paths.stateDir, repository),
+      start.head,
+      agent,
+      Date.now(),
+      start.branch,
+    );
   } catch (error) {
     return said(
       `cannot write the record (${error instanceof Error ? error.message : String(error)})`,

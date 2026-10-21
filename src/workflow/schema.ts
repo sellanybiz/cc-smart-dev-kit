@@ -109,7 +109,7 @@ export const workflowSchema = z.strictObject({
    * lines stay within `lines` or `percent`% of the reviewed change's lines, whichever is more,
    * and its files within `files` or `percent`% of the reviewed files, whichever is more.
    * `0`/`0`/`0` means the exact reviewed commit only. A review-gate group: read from the base's
-   * committed file. Nothing reads it for a decision yet.
+   * committed file. `readCover` (`review-cover.ts`) judges with it; the merge guard from D17b.
    */
   fixesAfterReview: z
     .strictObject({

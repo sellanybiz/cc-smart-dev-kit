@@ -11,7 +11,10 @@
  *
  * One small JSON file per repository, under the plugin's state folder
  * (`<stateDir>/reviews/<key>.json`, mode 0600, written atomically): the full commit sha to
- * when it was first recorded and every writer that recorded it. The key is a hash of the main
+ * when it was first recorded, every writer that recorded it, and the branches it was reviewed
+ * on (`branches`, since 1.0.0: what lets a review count for the fix commits after it on the
+ * same branch, `review-cover.ts`). An entry without `branches` — a 0.6.0 record, or one written
+ * by hand — still reads: it counts for its exact commit only. The key is a hash of the main
  * checkout's folder — the same key the after-merge note uses — so a repository and every
  * worktree of it share one record, and a record never follows a copy of the repository
  * somewhere else. Beside it, `<key>.starts.json` holds the commit each review agent started
@@ -49,10 +52,14 @@ export const BY_HAND = "workflow review-done";
 /** A commit as git writes one: 40 hex characters, or 64 in a sha256 repository. */
 export const COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 
-/** One recorded commit: when it was first recorded, and every writer that recorded it. */
+/**
+ * One recorded commit: when it was first recorded, every writer that recorded it, and the
+ * branches the reviewers were on (none: the exact commit only).
+ */
 export interface ReviewEntry {
   at: string;
   by: string[];
+  branches?: string[];
 }
 
 /** One repository's reviewed commits: the full sha of each, to its entry. */
@@ -116,11 +123,19 @@ export function readReviews(file: string): ReviewRecord {
   const record: ReviewRecord = {};
   for (const [sha, entry] of Object.entries(readObject(file))) {
     if (!COMMIT_SHA.test(sha) || typeof entry !== "object" || entry === null) continue;
-    const { at, by } = entry as { at?: unknown; by?: unknown };
+    const { at, by, branches } = entry as { at?: unknown; by?: unknown; branches?: unknown };
     const writers = stringList(by);
-    if (typeof at === "string" && writers !== null) record[sha] = { at, by: writers };
+    if (typeof at !== "string" || writers === null) continue;
+    // A branch list that cannot be read names no branch: the entry still counts, exactly.
+    const named = stringList(branches);
+    record[sha] = named === null ? { at, by: writers } : { at, by: writers, branches: named };
   }
   return record;
+}
+
+/** True when `entry` was recorded by a writer that counts: an agent `agents` lists, or by hand. */
+function trusted(entry: ReviewEntry, agents: readonly string[]): boolean {
+  return entry.by.some((by) => by === BY_HAND || recordsReview(by, agents));
 }
 
 /**
@@ -129,7 +144,38 @@ export function readReviews(file: string): ReviewRecord {
  */
 export function hasReview(file: string, sha: string, agents: readonly string[]): boolean {
   const entry = readReviews(file)[sha];
-  return entry?.by.some((by) => by === BY_HAND || recordsReview(by, agents)) ?? false;
+  return entry !== undefined && trusted(entry, agents);
+}
+
+/** One recorded review a writer that counts wrote: its commit and the branches it was on. */
+export interface TrustedReview {
+  sha: string;
+  at: string;
+  branches: readonly string[];
+}
+
+/**
+ * Every review in `file` a writer that counts recorded (`hasReview`'s rule), the newest first:
+ * what `readCover` (`review-cover.ts`) judges a head with — an exact match on any branch, and
+ * the reviews of the head's own branch.
+ */
+export function trustedReviews(file: string, agents: readonly string[]): TrustedReview[] {
+  return Object.entries(readReviews(file))
+    .filter(([, entry]) => trusted(entry, agents))
+    .sort(([, a], [, b]) => b.at.localeCompare(a.at))
+    .map(([sha, entry]) => ({ sha, at: entry.at, branches: entry.branches ?? [] }));
+}
+
+/**
+ * The reviews that may cover a later head of `branch`: each one a writer that counts recorded
+ * while on that branch, the newest first. A record without a branch (0.6.0) is never one.
+ */
+export function reviewsOn(
+  file: string,
+  branch: string,
+  agents: readonly string[],
+): TrustedReview[] {
+  return trustedReviews(file, agents).filter((review) => review.branches.includes(branch));
 }
 
 /** The line a write that happened prints: the commit, and when it was recorded before. */
@@ -148,22 +194,29 @@ async function underRecordLock<T>(file: string, write: () => T): Promise<T> {
 }
 
 /**
- * Records `sha` in `file` for writer `by`, at `atMs`. A commit already there keeps its first
- * time and gains the writer. The file keeps the newest `REVIEWS_KEPT` commits, so it stays
- * small. Throws `LockBusyError` when the lock stays held past `REVIEWS_LOCK_WAIT_MS`.
+ * Records `sha` in `file` for writer `by`, at `atMs`, reviewed on `branch` (null: a detached
+ * HEAD, or a writer that names none — the record then counts for `sha` exactly). A commit
+ * already there keeps its first time and gains the writer and the branch. The file keeps the
+ * newest `REVIEWS_KEPT` commits, so it stays small. Throws `LockBusyError` when the lock stays
+ * held past `REVIEWS_LOCK_WAIT_MS`.
  */
 export async function recordReview(
   file: string,
   sha: string,
   by: string,
   atMs: number,
+  branch: string | null = null,
 ): Promise<RecordedReview> {
   return await underRecordLock(file, () => {
     const record = readReviews(file);
     const before = record[sha];
-    if (before?.by.includes(by)) return { added: false, at: before.at };
+    const branches = before?.branches ?? [];
+    const newBranch = branch !== null && branch !== "" && !branches.includes(branch);
+    if (before?.by.includes(by) && !newBranch) return { added: false, at: before.at };
     const at = before?.at ?? new Date(atMs).toISOString();
-    record[sha] = { at, by: [...(before?.by ?? []), by] };
+    const writers = before?.by.includes(by) ? before.by : [...(before?.by ?? []), by];
+    const named = newBranch ? [...branches, branch] : branches;
+    record[sha] = named.length === 0 ? { at, by: writers } : { at, by: writers, branches: named };
     const kept: ReviewRecord = {};
     for (const [commit, entry] of Object.entries(record)
       .sort(([, a], [, b]) => b.at.localeCompare(a.at))
@@ -176,9 +229,17 @@ export async function recordReview(
 }
 
 /** One review agent's start: the commit its folder was on, and when. */
-interface ReviewStart {
+interface StartNote {
   head: string;
   at: number;
+  /** The branch the folder was on; none on a detached HEAD, or in a note 0.6.0 wrote. */
+  branch?: string;
+}
+
+/** Where a review agent started: the commit, and the branch (null on a detached HEAD). */
+export interface ReviewStart {
+  head: string;
+  branch: string | null;
 }
 
 /**
@@ -192,48 +253,51 @@ export function agentIdKey(agentId: string): string | null {
 }
 
 /** The starts in `file`, the ones that are not well formed dropped. */
-function readStarts(file: string): Record<string, ReviewStart> {
-  const starts: Record<string, ReviewStart> = {};
+function readStarts(file: string): Record<string, StartNote> {
+  const starts: Record<string, StartNote> = {};
   for (const [key, entry] of Object.entries(readObject(file))) {
     if (typeof entry !== "object" || entry === null) continue;
-    const { head, at } = entry as { head?: unknown; at?: unknown };
+    const { head, at, branch } = entry as { head?: unknown; at?: unknown; branch?: unknown };
     if (typeof head === "string" && COMMIT_SHA.test(head) && typeof at === "number") {
-      starts[key] = { head, at };
+      starts[key] =
+        typeof branch === "string" && branch !== "" ? { head, at, branch } : { head, at };
     }
   }
   return starts;
 }
 
 /**
- * Notes that review agent `agentId` started with its folder on `head`. A start already noted
- * for it stays: a resumed agent (SubagentStart fires again) must not move the commit it began
- * reading. Starts older than `START_KEPT_MS` are dropped on the way.
+ * Notes that review agent `agentId` started with its folder on `head`, on `branch` (null: a
+ * detached HEAD). A start already noted for it stays: a resumed agent (SubagentStart fires
+ * again) must not move the commit it began reading. Starts older than `START_KEPT_MS` are
+ * dropped on the way.
  */
 export async function noteReviewStart(
   file: string,
   agentId: string,
   head: string,
   atMs: number,
+  branch: string | null = null,
 ): Promise<void> {
   const key = agentIdKey(agentId);
   if (key === null) return;
   await underRecordLock(file, () => {
     const starts = readStarts(file);
-    const kept: Record<string, ReviewStart> = {};
+    const kept: Record<string, StartNote> = {};
     for (const [one, start] of Object.entries(starts)) {
       if (atMs - start.at <= START_KEPT_MS) kept[one] = start;
     }
     if (kept[key] !== undefined) return;
-    kept[key] = { head, at: atMs };
+    kept[key] = branch === null || branch === "" ? { head, at: atMs } : { head, at: atMs, branch };
     atomicWrite(file, `${JSON.stringify(kept, null, 2)}\n`, 0o600);
   });
 }
 
 /**
- * The commit review agent `agentId` started on, taken out of `file` (a stop is the end of
- * that start), or null when none was noted.
+ * The commit and branch review agent `agentId` started on, taken out of `file` (a stop is the
+ * end of that start), or null when none was noted.
  */
-export async function takeReviewStart(file: string, agentId: string): Promise<string | null> {
+export async function takeReviewStart(file: string, agentId: string): Promise<ReviewStart | null> {
   const key = agentIdKey(agentId);
   if (key === null) return null;
   return await underRecordLock(file, () => {
@@ -242,6 +306,6 @@ export async function takeReviewStart(file: string, agentId: string): Promise<st
     if (start === undefined) return null;
     delete starts[key];
     atomicWrite(file, `${JSON.stringify(starts, null, 2)}\n`, 0o600);
-    return start.head;
+    return { head: start.head, branch: start.branch ?? null };
   });
 }

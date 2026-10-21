@@ -21,6 +21,8 @@
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
  *   nothing, and can be taken out.
+ * - **A git too old for the review gate's measure.** In a project with a `cc-smart-dev-kit.json`,
+ *   git older than 2.40 is a warning: a review then counts for its exact commit only (D17).
  *
  * The project's settings are read where Claude Code reads them: `$CLAUDE_PROJECT_DIR` when
  * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
@@ -45,6 +47,7 @@ import {
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunner } from "./project-init";
 
@@ -378,6 +381,24 @@ export function projectChecks(
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
+    lines.push(...coverGitLines(checkout, env));
   }
   return lines;
+}
+
+/**
+ * One `!` line when this git is too old to measure a change made after a review
+ * (`MIN_COVER_GIT`, `src/workflow/review-cover.ts`): the review gate then counts a review of
+ * the exact head only, so every fix needs a review of its own.
+ */
+function coverGitLines(checkout: Checkout, env: Env): ProjectLine[] {
+  const version = parseGitVersion(runGit(checkout.root, ["--version"], env).out);
+  if (version === null || !tooOldToCover(version)) return [];
+  return [
+    {
+      ok: true,
+      warn: true,
+      text: `project: git ${version} is older than 2.40, so fixes made after a review cannot be measured here: each fix then needs a review of the exact new head (update git)`,
+    },
+  ];
 }
