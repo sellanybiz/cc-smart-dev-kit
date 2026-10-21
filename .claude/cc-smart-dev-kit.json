@@ -8,9 +8,7 @@
       "release/": "main"
     }
   },
-  "protectedBranches": [
-    "main"
-  ],
+  "protectedBranches": ["main"],
   "sessionNames": false,
   "workflow": {
     "reviewBeforePush": true,
