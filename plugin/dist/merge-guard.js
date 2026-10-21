@@ -9268,35 +9268,417 @@ var WORKER_KINDS = {
 };
 var WORKER_KIND_NAMES = Object.keys(WORKER_KINDS);
 
-// src/hooks/agent-launches.ts
-import { appendFileSync as appendFileSync2, readFileSync as readFileSync7 } from "fs";
-import { join as join9 } from "path";
-function agentLaunchesFile(stateDir) {
-  return join9(stateDir, "agent-launches.jsonl");
-}
-function lastAgentLaunch(file) {
-  let text;
+// src/hooks/agent-guard-workflows.ts
+import { existsSync as existsSync7, readdirSync as readdirSync2, readFileSync as readFileSync8, statSync as statSync5 } from "fs";
+import { dirname as dirname4, isAbsolute, join as join9, resolve as resolve4, sep as sep2 } from "path";
+
+// src/setup/installed-plugins.ts
+import { existsSync as existsSync6, readFileSync as readFileSync7 } from "fs";
+function pluginsRecord(installedPluginsFile) {
+  if (!existsSync6(installedPluginsFile))
+    return null;
+  let parsed;
   try {
-    text = readFileSync7(file, "utf8");
+    parsed = JSON.parse(readFileSync7(installedPluginsFile, "utf8"));
   } catch {
     return null;
   }
-  const last = text.split(`
-`).filter((line) => line.trim() !== "").at(-1);
-  return last === undefined ? null : parseAgentLaunch(last);
+  const plugins = parsed?.plugins;
+  return typeof plugins === "object" && plugins !== null && !Array.isArray(plugins) ? plugins : null;
 }
-function appendAgentLaunch(file, launch) {
-  const previous = lastAgentLaunch(file);
-  if (previous !== null && launch.toolUseId !== "" && previous.toolUseId === launch.toolUseId && previous.session === launch.session) {
-    return;
+function installsOfPlugin(installedPluginsFile, pluginName) {
+  const plugins = pluginsRecord(installedPluginsFile);
+  if (plugins === null)
+    return [];
+  const out = [];
+  for (const [id, entries] of Object.entries(plugins)) {
+    const at = id.lastIndexOf("@");
+    if ((at === -1 ? id : id.slice(0, at)) !== pluginName || !Array.isArray(entries))
+      continue;
+    for (const entry of entries) {
+      if (typeof entry !== "object" || entry === null)
+        continue;
+      const { installPath, projectPath, scope } = entry;
+      if (typeof installPath !== "string" || typeof scope !== "string")
+        continue;
+      out.push({
+        installPath,
+        projectPath: typeof projectPath === "string" ? projectPath : null,
+        scope
+      });
+    }
+  }
+  return out;
+}
+
+// src/hooks/agent-guard-workflows.ts
+var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
+function stringAt(text, from) {
+  const quote = text[from];
+  if (quote !== '"' && quote !== "'" && quote !== "`")
+    return null;
+  let value = "";
+  for (let index = from + 1;index < text.length; index += 1) {
+    const char = text[index] ?? "";
+    if (char === "\\") {
+      const next = text[index + 1] ?? "";
+      value += next === "n" ? `
+` : next;
+      index += 1;
+      continue;
+    }
+    if (char === quote)
+      return { end: index + 1, value };
+    value += char;
+  }
+  return null;
+}
+function interpolated(text, from, end) {
+  for (let index = from + 1;index < end - 1; index += 1) {
+    const char = text[index] ?? "";
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === "$" && text[index + 1] === "{")
+      return true;
+  }
+  return false;
+}
+function literalAt(text, from) {
+  const literal = stringAt(text, from);
+  if (literal === null)
+    return null;
+  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
+}
+function skipBlank(text, from) {
+  let index = from;
+  while (index < text.length) {
+    if (/\s/.test(text[index] ?? "")) {
+      index += 1;
+    } else if (text.startsWith("//", index)) {
+      const end = text.indexOf(`
+`, index);
+      index = end === -1 ? text.length : end + 1;
+    } else if (text.startsWith("/*", index)) {
+      const end = text.indexOf("*/", index + 2);
+      index = end === -1 ? text.length : end + 2;
+    } else {
+      break;
+    }
+  }
+  return index;
+}
+function wholeLiteralAt(text, from, ends) {
+  const literal = literalAt(text, from);
+  if (literal === null)
+    return null;
+  const next = text[skipBlank(text, literal.end)] ?? "";
+  return ends.includes(next) ? literal.value : null;
+}
+var FAIL = Symbol("not a pure literal");
+var RESERVED_KEYS = ["__proto__", "constructor", "prototype"];
+var NUMBER2 = /^-?(?:(?:0|[1-9][0-9]*)(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/;
+function literalValue(text, from) {
+  const at = skipBlank(text, from);
+  const char = text[at] ?? "";
+  if (char === '"' || char === "'" || char === "`") {
+    const literal = literalAt(text, at);
+    return literal === null ? FAIL : { end: literal.end, value: literal.value };
+  }
+  if (char === "{")
+    return objectValue(text, at);
+  if (char === "[")
+    return arrayValue(text, at);
+  const number = NUMBER2.exec(text.slice(at));
+  if (number !== null)
+    return { end: at + number[0].length, value: Number(number[0]) };
+  const word = /^(true|false|null)(?![\w$])/.exec(text.slice(at));
+  if (word !== null) {
+    const values = { false: false, null: null, true: true };
+    return { end: at + word[0].length, value: values[word[1]] };
+  }
+  return FAIL;
+}
+function objectValue(text, from) {
+  const value = {};
+  let at = skipBlank(text, from + 1);
+  while (text[at] !== "}") {
+    let key;
+    const quoted = literalAt(text, at);
+    const name = /^[A-Za-z_$][\w$]*/.exec(text.slice(at))?.[0];
+    if (quoted !== null) {
+      key = quoted.value;
+      at = quoted.end;
+    } else if (name !== undefined) {
+      key = name;
+      at += name.length;
+    } else {
+      return FAIL;
+    }
+    if (RESERVED_KEYS.includes(key) || key in value)
+      return FAIL;
+    at = skipBlank(text, at);
+    if (text[at] !== ":")
+      return FAIL;
+    const inner = literalValue(text, at + 1);
+    if (inner === FAIL)
+      return FAIL;
+    value[key] = inner.value;
+    at = skipBlank(text, inner.end);
+    if (text[at] === ",")
+      at = skipBlank(text, at + 1);
+    else if (text[at] !== "}")
+      return FAIL;
+  }
+  return { end: at + 1, value };
+}
+function arrayValue(text, from) {
+  const value = [];
+  let at = skipBlank(text, from + 1);
+  while (text[at] !== "]") {
+    const inner = literalValue(text, at);
+    if (inner === FAIL)
+      return FAIL;
+    value.push(inner.value);
+    at = skipBlank(text, inner.end);
+    if (text[at] === ",")
+      at = skipBlank(text, at + 1);
+    else if (text[at] !== "]")
+      return FAIL;
+  }
+  return { end: at + 1, value };
+}
+function workflowMetaName(script) {
+  const start = skipBlank(script, 0);
+  const head = /^export\s+const\s+meta\s*=\s*(?=\{)/.exec(script.slice(start));
+  if (head === null)
+    return null;
+  const meta = objectValue(script, start + head[0].length);
+  if (meta === FAIL)
+    return null;
+  const after = script[skipBlank(script, meta.end)];
+  if (after !== undefined && after !== ";" && !/\n/.test(script.slice(meta.end, skipBlank(script, meta.end)))) {
+    return null;
+  }
+  const { description, name } = meta.value;
+  if (typeof name !== "string" || name === "")
+    return null;
+  if (typeof description !== "string" || description === "")
+    return null;
+  return name;
+}
+function normalized(text) {
+  return text.replaceAll(`\r
+`, `
+`);
+}
+function scriptAtPath(path, cwd) {
+  if (cwd === "" && !isAbsolute(path)) {
+    return {
+      unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
+    };
+  }
+  const file = resolve4(cwd, path);
+  let size;
+  try {
+    const stat = statSync5(file);
+    if (!stat.isFile())
+      return { unreadable: `The workflow script \`${file}\` is not a file.` };
+    size = stat.size;
+  } catch {
+    return { unreadable: `The workflow script \`${file}\` does not exist.` };
+  }
+  if (size > WORKFLOW_SCRIPT_MAX_BYTES) {
+    return {
+      unreadable: `The workflow script \`${file}\` is larger than the ${WORKFLOW_SCRIPT_MAX_BYTES} bytes Claude Code runs.`
+    };
   }
   try {
-    appendFileSync2(file, `${JSON.stringify(launch)}
+    return { file, script: normalized(readFileSync8(file, "utf8")) };
+  } catch {
+    return { unreadable: `The workflow script \`${file}\` cannot be read.` };
+  }
+}
+function workflowFiles(folder) {
+  let names;
+  try {
+    names = readdirSync2(folder).filter((name) => name.endsWith(".js"));
+  } catch {
+    return [];
+  }
+  return names.sort().map((name) => join9(folder, name));
+}
+function claiming(files, name) {
+  const found = [];
+  for (const file of files) {
+    try {
+      const stat = statSync5(file);
+      if (!stat.isFile() || stat.size > WORKFLOW_SCRIPT_MAX_BYTES)
+        continue;
+      const script = normalized(readFileSync8(file, "utf8"));
+      if (workflowMetaName(script) === name)
+        found.push({ file, script });
+    } catch {}
+  }
+  return found;
+}
+function oneOf(found, name) {
+  const [first] = found;
+  if (first === undefined)
+    return null;
+  const other = found.find((one) => one.script !== first.script);
+  if (other === undefined)
+    return first;
+  return {
+    unreadable: `Two files claim the workflow name \`${name}\`: \`${first.file}\` and \`${other.file}\`. Claude Code runs one of them, and which one depends on the order the folder lists them, so the guard cannot tell. Give each workflow its own \`meta.name\`.`
+  };
+}
+function savedFolders(place) {
+  const folders = [];
+  let at = resolve4(place.cwd);
+  const home = resolve4(place.home);
+  while (place.cwd !== "" && at !== home) {
+    folders.push(join9(at, ".claude", "workflows"));
+    if (existsSync7(join9(at, ".git")))
+      break;
+    const up = dirname4(at);
+    if (up === at)
+      break;
+    at = up;
+  }
+  folders.push(join9(place.claudeConfigDir, "workflows"));
+  return folders;
+}
+function noFile(name) {
+  return {
+    unreadable: `The workflow \`${name}\` has no file the guard can find: a built-in workflow (its script is inside Claude Code), or a saved one the guard cannot read.`
+  };
+}
+function within(folder, inside) {
+  const root = resolve4(inside);
+  const path = resolve4(folder);
+  return path === root || path.startsWith(root.endsWith(sep2) ? root : `${root}${sep2}`);
+}
+function pluginFolder(plugin, place) {
+  if (plugin === PLUGIN && place.pluginRoot !== null)
+    return place.pluginRoot;
+  const installs = installsOfPlugin(place.installedPluginsFile, plugin);
+  const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && place.cwd !== "" && within(place.cwd, one.projectPath)).sort((a, b) => b.projectPath.length - a.projectPath.length);
+  const user = installs.filter((one) => one.scope === "user");
+  return [...project, ...user].find((one) => existsSync7(one.installPath))?.installPath ?? null;
+}
+function pluginWorkflowFiles(root) {
+  let listed;
+  try {
+    const manifest = JSON.parse(readFileSync8(join9(root, ".claude-plugin", "plugin.json"), "utf8"));
+    listed = manifest?.workflows ?? manifest?.experimental?.workflows;
+  } catch {
+    listed = undefined;
+  }
+  const paths = typeof listed === "string" ? [listed] : Array.isArray(listed) ? listed : null;
+  if (paths === null)
+    return workflowFiles(join9(root, "workflows"));
+  return paths.filter((one) => typeof one === "string").flatMap((one) => {
+    const path = resolve4(root, one);
+    try {
+      if (statSync5(path).isDirectory())
+        return workflowFiles(path);
+    } catch {
+      return [];
+    }
+    return path.endsWith(".js") ? [path] : [];
+  });
+}
+function scriptByName(name, place) {
+  const colon = name.indexOf(":");
+  if (colon !== -1) {
+    const plugin = name.slice(0, colon);
+    const own = name.slice(colon + 1);
+    const root = pluginFolder(plugin, place);
+    if (root === null) {
+      return {
+        unreadable: `The workflow \`${name}\` belongs to the plugin \`${plugin}\`, and Claude Code's installed_plugins.json names no installed folder for it.`
+      };
+    }
+    return oneOf(claiming(pluginWorkflowFiles(root), own), name) ?? {
+      unreadable: `The workflow \`${name}\`: the plugin's folder \`${root}\` holds no workflow named \`${own}\`.`
+    };
+  }
+  for (const folder of savedFolders(place)) {
+    const found = oneOf(claiming(workflowFiles(folder), name), name);
+    if (found !== null)
+      return found;
+  }
+  return noFile(name);
+}
+
+// src/hooks/agent-launches.ts
+import { appendFileSync as appendFileSync2, closeSync as closeSync3, fstatSync, openSync as openSync3, readFileSync as readFileSync9, readSync } from "fs";
+import { join as join10 } from "path";
+var SESSION_EFFORT = "session-effort";
+var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
+function reasonParts(reason) {
+  const parts = reason.split(":");
+  const rest = parts[0] === "opus" || parts[0] === "fable" ? parts.slice(1) : parts;
+  const [first = "", ...after] = rest;
+  if (REASON_EFFORTS.includes(first)) {
+    return { effort: first, word: after.length === 0 ? null : after.join(":") };
+  }
+  const word = rest.join(":");
+  return { effort: null, word: word === "" ? null : word };
+}
+function agentLaunchesFile(stateDir) {
+  return join10(stateDir, "agent-launches.jsonl");
+}
+var RECORD_TAIL_BYTES = 64 * 1024;
+function tailLines(file) {
+  let fd;
+  try {
+    fd = openSync3(file, "r");
+  } catch {
+    return [];
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const from = Math.max(0, size - RECORD_TAIL_BYTES);
+    const buffer = Buffer.alloc(size - from);
+    const read = readSync(fd, buffer, 0, buffer.length, from);
+    const lines = buffer.subarray(0, read).toString("utf8").split(`
 `);
+    return (from > 0 ? lines.slice(1) : lines).filter((line) => line.trim() !== "");
+  } catch {
+    return [];
+  } finally {
+    closeSync3(fd);
+  }
+}
+function launchKey(launch) {
+  return `${launch.session}\x00${launch.toolUseId}\x00${launch.launchIndex}`;
+}
+function appendAgentLaunches(file, launches) {
+  const written = new Set(tailLines(file).map(parseAgentLaunch).filter((one) => one !== null && one.toolUseId !== "").map(launchKey));
+  const fresh = launches.filter((one) => {
+    if (one.toolUseId === "")
+      return true;
+    const key = launchKey(one);
+    if (written.has(key))
+      return false;
+    written.add(key);
+    return true;
+  });
+  if (fresh.length === 0)
+    return;
+  try {
+    appendFileSync2(file, fresh.map((one) => `${JSON.stringify(one)}
+`).join(""));
   } catch {}
 }
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function textOrNull(value) {
+  return typeof value === "string" && value !== "" ? value : null;
 }
 function parseAgentLaunch(line) {
   let value;
@@ -9311,36 +9693,41 @@ function parseAgentLaunch(line) {
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
     return null;
   }
+  const parts = "effort" in value || "word" in value ? { effort: textOrNull(value.effort), word: textOrNull(value.word) } : reasonParts(reason);
+  const index = value.launchIndex;
   return {
     at,
+    effort: parts.effort,
     family,
+    launchIndex: typeof index === "number" && Number.isInteger(index) && index >= 0 ? index : 0,
     model,
     project: typeof project === "string" ? project : "",
     reason,
     session: typeof value.session === "string" ? value.session : "",
     subagentType: typeof subagentType === "string" ? subagentType : "",
-    toolUseId: typeof value.toolUseId === "string" ? value.toolUseId : ""
+    toolUseId: typeof value.toolUseId === "string" ? value.toolUseId : "",
+    word: parts.word
   };
 }
 
 // src/hooks/transcript.ts
-import { closeSync as closeSync3, fstatSync, openSync as openSync3, readSync } from "fs";
+import { closeSync as closeSync4, fstatSync as fstatSync2, openSync as openSync4, readSync as readSync2 } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function tailLines(transcriptPath) {
+function tailLines2(transcriptPath) {
   let text;
   try {
-    const fd = openSync3(transcriptPath, "r");
+    const fd = openSync4(transcriptPath, "r");
     try {
-      const size = fstatSync(fd).size;
+      const size = fstatSync2(fd).size;
       const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
       const buffer = Buffer.alloc(length);
-      readSync(fd, buffer, 0, length, size - length);
+      readSync2(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
     } finally {
-      closeSync3(fd);
+      closeSync4(fd);
     }
   } catch {
     return null;
@@ -9364,7 +9751,7 @@ function* entriesFromEnd(lines) {
   }
 }
 function lastClaudeModel(transcriptPath) {
-  const lines = tailLines(transcriptPath);
+  const lines = tailLines2(transcriptPath);
   if (lines === null)
     return null;
   for (const entry of entriesFromEnd(lines)) {
@@ -9409,44 +9796,6 @@ function readLaunch(input) {
     tool
   };
 }
-function stringAt(text, from) {
-  const quote = text[from];
-  if (quote !== '"' && quote !== "'" && quote !== "`")
-    return null;
-  let value = "";
-  for (let index = from + 1;index < text.length; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      const next = text[index + 1] ?? "";
-      value += next === "n" ? `
-` : next;
-      index += 1;
-      continue;
-    }
-    if (char === quote)
-      return { end: index + 1, value };
-    value += char;
-  }
-  return null;
-}
-function interpolated(text, from, end) {
-  for (let index = from + 1;index < end - 1; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      index += 1;
-      continue;
-    }
-    if (char === "$" && text[index + 1] === "{")
-      return true;
-  }
-  return false;
-}
-function literalAt(text, from) {
-  const literal = stringAt(text, from);
-  if (literal === null)
-    return null;
-  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
-}
 function endOf(text, from, open, close) {
   let depth = 0;
   for (let index = from;index < text.length; index += 1) {
@@ -9472,26 +9821,21 @@ function callText(script, open) {
   return script.slice(open, endOf(script, open, "(", ")") + 1);
 }
 function firstArgument(call) {
-  const args = call.slice(1);
-  const lead = args.length - args.trimStart().length;
-  const literal = literalAt(call, 1 + lead);
-  return literal === null ? null : literal.value;
+  return wholeLiteralAt(call, skipBlank(call, 1), ",)");
 }
 function stringOption(call, name) {
   const at = readOptions(call).keys.get(name);
   if (at === undefined)
     return null;
-  const colon = /^\s*:\s*/.exec(call.slice(at));
+  const colon = /^\s*:/.exec(call.slice(at));
   if (colon === null)
     return null;
-  const literal = literalAt(call, at + colon[0].length);
-  return literal === null ? null : literal.value;
+  return wholeLiteralAt(call, skipBlank(call, at + colon[0].length), ",}");
 }
-function callOpen(at, script) {
-  const rest = script.slice(at + 5);
-  return at + 5 + (rest.length - rest.trimStart().length);
+function callOpen(mention, script) {
+  return skipBlank(script, mention.at + mention.name.length);
 }
-function agentMentions(script) {
+function mentionsOf(script, name) {
   const mentions = [];
   const stack = [{ braces: 0, kind: "code" }];
   for (let index = 0;index < script.length; index += 1) {
@@ -9560,10 +9904,11 @@ function agentMentions(script) {
         stack.pop();
       continue;
     }
-    if (script.startsWith("agent", index) && (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))) {
-      if (/[\w$]/.test(script[index + 5] ?? ""))
+    if (script.startsWith(name, index) && (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))) {
+      const after = index + name.length;
+      if (/[\w$]/.test(script[after] ?? ""))
         continue;
-      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(index + 5)) });
+      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(after)), name });
     }
   }
   return mentions;
@@ -9659,30 +10004,39 @@ function builtAtRuntime(call) {
   return readOptions(call).hidden;
 }
 function callsOf(script) {
-  return agentMentions(script).filter((mention) => mention.call).map((mention) => callOpen(mention.at, script));
+  return mentionsOf(script, "agent").filter((mention) => mention.call).map((mention) => callOpen(mention, script));
 }
-var AGENT_HANDED_AROUND = [
-  "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.",
-  'Write every launch as a direct `agent("<prompt>", { model: "\u2026", effort: "\u2026" })` call.'
-].join(`
-`);
+var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
+var HANDED_AROUND = {
+  agent: [
+    THROUGH_A_VARIABLE,
+    'Write every launch as a direct `agent("<prompt>", { model: "\u2026", effort: "\u2026" })` call.'
+  ].join(`
+`),
+  workflow: [
+    THROUGH_A_VARIABLE,
+    'Write every nested workflow as a direct `workflow("<name>")` call.'
+  ].join(`
+`)
+};
 var OPTIONS_BUILT_AT_RUNTIME = [
   "Its options are not what they seem: a `...spread`, a computed `[\u2026]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
   "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object."
 ].join(`
 `);
 function workflowRefusal(script) {
-  const mentions = agentMentions(script);
-  const handed = mentions.find((mention) => !mention.call);
-  if (handed !== undefined) {
+  for (const name of ["agent", "workflow"]) {
+    const handed = mentionsOf(script, name).find((mention) => !mention.call);
+    if (handed === undefined)
+      continue;
     return [
-      `This Workflow uses \`agent\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`agent?.(\u2026)\`), or it is passed as a value.`,
-      AGENT_HANDED_AROUND
+      `This Workflow uses \`${name}\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`${name}?.(\u2026)\`), or it is passed as a value.`,
+      HANDED_AROUND[name]
     ].join(`
 `);
   }
-  for (const mention of mentions) {
-    if (!builtAtRuntime(callText(script, callOpen(mention.at, script)))) {
+  for (const mention of mentionsOf(script, "agent")) {
+    if (!builtAtRuntime(callText(script, callOpen(mention, script)))) {
       continue;
     }
     return [
@@ -9692,6 +10046,31 @@ function workflowRefusal(script) {
 `);
   }
   return null;
+}
+function nestedWorkflows(script) {
+  const calls = [];
+  for (const mention of mentionsOf(script, "workflow")) {
+    if (!mention.call)
+      continue;
+    const call = callText(script, callOpen(mention, script));
+    const line = lineOf(script, mention.at);
+    const name = firstArgument(call);
+    const path = call[skipBlank(call, 1)] === "{" && !builtAtRuntime(call) ? stringOption(call, "scriptPath") : null;
+    if (name !== null)
+      calls.push({ line, name });
+    else if (path !== null)
+      calls.push({ line, scriptPath: path });
+    else {
+      return {
+        refusal: [
+          `This Workflow's \`workflow(\u2026)\` call at line ${line} names its workflow at run time.`,
+          'Write it as `workflow("<name>")` or `workflow({ scriptPath: "<path>" })`, with a string literal, so the guard can read what it runs.'
+        ].join(`
+`)
+      };
+    }
+  }
+  return { calls };
 }
 function readWorkflowScript(script) {
   const launches = [];
@@ -9727,14 +10106,19 @@ var NO_WORKFLOW_MODEL = [
 ].join(`
 `);
 var PROMPT_UNREADABLE = "The launch's prompt is built at run time, so the guard cannot read a `Fable reason:` line in it.";
-function judgeWorkflow(script, ctx, env) {
+function judgeWorkflow(script, ctx, env, from = null) {
   return readWorkflowScript(script).map((launch) => {
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
     if (launch.model === null && verdict.ran.modelFrom === "call") {
-      return { launch, verdict: { ...deny(verdict.real, NO_WORKFLOW_MODEL), ran: verdict.ran } };
+      return {
+        from,
+        launch,
+        verdict: { ...deny(verdict.real, NO_WORKFLOW_MODEL), ran: verdict.ran }
+      };
     }
     if (launch.prompt === null && (verdict.decision === "deny" || verdict.restsOnPrompt === true)) {
       return {
+        from,
         launch,
         verdict: {
           ...verdict,
@@ -9744,12 +10128,90 @@ ${PROMPT_UNREADABLE}`
         }
       };
     }
-    return { launch, verdict };
+    return { from, launch, verdict };
   });
 }
 function workflowReason(result) {
   const named = result.launch.where === "(unreadable)" ? "one launch" : `the launch "${result.launch.where}"`;
-  return `In this workflow, ${named}: ${result.verdict.reason}`;
+  const workflow = result.from === null ? "this workflow" : `the workflow \`${result.from}\``;
+  return `In ${workflow}, ${named}: ${result.verdict.reason}`;
+}
+function resumeUnreadable(runId) {
+  return `This Workflow call resumes run \`${runId}\`: the run goes on from a script the guard does not see, and it runs again every launch whose prompt or options changed.`;
+}
+var NO_SCRIPT = "This Workflow call names no `script`, `name` or `scriptPath`.";
+function callScript(fields, place) {
+  const resume = stringField(fields.resumeFromRunId);
+  if (resume !== null)
+    return { unreadable: resumeUnreadable(resume) };
+  const name = stringField(fields.name);
+  const script = stringField(fields.script);
+  if (script !== null)
+    return { from: name, script };
+  const path = stringField(fields.scriptPath);
+  const found = path !== null ? scriptAtPath(path, place.cwd) : name !== null ? scriptByName(name, place) : null;
+  if (found === null)
+    return { unreadable: NO_SCRIPT };
+  if ("unreadable" in found)
+    return found;
+  return { from: path === null ? name : found.file, script: found.script };
+}
+function judgeWorkflowCall(fields, ctx, env, place) {
+  const refused = (refusal) => ({ refusal, results: [], unreadable: [] });
+  const top = callScript(fields, place);
+  if ("unreadable" in top)
+    return { refusal: null, results: [], unreadable: [top.unreadable] };
+  const inTop = (reason) => top.from === null ? reason : `In the workflow \`${top.from}\`: ${reason}`;
+  const topRefusal = workflowRefusal(top.script);
+  if (topRefusal !== null)
+    return refused(inTop(topRefusal));
+  const nested = nestedWorkflows(top.script);
+  if ("refusal" in nested)
+    return refused(inTop(nested.refusal));
+  const scripts = [top];
+  const unreadable = [];
+  for (const call of nested.calls) {
+    const found = "name" in call ? scriptByName(call.name, place) : scriptAtPath(call.scriptPath, place.cwd);
+    if ("unreadable" in found) {
+      unreadable.push(found.unreadable);
+      continue;
+    }
+    const from = "name" in call ? call.name : found.file;
+    const deeper = mentionsOf(found.script, "workflow")[0];
+    if (deeper !== undefined) {
+      return refused(`The workflow \`${from}\` this one runs nests a workflow of its own (line ${lineOf(found.script, deeper.at)}): Claude Code runs workflows one level deep, and the guard reads no deeper.`);
+    }
+    const childRefusal = workflowRefusal(found.script);
+    if (childRefusal !== null) {
+      return refused(`In the workflow \`${from}\` this one runs: ${childRefusal}`);
+    }
+    scripts.push({ from, script: found.script });
+  }
+  return {
+    refusal: null,
+    results: scripts.flatMap((one) => judgeWorkflow(one.script, ctx, env, one.from)),
+    unreadable
+  };
+}
+var UNREADABLE_ASK = "The guard cannot see the model and effort its launches run on: approve only if you know what this workflow runs.";
+var UNREADABLE_UNATTENDED = "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
+function workflowAnswer(call, env) {
+  if (call.refusal !== null)
+    return { decision: "deny", reason: call.refusal };
+  const denied = call.results.find((one) => one.verdict.decision === "deny");
+  if (denied !== undefined)
+    return { decision: "deny", reason: workflowReason(denied) };
+  if (call.unreadable.length > 0 && nobodyWatches(env)) {
+    return { decision: "deny", reason: [...call.unreadable, UNREADABLE_UNATTENDED].join(`
+`) };
+  }
+  const asks = [
+    ...call.unreadable.map((reason) => `${reason}
+${UNREADABLE_ASK}`),
+    ...call.results.filter((one) => one.verdict.decision === "ask").map(workflowReason)
+  ];
+  return asks.length > 0 ? { decision: "ask", reason: asks.join(`
+`) } : { decision: "allow", reason: "" };
 }
 function allow(real, why = "") {
   return { decision: "allow", real, reason: "", why };
@@ -9810,7 +10272,7 @@ function atEffort(effort) {
   return effort === null ? "at the session's own effort" : `at effort \`${effort.toLowerCase()}\``;
 }
 function opusWhy(effort, word) {
-  const level = effort ?? "session-effort";
+  const level = effort ?? SESSION_EFFORT;
   return word === null ? `opus:${level}` : `opus:${level}:${word}`;
 }
 function fableDenial(real) {
@@ -10027,19 +10489,15 @@ function guardFacts(input, context) {
   const guard = readGuardContext(context.paths, input, context.env);
   const tool = stringField(input.tool_name);
   if (tool !== null && WORKFLOW_TOOLS.includes(tool)) {
-    const script = stringField(toolInput(input).script);
-    if (script === null)
-      return {};
-    const refusal = workflowRefusal(script);
-    if (refusal !== null)
-      return { decision: "deny", launches: 0, tool: "Workflow", why: "unreadable" };
-    const results = judgeWorkflow(script, guard, context.env);
-    const decided = results.find((one) => one.verdict.decision !== "allow");
+    const call = judgeWorkflowCall(toolInput(input), guard, context.env, workflowPlace(context.paths, context.env, stringField(input.cwd) ?? ""));
+    const { decision } = workflowAnswer(call, context.env);
+    const decided = call.results.find((one) => one.verdict.decision === decision);
+    const why = decision === "allow" ? null : call.refusal !== null || call.unreadable.length > 0 && decided?.verdict.decision !== "deny" ? "unreadable" : decided === undefined ? decision : decided.verdict.why || decided.verdict.decision;
     return {
-      decision: decided?.verdict.decision ?? "allow",
-      launches: results.length,
+      decision,
+      launches: call.results.length,
       tool: "Workflow",
-      ...decided === undefined ? {} : { why: decided.verdict.why || decided.verdict.decision }
+      ...why === null ? {} : { why }
     };
   }
   const launch = readLaunch(input);
@@ -10072,19 +10530,32 @@ function overrideFacts(ran) {
     ...ran.effortFrom === null ? {} : { effort_override: ran.effortFrom, ran_effort: ran.effort }
   };
 }
-function recorded(result, launch, input, cwd, nowMs) {
+function workflowPlace(paths, env, cwd) {
+  return {
+    claudeConfigDir: paths.claudeConfigDir,
+    cwd,
+    home: paths.home,
+    installedPluginsFile: paths.installedPluginsFile,
+    pluginRoot: stringField(env.CLAUDE_PLUGIN_ROOT)
+  };
+}
+function recorded(result, launch, input, cwd, nowMs, index) {
   const family = result.real?.tier;
   if (family !== "opus" && family !== "fable")
     return null;
+  const reason = result.why === "" ? result.decision : result.why;
   return {
     at: nowMs,
+    effort: result.ran.effort?.toLowerCase() ?? SESSION_EFFORT,
     family,
+    launchIndex: index,
     model: result.real?.model ?? "",
     project: cwd,
-    reason: result.why === "" ? result.decision : result.why,
+    reason,
     session: stringField(input.session_id) ?? "",
     subagentType: launch.subagentType ?? "",
-    toolUseId: stringField(input.tool_use_id) ?? ""
+    toolUseId: stringField(input.tool_use_id) ?? "",
+    word: reasonParts(reason).word
   };
 }
 var RAN_EVENT = "PostToolUse";
@@ -10096,59 +10567,50 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
   const context = readGuardContext(paths, input, env);
   const file = agentLaunchesFile(paths.stateDir);
   const ran = afterTheCall(input);
-  const record = (verdict, launch) => {
-    const line = recorded(verdict, launch, input, cwd, nowMs);
-    if (line !== null)
-      appendAgentLaunch(file, line);
+  const record = (judged) => {
+    const lines = judged.map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index)).filter((line) => line !== null);
+    if (lines.length > 0)
+      appendAgentLaunches(file, lines);
   };
   if (tool !== null && WORKFLOW_TOOLS.includes(tool)) {
-    const script = stringField(toolInput(input).script);
-    if (script === null)
-      return SILENT;
-    const refusal = workflowRefusal(script);
-    if (refusal !== null)
-      return ran ? SILENT : toolDecision("deny", refusal);
-    const results = judgeWorkflow(script, context, env);
-    const decided = results.find((one) => one.verdict.decision === "deny");
-    if (decided !== undefined)
-      return ran ? SILENT : toolDecision("deny", workflowReason(decided));
-    const asks = results.filter((one) => one.verdict.decision === "ask");
-    const asked = asks.length > 0;
+    const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
+    const answer = workflowAnswer(call, env);
+    if (answer.decision === "deny")
+      return ran ? SILENT : toolDecision("deny", answer.reason);
+    const asked = answer.decision === "ask";
     if (ran === asked) {
-      for (const one of results)
-        record(one.verdict, asLaunch(one.launch));
+      record(call.results.map((one) => ({ launch: asLaunch(one.launch), verdict: one.verdict })));
     }
     if (ran || !asked)
       return SILENT;
-    return toolDecision("ask", asks.map((one) => workflowReason(one)).join(`
-`));
+    return toolDecision("ask", answer.reason);
   }
   const launch = readLaunch(input);
   if (launch === null)
     return SILENT;
   const result = judgeLaunch(launch, context, env);
   if (result.decision === (ran ? "ask" : "allow"))
-    record(result, launch);
+    record([{ launch, verdict: result }]);
   return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync7, writeFileSync as writeFileSync4 } from "fs";
-import { dirname as dirname4, join as join11 } from "path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync7, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname5, join as join12 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { join as join10 } from "path";
+import { join as join11 } from "path";
 function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 }
 function namesDir(env) {
-  return join10(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+  return join11(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync6(file) ? cleanSessionName(readFileSync8(file, "utf8")) : null;
+    return existsSync8(file) ? cleanSessionName(readFileSync10(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -10170,7 +10632,7 @@ function sessionName(context) {
   if (!isSessionId(sessionId))
     return SILENT;
   const dir = namesDir(env);
-  const wanted = readName(join10(dir, `${sessionId}.name`));
+  const wanted = readName(join11(dir, `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
   if (event === "SessionStart") {
     return {
@@ -10179,7 +10641,7 @@ function sessionName(context) {
       })
     };
   }
-  const appliedFile = join10(dir, sessionId);
+  const appliedFile = join11(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
     mkdirSync6(dir, { recursive: true });
@@ -10203,11 +10665,11 @@ function fableSessionModelName(real) {
   return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
 }
 function fableSessionMark(env, sessionId) {
-  return join11(namesDir(env), `${sessionId}.fable`);
+  return join12(namesDir(env), `${sessionId}.fable`);
 }
 function firstTime(mark) {
   try {
-    mkdirSync7(dirname4(mark), { recursive: true });
+    mkdirSync7(dirname5(mark), { recursive: true });
     writeFileSync4(mark, "", { flag: "wx" });
     return true;
   } catch {
@@ -10231,7 +10693,7 @@ function fableSession(input, env, paths) {
   if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
     return SILENT;
   const mark = fableSessionMark(env, sessionId);
-  if (existsSync7(mark))
+  if (existsSync9(mark))
     return SILENT;
   let model;
   if (event === "SessionStart")
@@ -10251,7 +10713,7 @@ function fableSession(input, env, paths) {
 }
 
 // src/hooks/git-guard.ts
-import { isAbsolute, resolve as resolve4 } from "path";
+import { isAbsolute as isAbsolute2, resolve as resolve5 } from "path";
 var DEFAULT_PROTECTED_BRANCHES = ["main"];
 var PUSH_VALUE_OPTIONS = [
   ["--exec", 4],
@@ -10271,14 +10733,14 @@ function movedTo(program, folder, args) {
   if (target === undefined || /^[~%]|[$`]/.test(target))
     return null;
   const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
-  if (isAbsolute(path))
-    return resolve4(path);
-  return folder === null ? null : resolve4(folder, path);
+  if (isAbsolute2(path))
+    return resolve5(path);
+  return folder === null ? null : resolve5(folder, path);
 }
 function currentBranch(folder, dir, env) {
   if (folder === null)
     return;
-  const where = dir === undefined ? folder : resolve4(folder, dir);
+  const where = dir === undefined ? folder : resolve5(folder, dir);
   const run = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], env, GUARD_GIT_TIMEOUT_MS);
   return run.ok && run.out !== "" ? run.out : undefined;
 }
@@ -10599,13 +11061,13 @@ function routeFacts(input) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute2, resolve as resolve5 } from "path";
+import { isAbsolute as isAbsolute3, resolve as resolve6 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute2(path) ? resolve5(path) : resolve5(cwd, path));
+  return realPath(isAbsolute3(path) ? resolve6(path) : resolve6(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -10637,10 +11099,10 @@ function mainFolderGuard(context) {
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync13 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, dirname as dirname5, join as join13 } from "path";
+import { delimiter, dirname as dirname6, join as join14 } from "path";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -10723,9 +11185,9 @@ var RETIRED_ENGINE_HOOKS = [
 var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync8, readdirSync as readdirSync2, readFileSync as readFileSync9, statSync as statSync5 } from "fs";
+import { existsSync as existsSync10, readdirSync as readdirSync3, readFileSync as readFileSync11, statSync as statSync6 } from "fs";
 import { uptime } from "os";
-import { join as join12 } from "path";
+import { join as join13 } from "path";
 function parseSessionRecord(json) {
   let value;
   try {
@@ -10750,20 +11212,20 @@ function isRunning(pid) {
   }
 }
 function liveSessions(claudeConfigDir) {
-  const dir = join12(claudeConfigDir, "sessions");
-  if (!existsSync8(dir))
+  const dir = join13(claudeConfigDir, "sessions");
+  if (!existsSync10(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
-  for (const file of readdirSync2(dir)) {
+  for (const file of readdirSync3(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
     if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
       continue;
     let text;
     try {
-      if (statSync5(join12(dir, file)).mtimeMs < bootedAt)
+      if (statSync6(join13(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync9(join12(dir, file), "utf8");
+      text = readFileSync11(join13(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -10781,38 +11243,38 @@ var TAIL_BYTES = 512 * 1024;
 
 // src/cli/setup.ts
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join13(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join14(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/update/state.ts
 import {
   appendFileSync as appendFileSync3,
-  existsSync as existsSync9,
+  existsSync as existsSync11,
   mkdirSync as mkdirSync8,
-  readdirSync as readdirSync3,
-  readFileSync as readFileSync10,
+  readdirSync as readdirSync4,
+  readFileSync as readFileSync12,
   rmSync,
-  statSync as statSync6,
+  statSync as statSync7,
   writeFileSync as writeFileSync5
 } from "fs";
-import { join as join14 } from "path";
+import { join as join15 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join14(stateDir, "update-hold"),
-    check: join14(stateDir, "update-check.json"),
-    reported: join14(stateDir, "update-reported"),
-    major: join14(stateDir, "update-major.json"),
-    log: join14(stateDir, "update.log"),
-    lockDir: join14(stateDir, "update"),
-    sessions: join14(stateDir, "sessions")
+    hold: join15(stateDir, "update-hold"),
+    check: join15(stateDir, "update-check.json"),
+    reported: join15(stateDir, "update-reported"),
+    major: join15(stateDir, "update-major.json"),
+    log: join15(stateDir, "update.log"),
+    lockDir: join15(stateDir, "update"),
+    sessions: join15(stateDir, "sessions")
   };
 }
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 function isHeld(files) {
-  return existsSync9(files.hold);
+  return existsSync11(files.hold);
 }
 
 // src/zod-issues.ts
@@ -10831,11 +11293,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync10(file))
+  if (!existsSync12(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync11(file, "utf8"));
+    raw = JSON.parse(readFileSync13(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -10886,7 +11348,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync11(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync13(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -11325,8 +11787,8 @@ function messageGuard(context) {
 }
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync4, readFileSync as readFileSync12, readlinkSync as readlinkSync3 } from "fs";
-import { join as join15 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync5, readFileSync as readFileSync14, readlinkSync as readlinkSync3 } from "fs";
+import { join as join16 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -11345,8 +11807,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join15(worktree, relative);
-    const there = join15(mainCheckout, relative);
+    const here = join16(worktree, relative);
+    const there = join16(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -11354,9 +11816,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync4(here).every((entry) => same(join15(relative, entry)));
+        return b.isDirectory() && readdirSync5(here).every((entry) => same(join16(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync12(here).equals(readFileSync12(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync14(here).equals(readFileSync14(there));
     } catch {
       return false;
     }
@@ -11453,22 +11915,22 @@ async function reviewRecord(context) {
 var FETCH_AGE_MS = 24 * 60 * 60 * 1000;
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync13, statSync as statSync7 } from "fs";
-import { basename as basename3, isAbsolute as isAbsolute3, join as join16, resolve as resolve6 } from "path";
+import { readFileSync as readFileSync15, statSync as statSync8 } from "fs";
+import { basename as basename3, isAbsolute as isAbsolute4, join as join17, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync13(join16(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync15(join17(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
-  if (!isAbsolute3(admin))
-    admin = resolve6(worktree, admin);
+  if (!isAbsolute4(admin))
+    admin = resolve7(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join16("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join17("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync7(join16(admin, file)).mtimeMs);
+      last = Math.max(last, statSync8(join17(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -11479,7 +11941,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync7(listed.path);
+    statSync8(listed.path);
   } catch {
     return "gone";
   }

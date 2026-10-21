@@ -1331,7 +1331,7 @@ notifier).
 
 ### The Agent guard
 
-`agent-guard` (PreToolUse on `Agent`, and the older name `Task`) is **machine-wide**, like
+`agent-guard` (PreToolUse on `Agent`, the older name `Task`, and `Workflow`) is **machine-wide**, like
 `update-check`: it runs with or without `.claude/cc-smart-dev-kit.json`, and a broken or too new file
 does not change its answer (the frame hands it the input and the environment instead, and its
 `outsideGit` and `onConfigProblem` judge on). A project may still silence it through
@@ -1404,18 +1404,48 @@ and the guard reads no managed settings, so it judges FORCE's model there.
 A **Workflow** tool call is judged too: its `agent(...)` launches run inside the tool and pass
 no hook of their own (proved live on 2.1.301 — a project hook with the matcher
 `Agent|Task|Workflow` saw the `Workflow` call and nothing else), so the guard reads the
-`script` text: the `model`, `effort` and `agentType` of each call, and its prompt when that
+script's text: the `model`, `effort` and `agentType` of each call, and its prompt when that
 is a fixed string literal (`readWorkflowScript` — a template that builds its text, `` `${…}` ``,
-is not one). An option counts only as a key of the call's own options object, quoted or not
+is not one, and neither is a literal an operator changes, `effort: "high" && "max"` or
+`"a" + b`). An option counts only as a key of the call's own options object, quoted or not
 — never the same words in the prompt or in a nested object (`schema: { effort: … }`). A
 `model` held in a variable is refused rather than guessed, and a prompt built at run time is
 refused for a Fable launch (its reason line cannot be read). Two things are refused for the
 whole call (`workflowRefusal`), because no rule can hold for a launch the guard cannot follow:
-`agent` mentioned without a direct call (`const run = agent; run(…)`, `agent?.(…)`, `agent`
-passed around), and a call whose options are built at run time (a `...spread`, a computed
-`[…]` key, the same key twice). The strictest launch of the call answers for the whole call.
-A launch with no readable `model` is judged, not refused, when FORCE or
-`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` names the model it runs on.
+`agent` or `workflow` mentioned without a direct call (`const run = agent; run(…)`,
+`agent?.(…)`, either passed around), and a call whose options are built at run time (a
+`...spread`, a computed `[…]` key, the same key twice). The strictest launch of the call
+answers for the whole call. A launch with no readable `model` is judged, not refused, when
+FORCE or `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` names the model it runs on.
+
+**Which script a Workflow call runs** (G2; `judgeWorkflowCall`, the files in
+`src/hooks/agent-guard-workflows.ts`). Proved live on 2.1.306, the call's PreToolUse input holds
+one of four shapes — `{"script": …}` inline, `{"name":"probe"}` for a saved workflow,
+`{"scriptPath":"<path>"}` for a path run, `{"name":"<plugin>:<meta.name>"}` for a plugin's —
+and the guard finds the script the way Claude Code's own code (2.1.306) does:
+
+| The call names | The script the guard reads |
+|---|---|
+| `script` | that text — it runs whatever else the call names |
+| `scriptPath` | that file, relative to the input's `cwd`; one over 524288 bytes is refused, as Claude Code refuses it |
+| a bare `name` | the `.js` file whose `meta.name` is that name — the file's own name plays no part — in `.claude/workflows/`, from the `cwd` up to the repo root (never the home folder itself), then in the user's `<config>/workflows/`; the nearest folder wins, the project's over the user's |
+| `<plugin>:<name>` | the file whose `meta.name` is `<name>` in that plugin's `workflows/` folder, or in the paths its manifest's `workflows` lists instead; the plugin's folder is `CLAUDE_PLUGIN_ROOT` for this plugin, else its install in Claude Code's `installed_plugins.json` (a `project` or `local` install whose folder holds the `cwd`, the deepest first, before the `user` one) |
+
+`meta` is read the way Claude Code reads it: `export const meta = { … }` as the first statement,
+a pure literal (no variable, no `${…}`, no spread, no computed key, no method), with a non-empty
+`name` and `description`; a file without one is no workflow. Each nested `workflow("<name>")`
+or `workflow({ scriptPath: "…" })` in the script is found the same way and judged with it, one
+level deep as Claude Code runs them; a nested workflow named at run time, or a nested script
+that nests again, refuses the whole call. **Two files in one folder that claim one
+`meta.name`** with different texts: Claude Code keeps the one its folder listing gives last,
+an order the guard cannot know, so the guard treats the name as unreadable (two copies of one
+text are one script). A run the guard cannot read — a built-in workflow (`deep-research`: its
+script is inside Claude Code), a missing file, those two files, a `resumeFromRunId` (the run
+goes on from a script the guard does not see), a call that names none of the three — **asks**,
+naming why, and is **denied in `claude -p`**, where nobody can answer. Known limits: a script
+that changes between the guard's read and the run is judged as it was read; an override that
+does not parse (Claude Code then keeps the farther copy) is judged as written; and a launch in
+a loop is one launch to the record.
 
 The rules are in one table in `src/hooks/agent-guard.ts` (its header). The policy under them —
 which model a launch really runs on (`resolveLaunchModel`), the effort levels
@@ -1451,14 +1481,17 @@ allowed there, one at `max` is told to run at `medium`, `high` or `xhigh`, or in
 interactive session, and one with no family is told to name `opus`. Every premium launch is
 recorded once it is known to run — an allowed one on PreToolUse, an asked one on PostToolUse
 (`RAN_EVENT`: the call ran, so the person said yes; one they refuse is never recorded) — once
-per `tool_use_id`, in
-`<stateDir>/agent-launches.jsonl` with why it ran — the `opus` tier as `opus:<effort>`, with
-the prompt's reason word after it when there is one (`opus:xhigh`, `opus:max:security`; a fork
-`opus:session-effort`), and the `fable` tier by its word (`fable:build` for a builder the
-person asked for) — and `cc-smart-dev-kit usage` lists them (count,
-why) — the transcripts say which model wrote a reply, never why it was allowed. A Workflow call
-denied as a whole records none of its launches: nothing in it ran; an `ask` names every launch
-of the script that asks, not only the first.
+per `tool_use_id` and launch index (a Workflow's launches all share its one `tool_use_id`, so
+each is its own line, under its index), in
+`<stateDir>/agent-launches.jsonl`. Each line carries the `effort` it really ran at and the
+reason `word` as their own fields, and keeps `reason`, why it ran as one string, for a reader
+that knows only that — the `opus` tier as `opus:<effort>`, with the prompt's reason word after
+it when there is one (`opus:xhigh`, `opus:max:security`; a fork `opus:session-effort`), and the
+`fable` tier by its word (`fable:build` for a builder the person asked for). An older line with
+only `reason` is taken apart once, when it is read (`reasonParts`). `cc-smart-dev-kit usage`
+lists them (count, by effort, by word) — the transcripts say which model wrote a reply, never
+why it was allowed. A Workflow call denied as a whole records none of its launches: nothing in
+it ran; an `ask` names every launch of the script that asks, not only the first.
 
 **Tiers, not vendors** (the owner, 2026-10-16). `LaunchModel.tier` is what the rules go by:
 `opus` and `fable` mean the tier whatever answers behind them — a family name keeps its tier

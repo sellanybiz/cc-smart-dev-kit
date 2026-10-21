@@ -17,8 +17,9 @@
  * A file last changed before the window holds nothing in it, and is not read.
  *
  * Beside the transcripts it lists the Opus and Fable launches the Agent guard allowed
- * (`src/hooks/agent-launches.ts`), with why: an Opus or Fable agent spends the person's own
- * plan usage, and the reason the guard accepted is the one thing the transcripts cannot say.
+ * (`src/hooks/agent-launches.ts`), counted by the effort each ran at and by why (its reason
+ * word): an Opus or Fable agent spends the person's own plan usage, and the reason the guard
+ * accepted is the one thing the transcripts cannot say.
  *
  * It also shows the auto-mode safety checks the router counted (`../gateway/safety-checks.ts`),
  * by day: those requests are not in the transcripts, since they belong to no session's

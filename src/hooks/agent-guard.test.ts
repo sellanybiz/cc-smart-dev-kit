@@ -1142,17 +1142,20 @@ describe("a Workflow script", () => {
     expect(answer.permissionDecisionReason).toContain("asks for effort `low`");
   });
 
-  it("a script with no agent(…) call, or no script at all: nothing to say", () => {
+  it("a script with no agent(…) call: nothing to say", () => {
     expect(judgeWorkflow("export const meta = {};", CTX, NO_ENV)).toEqual([]);
     expect(agentGuard(workflowCall("return 1;"), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).toEqual({});
-    expect(
-      agentGuard(
-        { hook_event_name: "PreToolUse", tool_input: {}, tool_name: "Workflow" },
-        NO_ENV,
-        WORKFLOW_PATHS,
-        "/tmp/app",
-      ),
-    ).toEqual({});
+  });
+
+  it("G2: a call with no script at all is no longer let through: it asks", () => {
+    // Before G2 this was silent, and so was every run by `name` or `scriptPath`.
+    const answer = agentGuard(
+      { hook_event_name: "PreToolUse", tool_input: {}, tool_name: "Workflow" },
+      NO_ENV,
+      WORKFLOW_PATHS,
+      "/tmp/app",
+    );
+    expect(JSON.parse(answer.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
   });
 });
 
@@ -1374,13 +1377,17 @@ describe("the hook's answer, and the record", () => {
       parseAgentLaunch(JSON.stringify({ at: 1, family: "opus", model: "m", reason: "review" })),
     ).toEqual({
       at: 1,
+      // An old line's effort and word come from its reason (G2).
+      effort: null,
       family: "opus",
+      launchIndex: 0,
       model: "m",
       project: "",
       reason: "review",
       session: "",
       subagentType: "",
       toolUseId: "",
+      word: "review",
     });
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
@@ -2178,5 +2185,340 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
       tool: "Agent",
       why: "opus:high",
     });
+  });
+});
+
+describe("G2: every Workflow run is judged, however it names its script", () => {
+  /** A home, its config folder, and a git repo in it: the session's cwd. */
+  function world() {
+    const home = tempDir("g2-home");
+    const repo = join(home, "code", "my-app");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(where.stateDir, { recursive: true });
+    return { home, repo, where };
+  }
+
+  function put(path: string, text: string): void {
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, text);
+  }
+
+  /** A workflow script whose `meta.name` is `name`, with these lines of body. */
+  function script(name: string, ...body: string[]): string {
+    return [`export const meta = { name: "${name}", description: "A probe." };`, ...body].join(
+      "\n",
+    );
+  }
+
+  const OPUS_MAX = 'await agent("look", { label: "deep", model: "opus", effort: "max" });';
+  const OPUS_HIGH = 'await agent("look", { label: "check", model: "opus", effort: "high" });';
+  const HAIKU_LOW = 'await agent("look", { label: "cheap", model: "haiku", effort: "low" });';
+
+  /** A Workflow call with this input, as Claude Code builds it. */
+  function call(fields: Record<string, unknown>, event = "PreToolUse"): HookInput {
+    return {
+      hook_event_name: event,
+      session_id: "11111111-2222-3333-4444-555555555555",
+      tool_input: fields,
+      tool_name: "Workflow",
+      tool_use_id: "toolu_wf",
+    };
+  }
+
+  function answer(result: { stdout?: string }) {
+    return JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+  }
+
+  const records = (where: CliPaths) => readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
+
+  const UNATTENDED = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
+
+  /** The line every unreadable run's question ends with. */
+  const UNREADABLE_ASK =
+    "The guard cannot see the model and effort its launches run on: approve only if you know what this workflow runs.";
+
+  it("G2: a saved workflow by name: its launches are judged and the ask names the workflow", () => {
+    const { repo, where } = world();
+    put(join(repo, ".claude", "workflows", "probe.js"), script("probe", OPUS_MAX));
+    expect(answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: [
+        'In the workflow `probe`, the launch "deep": Claude Opus launch at effort `max`: `general-purpose`.',
+        "The opus tier runs at `medium`, `high` or `xhigh` with no question; `max` only when the person asks for it. Approve only if you did.",
+      ].join("\n"),
+    });
+    // A denied launch in it denies the whole call.
+    put(join(repo, ".claude", "workflows", "probe.js"), script("probe", HAIKU_LOW));
+    expect(
+      answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
+    ).toBe("deny");
+  });
+
+  it("G2: by scriptPath: the file is read and judged", () => {
+    const { repo, where } = world();
+    const file = join(repo, "flows", "x.js");
+    put(file, script("x", HAIKU_LOW));
+    const result = answer(agentGuard(call({ scriptPath: file }), NO_ENV, where, repo));
+    expect(result.permissionDecision).toBe("deny");
+    expect(result.permissionDecisionReason).toStartWith(
+      `In the workflow \`${file}\`, the launch "cheap": `,
+    );
+  });
+
+  it("G2: a plugin's `<plugin>:<name>`: from its installed folder", () => {
+    const { home, repo, where } = world();
+    const root = join(home, "plugins", "probe-kit");
+    put(join(root, "workflows", "audit-run.js"), script("audit-run", OPUS_MAX));
+    put(
+      where.installedPluginsFile,
+      JSON.stringify({
+        plugins: { "probe-kit@example-market": [{ installPath: root, scope: "user" }] },
+        version: 2,
+      }),
+    );
+    const result = answer(agentGuard(call({ name: "probe-kit:audit-run" }), NO_ENV, where, repo));
+    expect(result.permissionDecision).toBe("ask");
+    expect(result.permissionDecisionReason).toStartWith(
+      'In the workflow `probe-kit:audit-run`, the launch "deep": ',
+    );
+  });
+
+  it("G2: a bare name found in the user folder only", () => {
+    const { repo, where } = world();
+    put(join(where.claudeConfigDir, "workflows", "probe.js"), script("probe", HAIKU_LOW));
+    expect(
+      answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
+    ).toBe("deny");
+  });
+
+  it("G2: two files claim one name: asked, naming both (refused in claude -p)", () => {
+    const { repo, where } = world();
+    const a = join(repo, ".claude", "workflows", "a.js");
+    const b = join(repo, ".claude", "workflows", "b.js");
+    put(a, script("probe", OPUS_HIGH));
+    put(b, script("probe", OPUS_MAX));
+    const claim = `Two files claim the workflow name \`probe\`: \`${a}\` and \`${b}\`. Claude Code runs one of them, and which one depends on the order the folder lists them, so the guard cannot tell. Give each workflow its own \`meta.name\`.`;
+    expect(answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: [claim, UNREADABLE_ASK].join("\n"),
+    });
+    expect(answer(agentGuard(call({ name: "probe" }), UNATTENDED, where, repo))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: [
+        claim,
+        "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.",
+      ].join("\n"),
+    });
+  });
+
+  it("G2: a built-in name, a missing file, a resume: each asks, saying why", () => {
+    const { repo, where } = world();
+    const ask = (fields: Record<string, unknown>) =>
+      answer(agentGuard(call(fields), NO_ENV, where, repo));
+    expect(ask({ name: "deep-research" })).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: [
+        "The workflow `deep-research` has no file the guard can find: a built-in workflow (its script is inside Claude Code), or a saved one the guard cannot read.",
+        UNREADABLE_ASK,
+      ].join("\n"),
+    });
+    const missing = join(repo, "gone.js");
+    expect(ask({ scriptPath: missing }).permissionDecisionReason).toBe(
+      [`The workflow script \`${missing}\` does not exist.`, UNREADABLE_ASK].join("\n"),
+    );
+    // A resume runs on from a script the guard does not see — even with one beside it.
+    put(join(repo, "x.js"), script("x", OPUS_HIGH));
+    expect(ask({ resumeFromRunId: "run_1", scriptPath: join(repo, "x.js") })).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: [
+        "This Workflow call resumes run `run_1`: the run goes on from a script the guard does not see, and it runs again every launch whose prompt or options changed.",
+        UNREADABLE_ASK,
+      ].join("\n"),
+    });
+    expect(ask({}).permissionDecisionReason).toBe(
+      ["This Workflow call names no `script`, `name` or `scriptPath`.", UNREADABLE_ASK].join("\n"),
+    );
+    // Where nobody can answer, each is refused.
+    for (const fields of [{ name: "deep-research" }, { resumeFromRunId: "run_1" }]) {
+      expect(answer(agentGuard(call(fields), UNATTENDED, where, repo)).permissionDecision).toBe(
+        "deny",
+      );
+    }
+  });
+
+  it("G2: an inline script still wins over a name, as Claude Code runs it", () => {
+    const { repo, where } = world();
+    put(join(repo, ".claude", "workflows", "probe.js"), script("probe", HAIKU_LOW));
+    expect(
+      agentGuard(call({ name: "probe", script: script("probe", OPUS_HIGH) }), NO_ENV, where, repo),
+    ).toEqual({});
+  });
+
+  it("G2: a nested literal `workflow('x')` is resolved and judged, one level deep", () => {
+    const { repo, where } = world();
+    put(join(repo, ".claude", "workflows", "child.js"), script("child", HAIKU_LOW));
+    const top = script("top", OPUS_HIGH, 'const out = await workflow("child", { n: 1 });');
+    const result = answer(agentGuard(call({ script: top }), NO_ENV, where, repo));
+    expect(result.permissionDecision).toBe("deny");
+    expect(result.permissionDecisionReason).toStartWith(
+      'In the workflow `child`, the launch "cheap": ',
+    );
+    // `{ scriptPath: '…' }` too, relative to the cwd.
+    put(join(repo, "flows", "c.js"), script("c", OPUS_MAX));
+    const byPath = script("top", "await workflow({ scriptPath: 'flows/c.js' });");
+    const asked = answer(agentGuard(call({ script: byPath }), NO_ENV, where, repo));
+    expect(asked.permissionDecision).toBe("ask");
+    expect(asked.permissionDecisionReason).toStartWith(
+      `In the workflow \`${join(repo, "flows", "c.js")}\`, the launch "deep": `,
+    );
+    // A nested name with no file asks, like a run by that name.
+    const builtIn = script("top", "await workflow('deep-research');");
+    expect(
+      answer(agentGuard(call({ script: builtIn }), NO_ENV, where, repo)).permissionDecision,
+    ).toBe("ask");
+  });
+
+  it("G2: a nested computed name, `workflow` handed around, or a second level: refused whole", () => {
+    const { repo, where } = world();
+    const refused = (top: string) => answer(agentGuard(call({ script: top }), NO_ENV, where, repo));
+    expect(refused(script("top", "const name = args.n;", "await workflow(name);"))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: [
+        "This Workflow's `workflow(…)` call at line 3 names its workflow at run time.",
+        'Write it as `workflow("<name>")` or `workflow({ scriptPath: "<path>" })`, with a string literal, so the guard can read what it runs.',
+      ].join("\n"),
+    });
+    expect(refused(script("top", "await workflow('a' + args.n);")).permissionDecision).toBe("deny");
+    expect(
+      refused(script("top", "await workflow({ scriptPath: args.p });")).permissionDecision,
+    ).toBe("deny");
+    expect(refused(script("top", "const run = workflow;", "await run('x');"))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: [
+        "This Workflow uses `workflow` without calling it at once (line 2): a variable holds it, it is optional-called (`workflow?.(…)`), or it is passed as a value.",
+        "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.",
+        'Write every nested workflow as a direct `workflow("<name>")` call.',
+      ].join("\n"),
+    });
+    put(
+      join(repo, ".claude", "workflows", "child.js"),
+      script("child", "await workflow('grand');"),
+    );
+    expect(refused(script("top", "await workflow('child');"))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason:
+        "The workflow `child` this one runs nests a workflow of its own (line 2): Claude Code runs workflows one level deep, and the guard reads no deeper.",
+    });
+  });
+
+  it('G2: a literal followed by an operator is not the value: `effort: "high" && "max"`', () => {
+    const { repo, where } = world();
+    const top = script(
+      "top",
+      'await agent("look", { label: "deep", model: "opus", effort: "high" && "max" });',
+    );
+    expect(answer(agentGuard(call({ script: top }), NO_ENV, where, repo)).permissionDecision).toBe(
+      "deny",
+    );
+    // A comment after the literal is no operator.
+    const fine = script(
+      "top",
+      'await agent("look", { label: "check", model: "opus" /* the tier */, effort: "high" });',
+    );
+    expect(agentGuard(call({ script: fine }), NO_ENV, where, repo)).toEqual({});
+  });
+
+  it("G2: a run with three premium launches is recorded three times, once each", () => {
+    const { repo, where } = world();
+    put(
+      join(repo, ".claude", "workflows", "probe.js"),
+      script(
+        "probe",
+        'await agent("Opus reason: security - a", { label: "a", model: "opus", effort: "xhigh", agentType: "Reviewer" });',
+        'await agent("b", { label: "b", model: "opus", effort: "high" });',
+        'await agent("c", { label: "cheap", model: "haiku", effort: "medium" });',
+        // The nested workflow's launch is the third premium one.
+        'await workflow("child");',
+      ),
+    );
+    put(join(repo, ".claude", "workflows", "child.js"), script("child", OPUS_HIGH));
+    expect(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).toEqual({});
+    // PreToolUse again, then PostToolUse: nothing new.
+    agentGuard(call({ name: "probe" }), NO_ENV, where, repo);
+    agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
+    expect(
+      records(where).map((one) => [
+        one.launchIndex,
+        one.reason,
+        one.effort,
+        one.word,
+        one.toolUseId,
+      ]),
+    ).toEqual([
+      [0, "opus:xhigh:security", "xhigh", "security", "toolu_wf"],
+      [1, "opus:high", "high", null, "toolu_wf"],
+      [3, "opus:high", "high", null, "toolu_wf"],
+    ]);
+  });
+
+  it("G2: an asked named run records its launches once it ran", () => {
+    const { repo, where } = world();
+    put(join(repo, ".claude", "workflows", "probe.js"), script("probe", OPUS_MAX, OPUS_HIGH));
+    expect(
+      answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
+    ).toBe("ask");
+    expect(records(where)).toEqual([]);
+    agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
+    agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
+    expect(records(where).map((one) => [one.launchIndex, one.effort])).toEqual([
+      [0, "max"],
+      [1, "high"],
+    ]);
+  });
+
+  it("G2: an Agent launch's line carries its effort and word as fields", () => {
+    const { repo, where } = world();
+    agentGuard(
+      {
+        ...agentCall({
+          effort: "xhigh",
+          model: "opus",
+          prompt: "Opus reason: security - check it",
+          subagent_type: "Reviewer",
+        }),
+        session_id: "s",
+        tool_use_id: "toolu_a",
+      },
+      NO_ENV,
+      where,
+      repo,
+    );
+    const line = JSON.parse(readFileSync(agentLaunchesFile(where.stateDir), "utf8").trim());
+    expect([line.reason, line.effort, line.word, line.launchIndex]).toEqual([
+      "opus:xhigh:security",
+      "xhigh",
+      "security",
+      0,
+    ]);
+  });
+
+  it("G2: guardFacts judges a named run the same way", () => {
+    const { repo, where } = world();
+    put(join(repo, ".claude", "workflows", "probe.js"), script("probe", OPUS_HIGH));
+    expect(
+      guardFacts({ ...call({ name: "probe" }), cwd: repo }, { env: NO_ENV, paths: where }),
+    ).toEqual({ decision: "allow", launches: 1, tool: "Workflow" });
+    expect(
+      guardFacts({ ...call({ name: "deep-research" }), cwd: repo }, { env: NO_ENV, paths: where }),
+    ).toEqual({ decision: "ask", launches: 0, tool: "Workflow", why: "unreadable" });
   });
 });

@@ -6,8 +6,32 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SafetyCheckState } from "../gateway/safety-checks";
+import { type AgentLaunch, parseAgentLaunch } from "../hooks/agent-launches";
 import { tempDir } from "../testing/temp";
 import { collectUsage, formatSafetyChecks, formatUsage, usageOptions } from "./usage";
+
+/** A record line as an older guard wrote it — `reason` only — read the way `usage` reads it. */
+function oldLine(
+  at: number,
+  family: "fable" | "opus",
+  reason: string,
+  subagentType: string,
+): AgentLaunch {
+  const line = parseAgentLaunch(
+    JSON.stringify({
+      at,
+      family,
+      model: "claude-opus-5-5",
+      project: "/home/user/my-app",
+      reason,
+      session: "s1",
+      subagentType,
+      toolUseId: "",
+    }),
+  );
+  if (line === null) throw new Error(`the old line did not read: ${reason}`);
+  return line;
+}
 
 const NOW = Date.UTC(2026, 9, 15, 12, 0, 0);
 const SINCE = NOW - 6 * 3_600_000;
@@ -155,37 +179,32 @@ describe("usage", () => {
   it("the Opus and Fable launches the guard allowed are listed, with why", () => {
     const root = projects();
     const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
-    const launch = (
-      at: number,
-      family: "fable" | "opus",
-      reason: string,
-      subagentType: string,
-    ) => ({
-      at,
-      family,
-      model: "claude-opus-5-5",
-      project: "/home/user/my-app",
-      reason,
-      session: "s1",
-      subagentType,
-      toolUseId: "",
-    });
-    const text = formatUsage(sessions, 6, root, "/home/user", [
-      launch(SINCE + 1, "opus", "review", "Reviewer"),
-      launch(SINCE + 2, "fable", "fable:plan", "Plan"),
-      launch(SINCE + 3, "opus", "opus:security", "general-purpose"),
+    const launches = [
+      oldLine(SINCE + 1, "opus", "review", "Reviewer"),
+      oldLine(SINCE + 2, "fable", "fable:plan", "Plan"),
+      oldLine(SINCE + 3, "opus", "opus:security", "general-purpose"),
       // A builder on Fable, with the word the person's request carries (`fable:build`).
-      launch(SINCE + 4, "fable", "fable:build", "general-purpose"),
+      oldLine(SINCE + 4, "fable", "fable:build", "general-purpose"),
       // The opus launch the person approved at `max` (its effort is its why since D11).
-      launch(SINCE + 5, "opus", "opus:max", "Reviewer"),
-    ]);
+      oldLine(SINCE + 5, "opus", "opus:max", "Reviewer"),
+    ];
+    const text = formatUsage(sessions, 6, root, "/home/user", launches);
     expect(text.split("\n").slice(-2)).toEqual([
       "",
-      "Opus / Fable launches: 5 (Opus 3, Fable 2); why: build 1, max 1, plan 1, review 1, security 1",
+      "Opus / Fable launches: 5 (Opus 3, Fable 2); effort: effort not recorded 4, max 1; why: build 1, no word 1, plan 1, review 1, security 1",
     ]);
     // No launch: no line at all (an older machine has no record file).
     expect(formatUsage(sessions, 6, root, "/home/user")).toBe(
       formatUsage(sessions, 6, root, "/home/user", []),
+    );
+  });
+
+  it("G2: an old `opus:xhigh:security` line shows its effort and its word", () => {
+    const root = projects();
+    const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
+    const line = oldLine(SINCE + 1, "opus", "opus:xhigh:security", "Reviewer");
+    expect(formatUsage(sessions, 6, root, "/home/user", [line]).split("\n").at(-1)).toBe(
+      "Opus / Fable launches: 1 (Opus 1, Fable 0); effort: xhigh 1; why: security 1",
     );
   });
 

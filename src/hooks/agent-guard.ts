@@ -83,13 +83,26 @@
  * so it is judged on the session's own: the last Claude model in the hook input's
  * `transcript_path` (`lastClaudeModel`), else `ANTHROPIC_MODEL`; unknowable → the `opus` tier.
  *
- * Every premium launch is recorded with why it ran (`agent-launches.ts`) once it is known to
- * run, and `cc-smart-dev-kit usage` lists them: the `opus` tier as `opus:<effort>`, with the
- * prompt's reason word after it when there is one (`opus:xhigh`, `opus:max:security`; a fork
- * `opus:session-effort`), and the `fable` tier by its word. An allowed launch is recorded on
- * PreToolUse, an asked one on PostToolUse — the call ran, so the person said yes (`RAN_EVENT`);
- * a launch the person refuses is never recorded. Anything the guard cannot work out lets the
- * call through, except a Workflow whose launches it cannot read (`workflowRefusal`).
+ * **Every Workflow run** (G2). A Workflow call's launches run inside the tool and fire no hook of
+ * their own, so the guard reads the script the call runs, however the call names it — an
+ * inline `script`, a `scriptPath`, a saved workflow's `name`, a plugin's `<plugin>:<name>`
+ * (`agent-guard-workflows.ts` finds the file the way Claude Code does) — and every workflow
+ * that script nests with a literal `workflow("<name>")` or `workflow({ scriptPath: "…" })`, one
+ * level deep (`judgeWorkflowCall`). A run whose script the guard cannot read — a built-in
+ * workflow, a missing file, two files that claim one name, a `resumeFromRunId` — asks the
+ * person, and is denied in `claude -p`, saying why. A nested workflow named at run time, or a
+ * script that nests deeper, refuses the whole call.
+ *
+ * Every premium launch is recorded (`agent-launches.ts`) once it is known to run, with its
+ * effort and its reason word as their own fields, and with why it ran as one string for older
+ * readers: the `opus` tier as `opus:<effort>`, with the prompt's reason word after it when there
+ * is one (`opus:xhigh`, `opus:max:security`; a fork `opus:session-effort`), and the `fable` tier
+ * by its word. `cc-smart-dev-kit usage` counts them by effort and by word. An allowed launch is
+ * recorded on PreToolUse, an asked one on PostToolUse — the call ran, so the person said yes
+ * (`RAN_EVENT`); a launch the person refuses is never recorded. A Workflow's launches share one
+ * `tool_use_id`, so each is recorded under its own index, once. Anything the guard cannot work
+ * out lets the call through, except a Workflow whose launches it cannot read
+ * (`workflowRefusal`, `judgeWorkflowCall`).
  */
 
 import type { CliPaths } from "../cli/paths";
@@ -115,7 +128,21 @@ import {
   SUBAGENT_MODEL_FORCE_ENV,
   WORKFLOW_SUBAGENT_MODEL_ENV,
 } from "../models/launch-policy";
-import { type AgentLaunch, agentLaunchesFile, appendAgentLaunch } from "./agent-launches";
+import {
+  scriptAtPath,
+  scriptByName,
+  skipBlank,
+  stringAt,
+  type WorkflowPlace,
+  wholeLiteralAt,
+} from "./agent-guard-workflows";
+import {
+  type AgentLaunch,
+  agentLaunchesFile,
+  appendAgentLaunches,
+  reasonParts,
+  SESSION_EFFORT,
+} from "./agent-launches";
 import {
   type HookInput,
   type HookResult,
@@ -203,13 +230,15 @@ export interface GuardContext extends GatewayFacts {
 /**
  * One `agent(...)` call of a Workflow script, as much of it as its text shows. A workflow
  * runs its agents **inside itself**: live on 2.1.301 the `Workflow` tool call fires
- * PreToolUse (tool_name `Workflow`, its `script` in the input) and the launches inside the
- * script fire **nothing** — no `Agent` call passes the hooks. So the guard reads the script
- * (`readWorkflowScript`) and judges each launch it can see.
+ * PreToolUse (tool_name `Workflow`; its input holds the `script`, or only a `name` or a
+ * `scriptPath`, 2.1.306) and the launches inside the script fire **nothing** — no `Agent` call
+ * passes the hooks. So the guard reads the script (`readWorkflowScript`; found by
+ * `judgeWorkflowCall` when the input holds none) and judges each launch it can see.
  *
  * What it cannot see is refused, never guessed:
- *   - a value held in a variable (`model: chosen`), a prompt built at run time, and a
- *     backtick literal that builds its text (`` `${…}` ``) leave that launch's verdict short
+ *   - a value held in a variable (`model: chosen`), a prompt built at run time, a literal an
+ *     operator changes (`effort: "high" && "max"`, `"a" + b`), and a backtick literal that
+ *     builds its text (`` `${…}` ``) leave that launch's verdict short
  *     of a reason line, so a Fable launch is denied and a launch whose `model` cannot be read
  *     is denied outright (an `opus`-tier launch needs no reason line, so its prompt does not
  *     matter);
@@ -230,50 +259,6 @@ export interface WorkflowLaunch {
   prompt: null | string;
   /** How the message names this launch: its `label`, else the first words of its prompt. */
   where: string;
-}
-
-/** A string literal's value at `from`, and the index after it; null when it is not one. */
-function stringAt(text: string, from: number): null | { end: number; value: string } {
-  const quote = text[from];
-  if (quote !== '"' && quote !== "'" && quote !== "`") return null;
-  let value = "";
-  for (let index = from + 1; index < text.length; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      // A literal escape with a value (`\n`, `\"`) is read as the character it names.
-      const next = text[index + 1] ?? "";
-      value += next === "n" ? "\n" : next;
-      index += 1;
-      continue;
-    }
-    if (char === quote) return { end: index + 1, value };
-    value += char;
-  }
-  return null;
-}
-
-/**
- * True when the literal at `[from, end)` builds its text at run time: a template with an
- * unescaped `${…}`. Its value is not the text between the backticks, so nothing is read from
- * it — `model: \`op${n}us\`` names no model the guard can prove.
- */
-function interpolated(text: string, from: number, end: number): boolean {
-  for (let index = from + 1; index < end - 1; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      index += 1;
-      continue;
-    }
-    if (char === "$" && text[index + 1] === "{") return true;
-  }
-  return false;
-}
-
-/** A **fixed** string literal's value at `from`; null when it is not one, or is built at run time. */
-function literalAt(text: string, from: number): null | { end: number; value: string } {
-  const literal = stringAt(text, from);
-  if (literal === null) return null;
-  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
 }
 
 /** Where a `{…}` object or a `(…)` call ends, skipping string literals; the text's end. */
@@ -301,55 +286,59 @@ function callText(script: string, open: number): string {
   return script.slice(open, endOf(script, open, "(", ")") + 1);
 }
 
-/** The first argument of a call, when it is a fixed string literal; null otherwise. */
+/**
+ * The first argument of a call, when it is a fixed string literal and the whole argument (no
+ * `"a" + b` after it); null otherwise.
+ */
 function firstArgument(call: string): null | string {
-  const args = call.slice(1);
-  const lead = args.length - args.trimStart().length;
-  const literal = literalAt(call, 1 + lead);
-  return literal === null ? null : literal.value;
+  return wholeLiteralAt(call, skipBlank(call, 1), ",)");
 }
 
 /**
- * A fixed string option of a call (`model: "opus"`), or null when absent or not a literal. Only
- * a key of the call's own options object counts — never the same words in the prompt or in a
- * nested object (`schema: { effort: … }`), which would let them stand in for the real option.
+ * A fixed string option of a call (`model: "opus"`), or null when absent or not a literal — and
+ * not when an operator follows it (`effort: "high" && "max"` runs at `max`). Only a key of the
+ * call's own options object counts — never the same words in the prompt or in a nested object
+ * (`schema: { effort: … }`), which would let them stand in for the real option.
  */
 function stringOption(call: string, name: string): null | string {
   const at = readOptions(call).keys.get(name);
   if (at === undefined) return null;
-  const colon = /^\s*:\s*/.exec(call.slice(at));
+  const colon = /^\s*:/.exec(call.slice(at));
   if (colon === null) return null;
-  const literal = literalAt(call, at + colon[0].length);
-  return literal === null ? null : literal.value;
+  return wholeLiteralAt(call, skipBlank(call, at + colon[0].length), ",}");
 }
 
-/** One way a script mentions the `agent` function: its name in code, and whether it is called. */
-interface AgentMention {
+/** The script functions the guard follows: `agent` launches one agent, `workflow` nests one. */
+type ScriptFunction = "agent" | "workflow";
+
+/** One way a script mentions a function: its name in code, and whether it is called. */
+interface Mention {
   /** Where the name starts in the script. */
   at: number;
-  /** True for a direct call (`agent(…)`); false when `agent` is handed around as a value. */
+  /** True for a direct call (`agent(…)`); false when the function is handed around as a value. */
   call: boolean;
+  /** The function's name. */
+  name: ScriptFunction;
 }
 
-/** The position of the `(` of a direct call whose name starts at `at`. */
-function callOpen(at: number, script: string): number {
-  const rest = script.slice(at + 5);
-  return at + 5 + (rest.length - rest.trimStart().length);
+/** The position of the `(` of a direct call (`mention.call`). */
+function callOpen(mention: Mention, script: string): number {
+  return skipBlank(script, mention.at + mention.name.length);
 }
 
 /**
- * Every mention of `agent` in the script's code, and whether it is a direct call. In code
- * only: the word inside a prompt, a string or a comment is not a mention, and neither is a
- * property (`x.agent`) or a longer name (`agentType`, `agents`). A template literal's
- * `${…}` is code again — a launch written there is a launch — so the scan keeps a stack of
- * the contexts it is inside.
+ * Every mention of `name` (`agent`, `workflow`) in the script's code, and whether it is a
+ * direct call. In code only: the word inside a prompt, a string or a comment is not a mention,
+ * and neither is a property (`x.agent`) or a longer name (`agentType`, `agents`). A template
+ * literal's `${…}` is code again — a launch written there is a launch — so the scan keeps a
+ * stack of the contexts it is inside.
  */
-function agentMentions(script: string): AgentMention[] {
+function mentionsOf(script: string, name: ScriptFunction): Mention[] {
   type Frame = {
     braces: number;
     kind: "block" | "code" | "double" | "line" | "single" | "template";
   };
-  const mentions: AgentMention[] = [];
+  const mentions: Mention[] = [];
   const stack: Frame[] = [{ braces: 0, kind: "code" }];
   for (let index = 0; index < script.length; index += 1) {
     const frame = stack.at(-1);
@@ -410,12 +399,13 @@ function agentMentions(script: string): AgentMention[] {
       continue;
     }
     if (
-      script.startsWith("agent", index) &&
+      script.startsWith(name, index) &&
       (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))
     ) {
+      const after = index + name.length;
       // `agentType`, `agents`: a longer name, not a mention of `agent`.
-      if (/[\w$]/.test(script[index + 5] ?? "")) continue;
-      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(index + 5)) });
+      if (/[\w$]/.test(script[after] ?? "")) continue;
+      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(after)), name });
     }
   }
   return mentions;
@@ -531,16 +521,26 @@ function builtAtRuntime(call: string): boolean {
 
 /** Where each direct call's `(` sits, in script order: what `readWorkflowScript` reads. */
 function callsOf(script: string): number[] {
-  return agentMentions(script)
+  return mentionsOf(script, "agent")
     .filter((mention) => mention.call)
-    .map((mention) => callOpen(mention.at, script));
+    .map((mention) => callOpen(mention, script));
 }
 
-/** Said when the script hands `agent` around: nothing it launches can be read. */
-const AGENT_HANDED_AROUND = [
-  "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.",
-  'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call.',
-].join("\n");
+/** Why a function handed around hides what it runs. */
+const THROUGH_A_VARIABLE =
+  "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
+
+/** Said when the script hands `agent` or `workflow` around: nothing it runs can be read. */
+const HANDED_AROUND: Record<ScriptFunction, string> = {
+  agent: [
+    THROUGH_A_VARIABLE,
+    'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call.',
+  ].join("\n"),
+  workflow: [
+    THROUGH_A_VARIABLE,
+    'Write every nested workflow as a direct `workflow("<name>")` call.',
+  ].join("\n"),
+};
 
 /** Said when a call's options are not what they seem: what the guard read can differ. */
 const OPTIONS_BUILT_AT_RUNTIME = [
@@ -552,21 +552,23 @@ const OPTIONS_BUILT_AT_RUNTIME = [
  * The reason this whole Workflow call is refused, or null when every launch in it can be
  * read. Two things hide the rules from the guard, and a hook must refuse what it cannot see
  * rather than let it run unchecked:
- *   - `agent` mentioned without being called at once (`const run = agent; run(…)`,
- *     `agent?.(…)`, `agent` passed around as a value);
- *   - a call whose options are not what they seem (`builtAtRuntime`).
+ *   - `agent` or `workflow` mentioned without being called at once (`const run = agent;
+ *     run(…)`, `agent?.(…)`, either passed around as a value);
+ *   - an `agent(…)` call whose options are not what they seem (`builtAtRuntime`).
+ * A nested `workflow(…)` call whose workflow is named at run time is refused by
+ * `nestedWorkflows`.
  */
 export function workflowRefusal(script: string): null | string {
-  const mentions = agentMentions(script);
-  const handed = mentions.find((mention) => !mention.call);
-  if (handed !== undefined) {
+  for (const name of ["agent", "workflow"] as const) {
+    const handed = mentionsOf(script, name).find((mention) => !mention.call);
+    if (handed === undefined) continue;
     return [
-      `This Workflow uses \`agent\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`agent?.(…)\`), or it is passed as a value.`,
-      AGENT_HANDED_AROUND,
+      `This Workflow uses \`${name}\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`${name}?.(…)\`), or it is passed as a value.`,
+      HANDED_AROUND[name],
     ].join("\n");
   }
-  for (const mention of mentions) {
-    if (!builtAtRuntime(callText(script, callOpen(mention.at, script)))) {
+  for (const mention of mentionsOf(script, "agent")) {
+    if (!builtAtRuntime(callText(script, callOpen(mention, script)))) {
       continue;
     }
     return [
@@ -575,6 +577,40 @@ export function workflowRefusal(script: string): null | string {
     ].join("\n");
   }
   return null;
+}
+
+/** A nested `workflow(…)` call of a script: the workflow it names, and its line. */
+type NestedCall = { line: number } & ({ name: string } | { scriptPath: string });
+
+/**
+ * Every nested `workflow(…)` call of a script, in order — the two shapes Claude Code accepts,
+ * `workflow("<name>")` and `workflow({ scriptPath: "<path>" })`, each with a string literal — or
+ * why the whole call is refused: a call whose workflow is named at run time
+ * (`workflow(name)`, `workflow("a" + b)`) runs a script the guard cannot know.
+ */
+export function nestedWorkflows(script: string): { calls: NestedCall[] } | { refusal: string } {
+  const calls: NestedCall[] = [];
+  for (const mention of mentionsOf(script, "workflow")) {
+    if (!mention.call) continue;
+    const call = callText(script, callOpen(mention, script));
+    const line = lineOf(script, mention.at);
+    const name = firstArgument(call);
+    const path =
+      call[skipBlank(call, 1)] === "{" && !builtAtRuntime(call)
+        ? stringOption(call, "scriptPath")
+        : null;
+    if (name !== null) calls.push({ line, name });
+    else if (path !== null) calls.push({ line, scriptPath: path });
+    else {
+      return {
+        refusal: [
+          `This Workflow's \`workflow(…)\` call at line ${line} names its workflow at run time.`,
+          'Write it as `workflow("<name>")` or `workflow({ scriptPath: "<path>" })`, with a string literal, so the guard can read what it runs.',
+        ].join("\n"),
+      };
+    }
+  }
+  return { calls };
 }
 
 /**
@@ -613,6 +649,8 @@ function asLaunch(one: WorkflowLaunch): Launch {
 
 /** One launch of a Workflow script, judged. */
 export interface WorkflowResult {
+  /** How the messages name the script it is in: null for the call's own inline script. */
+  from: null | string;
   launch: WorkflowLaunch;
   verdict: Verdict;
 }
@@ -627,20 +665,33 @@ const NO_WORKFLOW_MODEL = [
 const PROMPT_UNREADABLE =
   "The launch's prompt is built at run time, so the guard cannot read a `Fable reason:` line in it.";
 
-/** Judges every launch of a Workflow script, in order. */
-export function judgeWorkflow(script: string, ctx: GuardContext, env: Env): WorkflowResult[] {
+/**
+ * Judges every launch of a Workflow script, in order. `from` names the script in the messages
+ * (`judgeWorkflowCall`); null for a call's own inline script.
+ */
+export function judgeWorkflow(
+  script: string,
+  ctx: GuardContext,
+  env: Env,
+  from: null | string = null,
+): WorkflowResult[] {
   return readWorkflowScript(script).map((launch) => {
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
     // A model the script builds at run time cannot be read by a hook: refused, never guessed —
     // unless an override names the model it runs on whatever the script says.
     if (launch.model === null && verdict.ran.modelFrom === "call") {
-      return { launch, verdict: { ...deny(verdict.real, NO_WORKFLOW_MODEL), ran: verdict.ran } };
+      return {
+        from,
+        launch,
+        verdict: { ...deny(verdict.real, NO_WORKFLOW_MODEL), ran: verdict.ran },
+      };
     }
     // An ask that rests on the launch's own prompt — a reason line — cannot stand with a prompt
     // the guard cannot read: there is nothing to approve, so it is refused instead. An ask that
     // rests on the effort (the `opus` tier at `max`) needs no prompt and stays an ask.
     if (launch.prompt === null && (verdict.decision === "deny" || verdict.restsOnPrompt === true)) {
       return {
+        from,
         launch,
         verdict: {
           ...verdict,
@@ -649,15 +700,149 @@ export function judgeWorkflow(script: string, ctx: GuardContext, env: Env): Work
         },
       };
     }
-    return { launch, verdict };
+    return { from, launch, verdict };
   });
 }
 
-/** The Workflow answer's words: which launch it is about, and the rule. */
+/** The Workflow answer's words: which workflow and which launch it is about, and the rule. */
 export function workflowReason(result: WorkflowResult): string {
   const named =
     result.launch.where === "(unreadable)" ? "one launch" : `the launch "${result.launch.where}"`;
-  return `In this workflow, ${named}: ${result.verdict.reason}`;
+  const workflow = result.from === null ? "this workflow" : `the workflow \`${result.from}\``;
+  return `In ${workflow}, ${named}: ${result.verdict.reason}`;
+}
+
+/** A script a Workflow call runs: its own, or one its script nests. */
+interface RunScript {
+  /** How the messages name it: null for the call's own inline script. */
+  from: null | string;
+  script: string;
+}
+
+/** A Workflow call, judged: every launch of every script it runs, and what the guard cannot see. */
+export interface WorkflowCall {
+  /** Why the whole call is refused — a launch or a nested workflow the guard cannot follow. */
+  refusal: null | string;
+  /** Every launch of the call's scripts, judged: its own script's first, then each nested one's. */
+  results: WorkflowResult[];
+  /** Why the guard cannot see what (part of) the call runs; each asks, or is refused in `claude -p`. */
+  unreadable: string[];
+}
+
+/** Said when a call resumes a run: what runs again comes from a script the guard does not see. */
+function resumeUnreadable(runId: string): string {
+  return `This Workflow call resumes run \`${runId}\`: the run goes on from a script the guard does not see, and it runs again every launch whose prompt or options changed.`;
+}
+
+/** Said when a call names none of the three ways to give a script. */
+const NO_SCRIPT = "This Workflow call names no `script`, `name` or `scriptPath`.";
+
+/**
+ * The script a Workflow call runs, or why the guard cannot read it. In Claude Code's own order
+ * (2.1.306): an inline `script` runs whatever else the call names; else `scriptPath`; else
+ * `name`. A `resumeFromRunId` goes on from a run the guard cannot see, whatever it names.
+ */
+function callScript(fields: Record<string, unknown>, place: WorkflowPlace): ScriptRun {
+  const resume = stringField(fields.resumeFromRunId);
+  if (resume !== null) return { unreadable: resumeUnreadable(resume) };
+  const name = stringField(fields.name);
+  const script = stringField(fields.script);
+  if (script !== null) return { from: name, script };
+  const path = stringField(fields.scriptPath);
+  const found =
+    path !== null
+      ? scriptAtPath(path, place.cwd)
+      : name !== null
+        ? scriptByName(name, place)
+        : null;
+  if (found === null) return { unreadable: NO_SCRIPT };
+  if ("unreadable" in found) return found;
+  return { from: path === null ? name : found.file, script: found.script };
+}
+
+/** A script to judge, or why there is none the guard can read. */
+type ScriptRun = RunScript | { unreadable: string };
+
+/**
+ * Judges a whole Workflow call: the script it runs (`callScript`), and every workflow that
+ * script nests with `workflow(…)` — one level, as Claude Code runs them; a nested script that
+ * nests again is refused. A launch or a nested call the guard cannot follow refuses the whole
+ * call; a script it cannot find is `unreadable`, and asks.
+ */
+export function judgeWorkflowCall(
+  fields: Record<string, unknown>,
+  ctx: GuardContext,
+  env: Env,
+  place: WorkflowPlace,
+): WorkflowCall {
+  const refused = (refusal: string): WorkflowCall => ({ refusal, results: [], unreadable: [] });
+  const top = callScript(fields, place);
+  if ("unreadable" in top) return { refusal: null, results: [], unreadable: [top.unreadable] };
+  const inTop = (reason: string) =>
+    top.from === null ? reason : `In the workflow \`${top.from}\`: ${reason}`;
+  const topRefusal = workflowRefusal(top.script);
+  if (topRefusal !== null) return refused(inTop(topRefusal));
+  const nested = nestedWorkflows(top.script);
+  if ("refusal" in nested) return refused(inTop(nested.refusal));
+  const scripts: RunScript[] = [top];
+  const unreadable: string[] = [];
+  for (const call of nested.calls) {
+    const found =
+      "name" in call ? scriptByName(call.name, place) : scriptAtPath(call.scriptPath, place.cwd);
+    if ("unreadable" in found) {
+      unreadable.push(found.unreadable);
+      continue;
+    }
+    const from = "name" in call ? call.name : found.file;
+    const deeper = mentionsOf(found.script, "workflow")[0];
+    if (deeper !== undefined) {
+      return refused(
+        `The workflow \`${from}\` this one runs nests a workflow of its own (line ${lineOf(found.script, deeper.at)}): Claude Code runs workflows one level deep, and the guard reads no deeper.`,
+      );
+    }
+    const childRefusal = workflowRefusal(found.script);
+    if (childRefusal !== null) {
+      return refused(`In the workflow \`${from}\` this one runs: ${childRefusal}`);
+    }
+    scripts.push({ from, script: found.script });
+  }
+  return {
+    refusal: null,
+    results: scripts.flatMap((one) => judgeWorkflow(one.script, ctx, env, one.from)),
+    unreadable,
+  };
+}
+
+/** The question asked after each reason a run cannot be read. */
+const UNREADABLE_ASK =
+  "The guard cannot see the model and effort its launches run on: approve only if you know what this workflow runs.";
+
+/** Said in `claude -p` after the reasons a run cannot be read. */
+const UNREADABLE_UNATTENDED =
+  "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
+
+/**
+ * The one answer for a whole Workflow call: a refusal or any denied launch denies it; a script
+ * it cannot read asks (denied in `claude -p`, where nobody can answer); else the ask names each
+ * launch that asks; else it is allowed.
+ */
+function workflowAnswer(
+  call: WorkflowCall,
+  env: Env,
+): { decision: "allow" | "ask" | "deny"; reason: string } {
+  if (call.refusal !== null) return { decision: "deny", reason: call.refusal };
+  const denied = call.results.find((one) => one.verdict.decision === "deny");
+  if (denied !== undefined) return { decision: "deny", reason: workflowReason(denied) };
+  if (call.unreadable.length > 0 && nobodyWatches(env)) {
+    return { decision: "deny", reason: [...call.unreadable, UNREADABLE_UNATTENDED].join("\n") };
+  }
+  const asks = [
+    ...call.unreadable.map((reason) => `${reason}\n${UNREADABLE_ASK}`),
+    ...call.results.filter((one) => one.verdict.decision === "ask").map(workflowReason),
+  ];
+  return asks.length > 0
+    ? { decision: "ask", reason: asks.join("\n") }
+    : { decision: "allow", reason: "" };
 }
 
 /** The guard's answer: what to do, in words for the person or Claude, and what it read. */
@@ -777,7 +962,7 @@ function atEffort(effort: null | string): string {
  * effort. A fork names no effort: it runs at the session's own.
  */
 function opusWhy(effort: null | string, word: null | string): string {
-  const level = effort ?? "session-effort";
+  const level = effort ?? SESSION_EFFORT;
   return word === null ? `opus:${level}` : `opus:${level}:${word}`;
 }
 
@@ -1124,18 +1309,30 @@ export function guardFacts(input: HookInput, context: HookEnvContext): Record<st
   const guard = readGuardContext(context.paths, input, context.env);
   const tool = stringField(input.tool_name);
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
-    const script = stringField(toolInput(input).script);
-    if (script === null) return {};
-    const refusal = workflowRefusal(script);
-    if (refusal !== null)
-      return { decision: "deny", launches: 0, tool: "Workflow", why: "unreadable" };
-    const results = judgeWorkflow(script, guard, context.env);
-    const decided = results.find((one) => one.verdict.decision !== "allow");
+    const call = judgeWorkflowCall(
+      toolInput(input),
+      guard,
+      context.env,
+      workflowPlace(context.paths, context.env, stringField(input.cwd) ?? ""),
+    );
+    const { decision } = workflowAnswer(call, context.env);
+    // What decided it: a script or a call the guard cannot read, else the first launch that
+    // gave the call its answer.
+    const decided = call.results.find((one) => one.verdict.decision === decision);
+    const why =
+      decision === "allow"
+        ? null
+        : call.refusal !== null ||
+            (call.unreadable.length > 0 && decided?.verdict.decision !== "deny")
+          ? "unreadable"
+          : decided === undefined
+            ? decision
+            : decided.verdict.why || decided.verdict.decision;
     return {
-      decision: decided?.verdict.decision ?? "allow",
-      launches: results.length,
+      decision,
+      launches: call.results.length,
       tool: "Workflow",
-      ...(decided === undefined ? {} : { why: decided.verdict.why || decided.verdict.decision }),
+      ...(why === null ? {} : { why }),
     };
   }
   const launch = readLaunch(input);
@@ -1172,26 +1369,50 @@ function overrideFacts(ran: EffectiveLaunch): Record<string, unknown> {
   };
 }
 
-/** One line in the record, and one in the hook log, for an Opus or Fable launch. */
+/**
+ * Where a Workflow's scripts are found from this hook (`WorkflowPlace`): the input's `cwd`, the
+ * person's folders, and this plugin's own folder (`CLAUDE_PLUGIN_ROOT`, which Claude Code sets
+ * for a plugin's hook).
+ */
+function workflowPlace(paths: CliPaths, env: Env, cwd: string): WorkflowPlace {
+  return {
+    claudeConfigDir: paths.claudeConfigDir,
+    cwd,
+    home: paths.home,
+    installedPluginsFile: paths.installedPluginsFile,
+    pluginRoot: stringField(env.CLAUDE_PLUGIN_ROOT),
+  };
+}
+
+/**
+ * One line in the record for an Opus or Fable launch; null for any other. `index` is the
+ * launch's place in its tool call (a Workflow's launches share one `tool_use_id`).
+ */
 function recorded(
   result: Verdict,
   launch: Launch,
   input: HookInput,
   cwd: string,
   nowMs: number,
+  index: number,
 ): AgentLaunch | null {
   // The tier, not the vendor: a premium launch whose model is a backend is recorded too.
   const family = result.real?.tier;
   if (family !== "opus" && family !== "fable") return null;
+  const reason = result.why === "" ? result.decision : result.why;
   return {
     at: nowMs,
+    // What it really ran at, after Claude Code's overrides; a fork at the session's own.
+    effort: result.ran.effort?.toLowerCase() ?? SESSION_EFFORT,
     family,
+    launchIndex: index,
     model: result.real?.model ?? "",
     project: cwd,
-    reason: result.why === "" ? result.decision : result.why,
+    reason,
     session: stringField(input.session_id) ?? "",
     subagentType: launch.subagentType ?? "",
     toolUseId: stringField(input.tool_use_id) ?? "",
+    word: reasonParts(reason).word,
   };
 }
 
@@ -1215,7 +1436,12 @@ function afterTheCall(input: HookInput): boolean {
  * PostToolUse (`RAN_EVENT`), a call the guard asked about (it ran, so the person said yes). So
  * a launch the person refuses is never recorded, and none is recorded twice. A Workflow is one
  * call: when any of its launches asks, the person may refuse them all, so all wait for the run.
- * Anything it cannot read lets the call through.
+ * Each of a Workflow's launches is recorded under its own index, as its own line.
+ *
+ * A Workflow run is judged however it names its script — inline, `scriptPath`, a saved or a
+ * plugin's `name` — with the workflows it nests (`judgeWorkflowCall`). One the guard cannot read
+ * (a built-in, a missing file, a resume) asks, and is refused in `claude -p`. Anything else it
+ * cannot work out lets the call through.
  */
 export function agentGuard(
   input: HookInput,
@@ -1228,36 +1454,30 @@ export function agentGuard(
   const context = readGuardContext(paths, input, env);
   const file = agentLaunchesFile(paths.stateDir);
   const ran = afterTheCall(input);
-  const record = (verdict: Verdict, launch: Launch) => {
-    const line = recorded(verdict, launch, input, cwd, nowMs);
-    if (line !== null) appendAgentLaunch(file, line);
+  const record = (judged: ReadonlyArray<{ launch: Launch; verdict: Verdict }>) => {
+    const lines = judged
+      .map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index))
+      .filter((line): line is AgentLaunch => line !== null);
+    if (lines.length > 0) appendAgentLaunches(file, lines);
   };
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
-    const script = stringField(toolInput(input).script);
-    if (script === null) return SILENT;
-    // A launch the guard cannot follow — `agent` handed around, options built at run time —
-    // refuses the whole call: the rules would not hold for it.
-    const refusal = workflowRefusal(script);
-    if (refusal !== null) return ran ? SILENT : toolDecision("deny", refusal);
-    const results = judgeWorkflow(script, context, env);
-    // The strictest verdict of the script's launches answers for the whole call: a deny refuses
-    // it, so nothing in it runs and none of its launches is recorded; otherwise the ask names
-    // each launch that asks.
-    const decided = results.find((one) => one.verdict.decision === "deny");
-    if (decided !== undefined) return ran ? SILENT : toolDecision("deny", workflowReason(decided));
-    const asks = results.filter((one) => one.verdict.decision === "ask");
-    const asked = asks.length > 0;
+    const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
+    // One answer for the whole call: a deny refuses it, so nothing in it runs and none of its
+    // launches is recorded; an ask names each launch that asks and each script it cannot read.
+    const answer = workflowAnswer(call, env);
+    if (answer.decision === "deny") return ran ? SILENT : toolDecision("deny", answer.reason);
+    const asked = answer.decision === "ask";
     // Recorded when the whole call is known to run: at once when nothing in it asks, else after
     // it ran.
     if (ran === asked) {
-      for (const one of results) record(one.verdict, asLaunch(one.launch));
+      record(call.results.map((one) => ({ launch: asLaunch(one.launch), verdict: one.verdict })));
     }
     if (ran || !asked) return SILENT;
-    return toolDecision("ask", asks.map((one) => workflowReason(one)).join("\n"));
+    return toolDecision("ask", answer.reason);
   }
   const launch = readLaunch(input);
   if (launch === null) return SILENT;
   const result = judgeLaunch(launch, context, env);
-  if (result.decision === (ran ? "ask" : "allow")) record(result, launch);
+  if (result.decision === (ran ? "ask" : "allow")) record([{ launch, verdict: result }]);
   return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
 }

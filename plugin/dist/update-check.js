@@ -250,7 +250,7 @@ function gitEnv(base) {
 
 // src/setup/installed-plugins.ts
 import { existsSync, readFileSync } from "fs";
-function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
+function pluginsRecord(installedPluginsFile) {
   if (!existsSync(installedPluginsFile))
     return null;
   let parsed;
@@ -260,7 +260,10 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
     return null;
   }
   const plugins = parsed?.plugins;
-  const entries = plugins?.[pluginId];
+  return typeof plugins === "object" && plugins !== null && !Array.isArray(plugins) ? plugins : null;
+}
+function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
+  const entries = pluginsRecord(installedPluginsFile)?.[pluginId];
   if (!Array.isArray(entries))
     return null;
   const entry = entries.find((candidate) => typeof candidate === "object" && candidate !== null && candidate.scope === "user" && typeof candidate.installPath === "string");
