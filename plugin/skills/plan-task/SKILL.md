@@ -118,7 +118,9 @@ Brief each owner with its phase, its files, the patterns, its done-check and its
 tests, confirm nothing changed outside its list. That read is your own review pass for those
 files. A worker's hand-back passes the lead skill's gate instead (§ 6 there). While other
 owners still write, stage by path, never `git add -A`. You tick the plan, integrate, commit and
-own the result.
+own the result. Once a subagent's work is merged, remove its worktree and its branch in the same
+step (`git worktree remove`, `git branch -D`): Claude Code keeps a worktree that holds commits,
+and a squash merge never shows its branch as merged.
 
 ## 6. Keep it live
 
