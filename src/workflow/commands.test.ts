@@ -427,6 +427,22 @@ describe("workflow review-done", () => {
     expect(existsSync(recordFile(env, repo))).toBe(false);
   });
 
+  test("a broken project file does not stop a review from being recorded", async () => {
+    // The record says a commit was reviewed. It does not depend on the project's policy, so a
+    // `cc-smart-dev-kit.json` that cannot be read must not keep it from being written — the
+    // merge guard reads the record, and every guard that cannot read the file fails closed
+    // until it is fixed.
+    const env = hookEnv();
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    writeFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "{not json\n");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const run = context(repo, env);
+    expect(await runWorkflow(["review-done"], run.context)).toBe(0);
+    expect(run.lines[0]).toContain(`the review of ${head.slice(0, 7)} is recorded`);
+    expect(existsSync(recordFile(env, repo))).toBe(true);
+  });
+
   test("outside a git project, and with a bad flag: nothing is written", async () => {
     const outside = context(tempDir("not-git"));
     expect(await runWorkflow(["review-done"], outside.context)).toBe(1);

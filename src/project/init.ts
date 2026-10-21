@@ -28,13 +28,16 @@
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
 import { detectIndent, isObject } from "../setup/managed-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import type { Workflow } from "../workflow/schema";
 import {
+  ccSmartDevKitConfigSchema,
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
+  WORKFLOW_WORKERS_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
 } from "./config";
@@ -164,7 +167,7 @@ export function requiresFor(version: string): string {
  * needs a newer plugin keeps its own range — never lowered. `floorVersion` is the version
  * `floor` names, for that comparison.
  */
-function raisedRequires(existing: unknown, floor: string, floorVersion: string): string {
+export function raisedRequires(existing: unknown, floor: string, floorVersion: string): string {
   if (typeof existing === "string") {
     const floorMatch = /^>=\s*(\d+)\.(\d+)(?:\.(\d+))?/.exec(existing);
     if (floorMatch !== null) {
@@ -173,6 +176,30 @@ function raisedRequires(existing: unknown, floor: string, floorVersion: string):
     }
   }
   return floor;
+}
+
+/**
+ * The oldest plugin that reads every field the file holds: the range and the version it
+ * names, for `raisedRequires`.
+ *
+ * A file without `worktrees.prefix` needs the plugin that made that field optional
+ * (0.5.2): every older plugin refuses the whole file. A file with `workflow.workers` or
+ * `workflow.fixesAfterReview` needs the release that brought them: an older plugin reads
+ * the file strictly, does not know that field, and refuses the file — so every guard in
+ * that project fails closed until the plugin is updated.
+ */
+export function requiresFloor(file: Record<string, unknown>): {
+  floor: string;
+  version: string;
+} {
+  const workflow = isObject(file.workflow) ? file.workflow : {};
+  if (Object.hasOwn(workflow, "workers") || Object.hasOwn(workflow, "fixesAfterReview")) {
+    return { floor: requiresFor(WORKFLOW_WORKERS_SINCE), version: WORKFLOW_WORKERS_SINCE };
+  }
+  return {
+    floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+    version: WORKTREE_PREFIX_OPTIONAL_SINCE,
+  };
 }
 
 /** Every leaf of a JSON object, by its dotted path: what the diff compares. */
@@ -320,13 +347,6 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   else delete worktrees.bases;
 
   const next: Record<string, unknown> = { ...before };
-  // A file without `worktrees.prefix` needs at least the plugin version that made it
-  // optional: an older plugin still requires the field and refuses the whole file.
-  next.requires = raisedRequires(
-    before.requires,
-    `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
-    WORKTREE_PREFIX_OPTIONAL_SINCE,
-  );
   next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
   if (answers.protectedBranches.length > 0) next.protectedBranches = answers.protectedBranches;
   else delete next.protectedBranches;
@@ -339,7 +359,23 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   else delete next.jobs;
   if (Object.keys(answers.workflow).length > 0) next.workflow = answers.workflow;
   else delete next.workflow;
+  // The floor depends on the fields the file ends up with: a file that sets
+  // `workflow.workers` needs the plugin that brought it, or every older plugin refuses the
+  // whole file (it does not know the field) and every guard in that project fails closed.
+  const floor = requiresFloor(next);
+  next.requires = raisedRequires(before.requires, floor.floor, floor.version);
   const after = orderKeys(next, FILE_ORDER);
+  // The file the plan would write is checked against the plugin's own schema BEFORE anything
+  // is written: a plan this command made from a wrong answer — or one that keeps a key no
+  // version of cc-smart-dev-kit knows — would leave a project every reader refuses. The
+  // schema is the one the readers use, so the two can never disagree.
+  const valid = ccSmartDevKitConfigSchema.safeParse(after);
+  if (!valid.success) {
+    throw new Error(
+      `${file} would not be a valid project file (${z.prettifyError(valid.error)}). ` +
+        `Change the answer, then run again.`,
+    );
+  }
   const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}\n`;
 
   // Claude Code cuts a new worktree from origin's default branch. A project whose base branch

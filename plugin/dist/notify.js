@@ -6910,6 +6910,9 @@ var RETIRED_ENGINE_HOOKS = [
 ];
 var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
 
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+
 // src/sessions/command.ts
 var TAIL_BYTES = 512 * 1024;
 

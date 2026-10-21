@@ -121,7 +121,7 @@ describe("the flags", () => {
   test("a flag that needs a value, a bad value, and an unknown flag", () => {
     expect(parseFlags(["--base"])).toEqual({ error: "--base needs a value" });
     expect(parseFlags(["--bases", "hotfix"])).toEqual({
-      error: '--bases: "hotfix" is not prefix=base',
+      error: '--bases: "hotfix" is not prefix=base (the prefix ends with "/")',
     });
     expect(parseFlags(["--fast"])).toEqual({ error: "Unknown option: --fast" });
   });
@@ -563,6 +563,76 @@ describe("the run", () => {
     expect(runProjectInit(["--help"], run.context, runner({}))).toBe(0);
     expect(run.lines[0]).toContain("Usage: cc-smart-dev-kit project init");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+});
+
+describe("what the file asks for", () => {
+  test("running init again leaves a file that already asks for the floor alone", () => {
+    // The floor is the plugin that made `worktrees.prefix` optional (0.5.2): a file without
+    // that field is refused by every older plugin, so the file asks for 0.5.2 or newer.
+    const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    writeFileSync(
+      file,
+      `${JSON.stringify({ requires: ">=0.5.2", worktrees: { base: "main" } }, null, 2)}\n`,
+    );
+    const run = context(repo);
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect((JSON.parse(readFileSync(file, "utf8")) as { requires: string }).requires).toBe(
+      ">=0.5.2",
+    );
+    expect(run.lines.at(-1)).toBe(
+      "The file asks for cc-smart-dev-kit >=0.5.2: every teammate needs that plugin version or newer.",
+    );
+  });
+
+  test("a file that asks for a newer plugin keeps its own range", () => {
+    const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    writeFileSync(
+      file,
+      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" } }, null, 2)}\n`,
+    );
+    const run = context(repo);
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect((JSON.parse(readFileSync(file, "utf8")) as { requires: string }).requires).toBe(">=1.0");
+  });
+});
+
+describe("the file this command writes is one the plugin accepts", () => {
+  test("CM-3: a --bases prefix without the trailing slash is refused, and nothing is written", () => {
+    // The schema refuses a prefix that does not end with "/" (it is a branch-name prefix), so
+    // writing this one made every later reader — the hooks, doctor, the plugin itself — refuse
+    // the project the person had just set up.
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(runProjectInit(["--yes", "--bases", "release=dev"], run.context, runner({}))).toBe(2);
+    expect(run.errors[0]).toContain('"release=dev" is not prefix=base');
+    expect(run.errors[0]).toContain('ends with "/"');
+    expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("CM-3: a blank answer to --base or --bases is a usage mistake", () => {
+    expect(parseFlags(["--yes", "--base", ""])).toEqual({ error: "--base needs a value" });
+    expect(parseFlags(["--yes", "--bases", ""])).toEqual({ error: "--bases needs a value" });
+  });
+
+  test("CM-3: the plan is refused before the write when the plugin would refuse the file", () => {
+    // The project's own file holds a key no version of cc-smart-dev-kit knows: writing the
+    // plan back would keep it, and every reader would refuse the project from then on.
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    const before = `{\n  "requires": ">=0.4",\n  "worktree": {\n    "base": "main"\n  }\n}\n`;
+    writeFileSync(file, before);
+    const run = context(repo);
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(1);
+    expect(run.errors[0]).toContain(file);
+    expect(run.errors[0]).toContain("worktree");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(false);
   });
 });
 

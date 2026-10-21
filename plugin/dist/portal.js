@@ -15872,6 +15872,7 @@ var RETIRED_HOOK_NAMES = ["serena-root"];
 var WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2";
 var WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var WORKFLOW_WORKERS_SINCE = "1.0.0";
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -21418,6 +21419,10 @@ function parseObject(text, file) {
     throw new Error(`${file} must hold a JSON object.`);
   return raw;
 }
+function requiresFor(version) {
+  const [major, minor] = version.split(".");
+  return `>=${major ?? "0"}.${minor ?? "0"}`;
+}
 function raisedRequires(existing, floor, floorVersion) {
   if (typeof existing === "string") {
     const floorMatch = /^>=\s*(\d+)\.(\d+)(?:\.(\d+))?/.exec(existing);
@@ -21428,6 +21433,16 @@ function raisedRequires(existing, floor, floorVersion) {
     }
   }
   return floor;
+}
+function requiresFloor(file) {
+  const workflow = isObject2(file.workflow) ? file.workflow : {};
+  if (Object.hasOwn(workflow, "workers") || Object.hasOwn(workflow, "fixesAfterReview")) {
+    return { floor: requiresFor(WORKFLOW_WORKERS_SINCE), version: WORKFLOW_WORKERS_SINCE };
+  }
+  return {
+    floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+    version: WORKTREE_PREFIX_OPTIONAL_SINCE
+  };
 }
 function leaves(value, prefix, found) {
   if (isObject2(value)) {
@@ -21552,7 +21567,6 @@ function planProjectInit(input) {
   else
     delete worktrees.bases;
   const next = { ...before };
-  next.requires = raisedRequires(before.requires, `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`, WORKTREE_PREFIX_OPTIONAL_SINCE);
   next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
   if (answers.protectedBranches.length > 0)
     next.protectedBranches = answers.protectedBranches;
@@ -21575,7 +21589,13 @@ function planProjectInit(input) {
     next.workflow = answers.workflow;
   else
     delete next.workflow;
+  const floor = requiresFloor(next);
+  next.requires = raisedRequires(before.requires, floor.floor, floor.version);
   const after = orderKeys(next, FILE_ORDER);
+  const valid = ccSmartDevKitConfigSchema.safeParse(after);
+  if (!valid.success) {
+    throw new Error(`${file} would not be a valid project file (${prettifyError(valid.error)}). ` + `Change the answer, then run again.`);
+  }
   const text = `${JSON.stringify(after, null, detectIndent(existing ?? ""))}
 `;
   const settings = settingsPlan(join40(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
@@ -22064,6 +22084,12 @@ function checkPlugin(paths) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`
+    };
+  }
+  if (!pluginEnabled(paths, PLUGIN_ID)) {
+    return {
+      ok: false,
+      text: `${PLUGIN_ID} ${install.version ?? "(no version)"} is installed, but the user settings turn it off: none of its hooks, skills or commands run. Run: claude plugin enable ${PLUGIN_ID}`
     };
   }
   return {
@@ -23811,7 +23837,7 @@ import {
   utimesSync,
   writeFileSync as writeFileSync8
 } from "fs";
-import { join as join44 } from "path";
+import { join as join44, posix as posix2, win32 as win323 } from "path";
 var HEARTBEAT_MS = 5000;
 var UNSEEN_STALE_MS = 30000;
 var LOCK_STALE_MS = 30000;
@@ -23848,9 +23874,12 @@ function parseStoreFile(text) {
 function errorCode(error) {
   return error?.code;
 }
+function tempFileBeside(file, token, on = process.platform) {
+  const paths = on === "win32" ? win323 : posix2;
+  return paths.join(paths.dirname(file), `.${token}.tmp`);
+}
 function writeWhole(file, text, token) {
-  const dir = file.slice(0, file.lastIndexOf("/"));
-  const temp = join44(dir, `.${token}.tmp`);
+  const temp = tempFileBeside(file, token);
   writeFileSync8(temp, text, { mode: FILE_MODE });
   try {
     chmodSync2(temp, FILE_MODE);

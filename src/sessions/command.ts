@@ -50,6 +50,7 @@ import { liveSessions } from "../hooks/sessions";
 import { openUrlCandidates } from "../machine/open-url";
 import { locateCheckout } from "../project/resolve";
 import { atomicWrite } from "../setup/write";
+import { repoKey } from "../workflow/reviews";
 import {
   belongsToRepo,
   closedWithWindow,
@@ -62,6 +63,7 @@ import {
   sessionsToReopen,
   stoppedByRestart,
   TAB_CONFIG_MARK,
+  tabCheckoutOf,
   tabConfigName,
   warpTabConfig,
   windowsTerminalCommand,
@@ -74,8 +76,6 @@ const PIN_HOURS = 48;
 const RESTORE_HOURS = 12;
 /** Claude Code repeats a session's name and folder all through its file. */
 const TAIL_BYTES = 512 * 1024;
-/** The one saved tab that is not a session: it runs `--open` for you. */
-const RESTORE_ALL = "claude_restore_all";
 
 /** Where Warp keeps its saved tabs, by platform. */
 export function warpTabConfigDir(home: string, on: NodeJS.Platform = platform()): string {
@@ -180,7 +180,19 @@ export function savedSessions(
   return sessions.sort((a, b) => b.lastWrite - a.lastWrite);
 }
 
-/** Write a tab for every session, and remove the tabs this command wrote for sessions gone quiet. */
+/** Every saved tab of this project starts with this, and one of another project never does. */
+function tabPrefix(key: string): string {
+  return `claude_${key}_`;
+}
+
+/**
+ * Write a tab for every session, and remove this project's tabs for sessions gone quiet.
+ *
+ * Only this project's tabs are touched: the name carries the project's key, and a tab
+ * written before the key existed is recognized by its own `directory` line. Warp keeps
+ * every project's tabs in one folder, so removing "every tab of ours that is not in `keep`"
+ * once removed another project's tabs and took over its "bring back the sessions" tab.
+ */
 export function saveWarpTabs(
   dir: string,
   sessions: SavedSession[],
@@ -188,21 +200,32 @@ export function saveWarpTabs(
   command: string,
 ): void {
   mkdirSync(dir, { recursive: true });
-  const keep = new Set([RESTORE_ALL, ...sessions.map((session) => tabConfigName(session))]);
+  const key = repoKey(mainCheckout);
+  const prefix = tabPrefix(key);
+  const restoreAll = `${prefix}restore_all`;
+  const keep = new Set([restoreAll, ...sessions.map((session) => tabConfigName(key, session))]);
   for (const name of readdirSync(dir)) {
     if (!name.startsWith("claude_") || !name.endsWith(".toml")) continue;
     if (keep.has(name.slice(0, -".toml".length))) continue;
     const path = join(dir, name);
-    if (readFileSync(path, "utf8").startsWith(TAB_CONFIG_MARK)) rmSync(path);
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch {
+      // Removed between the listing and the look, or not ours to read: nothing to remove.
+      continue;
+    }
+    if (!text.startsWith(TAB_CONFIG_MARK)) continue;
+    if (name.startsWith(prefix) || tabCheckoutOf(text) === mainCheckout) rmSync(path);
   }
   for (const session of sessions) {
     writeFileSync(
-      join(dir, `${tabConfigName(session)}.toml`),
+      join(dir, `${tabConfigName(key, session)}.toml`),
       warpTabConfig(session, mainCheckout),
     );
   }
   writeFileSync(
-    join(dir, `${RESTORE_ALL}.toml`),
+    join(dir, `${restoreAll}.toml`),
     [
       TAB_CONFIG_MARK,
       'name = "Claude · bring back the sessions a restart or a closed window stopped"',
@@ -464,7 +487,7 @@ export async function runSessions(
   for (const session of toOpen) {
     let opened: boolean;
     if (reopenIn === "warp") {
-      const link = `warp://tab_config/${tabConfigName(session)}`;
+      const link = `warp://tab_config/${tabConfigName(repoKey(mainCheckout), session)}`;
       // Which program opens a link, per platform: `open-url.ts` (the portal uses the same
       // one). The first candidate is this platform's opener for a desktop link.
       const opener = openUrlCandidates(deps.platform, link)[0];
@@ -495,5 +518,7 @@ export async function runSessions(
       "Run this in a terminal on the desktop, or start each one with its `claude --resume` line above.",
     );
   }
-  return 0;
+  // A window that did not open is this command's failure, so a script around it can tell
+  // that a session did not come back.
+  return failed ? 1 : 0;
 }

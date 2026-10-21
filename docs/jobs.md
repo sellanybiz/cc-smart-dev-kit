@@ -250,7 +250,10 @@ Each budget is a folder of small files:
   two jobs never both take the last free GB. The lock records its holder's pid namespace
   too: a lock from another namespace is judged by its age (30 seconds), never by a pid
   that means another process here.
-- **Every file is written whole** (a temp file, then a rename). Lease and ticket files are
+- **Every file is written whole** (a temp file, then a rename). The temp file sits in the
+  file's own folder, and that folder comes from the platform's own path rules: a Windows
+  path separates with `\`, so the temp file of a lease there is beside the lease and not a
+  name with no folder at all. Lease and ticket files are
   mode 644 and the lock 664, set with chmod, so the umask never narrows them: every user
   of a shared folder can read them. A temp file a crashed writer left is removed by a look
   once it is a minute old.

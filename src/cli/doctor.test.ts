@@ -1,13 +1,14 @@
 /** `doctor`'s line for the user-level `Notification` hook setup writes for agent view. */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { PLUGIN_ID } from "../build-info";
 import { applyClaudeMem, claudeMemPlan, TODO_TOOLS_KEY } from "../machine/claude-mem";
 import { applyManagedJson } from "../setup/managed-json";
 import { hookEnv } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
-import { checkLine, checkUserNotifyHook, claudeMemChecks } from "./doctor";
-import { cliPaths } from "./paths";
+import { checkLine, checkPlugin, checkUserNotifyHook, claudeMemChecks } from "./doctor";
+import { type CliPaths, cliPaths } from "./paths";
 
 const COMMAND = '"$HOME/.local/bin/cc-smart-dev-kit" hook notify';
 const SETTINGS = "~/.claude/settings.json";
@@ -181,5 +182,70 @@ describe("doctor: claude-mem's start blocks (D23)", () => {
     expect(lines(w.paths)).toEqual([
       `! ${SHORT} cannot be read (it is not valid JSON, or not a JSON object). Fix it by hand, then run cc-smart-dev-kit setup again.`,
     ]);
+  });
+});
+
+/**
+ * `doctor`'s own line for this plugin: installed AND turned on.
+ *
+ * The checks are tested here one at a time, with paths built from a temp home; the whole
+ * report, printed by the real command in a world of its own, is `cli.test.ts`.
+ */
+
+/**
+ * A temp home with this plugin installed, and the user settings saying `enabled`:
+ * `true` on, `false` off, `undefined` no entry at all (what an install from before Claude
+ * Code wrote one leaves).
+ */
+function world(enabled: boolean | undefined, version = "0.5.0"): CliPaths {
+  const paths = cliPaths({ HOME: tempDir("doctor-home") });
+  const installPath = join(paths.claudeConfigDir, "plugins", "cache", PLUGIN_ID, version);
+  mkdirSync(installPath, { recursive: true });
+  mkdirSync(dirname(paths.installedPluginsFile), { recursive: true });
+  writeFileSync(
+    paths.installedPluginsFile,
+    JSON.stringify({ plugins: { [PLUGIN_ID]: [{ scope: "user", installPath, version }] } }),
+  );
+  if (enabled !== undefined) {
+    mkdirSync(dirname(paths.settingsFile), { recursive: true });
+    writeFileSync(paths.settingsFile, JSON.stringify({ enabledPlugins: { [PLUGIN_ID]: enabled } }));
+  }
+  return paths;
+}
+
+describe("doctor's line for this plugin", () => {
+  test("CM-4: an installed plugin the user settings turn off is a failure, with what to run", () => {
+    // A turned-off plugin loads nothing: no hook, no skill, no command runs, while doctor
+    // said ✓ and the person was left wondering why none of it worked.
+    const check = checkPlugin(world(false));
+    expect(check.ok).toBe(false);
+    expect(check.info).toBeUndefined();
+    expect(check.text).toBe(
+      `${PLUGIN_ID} 0.5.0 is installed, but the user settings turn it off: none of its hooks, skills or commands run. Run: claude plugin enable ${PLUGIN_ID}`,
+    );
+  });
+
+  test("CM-4: a settings file with no entry for it is the same failure", () => {
+    const check = checkPlugin(world(undefined));
+    expect(check.ok).toBe(false);
+    expect(check.text).toContain(`claude plugin enable ${PLUGIN_ID}`);
+  });
+
+  test("green when the settings turn it on", () => {
+    const paths = world(true);
+    const check = checkPlugin(paths);
+    expect(check.ok).toBe(true);
+    expect(check.text).toBe(
+      `${PLUGIN_ID} 0.5.0 is installed at ~/.claude/plugins/cache/${PLUGIN_ID}/0.5.0`,
+    );
+  });
+
+  test("not installed at all still says so, and never claims it is off", () => {
+    const paths = cliPaths({ HOME: tempDir("doctor-home") });
+    const check = checkPlugin(paths);
+    expect(check.ok).toBe(false);
+    expect(check.text).toBe(
+      `the ${PLUGIN_ID} plugin is not installed. Run: claude plugin install ${PLUGIN_ID}`,
+    );
   });
 });

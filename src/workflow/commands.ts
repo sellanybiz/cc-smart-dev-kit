@@ -100,6 +100,24 @@ function project(
   }
 }
 
+/**
+ * The checkout of `cwd` alone, without the project's settings. Recording a review needs the
+ * repository, not the project's policy: a `cc-smart-dev-kit.json` that is broken (or too
+ * new) must not stop a person from recording one — the record is what the merge guard reads,
+ * and the guards that cannot read the file fail closed until it is fixed.
+ */
+function checkoutOf(cwd: string, env: Env): { checkout: Checkout | null; why: string | null } {
+  try {
+    const checkout = locateCheckout(cwd, { env });
+    return {
+      checkout,
+      why: checkout === null ? "this folder is not in a git project" : null,
+    };
+  } catch (error) {
+    return { checkout: null, why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** The commit `rev` names in `folder`: the full sha, or null when git cannot name one. */
 function commitOf(folder: string, rev: string, env: Env): string | null {
   const run = runGit(
@@ -240,7 +258,9 @@ async function reviewDone(context: WorkflowContext, argv: string[]): Promise<num
     rev = value;
     index += 1;
   }
-  const here = project(context.cwd, context.env);
+  // The project's own file is not read: a review record does not depend on the project's
+  // policy, and a broken file must not stop a person from recording one.
+  const here = checkoutOf(context.cwd, context.env);
   if (here.checkout === null) {
     context.error(`${COMMAND} workflow review-done: ${here.why}`);
     return 1;

@@ -2319,9 +2319,13 @@ asked for (`src/sessions/`, `src/worktrees/`):
   to keep a worktree is one testable rule, and the facts themselves (git's list, the running
   sessions, Docker's mounts, the programs using it) come from `machine-facts.ts` and
   `scan.ts` — reading each process's parent too, so the command that asked about a worktree,
-  and the shells that started it, are not taken for programs using it. `--clean` and `--remove`
+  and the shells that started it, are not taken for programs using it. Whether the work is on
+  the base is asked four ways: every commit by ancestry, every commit under another sha
+  (`git cherry`), a merge of the branch into the base that changes nothing
+  (`git merge-tree --write-tree`, which is what sees a squash merge), and a merged pull
+  request that merged this very head. `--clean` and `--remove`
   hold a port as a lock (`ports.ts`), move a worktree
-  aside before deleting it, and delete a branch only when the base holds every commit on it.
+  aside before deleting it, and delete a branch only when the base holds its work.
   The plugin's own leftovers hook uses the same verdict; the dev-server probe the project
   this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
   general rule is a program running from the worktree, or working in it.

@@ -159,12 +159,15 @@ export async function runWorktrees(
 
     if (options.remove !== null) {
       const target = resolve(options.remove);
-      const scanned = scanWorktrees(repo, {
+      // `--remove` is the session that has just finished in it, so the one-hour wait is out;
+      // the removal judges the folder again with the same options (`removeWorktree`).
+      const judged = {
         base,
         claudeConfigDir: paths.claudeConfigDir,
         env,
         idleLimit: 0,
-      });
+      };
+      const scanned = scanWorktrees(repo, judged);
       const found = scanned.find(
         (worktree) => worktree.state !== "main" && samePath(worktree.listed.path, target),
       );
@@ -184,7 +187,7 @@ export async function runWorktrees(
       }
       if (typeof found.state === "object" && found.state.finished) {
         console.log(`removing ${found.listed.path} …`);
-        const removal = removeWorktree(repo, found.listed, env, base);
+        const removal = removeWorktree(repo, found.listed, judged);
         for (const said of removal.said) console.log(said);
         // Exit 1 unless it really went: "held" (something uses it), "kept" (something in it
         // is changed) and "failed" (git could not finish) all leave it a worktree still.
@@ -194,7 +197,8 @@ export async function runWorktrees(
       return 1;
     }
 
-    const scanned = scanWorktrees(repo, { base, claudeConfigDir: paths.claudeConfigDir, env });
+    const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
+    const scanned = scanWorktrees(repo, judged);
     console.log(`Worktrees of ${repo}\n`);
     show(scanned);
 
@@ -211,7 +215,7 @@ export async function runWorktrees(
     for (const worktree of going) {
       if (worktree.state === "gone") continue;
       console.log(`removing ${worktree.listed.path} …`);
-      for (const said of removeWorktree(repo, worktree.listed, env, base).said) {
+      for (const said of removeWorktree(repo, worktree.listed, judged).said) {
         console.log(`  ${said}`);
       }
     }

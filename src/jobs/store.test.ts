@@ -15,7 +15,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { processStartTime, type StartTimeReader } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import { acquireFrom, holderText, type Reservation } from "./queue";
@@ -27,6 +27,7 @@ import {
   networkFileSystem,
   openSharedStore,
   type SharedFolderFacts,
+  tempFileBeside,
   UNSEEN_STALE_MS,
 } from "./store";
 import { startTimeReader } from "./windows";
@@ -379,6 +380,28 @@ describe("leaseStore: a look", () => {
     await store(dir).held();
     expect(existsSync(left)).toBe(false);
     expect(existsSync(writing)).toBe(true);
+  });
+
+  test("CM-2: a lease on a Windows path is written through a temp file beside it", () => {
+    // The file path a Windows run has: `join` there writes `\`, so a file's folder is not
+    // "everything before the last /". Taking it that way left a Windows lease no folder at
+    // all (the write failed with ENOENT), and the queue then ran the job unqueued
+    // (`docs/windows-jobs.md`: the queue applies in full there).
+    const file = win32.join(
+      "C:\\Users\\user",
+      ".local",
+      "share",
+      "cc-smart-dev-kit",
+      "jobs",
+      "leases",
+      "0f8f-1234.json",
+    );
+    expect(file).toBe(
+      "C:\\Users\\user\\.local\\share\\cc-smart-dev-kit\\jobs\\leases\\0f8f-1234.json",
+    );
+    expect(tempFileBeside(file, "0f8f-1234", "win32")).toBe(
+      "C:\\Users\\user\\.local\\share\\cc-smart-dev-kit\\jobs\\leases\\.0f8f-1234.tmp",
+    );
   });
 
   // On macOS each read starts `ps`: one per file every half second adds up.

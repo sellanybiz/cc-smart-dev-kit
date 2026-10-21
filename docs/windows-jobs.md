@@ -59,6 +59,10 @@ Windows has neither, so:
   taken by another process is taken over 30 seconds after it was written (the age rule). The
   Linux and macOS path also reads that lock's start time; on Windows only a POSIX `ps` on
   PATH (Git Bash has one) gives it one.
+- **The lease files are written whole, as on Linux**: a temp file beside the lease, then a
+  rename. The folder comes from Windows' own path rules (a path separates with `\`), so the
+  temp file lands in the leases folder and the lease is written where it belongs — the temp
+  file of a lease used to be a name with no folder at all, and the write failed.
 - Everything else is as on Linux: the files (their modes are harmless on Windows, where a
   mode only sets the read-only bit and the folder's access rights are what protects a file),
   the 5-second heartbeat, the 30-second rule for a writer this machine cannot judge, the

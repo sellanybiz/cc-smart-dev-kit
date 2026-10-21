@@ -458,7 +458,17 @@ async function main(argv: string[]): Promise<number> {
         );
         return 2;
       }
-      const name = recordSessionName(sessionId, words.join(" "), process.env);
+      let name: string;
+      try {
+        name = recordSessionName(sessionId, words.join(" "), process.env);
+      } catch (error) {
+        // A wrong argument (a name that is not a session id, a name that is empty) is a
+        // usage mistake, not a failed command: exit 2, and say what is wrong.
+        console.error(
+          usageError(error instanceof Error ? error.message : String(error), "session-name"),
+        );
+        return 2;
+      }
       console.log(`This session will be named "${name}" from the next prompt.`);
       return 0;
     }

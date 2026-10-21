@@ -24,7 +24,7 @@ import {
   TODO_TOOLS_VALUE,
   WORK_STATE_KEY,
 } from "../machine/claude-mem";
-import { companionChecks } from "../machine/companions";
+import { companionChecks, pluginEnabled } from "../machine/companions";
 import type { Machine } from "../machine/machine";
 import { warpCheck } from "../machine/warp";
 import { type McpDoctorDeps, mcpChecks } from "../mcp/doctor";
@@ -126,7 +126,8 @@ function run(argv: string[]): { ok: boolean; output: string } {
   }
 }
 
-function checkPlugin(paths: CliPaths): Check {
+/** This plugin itself: installed, its folder there, and turned on in the user settings. */
+export function checkPlugin(paths: CliPaths): Check {
   const install = findUserInstall(paths.installedPluginsFile);
   if (!install) {
     return {
@@ -139,6 +140,16 @@ function checkPlugin(paths: CliPaths): Check {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`,
+    };
+  }
+  // Installed is not on: Claude Code loads only a plugin whose `enabledPlugins` entry is
+  // true, and a person who turned this one off (or whose install predates the entry) gets no
+  // hook, no skill and no command from it. `pluginEnabled` is the same reader doctor uses for
+  // the companions, so the two can never disagree about one settings file.
+  if (!pluginEnabled(paths, PLUGIN_ID)) {
+    return {
+      ok: false,
+      text: `${PLUGIN_ID} ${install.version ?? "(no version)"} is installed, but the user settings turn it off: none of its hooks, skills or commands run. Run: claude plugin enable ${PLUGIN_ID}`,
     };
   }
   return {

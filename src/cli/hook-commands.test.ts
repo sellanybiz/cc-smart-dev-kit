@@ -319,13 +319,20 @@ describe("cc-smart-dev-kit session-name", () => {
     ).toBe("Fix the login page");
   });
 
-  test("no name: usage, exit 2; a bad id: the reason, exit 1", () => {
+  test("no name: usage, exit 2; a bad id: the reason, exit 2", () => {
     const usage = cli(["session-name", SESSION]);
     expect(usage.exitCode).toBe(2);
     expect(usage.stderr).toStartWith("Usage: cc-smart-dev-kit session-name <session id> <name>");
+    // A wrong argument is a usage mistake (exit 2), not a failed command (exit 1).
     const bad = cli(["session-name", "../x", "name"]);
-    expect(bad.exitCode).toBe(1);
-    expect(bad.stderr).toBe('cc-smart-dev-kit: "../x" is not a session id\n');
+    expect(bad.exitCode).toBe(2);
+    expect(bad.stderr).toBe(
+      '"../x" is not a session id\nSee: cc-smart-dev-kit session-name --help\n',
+    );
+    // A name that is nothing at all is the same.
+    const empty = cli(["session-name", SESSION, "   "]);
+    expect(empty.exitCode).toBe(2);
+    expect(empty.stderr).toStartWith("the name is empty");
   });
 });
 

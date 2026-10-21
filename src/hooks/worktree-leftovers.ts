@@ -19,7 +19,9 @@
  *   worktree, and the programs running from it (`machine-facts.ts`) — and this one does not: a
  *   SessionStart hook must stay quick (the rules: no fetch, no probe that can wait seconds),
  *   and listing containers and processes can take 5 s and 15 s when Docker is starting or `ps`
- *   is slow. The two agree on everything else. The difference is safe because the note removes
+ *   is slow. It does not replay a branch onto the base either (three more git calls per
+ *   worktree, at every session start): a squash-merged worktree is named by the command and
+ *   not here. The two agree on everything else. The difference is safe because the note removes
  *   NOTHING: it sends the person to `cc-smart-dev-kit worktrees --clean`, whose own judgment
  *   (`scan.ts` → `verdict.ts`) asks the machine's facts again before anything goes. Keep them
  *   in step: a new reason to keep a worktree belongs in `verdict.ts`, and in `judgeWorktree`

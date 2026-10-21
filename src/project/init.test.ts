@@ -16,6 +16,8 @@ import {
   type ProjectInitAnswers,
   type ProjectInitInput,
   planProjectInit,
+  raisedRequires,
+  requiresFloor,
   requiresFor,
 } from "./init";
 
@@ -433,6 +435,66 @@ describe("requiresFor", () => {
   test("the plugin's own minor", () => {
     expect(requiresFor("0.4.0")).toBe(">=0.4");
     expect(requiresFor("1.2.3")).toBe(">=1.2");
+  });
+});
+
+describe("raisedRequires", () => {
+  // The floor is the plugin that made `worktrees.prefix` optional (0.5.2): a file without
+  // that field is refused by every older plugin, so it asks for 0.5.2 or newer.
+  const FLOOR = ">=0.5.2";
+  const VERSION = "0.5.2";
+
+  test("a file with no range gets the floor", () => {
+    expect(raisedRequires(undefined, FLOOR, VERSION)).toBe(FLOOR);
+    expect(raisedRequires(null, FLOOR, VERSION)).toBe(FLOOR);
+  });
+
+  test("a file that asks for an older plugin gets the floor", () => {
+    expect(raisedRequires(">=0.1", FLOOR, VERSION)).toBe(FLOOR);
+    expect(raisedRequires(">=0.5", FLOOR, VERSION)).toBe(FLOOR);
+  });
+
+  test("a file that asks for the floor or newer keeps its own range", () => {
+    expect(raisedRequires(">=0.5.2", FLOOR, VERSION)).toBe(">=0.5.2");
+    expect(raisedRequires(">=0.6", FLOOR, VERSION)).toBe(">=0.6");
+    expect(raisedRequires(">=1.0", FLOOR, VERSION)).toBe(">=1.0");
+  });
+
+  test("a range in another shape gets the floor", () => {
+    // A floor cannot be read out of "^0.5", and a range that asks for less than the floor
+    // would leave the file unreadable by the plugin that runs now: the floor asks for a
+    // plugin that reads the file.
+    expect(raisedRequires("^0.5", FLOOR, VERSION)).toBe(FLOOR);
+  });
+});
+
+describe("requiresFloor", () => {
+  test("a file with no 1.0 field: the version that made `worktrees.prefix` optional", () => {
+    expect(requiresFloor({ worktrees: { base: "main" } })).toEqual({
+      floor: ">=0.5.2",
+      version: "0.5.2",
+    });
+  });
+
+  test("a file with a field that came with 1.0.0: the release that brought it", () => {
+    // An older plugin reads the file strictly, does not know the field, and refuses the
+    // whole file — so every guard in that project fails closed until it is updated.
+    expect(requiresFloor({ workflow: { workers: { enabled: true } } })).toEqual({
+      floor: ">=1.0",
+      version: "1.0.0",
+    });
+    expect(requiresFloor({ workflow: { fixesAfterReview: { lines: 200 } } })).toEqual({
+      floor: ">=1.0",
+      version: "1.0.0",
+    });
+  });
+
+  test("the plan asks for what its own fields need", () => {
+    const root = tempDir("project-init");
+    const plan = planProjectInit(
+      input({ root, answers: { ...ANSWERS, workflow: { workers: { enabled: true } } } }),
+    );
+    expect(plan.text).toContain('"requires": ">=1.0"');
   });
 });
 

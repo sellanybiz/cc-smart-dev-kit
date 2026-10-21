@@ -53,6 +53,13 @@ export const WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
 export const RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"] as const;
 
 /**
+ * The release that brought `workflow.workers` and `workflow.fixesAfterReview`. A project file
+ * that sets one needs that plugin version or newer: an older plugin reads the file strictly
+ * and refuses it whole (a field it does not know), and every guard then fails closed.
+ */
+export const WORKFLOW_WORKERS_SINCE = "1.0.0";
+
+/**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */

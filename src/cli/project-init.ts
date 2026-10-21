@@ -231,6 +231,12 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
     if (next === undefined || next.startsWith("--")) throw new Error(`${name} needs a value`);
     return next;
   };
+  /** A flag whose value must say something: a blank one is a mistake, not an empty answer. */
+  const words = (name: string, next: string | undefined): string => {
+    const given = value(name, next);
+    if (given.trim() === "") throw new Error(`${name} needs a value`);
+    return given;
+  };
   try {
     for (let index = 0; index < argv.length; index += 1) {
       const arg = argv[index] ?? "";
@@ -242,7 +248,7 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
           flags.yes = true;
           break;
         case "--base":
-          flags.base = value(arg, argv[index + 1]);
+          flags.base = words(arg, argv[index + 1]);
           index += 1;
           break;
         // The retired engine's flags: a usage mistake now, named as one, never ignored.
@@ -254,16 +260,10 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
             error: `${arg} is gone: the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}, and Claude Code's own worktrees need none of its settings`,
           };
         case "--bases": {
-          const pairs = value(arg, argv[index + 1]);
+          const pairs = words(arg, argv[index + 1]);
           index += 1;
-          flags.bases = {};
-          for (const pair of pairs.split(",")) {
-            const [prefix, base] = pair.split("=");
-            if (prefix === undefined || base === undefined || base === "") {
-              throw new Error(`--bases: "${pair}" is not prefix=base`);
-            }
-            flags.bases[prefix] = base;
-          }
+          // The same parser the question uses: one answer, one rule.
+          flags.bases = parseBases(pairs, "--bases: ");
           break;
         }
         case "--protected":
@@ -458,13 +458,19 @@ export function askedAnswers(
   };
 }
 
-/** `hotfix/=main,release/=main` as a map. An empty answer means no bases. */
-function parseBases(text: string): Record<string, string> {
+/**
+ * `hotfix/=main,release/=main` as a map. An empty answer means no bases. One parser for the
+ * flag and for the question, so the two answers can never differ: the key is a branch-name
+ * prefix and ends with "/" (the file's schema refuses one that does not, and a project with
+ * such a file is refused by every reader). `where` names the flag, for the person reading
+ * the error.
+ */
+export function parseBases(text: string, where = ""): Record<string, string> {
   const bases: Record<string, string> = {};
   for (const pair of listOf(text)) {
     const [prefix, base] = pair.split("=");
-    if (prefix === undefined || base === undefined || !prefix.endsWith("/") || base === "") {
-      throw new Error(`"${pair}" is not prefix=base (the prefix ends with "/")`);
+    if (!prefix?.endsWith("/") || base === undefined || base === "") {
+      throw new Error(`${where}"${pair}" is not prefix=base (the prefix ends with "/")`);
     }
     bases[prefix] = base;
   }

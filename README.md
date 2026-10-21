@@ -693,7 +693,9 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
 
 - the Bun running it is 1.4.3 or later. On an older one it skips the gateway checks:
   they send the backend key;
-- the plugin is installed;
+- the plugin is installed **and turned on**: an install whose `enabledPlugins` entry in
+  `~/.claude/settings.json` is not `true` loads no hook, skill or command, so ✗ says
+  "Run: claude plugin enable cc-smart-dev-kit@cc-smart-dev-kit";
 - the installed version is not behind the marketplace's local copy. When it is, ✗ says
   "installed X, marketplace has Y. Run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit". When the
   local copy or its version cannot be read, it says "Run: claude plugin marketplace
@@ -2054,7 +2056,13 @@ sessions: Claude Code writes every session to disk as it goes
 (`~/.claude/projects/<folder>/<session id>.jsonl`), and `claude --resume <id>` brings one back
 with its history. `cc-smart-dev-kit sessions` lists this project's sessions of the last two
 days by name and worktree, with the command that resumes each, and saves one Warp tab per
-session (Warp's "+" menu → `Claude · <name>`).
+session (Warp's "+" menu → `Claude · <name>`; the tab files carry the project's own key, so
+two projects on one machine never remove each other's tabs).
+
+**Which folders are this project's:** its main checkout, and Claude Code's own worktrees inside
+it (`.claude/worktrees/`). A project folder next to it in the same Code folder is another
+project's, and is left alone. A session running in another project's folder is never listed,
+and never reopened.
 
 `cc-smart-dev-kit sessions --open` brings back the sessions that were **open when the machine
 last went down, or when their window closed**, and that nobody has resumed since:
@@ -2077,7 +2085,8 @@ environment and opens over SSH too). On Windows it opens a **Windows Terminal** 
 left alone for the next few minutes too (a marker in `~/.claude/cc-smart-dev-kit/` — a resumed
 session takes a moment to write to its file, and a quick second run must not open a second
 copy of it). With neither terminal it prints the resume command for each. `--dry-run` says
-what it would open and opens nothing.
+what it would open and opens nothing. A window that could not be opened is named, and the
+command exits 1, so a script around it can tell that a session did not come back.
 
 ## Worktrees
 
@@ -2150,18 +2159,33 @@ when removing it can lose nothing and disturb no one:
   read on Linux only: on macOS and Windows the command line alone counts, and a Claude session in
   the worktree is kept by the rule above;
 - no Docker container, running or stopped, mounts files from inside it;
-- every commit on it is on `origin/<base>`;
+- the work on it is on `origin/<base>`: every commit by ancestry, every commit under another
+  sha (`git cherry` — a rebase or a cherry-pick merge), a merge of the branch into the base
+  that changes nothing (`git merge-tree --write-tree` — a squash merge leaves one commit of
+  its own on the base and none of the branch's), or its merged pull request (`gh pr list`).
+  A commit the base does not have keeps the worktree, whatever the rest says; and the
+  `git merge-tree` way needs git 2.38 or newer — on an older one the worktree is kept, and
+  the reason names the git that cannot answer;
 - git has not touched it for an hour (a worktree made a minute ago is not finished: its
   session has not moved into it yet);
 - nothing in it is changed or untracked, and it holds no ignored file that cannot come back
   (an edited `.env.local`, a notes file, a key). Dependency folders, build output, caches and
   a file the main checkout still holds byte for byte do not block.
 
-`--clean` removes the finished ones, with their branches (a branch goes only when every one
-of its commits is on the base). `--remove <path>` removes one now — for a session that has
-just finished in it, so without the one-hour wait. Both run in the main checkout only (a
-session working in a worktree leaves it first) and one at a time; a second run says so and
-does nothing. A worktree whose folder is gone is named, and `git worktree prune` forgets it.
+**The verdict is taken again right before anything is removed**, on the folder as it is then:
+a worktree that was finished when the list was printed and has a new commit a minute later is
+kept. `--clean` removes the finished ones, with their branches (a branch goes only when
+`origin/<base>` holds its work, by any of the ways above). `--remove <path>` removes one
+now — for a session that has just finished in it, so without the one-hour wait. Both run in the
+main checkout only (a session working in a worktree leaves it first) and one at a time; a
+second run says so and does nothing. A worktree whose folder is gone is named, and
+`git worktree prune` forgets it.
+
+**A worktree that holds a git submodule** cannot be moved or removed by git at all
+(`git worktree move` and `git worktree remove` both refuse one), so it is kept with that
+reason, never with "try again". Commit and push its work, delete the folder by hand, and run
+`cc-smart-dev-kit worktrees` again: a worktree whose folder is gone is forgotten (its branch
+goes when the base holds its commits).
 
 **A worktree on a removable disk (a USB drive, a network share): lock it** —
 `git worktree lock <folder>`. A LOCKED worktree is never taken, so a folder that is simply
@@ -2225,8 +2249,12 @@ terminal can answer either way. With no terminal it writes nothing unless
 `--yes` is given: it prints the plan and the line to run instead. `--dry-run` prints the plan
 and writes nothing at all. Run it again on a project that has a file: it shows the diff and
 asks, and `--yes` keeps every field the flags do not set. A `requires` the file already has
-is never lowered (a project needing a newer plugin keeps its range); an older one is raised
-to the plugin that wrote the file.
+is never lowered (a project needing a newer plugin keeps its range); an older one is raised to
+the oldest plugin that reads the file — 0.5.2, the version that made `worktrees.prefix`
+optional, or 1.0 for a file that sets `workflow.workers` or `workflow.fixesAfterReview` —
+never to the version running here, so a teammate on an older plugin is not refused for a
+file that reads fine there. A plan the plugin itself would refuse (a `bases` prefix that does
+not end with `/`, a key no version knows) is an error before anything is written.
 
 ## The workflow
 
@@ -2319,8 +2347,9 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 
 | Setting | What follows it |
 |---|---|
-| `autoCommit`, `autoPush`, `openPr`, `clearWorktreeAfterMerge` | the instructions: the commit and worktree skills read `cc-smart-dev-kit workflow show` and follow it. |
-| `autoMerge` (with `mergeMethod`, `deleteBranch`) | the **merge guard hook**, which asks you before a merge its rules do not allow — every merge form it reads, in this repository only, and every merge with `--admin` (§ The hooks). |
+| `autoCommit`, `autoPush`, `openPr`, `clearWorktreeAfterMerge` | the instructions: the `commit`, `pull-request` and `worktree` skills read `cc-smart-dev-kit workflow show` and follow it. No hook acts on them: a commit, a push and a folder are the session's own doing, and no hook sees them as one act. |
+| `autoMerge` | the **merge guard hook**, which asks you before a merge its rules do not allow — every merge form it reads, in this repository only, and every merge with `--admin` (§ The hooks). |
+| `mergeMethod`, `deleteBranch` | the instructions: they say how a merge the guard allowed is made, and whether its branch goes afterwards. No hook reads them. |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when the review agent finishes (§ below), and the merge guard asks about a merge whose head commit has no record. |
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the base names the agent that wrote it. |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ Notifications). |
@@ -2417,7 +2446,7 @@ every question it holds.
 
 ```json
 {
-  "requires": ">=0.1",
+  "requires": ">=0.5.2",
   "worktrees": {
     "base": "main",
     "guardMainFolder": true,

@@ -133,9 +133,30 @@ export function sessionLabel(session: SavedSession): string {
   return session.folder === null ? name : `${name} — ${lastPart(session.folder)}`;
 }
 
-/** The file name of a session's saved Warp tab, without `.toml`. */
-export function tabConfigName(session: SavedSession): string {
-  return `claude_${session.id.slice(0, 8)}`;
+/**
+ * The file name of a session's saved Warp tab, without `.toml`: `claude_<key>_<id8>`.
+ *
+ * `key` names the project (`repoKey` of its main checkout). Warp keeps every project's tabs
+ * in ONE folder, and a run removes the tabs of the sessions gone quiet — so the name must
+ * say which project a tab belongs to, or one project's run removes another's. Tabs written
+ * before the key existed carry none: those are told apart by their own `directory` line.
+ */
+export function tabConfigName(key: string, session: SavedSession): string {
+  return `claude_${key}_${session.id.slice(0, 8)}`;
+}
+
+/** The main checkout a saved tab's text runs in, or null when its text does not say. */
+export function tabCheckoutOf(text: string): null | string {
+  const match = /^directory = (".*")$/m.exec(text);
+  if (match?.[1] === undefined) return null;
+  try {
+    const value: unknown = JSON.parse(match[1]);
+    return typeof value === "string" ? value : null;
+  } catch {
+    // A tab with a line this cannot read (someone edited it, or a TOML string we never
+    // wrote): it names no project, so no run removes it.
+    return null;
+  }
 }
 
 /** The first line of every tab file this writes — only files that carry it are ever removed. */
