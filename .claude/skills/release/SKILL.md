@@ -5,8 +5,9 @@ description: Ship a new version of the cc-smart-dev-kit plugin — pick the semv
 
 # Release the `cc-smart-dev-kit` plugin
 
-Machines with auto-update on take a new version on their next start. So a release
-reaches everyone without a further step: check it well before the merge.
+The kit's own background update installs a new patch or minor version on every machine
+within the hour (a major version waits for each person's `cc-smart-dev-kit update`). So a
+release reaches everyone without a further step: check it well before the merge.
 
 ## 1. Pick the version step (semver)
 

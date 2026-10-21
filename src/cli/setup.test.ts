@@ -90,7 +90,7 @@ describe("setup on a terminal: the auto-mode entries", () => {
     expect(readJson(w.paths.settingsFile).autoMode).toBeUndefined();
     expect(
       readJson(w.paths.settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("the project changes its rules: the next setup shows and makes exactly that change", async () => {

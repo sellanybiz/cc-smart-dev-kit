@@ -12,6 +12,7 @@ import {
   backgroundCheck,
   backgroundCheckArgv,
   refreshInstructionsAtSessionStart,
+  sessionSourceOf,
   sessionStart,
 } from "../update/background";
 
@@ -40,11 +41,14 @@ if (process.argv.includes("--background")) {
   });
 } else {
   try {
+    // The input says why the hook runs: a held major's line is for a session start only.
+    const input = process.stdin.isTTY ? "" : await Bun.stdin.text();
     const answer = sessionStart({
       paths,
       env,
       nowMs: Date.now(),
       sessionPid: sessionPid(),
+      source: sessionSourceOf(input),
       version: VERSION,
       spawnBackground: () => {
         // Detached with no pipe to this hook: it outlives the hook, and Claude Code never

@@ -5923,7 +5923,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "0.6.0",
+  version: "0.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -10076,6 +10076,7 @@ function updateFiles(stateDir) {
     hold: join11(stateDir, "update-hold"),
     check: join11(stateDir, "update-check.json"),
     reported: join11(stateDir, "update-reported"),
+    major: join11(stateDir, "update-major.json"),
     log: join11(stateDir, "update.log"),
     lockDir: join11(stateDir, "update"),
     sessions: join11(stateDir, "sessions")

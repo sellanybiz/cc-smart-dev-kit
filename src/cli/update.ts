@@ -2,7 +2,8 @@
  * `cc-smart-dev-kit update`: the self-update by hand.
  *
  *   update            check now and install a newer version, in this terminal, with the
- *                     output of each `claude plugin` command
+ *                     output of each `claude plugin` command; a new major version too (the
+ *                     background check holds one for this, D33)
  *   update --check    only say whether a newer version exists; changes nothing
  *   update --hold     the SessionStart hook stops checking on this machine
  *   update --resume   it checks again (at most once an hour)
@@ -24,17 +25,27 @@ import {
   CLAUDE_TIMEOUT_MS,
   type CommandRunner,
   commandContext,
+  type MajorStep,
   ROUTER_SETUP_HINT,
   routerNeedsSetup,
 } from "../update/apply";
 import { checkForUpdate, isOlder, remotePluginVersion, type UpdateStatus } from "../update/check";
 import {
+  isNewMajor,
+  majorHeldDetail,
+  majorInstallLine,
+  majorSetupLine,
+  majorStillWaitsLine,
+} from "../update/major";
+import {
   type CheckResult,
   checkRunning,
+  clearHeldMajor,
   heldSince,
   hold,
   isHeld,
   isoSeconds,
+  readHeldMajor,
   readLastCheck,
   resume,
   unreachableCheck,
@@ -111,7 +122,12 @@ async function check(paths: CliPaths, env: Env, sinks: Sinks): Promise<number> {
     available = remote.version;
   }
   if (isOlder(status.installed, available)) {
-    print(`${PLUGIN} ${available} is available (installed: ${installed}). Run: ${COMMAND} update`);
+    const major = isNewMajor(status.installed, available)
+      ? " It is a major version: read What's new first."
+      : "";
+    print(
+      `${PLUGIN} ${available} is available (installed: ${installed}).${major} Run: ${COMMAND} update`,
+    );
   } else {
     print(
       `${PLUGIN} ${installed} is the newest version${status.catalogBehind ? " (the marketplace has newer commits, with no new version)" : ""}.`,
@@ -148,24 +164,49 @@ async function updateNow(
       }
       let code = 0;
       if (status.kind === "up-to-date") {
+        clearHeldMajor(files);
         print(`${PLUGIN} ${status.installed} is up to date.`);
         record("up-to-date", status.installed);
       } else {
         const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
+        // The major version this run was asked to install, when there is one.
+        const seen: { major: MajorStep | null } = { major: null };
         const result = applyUpdate(
           paths,
           claude,
           sinks.run ?? terminalRunner(env, paths.home),
           (line) => print(`$ ${line}`),
+          // The person's own `update` is their word for a new major version (D33).
+          (major) => {
+            seen.major = major;
+            print(majorInstallLine(major.to, major.notes));
+            return true;
+          },
         );
+        const major = seen.major;
+        // A major version that did not get installed still waits: a failed install, or a
+        // `claude plugin update` that ended well and installed nothing.
+        const majorWaits = major !== null && isOlder(result.after, major.to);
+        // The hold goes only once the version it holds is really installed.
+        const clearHoldIfInstalled = () => {
+          const held = readHeldMajor(files);
+          if (held === null || !isOlder(result.after, held.version)) clearHeldMajor(files);
+        };
         if (!result.ok) {
           error(result.detail);
+          if (majorWaits) error(majorStillWaitsLine(major.to, major.notes));
           record(result.busy === true ? "skipped" : "failed", result.detail);
           code = 1;
+        } else if (majorWaits) {
+          error(majorStillWaitsLine(major.to, major.notes));
+          record("skipped", majorHeldDetail(major.to, major.notes));
+          code = 1;
         } else if (result.after === result.before) {
+          clearHoldIfInstalled();
           print(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
           record("up-to-date", result.after ?? "(no version)");
         } else {
+          clearHoldIfInstalled();
           print(
             `${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`,
           );
@@ -179,6 +220,8 @@ async function updateNow(
               `Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`,
             );
           }
+          // A major version's own one-time steps run in its setup.
+          if (major !== null) print(majorSetupLine());
         }
       }
       if (isHeld(files)) {
