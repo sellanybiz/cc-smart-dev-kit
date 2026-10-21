@@ -2526,6 +2526,45 @@ with the marketplace there and the plugin gone, it runs `claude plugin install`.
 turns on a companion the person turned off, and never updates one: it says what to run.
 These are Claude Code's own commands on its own files, so `restore` does not undo them.
 
+## claude-mem: the two start blocks, off (D23)
+
+claude-mem puts two blocks at the start of every session: work state (a to-do list, with the
+instruction to use its `work_state_write` tool) and the memory-use block (how to use the
+memories it loaded). Measured over 14 days, together they pass Claude Code's 10,000-character
+hook output limit in 36 of 218 starts. The owner decided both go off on every machine (D23).
+
+- **Two keys in `~/.claude-mem/settings.json`**: `CLAUDE_MEM_WORK_STATE_ENABLED` (13.36.0 and
+  later; `false` also makes its work_state tools answer "Work state is turned off") and
+  `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED` (13.35.0 and later), both `"false"`
+  (`START_BLOCK_KEYS`).
+- **Planned on their own.** `claudeMemPlan` (`src/machine/claude-mem.ts`) builds them whenever
+  claude-mem is installed, separate from the gateway's provider keys: no affordable scout
+  changes nothing about them, and a backend check that fails drops only the provider keys. An
+  older claude-mem gets them too: its `loadFromFile` overlays only the defaults it knows, so
+  an unknown key changes nothing. `plugin.json` asks for 13.36.0, so both exist on every
+  machine that installs claude-mem.
+- **Owned like the provider keys**, through `applyManagedJson`: claude-mem's own default
+  (`"true"` or `""`) counts as unchosen; any other value is the person's, and setup names it
+  in a `!` line. A value setup wrote and the person changed since is theirs too — also
+  `"true"`, which is the README's way back on, so setup never undoes it. `restore` removes
+  both keys, and claude-mem falls back to its defaults.
+- **A session's to-do home.** While work state is off, setup sets
+  `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user settings (`src/cli/setup.ts`, through
+  `applyManagedJson`). Live proof on Claude Code 2.1.306: the task tools (`TaskCreate`, …) are
+  absent in `claude -p` and foreground sessions on newer models, and present in background
+  ones; `1` turns them on everywhere. A value the person set is theirs: it stays, named in an
+  information line. `doctor` checks it while work state is off.
+- **Said before the write.** When the plan changes work state, setup prints one `!` line: the
+  lists stop showing, `work_state_read` reads one while the switch is still on, and
+  `CLAUDE_MEM_WORK_STATE_ENABLED` set to `"true"` turns it back on. After a write it prints the
+  restart step: a new session's start hook reads the settings, and claude-mem's worker reads
+  them when it starts.
+- **An old nested file** (only `env`, which claude-mem rewrites flat on its next start) waits
+  as a whole, the two start blocks included: a key written under `env` would lose its owned
+  path in the rewrite.
+- `doctor` shows both values and who set each (cc-smart-dev-kit's setup, the person, or
+  claude-mem's default); a value the person set is information, never a failure.
+
 ## claude-mem on the gateway
 
 claude-mem's summaries run on Claude Haiku, on the person's own login, by default. Its work
@@ -2541,7 +2580,7 @@ the person's values. The fixed Claude Haiku id that 0.4.3 and earlier wrote ther
 again while it still holds cc-smart-dev-kit's value (`RETIRED_KEYS`), and a value the person
 set or changed stays. A removal alone sends no check to the backend.
 
-- Five keys in claude-mem's settings, owned through `applyManagedJson`. claude-mem's
+- Five more keys in claude-mem's settings, owned through `applyManagedJson`. claude-mem's
   seeded defaults count as unchosen; any other value of the five is the person's
   choice (also one cc-smart-dev-kit wrote and the person changed since, and a key pool of their
   own in `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS`), and then none of them change.
@@ -2559,8 +2598,8 @@ set or changed stays. A removal alone sends no check to the backend.
   says that claude-mem still points at the old backend, and how to fix it.
 - **No chroma workaround.** An older pin of claude-mem's vector search (`pydantic<2.12`
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
-  (`pydantic<2.14`, its CHANGELOG, #4595). `doctor` warns (`!`, never a failure) below
-  13.35.0.
+  (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 13.36.0 or newer, so no
+  warning is needed below it.
 
 ## Warp
 

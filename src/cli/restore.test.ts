@@ -7,7 +7,9 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { HealthProbe } from "../gateway/health";
+import { TODO_TOOLS_KEY } from "../machine/claude-mem";
 import { mcpRecordsFile, recordMcpServer } from "../mcp/records";
+import { applyManagedJson } from "../setup/managed-json";
 import { capturePrinted, printed } from "../testing/fake-machine";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
@@ -77,5 +79,51 @@ describe("restore: the record of the MCP servers", () => {
     // A later restore whose removal works: done, exit 0, and the record goes.
     expect(await runRestore(paths, options(true))).toBe(0);
     expect(existsSync(mcpRecordsFile(paths.stateDir))).toBe(false);
+  });
+});
+
+describe("restore: claude-mem's keys and the task tools (D23)", () => {
+  const WORK_STATE = "CLAUDE_MEM_WORK_STATE_ENABLED";
+  const MEMORY = "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED";
+
+  test("D23: restore takes both start blocks and the task-tools key back, and keeps the rest", async () => {
+    const { options, paths } = machine();
+    // claude-mem's settings as claude-mem seeds them, then as setup leaves them.
+    const file = paths.claudeMemSettingsFile;
+    mkdirSync(dirname(file), { recursive: true });
+    const seeded = {
+      CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+      CLAUDE_MEM_PROVIDER: "claude",
+      [WORK_STATE]: "true",
+      [MEMORY]: "true",
+    };
+    writeFileSync(file, JSON.stringify(seeded, null, 2), { mode: 0o600 });
+    applyManagedJson({
+      file,
+      stateDir: paths.stateDir,
+      set: [
+        [[WORK_STATE], "false"],
+        [[MEMORY], "false"],
+      ],
+      // claude-mem's own default ("true"): nobody chose it, so setup may take it.
+      unchosen: () => true,
+    });
+    applyManagedJson({
+      file: paths.settingsFile,
+      stateDir: paths.stateDir,
+      set: [[["env", TODO_TOOLS_KEY], "1"]],
+    });
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    // The keys go; claude-mem falls back to its own defaults ("true") for both.
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+      CLAUDE_MEM_PROVIDER: "claude",
+    });
+    // setup created the settings file for this one key: restore removes it again.
+    expect(existsSync(paths.settingsFile)).toBe(false);
+    expect(printed.join("\n")).toContain(
+      "~ ~/.claude-mem/settings.json: removed CLAUDE_MEM_WORK_STATE_ENABLED, CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED; everything else kept",
+    );
   });
 });

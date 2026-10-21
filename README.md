@@ -574,7 +574,7 @@ Five pages say how, and what still has to be tested there:
 
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit setup` | Installs the launcher, turns on plugin auto-update, writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
+| `cc-smart-dev-kit setup` | Installs the launcher, turns on plugin auto-update, writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up, and turns [claude-mem's two start blocks off, with Claude Code's own task tools on](#claude-mem) whenever claude-mem is installed. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
 | `cc-smart-dev-kit setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/cc-smart-dev-kit/no-instructions`), so a later plain `cc-smart-dev-kit setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `cc-smart-dev-kit setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `cc-smart-dev-kit setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
@@ -709,9 +709,13 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   version that is a commit id, not a version number, is a ✗ for a pinned companion alone,
   and only because it cannot be checked against its range; frontend-design, unpinned,
   shows ✓ with a commit id;
-- claude-mem is 13.35.0 or newer. Older is a warning (`!`), not a failure: before
-  13.35.0, a fresh install's vector search may not start (pydantic 2.14 broke
-  chroma-mcp; 13.35.0 pins pydantic below it);
+- claude-mem's two start blocks are off in `~/.claude-mem/settings.json` ([claude-mem](#claude-mem)):
+  work state and the memory-use block, each shown with whether setup or you set it. Both on,
+  and nobody having chosen them, is a ✗ that names `cc-smart-dev-kit setup` (together they
+  overflow Claude Code's start context in about one start in six); a value you set is
+  information (`·`), never a failure. While work state is off, a second line checks
+  `env.CLAUDE_CODE_ENABLE_TODO_TOOLS` in `~/.claude/settings.json`: ✗ when it is not set, ✓
+  when it is `"1"`, and `·` for a value you set yourself;
 - Warp: the app and its version, and its Claude plugin. Not installed, or installed
   without its plugin (or with it turned off), is information (`·`): Warp is optional.
   ✗ only for the plugin without the app;
@@ -1405,30 +1409,68 @@ Code installs and turns them on with it:
 
 | Plugin | Marketplace (`claude plugin marketplace add …`) | Version |
 |---|---|---|
-| `claude-mem@thedotmack` (memory across sessions) | `thedotmack/claude-mem` | 13.29.0 or newer |
+| `claude-mem@thedotmack` (memory across sessions) | `thedotmack/claude-mem` | 13.36.0 or newer |
 | `frontend-design@claude-plugins-official` | `anthropics/claude-plugins-official` | any |
 
 - **Claude Code installs a dependency only from a marketplace you added.** Without it,
   `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit` succeeds with a warning, and cc-smart-dev-kit does not
   load. `cc-smart-dev-kit setup` adds each missing marketplace, and that installs the companion.
 - **A companion you have already stays as it is.** A claude-mem in the range is not
-  updated or reinstalled. One older than 13.29.0 stops the install: run
-  `claude plugin update claude-mem@thedotmack` first.
+  updated or reinstalled. One older than 13.36.0 stops the install: run
+  `claude plugin update claude-mem@thedotmack` first. (Setup still writes the two start
+  blocks for an older one: see [claude-mem](#claude-mem).)
 - **You turned one off?** Setup leaves it off and says how to turn it on; cc-smart-dev-kit does
   not load while it is off.
 - `restore` does not uninstall them.
 
-## claude-mem on the gateway
+## claude-mem
 
-claude-mem writes a summary of every session, by default with Claude Haiku on your own Claude
+claude-mem (a [companion plugin](#companion-plugins)) writes a summary of every session,
+keeps a memory across sessions, and puts two blocks at the start of every session. `setup`
+changes its settings in `~/.claude-mem/settings.json` (`$CLAUDE_MEM_DATA_DIR/settings.json`
+when you set that variable), and only there; everything else in that file stays as it is.
+
+### The two start blocks, off
+
+A session's start begins with claude-mem's **work state** (a to-do list, which tells the
+session to use its `work_state_write` tool) and its **memory-use block** (how to use the
+memories it loaded). Together they pass Claude Code's 10,000-character hook output limit in
+about one start in six (measured over 14 days: 36 of 218 starts). So `setup` turns both off:
+
+- `CLAUDE_MEM_WORK_STATE_ENABLED`: `"false"` (claude-mem 13.36.0 or newer; this also removes
+  its work_state tools);
+- `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED`: `"false"` (claude-mem 13.35.0 or newer).
+
+`setup` writes both whenever claude-mem is installed, whether or not the gateway is set up,
+and to an older claude-mem too: a key it does not know changes nothing there. With work state
+off a session has no to-do list from claude-mem, so `setup` also turns on Claude Code's own
+task tools (`TaskCreate`, `TaskList`, …): `env.CLAUDE_CODE_ENABLE_TODO_TOOLS` set to `"1"` in
+`~/.claude/settings.json`. They are off in `claude -p` and foreground sessions on newer models,
+and on in background sessions; `1` turns them on everywhere.
+
+- **Read a list before it goes.** claude-mem keeps its stored lists. Its `work_state_read`
+  tool answers while work state is on, so read one first; after the switch is off that tool
+  answers "Work state is turned off". Turning work state back on reads them again.
+- **Turn one back on.** Set it to `"true"` in `~/.claude-mem/settings.json`: claude-mem's own
+  default is `"true"`, and a later `setup` leaves a value you set alone (also `"true"`), while
+  `doctor` shows it as your choice. With work state on, Claude Code's task tools are not
+  needed; setup leaves the setting it wrote, and `restore` removes it.
+- **Restart.** A new Claude Code session reads claude-mem's settings at its start, and
+  claude-mem's worker reads them when it starts. `setup` prints this step when it changes them.
+- **Back to claude-mem's defaults.** `restore` removes both keys, and the task-tools setting
+  when setup set it, so claude-mem uses its own defaults again (`"true"` for both blocks).
+
+### claude-mem on the gateway
+
+claude-mem's summaries run, by default, with Claude Haiku on your own Claude
 login. Its work is Haiku's, so it follows the gateway's scout slot: when the
-[gateway](#the-ai-gateway-optional) is set up, claude-mem is installed (13.29.0 or newer), and
+[gateway](#the-ai-gateway-optional) is set up, claude-mem is installed (13.36.0 or newer), and
 you gave the scout a chain whose first target is an affordable `<backend>:<model>`, `setup`
 points claude-mem at that model, straight at its backend. A scout with no chain, or one that
 starts with a Claude model, leaves claude-mem on Claude. Setup writes no fallback model:
 claude-mem's own quota fallback (`CLAUDE_MEM_QUOTA_FALLBACK_*`) keeps its defaults or your
 values, and the fixed Claude Haiku fallback older versions wrote there is taken out again while
-it still holds setup's value. It sets five keys in `~/.claude-mem/settings.json`
+it still holds setup's value. It sets five more keys in `~/.claude-mem/settings.json`
 (`$CLAUDE_MEM_DATA_DIR/settings.json` when you set that variable):
 
 - `CLAUDE_MEM_PROVIDER`: `openai-compatible`, with `…_PRESET` `custom`;

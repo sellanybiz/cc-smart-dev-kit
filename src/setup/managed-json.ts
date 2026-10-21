@@ -101,7 +101,8 @@ export function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function samePath(a: KeyPath, b: KeyPath): boolean {
+/** True when two key paths name the same key. One home, for the readers of owned records. */
+export function samePath(a: KeyPath, b: KeyPath): boolean {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
 

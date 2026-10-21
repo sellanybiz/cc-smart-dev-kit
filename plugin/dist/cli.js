@@ -337,7 +337,7 @@ var info = {
     {
       name: "claude-mem",
       marketplace: "thedotmack",
-      version: ">=13.29.0"
+      version: ">=13.36.0"
     },
     {
       name: "frontend-design",
@@ -14090,7 +14090,6 @@ function companionCheck(paths, companion) {
 // src/machine/claude-mem.ts
 var CLAUDE_MEM_ID = "claude-mem@thedotmack";
 var CLAUDE_MEM_MIN_VERSION = "13.29.0";
-var CLAUDE_MEM_CHROMA_FIX_VERSION = "13.35.0";
 var RETIRED_KEYS = [
   "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER",
   "CLAUDE_MEM_QUOTA_FALLBACK_MODEL"
@@ -14098,12 +14097,22 @@ var RETIRED_KEYS = [
 var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
 var API_KEY_POOL = "CLAUDE_MEM_OPENAI_COMPAT_API_KEYS";
 var PROVIDER = "CLAUDE_MEM_PROVIDER";
+var START_BLOCK_KEYS = [
+  "CLAUDE_MEM_WORK_STATE_ENABLED",
+  "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED"
+];
+var WORK_STATE_KEY = START_BLOCK_KEYS[0];
+var START_BLOCK_OFF = "false";
+var TODO_TOOLS_KEY = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
+var TODO_TOOLS_VALUE = "1";
 var UNCHOSEN = {
   [PROVIDER]: ["", "claude"],
   CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
-  [API_KEY]: [""]
+  [API_KEY]: [""],
+  [START_BLOCK_KEYS[0]]: ["", "true"],
+  [START_BLOCK_KEYS[1]]: ["", "true"]
 };
 var unchosen = (path, value) => typeof value === "string" && (UNCHOSEN[path.at(-1) ?? ""] ?? []).includes(value);
 function gatewayAffordableTarget(gatewayConfigFile) {
@@ -14136,49 +14145,95 @@ function gatewayAffordableTarget(gatewayConfigFile) {
     }
   };
 }
-function claudeMemPlan(paths) {
-  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync17(install.installPath))
-    return { notInstalled: true };
+function readClaudeMemSettings(paths) {
   const file = paths.claudeMemSettingsFile;
   const short = tildify(file, paths.home);
-  const left = (why) => ({ note: `! claude-mem settings left alone: ${why}` });
   let data;
   try {
     data = readJsonObject(file).data;
-  } catch (error) {
-    return left(messageOf(error));
+  } catch {
+    return {
+      problem: `${short} cannot be read (it is not valid JSON, or not a JSON object). Fix it by hand, then run ${COMMAND} setup again.`
+    };
   }
   const env = data.env;
   const nested = isObject(env) && Object.keys(env).some((key) => key.startsWith("CLAUDE_MEM_"));
-  const at = (key) => nested ? ["env", key] : [key];
-  const records = ownedRecords(paths.stateDir, realTarget(file));
+  return {
+    data,
+    at: (key) => nested ? ["env", key] : [key],
+    records: ownedRecords(paths.stateDir, realTarget(file)),
+    short
+  };
+}
+function readStartBlocks(paths) {
+  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
+  if (install === null || !existsSync17(install.installPath))
+    return null;
+  const read = readClaudeMemSettings(paths);
+  if ("problem" in read)
+    return read;
+  return START_BLOCK_KEYS.map((key) => {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found)
+      return { key, value: null, by: "default" };
+    const value = typeof current.value === "string" ? current.value : null;
+    const record = read.records.find((entry) => samePath(entry.path, path));
+    if (record !== undefined) {
+      const ours = record.sha256 === undefined && (Object.hasOwn(record, "value") ? Bun.deepEquals(record.value, current.value) : true);
+      return { key, value, by: ours ? "setup" : "person" };
+    }
+    return {
+      key,
+      value,
+      by: unchosen(path, current.value) ? "default" : "person"
+    };
+  });
+}
+function shownStartBlock(value) {
+  return JSON.stringify(value);
+}
+function planStartBlocks(read, notes) {
+  const planned = [];
+  for (const key of START_BLOCK_KEYS) {
+    const path = read.at(key);
+    const current = getKey(read.data, path);
+    if (!current.found || Bun.deepEquals(current.value, START_BLOCK_OFF)) {
+      planned.push([path, START_BLOCK_OFF]);
+      continue;
+    }
+    const record = read.records.find((entry) => samePath(entry.path, path));
+    const theirs = record !== undefined && Object.hasOwn(record, "value");
+    if (!theirs && unchosen(path, current.value)) {
+      planned.push([path, START_BLOCK_OFF]);
+      continue;
+    }
+    notes.push(`! claude-mem settings left alone: ${key} is ${shownStartBlock(current.value)} in ${read.short} (your choice)`);
+  }
+  return planned;
+}
+function planProvider(paths, install, read, notes) {
   const affordable = gatewayAffordableTarget(paths.gatewayConfigFile);
   if ("reason" in affordable) {
-    const provider = getKey(data, at(PROVIDER));
-    if (provider.found && ownership(records, at(PROVIDER), provider) === "ours") {
-      return {
-        note: `! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. Run ${COMMAND} setup again once the scout slot starts with an affordable model, or ${COMMAND} restore to put claude-mem back on its own defaults.`
-      };
+    const provider = getKey(read.data, read.at(PROVIDER));
+    if (provider.found && ownership(read.records, read.at(PROVIDER), provider) === "ours") {
+      notes.push(`! claude-mem still uses the backend ${COMMAND} set for it, but ${affordable.reason}. Run ${COMMAND} setup again once the scout slot starts with an affordable model, or ${COMMAND} restore to put claude-mem back on its own defaults.`);
     }
-    return { note: null };
+    return null;
   }
   const version = comparableVersion(install.version);
   if (version === null || Bun.semver.order(version, CLAUDE_MEM_MIN_VERSION) < 0) {
     const companion = companions().find((entry) => entry.id === CLAUDE_MEM_ID);
     const state = companion === undefined ? null : companionState(paths, companion).kind;
-    if (state === "outside-range" || state === "unknown-version")
-      return { note: null };
-    return left(version === null ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so cc-smart-dev-kit cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}` : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`);
+    if (state !== "outside-range" && state !== "unknown-version") {
+      notes.push(`! claude-mem settings left alone: ${version === null ? `claude-mem's version ${install.version ?? "(none)"} is unknown, so cc-smart-dev-kit cannot tell whether it has what they need (${CLAUDE_MEM_MIN_VERSION} or newer). Run: claude plugin update ${CLAUDE_MEM_ID}` : `claude-mem ${install.version} is older than ${CLAUDE_MEM_MIN_VERSION}, which brought what they need. Run: claude plugin update ${CLAUDE_MEM_ID}`}`);
+    }
+    return null;
   }
-  if (nested && Object.keys(data).every((key) => key === "env")) {
-    return left(`${short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.`);
-  }
-  const pool = getKey(data, at(API_KEY_POOL));
+  const pool = getKey(read.data, read.at(API_KEY_POOL));
   if (pool.found && typeof pool.value === "string" && pool.value.trim() !== "") {
-    return {
-      note: `  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${short} (your choice)`
-    };
+    notes.push(`  claude-mem settings left alone: ${API_KEY_POOL} holds your own keys in ${read.short} (your choice)`);
+    return null;
   }
   const target = affordable.target;
   const wanted = {
@@ -14189,23 +14244,43 @@ function claudeMemPlan(paths) {
     [API_KEY]: target.apiKey
   };
   for (const [key, value] of Object.entries(wanted)) {
-    const path = at(key);
-    const current = getKey(data, path);
+    const path = read.at(key);
+    const current = getKey(read.data, path);
     if (!current.found || current.value === value)
       continue;
-    const whose = ownership(records, path, current, unchosen);
+    const whose = ownership(read.records, path, current, unchosen);
     if (whose === "ours" || whose === "none" && unchosen(path, current.value))
       continue;
     const shown = key === API_KEY ? "another key" : JSON.stringify(current.value);
-    return {
-      note: `  claude-mem settings left alone: ${key} is ${shown} in ${short} (your choice)`
-    };
+    notes.push(`  claude-mem settings left alone: ${key} is ${shown} in ${read.short} (your choice)`);
+    return null;
   }
   return {
+    target,
+    set: Object.entries(wanted).map(([key, value]) => [read.at(key), value])
+  };
+}
+function claudeMemPlan(paths) {
+  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
+  if (install === null || !existsSync17(install.installPath))
+    return { notInstalled: true };
+  const read = readClaudeMemSettings(paths);
+  if ("problem" in read)
+    return { note: `! claude-mem settings left alone: ${read.problem}` };
+  const left = (why) => ({ note: `! claude-mem settings left alone: ${why}` });
+  if (isObject(read.data.env) && Object.keys(read.data).every((key) => key === "env")) {
+    return left(`${read.short} is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.`);
+  }
+  const notes = [];
+  const startBlocks = planStartBlocks(read, notes);
+  const provider = planProvider(paths, install, read, notes);
+  return {
     plan: {
-      remove: RETIRED_KEYS.map(at),
-      set: Object.entries(wanted).map(([key, value]) => [at(key), value]),
-      target
+      remove: RETIRED_KEYS.map(read.at),
+      startBlocks,
+      provider,
+      notes,
+      todoTools: startBlocks.some(([path]) => path.at(-1) === WORK_STATE_KEY)
     }
   };
 }
@@ -14256,7 +14331,7 @@ function applyClaudeMem(paths, plan, dryRun) {
   return applyManagedJson({
     file: paths.claudeMemSettingsFile,
     stateDir: paths.stateDir,
-    set: plan.set,
+    set: [...plan.startBlocks, ...plan.provider?.set ?? []],
     remove: plan.remove,
     dryRun,
     unchosen,
@@ -14270,16 +14345,6 @@ function shownClaudeMemValue(path, value) {
     return JSON.stringify(maskKey(value));
   }
   return JSON.stringify(value);
-}
-function claudeMemAdvice(paths) {
-  const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync17(install.installPath))
-    return null;
-  const version = comparableVersion(install.version);
-  if (version === null || Bun.semver.order(version, CLAUDE_MEM_CHROMA_FIX_VERSION) >= 0) {
-    return null;
-  }
-  return `${CLAUDE_MEM_ID} ${install.version} is older than ${CLAUDE_MEM_CHROMA_FIX_VERSION}: on a fresh install its vector search may not start (pydantic 2.14 broke chroma-mcp; ${CLAUDE_MEM_CHROMA_FIX_VERSION} pins pydantic below it). Run: claude plugin update ${CLAUDE_MEM_ID}`;
 }
 
 // src/machine/warp.ts
@@ -22319,6 +22384,9 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
+  const todoTools = managed.claudeMem?.todoTools === true ? planTodoTools(paths) : null;
+  if (todoTools?.kind === "set")
+    set.push([todoTools.path, TODO_TOOLS_VALUE]);
   const tavilyOwned = managed.tavilyKeyPlan.kind === "remove" && ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some((path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH));
   const settings = applyManagedJson({
     file: paths.settingsFile,
@@ -22334,6 +22402,9 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   }
   for (const skip of settings.skipped) {
     info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+  }
+  if (todoTools?.kind === "kept") {
+    info.push(`  ${short(settings.file)}: ${formatKeyPath(todoTools.path)} is ${JSON.stringify(todoTools.value)} (your choice); left alone`);
   }
   if (managed.autoMode !== null) {
     const result = applyAutoMode(paths.settingsFile, paths.stateDir, managed.autoMode, dryRun);
@@ -22359,6 +22430,8 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     for (const change of result.changes) {
       changes.push(`~ ${short(result.file)}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.before)} -> ${shownClaudeMemValue(change.path, change.after)}`);
     }
+    if (!dryRun && result.changes.length > 0)
+      info.push(CLAUDE_MEM_RESTART_STEP);
   }
   if (managed.tmuxLine) {
     const line = applyTmuxLine({ dryRun, file: paths.tmuxConfFile, stateDir: paths.stateDir });
@@ -22468,6 +22541,10 @@ function askStatusline(paths, machine, managed) {
   managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
   return !managed.statusline;
 }
+function workStateWarning(paths) {
+  return `! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`;
+}
+var CLAUDE_MEM_RESTART_STEP = "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.";
 async function decideClaudeMem(paths, dryRun, report) {
   const planned = claudeMemPlan(paths);
   if ("notInstalled" in planned)
@@ -22477,19 +22554,37 @@ async function decideClaudeMem(paths, dryRun, report) {
       report.notes.push(planned.note);
     return null;
   }
-  const sets = applyClaudeMem(paths, planned.plan, true).changes.filter((change) => change.after !== undefined);
-  if (sets.length === 0)
-    return planned.plan;
-  if (dryRun) {
-    report.info.push(`  claude-mem: would check ${planned.plan.target.backend} (one chat request) before writing its settings`);
-    return planned.plan;
+  const plan = planned.plan;
+  report.notes.push(...plan.notes);
+  const changes = applyClaudeMem(paths, plan, true).changes;
+  if (changes.some((change) => change.path.at(-1) === WORK_STATE_KEY)) {
+    report.notes.push(workStateWarning(paths));
   }
-  const problem = await checkAffordableTarget(planned.plan.target);
+  const provider = plan.provider;
+  if (provider === null)
+    return plan;
+  const providerChanges = changes.some((change) => provider.set.some(([path]) => samePath(path, change.path)));
+  if (!providerChanges)
+    return plan;
+  if (dryRun) {
+    report.info.push(`  claude-mem: would check ${provider.target.backend} (one chat request) before writing its settings`);
+    return plan;
+  }
+  const problem = await checkAffordableTarget(provider.target);
   if (problem !== null) {
     report.notes.push(`! claude-mem settings left alone: ${problem}`);
-    return null;
+    return { ...plan, provider: null };
   }
-  return planned.plan;
+  return plan;
+}
+function planTodoTools(paths) {
+  const path = ["env", TODO_TOOLS_KEY];
+  const current = getKey(readJsonObject(paths.settingsFile).data, path);
+  if (!current.found || Bun.deepEquals(current.value, TODO_TOOLS_VALUE)) {
+    return { kind: "set", path };
+  }
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  return ownership(records, path, current) === "ours" ? { kind: "set", path } : { kind: "kept", path, value: current.value };
 }
 var NO_WARP = {
   commands: [],
@@ -25450,9 +25545,70 @@ function checkProjectImports(paths, cwd) {
     text: `${list}, which is missing: it loads nothing. Run: cc-smart-dev-kit setup`
   };
 }
-function claudeMemCheck(paths) {
-  const advice = claudeMemAdvice(paths);
-  return advice === null ? null : { ok: true, warn: true, text: advice };
+var START_BLOCK_NAMES = {
+  [START_BLOCK_KEYS[0]]: "work state",
+  [START_BLOCK_KEYS[1]]: "memory-use block"
+};
+function describeStartBlock(reading) {
+  const name = START_BLOCK_NAMES[reading.key] ?? reading.key;
+  const state = reading.value === "false" ? "off" : "on";
+  const by = reading.by === "setup" ? `set by ${COMMAND} setup` : reading.by === "person" ? "your choice" : "claude-mem's default";
+  return `${name} is ${state} (${by})`;
+}
+function claudeMemStartBlocksCheck(paths, readings) {
+  if ("problem" in readings)
+    return { ok: true, warn: true, text: readings.problem };
+  const base = `claude-mem's start blocks in ${tildify(paths.claudeMemSettingsFile, paths.home)}: ${readings.map(describeStartBlock).join(", ")}`;
+  const unset = readings.filter((reading) => reading.value !== "false" && reading.by !== "person");
+  if (unset.length > 0) {
+    return {
+      ok: false,
+      text: `${base}. Together they overflow Claude Code's start context in about one start in six. Run: ${COMMAND} setup`
+    };
+  }
+  return {
+    ok: true,
+    ...readings.some((reading) => reading.value !== "false") && { info: true },
+    text: base
+  };
+}
+function claudeMemTodoToolsCheck(paths, readings) {
+  if ("problem" in readings)
+    return null;
+  const workState = readings.find((reading) => reading.key === WORK_STATE_KEY);
+  if (workState?.value !== "false")
+    return null;
+  const path = ["env", TODO_TOOLS_KEY];
+  const current = getKey(readSettings2(paths.settingsFile) ?? {}, path);
+  const key = formatKeyPath(path);
+  const file = tildify(paths.settingsFile, paths.home);
+  if (current.found && Bun.deepEquals(current.value, TODO_TOOLS_VALUE)) {
+    return {
+      ok: true,
+      text: `Claude Code's task tools are on for sessions: ${key} is ${JSON.stringify(TODO_TOOLS_VALUE)} in ${file}`
+    };
+  }
+  if (!current.found) {
+    return {
+      ok: false,
+      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a session has no to-do list while claude-mem's work state is off. Run: ${COMMAND} setup`
+    };
+  }
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  const ours = ownership(records, path, current) === "ours";
+  return {
+    ok: true,
+    info: true,
+    text: `Claude Code's task tools are off for sessions: ${key} is ${JSON.stringify(current.value)} in ${file} (${ours ? `set by ${COMMAND} setup` : "your choice"}), so a session has no to-do list while claude-mem's work state is off`
+  };
+}
+function claudeMemChecks(paths) {
+  const readings = readStartBlocks(paths);
+  const todoTools = readings === null ? null : claudeMemTodoToolsCheck(paths, readings);
+  return [
+    ...readings === null ? [] : [claudeMemStartBlocksCheck(paths, readings)],
+    ...todoTools === null ? [] : [todoTools]
+  ];
 }
 async function omnirouteCheck(paths, env, gateway) {
   const line = await omnirouteDoctorLine({
@@ -25581,7 +25737,7 @@ async function doctorChecks(paths, env, { browser, bun, gateway, local, mcp, pro
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
     ...companionChecks(paths),
-    claudeMemCheck(paths),
+    ...claudeMemChecks(paths),
     ...mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env, local.cwd),
     ...browser == null ? [] : browserChecks(paths, browser),
     warpCheck(gateway.machine, paths),

@@ -460,6 +460,152 @@ describe("setup manages agent view's notification hook", () => {
   });
 });
 
+describe("setup turns claude-mem's two start blocks off (D23)", () => {
+  const WORK_STATE = "CLAUDE_MEM_WORK_STATE_ENABLED";
+  const MEMORY = "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED";
+  /** claude-mem's settings.json as 13.40.0 seeds it on its first run (the keys that matter). */
+  const SEEDED = {
+    CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+    CLAUDE_MEM_PROVIDER: "claude",
+    CLAUDE_MEM_OPENAI_COMPAT_PRESET: "",
+    CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "",
+    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "",
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
+    [WORK_STATE]: "true",
+    [MEMORY]: "true",
+  };
+  const claudeMemFile = (w: ReturnType<typeof world>) =>
+    join(w.home, ".claude-mem", "settings.json");
+  const seed = (w: ReturnType<typeof world>, settings: unknown = SEEDED) => {
+    const file = claudeMemFile(w);
+    mkdirSync(join(w.home, ".claude-mem"), { recursive: true });
+    writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
+    return file;
+  };
+  /** The claude-mem version the fake world installs. */
+  const installedPlugins = (w: ReturnType<typeof world>) =>
+    JSON.parse(readFileSync(w.paths.installedPluginsFile, "utf8"));
+
+  test("first run: both blocks off, the to-do warning once, the restart step, and the task tools on", async () => {
+    const w = world();
+    const file = seed(w);
+    expect(await w.setup()).toBe(0);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
+    expect(printed).toContain(
+      '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+    );
+    expect(printed).toContain(
+      "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
+    );
+    expect(printed).toContain(
+      "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
+    );
+    expect(printed.filter((line) => line.includes("work_state_read"))).toHaveLength(1);
+    expect(readJson(file)).toEqual({ ...SEEDED, [WORK_STATE]: "false", [MEMORY]: "false" });
+    expect(readJson(w.paths.settingsFile).env.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("1");
+
+    // A second run: nothing to change, nothing about claude-mem or the task tools.
+    printed.length = 0;
+    expect(await w.setup()).toBe(0);
+    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(printed.join("\n")).not.toContain("claude-mem");
+    expect(printed.join("\n")).not.toContain("CLAUDE_CODE_ENABLE_TODO_TOOLS");
+  });
+
+  test("--dry-run: both ~ lines and the task tools shown, nothing written", async () => {
+    const w = world();
+    const file = seed(w);
+    const before = readFileSync(file, "utf8");
+    const settingsBefore = readFileSync(w.paths.settingsFile, "utf8");
+    expect(await w.setup({ dryRun: true })).toBe(0);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
+    expect(printed).toContain(
+      '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+    );
+    expect(printed).toContain("Dry run: nothing was written or run.");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(settingsBefore);
+  });
+
+  test('a person\'s own "true" is kept, named in a ! line, and the task tools go with it', async () => {
+    const w = world();
+    const file = seed(w);
+    await w.setup();
+    // The way back on from the README: the person sets it to "true".
+    const settings = readJson(file);
+    settings[WORK_STATE] = "true";
+    writeFileSync(file, JSON.stringify(settings, null, 2));
+    printed.length = 0;
+    expect(await w.setup()).toBe(0);
+    expect(printed).toContain(
+      `! claude-mem settings left alone: ${WORK_STATE} is "true" in ~/.claude-mem/settings.json (your choice)`,
+    );
+    expect(readJson(file)[WORK_STATE]).toBe("true");
+    // Its to-do list is back: no task tools are needed, and setup leaves the ones it set.
+    expect(printed).not.toContain("CLAUDE_CODE_ENABLE_TODO_TOOLS");
+  });
+
+  test("claude-mem older than 13.36.0: both keys are still turned off", async () => {
+    const w = world();
+    const file = seed(w);
+    const plugins = installedPlugins(w);
+    plugins.plugins["claude-mem@thedotmack"][0].version = "13.35.0";
+    writeFileSync(w.paths.installedPluginsFile, JSON.stringify(plugins));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(file)[WORK_STATE]).toBe("false");
+    expect(readJson(file)[MEMORY]).toBe("false");
+  });
+
+  test("claude-mem not installed: the plan writes nothing for it (the companion step runs first)", async () => {
+    const w = world();
+    const file = seed(w);
+    const before = readFileSync(file, "utf8");
+    const plugins = installedPlugins(w);
+    delete plugins.plugins["claude-mem@thedotmack"];
+    writeFileSync(w.paths.installedPluginsFile, JSON.stringify(plugins));
+    expect(await w.setup()).toBe(0);
+    // The fake `claude` records the step but installs nothing, so the plan still sees no
+    // claude-mem: nothing of its settings is touched, and no task tools are turned on.
+    expect(printed).toContain("+ plugin claude-mem@thedotmack");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(readJson(w.paths.settingsFile).env).toBeUndefined();
+  });
+
+  test("a task-tools value the person set is theirs: kept, named, never overwritten", async () => {
+    const w = world();
+    const file = seed(w);
+    const settings = readJson(w.paths.settingsFile);
+    settings.env = { CLAUDE_CODE_ENABLE_TODO_TOOLS: "0" };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile).env.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("0");
+    expect(printed).toContain(
+      '  ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" (your choice); left alone',
+    );
+    // claude-mem's own keys are still turned off around it.
+    expect(readJson(file)[WORK_STATE]).toBe("false");
+  });
+
+  test("restore takes both keys and the task tools back", async () => {
+    const w = world();
+    const file = seed(w);
+    expect(await w.setup()).toBe(0);
+    restore(w.paths.stateDir);
+    // The keys go; claude-mem falls back to its own defaults ("true") for both.
+    expect(readJson(file)).toEqual({
+      CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+      CLAUDE_MEM_PROVIDER: "claude",
+      CLAUDE_MEM_OPENAI_COMPAT_PRESET: "",
+      CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "",
+      CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "",
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
+    });
+    expect(readJson(w.paths.settingsFile).env).toBeUndefined();
+  });
+});
+
 describe("setup takes back what an older setup left for Serena", () => {
   /**
    * What an older setup left: `serena` in Claude Code's own config, naming its context file —

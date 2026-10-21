@@ -514,8 +514,14 @@ describe("cc-smart-dev-kit setup", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        // D23: work state off gives sessions Claude Code's own task tools.
+        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
         NOTIFY_HOOK_ADDED,
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
         ...INSTRUCTIONS_CREATED,
+        "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
+        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
@@ -525,6 +531,7 @@ describe("cc-smart-dev-kit setup", () => {
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
       hooks: { Notification: [NOTIFY_HOOK_ENTRY] },
+      env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" },
       enabledPlugins: {
         "cc-smart-dev-kit@cc-smart-dev-kit": true,
         "claude-mem@thedotmack": true,
@@ -574,8 +581,13 @@ describe("cc-smart-dev-kit setup", () => {
         ...mcpDryRunLines(home),
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        // D23: work state off gives sessions Claude Code's own task tools.
+        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
         NOTIFY_HOOK_ADDED,
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
         ...INSTRUCTIONS_CREATED,
+        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
         TAVILY_SKIPPED,
         "Dry run: nothing was written or run.",
         "",
@@ -634,6 +646,7 @@ describe("cc-smart-dev-kit setup", () => {
       [
         "Nothing to change. Setup is up to date.",
         '  ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
+        "  ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: already set by someone else; left alone",
         TAVILY_SKIPPED,
         "",
       ].join("\n"),
@@ -714,8 +727,14 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> true',
+        // D23: work state off gives sessions Claude Code's own task tools.
+        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
         NOTIFY_HOOK_ADDED,
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
         OPT_OUT_STORED,
+        "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
+        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
@@ -869,6 +888,9 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ claude-mem@thedotmack 13.39.0 is installed and on",
         "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
+        // D23: claude-mem's two start blocks off, and Claude Code's own task tools on.
+        "✓ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)",
+        '✓ Claude Code\'s task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ~/.claude/settings.json',
         ...MCP_DOCTOR_OK,
         // Tavily is optional: without a key its server is skipped, never a failure.
         tavilyDoctorSkipped(home),
@@ -1072,6 +1094,8 @@ describe("cc-smart-dev-kit doctor", () => {
       "✓ no other enabled plugin is named cc-smart-dev-kit",
       "✓ claude-mem@thedotmack 13.39.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
+      // No setup ran here: claude-mem's two start blocks are still on (D23).
+      "✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). Together they overflow Claude Code's start context in about one start in six. Run: cc-smart-dev-kit setup",
       "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
       "✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive. Run: cc-smart-dev-kit setup",
       "· gateway: not checked on this Bun (its checks send the backend key)",
@@ -1708,7 +1732,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ claude-mem@thedotmack 13.28.0 is outside >=13.29.0. Run: claude plugin update claude-mem@thedotmack\n" +
+      "✗ claude-mem@thedotmack 13.28.0 is outside >=13.36.0. Run: claude plugin update claude-mem@thedotmack\n" +
         "✗ frontend-design@claude-plugins-official is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable frontend-design@claude-plugins-official\n",
     );
   });
@@ -1718,10 +1742,10 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     run(["setup"]);
     const installed = join(configDir, "plugins", "installed_plugins.json");
     const plugins = readJson(installed);
-    plugins.plugins["claude-mem@thedotmack"][0].version = "13.30.0-8713c5b11005";
+    plugins.plugins["claude-mem@thedotmack"][0].version = "13.36.0-8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     expect(run(["doctor"]).stdout).toContain(
-      "✓ claude-mem@thedotmack 13.30.0-8713c5b11005 is installed and on\n",
+      "✓ claude-mem@thedotmack 13.36.0-8713c5b11005 is installed and on\n",
     );
   });
 
@@ -1732,7 +1756,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     plugins.plugins["claude-mem@thedotmack"][0].version = "8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     const unknown =
-      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.29.0. Run: claude plugin update claude-mem@thedotmack";
+      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.36.0. Run: claude plugin update claude-mem@thedotmack";
     expect(run(["doctor"]).stdout).toContain(`✗ ${unknown}\n`);
     // With the gateway there, claude-mem's own check would say it again: it does not.
     writeGatewayConfig(home, "http://127.0.0.1:9");
@@ -1740,21 +1764,6 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     expect(result.stdout).toContain(`! ${unknown}\n`);
     expect(result.stdout).not.toContain("older");
     expect(result.stdout).not.toContain("claude-mem settings left alone");
-  });
-
-  test("claude-mem older than 13.35.0: a warning (its vector search), never a failure", () => {
-    const { configDir, run } = setup();
-    run(["setup"]);
-    const installed = join(configDir, "plugins", "installed_plugins.json");
-    const plugins = readJson(installed);
-    plugins.plugins["claude-mem@thedotmack"][0].version = "13.34.2";
-    writeFileSync(installed, JSON.stringify(plugins));
-    const result = run(["doctor"]);
-    expect(result.stdout).toContain("✓ claude-mem@thedotmack 13.34.2 is installed and on\n");
-    expect(result.stdout).toContain(
-      "\n! claude-mem@thedotmack 13.34.2 is older than 13.35.0: on a fresh install its vector search may not start (pydantic 2.14 broke chroma-mcp; 13.35.0 pins pydantic below it). Run: claude plugin update claude-mem@thedotmack\n",
-    );
-    expect(result.exitCode).toBe(0);
   });
 });
 
@@ -1982,6 +1991,9 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(backend.seen).toEqual([CHAT_CHECK]);
     expect(readJson(file)).toEqual({
       ...SEEDED,
+      // D23: claude-mem's two start blocks, off.
+      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
+      CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
       CLAUDE_MEM_OPENAI_COMPAT_API_KEY: PLANTED_KEY,
@@ -2053,25 +2065,37 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       const backend = fakeBackend();
       writeGatewayConfig(home, backend.url, slots);
       const file = writeClaudeMem(home, SEEDED);
-      const before = readFileSync(file, "utf8");
-      expect((await runAsync(["setup"])).stdout).not.toContain("claude-mem");
-      expect(readFileSync(file, "utf8")).toBe(before);
+      const result = await runAsync(["setup"]);
+      // No provider key is written: claude-mem stays on Claude.
+      expect(result.stdout).not.toContain("CLAUDE_MEM_PROVIDER");
+      expect(result.stdout).not.toContain("CLAUDE_MEM_OPENAI_COMPAT");
+      const written = readJson(file);
+      expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+      expect(written.CLAUDE_MEM_OPENAI_COMPAT_PRESET).toBe("");
+      // D23's two start blocks do not depend on the gateway: they are set all the same.
+      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+      expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
       expect(backend.seen).toEqual([]);
     }
   });
 
-  test("the person chose another provider: every claude-mem key is left alone, said once", () => {
+  test("the person chose another provider: the five provider keys stay, and D23's two are set", () => {
     const { home, run } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
     const file = writeClaudeMem(home, { ...SEEDED, CLAUDE_MEM_PROVIDER: "gemini" });
-    const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
       '  claude-mem settings left alone: CLAUDE_MEM_PROVIDER is "gemini" in ~/.claude-mem/settings.json (your choice)\n',
     );
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    // The provider keys stay exactly as the person left them...
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("gemini");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_PRESET).toBe("");
+    // ...while D23's two start blocks are still turned off.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     expect(backend.seen).toEqual([]);
   });
 
@@ -2089,26 +2113,33 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(result.stdout).not.toContain("sk-their-own-key");
   });
 
-  test("the backend refuses the key: nothing written to claude-mem's settings", async () => {
+  test("the backend refuses the key: the provider keys stay, and D23's two are still set", async () => {
     const { home, runAsync } = setup();
     writeGatewayConfig(home, fakeBackend(401).url);
     const file = writeClaudeMem(home, SEEDED);
-    const before = readFileSync(file, "utf8");
     const result = await runAsync(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
       "! claude-mem settings left alone: omniroute refused its key (HTTP 401)\n",
     );
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    // Nothing of the provider's is written...
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+    // ...and the two start blocks, which need no backend, are written anyway.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 
-  test("claude-mem never ran yet: its settings file is made with the five keys, mode 600", async () => {
+  test("claude-mem never ran yet: its settings file is made with the five keys and D23's two, mode 600", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
     expect((await runAsync(["setup"])).exitCode).toBe(0);
     const file = join(home, ".claude-mem", "settings.json");
     expect(readJson(file)).toEqual({
+      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
+      CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${backend.url}/v1`,
@@ -2131,7 +2162,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(written.CLAUDE_MEM_PROVIDER).toBeUndefined();
   });
 
-  test("claude-mem older than 13.29.0: one note (the range check's), and nothing written", () => {
+  test("claude-mem older than 13.29.0: one note (the range check's), the provider keys left alone, D23's two still set", () => {
     const { home, configDir, run } = setup();
     writeGatewayConfig(home, fakeBackend().url);
     const file = writeClaudeMem(home, SEEDED);
@@ -2139,13 +2170,18 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const plugins = readJson(installed);
     plugins.plugins["claude-mem@thedotmack"][0].version = "13.28.0";
     writeFileSync(installed, JSON.stringify(plugins));
-    const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "! claude-mem@thedotmack 13.28.0 is outside >=13.29.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
+      "! claude-mem@thedotmack 13.28.0 is outside >=13.36.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
     );
     expect(result.stdout.match(/13\.28\.0/g)).toHaveLength(1);
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    // No provider key: that provider came in 13.29.0.
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+    // Both start blocks are still planned: an unknown key is harmless to an older claude-mem.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 
   test("the backend has no chat endpoint (404), or does not serve the model: said so; the key never shows", async () => {
@@ -2171,12 +2207,17 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       const backend = fakeBackend(status, body);
       writeGatewayConfig(home, backend.url);
       const file = writeClaudeMem(home, SEEDED);
-      const before = readFileSync(file, "utf8");
       const result = await runAsync(["setup"]);
       expect(result.stdout).toContain(note.replace("URL", backend.url));
       expect(result.stdout).not.toContain("refused its key");
       expect(`${result.stdout}${result.stderr}`).not.toContain(PLANTED_KEY);
-      expect(readFileSync(file, "utf8")).toBe(before);
+      const written = readJson(file);
+      // The provider keys stay as they were: they point at a backend that failed.
+      expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+      expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+      // D23's two start blocks need no backend: they are written anyway.
+      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+      expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     }
   });
 
@@ -2264,7 +2305,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  test("a key pool of the person's (CLAUDE_MEM_OPENAI_COMPAT_API_KEYS): left alone, never printed", () => {
+  test("a key pool of the person's (CLAUDE_MEM_OPENAI_COMPAT_API_KEYS): the provider keys left alone, never printed; D23's two set", () => {
     const { home, run } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -2272,13 +2313,16 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       ...SEEDED,
       CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: "sk-pool-one-000000,sk-pool-two-000000",
     });
-    const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
       "  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_API_KEYS holds your own keys in ~/.claude-mem/settings.json (your choice)\n",
     );
     expect(result.stdout).not.toContain("sk-pool");
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS).toBe("sk-pool-one-000000,sk-pool-two-000000");
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     expect(backend.seen).toEqual([]);
   });
 
@@ -2294,12 +2338,19 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
-  test("no gateway: claude-mem's settings are not touched, and nothing is said", () => {
+  test("no gateway: only the two start blocks are set, and no provider key", () => {
     const { home, run } = setup();
     const file = writeClaudeMem(home, SEEDED);
-    const before = readFileSync(file, "utf8");
-    expect(run(["setup"]).stdout).not.toContain("claude-mem");
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const result = run(["setup"]);
+    expect(result.stdout).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"\n',
+    );
+    expect(result.stdout).not.toContain("CLAUDE_MEM_PROVIDER");
+    const written = readJson(file);
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 });
 
@@ -2945,7 +2996,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     // The line names the key's PATH, never its value. The `env` object setup made for it goes
     // with the key: this settings file had none of its own.
     expect(restored.stdout).toContain(
-      "env.TAVILY_API_KEY, env, the hook entry in hooks.Notification; everything else kept",
+      "env.TAVILY_API_KEY, env.CLAUDE_CODE_ENABLE_TODO_TOOLS, env, the hook entry in hooks.Notification; everything else kept",
     );
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });

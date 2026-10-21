@@ -14,6 +14,9 @@ import {
   checkAffordableTarget,
   claudeMemPlan,
   shownClaudeMemValue,
+  TODO_TOOLS_KEY,
+  TODO_TOOLS_VALUE,
+  WORK_STATE_KEY,
 } from "../machine/claude-mem";
 import { type CompanionStep, companionPlan, runCompanionSteps } from "../machine/companions";
 import type { Machine } from "../machine/machine";
@@ -69,9 +72,14 @@ import {
   applyManagedJson,
   createdObjects,
   formatKeyPath,
+  getKey,
   isObject,
   type KeyPath,
   ownedKeys,
+  ownedRecords,
+  ownership,
+  readJsonObject,
+  samePath,
 } from "../setup/managed-json";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
 import { readUserJson } from "../setup/user-json";
@@ -264,6 +272,10 @@ function applySetup(
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
+  // claude-mem's work state goes off (D23): Claude Code's own task tools are a session's
+  // to-do home then. A value the person set themselves stays, and is named below.
+  const todoTools = managed.claudeMem?.todoTools === true ? planTodoTools(paths) : null;
+  if (todoTools?.kind === "set") set.push([todoTools.path, TODO_TOOLS_VALUE]);
   // The key's source moved: the environment has it now (or there is no key at all), so the
   // key cc-smart-dev-kit wrote into the settings goes — the person's environment must not be
   // shadowed by a stale copy. Only while the key still holds what cc-smart-dev-kit wrote:
@@ -293,6 +305,11 @@ function applySetup(
   }
   for (const skip of settings.skipped) {
     info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+  }
+  if (todoTools?.kind === "kept") {
+    info.push(
+      `  ${short(settings.file)}: ${formatKeyPath(todoTools.path)} is ${JSON.stringify(todoTools.value)} (your choice); left alone`,
+    );
   }
 
   if (managed.autoMode !== null) {
@@ -336,6 +353,7 @@ function applySetup(
     }
     // A key that holds the wanted value already is claude-mem's own default (the plan
     // stops at any other value of the person's): nothing worth a line.
+    if (!dryRun && result.changes.length > 0) info.push(CLAUDE_MEM_RESTART_STEP);
   }
 
   if (managed.tmuxLine) {
@@ -538,6 +556,23 @@ function askStatusline(paths: CliPaths, machine: Machine, managed: Managed): boo
 }
 
 /**
+ * Said before claude-mem's work state goes off (D23): its to-do lists stop showing in a
+ * session, and the person may want to read one last time, or turn it back on (`setup`
+ * leaves a value they set alone, also `"true"`).
+ */
+function workStateWarning(paths: CliPaths): string {
+  return `! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`;
+}
+
+/**
+ * claude-mem's settings change. A new session's start hook reads them at its start, and
+ * claude-mem's worker reads them when it starts, so the running worker keeps the old ones
+ * until then.
+ */
+const CLAUDE_MEM_RESTART_STEP =
+  "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.";
+
+/**
  * The claude-mem keys this run writes, once the backend answered. Null: none. A dry run
  * reaches no network: it says which backend a real run would check.
  */
@@ -552,24 +587,55 @@ async function decideClaudeMem(
     if (planned.note !== null) report.notes.push(planned.note);
     return null;
   }
-  // Nothing to set: no need to ask the backend. Taking out a retired key writes no key, model
-  // or address the backend must answer for.
-  const sets = applyClaudeMem(paths, planned.plan, true).changes.filter(
-    (change) => change.after !== undefined,
+  const plan = planned.plan;
+  report.notes.push(...plan.notes);
+  // A dry run of the plan: what this run would change. No file is written.
+  const changes = applyClaudeMem(paths, plan, true).changes;
+  if (changes.some((change) => change.path.at(-1) === WORK_STATE_KEY)) {
+    report.notes.push(workStateWarning(paths));
+  }
+
+  // The backend is asked only when one of the provider keys changes: taking out a retired
+  // key, or writing only the two start blocks, needs no answer from it.
+  const provider = plan.provider;
+  if (provider === null) return plan;
+  const providerChanges = changes.some((change) =>
+    provider.set.some(([path]) => samePath(path, change.path)),
   );
-  if (sets.length === 0) return planned.plan;
+  if (!providerChanges) return plan;
   if (dryRun) {
     report.info.push(
-      `  claude-mem: would check ${planned.plan.target.backend} (one chat request) before writing its settings`,
+      `  claude-mem: would check ${provider.target.backend} (one chat request) before writing its settings`,
     );
-    return planned.plan;
+    return plan;
   }
-  const problem = await checkAffordableTarget(planned.plan.target);
+  const problem = await checkAffordableTarget(provider.target);
   if (problem !== null) {
+    // The two start blocks are independent of the backend: they are still written.
     report.notes.push(`! claude-mem settings left alone: ${problem}`);
-    return null;
+    return { ...plan, provider: null };
   }
-  return planned.plan;
+  return plan;
+}
+
+/**
+ * Claude Code's own task tools (D23): `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user
+ * settings, so a session whose claude-mem work state is off has a to-do home. A value the
+ * person set themselves is theirs: it stays, and setup names it.
+ */
+function planTodoTools(
+  paths: CliPaths,
+): { kind: "set"; path: KeyPath } | { kind: "kept"; path: KeyPath; value: unknown } {
+  const path: KeyPath = ["env", TODO_TOOLS_KEY];
+  const current = getKey(readJsonObject(paths.settingsFile).data, path);
+  if (!current.found || Bun.deepEquals(current.value, TODO_TOOLS_VALUE)) {
+    return { kind: "set", path };
+  }
+  // A key setup wrote before, and the person changed since, is theirs too (`ownership`).
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  return ownership(records, path, current) === "ours"
+    ? { kind: "set", path }
+    : { kind: "kept", path, value: current.value };
 }
 
 /** What `--warp`, `--remove-warp` or plain setup does about Warp. */

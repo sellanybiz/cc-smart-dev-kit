@@ -16,7 +16,14 @@ import {
 import { gatewayChecks } from "../gateway/doctor";
 import type { RouterServiceKind, Runner } from "../gateway/service";
 import { hasDesktop } from "../hooks/desktop-alert";
-import { claudeMemAdvice } from "../machine/claude-mem";
+import {
+  readStartBlocks,
+  START_BLOCK_KEYS,
+  type StartBlockReading,
+  TODO_TOOLS_KEY,
+  TODO_TOOLS_VALUE,
+  WORK_STATE_KEY,
+} from "../machine/claude-mem";
 import { companionChecks } from "../machine/companions";
 import type { Machine } from "../machine/machine";
 import { warpCheck } from "../machine/warp";
@@ -40,6 +47,7 @@ import {
   launcherCmdArgv,
   launcherCmdScript,
 } from "../setup/launcher-cmd";
+import { formatKeyPath, getKey, ownedRecords, ownership } from "../setup/managed-json";
 import {
   canReadGitRemote,
   canReadHttp,
@@ -60,6 +68,7 @@ import {
   tmuxPassthroughOf,
 } from "../setup/tmux";
 import { USER_NOTIFY_COMMAND, userNotifyHookState } from "../setup/user-notify-hook";
+import { realTarget } from "../setup/write";
 import { isOlder } from "../update/check";
 import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
 import {
@@ -699,10 +708,98 @@ export interface DoctorLocal {
   cwd: string;
 }
 
-/** A claude-mem whose vector search may not start: a warning, never a failure. */
-function claudeMemCheck(paths: CliPaths): Check | null {
-  const advice = claudeMemAdvice(paths);
-  return advice === null ? null : { ok: true, warn: true, text: advice };
+/** The two start blocks' names, as doctor says them. One per key in `START_BLOCK_KEYS`. */
+const START_BLOCK_NAMES: Readonly<Record<string, string>> = {
+  [START_BLOCK_KEYS[0]]: "work state",
+  [START_BLOCK_KEYS[1]]: "memory-use block",
+};
+
+/** How one start block reads: its name, whether it is on, and who set it. */
+function describeStartBlock(reading: StartBlockReading): string {
+  const name = START_BLOCK_NAMES[reading.key] ?? reading.key;
+  const state = reading.value === "false" ? "off" : "on";
+  const by =
+    reading.by === "setup"
+      ? `set by ${COMMAND} setup`
+      : reading.by === "person"
+        ? "your choice"
+        : "claude-mem's default";
+  return `${name} is ${state} (${by})`;
+}
+
+/**
+ * D23: claude-mem's two start blocks (its to-do list and its memory-use block), off. Both
+ * on (or one, with nobody having chosen it) is a ✗ that names setup: together they pass
+ * Claude Code's hook output limit in about one start in six. A value the person set is
+ * information, never a failure. An unreadable file is a warning: doctor cannot judge it.
+ */
+function claudeMemStartBlocksCheck(
+  paths: CliPaths,
+  readings: StartBlockReading[] | { problem: string },
+): Check {
+  if ("problem" in readings) return { ok: true, warn: true, text: readings.problem };
+  const base = `claude-mem's start blocks in ${tildify(paths.claudeMemSettingsFile, paths.home)}: ${readings.map(describeStartBlock).join(", ")}`;
+  const unset = readings.filter((reading) => reading.value !== "false" && reading.by !== "person");
+  if (unset.length > 0) {
+    return {
+      ok: false,
+      text: `${base}. Together they overflow Claude Code's start context in about one start in six. Run: ${COMMAND} setup`,
+    };
+  }
+  // Both off, or one left on by the person: their machine, their call. Information only.
+  return {
+    ok: true,
+    ...(readings.some((reading) => reading.value !== "false") && { info: true }),
+    text: base,
+  };
+}
+
+/**
+ * D23: Claude Code's own task tools, the to-do home of a session while claude-mem's work
+ * state is off. Checked only while that is off; with work state on, claude-mem's own list
+ * is there and this setting changes nothing.
+ */
+function claudeMemTodoToolsCheck(
+  paths: CliPaths,
+  readings: StartBlockReading[] | { problem: string },
+): Check | null {
+  if ("problem" in readings) return null;
+  const workState = readings.find((reading) => reading.key === WORK_STATE_KEY);
+  if (workState?.value !== "false") return null;
+  const path = ["env", TODO_TOOLS_KEY];
+  const current = getKey(readSettings(paths.settingsFile) ?? {}, path);
+  const key = formatKeyPath(path);
+  const file = tildify(paths.settingsFile, paths.home);
+  if (current.found && Bun.deepEquals(current.value, TODO_TOOLS_VALUE)) {
+    return {
+      ok: true,
+      text: `Claude Code's task tools are on for sessions: ${key} is ${JSON.stringify(TODO_TOOLS_VALUE)} in ${file}`,
+    };
+  }
+  if (!current.found) {
+    return {
+      ok: false,
+      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a session has no to-do list while claude-mem's work state is off. Run: ${COMMAND} setup`,
+    };
+  }
+  // A value the person set is theirs: information, never a failure.
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  const ours = ownership(records, path, current) === "ours";
+  return {
+    ok: true,
+    info: true,
+    text: `Claude Code's task tools are off for sessions: ${key} is ${JSON.stringify(current.value)} in ${file} (${ours ? `set by ${COMMAND} setup` : "your choice"}), so a session has no to-do list while claude-mem's work state is off`,
+  };
+}
+
+/** D23's lines: all `!` or `·`, except a gap setup fills. */
+export function claudeMemChecks(paths: CliPaths): Check[] {
+  const readings = readStartBlocks(paths);
+  const todoTools = readings === null ? null : claudeMemTodoToolsCheck(paths, readings);
+  return [
+    ...(readings === null ? [] : [claudeMemStartBlocksCheck(paths, readings)]),
+    ...(todoTools === null ? [] : [todoTools]),
+  ];
 }
 
 /**
@@ -943,7 +1040,7 @@ export async function doctorChecks(
     checkNameClash(settings),
     checkOldPlugin(settings, paths),
     ...companionChecks(paths),
-    claudeMemCheck(paths),
+    ...claudeMemChecks(paths),
     ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env, local.cwd)),
     ...(browser == null ? [] : browserChecks(paths, browser)),
     warpCheck(gateway.machine, paths),
