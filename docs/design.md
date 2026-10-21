@@ -1045,7 +1045,7 @@ its own repo.
 
 ## Instructions, skills and agents
 
-The plugin carries general working instructions for Claude, 17 skills and 3 agents, all
+The plugin carries general working instructions for Claude, 19 skills and 3 agents, all
 written for any project (`README.md` § Instructions, skills and agents lists them).
 
 **The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot
@@ -2196,6 +2196,13 @@ This section holds the contracts every part of it builds on — the switch, the 
 and the store — and the two commands that act on them so far: `worker lead` and the launcher,
 `worker start` (§ The lead and the launch, below). The watch that brings the lead its news, the
 hand-back report command, and the worker and lead hooks are later parts, and extend this section.
+
+**The instructions** say when a phase goes to a worker (`core.md` § Lead the work: a phase with
+its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
+the procedures: `lead` (register, split, start, hear the news, route the questions, the merge
+gate, caps, hand-offs, restarts) and `worker` (build the phase end to end, the steps, the
+report, the questions). Each points at the commands it uses and copies none of their tables:
+the kinds come from `worker kinds` (or `worker --help`), the caps from `workflow show`.
 
 **The switch** (D34) is `workflow.workers.enabled`, off by default, in the person's
 `workflow.json` (every project's default) and in a project's `.claude/cc-smart-dev-kit.json`,

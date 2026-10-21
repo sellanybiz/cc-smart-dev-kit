@@ -11,8 +11,8 @@ there.
 
 A subagent runs in its own context window; only its final report comes back. Every file it
 reads, every search and every dead end stays out of yours. If the task can be written as a
-self-contained brief, delegate it. What stays with you, and which model and effort each agent
-gets, are in the core instructions (§ Subagents).
+self-contained brief, delegate it. What stays with you is in the core instructions (§ Lead the
+work), and which model and effort each agent gets too (§ Subagents).
 
 ## Which agent
 
@@ -22,7 +22,8 @@ gets, are in the core instructions (§ Subagents).
 | A file's or a module's structure — its functions, exports, outline | yourself: claude-mem's `smart_outline` for one file, `smart_search` across the repo, `smart_unfold` for one symbol's body; when they are not there or do not answer, `Grep` and `Read` |
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
-| A phase of a plan; any job that both explores and edits | `general-purpose` |
+| A whole phase of a plan, where the project has workers on | a worker session, not a subagent — `/cc-smart-dev-kit:lead` |
+| A phase of a plan with workers off, a piece of one; any job that both explores and edits | `general-purpose` |
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
 | Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify` |
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |

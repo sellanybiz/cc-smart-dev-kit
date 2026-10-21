@@ -1337,9 +1337,10 @@ The plugin gives Claude general working instructions, skills and agents, written
 project.
 
 **The always-on instructions** (`plugin/instructions/core.md`): Claude works as the senior
-engineer and team lead — it plans, splits the work into independent phases, starts them at
-the same time as parallel subagents, checks each hand-back and gets one second-opinion review
-per change set. Also: the role, delegation, each subagent's model and effort, review, the core
+engineer and team lead — it plans, splits the work into independent phases, places each one
+(inline, a subagent, or a worker session where [`workers.enabled`](#the-workflow) is on),
+starts them at the same time, never waits on them, checks each hand-back and gets one
+second-opinion review per change set. Also: the role, delegation, each subagent's model and effort, review, the core
 principles, how to end a turn, and keeping docs true. `cc-smart-dev-kit setup` installs them for your
 user, **on by default**:
 
@@ -1387,7 +1388,7 @@ cc-smart-dev-kit, or one who ran `cc-smart-dev-kit setup --no-instructions`, the
 import loads nothing — Claude Code gives no error. `cc-smart-dev-kit doctor`, run in the project,
 names such a missing import.
 
-**17 skills** (`/cc-smart-dev-kit:<name>`; each also loads on its own when its topic comes up):
+**19 skills** (`/cc-smart-dev-kit:<name>`; each also loads on its own when its topic comes up):
 
 | Skill | Use it for |
 |---|---|
@@ -1408,6 +1409,8 @@ names such a missing import.
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |
 | `search` | Quick web lookups and one page's text through the gateway (`cc-smart-dev-kit search`). |
+| `lead` | Leading worker sessions: register, start each phase, hear the news without waiting, route questions, merge. |
+| `worker` | Inside a worker session: build the phase end to end, mark each step, ask the lead, hand back the report. |
 
 **3 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
 none is pinned in their files). `reviewer` and `rules-maintainer` load the skill they work by
