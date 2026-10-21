@@ -1,0 +1,19 @@
+{
+  "requires": ">=0.5.2",
+  "worktrees": {
+    "base": "main",
+    "guardMainFolder": false,
+    "bases": {
+      "hotfix/": "main",
+      "release/": "main"
+    }
+  },
+  "protectedBranches": [
+    "main"
+  ],
+  "sessionNames": false,
+  "workflow": {
+    "reviewBeforePush": true,
+    "autoMerge": false
+  }
+}
