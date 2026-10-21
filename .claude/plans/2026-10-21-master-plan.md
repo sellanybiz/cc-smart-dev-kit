@@ -309,7 +309,9 @@ Only once each release has run on this machine and the owner has checked it: dec
 
 ## Measure
 
-Baseline now (R1's report and R7's numbers), then again 14 days after each release: parallel ratio of agent launches; minutes blocked on prompts, and which guard asked; merges that asked; context per lead request; workers per day, their hand-offs and quiet alerts; to-dos kept in task tools or plan files; start notes cut to a preview (target 0).
+**Baseline, 2026-10-21** (`cc-smart-dev-kit report --days 7`, machine-wide: every project, session and background session): agent launches in parallel 50% (461 of 928; most at once 15); blocked on permission prompts 965 times, 260 h 48 min in all (an upper bound) — Claude Code 500 (116 h), merge-guard 102 (81 h), the Bash guard 89 (41 h), agent-guard 34 (11 h), main-folder-guard 233 (9 h), git-guard 5; merges that asked 102; 459 questions; compactions 38; auto-mode blocks 116 (Merge Without Review 3).
+
+Then again 14 days after each release: parallel ratio of agent launches; minutes blocked on prompts, and which guard asked; merges that asked; context per lead request; workers per day, their hand-offs and quiet alerts; to-dos kept in task tools or plan files; start notes cut to a preview (target 0).
 
 ## Carried over
 
