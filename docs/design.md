@@ -452,7 +452,7 @@ The guarantees:
   that means "nobody chose this yet" — a program's own default, which that program wrote
   into its file itself (claude-mem seeds every default on its first run). Such a key may
   be taken; restore removes it, and the program falls back to the same default. Setup checks `settings.json` before it
-  writes the launcher, so such a key (for example `autoUpdate: false`) stops it before
+  writes the launcher, so such a key (for example `autoUpdate: true`) stops it before
   anything is written.
 - **A key the person changed is theirs.** An owned key remembers the value cc-smart-dev-kit
   wrote. When it holds another value now (and not the program's own default), the
@@ -863,10 +863,30 @@ service; `MigrateOptions.router` is what it needs.
 
 ## Updates
 
-Claude Code's own plugin auto-update (`autoUpdate: true`, which `setup` turns on) did not
-run on a machine where it was on: 15 minutes after a session started, not even the
-marketplace copy was refreshed (anthropics/claude-code#61854). The same two commands by
-hand worked at once. So the plugin updates itself (the owner's decision, 2026-10-15):
+Claude Code's own plugin auto-update (`autoUpdate: true`, which `setup` turned on before
+0.7.0) did not run on a machine where it was on: 15 minutes after a session started, not
+even the marketplace copy was refreshed (anthropics/claude-code#61854). The same two
+commands by hand worked at once. So the plugin updates itself (the owner's decision,
+2026-10-15). Since 0.7.0 it is the only updater (D39): Claude Code's own auto-update is off
+for this marketplace, because it knows nothing of the major hold below and would install a
+major version by itself the day it runs.
+
+- **Claude Code's own auto-update off** (`src/setup/auto-update.ts`). Claude Code 2.1.306
+  decides by the first of three that is set: the settings' `extraKnownMarketplaces.<name>.
+  autoUpdate`, then the `autoUpdate` in its own `known_marketplaces.json`, then its default
+  (off for a marketplace that is not Anthropic's). A session start copies a settings value
+  into that record, and copies nothing when the settings have none. So a removed key leaves
+  an older `true` in the record, and auto-update stays on; only an explicit `false` in the
+  settings turns it off (proved live: `claude-code-contract.md`). `setup` manages the key at
+  `false`, with the usual ownership rules: an older setup's `true` is its own and becomes
+  `false`; a `true` the person set stops setup (`ForeignKeyError`). A machine that reached
+  0.7.0 through the background update never ran setup, so each background check first turns
+  setup's own leftover `true` to `false` (`turnOffLeftoverAutoUpdate`: `applyManagedJson`
+  under the state lock, with no wait), and nothing else: a key a `restore` took away is not
+  put back, and a `true` of the person's stays. Every failure there (a busy lock, the
+  person's value, a broken settings file) is one line in `update.log`, and the check goes on.
+  `doctor` passes while nothing turns it on, and fails on a `true` in the settings (setup's:
+  run setup; the person's: remove it by hand, then setup) or in the record.
 
 - **The SessionStart hook** (`src/entries/update-check.ts`, logic in
   `src/update/background.ts`) records which version the session loaded, and starts the
@@ -907,8 +927,8 @@ hand worked at once. So the plugin updates itself (the owner's decision, 2026-10
   a check is running now (it finishes).
 - **`doctor`** shows the last check and its result, the hold, and running sessions that
   loaded an older version than the one installed now.
-- **A major version waits for the person (D33).** A new major one may need the person's
-  own work first (1.0.0 refuses the retired worktree fields), so it must not reach a
+- **A major version waits for the person (D33, since 0.7.0).** A new major one may need the
+  person's own work first (1.0.0 refuses the retired worktree fields), so it must not reach a
   machine behind their back. `applyUpdate` (`src/update/apply.ts`) refreshes the
   marketplace, and when the copy's version is a new major one (`isNewMajor` in
   `src/update/major.ts`: the first number grows, compared with `Bun.semver.order`; a
@@ -935,22 +955,32 @@ hand worked at once. So the plugin updates itself (the owner's decision, 2026-10
     keeps the current major's note in it. Without the file the line has no why.
   - **`cc-smart-dev-kit update`** is the person's yes. Before it installs a major version it
     prints that it is one and lists the repos that still carry a retired piece (below); then
-    it installs and removes the hold's file.
-  - **The repo list** (`src/update/retired-repos.ts`), printed by `update` before a major and
-    by every `setup` run (`--dry-run` too): the folders Claude Code's saved sessions name
-    (`sessionWorkFolders` in `src/sessions/command.ts`, the same reader `sessions` uses: one
-    file per project folder, its newest), each taken to its main checkout; a folder that is
-    gone or not in git is skipped. A repo is listed, one `!` line with `cd <repo> &&
-    cc-smart-dev-kit project init`, when its `.claude/cc-smart-dev-kit.json` sets a retired
-    field (`retiredFieldsOf`, over `RETIRED_WORKTREE_FIELDS`), is not valid JSON (with the
-    error), or one of its two settings files runs an engine hook (`retiredEngineHookOf`).
-    Read-only: no other repo is ever written.
-  - **An older version does not know this rule.** Its background check (0.6.0's
-    `applyUpdate`) installs whatever is newer, so a machine on 0.6.0 gets 1.0.0 within the
-    hour, with its usual notification. A machine follows the new rule only once a session
-    has loaded a version that has it; a session still on the old version that runs its
-    SessionStart again (a `/clear`, a compaction) most likely runs the old hook (its plugin
-    folder is fixed for the session; not proved).
+    it installs, and asks for `cc-smart-dev-kit setup` (a major version's own one-time steps
+    run there). The hold's file goes only once the version it holds is really installed
+    (`!isOlder(after, held.version)`): a failed install, or a `claude plugin update` that
+    ends well and installs nothing, keeps it, and `update` says on stderr, with exit 1, that
+    the major version still waits. `update --check` says when the newer version is a major
+    one, and `doctor` shows a held major as a `·` line naming `update`, never `claude plugin
+    update` (which would skip the hold).
+  - **The repo list** (1.0.0, `src/update/retired-repos.ts`), printed by `update` before a
+    major and by every `setup` run (`--dry-run` too): the folders Claude Code's saved
+    sessions name (`sessionWorkFolders` in `src/sessions/command.ts`, the same reader
+    `sessions` uses: one file per project folder, its newest), each taken to its main
+    checkout; a folder that is gone or not in git is skipped. A repo is listed, one `!` line
+    with `cd <repo> && cc-smart-dev-kit project init`, when its
+    `.claude/cc-smart-dev-kit.json` sets a retired field (`retiredFieldsOf`, over
+    `RETIRED_WORKTREE_FIELDS`), is not valid JSON (with the error), or one of its two settings
+    files runs an engine hook (`retiredEngineHookOf`). Read-only: no other repo is ever
+    written.
+  - **An installed version that cannot be read is no major step.** `installed_plugins.json`
+    may name no version (`findUserInstall` gives null), or one that is not a version: then
+    `isNewMajor` is false, and the background check installs the newer version as before.
+  - **A version before 0.7.0 does not know this rule.** Its background check (0.6.0's
+    `applyUpdate`) installs whatever is newer. A machine follows the new rule only once a
+    session has loaded a version that has it; a session still on the old version that runs
+    its SessionStart again (a `/clear`, a compaction) most likely runs the old hook (its
+    plugin folder is fixed for the session; not proved). So 0.7.0 ships before 1.0.0, on
+    its own, to reach the machines first.
 
 The trade-off, accepted: a bad release reaches every machine within the hour, without a
 person running anything. A rollback is a new, higher version, which reaches them the same
@@ -2488,7 +2518,7 @@ plugin only copies it.
   the question says so plainly.
 - **Only one part of setup.** A project setup cannot read (an invalid or too-new
   `cc-smart-dev-kit.json`, git older than 2.31, a worktree whose main checkout is gone) leaves
-  the entries out with a note; the launcher, auto-update and the companions still
+  the entries out with a note; the launcher, the auto-update key and the companions still
   happen. Outside git, setup needs no git.
 - **Every question first.** The auto-mode question and Warp's commands are asked before
   anything runs or is written. A "no" drops only what depends on it.

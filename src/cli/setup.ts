@@ -57,6 +57,7 @@ import {
   applyAutoMode,
   autoModeSource,
 } from "../setup/auto-mode";
+import { AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE } from "../setup/auto-update";
 import {
   type InstructionsPaths,
   installInstructions,
@@ -87,9 +88,6 @@ import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-h
 import { atomicWrite, realTarget } from "../setup/write";
 import { retiredRepoLines } from "../update/retired-repos";
 import { type CliPaths, tildify } from "./paths";
-
-/** The key that turns on auto-update for the cc-smart-dev-kit marketplace. Claude Code's install leaves it out. */
-export const AUTO_UPDATE_KEY: KeyPath = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 
 export interface SetupOptions {
   /** Show every change; write and run nothing (and reach no network). */
@@ -263,7 +261,9 @@ function applySetup(
     changes.push(`${mark} ${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
   }
 
-  const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, true]];
+  // Claude Code's own plugin auto-update off, so a major version waits for the person (D39):
+  // why it is `false` and not a removed key, in `src/setup/auto-update.ts`.
+  const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
@@ -825,7 +825,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // changes another repo.
   report.notes.push(...retiredRepoLines(paths, options.env));
 
-  // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
+  // A read-only pass: a key the user set (autoUpdate: true) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.
   const planned = applySetup(paths, managed, true, plannedRemovals, machine.platform);
 

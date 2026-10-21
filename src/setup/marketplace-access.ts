@@ -320,14 +320,38 @@ export function marketplaceInstallLocation(
   knownMarketplacesFile: string,
   name: string,
 ): string | null {
+  const location = knownMarketplaceEntry(knownMarketplacesFile, name)?.installLocation;
+  return typeof location === "string" && location !== "" ? location : null;
+}
+
+/**
+ * The `autoUpdate` Claude Code keeps for a marketplace in known_marketplaces.json: what its
+ * `/plugin` toggle wrote, or what a session start copied there from the settings
+ * (`docs/claude-code-contract.md`). Undefined when it is not recorded as a boolean.
+ */
+export function marketplaceAutoUpdate(
+  knownMarketplacesFile: string,
+  name: string,
+): boolean | undefined {
+  const autoUpdate = knownMarketplaceEntry(knownMarketplacesFile, name)?.autoUpdate;
+  return typeof autoUpdate === "boolean" ? autoUpdate : undefined;
+}
+
+/** One marketplace's entry in known_marketplaces.json; null when the file or the entry cannot be read. */
+function knownMarketplaceEntry(
+  knownMarketplacesFile: string,
+  name: string,
+): Record<string, unknown> | null {
   if (!existsSync(knownMarketplacesFile)) return null;
   try {
     const known = JSON.parse(readFileSync(knownMarketplacesFile, "utf8")) as Record<
       string,
-      { installLocation?: unknown } | null
+      unknown
     > | null;
-    const location = known?.[name]?.installLocation;
-    return typeof location === "string" && location !== "" ? location : null;
+    const entry = known?.[name];
+    return typeof entry === "object" && entry !== null && !Array.isArray(entry)
+      ? (entry as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }

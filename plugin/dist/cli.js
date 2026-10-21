@@ -331,7 +331,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "0.6.0",
+  version: "0.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -2073,9 +2073,6 @@ function oldBunRefusal(command, version, path) {
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync49, readFileSync as readFileSync51 } from "fs";
 import { dirname as dirname16, join as join50 } from "path";
-
-// src/gateway/doctor.ts
-import { existsSync as existsSync12, readFileSync as readFileSync15 } from "fs";
 
 // src/gateway/config.ts
 import { createHash as createHash2 } from "crypto";
@@ -8347,6 +8344,9 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
+// src/gateway/doctor.ts
+import { existsSync as existsSync12, readFileSync as readFileSync15 } from "fs";
+
 // src/gateway/hosts.ts
 function ipv4Parts(host) {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
@@ -13321,12 +13321,20 @@ async function canReadHttp(url) {
   }
 }
 function marketplaceInstallLocation(knownMarketplacesFile, name) {
+  const location = knownMarketplaceEntry(knownMarketplacesFile, name)?.installLocation;
+  return typeof location === "string" && location !== "" ? location : null;
+}
+function marketplaceAutoUpdate(knownMarketplacesFile, name) {
+  const autoUpdate = knownMarketplaceEntry(knownMarketplacesFile, name)?.autoUpdate;
+  return typeof autoUpdate === "boolean" ? autoUpdate : undefined;
+}
+function knownMarketplaceEntry(knownMarketplacesFile, name) {
   if (!existsSync14(knownMarketplacesFile))
     return null;
   try {
     const known = JSON.parse(readFileSync17(knownMarketplacesFile, "utf8"));
-    const location = known?.[name]?.installLocation;
-    return typeof location === "string" && location !== "" ? location : null;
+    const entry = known?.[name];
+    return typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
   } catch {
     return null;
   }
@@ -13529,6 +13537,15 @@ function why(notes) {
 }
 function majorInstallLine(version, notes) {
   return `${PLUGIN} ${version} is a major version${why(notes)}: installing it.`;
+}
+function majorSetupLine() {
+  return `Run \`${COMMAND} setup\` now: a major version may need it.`;
+}
+function majorStillWaitsLine(version, notes) {
+  return `${PLUGIN} ${version} is a major version${why(notes)}: it was not installed, and it still waits for \`${COMMAND} update\`.`;
+}
+function majorHeldDetail(version, notes) {
+  return `${version} is a major version${why(notes)}: it waits for \`${COMMAND} update\``;
 }
 
 // src/update/apply.ts
@@ -16400,6 +16417,20 @@ async function omnirouteDoctorLine(ctx) {
   };
 }
 
+// src/setup/auto-update.ts
+var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
+var AUTO_UPDATE_VALUE = false;
+function autoUpdateState(paths) {
+  const current = getKey(readJsonObject(paths.settingsFile).data, AUTO_UPDATE_KEY);
+  if (current.found) {
+    if (current.value !== true)
+      return "off";
+    const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+    return ownership(records, AUTO_UPDATE_KEY, current) === "ours" ? "ours" : "yours";
+  }
+  return marketplaceAutoUpdate(paths.knownMarketplacesFile, MARKETPLACE) === true ? "known" : "off";
+}
+
 // src/setup/instructions.ts
 import { existsSync as existsSync30, readdirSync as readdirSync11, readFileSync as readFileSync33, rmSync as rmSync8 } from "fs";
 import { join as join26, relative, sep as sep2 } from "path";
@@ -17621,6 +17652,17 @@ function checkRunning(files) {
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
+}
+function readHeldMajor(files) {
+  try {
+    const parsed = JSON.parse(readFileSync35(files.major, "utf8"));
+    if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
+      return null;
+    }
+    return { at: parsed.at, from: parsed.from, notes: parsed.notes, version: parsed.version };
+  } catch {
+    return null;
+  }
 }
 function clearHeldMajor(files) {
   rmSync9(files.major, { force: true });
@@ -23576,7 +23618,6 @@ function retiredRepoLines(paths, env) {
 }
 
 // src/cli/setup.ts
-var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function show2(value) {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
@@ -23646,7 +23687,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     }
     changes.push(`${mark} ${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
   }
-  const set = [[AUTO_UPDATE_KEY, true]];
+  const set = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
   if (managed.statusline)
     set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.tavilyKeyPlan.kind === "write") {
@@ -26088,6 +26129,13 @@ function checkInstalledVersion(paths) {
       text: `cannot compare the installed version ${installed} with the marketplace's ${latest}`
     };
   }
+  if (order < 0 && isNewMajor(installed, latest)) {
+    return {
+      ok: true,
+      info: true,
+      text: `installed ${installed}; ${majorHeldDetail(latest, readMajorNotes(location, installed, latest))}`
+    };
+  }
   if (order < 0) {
     return {
       ok: false,
@@ -26096,12 +26144,38 @@ function checkInstalledVersion(paths) {
   }
   return { ok: true, text: `the installed version ${installed} is not behind the marketplace` };
 }
-function checkAutoUpdate(settings, paths) {
-  const marketplaces = settings?.extraKnownMarketplaces;
-  return marketplaces?.[MARKETPLACE]?.autoUpdate === true ? { ok: true, text: "plugin auto-update is on" } : {
-    ok: false,
-    text: `plugin auto-update is off in ${tildify(paths.settingsFile, paths.home)}. Run: cc-smart-dev-kit setup`
-  };
+function checkAutoUpdate(paths) {
+  const settingsFile = tildify(paths.settingsFile, paths.home);
+  const key = formatKeyPath(AUTO_UPDATE_KEY);
+  const risk = "a major version would install with no hold";
+  let state;
+  try {
+    state = autoUpdateState(paths);
+  } catch (error) {
+    return { ok: false, text: `cannot read Claude Code's plugin auto-update: ${messageOf(error)}` };
+  }
+  switch (state) {
+    case "off":
+      return {
+        ok: true,
+        text: `Claude Code's own plugin auto-update is off: ${COMMAND}'s own check updates the plugin`
+      };
+    case "ours":
+      return {
+        ok: false,
+        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, set by an older setup): ${risk}. Run: ${COMMAND} setup`
+      };
+    case "yours":
+      return {
+        ok: false,
+        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, not set by ${COMMAND}): ${risk}. Remove that key from ${settingsFile} by hand, then run: ${COMMAND} setup`
+      };
+    case "known":
+      return {
+        ok: false,
+        text: `Claude Code's own plugin auto-update is on (its own record, ${tildify(paths.knownMarketplacesFile, paths.home)}, says so): ${risk}. Run: ${COMMAND} setup`
+      };
+  }
 }
 function checkUpdatesNotOff(settings, env, paths) {
   const fromSettings = settings?.env ?? {};
@@ -26549,7 +26623,7 @@ async function doctorChecks(paths, env, { browser, bun, gateway, local, mcp, pro
     checkInstructions(paths, local.instructionsSource),
     checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),
-    checkAutoUpdate(settings, paths),
+    checkAutoUpdate(paths),
     checkUpdatesNotOff(settings, env, paths),
     ...checkSelfUpdate(paths),
     checkNameClash(settings),
@@ -32295,28 +32369,45 @@ async function updateNow(paths, env, now, sinks) {
       record("up-to-date", status.installed);
     } else {
       const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
+      const seen = { major: null };
       const result = applyUpdate(paths, claude, sinks.run ?? terminalRunner(env, paths.home), (line) => print(`$ ${line}`), (major) => {
+        seen.major = major;
         print(majorInstallLine(major.to, major.notes));
         for (const line of retiredRepoLines(paths, env))
           print(line);
         return true;
       });
+      const major = seen.major;
+      const majorWaits = major !== null && isOlder(result.after, major.to);
+      const clearHoldIfInstalled = () => {
+        const held = readHeldMajor(files);
+        if (held === null || !isOlder(result.after, held.version))
+          clearHeldMajor(files);
+      };
       if (!result.ok) {
         error(result.detail);
+        if (majorWaits)
+          error(majorStillWaitsLine(major.to, major.notes));
         record(result.busy === true ? "skipped" : "failed", result.detail);
         code = 1;
+      } else if (majorWaits) {
+        error(majorStillWaitsLine(major.to, major.notes));
+        record("skipped", majorHeldDetail(major.to, major.notes));
+        code = 1;
       } else if (result.after === result.before) {
-        clearHeldMajor(files);
+        clearHoldIfInstalled();
         print(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
         record("up-to-date", result.after ?? "(no version)");
       } else {
-        clearHeldMajor(files);
+        clearHoldIfInstalled();
         print(`${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`);
         const routerChanged = routerNeedsSetup(paths);
         record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`);
         if (routerChanged) {
           print(`Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`);
         }
+        if (major !== null)
+          print(majorSetupLine());
       }
     }
     if (isHeld(files)) {
@@ -32377,12 +32468,14 @@ not a project hook: it needs no settings from a project, and it works in every f
 var SETUP_HELP = `Usage: ${COMMAND} setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
        [--no-instructions | --instructions] [--statusline] [--tavily-key-stdin]
 
-Installs the launcher in ~/.local/bin, turns on plugin auto-update, installs the plugin's
-instructions for Claude (a copy in ~/.claude/cc-smart-dev-kit/instructions/, imported by a
-block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, points claude-mem at
-the scout slot's affordable model (when its chain starts with one), and copies the project's
-auto-mode entries into your settings. The entries are trust rules: they are shown and asked
-on a terminal (--yes: shown, not asked); with no terminal they are left out, also with --yes.
+Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-update off (the
+kit's background update is the one updater, so a major version waits for you), installs the
+plugin's instructions for Claude (a copy in ~/.claude/cc-smart-dev-kit/instructions/, imported
+by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, points claude-mem
+at the scout slot's affordable model (when its chain starts with one), and copies the
+project's auto-mode entries into your settings. The entries are trust rules: they are shown
+and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
+with --yes.
 
   --project <dir>      the project to read .claude/cc-smart-dev-kit.json from
                        (default: this folder)
@@ -32795,12 +32888,7 @@ var BOOKKEEPING_NAMES = [
   "lock",
   "migrate-progress.json",
   "notify.json",
-  "sessions",
-  "update",
-  "update-check.json",
-  "update-hold",
-  "update-reported",
-  "update.log"
+  ...Object.values(updateFiles("")).map((path) => basename9(path))
 ];
 function foreignStateEntries(old) {
   if (!existsSync59(old.stateDir))

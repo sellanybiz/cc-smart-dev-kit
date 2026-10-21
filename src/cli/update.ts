@@ -26,11 +26,18 @@ import {
   CLAUDE_TIMEOUT_MS,
   type CommandRunner,
   commandContext,
+  type MajorStep,
   ROUTER_SETUP_HINT,
   routerNeedsSetup,
 } from "../update/apply";
 import { checkForUpdate, isOlder, remotePluginVersion, type UpdateStatus } from "../update/check";
-import { isNewMajor, majorInstallLine } from "../update/major";
+import {
+  isNewMajor,
+  majorHeldDetail,
+  majorInstallLine,
+  majorSetupLine,
+  majorStillWaitsLine,
+} from "../update/major";
 import { retiredRepoLines } from "../update/retired-repos";
 import {
   type CheckResult,
@@ -40,6 +47,7 @@ import {
   hold,
   isHeld,
   isoSeconds,
+  readHeldMajor,
   readLastCheck,
   resume,
   unreachableCheck,
@@ -163,6 +171,8 @@ async function updateNow(
         record("up-to-date", status.installed);
       } else {
         const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
+        // The major version this run was asked to install, when there is one.
+        const seen: { major: MajorStep | null } = { major: null };
         const result = applyUpdate(
           paths,
           claude,
@@ -171,21 +181,36 @@ async function updateNow(
           // The person's own `update` is their word for a new major version (D33). First the
           // repos it would break, so they know where `project init` has work to do.
           (major) => {
+            seen.major = major;
             print(majorInstallLine(major.to, major.notes));
             for (const line of retiredRepoLines(paths, env)) print(line);
             return true;
           },
         );
+        const major = seen.major;
+        // A major version that did not get installed still waits: a failed install, or a
+        // `claude plugin update` that ended well and installed nothing.
+        const majorWaits = major !== null && isOlder(result.after, major.to);
+        // The hold goes only once the version it holds is really installed.
+        const clearHoldIfInstalled = () => {
+          const held = readHeldMajor(files);
+          if (held === null || !isOlder(result.after, held.version)) clearHeldMajor(files);
+        };
         if (!result.ok) {
           error(result.detail);
+          if (majorWaits) error(majorStillWaitsLine(major.to, major.notes));
           record(result.busy === true ? "skipped" : "failed", result.detail);
           code = 1;
+        } else if (majorWaits) {
+          error(majorStillWaitsLine(major.to, major.notes));
+          record("skipped", majorHeldDetail(major.to, major.notes));
+          code = 1;
         } else if (result.after === result.before) {
-          clearHeldMajor(files);
+          clearHoldIfInstalled();
           print(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
           record("up-to-date", result.after ?? "(no version)");
         } else {
-          clearHeldMajor(files);
+          clearHoldIfInstalled();
           print(
             `${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`,
           );
@@ -199,6 +224,8 @@ async function updateNow(
               `Its router changed too. To run it: ${COMMAND} gateway setup (it asks before the restart).`,
             );
           }
+          // A major version's own one-time steps run in its setup.
+          if (major !== null) print(majorSetupLine());
         }
       }
       if (isHeld(files)) {

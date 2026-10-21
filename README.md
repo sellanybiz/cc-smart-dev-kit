@@ -175,8 +175,8 @@ step below runs the plugin through it.
    The bundle path is the newest version's own folder (`$d/$v/dist/cli.js`) and the empty
    config sits beside it (`$d/$v/bunfig.toml`), so a later version ships its own.
 
-   Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns on auto-update for the
-   plugin, registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
+   Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns Claude Code's own plugin
+   auto-update off (the kit updates itself, below), registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
    the plugin's general instructions for Claude (§ Instructions, skills
    and agents), adds any companion marketplace that is missing, and prints the [browser](#the-browser)'s
    own steps while they are still open (the browser needs the Playwright extension in a Chrome
@@ -188,6 +188,28 @@ step below runs the plugin through it.
    ([The browser](#the-browser)); without the token, the browser tools do not work.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
+
+## What's new in 0.7.0
+
+**A major version now waits for your `cc-smart-dev-kit update`.** A patch or a minor version
+still installs by itself, within the hour. A major version (the first number grows) does
+not: each interactive session start shows one line until you run `cc-smart-dev-kit update`
+([The background update](#the-background-update)).
+
+1.0.0 will be such a version. It refuses the old worktree fields in a project's
+`.claude/cc-smart-dev-kit.json`; its `cc-smart-dev-kit project init`, run in each project,
+fixes them. Read its What's new before you run `cc-smart-dev-kit update`.
+
+**Claude Code's own plugin auto-update is now off for this marketplace.** It knows nothing of
+the hold, so it would install a major version by itself. The kit's own background update is
+the one updater now. `setup` writes `autoUpdate: false` (an explicit `false`: a removed key
+leaves Claude Code's own record at `true`). On a machine that got 0.7.0 by itself, the next
+background check turns an older setup's `true` to `false` (a `true` you set stays yours:
+`doctor` says what to do).
+
+**After this update, restart your running Claude sessions.** Until then, a session that
+loaded 0.6.0 may run 0.6.0's hook again on a `/clear` or a compaction, and that older check
+would install a newer major version by itself.
 
 ## 0.6.0: Serena is removed
 
@@ -574,7 +596,7 @@ Five pages say how, and what still has to be tested there:
 
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit setup` | Installs the launcher, turns on plugin auto-update, writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up, and turns [claude-mem's two start blocks off, with Claude Code's own task tools on](#claude-mem) whenever claude-mem is installed. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: false`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
+| `cc-smart-dev-kit setup` | Installs the launcher, turns Claude Code's own plugin auto-update off for this marketplace (`extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: false`: the background update below is the one updater, so a major version waits for you), writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up, and turns [claude-mem's two start blocks off, with Claude Code's own task tools on](#claude-mem) whenever claude-mem is installed. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: true`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"). |
 | `cc-smart-dev-kit setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/cc-smart-dev-kit/no-instructions`), so a later plain `cc-smart-dev-kit setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `cc-smart-dev-kit setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `cc-smart-dev-kit setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
@@ -592,7 +614,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| review-done [--sha <commit>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, and whether the commit here has a recorded review. `set` and `unset` write one value; `--project` writes the project's committed file. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, the [agent view notification hook](#notifications), claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
-| `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version. `--check` only says whether a newer version exists (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
+| `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version; a new major version too, which the background update holds for this. `--check` only says whether a newer version exists, and whether it is a major one (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
 | `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. |
 | `cc-smart-dev-kit browser setup [--dry-run]` | Finds Chrome, opens the Playwright extension's Web Store page in the `claude-code` profile (Chrome makes that profile on that launch, if it is not there yet), pre-registers the extension for your user on macOS and Windows, and prints the steps that are left for you. It never installs or removes an extension, and never deletes a profile. `--dry-run` prints the same lines and runs and writes nothing. |
@@ -617,9 +639,11 @@ list.
 
 ### The background update
 
-Claude Code's own plugin auto-update can fail to run (anthropics/claude-code#61854), so
-cc-smart-dev-kit updates itself. When a Claude session starts, its hook checks, **at most once an
-hour**, in the background, and never makes the session wait or prints anything:
+Claude Code's own plugin auto-update can fail to run (anthropics/claude-code#61854), and it
+knows nothing of the major hold below, so it is off for this marketplace (since 0.7.0: `setup`
+writes `autoUpdate: false`, and each background check turns an older setup's `true` to
+`false`). cc-smart-dev-kit updates itself. When a Claude session starts, its hook checks, **at
+most once an hour**, in the background, and never makes the session wait or prints anything:
 
 1. It compares the marketplace's remote head (`git ls-remote`, with no password prompt
    in a terminal: `GIT_TERMINAL_PROMPT=0` and ssh `BatchMode`; a git credential helper
@@ -645,12 +669,12 @@ is "skipped", and the next check tries again. The trade-off, accepted on purpose
 release reaches every machine within the hour. `cc-smart-dev-kit update --hold` keeps one
 machine where it is.
 
-**A major version waits for you.** A patch or a minor version installs by itself. A new
-major version (the first number grows: 0.6.0 → 1.0.0, 1.4.2 → 2.0.0) does not, because it
-may need work in your projects first: 1.0.0 refuses the retired worktree fields. The check
-refreshes the marketplace, installs nothing, and records "skipped: 1.0.0 is a major version
-(…): it waits for `cc-smart-dev-kit update`". Until you install it, each interactive session
-start shows one line:
+**A major version waits for you** (since 0.7.0). A patch or a minor version installs by
+itself. A new major version (the first number grows: 0.7.0 → 1.0.0, 1.4.2 → 2.0.0) does
+not, because it may need work in your projects first: 1.0.0 refuses the retired worktree
+fields. The check refreshes the marketplace, installs nothing, and records "skipped: 1.0.0
+is a major version (…): it waits for `cc-smart-dev-kit update`". Until you install it, each
+interactive session start shows one line:
 
 ```text
 cc-smart-dev-kit 1.0.0 is ready: it is a major version (it refuses old project fields). Read What's new, then run `cc-smart-dev-kit update`.
@@ -659,21 +683,27 @@ cc-smart-dev-kit 1.0.0 is ready: it is a major version (it refuses old project f
 It is shown when a session starts or resumes, not on a `/clear` or a compaction of the same
 session, and never in a `claude -p` run. The words in brackets come from the new version
 itself (`src/update/major-notes.json` in its marketplace copy); without them the line has
-none. `cc-smart-dev-kit update` is your yes: it first lists every repo your saved Claude
-sessions worked in that still carries a retired worktree field (`worktrees.prefix`, `setup`,
-`engine`) or an engine hook line (`cc-smart-dev-kit hook worktree-create`, …) in
-`.claude/settings.json` or `.claude/settings.local.json`, one `!` line each with its fix:
+none. `cc-smart-dev-kit update` is your yes: it says the version is a major one, then lists
+every repo your saved Claude sessions worked in that still carries a retired worktree field
+(`worktrees.prefix`, `setup`, `engine`) or an engine hook line
+(`cc-smart-dev-kit hook worktree-create`, …) in `.claude/settings.json` or
+`.claude/settings.local.json`, one `!` line each with its fix:
 
 ```text
 ! ~/Code/my-app still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd /home/user/Code/my-app && cc-smart-dev-kit project init
 ```
 
-Then it installs the new version, and the line goes. `cc-smart-dev-kit setup` lists the same
-repos on every run. Both only read those repos; `project init`, run in each, makes the change
-(a repo whose `cc-smart-dev-kit.json` is not valid JSON is listed with the error). `update
---check` says when the newer version is a major one. `update --hold` still wins: while it
-holds, nothing is checked and no line is shown. Versions before 1.0.0 do not have this rule:
-their background check installs 1.0.0 within the hour, like any other version.
+Then it installs the new version, the line goes, and it asks you to run
+`cc-smart-dev-kit setup` (a major version's own one-time steps run there).
+`cc-smart-dev-kit setup` lists the same repos on every run. Both only read those repos;
+`project init`, run in each, makes the change (a repo whose `cc-smart-dev-kit.json` is not
+valid JSON is listed with the error).
+When the install fails, or ends without installing it, the hold stays and `update` says the
+major version still waits. An installed version that cannot be read is no major step: the
+background check installs as before. `update --check` says when the newer version is a
+major one. `update --hold` still wins: while it holds, nothing is checked and no line is
+shown. Versions before 0.7.0 do not have this rule: their background check installs any
+newer version within the hour.
 
 It honours Claude Code's own switches for updates: while `DISABLE_AUTOUPDATER`,
 `DISABLE_UPDATES` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set (in the
@@ -698,7 +728,8 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
 - the installed version is not behind the marketplace's local copy. When it is, ✗ says
   "installed X, marketplace has Y. Run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit". When the
   local copy or its version cannot be read, it says "Run: claude plugin marketplace
-  update cc-smart-dev-kit";
+  update cc-smart-dev-kit". A new major version in the copy is no failure: a `·` line says it
+  waits for `cc-smart-dev-kit update`;
 - the launcher matches the script setup would write for the `bun` baked into it, and
   that `bun` is executable;
 - on Windows, the second launcher and Git Bash: `~/.local/bin/cc-smart-dev-kit.cmd` is there,
@@ -722,7 +753,7 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   GitHub was refused (add the marketplace over HTTPS instead), or the GitHub account cannot
   read the repository (ask its owner for read access, then accept the invitation) — and keeps
   its old line for anything else;
-- auto-update is on for the plugin;
+- Claude Code's own plugin auto-update is off for this marketplace. It fails when it is on (`autoUpdate: true` in `settings.json`, or Claude Code's own record in `known_marketplaces.json` with no key in the settings): it knows nothing of the major hold, so it would install a major version by itself. For setup's own leftover `true` the fix is `cc-smart-dev-kit setup`; for a `true` you set, remove it by hand, then run setup;
 - the background update: the last check and its result (a failed check is a ✗ that
   names the log; a check still to come, a skipped one and a marketplace unreadable for
   less than 24 hours are information), whether it is on hold, and, as information,
