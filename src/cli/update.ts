@@ -2,7 +2,9 @@
  * `cc-smart-dev-kit update`: the self-update by hand.
  *
  *   update            check now and install a newer version, in this terminal, with the
- *                     output of each `claude plugin` command
+ *                     output of each `claude plugin` command; a new major version too (the
+ *                     background check holds one for this, D33), after the repos that still
+ *                     carry a retired piece are listed
  *   update --check    only say whether a newer version exists; changes nothing
  *   update --hold     the SessionStart hook stops checking on this machine
  *   update --resume   it checks again (at most once an hour)
@@ -28,9 +30,12 @@ import {
   routerNeedsSetup,
 } from "../update/apply";
 import { checkForUpdate, isOlder, remotePluginVersion, type UpdateStatus } from "../update/check";
+import { isNewMajor, majorInstallLine } from "../update/major";
+import { retiredRepoLines } from "../update/retired-repos";
 import {
   type CheckResult,
   checkRunning,
+  clearHeldMajor,
   heldSince,
   hold,
   isHeld,
@@ -111,7 +116,12 @@ async function check(paths: CliPaths, env: Env, sinks: Sinks): Promise<number> {
     available = remote.version;
   }
   if (isOlder(status.installed, available)) {
-    print(`${PLUGIN} ${available} is available (installed: ${installed}). Run: ${COMMAND} update`);
+    const major = isNewMajor(status.installed, available)
+      ? " It is a major version: read What's new first."
+      : "";
+    print(
+      `${PLUGIN} ${available} is available (installed: ${installed}).${major} Run: ${COMMAND} update`,
+    );
   } else {
     print(
       `${PLUGIN} ${installed} is the newest version${status.catalogBehind ? " (the marketplace has newer commits, with no new version)" : ""}.`,
@@ -148,6 +158,7 @@ async function updateNow(
       }
       let code = 0;
       if (status.kind === "up-to-date") {
+        clearHeldMajor(files);
         print(`${PLUGIN} ${status.installed} is up to date.`);
         record("up-to-date", status.installed);
       } else {
@@ -157,15 +168,24 @@ async function updateNow(
           claude,
           sinks.run ?? terminalRunner(env, paths.home),
           (line) => print(`$ ${line}`),
+          // The person's own `update` is their word for a new major version (D33). First the
+          // repos it would break, so they know where `project init` has work to do.
+          (major) => {
+            print(majorInstallLine(major.to, major.notes));
+            for (const line of retiredRepoLines(paths, env)) print(line);
+            return true;
+          },
         );
         if (!result.ok) {
           error(result.detail);
           record(result.busy === true ? "skipped" : "failed", result.detail);
           code = 1;
         } else if (result.after === result.before) {
+          clearHeldMajor(files);
           print(`${PLUGIN} ${result.after ?? "(no version)"} is the newest version.`);
           record("up-to-date", result.after ?? "(no version)");
         } else {
+          clearHeldMajor(files);
           print(
             `${PLUGIN} ${result.after ?? "(no version)"} installed (was ${result.before ?? "none"}). Restart Claude sessions to load it.`,
           );

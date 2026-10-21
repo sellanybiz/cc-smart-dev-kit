@@ -51,6 +51,7 @@ function cliPaths(env = process.env) {
     settingsFile: join2(claudeConfigDir, "settings.json"),
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    projectsDir: join2(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
@@ -6316,13 +6317,16 @@ function checkRequires(file, raw, pluginVersion) {
 function retiredFieldMessage(field) {
   return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
 }
-function checkRetiredFields(where, raw) {
+function retiredFieldsOf(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return;
+    return [];
   const worktrees = raw.worktrees;
   if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
-    return;
-  const found = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+    return [];
+  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+}
+function checkRetiredFields(where, raw) {
+  const found = retiredFieldsOf(raw);
   if (found.length === 0)
     return;
   throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
@@ -10499,6 +10503,9 @@ var FIND_INSTALL_JS = [
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
+function shellWord(path) {
+  return /^[\w./-]+$/.test(path) ? path : shellQuote(path);
+}
 
 // src/hooks/job-route.ts
 var PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
@@ -10513,7 +10520,7 @@ function plainWords(command) {
   const invocation = invocationOf(words);
   return invocation === undefined || invocation.program !== words[0] ? null : words;
 }
-function shellWord(word) {
+function shellWord2(word) {
   return PLAIN_WORD.test(word) ? word : shellQuote(word);
 }
 function routedShell(env, which = (command) => Bun.which(command, { PATH: env.PATH ?? "" })) {
@@ -10525,7 +10532,7 @@ function routedShell(env, which = (command) => Bun.which(command, { PATH: env.PA
 }
 function jobRunCommand(kind, command, shell) {
   const words = plainWords(command);
-  const inner = words === null ? `${shellWord(shell)} -c ${shellQuote(command)}` : words.map(shellWord).join(" ");
+  const inner = words === null ? `${shellWord2(shell)} -c ${shellQuote(command)}` : words.map(shellWord2).join(" ");
   return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
 }
 function runsJobRun(command) {
@@ -10630,10 +10637,10 @@ function mainFolderGuard(context) {
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync9, readFileSync as readFileSync10 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync11 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, dirname as dirname5, join as join12 } from "path";
+import { delimiter, dirname as dirname5, join as join13 } from "path";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -10707,42 +10714,105 @@ var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 var USER_NOTIFY_HOOK_NAME = "notify";
 var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
 
-// src/cli/setup.ts
-function shellWord2(path) {
-  return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
+// src/hooks/settings-hooks.ts
+var RETIRED_ENGINE_HOOKS = [
+  "worktree-create",
+  "worktree-remove",
+  "subagent-stop"
+];
+var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
+
+// src/hooks/sessions.ts
+import { existsSync as existsSync8, readdirSync as readdirSync2, readFileSync as readFileSync9, statSync as statSync5 } from "fs";
+import { uptime } from "os";
+import { join as join12 } from "path";
+function parseSessionRecord(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { cwd, name, pid, sessionId } = value;
+  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
+    return null;
+  }
+  return { pid, sessionId, cwd, name: typeof name === "string" ? name : sessionId.slice(0, 8) };
 }
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function liveSessions(claudeConfigDir) {
+  const dir = join12(claudeConfigDir, "sessions");
+  if (!existsSync8(dir))
+    return [];
+  const bootedAt = Date.now() - uptime() * 1000;
+  const live = [];
+  for (const file of readdirSync2(dir)) {
+    const pid = Number(file.replace(/\.json$/, ""));
+    if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
+      continue;
+    let text;
+    try {
+      if (statSync5(join12(dir, file)).mtimeMs < bootedAt)
+        continue;
+      text = readFileSync9(join12(dir, file), "utf8");
+    } catch {
+      continue;
+    }
+    const record = parseSessionRecord(text);
+    if (record === null) {
+      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+    }
+    live.push(record);
+  }
+  return live;
+}
+
+// src/sessions/command.ts
+var TAIL_BYTES = 512 * 1024;
+
+// src/cli/setup.ts
 function statuslineSetting(paths) {
-  return { command: `${shellWord2(join12(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join13(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/update/state.ts
 import {
   appendFileSync as appendFileSync3,
-  existsSync as existsSync8,
+  existsSync as existsSync9,
   mkdirSync as mkdirSync8,
-  readdirSync as readdirSync2,
-  readFileSync as readFileSync9,
+  readdirSync as readdirSync3,
+  readFileSync as readFileSync10,
   rmSync,
-  statSync as statSync5,
+  statSync as statSync6,
   writeFileSync as writeFileSync5
 } from "fs";
-import { join as join13 } from "path";
+import { join as join14 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join13(stateDir, "update-hold"),
-    check: join13(stateDir, "update-check.json"),
-    reported: join13(stateDir, "update-reported"),
-    log: join13(stateDir, "update.log"),
-    lockDir: join13(stateDir, "update"),
-    sessions: join13(stateDir, "sessions")
+    hold: join14(stateDir, "update-hold"),
+    check: join14(stateDir, "update-check.json"),
+    reported: join14(stateDir, "update-reported"),
+    major: join14(stateDir, "update-major.json"),
+    log: join14(stateDir, "update.log"),
+    lockDir: join14(stateDir, "update"),
+    sessions: join14(stateDir, "sessions")
   };
 }
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 function isHeld(files) {
-  return existsSync8(files.hold);
+  return existsSync9(files.hold);
 }
 
 // src/zod-issues.ts
@@ -10761,11 +10831,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync9(file))
+  if (!existsSync10(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync10(file, "utf8"));
+    raw = JSON.parse(readFileSync11(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -10816,7 +10886,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync10(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync11(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -11219,60 +11289,6 @@ function mergeGuard(context) {
       return toolDecision("ask", notByItself(reason, view.number));
   }
   return SILENT;
-}
-
-// src/hooks/sessions.ts
-import { existsSync as existsSync10, readdirSync as readdirSync3, readFileSync as readFileSync11, statSync as statSync6 } from "fs";
-import { uptime } from "os";
-import { join as join14 } from "path";
-function parseSessionRecord(json) {
-  let value;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (typeof value !== "object" || value === null)
-    return null;
-  const { cwd, name, pid, sessionId } = value;
-  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
-    return null;
-  }
-  return { pid, sessionId, cwd, name: typeof name === "string" ? name : sessionId.slice(0, 8) };
-}
-function isRunning(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-function liveSessions(claudeConfigDir) {
-  const dir = join14(claudeConfigDir, "sessions");
-  if (!existsSync10(dir))
-    return [];
-  const bootedAt = Date.now() - uptime() * 1000;
-  const live = [];
-  for (const file of readdirSync3(dir)) {
-    const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
-      continue;
-    let text;
-    try {
-      if (statSync6(join14(dir, file)).mtimeMs < bootedAt)
-        continue;
-      text = readFileSync11(join14(dir, file), "utf8");
-    } catch {
-      continue;
-    }
-    const record = parseSessionRecord(text);
-    if (record === null) {
-      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
-    }
-    live.push(record);
-  }
-  return live;
 }
 
 // src/hooks/message-guard.ts

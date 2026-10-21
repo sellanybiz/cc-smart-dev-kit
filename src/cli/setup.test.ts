@@ -11,7 +11,7 @@ import { serenaLeftoverPaths } from "../mcp/retired";
 import { restore } from "../setup/restore";
 import { readChanged, writeManagedFile } from "../setup/write";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
-import { git, tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 
 capturePrinted();
 
@@ -700,5 +700,42 @@ describe("setup takes back what an older setup left for Serena", () => {
     expect(existsSync(where.contextFile)).toBe(true);
     expect(existsSync(where.recordDir)).toBe(true);
     expect(readMcpRecords(w.paths.stateDir).serena).toBeDefined();
+  });
+});
+
+describe("D33: setup lists the repos that still carry a retired worktree piece", () => {
+  /** A repo a saved session of this machine worked in, with a retired field in its config. */
+  function oldRepo(w: ReturnType<typeof world>): { dir: string; config: string } {
+    const config = JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" } });
+    const dir = project({});
+    writeFileSync(join(dir, ".claude", "cc-smart-dev-kit.json"), config);
+    const folder = join(w.paths.projectsDir, "-old-repo");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "s1.jsonl"), `${JSON.stringify({ cwd: dir, type: "user" })}\n`);
+    return { config, dir };
+  }
+
+  test("D33: every run names each such repo once, with the fix; the repo itself is not changed", async () => {
+    const w = world({ git: true });
+    const { config, dir } = oldRepo(w);
+    const line = `! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`;
+    expect(await w.setup({ env: cleanGitEnv() })).toBe(0);
+    expect(printed.filter((printedLine) => printedLine === line)).toHaveLength(1);
+    printed.length = 0;
+    // A second run, with nothing else to change, still says it.
+    expect(await w.setup({ env: cleanGitEnv() })).toBe(0);
+    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(printed).toContain(line);
+    expect(readFileSync(join(dir, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(config);
+  });
+
+  test("D33: --dry-run names it too", async () => {
+    const w = world({ git: true });
+    const { dir } = oldRepo(w);
+    expect(await w.setup({ dryRun: true, env: cleanGitEnv() })).toBe(0);
+    expect(printed).toContain(
+      `! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`,
+    );
+    expect(printed).toContain("Dry run: nothing was written or run.");
   });
 });

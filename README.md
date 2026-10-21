@@ -646,6 +646,36 @@ is "skipped", and the next check tries again. The trade-off, accepted on purpose
 release reaches every machine within the hour. `cc-smart-dev-kit update --hold` keeps one
 machine where it is.
 
+**A major version waits for you.** A patch or a minor version installs by itself. A new
+major version (the first number grows: 0.6.0 → 1.0.0, 1.4.2 → 2.0.0) does not, because it
+may need work in your projects first: 1.0.0 refuses the retired worktree fields. The check
+refreshes the marketplace, installs nothing, and records "skipped: 1.0.0 is a major version
+(…): it waits for `cc-smart-dev-kit update`". Until you install it, each interactive session
+start shows one line:
+
+```text
+cc-smart-dev-kit 1.0.0 is ready: it is a major version (it refuses old project fields). Read What's new, then run `cc-smart-dev-kit update`.
+```
+
+It is shown when a session starts or resumes, not on a `/clear` or a compaction of the same
+session, and never in a `claude -p` run. The words in brackets come from the new version
+itself (`src/update/major-notes.json` in its marketplace copy); without them the line has
+none. `cc-smart-dev-kit update` is your yes: it first lists every repo your saved Claude
+sessions worked in that still carries a retired worktree field (`worktrees.prefix`, `setup`,
+`engine`) or an engine hook line (`cc-smart-dev-kit hook worktree-create`, …) in
+`.claude/settings.json` or `.claude/settings.local.json`, one `!` line each with its fix:
+
+```text
+! ~/Code/my-app still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd /home/user/Code/my-app && cc-smart-dev-kit project init
+```
+
+Then it installs the new version, and the line goes. `cc-smart-dev-kit setup` lists the same
+repos on every run. Both only read those repos; `project init`, run in each, makes the change
+(a repo whose `cc-smart-dev-kit.json` is not valid JSON is listed with the error). `update
+--check` says when the newer version is a major one. `update --hold` still wins: while it
+holds, nothing is checked and no line is shown. Versions before 1.0.0 do not have this rule:
+their background check installs 1.0.0 within the hour, like any other version.
+
 It honours Claude Code's own switches for updates: while `DISABLE_AUTOUPDATER`,
 `DISABLE_UPDATES` or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set (in the
 environment or the `env` of `settings.json`) and `FORCE_AUTOUPDATE_PLUGINS` is not, it

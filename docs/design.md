@@ -895,9 +895,9 @@ hand worked at once. So the plugin updates itself (the owner's decision, 2026-10
   at most once an hour per config folder, and not while updates are held. It needs no
   network and no lock, and returns at once (about 60 ms on a loaded machine, most of it
   bun's own start). It prints nothing, unless the last background check failed and no
-  session was told yet: then one `systemMessage`, to an attended session only (Claude
-  Code sets `CLAUDE_CODE_SESSION_ATTENDED=0` for the hooks of `claude -p`; such a session
-  neither shows it nor counts as told). It runs bun through `plugin/bin/cc-smart-dev-kit-bun.sh`,
+  session was told yet, or a major version is held (below): then one `systemMessage`, to
+  an attended session only (Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED=0` for the hooks
+  of `claude -p`; such a session neither shows it nor counts as told). It runs bun through `plugin/bin/cc-smart-dev-kit-bun.sh`,
   which looks where the launcher does, so a Claude Code started with no bun on PATH
   still runs it.
 - **Claude Code's switches for updates are honoured.** While `DISABLE_AUTOUPDATER`,
@@ -928,6 +928,50 @@ hand worked at once. So the plugin updates itself (the owner's decision, 2026-10
   a check is running now (it finishes).
 - **`doctor`** shows the last check and its result, the hold, and running sessions that
   loaded an older version than the one installed now.
+- **A major version waits for the person (D33).** A new major one may need the person's
+  own work first (1.0.0 refuses the retired worktree fields), so it must not reach a
+  machine behind their back. `applyUpdate` (`src/update/apply.ts`) refreshes the
+  marketplace, and when the copy's version is a new major one (`isNewMajor` in
+  `src/update/major.ts`: the first number grows, compared with `Bun.semver.order`; a
+  version it cannot read is no major step) it asks its caller first (`onMajor`). The
+  background check says no: it installs nothing, records `skipped` with the reason, and
+  writes `<stateDir>/update-major.json` (the version, the version installed then, when it
+  was first found, and the why). The hold is its own file, not a new result in
+  `update-check.json`: an older version's hook refuses a result it does not know, counts the
+  record as no check, and would check again at once. A later check that finds the install
+  current (installed by hand, or the release taken back) removes the file.
+  - **The session start** shows one line while the file names a version above the installed
+    one: "cc-smart-dev-kit 1.0.0 is ready: it is a major version (it refuses old project
+    fields). Read What's new, then run `cc-smart-dev-kit update`." Only when the hook's
+    input says a session starts (`source` `startup` or `resume`, or no `source`), never on a
+    `clear` or a `compact` of the same session; to an attended session only; after a failure
+    to tell, in the same `systemMessage`. `update --hold` and Claude Code's switches for
+    updates come first: they silence it.
+  - **The why comes from the new version.** The running code is the installed version's: it
+    cannot know why a later major is one. So each major names its reason in
+    `src/update/major-notes.json` (`{ "1.0.0": "it refuses old project fields" }`), and the
+    check reads that file from Claude Code's marketplace copy (the new version's repo, just
+    refreshed) at `MAJOR_NOTES_PATH`, keeping only short one-line notes of the majors the
+    step crosses. Every installed version reads that path, so the file never moves; a test
+    keeps the current major's note in it. Without the file the line has no why.
+  - **`cc-smart-dev-kit update`** is the person's yes. Before it installs a major version it
+    prints that it is one and lists the repos that still carry a retired piece (below); then
+    it installs and removes the hold's file.
+  - **The repo list** (`src/update/retired-repos.ts`), printed by `update` before a major and
+    by every `setup` run (`--dry-run` too): the folders Claude Code's saved sessions name
+    (`sessionWorkFolders` in `src/sessions/command.ts`, the same reader `sessions` uses: one
+    file per project folder, its newest), each taken to its main checkout; a folder that is
+    gone or not in git is skipped. A repo is listed, one `!` line with `cd <repo> &&
+    cc-smart-dev-kit project init`, when its `.claude/cc-smart-dev-kit.json` sets a retired
+    field (`retiredFieldsOf`, over `RETIRED_WORKTREE_FIELDS`), is not valid JSON (with the
+    error), or one of its two settings files runs an engine hook (`retiredEngineHookOf`).
+    Read-only: no other repo is ever written.
+  - **An older version does not know this rule.** Its background check (0.6.0's
+    `applyUpdate`) installs whatever is newer, so a machine on 0.6.0 gets 1.0.0 within the
+    hour, with its usual notification. A machine follows the new rule only once a session
+    has loaded a version that has it; a session still on the old version that runs its
+    SessionStart again (a `/clear`, a compaction) most likely runs the old hook (its plugin
+    folder is fixed for the session; not proved).
 
 The trade-off, accepted: a bad release reaches every machine within the hour, without a
 person running anything. A rollback is a new, higher version, which reaches them the same

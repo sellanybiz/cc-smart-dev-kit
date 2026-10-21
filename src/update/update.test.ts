@@ -18,23 +18,26 @@ import {
 } from "../setup/instructions";
 import { lockIsHeld, withLock } from "../setup/lock";
 import { subprocessGuard } from "../testing/port-guard";
-import { tempDir } from "../testing/temp";
-import { installedText, notifyCommand } from "./apply";
+import { git, tempDir } from "../testing/temp";
+import { capturingRunner, installedText, notifyCommand } from "./apply";
 import {
   backgroundCheck,
   backgroundCheckArgv,
   backgroundCommand,
   refreshInstructionsAtSessionStart,
+  sessionSourceOf,
   sessionStart,
 } from "./background";
 import { checkForUpdate, isOlder } from "./check";
 import {
   CHECK_INTERVAL_MS,
   isDue,
+  readHeldMajor,
   readLastCheck,
   registerSession,
   runningSessions,
   updateFiles,
+  writeHeldMajor,
   writeLastCheck,
 } from "./state";
 
@@ -66,6 +69,8 @@ interface MachineOptions {
   claudeSleeps?: number;
   /** More environment for the hook and the CLI (Claude Code's switches, git's variables). */
   env?: Record<string, string>;
+  /** The text of the copy's major-notes file (`MAJOR_NOTES_PATH`); absent: no such file. */
+  majorNotes?: string;
 }
 
 /** A temp machine as `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit` leaves it, with fakes on PATH. */
@@ -111,11 +116,18 @@ function machine(options: MachineOptions = {}) {
     }),
   );
 
+  if (options.majorNotes !== undefined) {
+    mkdirSync(join(copy, "src", "update"), { recursive: true });
+    writeFileSync(join(copy, "src", "update", "major-notes.json"), options.majorNotes);
+  }
+
   // What the fakes read and write.
   const fake = join(home, "fake");
   const bin = join(fake, "bin");
   mkdirSync(bin, { recursive: true });
   const remoteHead = options.remoteHead ?? HEAD_A;
+  const realGit = Bun.which("git");
+  if (realGit === null) throw new Error("this test needs git");
   writeFileSync(join(fake, "local-head"), `${options.localHead ?? HEAD_A}\n`);
   writeFileSync(join(fake, "installed-after"), installed(newVersion));
   writeFileSync(join(fake, "copy-after"), copyManifest(newVersion));
@@ -127,6 +139,8 @@ function machine(options: MachineOptions = {}) {
     chmodSync(join(bin, name), 0o755);
   };
   script("git", [
+    // The repo scan's own calls (it finds a session's checkout) reach the real git, unlogged.
+    `case "$*" in *--path-format*|"worktree list"*) exec ${q(realGit)} "$@" ;; esac`,
     `echo "$*" >> ${q(join(fake, "git.log"))}`,
     'case "$*" in',
     "  config*) exit 1 ;;",
@@ -623,6 +637,7 @@ function hookHere(
   m: ReturnType<typeof machine>,
   nowMs = NOW,
   env: Record<string, string | undefined> = m.env,
+  source: null | string = "startup",
 ) {
   let started = 0;
   const answer = sessionStart({
@@ -630,6 +645,7 @@ function hookHere(
     nowMs,
     paths: m.paths,
     sessionPid: process.pid,
+    source,
     spawnBackground: () => {
       started += 1;
     },
@@ -787,7 +803,7 @@ describe("cc-smart-dev-kit update", () => {
     );
     const remote = machine({ remoteHead: HEAD_B, remoteVersion: "2.0.0" });
     expect((await remote.cli(["update", "--check"])).stdout).toBe(
-      "cc-smart-dev-kit 2.0.0 is available (installed: 1.0.0). Run: cc-smart-dev-kit update\n",
+      "cc-smart-dev-kit 2.0.0 is available (installed: 1.0.0). It is a major version: read What's new first. Run: cc-smart-dev-kit update\n",
     );
     // No claude command, and Claude Code's copy untouched.
     expect(remote.read("claude.log")).toBe("");
@@ -1150,4 +1166,282 @@ describe("the instructions copy at a session start", () => {
     release();
     await busy;
   });
+});
+
+describe("D33: a major version waits for the person", () => {
+  const NOTES = JSON.stringify({ "1.0.0": "it refuses old project fields" });
+  const LINE_1_0_0 =
+    "cc-smart-dev-kit 1.0.0 is ready: it is a major version (it refuses old project fields). Read What's new, then run `cc-smart-dev-kit update`.";
+
+  /** The detached check in this process, with the machine's fakes; what it recorded and notified. */
+  async function checkHere(m: ReturnType<typeof machine>) {
+    const notified: string[] = [];
+    await backgroundCheck({
+      claude: Bun.which("claude", { PATH: m.env.PATH ?? "" }),
+      env: m.env,
+      notify: (text) => notified.push(text),
+      now: () => NOW,
+      paths: m.paths,
+      run: capturingRunner(m.env, m.home),
+    });
+    return { last: readLastCheck(m.files), notified };
+  }
+
+  /** A held major, as the background check leaves it. */
+  const holdMajor = (m: ReturnType<typeof machine>, notes: string[] = []) =>
+    writeHeldMajor(m.files, { at: "2026-10-15T09:00:00Z", from: "0.6.0", notes, version: "1.0.0" });
+
+  test("D33: 0.6.0 → 0.6.1 installs, as before", async () => {
+    const m = machine({
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      newVersion: "0.6.1",
+      remoteHead: HEAD_B,
+    });
+    const { last, notified } = await checkHere(m);
+    expect(last?.result).toBe("updated");
+    expect(m.installedVersion()).toBe("0.6.1");
+    expect(notified).toHaveLength(1);
+    expect(readHeldMajor(m.files)).toBeNull();
+  });
+
+  test("D33: 1.0.0 → 1.1.0 installs, as before", async () => {
+    const m = machine({ remoteHead: HEAD_B });
+    expect((await checkHere(m)).last?.result).toBe("updated");
+    expect(m.installedVersion()).toBe("1.1.0");
+    expect(readHeldMajor(m.files)).toBeNull();
+  });
+
+  test("D33: 0.6.0 → 1.0.0 holds: the refresh only, nothing installed, nothing notified; the held state says what and why", async () => {
+    const m = machine({
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    const { last, notified } = await checkHere(m);
+    expect(m.read("claude.log")).toBe("plugin marketplace update cc-smart-dev-kit\n");
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(notified).toEqual([]);
+    expect(last).toEqual({
+      at: "2026-10-15T10:00:00Z",
+      detail:
+        "1.0.0 is a major version (it refuses old project fields): it waits for `cc-smart-dev-kit update`",
+      result: "skipped",
+    });
+    expect(readHeldMajor(m.files)).toEqual({
+      at: "2026-10-15T10:00:00Z",
+      from: "0.6.0",
+      notes: ["it refuses old project fields"],
+      version: "1.0.0",
+    });
+  });
+
+  test("D33: 0.6.0 → 1.1.0 (two steps, one major) holds, with 1.0.0's note", async () => {
+    const m = machine({
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.1.0",
+      remoteHead: HEAD_B,
+    });
+    await checkHere(m);
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(readHeldMajor(m.files)).toMatchObject({
+      notes: ["it refuses old project fields"],
+      version: "1.1.0",
+    });
+  });
+
+  test("D33: two majors behind (0.6.0 → 2.0.0): held, with both notes, oldest first", async () => {
+    const m = machine({
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: JSON.stringify({
+        "2.0.0": "it needs a newer Bun",
+        "1.0.0": "it refuses old project fields",
+        "3.0.0": "not crossed",
+      }),
+      newVersion: "2.0.0",
+      remoteHead: HEAD_B,
+    });
+    expect((await checkHere(m)).last?.detail).toBe(
+      "2.0.0 is a major version (it refuses old project fields; it needs a newer Bun): it waits for `cc-smart-dev-kit update`",
+    );
+    expect(m.installedVersion()).toBe("0.6.0");
+  });
+
+  test("D33: a copy without the notes file: held all the same, the line without a why", async () => {
+    const m = machine({
+      inCopy: "1.4.2",
+      installed: "1.4.2",
+      newVersion: "2.0.0",
+      remoteHead: HEAD_B,
+    });
+    await checkHere(m);
+    expect(m.installedVersion()).toBe("1.4.2");
+    expect(readHeldMajor(m.files)?.notes).toEqual([]);
+    expect(JSON.parse(hookHere(m).answer)).toEqual({
+      systemMessage:
+        "cc-smart-dev-kit 2.0.0 is ready: it is a major version. Read What's new, then run `cc-smart-dev-kit update`.",
+    });
+  });
+
+  test("D33: the next check keeps when it was first found; a check that finds the install current forgets it", async () => {
+    const m = machine({
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    writeHeldMajor(m.files, {
+      at: "2026-10-15T08:00:00Z",
+      from: "0.6.0",
+      notes: [],
+      version: "1.0.0",
+    });
+    await checkHere(m);
+    expect(readHeldMajor(m.files)?.at).toBe("2026-10-15T08:00:00Z");
+    // Installed by hand since (`claude plugin update`): the next check finds it current.
+    writeFileSync(
+      join(m.home, ".claude", "plugins", "installed_plugins.json"),
+      readFileSync(join(m.home, "fake", "installed-after"), "utf8"),
+    );
+    writeLastCheck(m.files, { at: "2026-10-15T08:00:00Z", detail: "", result: "skipped" });
+    expect((await checkHere(m)).last?.result).toBe("up-to-date");
+    expect(readHeldMajor(m.files)).toBeNull();
+  });
+
+  test("D33: an older version reads the hold's record as an ordinary skipped check (its own file holds the major)", async () => {
+    // An older checker (0.6.0) knows no "held" result: a record it cannot read counts as no
+    // check at all, and it would check again at once. So the hold writes a result every older
+    // version knows, with the three fields it reads, and keeps the major in a file of its own.
+    const m = machine({
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    await checkHere(m);
+    const record = JSON.parse(readFileSync(m.files.check, "utf8"));
+    expect(Object.keys(record).sort()).toEqual(["at", "detail", "result"]);
+    expect(record.result).toBe("skipped");
+    expect(existsSync(m.files.major)).toBe(true);
+  });
+
+  test("D33: the session start shows one line while a major is held: at startup and resume, never on a clear or a compact", () => {
+    const m = machine({ installed: "0.6.0" });
+    holdMajor(m, ["it refuses old project fields"]);
+    writeLastCheck(m.files, { at: "2026-10-15T09:30:00Z", detail: "x", result: "skipped" });
+    const line = { systemMessage: LINE_1_0_0 };
+    expect(JSON.parse(hookHere(m, NOW, m.env, "startup").answer)).toEqual(line);
+    expect(hookHere(m, NOW, m.env, "compact").answer).toBe("");
+    expect(hookHere(m, NOW, m.env, "clear").answer).toBe("");
+    // Every new start says it again while it waits: it is the person's next step.
+    expect(JSON.parse(hookHere(m, NOW, m.env, "resume").answer)).toEqual(line);
+    // An input that does not say why the hook runs counts as a start.
+    expect(JSON.parse(hookHere(m, NOW, m.env, null).answer)).toEqual(line);
+  });
+
+  test("D33: an unattended session (`claude -p`) gets no line", () => {
+    const m = machine({ installed: "0.6.0" });
+    holdMajor(m);
+    expect(hookHere(m, NOW, { ...m.env, CLAUDE_CODE_SESSION_ATTENDED: "0" }).answer).toBe("");
+  });
+
+  test("D33: `update --hold` wins: no line and no check", () => {
+    const m = machine({ installed: "0.6.0" });
+    holdMajor(m);
+    writeFileSync(m.files.hold, "2026-10-15T09:00:00Z\n");
+    expect(hookHere(m)).toEqual({ answer: "", started: 0 });
+  });
+
+  test("D33: held, but installed by hand since: no line", () => {
+    const m = machine({ installed: "1.0.0" });
+    holdMajor(m);
+    expect(hookHere(m).answer).toBe("");
+  });
+
+  test("D33: a failure to tell and a held major: both, in one systemMessage", () => {
+    const m = machine({ installed: "0.6.0" });
+    holdMajor(m, ["it refuses old project fields"]);
+    writeLastCheck(m.files, { at: "2026-10-15T09:00:00Z", detail: "boom", result: "failed" });
+    expect(JSON.parse(hookHere(m).answer)).toEqual({
+      systemMessage: `cc-smart-dev-kit: the background update failed at 2026-10-15T09:00:00Z (boom). The log: ~/.claude/cc-smart-dev-kit/update.log. To try now: cc-smart-dev-kit update\n${LINE_1_0_0}`,
+    });
+  });
+
+  test("D33: the hook as Claude Code runs it: the line on a startup, nothing on a compact", async () => {
+    const m = machine({ installed: "0.6.0" });
+    holdMajor(m, ["it refuses old project fields"]);
+    const run = async (source: string) => {
+      const guard = subprocessGuard();
+      const proc = Bun.spawn([process.execPath, ...guard.args, HOOK], {
+        env: { ...m.env, ...guard.env, CLAUDE_CODE_SESSION_ATTENDED: "1" },
+        stdin: new Blob([JSON.stringify({ cwd: m.home, hook_event_name: "SessionStart", source })]),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      return stdout;
+    };
+    expect(await run("startup")).toBe(`${JSON.stringify({ systemMessage: LINE_1_0_0 })}\n`);
+    expect(await run("compact")).toBe("");
+  }, 30_000);
+
+  test("D33: sessionSourceOf reads the input's source; anything else is null", () => {
+    expect(sessionSourceOf('{"source":"compact"}')).toBe("compact");
+    expect(sessionSourceOf('{"source":3}')).toBeNull();
+    expect(sessionSourceOf("")).toBeNull();
+    expect(sessionSourceOf("not json")).toBeNull();
+  });
+
+  test("D33: `update` with a held major installs it on the person's word: first the repos to fix, then the install; the held state goes", async () => {
+    const m = machine({
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    holdMajor(m, ["it refuses old project fields"]);
+    // A repo a saved session names, still with the retired prefix.
+    const repo = tempDir("old-repo");
+    git(repo, "init", "-q");
+    mkdirSync(join(repo, ".claude"));
+    const config = JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" } });
+    writeFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), config);
+    const folder = join(m.paths.projectsDir, "-old-repo");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "s1.jsonl"), `${JSON.stringify({ cwd: repo, type: "user" })}\n`);
+
+    const run = await m.cli(["update"]);
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout).toBe(
+      [
+        "$ claude plugin marketplace update cc-smart-dev-kit",
+        "refreshed",
+        "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): installing it.",
+        `! ${repo} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${repo} && cc-smart-dev-kit project init`,
+        "$ claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
+        "updated",
+        "cc-smart-dev-kit 1.0.0 installed (was 0.6.0). Restart Claude sessions to load it.",
+        "",
+      ].join("\n"),
+    );
+    expect(m.installedVersion()).toBe("1.0.0");
+    expect(readHeldMajor(m.files)).toBeNull();
+    // The other repo is only read, never changed.
+    expect(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(config);
+  }, 30_000);
+
+  test("D33: `update --check` says a major is one", async () => {
+    const m = machine({ inCopy: "1.0.0", installed: "0.6.0" });
+    expect((await m.cli(["update", "--check"])).stdout).toBe(
+      "cc-smart-dev-kit 1.0.0 is available (installed: 0.6.0). It is a major version: read What's new first. Run: cc-smart-dev-kit update\n",
+    );
+  }, 30_000);
 });

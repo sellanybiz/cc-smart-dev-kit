@@ -184,14 +184,19 @@ export function retiredFieldMessage(field: (typeof RETIRED_WORKTREE_FIELDS)[numb
 }
 
 /**
- * Refuses a file that still sets a retired engine field: one message per field, in the order
- * of `RETIRED_WORKTREE_FIELDS`. A value of any type counts — the field is gone, whatever it holds.
+ * The retired engine fields a cc-smart-dev-kit.json's parsed content still sets, in the order of
+ * `RETIRED_WORKTREE_FIELDS`. A value of any type counts — the field is gone, whatever it holds.
  */
-function checkRetiredFields(where: string, raw: unknown): void {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+export function retiredFieldsOf(raw: unknown): (typeof RETIRED_WORKTREE_FIELDS)[number][] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
   const worktrees = (raw as { worktrees?: unknown }).worktrees;
-  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees)) return;
-  const found = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees)) return [];
+  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+}
+
+/** Refuses a file that still sets a retired engine field: one message per field. */
+function checkRetiredFields(where: string, raw: unknown): void {
+  const found = retiredFieldsOf(raw);
   if (found.length === 0) return;
   throw new CcSmartDevKitRetiredFieldError(
     `Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`,

@@ -1,7 +1,7 @@
 // @bun
 // src/hooks/notify-entry.ts
 import { existsSync as existsSync6 } from "fs";
-import { join as join7 } from "path";
+import { join as join8 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -52,6 +52,7 @@ function cliPaths(env = process.env) {
     settingsFile: join2(claudeConfigDir, "settings.json"),
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    projectsDir: join2(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
@@ -129,7 +130,7 @@ var FIND_INSTALL_JS = [
 // src/hooks/notify.ts
 import { readFileSync as readFileSync6, rmSync, statSync as statSync3, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { basename, join as join5 } from "path";
+import { basename, join as join6 } from "path";
 
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
@@ -238,6 +239,10 @@ function gitEnv(base) {
 
 // src/setup/marketplace-access.ts
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+
+// src/update/major.ts
+import { join as join3 } from "path";
+var MAJOR_NOTES_PATH = join3("src", "update", "major-notes.json");
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
@@ -6398,13 +6403,16 @@ function checkRequires(file, raw, pluginVersion) {
 function retiredFieldMessage(field) {
   return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
 }
-function checkRetiredFields(where, raw) {
+function retiredFieldsOf(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return;
+    return [];
   const worktrees = raw.worktrees;
   if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
-    return;
-  const found = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+    return [];
+  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+}
+function checkRetiredFields(where, raw) {
+  const found = retiredFieldsOf(raw);
   if (found.length === 0)
     return;
   throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
@@ -6437,7 +6445,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
 
 // src/project/resolve.ts
 import { existsSync as existsSync2, realpathSync, statSync } from "fs";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
@@ -6523,11 +6531,11 @@ function locateCheckout(cwd, options = {}) {
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join3(root, ".claude", "cc-smart-dev-kit.json");
+  const own = join4(root, ".claude", "cc-smart-dev-kit.json");
   let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join3(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    const main = join4(mainCheckout, ".claude", "cc-smart-dev-kit.json");
     config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
@@ -6894,6 +6902,17 @@ var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 var USER_NOTIFY_HOOK_NAME = "notify";
 var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
 
+// src/hooks/settings-hooks.ts
+var RETIRED_ENGINE_HOOKS = [
+  "worktree-create",
+  "worktree-remove",
+  "subagent-stop"
+];
+var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
+
+// src/sessions/command.ts
+var TAIL_BYTES = 512 * 1024;
+
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
@@ -7004,7 +7023,7 @@ function alertsAt(paths, cwd, env) {
 }
 
 // src/hooks/alert-sound.ts
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
 var MACOS_SOUNDS = {
   "dialog-warning": "Basso",
@@ -7015,13 +7034,13 @@ function soundArgv(moment, platform, which) {
   if (platform === "linux") {
     const paplay = which("paplay");
     if (paplay !== null)
-      return [paplay, join4(SOUND_DIR, `${moment}.oga`)];
+      return [paplay, join5(SOUND_DIR, `${moment}.oga`)];
     const canberra = which("canberra-gtk-play");
     return canberra === null ? null : [canberra, "-i", moment];
   }
   if (platform === "darwin") {
     const afplay = which("afplay");
-    return afplay === null ? null : [afplay, join4("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
+    return afplay === null ? null : [afplay, join5("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
   }
   return null;
 }
@@ -7616,7 +7635,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync6(join5(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync6(join6(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject4(settings) || !isJsonObject4(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID] !== true)
@@ -7625,7 +7644,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync6(join5(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync6(join6(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject4(installed) || !isJsonObject4(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID];
@@ -7678,7 +7697,7 @@ function farEndIsWarp(env, config) {
     return client.toLowerCase() === WARP_TERMINAL_NAME;
   return config.sshWarp;
 }
-function sessionLabel(transcript, cwd) {
+function sessionLabel2(transcript, cwd) {
   if (transcript !== null) {
     const named = lastCustomTitle(transcript);
     const clean = named === null ? null : cleanSessionName(named);
@@ -7907,15 +7926,15 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join5(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join5(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const mark = join6(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join6(dir, `cc-smart-dev-kit-notify-failed-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     return SILENT;
   }
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
   const cwd = typeof input.cwd === "string" ? input.cwd : null;
-  const label = sessionLabel(transcript, cwd);
+  const label = sessionLabel2(transcript, cwd);
   const limitAlertIsStopFailures = event === "StopFailure" && input.error === "rate_limit" ? stopFailureWillAlert(input, {
     env: deps.env,
     nowMs: deps.nowMs,
@@ -7989,7 +8008,7 @@ function withProblem(result, problem) {
 
 // src/hooks/terminal.ts
 import { closeSync as closeSync2, constants, openSync as openSync2, readlinkSync, statSync as statSync4, writeSync } from "fs";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -8008,7 +8027,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join6(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join7(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -8071,7 +8090,7 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join7(paths.binDir, LAUNCHER_NAME);
+    const launcher = join8(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,

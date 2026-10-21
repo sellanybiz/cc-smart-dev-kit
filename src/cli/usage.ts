@@ -389,7 +389,7 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
     );
     return 2;
   }
-  const projectsDir = join(paths.claudeConfigDir, "projects");
+  const projectsDir = paths.projectsDir;
   const sinceMs = nowMs - options.hours * 3_600_000;
   const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
   console.log(

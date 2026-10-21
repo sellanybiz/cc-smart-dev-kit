@@ -5,6 +5,7 @@
  *   update-hold         while it exists, the SessionStart hook checks nothing
  *   update-check.json   the last check: when, its result, and the detail
  *   update-reported     the failure a session was already told about (its time, or its streak start)
+ *   update-major.json   a new major version the background check found and holds (`HeldMajor`)
  *   update.log          one line per step of each check, newest last, kept small
  *   update/lock         held by the one check or update that runs (`withLock`)
  *   sessions/<pid>.json the plugin version each running Claude session loaded
@@ -37,6 +38,8 @@ export interface UpdateFiles {
   hold: string;
   check: string;
   reported: string;
+  /** The held major version (`HeldMajor`): written by the background check, cleared by `update`. */
+  major: string;
   log: string;
   /** Pass to `withLock` as its folder: the lock file is `<lockDir>/lock`. */
   lockDir: string;
@@ -48,6 +51,7 @@ export function updateFiles(stateDir: string): UpdateFiles {
     hold: join(stateDir, "update-hold"),
     check: join(stateDir, "update-check.json"),
     reported: join(stateDir, "update-reported"),
+    major: join(stateDir, "update-major.json"),
     log: join(stateDir, "update.log"),
     lockDir: join(stateDir, "update"),
     sessions: join(stateDir, "sessions"),
@@ -237,6 +241,51 @@ export function wasReported(files: UpdateFiles, at: string): boolean {
 export function markReported(files: UpdateFiles, at: string): void {
   ensureDir(join(files.reported, ".."));
   atomicWrite(files.reported, `${at}\n`, 0o600);
+}
+
+/**
+ * A new major version the background check found and did not install (D33): it waits for the
+ * person's `update`. Its own file, not a result in `update-check.json`, so an older version's
+ * hook still reads that record (`readLastCheck` refuses a result it does not know).
+ */
+export interface HeldMajor {
+  /** The major version found in the marketplace copy. */
+  version: string;
+  /** The version installed when it was found (null: not recorded). */
+  from: null | string;
+  /** When it was first found, ISO 8601 in UTC. */
+  at: string;
+  /** Why it is a major step, in a few words, from the new version's own notes; [] when it has none. */
+  notes: string[];
+}
+
+/** The held major version, or null when there is none or the file cannot be read. */
+export function readHeldMajor(files: UpdateFiles): HeldMajor | null {
+  try {
+    const parsed = JSON.parse(readFileSync(files.major, "utf8")) as Partial<HeldMajor> | null;
+    if (
+      typeof parsed?.version !== "string" ||
+      typeof parsed.at !== "string" ||
+      (parsed.from !== null && typeof parsed.from !== "string") ||
+      !Array.isArray(parsed.notes) ||
+      !parsed.notes.every((note) => typeof note === "string")
+    ) {
+      return null;
+    }
+    return { at: parsed.at, from: parsed.from, notes: parsed.notes, version: parsed.version };
+  } catch {
+    return null;
+  }
+}
+
+export function writeHeldMajor(files: UpdateFiles, held: HeldMajor): void {
+  ensureDir(join(files.major, ".."));
+  atomicWrite(files.major, `${JSON.stringify(held, null, 2)}\n`, 0o600);
+}
+
+/** Forgets the held major version: it was installed, or it is no longer the newest. */
+export function clearHeldMajor(files: UpdateFiles): void {
+  rmSync(files.major, { force: true });
 }
 
 /** A running Claude session, as the SessionStart hook recorded it. */

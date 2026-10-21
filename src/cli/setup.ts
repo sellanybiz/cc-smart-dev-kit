@@ -65,7 +65,7 @@ import {
   removeInstructions,
   setInstructionsOptOut,
 } from "../setup/instructions";
-import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
+import { installLauncher, LAUNCHER_NAME, shellWord } from "../setup/launcher";
 import { installLauncherCmd, launcherArgv } from "../setup/launcher-cmd";
 import { withLock } from "../setup/lock";
 import {
@@ -85,6 +85,7 @@ import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from ".
 import { readUserJson } from "../setup/user-json";
 import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
 import { atomicWrite, realTarget } from "../setup/write";
+import { retiredRepoLines } from "../update/retired-repos";
 import { type CliPaths, tildify } from "./paths";
 
 /** The key that turns on auto-update for the cc-smart-dev-kit marketplace. Claude Code's install leaves it out. */
@@ -158,11 +159,6 @@ export const STATUSLINE_KEY: KeyPath = ["statusLine"];
 /** Says the person answered "no" to the status line: setup does not ask again. */
 export function statuslineDeclinedFile(stateDir: string): string {
   return join(stateDir, "statusline-declined");
-}
-
-/** A path as one word for the shell that runs the status line command. */
-function shellWord(path: string): string {
-  return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
 }
 
 /** The status line setting: the launcher, so it follows plugin updates. */
@@ -823,6 +819,11 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const browser = browserSetupReport(paths, realBrowserSetupDeps(machine, paths.home));
   report.info.push(...browser.info);
   report.notes.push(...browser.notes);
+
+  // The repos the saved sessions name that still carry a piece of the retired worktree engine
+  // (D33): one `!` line each, with the `project init` that takes it out. Read-only: setup never
+  // changes another repo.
+  report.notes.push(...retiredRepoLines(paths, options.env));
 
   // A read-only pass: a key the user set (autoUpdate: false) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.

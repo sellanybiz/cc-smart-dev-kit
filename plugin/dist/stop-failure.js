@@ -1,7 +1,7 @@
 // @bun
 // src/entries/stop-failure.ts
 import { existsSync as existsSync6 } from "fs";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -52,6 +52,7 @@ function cliPaths(env = process.env) {
     settingsFile: join2(claudeConfigDir, "settings.json"),
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    projectsDir: join2(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
@@ -6694,13 +6695,16 @@ function checkRequires(file, raw, pluginVersion) {
 function retiredFieldMessage(field) {
   return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
 }
-function checkRetiredFields(where, raw) {
+function retiredFieldsOf(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return;
+    return [];
   const worktrees = raw.worktrees;
   if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
-    return;
-  const found = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+    return [];
+  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+}
+function checkRetiredFields(where, raw) {
+  const found = retiredFieldsOf(raw);
   if (found.length === 0)
     return;
   throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
@@ -6947,6 +6951,17 @@ var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 var USER_NOTIFY_HOOK_NAME = "notify";
 var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
 
+// src/hooks/settings-hooks.ts
+var RETIRED_ENGINE_HOOKS = [
+  "worktree-create",
+  "worktree-remove",
+  "subagent-stop"
+];
+var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
+
+// src/sessions/command.ts
+var TAIL_BYTES = 512 * 1024;
+
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
@@ -7122,6 +7137,10 @@ function windowsToastArgv(shell, title, body, critical = false) {
 function windowsToastArgvFor(title, body, critical = false) {
   return windowsToastArgv(TOAST_SHELL, title, body, critical);
 }
+
+// src/update/major.ts
+import { join as join5 } from "path";
+var MAJOR_NOTES_PATH = join5("src", "update", "major-notes.json");
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
@@ -7416,7 +7435,7 @@ async function hook() {
     if (argv !== null)
       detached(argv);
   }
-  const launcher = join5(paths.binDir, LAUNCHER_NAME);
+  const launcher = join6(paths.binDir, LAUNCHER_NAME);
   if (usesAlertWorker(process.platform, existsSync6(launcher))) {
     detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
     return;

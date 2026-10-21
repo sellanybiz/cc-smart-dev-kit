@@ -381,7 +381,11 @@ piece, so it has no `cc-smart-dev-kit.json` and no `ownHooks` step. Its rules:
 - **Silent on success.** It prints only one `systemMessage`, once, after a failed
   background update, and only to an attended session (`CLAUDE_CODE_SESSION_ATTENDED` is
   `0` for `claude -p`, whose hook input looks the same; `docs/claude-code-contract.md`).
-  A marketplace that cannot be read is a failure only after 24 h in a row.
+  A marketplace that cannot be read is a failure only after 24 h in a row. The one other
+  line: while a major version is held (D33, `src/update/major.ts`), one line at each session
+  start (the input's `source` is `startup` or `resume`), never on a `clear` or a `compact`.
+- **A major version is never installed in the background** (D33): the check holds it in
+  `update-major.json` until the person's `cc-smart-dev-kit update`.
 - **Only Claude Code's own commands install:** `claude plugin marketplace update`, then
   `claude plugin update … --scope user`. Never `-y` (a marketplace-declared command needs
   a person), never a restart of the router or a session. They and the detached process

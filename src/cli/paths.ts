@@ -7,6 +7,8 @@ export interface CliPaths extends RouterPaths {
   installedPluginsFile: string;
   /** Claude Code's list of added marketplaces, with where each comes from. */
   knownMarketplacesFile: string;
+  /** Claude Code's saved sessions: `<config folder>/projects/<folder>/<session id>.jsonl`. */
+  projectsDir: string;
   /**
    * Claude Code's own user-scope config: `$CLAUDE_CONFIG_DIR/.claude.json`, else
    * `~/.claude.json`. It holds the user-scope MCP servers (`mcpServers`), which is where
@@ -96,6 +98,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     settingsFile: join(claudeConfigDir, "settings.json"),
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    projectsDir: join(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),
     binDir: join(router.home, ".local", "bin"),
     stateDir: join(claudeConfigDir, "cc-smart-dev-kit"),

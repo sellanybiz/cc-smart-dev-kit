@@ -34,6 +34,7 @@ import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import type { Workflow } from "../workflow/schema";
 import {
   RETIRED_WORKTREE_FIELDS,
+  retiredFieldsOf,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
 } from "./config";
@@ -361,7 +362,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
       `base ${answers.base} is not the repo's default branch ${defaultBranch}: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`,
     );
   }
-  const retired = RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(beforeWorktrees, field));
+  const retired = retiredFieldsOf(before);
   const engineLines = settings.removes.length + localSettings.removes.length;
   if (retired.length > 0 || engineLines > 0) {
     const what = [

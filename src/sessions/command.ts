@@ -97,6 +97,66 @@ function readTail(path: string, size: number): string {
   return buffer.toString("utf8");
 }
 
+/** One session file under `projects/<folder>/`: `<id>.jsonl`. */
+interface SessionFile {
+  id: string;
+  path: string;
+  /** When it was last written, in milliseconds. */
+  lastWrite: number;
+  size: number;
+}
+
+/** One project folder's session files, newest first; none when the folder cannot be read. */
+function sessionFiles(projectsDir: string, folder: string): SessionFile[] {
+  let names: string[];
+  try {
+    names = readdirSync(join(projectsDir, folder));
+  } catch {
+    // Not a folder, or gone since the listing.
+    return [];
+  }
+  const files: SessionFile[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const path = join(projectsDir, folder, name);
+    const stat = statSync(path, { throwIfNoEntry: false });
+    if (stat === undefined || !stat.isFile()) continue;
+    files.push({
+      id: name.slice(0, -".jsonl".length),
+      lastWrite: stat.mtimeMs,
+      path,
+      size: stat.size,
+    });
+  }
+  return files.sort((a, b) => b.lastWrite - a.lastWrite);
+}
+
+/** What one session file's end says (`describeSession`). */
+function readSession(file: SessionFile): SavedSession {
+  return describeSession(readTail(file.path, file.size), {
+    id: file.id,
+    lastWrite: file.lastWrite,
+  });
+}
+
+/**
+ * Every folder Claude Code's saved sessions name, once each: the folder the newest session of
+ * each project folder last worked in. One tail per project folder, so a machine with thousands
+ * of sessions reads one file per folder. `setup` and `update` read it to find the repos the
+ * person works in (`src/update/retired-repos.ts`).
+ */
+export function sessionWorkFolders(projectsDir: string): string[] {
+  if (!existsSync(projectsDir)) return [];
+  const folders = new Set<string>();
+  for (const folder of readdirSync(projectsDir)) {
+    const newest = sessionFiles(projectsDir, folder)[0];
+    if (newest === undefined) continue;
+    const worked = readSession(newest).folder;
+    if (worked !== null) folders.add(worked);
+  }
+  return [...folders];
+}
+
 /** This project's sessions written since `since`, newest first. */
 export function savedSessions(
   projectsDir: string,
@@ -108,15 +168,9 @@ export function savedSessions(
   const sessions: SavedSession[] = [];
   for (const folder of readdirSync(projectsDir)) {
     if (!belongsToRepo(folder, mainCheckout, prefix)) continue;
-    for (const name of readdirSync(join(projectsDir, folder))) {
-      if (!name.endsWith(".jsonl")) continue;
-      const path = join(projectsDir, folder, name);
-      const stat = statSync(path);
-      if (!stat.isFile() || stat.mtimeMs < since) continue;
-      const session = describeSession(readTail(path, stat.size), {
-        id: name.slice(0, -".jsonl".length),
-        lastWrite: stat.mtimeMs,
-      });
+    for (const file of sessionFiles(projectsDir, folder)) {
+      if (file.lastWrite < since) continue;
+      const session = readSession(file);
       // A session Claude never titled is a one-shot run (`claude -p`), not one to come back to.
       // The id must be a session id (letters, digits and dashes): it goes into a shell command
       // (`warpTabConfig`, xfceTerminalCommand) and names `--open`'s marker file, and a file
@@ -291,7 +345,7 @@ export async function runSessions(
     // Outside git, or a main checkout git cannot find: the folder itself is the project.
   }
 
-  const projectsDir = join(paths.claudeConfigDir, "projects");
+  const projectsDir = paths.projectsDir;
   const machineStartedAt = deps.now - deps.uptimeSeconds * 1000;
   const sessions = savedSessions(
     projectsDir,
