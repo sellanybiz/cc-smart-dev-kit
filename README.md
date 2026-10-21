@@ -606,6 +606,13 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). It reads and checks everything, asks every question, and writes nothing before they are answered: a "no" leaves the machine as it was. Then it prints its steps and walks them; a step that fails keeps what the steps before it did, and the next run goes on from there. `--dry-run` prints that plan and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal, and only when it is still installed. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. On a 0.2.x machine the command does not exist yet: run the plugin's `dist/cli.js` with bun (the section above has the line). |
 | `cc-smart-dev-kit version` | Prints the version. |
 
+**Help on one command:** `cc-smart-dev-kit help <command>`, or `<command> --help` — for a
+subcommand too, as in `cc-smart-dev-kit gateway setup --help`. Either prints that command's own
+help and runs nothing. Run `cc-smart-dev-kit` alone for the short list: the commands to start
+with, two examples, and the names of the rest. A wrong command or option prints one line and the
+`--help` line that explains it. `cc-smart-dev-kit help` with no command prints the same short
+list.
+
 ### The background update
 
 Claude Code's own plugin auto-update can fail to run (anthropics/claude-code#61854), so

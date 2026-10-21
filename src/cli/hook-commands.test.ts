@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { PLUGIN_ID, VERSION } from "../build-info";
 import { projectHookCommand } from "../hooks/project-wiring";
 import { launcherScript } from "../setup/launcher";
-import { USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
+import { USER_NOTIFY_COMMAND, USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -88,17 +88,11 @@ function engineClone(): string {
 }
 
 describe("cc-smart-dev-kit hook", () => {
-  test("no name: the lines to paste, exit 0", () => {
+  test("no name: the help, exit 0 — the notifier hook's, since the engine's names are retired", () => {
     const run = cli(["hook"]);
     expect(run.exitCode).toBe(0);
     expect(run.stdout).toBe(
-      `Usage: cc-smart-dev-kit hook <worktree-create|worktree-remove|subagent-stop|notify>
-
-The worktree engine is opt-in per project. To turn it on in a project, give its
-.claude/cc-smart-dev-kit.json a "worktrees" field, and paste these hooks into its
-.claude/settings.json (merge them with any "hooks" it has):
-
-${SETTINGS}
+      `Usage: cc-smart-dev-kit hook <notify>
 
 notify is the notifier hook, with the same input and answer as the plugin's own bundle.
 cc-smart-dev-kit setup wires it in your user settings for agent view, which runs no plugin hooks
@@ -109,13 +103,14 @@ not a project hook: it needs no settings from a project, and it works in every f
   });
 
   test("the README and the help name the same hook commands", () => {
-    // One list, written by hand here: a renamed or added hook fails this test rather than
-    // leaving the README or the help behind.
-    const names = ["worktree-create", "worktree-remove", "subagent-stop", "notify"];
+    // The engine's names are deprecated: the README still names them for the projects that wire
+    // the engine, and goes with the engine. The help names the one hook left, from its constant.
     const readme = readFileSync(join(import.meta.dir, "..", "..", "README.md"), "utf8");
-    expect(readme).toContain(`\`cc-smart-dev-kit hook <${names.join("\\|")}>\``);
+    expect(readme).toContain(
+      "`cc-smart-dev-kit hook <worktree-create\\|worktree-remove\\|subagent-stop\\|notify>`",
+    );
     expect(cli(["hook"]).stdout.split("\n")[0]).toBe(
-      `Usage: cc-smart-dev-kit hook <${names.join("|")}>`,
+      `Usage: cc-smart-dev-kit hook <${USER_NOTIFY_HOOK_NAME}>`,
     );
   });
 

@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { localDay } from "../gateway/safety-checks";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { recordMcpServer } from "../mcp/records";
@@ -21,10 +22,13 @@ import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { installLauncherCmd } from "../setup/launcher-cmd";
 import { applyManagedJson } from "../setup/managed-json";
+import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { listBackups, writeManagedFile } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { workflowDefaults } from "../workflow/schema";
 import { ccSmartDevKitImports, runDoctor } from "./doctor";
+import { COMMAND_HELP, HELP_COMMAND } from "./help";
 import { cliPaths } from "./paths";
 import { type SetupOptions as RunSetupOptions, runSetup } from "./setup";
 
@@ -2300,11 +2304,19 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
 });
 
 describe("cc-smart-dev-kit setup: options", () => {
-  test("--warp and --remove-warp together, a --project with no folder, or one that is not there: exit 2", () => {
+  test("--warp and --remove-warp together, or a --project with no folder: exit 2", () => {
     const { run } = setup();
     expect(run(["setup", "--warp", "--remove-warp"]).exitCode).toBe(2);
     expect(run(["setup", "--project"]).exitCode).toBe(2);
-    expect(run(["setup", "--project", "/no/such/folder"]).exitCode).toBe(2);
+  });
+
+  test("UX-13: a --project folder that is not there is not a usage mistake: exit 1, with a fix", () => {
+    const result = setup().run(["setup", "--project", "/no/such/folder"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe(
+      "Not a folder: /no/such/folder\n" +
+        "Fix: give the folder of a project, or leave --project out to use the folder you are in\n",
+    );
   });
 });
 
@@ -2313,10 +2325,132 @@ describe("cc-smart-dev-kit version and help", () => {
     expect(setup().run(["version"]).stdout).toBe(`cc-smart-dev-kit ${VERSION}\n`);
   });
 
-  test("an unknown command prints help and exits 2", () => {
+  test("UX-3: an unknown command prints one line and where to read the rest, exit 2", () => {
     const result = setup().run(["nope"]);
     expect(result.exitCode).toBe(2);
-    expect(result.stderr).toContain("Unknown command: nope");
+    // One line, and the command that explains it: never the wall of help again on stderr.
+    expect(result.stderr).toBe(`Unknown command: nope\nSee: ${COMMAND} --help\n`);
+    expect(result.stdout).toBe("");
+  });
+
+  test("UX-3: a wrong option prints one line and that command's help, exit 2", () => {
+    const result = setup().run(["doctor", "--lively"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toBe(`Unknown option: --lively\nSee: ${COMMAND} doctor --help\n`);
+    expect(result.stdout).toBe("");
+  });
+
+  test("UX-3: `help <command>` prints that command's help on stdout, exit 0", () => {
+    const world = setup();
+    expect(world.run(["help", "worktrees"]).stdout).toBe(world.run(["worktrees", "--help"]).stdout);
+    expect(world.run(["help", "worktrees"]).exitCode).toBe(0);
+    // `help` alone, and no command at all: the top-level help, on stdout.
+    expect(world.run(["help"]).stdout).toBe(world.run([]).stdout);
+    expect(world.run(["help"]).stdout).toStartWith(`${COMMAND} ${VERSION}: `);
+    // A command the table does not know is still an unknown command.
+    const unknown = world.run(["help", "nope"]);
+    expect(unknown.exitCode).toBe(2);
+    expect(unknown.stderr).toBe(`Unknown command: nope\nSee: ${COMMAND} --help\n`);
+  });
+
+  // One subprocess per command, on a machine other builders share: the default 5 s is the
+  // machine's speed, not this test's work, so it gets a minute.
+  test("UX-2: every command's and subcommand's --help prints its help and exits 0, running nothing", () => {
+    const world = setup();
+    for (const row of COMMAND_HELP) {
+      const result = world.run([...row.name.split(" "), "--help"]);
+      // Each check names the command it read, so a failure points at the row that broke.
+      if (result.exitCode !== 0) expect(`${row.name}: exit ${String(result.exitCode)}`).toBe("0");
+      if (result.stderr !== "") expect(`${row.name}: stderr`).toBe(`"${result.stderr}"`);
+      // `help --help` prints the top-level help, which opens with the version line.
+      const prefix = row.name === HELP_COMMAND ? `${COMMAND} ${VERSION}` : `Usage: ${COMMAND}`;
+      if (!result.stdout.startsWith(prefix)) expect(`${row.name}: ${result.stdout}`).toBe(prefix);
+    }
+    // Nothing ran: a scan or a setup would have called the fake git or the fake claude.
+    expect(world.gitCalls()).toBe("");
+    expect(world.claudeCalls()).toBe("");
+  }, 60_000);
+
+  test("UX-2: `worktrees --help` never scans, and a typo is refused instead of run", () => {
+    const world = setup();
+    const help = world.run(["worktrees", "--help"]);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toStartWith(`Usage: ${COMMAND} worktrees`);
+    expect(help.stderr).toBe("");
+    expect(world.gitCalls()).toBe("");
+
+    const typo = world.run(["worktrees", "--clena"]);
+    expect(typo.exitCode).toBe(2);
+    expect(typo.stderr).toBe(`Unknown option: --clena\nSee: ${COMMAND} worktrees --help\n`);
+    expect(world.gitCalls()).toBe("");
+
+    // The proof that the fake git would have seen a scan: the command itself calls it.
+    world.run(["worktrees"]);
+    expect(world.gitCalls()).not.toBe("");
+  });
+
+  test("UX-17: the help names the commands from the table, so a list cannot drift", () => {
+    const world = setup();
+    // The top-level help used to list the gateway's subcommands by hand — and missed `check`
+    // and `fallback`. It names the command now; the command's own text lists the rest.
+    const top = world.run([]).stdout;
+    expect(top).not.toContain("status, models, slot");
+    expect(top).not.toContain("<worktree-create");
+    // Every name the top-level help shows can be asked for its own help: the table's own text,
+    // the same text its own `--help` prints (one home, so the two can never drift).
+    for (const name of ["gateway setup", "browser setup", "project init"]) {
+      // `help gateway setup`: the words of the command name, as a person types them.
+      const words = name.split(" ");
+      const result = world.run(["help", ...words]);
+      expect(`${name}: ${String(result.exitCode)}`).toBe(`${name}: 0`);
+      const own = world.run([...words, "--help"]);
+      expect(`${name}: ${String(own.exitCode)}`).toBe(`${name}: 0`);
+      expect(`${name}: ${result.stdout}`).toBe(`${name}: ${own.stdout}`);
+    }
+    // The gateway's own module writes `gateway --help`: the row imports it, never copies it,
+    // so `check` and `fallback` can never be missing again.
+    const gateway = world.run(["gateway", "--help"]);
+    expect(gateway.exitCode).toBe(0);
+    expect(gateway.stdout).toBe(`${GATEWAY_USAGE}\n`);
+    expect(gateway.stdout).toContain("check");
+    expect(gateway.stdout).toContain("fallback <slot> on|off");
+  });
+
+  test("CM-12: the hook list is the one name left, and the top-level help types none", () => {
+    // The worktree engine's names are retired: `notify` is the one hook left, and the help and
+    // the refusal both read its constant rather than typing it.
+    expect(USER_NOTIFY_HOOK_NAME).toBe("notify");
+    const result = setup().run(["hook", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.split("\n")[0]).toBe(`Usage: ${COMMAND} hook <${USER_NOTIFY_HOOK_NAME}>`);
+    // No engine name survives in the help a person reads.
+    expect(result.stdout).not.toContain("worktree-create");
+    expect(result.stdout).not.toContain("worktree-remove");
+    expect(result.stdout).not.toContain("subagent-stop");
+    // The dispatcher's own refusal reads the same name.
+    const refused = setup().run(["hook", "git-guard"]);
+    expect(refused.exitCode).toBe(2);
+    expect(refused.stderr).toContain(`Usage: ${COMMAND} hook <${USER_NOTIFY_HOOK_NAME}>`);
+    // The list is written once, in the constant: the top-level help does not repeat it.
+    expect(setup().run([]).stdout).not.toContain("<worktree-create");
+  });
+
+  test("CM-12: the status line's help names the workflow's own warning share, not a typed 85", () => {
+    const result = setup().run(["statusline", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`a warning from ${workflowDefaults.alerts.usagePercent} %`);
+  });
+
+  test("CM hunch: `worktrees --remove --clean` is refused as a usage mistake, not read as the path", () => {
+    const world = setup();
+    for (const path of ["--clean", "--no-fetch"]) {
+      const result = world.run(["worktrees", "--remove", path]);
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toBe(
+        `--remove needs the path of one worktree: --remove <path>\nSee: ${COMMAND} worktrees --help\n`,
+      );
+    }
+    expect(world.gitCalls()).toBe("");
   });
 });
 
@@ -2866,10 +3000,11 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
       "tvly-stdin-secret",
     );
     expect(`${again.stdout}${again.stderr}`).not.toContain("tvly-stdin-secret");
-    // An empty stdin is refused, and nothing is written.
+    // An empty stdin is refused as a usage mistake: the option was given with nothing to
+    // read, so exit 2 and the one line that says which help explains it.
     const empty = run(["setup", "--tavily-key-stdin"], {}, home, "");
-    expect(empty.exitCode).toBe(1);
-    expect(empty.stderr).toContain("no key on stdin");
+    expect(empty.exitCode).toBe(2);
+    expect(empty.stderr).toBe(`No key arrived on stdin\nSee: ${COMMAND} setup --help\n`);
   });
 
   test("a Tavily key the environment already has: nothing is written for it", () => {
