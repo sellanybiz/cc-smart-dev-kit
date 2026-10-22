@@ -12,7 +12,7 @@ parts fit: `design.md`.
 | 5 | Instructions, skills, agents | Done (0.3.0) |
 | 6 | Notifications, claude-mem settings, the auto-mode block | Done (0.3.0) |
 | 7 | Opus and Fable slots, the usage-limit alert | Done (0.3.0) |
-| 8 | Web search | Done (0.3.0) |
+| 8 | Web search | Done (0.3.0); the command was removed in 1.0.0 |
 | 9 | The local portal | Done (0.3.0) |
 | 10 | Rollout to machines | Planned |
 | 12 | The heavy-job queue | Done (0.3.0) |
@@ -21,6 +21,85 @@ parts fit: `design.md`.
 command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
+
+## 1.0.0 — safety, the crew, and native Windows
+
+**Done in this release:**
+
+- **The worktree engine is gone, and its fields are refused** (`worktrees.prefix`,
+  `worktrees.setup`, `worktrees.engine`): a file that sets one does not load, the error names
+  the field and the fix, `cc-smart-dev-kit project init` removes the fields and every engine
+  hook line in one run, and `doctor` finds a leftover line by its command text (D20).
+- **A major version waits for the person**, shipped first as 0.7.0 so every machine holds
+  1.0.0 until its person runs `cc-smart-dev-kit update`; `update` and `setup` first list each
+  repository that still carries a retired field or an engine line (D33, D38). Claude Code's
+  own plugin auto-update is off for this marketplace: `setup` writes `autoUpdate: false`
+  (D39).
+- **The `search` command is gone** (D40): Claude Code's own WebSearch and WebFetch, or the
+  Tavily MCP server, are what is left.
+- **Anthropic's server tools go to Anthropic** (D41): a request that carries web search is sent
+  to Anthropic as it came, whatever the slot, so a Sonnet or Haiku session's WebSearch runs a
+  real search; at a Claude limit the answer is a short note naming Tavily.
+- **An affordable model's thinking stays visible** (A1b): the router keeps it, marked as its
+  own with the backend's signature inside, removes it only on a request to Claude (no
+  "Invalid `signature`" 400), and gives a backend its own signature back.
+- **The breaker** (D42): while every target of a slot is limited or down, the router holds the
+  request (up to 240 s) and then answers a 429 Claude Code retries; a heartbeat-only target
+  rests like any other failure; the status line and the StopFailure alert name it; a crew
+  session waits out a limit, and its lead resumes it once the gateway answers again.
+- **Claude judges first** (D44): auto mode's checks go to Claude first; while Claude is limited
+  or down, the worker slot's tested targets judge in its place. WebSearch never falls back to
+  them, and opus and fable keep no fallback.
+- **Crew sessions** (D34, D35, D37, D45, D47): `cc-smart-dev-kit crew lead|start|watch|list|
+  status|step|report|answer|tell|self-watch|stop|rm|resume|attach|kinds`. A small lead starts
+  each phase as a background session in its own worktree, never waits, hears each change as one
+  line, routes a question to the person only when it is the person's, merges the branch and
+  ends the session. Off by default (`crew.enabled`). The `lead` and `crew` skills and
+  `plugin/instructions/core.md` place each phase inline, in a subagent or in a crew session
+  (W5).
+- **Reviews count for their fix commits** (D17): a review covers its branch's head while the
+  change since it stays within `fixesAfterReview` (200 lines, 10 files, or 20 % — whichever is
+  more), the base's own changes and generated files not counted. `workflow merge-check` prints
+  the same verdict without merging, and the merge guard answers `allow` for an exact merge that
+  passes every rule (D31).
+- **The agent guard judges what really runs** (G1, G2): the model and effort Claude Code
+  really gives a launch after its own overrides, and every Workflow run — by inline script,
+  path, name or plugin. `medium` is now an allowed subagent effort.
+- **Less Opus** (D46, D50): Opus builds architecture and UI/UX work only, and the other kinds
+  build on the worker slot; a review runs on Opus only for a risky change set; UI/UX design
+  runs only on `opus` or `fable`, at `high` or above, and the agent guard and the crew launcher
+  refuse it anywhere else.
+- **The hook frame fails closed** (A4), with the `session-escape-guard` (a session never
+  loosens its own limits), the shell judge in `job-route` (a raw `claude --bg` and `claude -p`
+  judged, polling refused, a lead's long waits moved to the background), the git guard's
+  refusal of a crew session's push (D24), and the message guard's crew tag (D47).
+- **A subagent never hands back with its own background work running** (D53): a SubagentStop
+  check blocks the stop once, with one plain reason.
+- **Finished worktrees clean themselves** (D48): after a merge into the base, and at an
+  attended session start at most once an hour, through the same safe clean as
+  `worktrees --clean`; `worktrees.autoClean` turns it off. A squash or rebase merge counts as
+  finished (A6).
+- **`cc-smart-dev-kit report`** (R1): the flow report — agent launches and the parallel share,
+  minutes blocked on prompts and which guard asked, waits on background work, compactions,
+  auto-mode blocks, merges that asked; never message text.
+- **Help from one table, with `--help` on every command** (B1), and one shell reader for every
+  guard (A2).
+- **claude-mem's two start blocks are off** (D23): `setup` writes both keys off and turns
+  Claude Code's own task tools on; `restore` puts them back.
+- **Claude Code's retry watchdog** (D42): `setup` offers it once (default no), and each crew
+  session's own settings turn it on with no wait limit (CC1, BR3).
+- **Native Windows** (WIN): every 1.0.0 part checked against native Windows, a Windows CI job,
+  and `docs/windows-setup.md` with the checklist for a real PC and what is still owed.
+
+## 0.7.0 — a major version waits for the person (D33)
+
+The background update holds a new major version instead of installing it: it records why,
+writes `update-major.json`, and each interactive session start shows one line until the
+person runs `cc-smart-dev-kit update` (`design.md` § Updates). It ships on
+its own, before 1.0.0, so that machines take the rule first and hold 1.0.0 (a version
+before 0.7.0 installs any newer one by itself). Claude Code's own plugin auto-update for
+this marketplace goes off with it (D39: `setup` writes `autoUpdate: false`, and the
+background check turns an older setup's `true` off), because it knows nothing of the hold.
 
 ## 0.4.0 — the workflow, and a project that sets itself up
 
@@ -31,7 +110,7 @@ Done in this release:
   from `origin/HEAD`, else the repo's only branch, else `main`, else `master`; the setup
   command from the lockfile; the protected branches from git and `gh`), a flag for every question, the diff shown before anything is written, a backup
   first, and a line saying to commit them. The worktree engine's three hook lines come from
-  the one home that owns them (`src/hooks/project-wiring.ts`).
+  the one home that owned them (`src/hooks/project-wiring.ts`, deleted with the engine in 1.0.0).
 - **The workflow** (`design.md` § The workflow): what cc-smart-dev-kit may do by itself —
   commit, push, open a pull request, merge — held by the project's committed file over the
   person's own `~/.config/cc-smart-dev-kit/workflow.json` over the safe built-in defaults, each
@@ -86,16 +165,6 @@ Done in this release:
   browser's own state. What 0.3.0 left — the profile folder `<dataDir>/playwright` and the Chrome
   it may still have running — is reported by `doctor` (with the command that deletes the folder,
   which is the person's own call, and the pid of that Chrome) and is never deleted or used.
-
-## 0.7.0 — a major version waits for the person (D33)
-
-The background update holds a new major version instead of installing it: it records why,
-writes `update-major.json`, and each interactive session start shows one line until the
-person runs `cc-smart-dev-kit update` (`design.md` § Updates). It ships on
-its own, before 1.0.0, so that machines take the rule first and hold 1.0.0 (a version
-before 0.7.0 installs any newer one by itself). Claude Code's own plugin auto-update for
-this marketplace goes off with it (D39: `setup` writes `autoUpdate: false`, and the
-background check turns an older setup's `true` off), because it knows nothing of the hold.
 
 ## 0.6.0 — Serena is removed
 
@@ -187,6 +256,38 @@ The owner's decisions, all about which model runs what, in one patch release:
 
 The general instructions (`plugin/instructions/core.md`), the `subagent-decision` and `review`
 skills and the two reference pages carry the same words; core.md stays at its 190 lines.
+
+## 0.4.2 — one command installs the plugin
+
+- `install.sh` and `install.ps1` (README § Install): the same steps, words and exit codes on
+  macOS, Linux and native Windows; each step one line, skipped when done; asks before it
+  installs or upgrades Bun; asks for the browser token, the gateway key and the Tavily key
+  (each can be skipped, none is echoed); ends with `doctor` and what is left. Exit codes: 0
+  done, 3 installed with items left, 1 a step failed, 2 refused.
+- The move runs on every machine and `setup` follows it (`migrate` says "Nothing to move."
+  where there is nothing). `setup --tavily-key-stdin` writes the key through the token's own
+  atomic writer.
+
+## 0.4.3 — the installer's first real run
+
+- The marketplace is refreshed before any version is compared, then the installed CLI's own
+  version is read (older: stop, with the two commands that fix it, exit 1).
+- A backend key is tested before it is saved (`gateway check`, `--backend-key-stdin`,
+  `--save-unchecked`); `gateway setup --omniroute-password[-stdin]` can make the router's key
+  itself. The installer asks before it replaces an MCP server of the person's own
+  (`mcp status --json`). A pasted secret no longer arrives broken (one home,
+  `src/cli/secret-line.ts`, and both installers). Both of Chrome's files name the
+  `claude-code` profile; `doctor` reads Chrome's own extension record.
+
+## 0.5.0 — every gateway slot works the same way
+
+- A slot is reached by the model's family; each slot has its own fallback switch; a slot with
+  no chain is off; no hidden Claude step; the judge judges every check; `agent-guard` reads
+  affordability from `gateway.json`; another model's thinking never goes back to Claude;
+  claude-mem follows the scout slot only.
+- The upgrade path takes out the 0.4.3 model keys, drops the hidden `claude-sonnet-5-5`,
+  starts an old opus or fable chain with its fallback off, and ignores an untested judge.
+  `worktrees --remove` no longer finds itself; `--admin` always asks.
 
 ## 1 — Foundation (done)
 
@@ -285,11 +386,12 @@ sessions closed in the same moment before the machine started (`docs/windows-set
 Slots keyed by the real model ids, so a Claude model at the plan's usage limit falls back
 to a chosen target instead of stopping; the usage-limit alert; and the status line's
 warning. The fallback's answers are made safe for Claude Code (`fallback-answer.ts`), and
-a judge target is used only after it passed the judge test.
+a judge target is used only after it passed the judge test. (0.5.0 changed how a slot is reached: by the model's family, not
+by an exact id, and each slot has its own fallback switch.)
 
-## 8 — Web search (done, 0.3.0)
+## 8 — Web search (done in 0.3.0, removed in 1.0.0)
 
-`cc-smart-dev-kit search "<query>"` asks the local OmniRoute gateway for web results (Ollama's web search, included with the Ollama account: $0 per search, about 0.9 s, cached for 5 minutes). `--fetch <url>` needs a fetch provider's key inside OmniRoute. How it works and its limits: [search.md](search.md).
+The search command asked the local OmniRoute gateway for web results (Ollama's web search, included with the Ollama account: $0 per search, about 0.9 s, cached for 5 minutes), and `--fetch <url>` read one page's text through a fetch provider's key inside OmniRoute. The command was removed in 1.0.0; that section above says what to use instead.
 
 ## 9 — The local portal (done, 0.3.0)
 

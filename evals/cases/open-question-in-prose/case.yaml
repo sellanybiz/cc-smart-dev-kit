@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: open-question-in-prose
+description: >-
+  An open question gets ideas in prose, not a multiple-choice question with made-up options.
+  Finding: IN-18.
+tags: [gate]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 4
+  allowed_tools: [Skill, AskUserQuestion]
+  prompt: |
+    I'm trying to think of a name for my command-line tool that tidies up old git branches. Any thoughts?
+graders:
+  - name: no-forced-choice
+    type: tool_used
+    tool: 'AskUserQuestion'
+    min: 0
+    max: 0
+    arm: 'both'

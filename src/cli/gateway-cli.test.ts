@@ -13,7 +13,7 @@
  * router runs in this process anyway: it waits for the port to close, and the fake server
  * here never closes.
  */
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -26,8 +26,12 @@ import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { cliPaths } from "./paths";
 import { runRestore, stageOneDone } from "./restore";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const BUILT_ROUTER = join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");
@@ -42,15 +46,18 @@ afterEach(() => {
 });
 
 /**
- * A fake OmniRoute (`/v1/models`, the judge test's `/v1/messages`, and `cc-smart-dev-kit search`'s
- * `/v1/search` and `/v1/web/fetch`) and a fake router health page, on one free port. Its
- * search answers 401 with the key it was sent echoed back, as an upstream may.
+ * A fake OmniRoute (`/v1/models` and the judge test's `/v1/messages`) and a fake router health
+ * page, on one free port.
  */
 function fakeServer(
-  options: { judge?: Record<string, "allow" | "block">; modelsStatus?: number } = {},
+  options: {
+    /** What the health page says about open breakers (`breakers`). */
+    breakers?: Record<string, unknown>;
+    judge?: Record<string, "allow" | "block">;
+    modelsStatus?: number;
+  } = {},
 ) {
   const seenKeys: string[] = [];
-  const searchKeys: string[] = [];
   /** Each judge test request: its model, the key it carried, and its body. */
   const judged: { body: Record<string, unknown>; key: string; model: string }[] = [];
   const server: Bun.Server<undefined> = Bun.serve({
@@ -58,17 +65,6 @@ function fakeServer(
     port: 0,
     async fetch(req): Promise<Response> {
       const url = new URL(req.url);
-      if (url.pathname === "/v1/search" || url.pathname === "/v1/web/fetch") {
-        const authorization = req.headers.get("authorization") ?? "";
-        searchKeys.push(authorization);
-        if (url.pathname === "/v1/web/fetch") {
-          return Response.json({ content: "Page text.", url: "https://example.com/" });
-        }
-        return Response.json(
-          { error: { message: `invalid key in "${authorization}"` } },
-          { status: 401 },
-        );
-      }
       if (url.pathname === "/v1/messages" && options.judge !== undefined) {
         const body = (await req.json()) as Record<string, unknown>;
         const model = String(body.model);
@@ -96,6 +92,7 @@ function fakeServer(
       }
       if (url.pathname === "/__cc-smart-dev-kit/health") {
         return Response.json({
+          ...(options.breakers === undefined ? {} : { breakers: options.breakers }),
           cooling: {},
           fallbacks: 0,
           ok: true,
@@ -108,7 +105,7 @@ function fakeServer(
     },
   });
   servers.push(server);
-  return { judged, port: server.port as number, searchKeys, seenKeys };
+  return { judged, port: server.port as number, seenKeys };
 }
 
 /** Another program on a free port: it answers, but not as this router (an older one, say). */
@@ -1548,7 +1545,7 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
         "· slot cc-smart-dev-kit-worker: first target claude-sonnet-5-5 (fallback on)",
         "· slot cc-smart-dev-kit-fable: off, fable goes to Anthropic as Claude Code sent it",
         "· slot cc-smart-dev-kit-opus: off, opus goes to Anthropic as Claude Code sent it",
-        "· slot cc-smart-dev-kit-judge: off, Claude judges auto mode's safety checks",
+        "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
         "",
       ].join("\n"),
     );
@@ -1637,7 +1634,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
       "· slot cc-smart-dev-kit-worker: off, sonnet goes to Anthropic as Claude Code sent it",
       "· slot cc-smart-dev-kit-fable: off, fable goes to Anthropic as Claude Code sent it",
       "· slot cc-smart-dev-kit-opus: off, opus goes to Anthropic as Claude Code sent it",
-      "· slot cc-smart-dev-kit-judge: off, Claude judges auto mode's safety checks",
+      "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
     ]);
     // Asked of the fake, never the network.
     expect(m.probed).toEqual(["http://127.0.0.1:20100/__cc-smart-dev-kit/health"]);
@@ -1811,8 +1808,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
         'judge test: omniroute:m2 blocked "git push --force origin main"',
         'judge test: omniroute:m1 blocked "git push --force origin main"',
         "cc-smart-dev-kit-judge: (new)",
-        "  now: omniroute:m2 → omniroute:m1  (fallback off: only omniroute:m2 answers; the rest are kept, not used)",
-        "  To let the next target answer when omniroute:m2 fails or rests: cc-smart-dev-kit gateway fallback judge on",
+        "  now: omniroute:m2 → omniroute:m1  (fallback on)",
         "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
         "The router uses it from its next request.",
         "",
@@ -2001,15 +1997,216 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     expect(status.stdout).toContain(
       [
         "Slots (the first target answers; the next one only while fallback is on):",
-        "  cc-smart-dev-kit-scout omniroute:m1 → claude-sonnet-5-5  (fallback on)",
-        "  cc-smart-dev-kit-worker omniroute:m1 → omniroute:m2  (fallback on)",
+        "  cc-smart-dev-kit-scout omniroute:m1 → claude-sonnet-5-5  (fallback on; breaker on)",
+        "  cc-smart-dev-kit-worker omniroute:m1 → omniroute:m2  (fallback on; breaker on)",
         "  cc-smart-dev-kit-fable off: fable goes to Anthropic as Claude Code sent it, on your own login",
-        "  cc-smart-dev-kit-opus omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used)",
-        "  cc-smart-dev-kit-judge off: Claude judges auto mode's safety checks",
+        "  cc-smart-dev-kit-opus omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used; breaker on)",
+        "  cc-smart-dev-kit-judge default: Claude judges every check, alone: no worker target has passed the judge test yet (omniroute:m1, omniroute:m2; cc-smart-dev-kit gateway setup tests them)",
         "",
       ].join("\n"),
     );
   });
+});
+
+describe("status names an open breaker", () => {
+  test("one line per slot whose every target is limited or down, with each target's rest", async () => {
+    const m = machine();
+    const at = Date.UTC(2026, 9, 15, 10, 0, 0);
+    const server = fakeServer({
+      breakers: {
+        "cc-smart-dev-kit-worker": {
+          held: 4,
+          heldNow: 2,
+          since: at,
+          targets: [
+            { status: 429, target: "omniroute:m1", until: at + 60_000 },
+            { status: null, target: "omniroute:m2", until: at + 30_000 },
+          ],
+        },
+      },
+    });
+    m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["omniroute:m1", "omniroute:m2"] });
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stderr).toBe("");
+    const line = status.stdout.split("\n").find((text) => text.includes("all targets limited"));
+    expect(line).toMatch(
+      /^ {2}cc-smart-dev-kit-worker: all targets limited, holding requests since (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d \(omniroute:m1 429 until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d; omniroute:m2 no answer until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d\)$/,
+    );
+  });
+});
+
+describe("cc-smart-dev-kit gateway breaker", () => {
+  /**
+   * Each test here starts the CLI as a real process, up to seven times. Bun's 5 s default is too
+   * short on a loaded machine; a speed limit, not a race, and no assertion depends on it.
+   */
+  const SPAWNING_TEST_MS = 30_000;
+
+  /** A config on the fake server's port: a worker chain of two, and fields this version keeps. */
+  function twoTargetMachine() {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["omniroute:m1", "omniroute:m2"] });
+    m.useServer(server.port, {
+      futureField: { level: 3 },
+      timeouts: { breakerHoldMs: 90_000, firstByteMs: 5000, idleMs: 9000 },
+    });
+    return { m, server };
+  }
+
+  test(
+    "worker off, then on: the switch is saved and said, and the file keeps its other fields",
+    async () => {
+      const { m } = twoTargetMachine();
+      const off = await m.run(["gateway", "breaker", "worker", "off"]);
+      expect(off.stderr).toBe("");
+      expect(off.exitCode).toBe(0);
+      expect(off.stdout).toBe(
+        [
+          "cc-smart-dev-kit-worker: breaker on → off",
+          "  omniroute:m1 → omniroute:m2  (breaker off)",
+          "  While every target is limited or down, the last answer goes back to Claude Code at once.",
+          "The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+      expect(saved.breaker).toEqual({ "cc-smart-dev-kit-worker": false });
+      // Everything else the file held is still there, the hold included, and the mode is 600.
+      expect(saved.futureField).toEqual({ level: 3 });
+      expect(saved.timeouts).toEqual({ breakerHoldMs: 90_000, firstByteMs: 5000, idleMs: 9000 });
+      expect(saved.slots["cc-smart-dev-kit-worker"]).toEqual(["omniroute:m1", "omniroute:m2"]);
+      expect(statSync(m.paths.config).mode & 0o777).toBe(0o600);
+      // It saved under the lock and let it go.
+      expect(existsSync(join(m.configDir, "cc-smart-dev-kit", "lock"))).toBe(false);
+
+      const on = await m.run(["gateway", "breaker", "worker", "on"]);
+      expect(on.stderr).toBe("");
+      expect(on.stdout).toBe(
+        [
+          "cc-smart-dev-kit-worker: breaker off → on",
+          "  omniroute:m1 → omniroute:m2  (breaker on)",
+          "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry.",
+          "The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      // On is the default: no entry, and no empty field either.
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("breaker");
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "status shows the breaker switch beside the fallback switch, never one for the judge",
+    async () => {
+      const { m } = twoTargetMachine();
+      await m.run(["gateway", "breaker", "worker", "off"]);
+      const status = await m.run(["gateway", "status"]);
+      expect(status.stderr).toBe("");
+      expect(status.stdout).toContain(
+        [
+          "  cc-smart-dev-kit-scout omniroute:m1 → claude-sonnet-5-5  (fallback on; breaker on)",
+          "  cc-smart-dev-kit-worker omniroute:m1 → omniroute:m2  (fallback on; breaker off)",
+          "  cc-smart-dev-kit-fable off: fable goes to Anthropic as Claude Code sent it, on your own login",
+          "  cc-smart-dev-kit-opus off: opus goes to Anthropic as Claude Code sent it, on your own login",
+          "  cc-smart-dev-kit-judge default: Claude judges every check, alone: no worker target has passed the judge test yet (omniroute:m1, omniroute:m2; cc-smart-dev-kit gateway setup tests them)",
+          "",
+        ].join("\n"),
+      );
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "the judge, a slot with no chain, a wrong word and missing words are refused, and nothing is saved",
+    async () => {
+      const { m } = twoTargetMachine();
+      const before = readFileSync(m.paths.config, "utf8");
+      const judge = await m.run(["gateway", "breaker", "judge", "on"]);
+      expect(judge.exitCode).toBe(1);
+      expect(judge.stdout).toBe("");
+      expect(judge.stderr).toBe(
+        "cc-smart-dev-kit: cc-smart-dev-kit-judge: the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch\n",
+      );
+      const noChain = await m.run(["gateway", "breaker", "fable", "off"]);
+      expect(noChain.exitCode).toBe(1);
+      expect(noChain.stderr).toBe(
+        "cc-smart-dev-kit: cc-smart-dev-kit-fable has no chain, so there is no request for the breaker to hold. Give it one first: cc-smart-dev-kit gateway slot fable <targets>\n",
+      );
+      const word = await m.run(["gateway", "breaker", "worker", "maybe"]);
+      expect(word.exitCode).toBe(1);
+      expect(word.stderr).toBe('cc-smart-dev-kit: say on or off, not "maybe"\n');
+      const name = await m.run(["gateway", "breaker", "Worker!", "off"]);
+      expect(name.exitCode).toBe(1);
+      expect(name.stderr).toBe(
+        'cc-smart-dev-kit: "Worker!" is not a slot name (scout, worker, opus, fable, or cc-smart-dev-kit-<name>)\n',
+      );
+      // Words missing or left over: the usage, exit 2.
+      for (const args of [
+        ["breaker"],
+        ["breaker", "worker"],
+        ["breaker", "worker", "on", "extra"],
+      ]) {
+        const usage = await m.run(["gateway", ...args]);
+        expect(usage.exitCode).toBe(2);
+        expect(usage.stderr).toContain(
+          "  breaker <slot> on|off  When every target of a slot is limited or down",
+        );
+      }
+      expect(readFileSync(m.paths.config, "utf8")).toBe(before);
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "a config the breaker's hold is too long for, or that is not JSON, stops the command and is left alone",
+    async () => {
+      const { m } = twoTargetMachine();
+      const tooLong = JSON.stringify({
+        ...JSON.parse(readFileSync(m.paths.config, "utf8")),
+        timeouts: { breakerHoldMs: 300_000 },
+      });
+      writeFileSync(m.paths.config, tooLong, { mode: 0o600 });
+      const refused = await m.run(["gateway", "breaker", "worker", "off"]);
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stdout).toBe("");
+      expect(refused.stderr).toContain(`${m.paths.config} is not a valid gateway config:`);
+      expect(refused.stderr).toContain(
+        "too long: at most 240000 ms (240 s), because a longer hold risks Claude Code giving up on the request",
+      );
+      expect(refused.stderr).toContain("at timeouts.breakerHoldMs");
+      expect(refused.stderr).not.toContain(PLANTED_KEY);
+      expect(readFileSync(m.paths.config, "utf8")).toBe(tooLong);
+
+      const broken = `{"backends":{"omniroute":{"apiKey":"${PLANTED_KEY}",}}}`;
+      writeFileSync(m.paths.config, broken, { mode: 0o600 });
+      const notJson = await m.run(["gateway", "breaker", "worker", "off"]);
+      expect(notJson.exitCode).toBe(1);
+      expect(notJson.stderr).toBe(
+        `cc-smart-dev-kit: ${m.paths.config} is not valid JSON. Fix it by hand.\n`,
+      );
+      expect(readFileSync(m.paths.config, "utf8")).toBe(broken);
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "it is in the command's help",
+    async () => {
+      const { m } = twoTargetMachine();
+      const help = await m.run(["gateway", "help"]);
+      expect(help.stdout).toContain(
+        [
+          "  breaker <slot> on|off  When every target of a slot is limited or down, may the router hold",
+          "                         the request for a while and then ask Claude Code to retry? Off: the",
+          "                         last answer goes back at once. On by default for scout, worker,",
+          "                         opus and fable. The judge never holds, so it has no switch.",
+        ].join("\n"),
+      );
+    },
+    SPAWNING_TEST_MS,
+  );
 });
 
 describe("cc-smart-dev-kit gateway on: no gateway.json", () => {
@@ -2064,6 +2261,10 @@ describe("secrets", () => {
     record(await m.run(["gateway", "slot", "opus", "claude-opus-5-5,omniroute:m1"]));
     record(await m.run(["gateway", "fallback", "opus", "on"]));
     record(await m.run(["gateway", "fallback", "worker", "off"]));
+    record(await m.run(["gateway", "breaker", "worker", "off"]));
+    record(await m.run(["gateway", "breaker", "judge", "on"]));
+    record(await m.run(["gateway", "fallback", "judge", "off"]));
+    record(await m.run(["gateway", "slot", "judge", "claude-sonnet-5-5"]));
     record(await m.run(["gateway", "slot", "opus", "off"]));
     record(await m.run(["usage"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));
@@ -2073,13 +2274,6 @@ describe("secrets", () => {
     record(await m.run(["doctor"]));
     record(await m.run(["gateway", "help"]));
     record(await m.run(["gateway", "setup", "--backend-key-stdin"], PLANTED_KEY));
-    // `cc-smart-dev-kit search` reads the same config and key: its search answers 401 with the key
-    // echoed, its fetch a page.
-    const searchFailed = record(await m.run(["search", "bun runtime"]));
-    record(await m.run(["search", "--json", "bun runtime"]));
-    record(await m.run(["search", "--fetch", "https://example.com/"]));
-    record(await m.run(["search", "--json", "--fetch", "https://example.com/"]));
-    record(await m.run(["search", "--max", "99", "bun runtime"]));
     // A broken file: the error must not quote the text around the mistake.
     writeFileSync(m.paths.config, `{"backends":{"omniroute":{"apiKey":"${PLANTED_KEY}",}}}`, {
       mode: 0o600,
@@ -2088,8 +2282,8 @@ describe("secrets", () => {
     // belong to a router running on this machine.
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "claude-sonnet-5-5"]));
+    record(await m.run(["gateway", "breaker", "worker", "on"]));
     record(await m.run(["doctor"]));
-    record(await m.run(["search", "bun runtime"]));
     // Valid JSON that fails the schema: the error names fields, not values.
     writeFileSync(
       m.paths.config,
@@ -2102,18 +2296,10 @@ describe("secrets", () => {
     );
     record(await m.run(["gateway", "models"]));
     record(await m.run(["doctor"]));
-    record(await m.run(["search", "bun runtime"]));
     const all = outputs.join("\n");
 
     // The backend did receive the key: the test would see a leak if one were printed.
     expect(server.seenKeys).toContain(`Bearer ${PLANTED_KEY}`);
-    // So did the search and the fetch, four times; the broken configs never sent it.
-    expect(server.searchKeys).toEqual(Array(4).fill(`Bearer ${PLANTED_KEY}`));
-    // The failed search printed the echoed key masked.
-    expect(searchFailed.exitCode).toBe(1);
-    expect(searchFailed.stderr).toStartWith(
-      'OmniRoute answered HTTP 401: invalid key in "Bearer ****cdef"\n',
-    );
     // The URL with the password was printed, masked, by status, models and doctor.
     const maskedUrl = `••••${String(server.port).slice(-4)}`;
     expect(all).toContain(`backend creds: ${maskedUrl} key ••••cdef → HTTP 200`);
@@ -2303,4 +2489,238 @@ describe("cc-smart-dev-kit gateway on Windows: the router as a Scheduled Task", 
     expect(existsSync(m.taskPath)).toBe(false);
     expect(existsSync(m.paths.copy)).toBe(false);
   });
+});
+
+describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44)", () => {
+  const SPAWNING_TEST_MS = 30_000;
+  /** The proof the router checks, by hand from config.ts's `judgeTestProof` (test version 3). */
+  const proofOf = (target: string, port: number) =>
+    createHash("sha256")
+      .update(`cc-smart-dev-kit judge test 3\n${target}\nhttp://127.0.0.1:${port}`)
+      .digest("hex")
+      .slice(0, 32);
+  const PASSED_LINE =
+    'judge test: omniroute:m1 blocked "git push --force origin main": it judges auto mode\'s checks while Claude is limited or down';
+  const FAILED_LINE =
+    'judge test: omniroute:m2 did not block "git push --force origin main" (let it run): it never judges; the worker slot uses it as before';
+
+  test(
+    "slot worker tests each target; only the one that blocked gets a proof, the worker is set either way",
+    async () => {
+      const m = machine();
+      const server = fakeServer({ judge: { m1: "block", m2: "allow" } });
+      m.writeConfig(server.port);
+      const set = await m.run(["gateway", "slot", "worker", "omniroute:m1,omniroute:m2"]);
+      expect(set.stderr).toBe("");
+      expect(set.exitCode).toBe(0);
+      expect(set.stdout).toBe(
+        [
+          PASSED_LINE,
+          FAILED_LINE,
+          "cc-smart-dev-kit-worker: (new)",
+          "  now: omniroute:m1 → omniroute:m2  (fallback on)",
+          `  Auto mode's checks: Claude first; while Claude is limited or down: omniroute:m1 (fallback on); not tested, so never judging: omniroute:m2 (cc-smart-dev-kit gateway setup tests them)`,
+          "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+      expect(saved.slots["cc-smart-dev-kit-worker"]).toEqual(["omniroute:m1", "omniroute:m2"]);
+      expect(saved.judgeTested).toEqual({ "omniroute:m1": proofOf("omniroute:m1", server.port) });
+      // Both targets were asked the test, with the backend's own key.
+      expect(server.judged.map((call) => call.model)).toEqual(["m1", "m2"]);
+      expect(server.judged.map((call) => call.key)).toEqual([
+        `Bearer ${PLANTED_KEY}`,
+        `Bearer ${PLANTED_KEY}`,
+      ]);
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "a worker chain of Claude alone, or off, tests nothing and writes no proof",
+    async () => {
+      const m = machine();
+      const server = fakeServer({ judge: { m1: "block" } });
+      m.writeConfig(server.port);
+      const claude = await m.run(["gateway", "slot", "worker", "claude-sonnet-5-5"]);
+      expect(claude.stderr).toBe("");
+      expect(claude.stdout).toBe(
+        [
+          "cc-smart-dev-kit-worker: (new)",
+          "  now: claude-sonnet-5-5  (fallback on)",
+          "  Auto mode's checks: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
+          "The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      expect(server.judged).toEqual([]);
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("judgeTested");
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "a target already proven is not tested again; a target taken out of the worker chain loses its proof",
+    async () => {
+      const m = machine();
+      const server = fakeServer({ judge: { m1: "block", m2: "block" } });
+      m.writeConfig(server.port);
+      await m.run(["gateway", "slot", "worker", "omniroute:m1"]);
+      expect(server.judged.map((call) => call.model)).toEqual(["m1"]);
+      // m1 has its proof now: only m2 is asked.
+      await m.run(["gateway", "slot", "worker", "omniroute:m1,omniroute:m2"]);
+      expect(server.judged.map((call) => call.model)).toEqual(["m1", "m2"]);
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8")).judgeTested).toEqual({
+        "omniroute:m1": proofOf("omniroute:m1", server.port),
+        "omniroute:m2": proofOf("omniroute:m2", server.port),
+      });
+      // m2 leaves the chain, and its proof goes with it.
+      await m.run(["gateway", "slot", "worker", "omniroute:m1"]);
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8")).judgeTested).toEqual({
+        "omniroute:m1": proofOf("omniroute:m1", server.port),
+      });
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "gateway setup tests the worker targets that have no proof, and says each result",
+    async () => {
+      const m = machine();
+      const server = fakeServer({ judge: { m1: "block", m2: "allow" } });
+      m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["omniroute:m1", "omniroute:m2"] });
+      const setup = await m.run(["gateway", "setup"]);
+      expect(setup.stderr).toBe("");
+      expect(setup.exitCode).toBe(0);
+      expect(setup.stdout).toContain(`${PASSED_LINE}\n${FAILED_LINE}\n`);
+      expect(setup.stdout).toContain(
+        "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action\n",
+      );
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8")).judgeTested).toEqual({
+        "omniroute:m1": proofOf("omniroute:m1", server.port),
+      });
+      // The second setup asks only the target that has no proof.
+      server.judged.length = 0;
+      await m.run(["gateway", "setup"]);
+      expect(server.judged.map((call) => call.model)).toEqual(["m2"]);
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "status shows the one judge line, and doctor shows it without a failure for an untested target",
+    async () => {
+      const m = machine();
+      const server = fakeServer({ judge: { m1: "block", m2: "allow" } });
+      m.writeConfig(server.port);
+      m.useServer(server.port, {});
+      expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
+      await m.run(["gateway", "slot", "worker", "omniroute:m1,omniroute:m2"]);
+      const status = await m.run(["gateway", "status"]);
+      expect(status.stdout).toContain(
+        [
+          "  cc-smart-dev-kit-worker omniroute:m1 → omniroute:m2  (fallback on; breaker on)",
+          "  cc-smart-dev-kit-fable off: fable goes to Anthropic as Claude Code sent it, on your own login",
+          "  cc-smart-dev-kit-opus off: opus goes to Anthropic as Claude Code sent it, on your own login",
+          "  cc-smart-dev-kit-judge default: Claude first; while Claude is limited or down: omniroute:m1 (fallback on); not tested, so never judging: omniroute:m2 (cc-smart-dev-kit gateway setup tests them)",
+          "    WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "",
+        ].join("\n"),
+      );
+      const checks = await gatewayChecks({
+        paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+        bundle: BUILT_ROUTER,
+        runner: () => ({ exitCode: 0, output: "active\n" }),
+        service: "systemd",
+        fetch: m.probe.fetch,
+      });
+      const judge = checks.filter((check) => check.text.startsWith("slot cc-smart-dev-kit-judge"));
+      expect(
+        judge.map(
+          (check) => `${check.info ? "·" : check.warn ? "!" : check.ok ? "✓" : "✗"} ${check.text}`,
+        ),
+      ).toEqual([
+        "· slot cc-smart-dev-kit-judge: Claude first; while Claude is limited or down: omniroute:m1 (fallback on); not tested, so never judging: omniroute:m2 (cc-smart-dev-kit gateway setup tests them)",
+        "! slot cc-smart-dev-kit-judge: a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+      ]);
+      expect(checks.filter((check) => !check.ok && !check.info)).toEqual([]);
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "fallback judge off keeps Claude alone with no judge chain; on puts the default back",
+    async () => {
+      const m = machine();
+      const server = fakeServer({ judge: { m1: "block" } });
+      m.writeConfig(server.port);
+      await m.run(["gateway", "slot", "worker", "omniroute:m1"]);
+      const off = await m.run(["gateway", "fallback", "judge", "off"]);
+      expect(off.stderr).toBe("");
+      expect(off.exitCode).toBe(0);
+      expect(off.stdout).toBe(
+        [
+          "cc-smart-dev-kit-judge: fallback on → off",
+          "  Claude judges every check, alone (fallback off)",
+          "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
+          "The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8")).fallback).toEqual({
+        "cc-smart-dev-kit-judge": false,
+      });
+      const on = await m.run(["gateway", "fallback", "judge", "on"]);
+      expect(on.stdout).toBe(
+        [
+          "cc-smart-dev-kit-judge: fallback off → on",
+          "  Claude first; while Claude is limited or down: omniroute:m1 (fallback on)",
+          "  The worker's tested targets answer when Claude is limited or down.",
+          "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("fallback");
+    },
+    SPAWNING_TEST_MS,
+  );
+
+  test(
+    "slot judge takes a claude-… target as it is, with no test; slot judge off keeps the worker's proofs",
+    async () => {
+      const m = machine();
+      const server = fakeServer({ judge: { m1: "block", m2: "block" } });
+      m.writeConfig(server.port);
+      await m.run(["gateway", "slot", "worker", "omniroute:m1"]);
+      const set = await m.run(["gateway", "slot", "judge", "claude-sonnet-5-5,omniroute:m2"]);
+      expect(set.stderr).toBe("");
+      expect(set.exitCode).toBe(0);
+      expect(set.stdout).toBe(
+        [
+          "judge: claude-sonnet-5-5 is Claude: no test needed; it judges as the model it names",
+          'judge test: omniroute:m2 blocked "git push --force origin main"',
+          "cc-smart-dev-kit-judge: (new)",
+          "  now: claude-sonnet-5-5 → omniroute:m2  (fallback on)",
+          "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
+      expect(saved.slots["cc-smart-dev-kit-judge"]).toEqual(["claude-sonnet-5-5", "omniroute:m2"]);
+      expect(saved.judgeTested).toEqual({
+        "omniroute:m1": proofOf("omniroute:m1", server.port),
+        "omniroute:m2": proofOf("omniroute:m2", server.port),
+      });
+      // Off: m2's proof goes (no chain holds it), the worker's m1 stays.
+      expect((await m.run(["gateway", "slot", "judge", "off"])).exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8")).judgeTested).toEqual({
+        "omniroute:m1": proofOf("omniroute:m1", server.port),
+      });
+    },
+    SPAWNING_TEST_MS,
+  );
 });

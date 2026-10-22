@@ -6,3 +6,7 @@
 # a file (the shim reads the launcher's baked bun path) keeps a trailing \r and stops
 # matching. Git Bash and sh need the LF form of plugin/bin/*, and of everything else they read.
 * text=auto eol=lf
+
+# Built bundles: a review counts the lines a person wrote, so a rebuilt bundle is listed after a
+# review, never counted (src/workflow/review-cover.ts reads this from the base branch).
+plugin/dist/** linguist-generated=true

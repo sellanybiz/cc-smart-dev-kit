@@ -5,9 +5,17 @@
  * WHAT IT STARTS
  *   The pinned `@playwright/mcp` (`src/mcp/versions.ts`) with `--extension`, so it does NOT start
  *   a browser of its own: it connects to the Chrome the person already has, in the ONE profile
- *   named `claude-code` (`--profile-dir-name`), through the Playwright extension installed there.
+ *   named `claude-code`, through the Playwright extension installed there. `--profile-dir-name`
+ *   is that profile's FOLDER name as `claudeCodeProfileOn` finds it — the same answer `doctor`
+ *   gives, so a profile made in Chrome's own dialog (`Profile 2`) is the one the MCP is told.
  *   Every session gets its own tab group in that profile (`Playwright · claude-code`, `(2)`, …)
  *   and the person can watch and take over.
+ *
+ * IT RUNS IN A FOLDER OF ITS OWN
+ *   Claude Code starts this launcher in the session's folder. The MCP child is started in the
+ *   browser's output folder instead: bun reads the working folder's `bunfig.toml` (its `preload`)
+ *   and `.env` for every bun it starts, and bunx looks in its `node_modules` first — so in a
+ *   project's folder the child that holds the browser token would run the project's own code.
  *
  * THE TOKEN IS REQUIRED, AND IT IS NEVER IN `argv`
  *   Without a token the extension opens an approval page and waits for a click — for EVERY
@@ -27,7 +35,8 @@
  *   Everything the browser saves — screenshots, page snapshots, console and network logs — goes to
  *   ONE folder, `cliPaths().browserOutputDir`, kept under `OUTPUT_MAX_BYTES` by the MCP itself. A
  *   file the CALLER names by a relative name is put there by the `playwright-output` hook, because
- *   the MCP resolves such a name against the folder the server was started in.
+ *   the MCP resolves such a name against the folder the server was started in (which is this
+ *   folder too, now; the hook still makes the name absolute, so it never depends on that).
  *
  * 🔴 NOTHING HERE MAY WRITE TO STDOUT. The launcher's stdout IS the MCP protocol stream; one
  *   stray line and the server shows in Claude Code as failed. Every line goes through `log`
@@ -37,13 +46,11 @@ import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { ensurePrivateDir } from "../machine/private-dir";
 import { MCP_VERSIONS } from "../mcp/versions";
+import { type ChromeDeps, CLAUDE_CODE_PROFILE, claudeCodeProfileOn } from "./chrome";
 import { BROWSER_TOKEN_ENV, type BrowserToken, readBrowserToken } from "./token";
 
 /** Oldest files are deleted once the output folder grows past this (the MCP's own limit). */
 const OUTPUT_MAX_BYTES = 200 * 1024 * 1024;
-
-/** The profile this plugin drives, by directory name (what `--profile-dir-name` takes). */
-const PROFILE_DIR_NAME = "claude-code";
 
 /** The launcher's own options, taken out before the rest goes to the MCP. */
 const OWN_OPTIONS = {
@@ -60,9 +67,15 @@ export interface BrowserMcpDeps {
   /**
    * Starts the MCP. Its stdout is this process's stdout. `env` is added to the child's own
    * environment (the caller merges it over the current one) — the extension token travels there,
-   * never in `argv`, which every user on the machine can read from `/proc`.
+   * never in `argv`, which every user on the machine can read from `/proc`. `cwd` is the folder
+   * the child must start in: the browser's own, never the session's.
    */
-  spawn: (argv: string[], options: { env: Record<string, string>; stdio: "inherit" }) => McpChild;
+  spawn: (
+    argv: string[],
+    options: { cwd: string; env: Record<string, string>; stdio: "inherit" },
+  ) => McpChild;
+  /** Chrome's files on this machine: where the `claude-code` profile is (`claudeCodeProfileOn`). */
+  chrome: ChromeDeps & { home: string; platform: NodeJS.Platform };
   log: (line: string) => void;
   /** Finds `bunx` (or any command) on PATH. */
   which: (command: string) => null | string;
@@ -95,7 +108,7 @@ export function browserMcpOptions(paths: CliPaths, argv: readonly string[]): Bro
 
 /**
  * The exact `argv` of the Playwright MCP. Pure, so a test can read it: `--extension` and the
- * profile are the mode; `--output-dir` is where the files it names itself go;
+ * profile's folder name are the mode; `--output-dir` is where the files it names itself go;
  * `--allow-unrestricted-file-access` is what lets it reach a session's files in a worktree AND
  * open a `file://` page (blocked by default); `--file-paths=absolute` is what makes the paths it
  * reports usable from any folder.
@@ -104,6 +117,7 @@ export function browserMcpArgv(
   head: string[],
   options: BrowserMcpOptions,
   packageName: string,
+  profileDirName: string,
 ): string[] {
   return [
     ...head,
@@ -111,7 +125,7 @@ export function browserMcpArgv(
     packageName,
     "--extension",
     "--browser=chrome",
-    `--profile-dir-name=${PROFILE_DIR_NAME}`,
+    `--profile-dir-name=${profileDirName}`,
     `--output-dir=${options.outputDir}`,
     `--output-max-size=${String(OUTPUT_MAX_BYTES)}`,
     "--file-paths=absolute",
@@ -163,7 +177,13 @@ export async function runBrowserMcp(
   const bunx = deps.which("bunx");
   const head = bunx === null ? [process.execPath, "x"] : [bunx];
   const packageName = deps.package ?? `@playwright/mcp@${MCP_VERSIONS.playwright}`;
-  const child = deps.spawn(browserMcpArgv(head, options, packageName), {
+  // The folder `doctor` names. No profile yet: the plugin's own name, so the MCP's own error
+  // names the profile `browser setup` makes.
+  const profileDirName = claudeCodeProfileOn(deps.chrome)?.dirName ?? CLAUDE_CODE_PROFILE;
+  const child = deps.spawn(browserMcpArgv(head, options, packageName, profileDirName), {
+    // A folder the plugin owns, never the session's: no project's bunfig.toml, `.env` or
+    // node_modules reaches the child that holds the token.
+    cwd: options.outputDir,
     // The token, and nothing else: an environment variable, never an argument.
     env: { [BROWSER_TOKEN_ENV]: token.value },
     stdio: "inherit",

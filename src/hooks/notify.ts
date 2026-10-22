@@ -83,6 +83,7 @@ import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { CliPaths } from "../cli/paths";
+import { cleanSessionName } from "../crew/names";
 import { oneLine } from "../gateway/plain-text";
 import { notifyCommand } from "../update/apply";
 import { alertsAt, type ResolvedAlerts } from "../workflow/alerts";
@@ -101,7 +102,6 @@ import { startDetached } from "./detached";
 import { type HookResult, SILENT } from "./io";
 import { AGENT_VIEW_TYPES, NOTIFY_TYPES } from "./notify-types";
 import type { Env } from "./run";
-import { cleanSessionName } from "./session-name";
 import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
 

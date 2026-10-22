@@ -25,11 +25,9 @@ import { join } from "node:path";
 import { CLAUDE_CODE_PROFILE } from "../browser/chrome";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { DEFAULT_PORTAL_PORT } from "../ports";
 import { bunConfigArg } from "../setup/bun-config";
 import { writeManagedFile } from "../setup/write";
-
-/** The port the portal binds when nothing else is asked: 20150, the design's own number. */
-export const DEFAULT_PORTAL_PORT = 20_150;
 
 export const PORTAL_USAGE = `Usage: ${COMMAND} portal [--port <port>] [--no-open]
 

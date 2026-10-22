@@ -5,6 +5,11 @@ import { isAbsolute, resolve, sep as sep2 } from "path";
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
 
+// src/build-info/names.ts
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
+var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
@@ -50,7 +55,9 @@ function cliPaths(env = process.env) {
     claudeConfigDir,
     settingsFile: join2(claudeConfigDir, "settings.json"),
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
+    pluginCacheDir: join2(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    projectsDir: join2(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),
     binDir: join2(router.home, ".local", "bin"),
     stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
@@ -107,20 +114,15 @@ function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
 // src/mcp/register.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
-// src/build-info/names.ts
-var MARKETPLACE = "cc-smart-dev-kit";
-var PLUGIN = "cc-smart-dev-kit";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-
 // src/build-info/index.ts
 var info = {
-  version: "0.7.0",
+  version: "1.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
       marketplace: "thedotmack",
-      version: ">=13.29.0"
+      version: ">=13.36.0"
     },
     {
       name: "frontend-design",
@@ -146,6 +148,15 @@ var FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
+// src/setup/user-json.ts
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+
 // src/mcp/register.ts
 function readUserServers(file) {
   let text;
@@ -155,7 +166,7 @@ function readUserServers(file) {
     return error.code === "ENOENT" ? {} : null;
   }
   try {
-    const parsed = JSON.parse(text);
+    const parsed = parseUserJson(text);
     if (typeof parsed !== "object" || parsed === null)
       return null;
     const servers = parsed.mcpServers;

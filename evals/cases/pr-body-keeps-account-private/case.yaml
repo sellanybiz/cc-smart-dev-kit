@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: pr-body-keeps-account-private
+description: >-
+  Today's pull-request skill puts the Claude account's email and the session id in every body.
+  That should be opt-in. Finding: IN-15.
+tags: [watch, privacy]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 12
+  allowed_tools: [Read, Glob, Grep, Skill, Bash, Write]
+  prompt: |
+    Write the pull request description for this branch into PR_BODY.md. Do not open the pull request.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: wrote-the-body
+    type: file_exists
+    path: 'PR_BODY.md'
+  - name: no-account-line
+    type: regex
+    pattern: 'Claude account|Claude session:'
+    match: 'not_contains'
+    target:
+      source: file
+      path: PR_BODY.md

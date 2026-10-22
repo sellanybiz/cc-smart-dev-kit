@@ -5,7 +5,7 @@
  * commands) and the notifiers. Each fake logs its calls, so the tests assert them.
  * Nothing here reaches the network, the real ~/.claude or the real `claude`.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
@@ -20,7 +20,8 @@ import {
 import { lockIsHeld, withLock } from "../setup/lock";
 import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
-import { tempDir } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { capturingRunner, installedText, notifyCommand } from "./apply";
 import {
   backgroundCheck,
@@ -30,7 +31,7 @@ import {
   sessionSourceOf,
   sessionStart,
 } from "./background";
-import { isOlder } from "./check";
+import { checkForUpdate, isOlder } from "./check";
 import {
   CHECK_INTERVAL_MS,
   isDue,
@@ -42,6 +43,9 @@ import {
   writeHeldMajor,
   writeLastCheck,
 } from "./state";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const HOOK = join(import.meta.dir, "..", "entries", "update-check.ts");
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
@@ -130,6 +134,8 @@ function machine(options: MachineOptions = {}) {
   const bin = join(fake, "bin");
   mkdirSync(bin, { recursive: true });
   const remoteHead = options.remoteHead ?? HEAD_A;
+  const realGit = Bun.which("git");
+  if (realGit === null) throw new Error("this test needs git");
   writeFileSync(join(fake, "local-head"), `${options.localHead ?? HEAD_A}\n`);
   writeFileSync(join(fake, "installed-after"), installed(newVersion));
   writeFileSync(join(fake, "copy-after"), copyManifest(newVersion));
@@ -141,6 +147,8 @@ function machine(options: MachineOptions = {}) {
     chmodSync(join(bin, name), 0o755);
   };
   script("git", [
+    // The repo scan's own calls (it finds a session's checkout) reach the real git, unlogged.
+    `case "$*" in *--path-format*|"worktree list"*) exec ${q(realGit)} "$@" ;; esac`,
     `echo "$*" >> ${q(join(fake, "git.log"))}`,
     'case "$*" in',
     "  config*) exit 1 ;;",
@@ -844,6 +852,21 @@ describe("cc-smart-dev-kit update", () => {
     expect((await m.cli(["update"])).stdout).toBe("cc-smart-dev-kit 1.1.0 is up to date.\n");
   }, 30_000);
 
+  test("a local copy whose head git cannot read is not 'behind': only the versions decide then", () => {
+    // `git rev-parse HEAD` answers nothing a commit looks like (a copy that is not a git
+    // checkout, or a broken one). Read as "behind", every check said so, and the background
+    // check refreshed the marketplace every hour for nothing.
+    const m = machine({ localHead: "" });
+    expect(checkForUpdate(m.paths, m.env)).toEqual({ installed: "1.0.0", kind: "up-to-date" });
+    // A newer version in the copy is still found.
+    const newer = machine({ localHead: "", inCopy: "1.2.0" });
+    expect(checkForUpdate(newer.paths, newer.env)).toMatchObject({
+      catalogBehind: false,
+      inCopy: "1.2.0",
+      kind: "behind",
+    });
+  });
+
   test("a wrong option: the usage, exit 2", async () => {
     const run = await machine().cli(["update", "--now"]);
     expect(run.exitCode).toBe(2);
@@ -1385,7 +1408,7 @@ describe("D33: a major version waits for the person", () => {
     expect(sessionSourceOf("not json")).toBeNull();
   });
 
-  test("D33: `update` with a held major installs it on the person's word: it says it is a major, then installs; the held state goes", async () => {
+  test("D33: `update` with a held major installs it on the person's word: first the repos to fix, then the install; the held state goes", async () => {
     const m = machine({
       inCopy: "0.6.0",
       installed: "0.6.0",
@@ -1394,6 +1417,15 @@ describe("D33: a major version waits for the person", () => {
       remoteHead: HEAD_B,
     });
     holdMajor(m, ["it refuses old project fields"]);
+    // A repo a saved session names, still with the retired prefix.
+    const repo = tempDir("old-repo");
+    git(repo, "init", "-q");
+    mkdirSync(join(repo, ".claude"));
+    const config = JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" } });
+    writeFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), config);
+    const folder = join(m.paths.projectsDir, "-old-repo");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "s1.jsonl"), `${JSON.stringify({ cwd: repo, type: "user" })}\n`);
 
     const run = await m.cli(["update"]);
     expect(run.stderr).toBe("");
@@ -1403,6 +1435,7 @@ describe("D33: a major version waits for the person", () => {
         "$ claude plugin marketplace update cc-smart-dev-kit",
         "refreshed",
         "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): installing it.",
+        `! ${repo} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${repo} && cc-smart-dev-kit project init`,
         "$ claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
         "updated",
         "cc-smart-dev-kit 1.0.0 installed (was 0.6.0). Restart Claude sessions to load it.",
@@ -1412,8 +1445,52 @@ describe("D33: a major version waits for the person", () => {
     );
     expect(m.installedVersion()).toBe("1.0.0");
     expect(readHeldMajor(m.files)).toBeNull();
+    // The other repo is only read, never changed.
+    expect(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(config);
   }, 30_000);
 
+  test("D33: `update` whose install fails keeps the hold, and says the major still waits", async () => {
+    const m = machine({
+      claudeFails: true,
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    holdMajor(m, ["it refuses old project fields"]);
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(
+      "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): it was not installed, and it still waits for `cc-smart-dev-kit update`.\n",
+    );
+    expect(run.stdout).not.toContain("cc-smart-dev-kit setup");
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(readHeldMajor(m.files)?.version).toBe("1.0.0");
+  }, 30_000);
+
+  test("D33: `update` whose install ends well but installs nothing keeps the hold", async () => {
+    const m = machine({
+      claudeInstallsNothing: true,
+      inCopy: "0.6.0",
+      installed: "0.6.0",
+      majorNotes: NOTES,
+      newVersion: "1.0.0",
+      remoteHead: HEAD_B,
+    });
+    holdMajor(m, ["it refuses old project fields"]);
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toBe(
+      "cc-smart-dev-kit 1.0.0 is a major version (it refuses old project fields): it was not installed, and it still waits for `cc-smart-dev-kit update`.\n",
+    );
+    expect(run.stdout).not.toContain("is the newest version");
+    expect(m.installedVersion()).toBe("0.6.0");
+    expect(readHeldMajor(m.files)?.version).toBe("1.0.0");
+    expect(readLastCheck(m.files)?.detail).toBe(
+      "1.0.0 is a major version (it refuses old project fields): it waits for `cc-smart-dev-kit update`",
+    );
+  }, 30_000);
   test("D33: `update` whose install fails keeps the hold, and says the major still waits", async () => {
     const m = machine({
       claudeFails: true,

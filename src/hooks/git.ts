@@ -4,9 +4,13 @@
  */
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { isInside } from "../path-compare";
 import { gitEnv } from "../project/git-env";
-import { BATCH_SSH_COMMAND, hasOwnSshCommand } from "../setup/marketplace-access";
 import type { Env } from "./run";
+
+// The path tests live in their one home, `src/path-compare.ts`; the hooks have always imported
+// them from here, so this file hands them on rather than every hook changing its import.
+export { IGNORE_CASE, isInside, samePath } from "../path-compare";
 
 export interface GitRun {
   ok: boolean;
@@ -14,63 +18,47 @@ export interface GitRun {
   out: string;
   /** stderr, trimmed; "timed out" when the timeout stopped it. */
   err: string;
+  /** git's exit code; null when it did not exit on its own (a timeout, or it never started). */
+  code: number | null;
 }
 
 /**
  * How long one git call inside a PreToolUse guard may take. The guard hook's own timeout is
- * 10 s (`plugin/hooks/hooks.json`, `project-wiring.ts`), so every git call it makes has to
- * answer well inside that: a guard that hangs stops the call it guards.
+ * 10 s (`plugin/hooks/hooks.json`), so every git call it makes has to answer well inside
+ * that: a guard that hangs stops the call it guards.
  */
 export const GUARD_GIT_TIMEOUT_MS = 5_000;
 
-/** A git command in `cwd`, without the GIT_* variables that point at another repo. */
-export function runGit(cwd: string, args: string[], env: Env, timeoutMs = 15_000): GitRun {
+/**
+ * A git command in `cwd`, without the GIT_* variables that point at another repo. `own` is set
+ * after those are dropped: the variables this one call needs on purpose (a temporary object
+ * folder, `src/workflow/review-cover.ts`), never ones inherited from outside.
+ */
+export function runGit(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs = 15_000,
+  own: Record<string, string> = {},
+): GitRun {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
-      env: gitEnv(env),
+      env: { ...gitEnv(env), ...own },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
+      // A guard runs with no console of its own on Windows: without this, git opens one.
+      windowsHide: true,
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err };
+    const code = result.signalCode ? null : result.exitCode;
+    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
   } catch (error) {
-    return { ok: false, out: "", err: error instanceof Error ? error.message : String(error) };
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
   }
-}
-
-/**
- * The environment for a git command that reaches the network: it never asks for a password
- * (GIT_TERMINAL_PROMPT=0), and ssh gets BatchMode unless the user has an ssh command of
- * their own (which would then be hidden).
- */
-export function noPromptEnv(env: Env): Env {
-  const quiet: Env = { ...env, GIT_TERMINAL_PROMPT: "0" };
-  if (!hasOwnSshCommand(quiet)) quiet.GIT_SSH_COMMAND = BATCH_SSH_COMMAND;
-  return quiet;
-}
-
-/** Folders compare without case on Windows only. */
-export const IGNORE_CASE = process.platform === "win32";
-
-/**
- * Is `path` the folder itself, or inside it? `..` and `.` are resolved first, so
- * `app/../app-wt-x` is not "inside app".
- */
-export function isInside(path: string, folder: string, ignoreCase = IGNORE_CASE): boolean {
-  const form = (p: string) => {
-    const forward = resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
-    return ignoreCase ? forward.toLowerCase() : forward;
-  };
-  const child = form(path);
-  const parent = form(folder);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-
-export function samePath(a: string, b: string, ignoreCase = IGNORE_CASE): boolean {
-  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
 }
 
 /**
@@ -101,6 +89,8 @@ export interface ListedWorktree {
   /** Without `refs/heads/`; null on a detached commit. */
   branch: string | null;
   locked: boolean;
+  /** Why it is locked, when the lock says (`git worktree lock --reason`); absent for a bare lock. */
+  lockReason?: string;
   /** git found its folder gone. */
   prunable: boolean;
 }
@@ -114,11 +104,13 @@ export function parseWorktreeList(porcelain: string): ListedWorktree[] {
     const flag = (key: string) => lines.some((line) => line === key || line.startsWith(`${key} `));
     const path = value("worktree");
     if (path === undefined) continue;
+    const lockReason = value("locked")?.trim();
     worktrees.push({
       path,
       head: value("HEAD") ?? "",
       branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
       locked: flag("locked"),
+      ...(lockReason === undefined || lockReason === "" ? {} : { lockReason }),
       prunable: flag("prunable"),
     });
   }
@@ -162,27 +154,4 @@ export function hasChanges(folder: string, env: Env): boolean {
     env,
   );
   return !status.ok || status.out !== "";
-}
-
-/** The commits on a branch that no other branch, local or remote, has. Null when git cannot tell. */
-export function ownCommits(repo: string, branch: string, env: Env): number | null {
-  const own = runGit(
-    repo,
-    [
-      "rev-list",
-      "--count",
-      `refs/heads/${branch}`,
-      "--not",
-      `--exclude=${branch}`,
-      "--branches",
-      "--remotes",
-    ],
-    env,
-  );
-  return own.ok && /^\d+$/.test(own.out) ? Number(own.out) : null;
-}
-
-/** True when `ref` names something in the repo. */
-export function hasRef(repo: string, ref: string, env: Env): boolean {
-  return runGit(repo, ["rev-parse", "--verify", "--quiet", ref], env).ok;
 }

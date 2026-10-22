@@ -1,10 +1,10 @@
 /**
- * Text from outside made safe to print: every control and format character a space, a
- * cut that never leaves half a character, and JSON that escapes what a terminal obeys.
+ * Text from outside made safe to print: every control and format character a space, and
+ * a cut that never leaves half a character.
  * Every expected value is written by hand.
  */
 import { describe, expect, it } from "bun:test";
-import { cutText, oneLine, plainText, printableJson } from "./plain-text";
+import { cutText, oneLine, plainText } from "./plain-text";
 
 /** An OSC 52 clipboard write, hidden text, a C1 control, a bidi override, a forged line. */
 const NASTY = "\u001b]52;c;ZXZpbA==\u0007\u001b[8m\u009b2J\u202e\r\n\u200b\u00ad";
@@ -52,25 +52,5 @@ describe("oneLine", () => {
       "bad?[31m red reason ?",
     );
     expect(oneLine("  abcdef  ", 3, { ascii: true })).toBe("abc");
-  });
-});
-
-describe("printableJson", () => {
-  it("escapes every control and format character JSON.stringify leaves raw, and parses back the same", () => {
-    const value = { a: "x\u009by\u202ez\u007f", b: ["\u001b[8m", "line\nbreak"], c: 1 };
-    const json = printableJson(value);
-    expect(json).toBe(
-      [
-        "{",
-        '  "a": "x\\u009by\\u202ez\\u007f",',
-        '  "b": [',
-        '    "\\u001b[8m",',
-        '    "line\\nbreak"',
-        "  ],",
-        '  "c": 1',
-        "}",
-      ].join("\n"),
-    );
-    expect(JSON.parse(json)).toEqual(value);
   });
 });

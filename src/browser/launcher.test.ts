@@ -4,9 +4,18 @@
  * approval page (no token → nothing is started).
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { browserMcpArgv, browserMcpOptions, noTokenMessage, runBrowserMcp } from "./launcher";
 import { BROWSER_TOKEN_ENV } from "./token";
@@ -46,6 +55,7 @@ describe("browserMcpArgv", () => {
       ["/usr/bin/bunx"],
       { mcpArgs: ["--caps=vision"], outputDir: "/out" },
       "@playwright/mcp@1.2.3",
+      "claude-code",
     );
     expect(argv).toEqual([
       "/usr/bin/bunx",
@@ -79,6 +89,7 @@ describe("runBrowserMcp", () => {
         started += 1;
         return { exited: Promise.resolve(0), kill: () => undefined };
       },
+      chrome: { home, platform: "linux" },
       which: () => "/usr/bin/bunx",
     });
     expect(code).not.toBe(0);
@@ -98,6 +109,7 @@ describe("runBrowserMcp", () => {
       spawn: () => {
         throw new Error("nothing may be started");
       },
+      chrome: { home, platform: "linux" },
       which: () => "/usr/bin/bunx",
     });
     expect(code).not.toBe(0);
@@ -116,6 +128,7 @@ describe("runBrowserMcp", () => {
       spawn: () => {
         throw new Error("nothing may be started");
       },
+      chrome: { home, platform: "linux" },
       which: () => "/usr/bin/bunx",
     });
     expect(code).not.toBe(0);
@@ -135,6 +148,7 @@ describe("runBrowserMcp", () => {
         envs.push(options.env);
         return { exited: Promise.resolve(0), kill: () => undefined };
       },
+      chrome: { home, platform: "linux" },
       which: () => "/usr/bin/bunx",
     });
     expect(code).toBe(0);
@@ -161,6 +175,7 @@ describe("runBrowserMcp", () => {
     await runBrowserMcp(paths_, [], {
       log: (line) => lines.push(line),
       spawn: () => ({ exited: Promise.resolve(0), kill: () => undefined }),
+      chrome: { home, platform: "linux" },
       which: () => "/usr/bin/bunx",
     });
     expect(statSync(paths_.browserOutputDir).mode & 0o777).toBe(0o700);
@@ -177,9 +192,117 @@ describe("runBrowserMcp", () => {
         spawned.push(argv);
         return { exited: Promise.resolve(0), kill: () => undefined };
       },
+      chrome: { home, platform: "linux" },
       which: () => null,
     });
     expect(spawned[0]?.slice(0, 2)).toEqual([process.execPath, "x"]);
+  });
+
+  test("PB-1: the MCP starts in the browser's own output folder, never the session's folder", async () => {
+    const home = tempDir("browser-mcp");
+    tokenFile(home);
+    const folders: string[] = [];
+    const start = (argv: string[]) =>
+      runBrowserMcp(paths(home), argv, {
+        log: () => undefined,
+        spawn: (_argv, options) => {
+          folders.push(options.cwd);
+          return { exited: Promise.resolve(0), kill: () => undefined };
+        },
+        chrome: { home, platform: "linux" },
+        which: () => "/usr/bin/bunx",
+      });
+    await start([]);
+    await start(["--output-dir=/tmp/other-output"]);
+    expect(folders).toEqual([
+      join(home, ".local/share/cc-smart-dev-kit/playwright-output"),
+      "/tmp/other-output",
+    ]);
+  });
+
+  test("PB-2: a profile made in Chrome's own dialog is the one the MCP is told", async () => {
+    // Chrome's "Add profile" makes a folder `Profile 2` and keeps the name typed there in
+    // `Local State`. `doctor` finds it by that name; the MCP must be told the same folder, or it
+    // looks for `<user data>/claude-code` and fails while doctor shows ✓.
+    const home = tempDir("browser-mcp");
+    tokenFile(home);
+    const userData = join(home, ".config", "google-chrome");
+    mkdirSync(join(userData, "Profile 2"), { recursive: true });
+    writeFileSync(
+      join(userData, "Local State"),
+      JSON.stringify({ profile: { info_cache: { "Profile 2": { name: "claude-code" } } } }),
+    );
+    const spawned: string[][] = [];
+    const start = () =>
+      runBrowserMcp(paths(home), [], {
+        log: () => undefined,
+        spawn: (argv) => {
+          spawned.push(argv);
+          return { exited: Promise.resolve(0), kill: () => undefined };
+        },
+        chrome: { home, platform: "linux" },
+        which: () => "/usr/bin/bunx",
+      });
+    await start();
+    expect(spawned[0]).toContain("--profile-dir-name=Profile 2");
+    expect(spawned[0]).not.toContain("--profile-dir-name=claude-code");
+    // No profile at all: the plugin's own name, so the MCP's own error names the profile.
+    rmSync(join(userData, "Local State"));
+    await start();
+    expect(spawned[1]).toContain("--profile-dir-name=claude-code");
+  });
+});
+
+describe("PB-1: the real command, from a project with its own bunfig.toml", () => {
+  test("PB-1: a project's bunfig.toml preload never runs inside the browser MCP", async () => {
+    // Claude Code starts `browser mcp` in the session's folder. Bun reads the working folder's
+    // `bunfig.toml` (its `preload`) and `.env` for every bun it starts, and bunx looks in its
+    // `node_modules` first: so the MCP child, which holds the browser token, would run the
+    // project's own code. The fake bunx starts a real bun, exactly as bunx would.
+    const home = tempDir("browser-mcp-cli");
+    tokenFile(home);
+    const project = tempDir("browser-mcp-project");
+    const marker = join(project, "preload-ran");
+    writeFileSync(
+      join(project, "preload.js"),
+      `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`,
+    );
+    writeFileSync(join(project, "bunfig.toml"), 'preload = ["./preload.js"]\n');
+    const bin = join(home, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    const probe = join(home, "probe.js");
+    const seen = join(home, "probe-cwd");
+    writeFileSync(
+      probe,
+      `require("node:fs").writeFileSync(${JSON.stringify(seen)}, process.cwd());\n`,
+    );
+    writeFileSync(join(bin, "bunx"), `#!/bin/sh\nexec "${process.execPath}" "${probe}"\n`);
+    chmodSync(join(bin, "bunx"), 0o755);
+    const plugin = join(import.meta.dir, "..", "..", "plugin");
+    const guard = subprocessGuard();
+    // Started the way the launcher starts the CLI: the plugin's own empty config, no `.env`.
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "--no-env-file",
+        `--config=${join(plugin, "bunfig.toml")}`,
+        ...guard.args,
+        join(import.meta.dir, "..", "entries", "cli.ts"),
+        "browser",
+        "mcp",
+      ],
+      {
+        cwd: project,
+        env: { CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home, PATH: bin, ...guard.env },
+        stderr: "pipe",
+        stdin: "ignore",
+        stdout: "pipe",
+      },
+    );
+    const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(seen, "utf8")).toBe(paths(home).browserOutputDir);
   });
 });
 

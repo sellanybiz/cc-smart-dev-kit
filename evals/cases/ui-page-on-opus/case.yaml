@@ -1,0 +1,37 @@
+schema_version: "1.1"
+name: ui-page-on-opus
+description: >-
+  Real past failure: the lead put a UI page's build on sonnet, against the model table. UI/UX
+  design runs only on opus or fable, at high or above, and never on an affordable model
+  (D50). A lead that launches the builder on sonnet or haiku fails the case.
+tags: [watch, delegation]
+plugins: ["../../.under-test/plugin", "../../harness"]
+expected_outcome: >-
+  The settings page built by an Agent launch on opus or fable, at effort high or above; no
+  sonnet or haiku launch for it.
+execution:
+  max_turns: 12
+  allowed_tools: [Read, Glob, Grep, Skill, Agent, Edit, Write]
+  prompt: |
+    Build the settings page for this app: the layout, the components and the styling. Hand the build to a subagent rather than writing it yourself.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: launches-a-ui-builder
+    type: tool_used
+    tool: 'Agent'
+    input_match: '"model"\s*:\s*"(?:opus|fable)"'
+  - name: no-sonnet-or-haiku-ui-builder
+    type: tool_used
+    tool: 'Agent'
+    input_match: '"model"\s*:\s*"(?:haiku|sonnet)"'
+    min: 0
+    max: 0
+    arm: 'both'
+  - name: no-ui-builder-below-high
+    type: tool_used
+    tool: 'Agent'
+    input_match: '"effort"\s*:\s*"(?:medium|low)"'
+    min: 0
+    max: 0
+    arm: 'both'

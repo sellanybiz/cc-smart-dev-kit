@@ -28,10 +28,8 @@
  *   with /exit.
  *
  * Everything is read from Claude Code's own files; nothing is tracked on the side. The
- * project is found from the working folder (`cc-smart-dev-kit.json` `worktrees.base`, and
- * `worktrees.prefix` while a project still runs the deprecated engine); without that file,
- * only the main checkout's own sessions are listed. A session's own worktree lives under
- * `<main checkout>/.claude/worktrees/`, and is listed with the rest of the project's.
+ * project is found from the working folder: its main checkout, whose own sessions are listed,
+ * and every session in a worktree under `<main checkout>/.claude/worktrees/` with them.
  */
 import {
   closeSync,
@@ -50,8 +48,9 @@ import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { liveSessions } from "../hooks/sessions";
 import { openUrlCandidates } from "../machine/open-url";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { locateCheckout } from "../project/resolve";
 import { atomicWrite } from "../setup/write";
+import { repoKey } from "../workflow/reviews";
 import {
   belongsToRepo,
   closedWithWindow,
@@ -64,6 +63,7 @@ import {
   sessionsToReopen,
   stoppedByRestart,
   TAB_CONFIG_MARK,
+  tabCheckoutOf,
   tabConfigName,
   warpTabConfig,
   windowsTerminalCommand,
@@ -76,8 +76,6 @@ const PIN_HOURS = 48;
 const RESTORE_HOURS = 12;
 /** Claude Code repeats a session's name and folder all through its file. */
 const TAIL_BYTES = 512 * 1024;
-/** The one saved tab that is not a session: it runs `--open` for you. */
-const RESTORE_ALL = "claude_restore_all";
 
 /** Where Warp keeps its saved tabs, by platform. */
 export function warpTabConfigDir(home: string, on: NodeJS.Platform = platform()): string {
@@ -99,26 +97,79 @@ function readTail(path: string, size: number): string {
   return buffer.toString("utf8");
 }
 
+/** One session file under `projects/<folder>/`: `<id>.jsonl`. */
+interface SessionFile {
+  id: string;
+  path: string;
+  /** When it was last written, in milliseconds. */
+  lastWrite: number;
+  size: number;
+}
+
+/** One project folder's session files, newest first; none when the folder cannot be read. */
+function sessionFiles(projectsDir: string, folder: string): SessionFile[] {
+  let names: string[];
+  try {
+    names = readdirSync(join(projectsDir, folder));
+  } catch {
+    // Not a folder, or gone since the listing.
+    return [];
+  }
+  const files: SessionFile[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const path = join(projectsDir, folder, name);
+    const stat = statSync(path, { throwIfNoEntry: false });
+    if (stat === undefined || !stat.isFile()) continue;
+    files.push({
+      id: name.slice(0, -".jsonl".length),
+      lastWrite: stat.mtimeMs,
+      path,
+      size: stat.size,
+    });
+  }
+  return files.sort((a, b) => b.lastWrite - a.lastWrite);
+}
+
+/** What one session file's end says (`describeSession`). */
+function readSession(file: SessionFile): SavedSession {
+  return describeSession(readTail(file.path, file.size), {
+    id: file.id,
+    lastWrite: file.lastWrite,
+  });
+}
+
+/**
+ * Every folder Claude Code's saved sessions name, once each: the folder the newest session of
+ * each project folder last worked in. One tail per project folder, so a machine with thousands
+ * of sessions reads one file per folder. `setup` and `update` read it to find the repos the
+ * person works in (`src/update/retired-repos.ts`).
+ */
+export function sessionWorkFolders(projectsDir: string): string[] {
+  if (!existsSync(projectsDir)) return [];
+  const folders = new Set<string>();
+  for (const folder of readdirSync(projectsDir)) {
+    const newest = sessionFiles(projectsDir, folder)[0];
+    if (newest === undefined) continue;
+    const worked = readSession(newest).folder;
+    if (worked !== null) folders.add(worked);
+  }
+  return [...folders];
+}
+
 /** This project's sessions written since `since`, newest first. */
 export function savedSessions(
   projectsDir: string,
   mainCheckout: string,
-  prefix: null | string,
   since: number,
 ): SavedSession[] {
   if (!existsSync(projectsDir)) return [];
   const sessions: SavedSession[] = [];
   for (const folder of readdirSync(projectsDir)) {
-    if (!belongsToRepo(folder, mainCheckout, prefix)) continue;
-    for (const name of readdirSync(join(projectsDir, folder))) {
-      if (!name.endsWith(".jsonl")) continue;
-      const path = join(projectsDir, folder, name);
-      const stat = statSync(path);
-      if (!stat.isFile() || stat.mtimeMs < since) continue;
-      const session = describeSession(readTail(path, stat.size), {
-        id: name.slice(0, -".jsonl".length),
-        lastWrite: stat.mtimeMs,
-      });
+    if (!belongsToRepo(folder, mainCheckout)) continue;
+    for (const file of sessionFiles(projectsDir, folder)) {
+      if (file.lastWrite < since) continue;
+      const session = readSession(file);
       // A session Claude never titled is a one-shot run (`claude -p`), not one to come back to.
       // The id must be a session id (letters, digits and dashes): it goes into a shell command
       // (`warpTabConfig`, xfceTerminalCommand) and names `--open`'s marker file, and a file
@@ -129,7 +180,19 @@ export function savedSessions(
   return sessions.sort((a, b) => b.lastWrite - a.lastWrite);
 }
 
-/** Write a tab for every session, and remove the tabs this command wrote for sessions gone quiet. */
+/** Every saved tab of this project starts with this, and one of another project never does. */
+function tabPrefix(key: string): string {
+  return `claude_${key}_`;
+}
+
+/**
+ * Write a tab for every session, and remove this project's tabs for sessions gone quiet.
+ *
+ * Only this project's tabs are touched: the name carries the project's key, and a tab
+ * written before the key existed is recognized by its own `directory` line. Warp keeps
+ * every project's tabs in one folder, so removing "every tab of ours that is not in `keep`"
+ * once removed another project's tabs and took over its "bring back the sessions" tab.
+ */
 export function saveWarpTabs(
   dir: string,
   sessions: SavedSession[],
@@ -137,21 +200,32 @@ export function saveWarpTabs(
   command: string,
 ): void {
   mkdirSync(dir, { recursive: true });
-  const keep = new Set([RESTORE_ALL, ...sessions.map((session) => tabConfigName(session))]);
+  const key = repoKey(mainCheckout);
+  const prefix = tabPrefix(key);
+  const restoreAll = `${prefix}restore_all`;
+  const keep = new Set([restoreAll, ...sessions.map((session) => tabConfigName(key, session))]);
   for (const name of readdirSync(dir)) {
     if (!name.startsWith("claude_") || !name.endsWith(".toml")) continue;
     if (keep.has(name.slice(0, -".toml".length))) continue;
     const path = join(dir, name);
-    if (readFileSync(path, "utf8").startsWith(TAB_CONFIG_MARK)) rmSync(path);
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch {
+      // Removed between the listing and the look, or not ours to read: nothing to remove.
+      continue;
+    }
+    if (!text.startsWith(TAB_CONFIG_MARK)) continue;
+    if (name.startsWith(prefix) || tabCheckoutOf(text) === mainCheckout) rmSync(path);
   }
   for (const session of sessions) {
     writeFileSync(
-      join(dir, `${tabConfigName(session)}.toml`),
+      join(dir, `${tabConfigName(key, session)}.toml`),
       warpTabConfig(session, mainCheckout),
     );
   }
   writeFileSync(
-    join(dir, `${RESTORE_ALL}.toml`),
+    join(dir, `${restoreAll}.toml`),
     [
       TAB_CONFIG_MARK,
       'name = "Claude · bring back the sessions a restart or a closed window stopped"',
@@ -286,26 +360,16 @@ export async function runSessions(
 ): Promise<number> {
   // The main checkout, so a run inside a worktree still lists every session of the project.
   let mainCheckout = resolve(cwd);
-  let prefix: null | string = null;
   try {
     const checkout = locateCheckout(cwd, { env: process.env });
-    if (checkout !== null) {
-      mainCheckout = checkout.mainCheckout ?? checkout.root;
-      const project = loadProjectConfig(checkout);
-      prefix = project.config?.worktrees?.prefix ?? null;
-    }
+    if (checkout !== null) mainCheckout = checkout.mainCheckout ?? checkout.root;
   } catch {
-    // Outside git, or a project file that does not read: the folder itself is the project.
+    // Outside git, or a main checkout git cannot find: the folder itself is the project.
   }
 
-  const projectsDir = join(paths.claudeConfigDir, "projects");
+  const projectsDir = paths.projectsDir;
   const machineStartedAt = deps.now - deps.uptimeSeconds * 1000;
-  const sessions = savedSessions(
-    projectsDir,
-    mainCheckout,
-    prefix,
-    deps.now - PIN_HOURS * 3_600_000,
-  );
+  const sessions = savedSessions(projectsDir, mainCheckout, deps.now - PIN_HOURS * 3_600_000);
 
   /**
    * The sessions running right now, from Claude Code's own records. A resumed session may not
@@ -423,7 +487,7 @@ export async function runSessions(
   for (const session of toOpen) {
     let opened: boolean;
     if (reopenIn === "warp") {
-      const link = `warp://tab_config/${tabConfigName(session)}`;
+      const link = `warp://tab_config/${tabConfigName(repoKey(mainCheckout), session)}`;
       // Which program opens a link, per platform: `open-url.ts` (the portal uses the same
       // one). The first candidate is this platform's opener for a desktop link.
       const opener = openUrlCandidates(deps.platform, link)[0];
@@ -454,5 +518,7 @@ export async function runSessions(
       "Run this in a terminal on the desktop, or start each one with its `claude --resume` line above.",
     );
   }
-  return 0;
+  // A window that did not open is this command's failure, so a script around it can tell
+  // that a session did not come back.
+  return failed ? 1 : 0;
 }

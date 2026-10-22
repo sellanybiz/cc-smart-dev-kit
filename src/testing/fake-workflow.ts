@@ -38,6 +38,7 @@ export function defaultResolved(): ResolvedWorkflow {
     autoPush: at(false),
     clearWorktreeAfterMerge: at(false),
     deleteBranch: at(false),
+    fixesAfterReview: { files: at(10), lines: at(200), percent: at(20) },
     mergeMethod: at("merge"),
     openPr: at("off"),
     reviewBeforePush: at(true),
@@ -47,6 +48,18 @@ export function defaultResolved(): ResolvedWorkflow {
       sessionNames: at(false),
       statusLine: at(false),
       updateHold: at(false),
+    },
+    crew: {
+      enabled: at(false),
+      handoffPercent: at(70),
+      idleStopMinutes: at(10),
+      max: at(6),
+      maxOpus: at(2),
+      maxHours: at(4),
+      memoryGb: at(2),
+      quietMinutes: at(20),
+      softHours: at(2),
+      tag: at<null | string>(null),
     },
   };
 }
@@ -121,11 +134,24 @@ function fakePlan(input: ProjectInitInput): ProjectInitPlan {
     changed: text !== input.existing,
     diff: [`+ worktrees.base: ${JSON.stringify(input.answers.base)}`],
     file,
+    // The personal settings file changes only for an engine line, which no fake plan has.
+    localSettings: {
+      adds: [],
+      changed: false,
+      file: `${input.root}/.claude/settings.local.json`,
+      lines: [],
+      removes: [],
+      text: input.existingLocalSettings ?? "{}\n",
+    },
     notes: [],
-    settingsAdds,
-    settingsChanged: settingsAdds.length > 0,
-    settingsFile,
-    settingsText,
+    settings: {
+      adds: settingsAdds,
+      changed: settingsAdds.length > 0,
+      file: settingsFile,
+      lines: settingsAdds.map((line) => `+ ${line}`),
+      removes: [],
+      text: settingsText,
+    },
     text,
   };
 }
@@ -161,7 +187,9 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
       if (opts.dryRun === true) return [];
       const wanted: Array<[string, string]> = [];
       if (plan.changed) wanted.push([plan.file, plan.text]);
-      if (plan.settingsChanged) wanted.push([plan.settingsFile, plan.settingsText]);
+      for (const settings of [plan.settings, plan.localSettings]) {
+        if (settings.changed) wanted.push([settings.file, settings.text]);
+      }
       return wanted.map(([file, text]) => {
         written.set(file, text);
         return { backup: null, created: true, file };
@@ -175,6 +203,8 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
       calls.planProjectInit.push(input);
       return options.unwired === true ? unwired() : fakePlan(input);
     },
+    // D16's clash warning in the plan: the fake has no person's file, so nothing is assumed.
+    personalWorkflowOrDefault: () => ({}),
     projectInitDefaults(input): ProjectInitDefaults {
       calls.projectInitDefaults.push({ root: input.root });
       if (options.unwired === true) unwired();

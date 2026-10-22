@@ -24,10 +24,11 @@
  *
  * A project's own servers are the project's: the plugin never knows them.
  */
+import { TAVILY_SERVER_NAME } from "./names";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 
 /** The servers this plugin manages, in the order setup registers them. */
-export const SERVER_NAMES = ["playwright", "sequential-thinking", "tavily-websearch"] as const;
+export const SERVER_NAMES = ["playwright", "sequential-thinking", TAVILY_SERVER_NAME] as const;
 
 export type ServerName = (typeof SERVER_NAMES)[number];
 
@@ -53,8 +54,12 @@ export interface McpServer {
 
 /** What building the registrations needs from the machine. */
 export interface McpContext {
-  /** The launcher (`~/.local/bin/cc-smart-dev-kit`): it finds bun itself, whatever PATH Claude Code was started with. */
-  launcher: string;
+  /**
+   * How a program starts the launcher (`launcherArgv`): it finds bun itself, whatever PATH
+   * Claude Code was started with. The `sh` launcher's path off Windows; on Windows
+   * `cmd.exe /c <the .cmd launcher>`, because a program there cannot run a `sh` script (ST-7).
+   */
+  launcher: readonly string[];
   /** `bunx`, as an absolute path when there is one. */
   bunx: string;
   /**
@@ -73,10 +78,13 @@ const LONG_CALL_MS = 300_000;
 
 /** Every server, with the JSON to register it by. */
 export function mcpServers(context: McpContext): McpServer[] {
+  const [command, ...before] = context.launcher;
   return [
     {
       name: "playwright",
-      json: json({ command: context.launcher, args: ["browser", "mcp"] }),
+      // `command` first, then `args`: the order every earlier setup wrote, so a machine whose
+      // registration is the same as before sees the same JSON text (`planMcpServers`).
+      json: json({ command, args: [...before, "browser", "mcp"] }),
     },
     {
       name: "sequential-thinking",
@@ -90,7 +98,7 @@ export function mcpServers(context: McpContext): McpServer[] {
     },
     context.tavily.key
       ? {
-          name: "tavily-websearch",
+          name: TAVILY_SERVER_NAME,
           json: json({
             // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code at connect time.
             headers: { Authorization: "Bearer ${TAVILY_API_KEY}" },
@@ -100,7 +108,7 @@ export function mcpServers(context: McpContext): McpServer[] {
           }),
         }
       : {
-          name: "tavily-websearch",
+          name: TAVILY_SERVER_NAME,
           json: "",
           skipped: context.tavily.reason,
         },

@@ -11,8 +11,8 @@ there.
 
 A subagent runs in its own context window; only its final report comes back. Every file it
 reads, every search and every dead end stays out of yours. If the task can be written as a
-self-contained brief, delegate it. What stays with you, and which model and effort each agent
-gets, are in the core instructions (§ Subagents).
+self-contained brief, delegate it. What stays with you is in the core instructions (§ Lead the
+work), and which model and effort each agent gets too (§ Subagents).
 
 ## Which agent
 
@@ -22,9 +22,10 @@ gets, are in the core instructions (§ Subagents).
 | A file's or a module's structure — its functions, exports, outline | yourself: claude-mem's `smart_outline` for one file, `smart_search` across the repo, `smart_unfold` for one symbol's body; when they are not there or do not answer, `Grep` and `Read` |
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
-| A phase of a plan; any job that both explores and edits | `general-purpose` |
+| A whole phase of a plan, where the project has crew sessions on | a crew session, not a subagent — `/cc-smart-dev-kit:lead` |
+| A phase of a plan with crew sessions off, a piece of one; any job that both explores and edits | `general-purpose` |
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
-| Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify` |
+| Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify`: the facts on `sonnet`, the design verdict on `opus` or `fable` |
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
 | Questions about Claude Code, the Agent SDK or the API | `claude-code-guide` (built-in) |
 
@@ -47,6 +48,10 @@ A subagent has none of your conversation. Treat it as a smart colleague who just
   the session's own scripts.
 - **Its limits:** no commit, no push, no new agents, no messages to other sessions, no
   questions to the person — unless the brief says so. "Your final message is your report."
+- **Nothing of its own still runs when it reports:** the brief tells it to wait for every
+  background command and agent it started, or to stop it, before the final message. One that
+  hands back early is blocked once and told to wait or stop it — and Claude Code keeps such an
+  agent open until the work lands.
 - **When it is blocked, it reports and stops.** It never retries in a loop, never works
   around a guard, a hook or a permission refusal, and never widens its scope.
 - **A dense report:** findings with `file:line` evidence and the commands it actually ran. No
@@ -73,6 +78,14 @@ the judgment for it in the brief:
 - **Its limits in words** — an affordable model follows written limits less reliably than Claude.
 - Two failed tries at the same job → hand it to `opus`; never a third affordable try.
 
+## UI/UX work
+
+Design judgment, layout, components, pages and styling run only on `opus` or `fable`, at `high` or above — never on
+an affordable model (the core instructions' model table). Declare it when you launch: `Opus reason: ui`, or
+`Fable reason: ui-design`; `agent-guard` refuses a declared UI launch on anything else. The one exception is
+checking, which is not design: the `ui-verifier` may run on `sonnet` and brings back measured facts and screenshots,
+and you make the design verdict on `opus` or `fable` (`/cc-smart-dev-kit:ui-verify`).
+
 ## Choosing Fable
 
 `fable` is the premium advisor (the core instructions' model table): the hardest long-horizon
@@ -91,7 +104,7 @@ guard asks the person about every Fable launch.
 
 **A fresh attempt's brief** (`unsatisfied`) carries: the task; your answer, or the files you
 changed; what the person disliked, in their words; and what it returns — a design, a plan or a
-fix for you or a worker to build, never a build of its own.
+fix for you or a crew session to build, never a build of its own.
 
 ## While agents run
 

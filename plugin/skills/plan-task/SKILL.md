@@ -29,7 +29,10 @@ A plan built on memory is worse than no plan. Gather the facts, then plan from t
 - **The code** — the files that change and the patterns to match.
 - **Impact** — every consumer of shared code you will touch (`/cc-smart-dev-kit:impact-analysis`).
 
-Write the findings into the plan's **Research** and **Code exploration** sections.
+**Save the research before you write the plan**, in its own file:
+`.claude/research/<YYYY-MM-DD>-<slug>.md`, or the place the add-on file names. The plan's
+**Research** section condenses it and links it; **Code exploration** holds what you read in the
+code. On approval the research file moves into the archive (§ 4).
 
 ## 2. Ask with `AskUserQuestion`
 
@@ -40,9 +43,13 @@ trade-off goes in the description. `multiSelect` when the choices do not exclude
 Ask about: a data-model change; edge cases the request does not settle; a change across
 several systems (all now, or phased?); two valid approaches; a known risk in the person's
 approach; a proposed fix that hides the root cause (offer the root-cause fix as
-recommended); unclear scope; backward compatibility (old stored values, columns, URLs,
-environment variables) — the recommended default is a clean break, never a silent legacy
-shim. Skip asking for trivial fixes, a detailed "just do it", or settled decisions.
+recommended); unclear scope. Skip asking for trivial fixes, a detailed "just do it", or
+settled decisions.
+
+**Before a major change, offer two ways:** **play safe** — keep fallbacks, compatibility and
+the legacy paths (old stored values, columns, URLs, environment variables) — or **go fully
+new** — none of them, a clean break. Recommend the one the facts support, with its cost. The
+plan writes down which was chosen: never a silent legacy shim, and never a silent break.
 
 The recommended option is always the strongest one — never a shortcut dressed up as an
 option. Label a workaround as one and name its debt.
@@ -72,23 +79,31 @@ plan, not of a change set). When the plan adds UI or a new architecture, show it
 or a mockup — rather than only describing it.
 
 Then ask for approval with `AskUserQuestion` ("Start building this plan?"). Approved: Status
-`Approved`, then build. Changes wanted: revise, ask again. Never go from `In review` to code
+`Approved`, move the research file into `archive/` in its own folder
+(`.claude/research/archive/` by default) and update the plan's link to it, then build. Changes wanted: revise, ask again. Never go from `In review` to code
 without an explicit yes.
 
-## 5. Phases and owners — you lead, subagents build
+## 5. Phases and owners — you lead, subagents and crew sessions build
 
-Write the plan for a team. What stays with you is the core instructions' "do it yourself"
-list.
+Write the plan for a team. What stays with you is the core instructions' inline list (§ Lead
+the work).
 
-- **Each phase has one owner** — a subagent, with its type, model and effort — or you.
+- **Each phase has one owner** — a crew session with its kind (where the project has crew sessions
+  on: `/cc-smart-dev-kit:lead`), a subagent with its type, model and effort, or you. The waves
+  table has a **Crew sessions** column that names each phase's owner.
+- **A phase is about 30 to 90 minutes of work.** A bigger one splits before it starts.
 - **Each phase names its files.** Two phases that might change one file are split instead of
   run in turn: each takes its own part of it, or both run and you merge the small conflict.
 - **Each phase names what it waits for** — any contract it builds on (a type, an API shape, a
   shared constant) and any code it calls. Contracts go first, alone.
 - **The plan lists its phases in waves** — a wave is the group that starts together: wave 1
-  holds every phase that waits for nothing, and it starts at once, in one message. On each
-  hand-back, check the phases still waiting and start, in that turn, what it unblocked. A
-  phase never waits for a merge or a review it does not use.
+  holds every phase that waits for nothing, and it starts at once, in one message (crew
+  through `cc-smart-dev-kit crew start`). On each hand-back, check the phases still waiting
+  and start, in that turn, what it unblocked. A phase never waits for a merge or a review it
+  does not use.
+- **The last wave is a heavy cleanup**, run only once everything is verified live: the
+  fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches,
+  worktrees and crew sessions, docs that still name what was removed, and the plan's archive (§ 8).
 - **Each phase has a done-check** — the targeted tests that prove it.
 - **Shared files stay with you, the integrator:** the plan file, the lockfile and new
   dependencies, the project's version number, shared index files (a docs index, a barrel, a
@@ -98,10 +113,14 @@ list.
   rebuilding as you go. None of it holds a phase back: it is your work, done after.
 
 Brief each owner with its phase, its files, the patterns, its done-check and its limits
-(`/cc-smart-dev-kit:subagent-decision` § How to brief). Check each hand-back yourself: read
-`git diff -- <its files>` in full, run its tests, confirm nothing changed outside its list.
-That read is your own review pass for those files. While other owners still write, stage by
-path, never `git add -A`. You tick the plan, integrate, commit and own the result.
+(`/cc-smart-dev-kit:subagent-decision` § How to brief; a crew session's brief: `/cc-smart-dev-kit:lead`
+§ 3). Check each subagent's hand-back yourself: read `git diff -- <its files>` in full, run its
+tests, confirm nothing changed outside its list. That read is your own review pass for those
+files. A crew session's hand-back passes the lead skill's gate instead (§ 6 there). While other
+owners still write, stage by path, never `git add -A`. You tick the plan, integrate, commit and
+own the result. Once a subagent's work is merged, remove its worktree and its branch in the same
+step (`git worktree remove`, `git branch -D`): Claude Code keeps a worktree that holds commits,
+and a squash merge never shows its branch as merged.
 
 ## 6. Keep it live
 

@@ -1,0 +1,36 @@
+schema_version: "1.1"
+name: no-side-work
+description: >-
+  One plan, no side work: the fix touches the file with the bug, and the smell in another file
+  is at most mentioned. Finding: IN-10.
+tags: [gate, workflow]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 12
+  allowed_tools: [Read, Glob, Grep, Skill, Edit, Bash]
+  prompt: |
+    pageCount in src/pagination.js returns one page too many when the total is an exact multiple of the page size. Fix it.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: bug-fixed
+    type: regex
+    pattern: 'Math\.floor\(total / size\) \+ 1'
+    match: 'not_contains'
+    target:
+      source: file
+      path: src/pagination.js
+  - name: format-untouched-edit
+    type: tool_used
+    tool: 'Edit'
+    input_match: 'format\.js'
+    min: 0
+    max: 0
+    arm: 'both'
+  - name: format-untouched-write
+    type: tool_used
+    tool: 'Write'
+    input_match: 'format\.js'
+    min: 0
+    max: 0
+    arm: 'both'

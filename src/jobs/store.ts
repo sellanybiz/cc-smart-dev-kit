@@ -46,7 +46,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import {
   holderIsGone,
   LockBusyError,
@@ -148,13 +148,33 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
+ * The temp file a whole write goes through first: beside `file`, named `.<token>.tmp`.
+ *
+ * The folder comes from the platform's own `dirname`, never from the file's text: on Windows
+ * a path separates with `\`, so "everything before the last `/`" is the whole path. A temp
+ * file named after the lease's text then has no folder, the write fails with ENOENT, and the
+ * queue runs the job unqueued (`docs/windows-jobs.md`: the queue applies in full there).
+ *
+ * `on` is the platform whose rules read the path. The default is this one, which is what a
+ * real run has; a test states the other one, because `node:path`'s own default follows the
+ * platform the process runs on.
+ */
+export function tempFileBeside(
+  file: string,
+  token: string,
+  on: NodeJS.Platform = process.platform,
+): string {
+  const paths = on === "win32" ? win32 : posix;
+  return paths.join(paths.dirname(file), `.${token}.tmp`);
+}
+
+/**
  * Writes `text` to `file` whole: a temp file beside it, then a rename. The temp file gets
  * FILE_MODE before the rename (chmod: the umask may have narrowed it), so other users
  * of a shared folder can read it.
  */
 function writeWhole(file: string, text: string, token: string): void {
-  const dir = file.slice(0, file.lastIndexOf("/"));
-  const temp = join(dir, `.${token}.tmp`);
+  const temp = tempFileBeside(file, token);
   writeFileSync(temp, text, { mode: FILE_MODE });
   try {
     chmodSync(temp, FILE_MODE);

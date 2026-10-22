@@ -31,11 +31,17 @@
 # Bash accepts Win32 paths as well as POSIX ones, so `"$bun" --version` and the `-nt` test
 # below read those paths like any other.
 #
-# The first argument says what to do when no bun is found (or the bun is too old), and is never
-# passed to bun:
+# The first argument says what to do when the program cannot run (no bun is found, the bun is
+# too old, or, for a guard, the bundle is gone), and is never passed to bun:
 #   --missing=ask    the guards fail closed: one PreToolUse answer on stdout, asking the
-#                    person, and exit 0 (a hook never stops a session).
+#                    person, and exit 0 (a hook never stops a session). A guard also asks when
+#                    its bundle file is not there: Claude Code deletes an old plugin version
+#                    folder some time after an update, and a bun that is told to run a file
+#                    that is gone only prints its own error and exits 1, which Claude Code
+#                    reads as a failure that lets the call through.
 #   --missing=quiet  one line on stderr, exit 0.
+#   --missing=fail   one line on stderr, exit 1: for a command that must not report success
+#                    when it did not run (`plugin/bin/cc-smart-dev-kit`, the CLI).
 # Every hook in hooks.json gives one: the PreToolUse guards ask, every other hook is quiet.
 #
 # The launcher writes its baked bun in single quotes, each ' in the path written as '\''
@@ -43,11 +49,20 @@
 # a folder like /home/o'brien works.
 mode=--missing=quiet
 case $1 in
-  --missing=ask | --missing=quiet)
+  --missing=ask | --missing=quiet | --missing=fail)
     mode=$1
     shift
     ;;
 esac
+
+# What the line on stderr calls the program that did not run, and how it ends: a hook is
+# quiet (exit 0), a command fails (exit 1).
+what=hook
+code=0
+if [ "$mode" = "--missing=fail" ]; then
+  what=command
+  code=1
+fi
 
 # The oldest Bun the plugin runs on: the same number as MIN_BUN in src/build-info/bun.ts, and
 # a test keeps the two equal. This script runs before any of the plugin's own code, so it
@@ -105,8 +120,8 @@ if [ -z "$bun" ]; then
     printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup."}}'
     exit 0
   fi
-  echo "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, \$BUN_INSTALL/bin, ~/.bun/bin or PATH), so the hook did not run. Install bun, then run: cc-smart-dev-kit setup" >&2
-  exit 0
+  echo "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, \$BUN_INSTALL/bin, ~/.bun/bin or PATH), so the $what did not run. Install bun, then run: cc-smart-dev-kit setup" >&2
+  exit $code
 fi
 
 # True when $1 is a Bun version at or above $min_bun. A pre-release of the minimum itself
@@ -151,9 +166,20 @@ if [ "$bun" != "$baked" ] || [ "$bun" -nt "$launcher" ]; then
       printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"cc-smart-dev-kit cannot run its guard: this Bun is older than the plugin needs ($detail). Run: bun upgrade\"}}"
       exit 0
     fi
-    echo "cc-smart-dev-kit: this Bun is older than the plugin needs ($detail), so the hook did not run. Run: bun upgrade" >&2
-    exit 0
+    echo "cc-smart-dev-kit: this Bun is older than the plugin needs ($detail), so the $what did not run. Run: bun upgrade" >&2
+    exit $code
   }
+fi
+
+# A guard whose bundle is not there asks, as when there is no bun: a guard fails closed. The
+# bundle is the first word after the mode. Claude Code deletes an old plugin version folder
+# some time after an update, and a session that still names it would otherwise get bun's own
+# "module not found" and exit 1, which Claude Code reads as a failure that lets the call
+# through (`onFailure: "block"` in hooks.json is the second belt, for a shim that is gone
+# too). Only a guard checks: any other hook goes on to bun as it always did.
+if [ "$mode" = "--missing=ask" ] && [ ! -f "$1" ]; then
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"cc-smart-dev-kit cannot run its guard: its own program file is missing (an update may have removed this plugin version). Restart Claude Code, then run: cc-smart-dev-kit setup"}}'
+  exit 0
 fi
 
 if [ -n "$shim_dir" ]; then

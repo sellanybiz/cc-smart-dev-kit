@@ -1,0 +1,14 @@
+[
+  {
+    "name": "crew-events",
+    "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" crew watch",
+    "description": "One line per change in the lead's crew sessions: their steps, their reports, their questions, what they need from you.",
+    "when": "on-skill-invoke:cc-smart-dev-kit:lead"
+  },
+  {
+    "name": "crew-self",
+    "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" crew self-watch",
+    "description": "The crew session's own line about its context and its time: hand off when the context or the time runs out.",
+    "when": "on-skill-invoke:cc-smart-dev-kit:crew"
+  }
+]

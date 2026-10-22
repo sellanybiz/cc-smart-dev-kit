@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { AGENT_VIEW_MATCHER } from "../hooks/notify-types";
@@ -10,6 +10,7 @@ import {
   type ManagedHookResult,
   runsPluginNotify,
 } from "./managed-hook";
+import { readUserJson } from "./user-json";
 
 /**
  * The one user-level Claude Code hook `cc-smart-dev-kit setup` manages: agent view
@@ -102,7 +103,7 @@ export function userNotifyHookState(file: string): UserNotifyHookState {
   if (!existsSync(file)) return "missing";
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(file, "utf8"));
+    parsed = readUserJson(file);
   } catch {
     return "missing";
   }

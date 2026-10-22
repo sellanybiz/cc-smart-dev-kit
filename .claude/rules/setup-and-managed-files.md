@@ -3,6 +3,9 @@ paths:
   - "src/setup/**"
   - "src/cli/**"
   - "src/machine/**"
+  - "src/mcp/**"
+  - "src/update/**"
+  - "src/workflow/write.ts"
 ---
 
 # Setup And Managed Files
@@ -30,8 +33,9 @@ Each of them:
 - **Writes in this order** (`writeManagedFile`):
   1. makes the backup;
   2. records the change in `changed.json` (the file, and the kind: `json-keys`,
-     `markdown-block` or `whole-file`), so `restore` knows what to undo. The first
-     time, that backup becomes the file's baseline. The record needs the backup's path,
+     `json-entries`, `markdown-block`, `file-line` or `whole-file`), so `restore` knows
+     what to undo. The first time, that backup becomes the file's baseline. The record
+     needs the backup's path,
      so the backup comes first. The record comes before the write, so a crash right
      after the rename never leaves a change that `restore` cannot see;
   3. writes a temp file in the same folder, and fsyncs it;
@@ -76,9 +80,10 @@ Each of them:
   the next write. This is general, in `applyManagedJson`: every caller gets it.
 - **The one exception: an unchosen value.** A caller may name, per key, the values that
   mean "nobody chose this yet" (`unchosen`): a program's own default that the program
-  wrote into its file itself. claude-mem does that on its first run, so its five keys
-  may be taken while they hold `""` (or `claude`, for its provider). Any other value
-  is the person's choice: `claudeMemPlan` then changes none of the keys. Restore removes
+  wrote into its file itself. claude-mem does that on its first run, so its keys
+  may be taken while they hold `""` (or `claude` for its provider, or `true` for a start
+  block). Any other value
+  is the person's choice: `claudeMemPlan` then leaves that key alone. Restore removes
   the key, and the program falls back to the same default.
 - **A secret is never printed.** A key whose value is a secret (claude-mem's API key) is
   named in `secret`: an error says "a secret", and setup's output masks it.
@@ -261,6 +266,11 @@ valid across updates.
   terminal they are left out whatever the flags, and setup says so. A project setup
   cannot read (invalid or too-new `cc-smart-dev-kit.json`, old git, a missing main checkout)
   leaves only these entries out, with a `!` note.
+- **An offered setting is asked once, and the default is no** (the status line, the retry
+  watchdog: `src/setup/retry-watchdog.ts`). Only on a terminal; a "no" is a file in the state
+  folder (`statusline-declined`, `retry-watchdog-declined`) that stops the question; a flag turns
+  it on without asking (and `--no-retry-watchdog` turns it off and remembers the "no"); with no
+  terminal nothing is asked or changed, and `--dry-run` says so. Its keys are owned keys.
 - **Every question comes first.** All questions are asked before anything runs or is
   written. A "no" to one drops only what depends on it.
 - **`claude plugin …` steps run only when a person runs `cc-smart-dev-kit setup`**; nothing in

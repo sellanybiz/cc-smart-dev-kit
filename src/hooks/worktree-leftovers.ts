@@ -11,15 +11,25 @@
  * git has not touched it for an hour (a worktree made a minute ago is not finished, its
  * session has not moved in yet); nothing in it is changed or untracked, and it holds no ignored
  * file that cannot come back (`local-files.ts`). A worktree whose
- * folder is gone is named too (`git worktree prune` forgets it). Nothing is removed here:
- * the note names them, and the person or the session removes them.
+ * folder is gone is named too (`git worktree prune` forgets it). Nothing is removed in this
+ * hook: the note names them, and the person or the session removes them — or the background
+ * clean this hook starts (D48, below).
+ *
+ * THE BACKGROUND CLEAN (D48)
+ *   At an attended session start, at most once an hour per repo, the hook also STARTS the same
+ *   safe clean as `worktrees --clean` in a detached process (`src/worktrees/auto-start.ts`),
+ *   and returns at once. It starts nothing in `claude -p`, or with `worktrees.autoClean: false`.
+ *   The next attended start says once what that clean removed (one `systemMessage`), and the
+ *   note below names the worktrees the clean looked at and kept, with its reason.
  *
  * WHY NOT `verdict()` (`src/worktrees/verdict.ts`)
  *   The command's verdict also checks the MACHINE's facts — the Docker containers mounting the
  *   worktree, and the programs running from it (`machine-facts.ts`) — and this one does not: a
  *   SessionStart hook must stay quick (the rules: no fetch, no probe that can wait seconds),
  *   and listing containers and processes can take 5 s and 15 s when Docker is starting or `ps`
- *   is slow. The two agree on everything else. The difference is safe because the note removes
+ *   is slow. It does not replay a branch onto the base either (three more git calls per
+ *   worktree, at every session start): a squash-merged worktree is named by the command and
+ *   not here. The two agree on everything else. The difference is safe because the note removes
  *   NOTHING: it sends the person to `cc-smart-dev-kit worktrees --clean`, whose own judgment
  *   (`scan.ts` → `verdict.ts`) asks the machine's facts again before anything goes. Keep them
  *   in step: a new reason to keep a worktree belongs in `verdict.ts`, and in `judgeWorktree`
@@ -29,8 +39,10 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
+import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
+import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { hasChanges, isInside, type ListedWorktree, listWorktrees, runGit } from "./git";
-import { addContext, type HookResult, SILENT } from "./io";
+import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
 import type { Env, HookContext } from "./run";
 import { liveSessions, type SessionRecord } from "./sessions";
@@ -105,10 +117,20 @@ export function leftoversNote(
   base: string,
   finished: ListedWorktree[],
   gone: ListedWorktree[],
+  keptBy: ReadonlyMap<string, string> = new Map(),
 ): string | null {
   const parts: string[] = [];
   if (finished.length > 0) {
-    const names = finished.map((worktree) => basename(worktree.path)).join(", ");
+    // A worktree the last background clean looked at and kept (a program runs from it, say)
+    // is named with its reason, so the person is not told it can go when it cannot yet.
+    const names = finished
+      .map((worktree) => {
+        const why = keptBy.get(worktree.path);
+        return why === undefined
+          ? basename(worktree.path)
+          : `${basename(worktree.path)} (kept by the last clean: ${why})`;
+      })
+      .join(", ");
     const count =
       finished.length === 1
         ? "1 finished worktree is"
@@ -131,18 +153,27 @@ export function worktreeLeftovers(context: HookContext): HookResult {
   const base = project.config?.worktrees?.base;
   if (base === undefined) return SILENT;
   const repo = project.mainCheckout ?? project.root;
+  // What a background clean removed since this repo's last session start (D48): one line to
+  // the person, once. It comes first because the clean may have removed every worktree.
+  const told = takeToldLine(context, repo);
+  const answer = (note: string | null): HookResult => {
+    if (note === null) return told === null ? SILENT : systemMessage(told);
+    return told === null ? addContext(event, note) : addContextAndMessage(event, note, told);
+  };
   const [, ...linked] = listWorktrees(repo, env);
-  if (linked.length === 0) return SILENT;
+  if (linked.length === 0) return answer(null);
+  // Finished worktrees clean themselves: the clean starts detached and judges for itself.
+  startAutoClean(context, repo, "session");
   // Without origin/<base> nothing can be judged: no note rather than a wrong one.
   if (!runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`], env).ok) {
-    return SILENT;
+    return answer(null);
   }
   let sessions: SessionRecord[];
   try {
     sessions = liveSessions(paths.claudeConfigDir);
   } catch {
     // Nobody can say who works where: no worktree counts as finished.
-    return SILENT;
+    return answer(null);
   }
   const now = Date.now();
   const finished: ListedWorktree[] = [];
@@ -152,6 +183,8 @@ export function worktreeLeftovers(context: HookContext): HookResult {
     if (verdict === "finished") finished.push(listed);
     if (verdict === "gone") gone.push(listed);
   }
-  const note = leftoversNote(base, finished, gone);
-  return note === null ? SILENT : addContext(event, note);
+  const kept = readRepoRecord(autoCleanFiles(paths.stateDir, repo))?.kept ?? [];
+  return answer(
+    leftoversNote(base, finished, gone, new Map(kept.map((one) => [one.path, one.why]))),
+  );
 }

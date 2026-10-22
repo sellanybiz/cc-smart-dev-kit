@@ -22,7 +22,7 @@
  */
 
 import { join } from "node:path";
-import { chromeUserDataDir, findClaudeCodeProfile } from "../browser/chrome";
+import { claudeCodeProfileOn } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
 import type { DoctorOptions } from "../cli/doctor";
@@ -71,26 +71,22 @@ const runner: Runner = (cmd) => {
  * browser (that machine has no profile for Claude to drive).
  */
 function claudeCodeProfileHere(machine: Machine, home: string): boolean {
-  const userDataDir = chromeUserDataDir(machine.platform, home);
-  if (userDataDir === null) return false;
-  return findClaudeCodeProfile(userDataDir, realBrowserDoctorDeps(machine, home)) !== null;
+  return claudeCodeProfileOn(realBrowserDoctorDeps(machine, home)) !== null;
 }
 
 /**
  * Opens a URL in the person's own browser. Never waits, and never fails the portal.
  * Which program opens it, per platform: `open-url.ts` (one home for that rule, with
  * `sessions`). On Windows that is `cmd.exe /c start "" <url>` — there is no `xdg-open` there.
+ *
+ * Started detached (`Machine.spawnDetached`: its own process group, no pipes): `xdg-open` may
+ * start the browser as its own child, and in this terminal's process group the Ctrl+C that
+ * stops the portal would close that browser too.
  */
-function openBrowser(
-  platform: NodeJS.Platform,
-  url: string,
-  which: (name: string) => null | string,
-): void {
-  openUrlOnDesktop(platform, url, {
-    which,
-    spawn: (argv) => {
-      Bun.spawn(argv, { stderr: "ignore", stdin: "ignore", stdout: "ignore" });
-    },
+function openBrowser(machine: Machine, url: string): void {
+  openUrlOnDesktop(machine.platform, url, {
+    which: machine.which,
+    spawn: machine.spawnDetached,
   });
 }
 
@@ -116,7 +112,7 @@ async function main(argv: string[]): Promise<number> {
     fetch: (url, init) => fetch(url, init),
     machine,
     now: () => Date.now(),
-    openBrowser: (url) => openBrowser(process.platform, url, which),
+    openBrowser: (url) => openBrowser(machine, url),
     paths,
     pluginFolder: () => resolvePluginFolder(paths.installedPluginsFile, fallback),
     probe: realProbe(),

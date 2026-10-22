@@ -62,10 +62,10 @@ Claude Code. Once a version has many changes, prove the live rows again live.
    `bun run check` does not run Claude Code; it shows the plugin still builds and its
    own tests pass. Only the two validates run the new version.
 
-3. From Phase 3 on: `cc-smart-dev-kit doctor --live`. It runs a throwaway session in a temp
-   repo with the plugin and proves the hooks and the worktree contract. It needs a
-   login, so it runs on a machine, not in CI. Before Phase 3, prove the marked live rows
-   by hand in a throwaway project.
+3. `cc-smart-dev-kit doctor --live`. It starts throwaway Claude Code sessions in a temp
+   folder and proves the hooks and the worktree contract on the version installed here. It
+   needs a login and costs a few cents, so it runs on a machine, not in CI. A marked live
+   row it does not reach: prove that one by hand in a throwaway project.
 
 ## 5. Fix
 

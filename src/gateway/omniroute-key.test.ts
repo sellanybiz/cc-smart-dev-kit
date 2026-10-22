@@ -164,6 +164,51 @@ describe("createOmnirouteKey", () => {
     expect(omnirouteKeyName("")).toBe("cc-smart-dev-kit-router");
   });
 
+  test("GW hunch 9: a login that answers a redirect is not followed, so the password stays put", async () => {
+    const elsewhere: string[] = [];
+    const thief: Bun.Server<undefined> = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req): Promise<Response> {
+        elsewhere.push(`${req.method} ${await req.text()}`);
+        return Response.json({ success: true });
+      },
+    });
+    servers.push(thief);
+    const redirecting: Bun.Server<undefined> = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        new Response(null, {
+          headers: { location: `http://127.0.0.1:${String(thief.port)}/collect` },
+          status: 307,
+        }),
+    });
+    servers.push(redirecting);
+    const made = await createOmnirouteKey({
+      baseUrl: `http://127.0.0.1:${String(redirecting.port)}`,
+      password: "the-dashboard-password",
+    });
+    expect(made).toEqual({ detail: "the OmniRoute login answered HTTP 307", kind: "failed" });
+    expect(elsewhere).toEqual([]);
+  });
+
+  test("GW-6: OmniRoute's own error words are shown masked and on one line", async () => {
+    const omni = fakeOmniRoute({
+      login: {
+        body: { error: "no session for the-dashboard-password\n\u001b[2Jforged line" },
+        status: 500,
+      },
+    });
+    expect(
+      await createOmnirouteKey({ baseUrl: omni.baseUrl, password: "the-dashboard-password" }),
+    ).toEqual({
+      // The escape character is a space: its `[2J` is plain text, and clears no screen.
+      detail: "the OmniRoute login answered HTTP 500: no session for ****word [2Jforged line",
+      kind: "failed",
+    });
+  });
+
   test("a wrong dashboard password: refused, and no key is made", async () => {
     const omni = fakeOmniRoute({ password: "another-password" });
     expect(

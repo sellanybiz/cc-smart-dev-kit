@@ -144,6 +144,10 @@ function print(results: RestoreResult[], short: (path: string) => string): void 
  * Stage 1 takes these back too: a registered server only affects a session that starts later,
  * and every session that already started one keeps the server it is running.
  *
+ * `ok` is false when a server could not be taken back (its record stays, so a later restore
+ * tries again) or the record could not be read (it stays, for the person to fix): `restore`
+ * then exits 1 (ST-12, ST-5).
+ *
  * A caller that passes no `claude` runner gets no MCP handling at all — `removeMcpServers`
  * would only be able to say it cannot run the command. `cc-smart-dev-kit restore` always
  * passes both (`src/entries/cli.ts`).
@@ -157,14 +161,16 @@ function removeMcp(
   const removal = removeMcpServers(paths, options.claude, options.which, false);
   for (const name of removal.forgotten) forgetMcpServer(paths.stateDir, name);
   const lines = [...removal.removed, ...removal.notes];
-  // Nothing left to take back: the record file goes with its last entry.
-  if (removal.kept.length === 0 && existsSync(mcpRecordsFile(paths.stateDir))) {
+  const ok = !removal.recordsUnreadable && removal.kept.length === 0;
+  // Nothing left to take back: the record file goes with its last entry. A file that did not
+  // read is never "nothing left": it may still name what setup registered.
+  if (ok && existsSync(mcpRecordsFile(paths.stateDir))) {
     rmSync(mcpRecordsFile(paths.stateDir), { force: true });
     lines.push(
       `- ${short(mcpRecordsFile(paths.stateDir))}: removed (the record of the MCP servers)`,
     );
   }
-  return { lines, ok: removal.kept.length === 0 };
+  return { lines, ok };
 }
 
 /**
@@ -260,13 +266,14 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
       () => {
         const results = restore(paths.stateDir, { except: routerFiles });
         print(results, short);
-        for (const line of removeMcp(paths, options, short).lines) console.log(line);
+        const mcp = removeMcp(paths, options, short);
+        for (const line of mcp.lines) console.log(line);
         for (const line of removeBrowser(paths, browserRecord, options.runner).lines) {
           console.log(line);
         }
         forgetInstructionChoice(paths.stateDir, short);
         console.log(stageOneDone(paths, options.cliBundle));
-        return results.some((result) => result.action === "no-backup") ? 1 : 0;
+        return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
       },
       { waitMs: 10_000 },
     );
@@ -371,7 +378,7 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
         if (!forgot) console.log("Nothing to restore: cc-smart-dev-kit has nothing in any file.");
         return 0;
       }
-      return results.some((result) => result.action === "no-backup") ? 1 : 0;
+      return !mcp.ok || results.some((result) => result.action === "no-backup") ? 1 : 0;
     },
     { waitMs: 10_000 },
   );

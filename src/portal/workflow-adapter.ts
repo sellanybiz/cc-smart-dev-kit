@@ -41,11 +41,14 @@ import {
   type ProjectInitPlan,
   type ProjectInitWrite,
   planProjectInit,
+  type SettingsFilePlan,
 } from "../project/init";
 import { autoMergeAllowed } from "../workflow/auto-merge";
 import {
+  personalWorkflowOrDefault,
   type ResolvedValue,
   type ResolvedWorkflow,
+  resolvedValueOf,
   resolveWorkflow,
   type WorkflowSource,
 } from "../workflow/resolve";
@@ -64,10 +67,17 @@ export type {
   ProjectInitWrite,
   ResolvedValue,
   ResolvedWorkflow,
+  SettingsFilePlan,
   SwitchName,
   WorkflowKey,
   WorkflowSource,
 };
+
+/**
+ * The module's one map from a key to its resolved value: pure, so it needs no seam of its own,
+ * and the page reads a value exactly where `workflow show` reads it.
+ */
+export { resolvedValueOf };
 
 /** The defaults the Project card's form starts with: the CLI's answers, and the repo's branch. */
 export interface ProjectInitDefaults {
@@ -84,6 +94,11 @@ export interface WorkflowAdapter {
   applyProjectInit: typeof applyProjectInit;
   autoMergeAllowed: typeof autoMergeAllowed;
   planProjectInit: typeof planProjectInit;
+  /**
+   * The person's own workflow values, for the plan's D16 clash warning: `{}` when the file is
+   * not there or cannot be read (`personalWorkflowOrDefault`).
+   */
+  personalWorkflowOrDefault: typeof personalWorkflowOrDefault;
   /** What the form starts with: the CLI's `detectFacts` and `defaultAnswers`, from the repo. */
   projectInitDefaults: (input: { env: Env; root: string }) => ProjectInitDefaults;
   /** The repository's default branch: `origin/HEAD`, else `main` (`defaultBranchOf`). */
@@ -113,6 +128,7 @@ function projectInitDefaults(input: { env: Env; root: string }): ProjectInitDefa
 export const workflowAdapter: WorkflowAdapter = {
   applyProjectInit,
   autoMergeAllowed,
+  personalWorkflowOrDefault,
   planProjectInit,
   projectInitDefaults,
   repositoryDefaultBranch: (root, env) => defaultBranchOf(realRunner(env), root),

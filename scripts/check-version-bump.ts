@@ -6,12 +6,32 @@
  *   bun scripts/check-version-bump.ts <base ref>     e.g. origin/main
  *
  * It compares HEAD with the point where it left <base ref> (git's base...HEAD), so commits
- * that landed on the base later do not count. The new version must also be higher: a
- * rollback is a new version with the old behaviour, never a lower number.
+ * that landed on the base later do not count as this branch's changes. The new version must be
+ * a strict semver version (semver.org: MAJOR.MINOR.PATCH, no `v`, no space, no leading zero),
+ * and higher than the one at that point AND than the base's own version now: two pull requests
+ * that raise to the same number both passed before, and the second would ship nothing new
+ * (ST-9). A rollback is a new version with the old behaviour, never a lower number.
+ *
+ * "The base now" is the base ref as this checkout knows it, so CI must check a branch against
+ * the base it merges into: a run that is older than the last merge proves nothing about it.
  */
 
 export const PLUGIN_DIR = "plugin";
 export const MANIFEST = "plugin/.claude-plugin/plugin.json";
+
+/** A strict semver 2.0.0 version, the pattern semver.org gives. */
+const SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+
+/** True when `text` is a strict semver version. */
+export function isVersion(text: string): boolean {
+  return SEMVER.test(text);
+}
+
+/** The base ref's short name for a message: `origin/main` → `main`. */
+function baseName(baseRef: string): string {
+  return baseRef.replace(/^(?:refs\/remotes\/)?origin\//, "");
+}
 
 export interface VersionBumpResult {
   ok: boolean;
@@ -66,6 +86,12 @@ export function checkVersionBump(baseRef: string, options: GitOptions): VersionB
   const before = versionAt(options, base);
   const after = versionAt(options, "HEAD");
   if (after === null) return { ok: false, message: `${MANIFEST} is missing.` };
+  if (!isVersion(after)) {
+    return {
+      ok: false,
+      message: `${MANIFEST}: ${JSON.stringify(after)} is not a version (MAJOR.MINOR.PATCH, as semver.org writes it).`,
+    };
+  }
   if (before === null) {
     return { ok: true, message: `${MANIFEST} is new (version ${after}).` };
   }
@@ -78,19 +104,43 @@ export function checkVersionBump(baseRef: string, options: GitOptions): VersionB
         `Raise "version" in ${MANIFEST} (the release skill), then run: bun run build`,
     };
   }
-  let order: number;
-  try {
-    order = Bun.semver.order(after, before);
-  } catch {
-    return { ok: false, message: `${MANIFEST}: "${after}" is not a version.` };
+  // `before` was checked by the run that let it in; one that is not a version (an old manifest)
+  // cannot be compared, and the check says so rather than passing.
+  if (!isVersion(before)) {
+    return {
+      ok: false,
+      message: `${MANIFEST} at ${base}: ${JSON.stringify(before)} is not a version, so the raise cannot be checked.`,
+    };
   }
+  const order = Bun.semver.order(after, before);
   if (order < 0) {
     return {
       ok: false,
       message: `The version went down, ${before} -> ${after}. A rollback needs a higher version.`,
     };
   }
-  return { ok: true, message: `plugin/ changed, and the version went up: ${before} -> ${after}.` };
+  if (order === 0) {
+    // Only build metadata differs (`1.0.0+1`): the same version to Claude Code's update check.
+    return {
+      ok: false,
+      message: `The version did not go up, ${before} -> ${after}: build metadata (after "+") does not make a version higher.`,
+    };
+  }
+  // The base's own version now: another pull request may have raised it since this branch left.
+  const tip = versionAt(options, baseRef);
+  if (tip !== null && tip !== before && isVersion(tip) && Bun.semver.order(after, tip) <= 0) {
+    return {
+      ok: false,
+      message:
+        `${baseName(baseRef)} is at ${tip} now, and this branch has ${after}: another pull request raised it first. ` +
+        `Raise "version" in ${MANIFEST} above ${tip} (the release skill), then run: bun run build`,
+    };
+  }
+  const now = tip !== null && tip !== before ? ` (${baseName(baseRef)} is at ${tip})` : "";
+  return {
+    ok: true,
+    message: `plugin/ changed, and the version went up: ${before} -> ${after}${now}.`,
+  };
 }
 
 if (import.meta.main) {

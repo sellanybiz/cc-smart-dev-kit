@@ -1,8 +1,8 @@
 /**
  * The plugin's hooks as Claude Code runs them: `plugin/hooks/hooks.json` names each bundle in
  * shell form, through the bun shim `bin/cc-smart-dev-kit-bun.sh`, and each `src/entries/<name>.ts`
- * reads its JSON on stdin and answers on stdout. (The worktree engine a project wires itself
- * runs as `cc-smart-dev-kit hook <name>`: `src/cli/hook-commands.test.ts`.)
+ * reads its JSON on stdin and answers on stdout. (`cc-smart-dev-kit hook notify` is the one
+ * hook a person's settings wire: `src/cli/hook-commands.test.ts`.)
  */
 import { describe, expect, test } from "bun:test";
 import {
@@ -14,15 +14,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { CREW_ENV } from "../crew/session";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
+import { GH_TIMEOUT_MS } from "../workflow/merge-check";
+import { CREW_ASK_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
-import { GH_TIMEOUT_MS } from "./merge-guard";
 import { HOOK_LOG_ENV } from "./run";
+import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
 import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
-import { ADD_TIMEOUT_MS, SETUP_TIMEOUT_MS } from "./worktree-create";
-import { REMOVE_TIMEOUT_MS } from "./worktree-remove";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -31,6 +32,8 @@ interface Handler {
   command: string;
   args?: string[];
   timeout?: number;
+  /** Claude Code's "what happens when the hook fails": `block` or nothing (continue). */
+  onFailure?: string;
 }
 interface Group {
   matcher?: string;
@@ -85,6 +88,34 @@ describe("hooks.json", () => {
       );
       expect(typeof handler.timeout).toBe("number");
     }
+  });
+
+  test("a guard fails closed in Claude Code too: onFailure block on its PreToolUse entry, on nothing else", () => {
+    // Claude Code lets a call through when a hook fails to start, times out, exits with
+    // another code than 0 or 2, or prints something it cannot read — unless the entry says
+    // `"onFailure": "block"` (2.1.295+). The shim's own answers and the frame's `onCrash`
+    // cover a guard that runs; this covers one that cannot start at all (the plugin folder is
+    // gone, so the shim is gone too). Only a guard's PreToolUse entry blocks: an
+    // informational hook that fails must never stop a person's work, and on PostToolUse a
+    // block would stop nothing (the call already ran).
+    for (const { event, handler } of wired) {
+      const guard = event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler));
+      expect(handler.onFailure).toBe(guard ? "block" : undefined);
+    }
+    // And the list is not empty: the guards are wired.
+    expect(wired.filter(({ handler }) => handler.onFailure === "block").length).toBe(
+      GUARD_BUNDLES.size,
+    );
+  });
+
+  test("the agent guard's record is wired after the call ran: PostToolUse on the same tools", () => {
+    // An asked launch is recorded when it is known to run, and Claude Code runs PostToolUse
+    // only for a call that ran (`RAN_EVENT`). The matcher is the guard's own.
+    const matcherOf = (event: string) =>
+      wired.find(({ event: one, handler }) => one === event && bundleOf(handler) === "agent-guard")
+        ?.matcher;
+    expect(matcherOf("PostToolUse")).toBe("Agent|Task|Workflow");
+    expect(matcherOf("PostToolUse")).toBe(matcherOf("PreToolUse"));
   });
 
   test("the first token is the shim and ends in .sh: Claude Code runs it through bash on Windows", () => {
@@ -155,9 +186,12 @@ esac
   });
 
   test("no worktree hook: a plugin WorktreeCreate would replace Claude Code's worktrees everywhere", () => {
-    // `SubagentStop` is allowed only for a hook that touches no worktree: the engine's
-    // `subagent-stop` (which removes one) must stay the project's own wiring, so every
-    // SubagentStop entry here is checked to be `review-record` and nothing else.
+    // `WorktreeCreate` and `WorktreeRemove` are never wired: they would replace Claude Code's
+    // own worktrees in every project. A `SubagentStop` hook is allowed only when it touches no
+    // worktree, so the SubagentStop entries here are checked by name and nothing else:
+    // `review-record` (the merge gate's record) and `subagent-background` (a subagent's
+    // hand-back with its own background work still running). SubagentStart is `review-record`'s
+    // own start (it notes the commit a review agent starts on) and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
       "Notification",
       "PostModelSwitch",
@@ -167,14 +201,14 @@ esac
       "SessionStart",
       "Stop",
       "StopFailure",
+      "SubagentStart",
       "SubagentStop",
       "UserPromptSubmit",
     ]);
-    const bundles = wired
-      .filter(({ event }) => event === "SubagentStop")
-      .map(({ handler }) => bundleOf(handler));
-    expect(bundles).toEqual(["review-record"]);
-    expect(bundles).not.toContain("subagent-stop");
+    const bundlesFor = (event: string) =>
+      wired.filter(({ event: one }) => one === event).map(({ handler }) => bundleOf(handler));
+    expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
+    expect(bundlesFor("SubagentStop")).toEqual(["review-record", "subagent-background"]);
   });
 
   test("each hook is wired for exactly the events it handles", () => {
@@ -193,6 +227,36 @@ esac
     expect(matcher).toBe("Edit|Write|NotebookEdit");
   });
 
+  test("the job-route matcher is exactly the shell tools its judge reads", () => {
+    const matcher = wired.find(({ handler }) => bundleOf(handler) === "job-route")?.matcher;
+    // Both of Claude Code's shell tools, so a raw `claude --bg` or a polling loop is judged in
+    // PowerShell too — a limit a session steps around by changing tools is not a limit.
+    expect(matcher).toBe("Bash|PowerShell");
+  });
+
+  test("the crew-role matcher is exactly the tools a crew session never calls", () => {
+    const matcher = wired.find(
+      ({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role",
+    )?.matcher;
+    expect(matcher).toBe(CREW_ASK_TOOLS.join("|"));
+    // Written by hand too, so a changed list is seen here and not only in the constant.
+    expect(matcher).toBe("AskUserQuestion|ExitPlanMode");
+  });
+
+  test("the session-escape-guard matcher is exactly the tools it judges: the shell tools and the edit tools", () => {
+    const matcher = wired.find(
+      ({ handler }) => bundleOf(handler) === "session-escape-guard",
+    )?.matcher;
+    expect(matcher).toBe([...ESCAPE_SHELL_TOOLS, ...ESCAPE_EDIT_TOOLS].join("|"));
+    // It is the guard that no project can switch off, so it is also on every PreToolUse once.
+    expect(
+      wired.filter(
+        ({ event, handler }) =>
+          event === "PreToolUse" && bundleOf(handler) === "session-escape-guard",
+      ),
+    ).toHaveLength(1);
+  });
+
   test("the timeouts: short for a guard", () => {
     const timeout = (bundle: string) =>
       wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout;
@@ -200,17 +264,16 @@ esac
     expect(timeout("main-folder-guard")).toBe(10);
     expect(timeout("message-guard")).toBe(10);
     expect(timeout("agent-guard")).toBe(10);
+    expect(timeout("session-escape-guard")).toBe(10);
+    // The crew session's ask is denied by a guard too, on the two tools that ask the person.
+    expect(timeout("crew-role")).toBe(10);
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {
     // The merge guard: two `gh` calls of its own timeout, inside the 30 s hooks.json gives it.
     expect(GH_TIMEOUT_MS).toBeLessThan(30_000 / 2);
-    // The project's own hooks: the worktree engine (`project-wiring.ts`).
     expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // git-guard, main-folder-guard, message-guard
     expect(RESOLVE_GIT_TIMEOUT_MS).toBeLessThan(10_000); // the frame's project lookup, in every hook
-    expect(ADD_TIMEOUT_MS).toBeLessThan(600_000); // worktree-create
-    expect(SETUP_TIMEOUT_MS).toBeLessThan(600_000); // the setup inside it
-    expect(REMOVE_TIMEOUT_MS).toBeLessThan(60_000); // worktree-remove, subagent-stop
   });
 });
 
@@ -252,14 +315,56 @@ describe("the entries, run as Claude Code runs them", () => {
     );
   });
 
-  test.each(HOOKS.map((spec) => [spec.name, spec.crashExitCode ?? 0] as const))(
-    "%s: input that is not JSON is one stderr line, exit %j",
-    (name, exitCode) => {
-      const run = runEntry(name, "not json", hookEnv());
+  // What each guard says it cannot check, when it cannot read its input: a guard that cannot
+  // judge a call asks (written by hand, one per guard in `GUARD_BUNDLES`).
+  const CANNOT_CHECK: Record<string, string> = {
+    "agent-guard": "the model this launch runs on",
+    "crew-role": "whether this crew session asks the person itself",
+    "git-guard": "this git command",
+    "job-route": "whether this launch or heavy command may run",
+    "main-folder-guard": "whether this edit belongs in a worktree",
+    "merge-guard": "whether this merge may happen by itself",
+    "message-guard": "whether this message may go to that session",
+    "session-escape-guard": "whether this call goes around the limits set for the session",
+  };
+
+  test("the list of guards above is the list of guards", () => {
+    expect(Object.keys(CANNOT_CHECK).sort()).toEqual([...GUARD_BUNDLES].sort());
+  });
+
+  test.each(
+    HOOKS.filter((spec) => !GUARD_BUNDLES.has(spec.name)).map(
+      (spec) => [spec.name, spec.crashExitCode ?? 0] as const,
+    ),
+  )("%s: input that is not JSON is one stderr line, exit %j", (name, exitCode) => {
+    const run = runEntry(name, "not json", hookEnv());
+    expect(run).toEqual({
+      exitCode,
+      stdout: "",
+      stderr: `cc-smart-dev-kit ${name}: the hook input is not JSON\n`,
+    });
+  });
+
+  // A guard that is silent outside its own sessions (crew-role is silent unless a crew session's
+  // environment names it) is proved as a guard where it IS one: the crew env is part of the input.
+  const GUARD_ENV: Record<string, Record<string, string>> = {
+    "crew-role": { [CREW_ENV]: "W2-x-1a2b3c" },
+  };
+
+  test.each([...GUARD_BUNDLES])(
+    "%s: input that is not JSON is an ask, never a pass: a guard that cannot read a call does not let it through",
+    (name) => {
+      const run = runEntry(name, "not json", { ...hookEnv(), ...(GUARD_ENV[name] ?? {}) });
       expect(run).toEqual({
-        exitCode,
-        stdout: "",
-        stderr: `cc-smart-dev-kit ${name}: the hook input is not JSON\n`,
+        exitCode: 0,
+        stdout: JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "ask",
+            permissionDecisionReason: `cc-smart-dev-kit cannot check ${CANNOT_CHECK[name]}: the hook input is not JSON`,
+          },
+        }),
+        stderr: "",
       });
     },
   );

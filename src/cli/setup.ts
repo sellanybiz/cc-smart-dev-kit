@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { browserSetupReport, realBrowserSetupDeps } from "../browser/setup";
 import {
@@ -14,6 +14,9 @@ import {
   checkAffordableTarget,
   claudeMemPlan,
   shownClaudeMemValue,
+  TODO_TOOLS_KEY,
+  TODO_TOOLS_VALUE,
+  WORK_STATE_KEY,
 } from "../machine/claude-mem";
 import { type CompanionStep, companionPlan, runCompanionSteps } from "../machine/companions";
 import type { Machine } from "../machine/machine";
@@ -30,18 +33,24 @@ import {
   warpPluginSteps,
   warpRemoveCommands,
 } from "../machine/warp";
-import { type McpRecord, markMcpServerPending, readMcpRecords } from "../mcp/records";
+import {
+  type McpRecord,
+  markMcpServerAdding,
+  mcpRecordsFile,
+  readMcpRecords,
+} from "../mcp/records";
 import {
   applyMcpServers,
   type ClaudeRun,
   planMcpServers,
   readUserServers,
   recordApplied,
+  unreadableRecordsNote,
   unreadableUserConfigNote,
 } from "../mcp/register";
 import { applySerenaCleanup, planRetiredServers, planSerenaCleanup } from "../mcp/retired";
 import { mcpServers } from "../mcp/servers";
-import { readTavilyKey, TAVILY_ENV_KEY } from "../mcp/tavily";
+import { readTavilyKey, TAVILY_KEY_PATH } from "../mcp/tavily";
 import {
   AUTO_MODE_PATH,
   type AutoModeSource,
@@ -57,19 +66,34 @@ import {
   removeInstructions,
   setInstructionsOptOut,
 } from "../setup/instructions";
-import { installLauncher, LAUNCHER_NAME } from "../setup/launcher";
-import { installLauncherCmd } from "../setup/launcher-cmd";
+import { installLauncher, LAUNCHER_NAME, shellWord } from "../setup/launcher";
+import { installLauncherCmd, launcherArgv } from "../setup/launcher-cmd";
 import { withLock } from "../setup/lock";
 import {
   applyManagedJson,
   createdObjects,
   formatKeyPath,
+  getKey,
+  isObject,
   type KeyPath,
   ownedKeys,
+  ownedRecords,
+  ownership,
+  readJsonObject,
+  samePath,
 } from "../setup/managed-json";
+import {
+  RETRY_WATCHDOG_FLAG,
+  RETRY_WATCHDOG_QUESTION,
+  RETRY_WATCHDOG_SETTINGS,
+  retryWatchdogDeclinedFile,
+  retryWatchdogKeysPresent,
+} from "../setup/retry-watchdog";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
+import { readUserJson } from "../setup/user-json";
 import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
 import { atomicWrite, realTarget } from "../setup/write";
+import { retiredRepoLines } from "../update/retired-repos";
 import { type CliPaths, tildify } from "./paths";
 
 export interface SetupOptions {
@@ -97,6 +121,13 @@ export interface SetupOptions {
   instructionsSource: string;
   /** `--statusline`: set the status line without asking. */
   statusline: boolean;
+  /**
+   * Claude Code's retry watchdog for the person's own sessions (`src/setup/retry-watchdog.ts`).
+   * `true`: `--retry-watchdog` — write its two keys without asking. `false`:
+   * `--no-retry-watchdog` — take ours out, and remember a "no". `null`: neither — ask once on a
+   * terminal (default no), never again after a "no".
+   */
+  retryWatchdog: boolean | null;
   /** The environment: the Tavily key may come from it (`TAVILY_API_KEY`). */
   env: Record<string, string | undefined>;
   /**
@@ -112,9 +143,6 @@ function show(value: unknown): string {
   return value === undefined ? "(none)" : JSON.stringify(value);
 }
 
-/** The settings key setup may write the Tavily key into (an owned secret key). */
-export const TAVILY_KEY_PATH: KeyPath = ["env", TAVILY_ENV_KEY];
-
 /**
  * A value as setup prints it: the Tavily key is never shown, only that it is one (and
  * `(none)` when it is gone).
@@ -128,12 +156,11 @@ function shownValue(path: KeyPath, value: unknown): string {
 function marketplaceKnown(settingsFile: string): boolean {
   if (!existsSync(settingsFile)) return false;
   try {
-    const settings = JSON.parse(readFileSync(settingsFile, "utf8")) as {
-      extraKnownMarketplaces?: Record<string, unknown>;
-    };
-    const entry = settings.extraKnownMarketplaces?.[MARKETPLACE];
-    return typeof entry === "object" && entry !== null;
+    const settings = readUserJson(settingsFile);
+    const known = isObject(settings) ? settings.extraKnownMarketplaces : undefined;
+    return isObject(known) && isObject(known[MARKETPLACE]);
   } catch {
+    // Not JSON: the marketplace cannot be read out of it; the message names the file.
     return false;
   }
 }
@@ -146,11 +173,6 @@ export function statuslineDeclinedFile(stateDir: string): string {
   return join(stateDir, "statusline-declined");
 }
 
-/** A path as one word for the shell that runs the status line command. */
-function shellWord(path: string): string {
-  return /^[\w./-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`;
-}
-
 /** The status line setting: the launcher, so it follows plugin updates. */
 export function statuslineSetting(paths: CliPaths): Record<string, string> {
   return { command: `${shellWord(join(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
@@ -160,8 +182,8 @@ export function statuslineSetting(paths: CliPaths): Record<string, string> {
 function hasStatusline(settingsFile: string): boolean {
   if (!existsSync(settingsFile)) return false;
   try {
-    const settings = JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>;
-    return Object.hasOwn(settings, "statusLine");
+    const settings = readUserJson(settingsFile);
+    return isObject(settings) && Object.hasOwn(settings, "statusLine");
   } catch {
     // An unreadable file: setup's own pass reports it.
     return false;
@@ -176,6 +198,11 @@ interface Managed {
   instructions: { where: InstructionsPaths; choice: boolean | null };
   /** Set the status line (`--statusline`, or a "yes" to the question). */
   statusline: boolean;
+  /**
+   * The retry watchdog's keys: `on` (`--retry-watchdog`, or a "yes" to the question) writes
+   * them, `off` (`--no-retry-watchdog`) takes ours out, `null` leaves them as they are.
+   */
+  retryWatchdog: "off" | "on" | null;
   /**
    * What the settings' own `env.TAVILY_API_KEY` gets — the ONE decision, from where the key
    * was found (`readTavilyKey`):
@@ -257,9 +284,14 @@ function applySetup(
   // why it is `false` and not a removed key, in `src/setup/auto-update.ts`.
   const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
+  if (managed.retryWatchdog === "on") set.push(...RETRY_WATCHDOG_SETTINGS);
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
+  // claude-mem's work state goes off (D23): Claude Code's own task tools are a session's
+  // to-do home then. A value the person set themselves stays, and is named below.
+  const todoTools = managed.claudeMem?.todoTools === true ? planTodoTools(paths) : null;
+  if (todoTools?.kind === "set") set.push([todoTools.path, TODO_TOOLS_VALUE]);
   // The key's source moved: the environment has it now (or there is no key at all), so the
   // key cc-smart-dev-kit wrote into the settings goes — the person's environment must not be
   // shadowed by a stale copy. Only while the key still holds what cc-smart-dev-kit wrote:
@@ -270,6 +302,15 @@ function applySetup(
     ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some(
       (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     );
+  // `--no-retry-watchdog`: only the keys that are ours, so a person's own is not even named.
+  const watchdogOwned =
+    managed.retryWatchdog === "off"
+      ? RETRY_WATCHDOG_SETTINGS.map(([path]) => path).filter((path) =>
+          ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some(
+            (owned) => formatKeyPath(owned) === formatKeyPath(path),
+          ),
+        )
+      : [];
   const settings = applyManagedJson({
     file: paths.settingsFile,
     stateDir: paths.stateDir,
@@ -277,7 +318,7 @@ function applySetup(
     // and the settings file is left at mode 600.
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
-    ...(tavilyOwned ? { remove: [TAVILY_KEY_PATH] } : {}),
+    remove: [...(tavilyOwned ? [TAVILY_KEY_PATH] : []), ...watchdogOwned],
     // An `env` setup created goes with its last key; one the person had stays.
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun,
@@ -289,6 +330,11 @@ function applySetup(
   }
   for (const skip of settings.skipped) {
     info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+  }
+  if (todoTools?.kind === "kept") {
+    info.push(
+      `  ${short(settings.file)}: ${formatKeyPath(todoTools.path)} is ${JSON.stringify(todoTools.value)} (your choice); left alone`,
+    );
   }
 
   if (managed.autoMode !== null) {
@@ -332,6 +378,7 @@ function applySetup(
     }
     // A key that holds the wanted value already is claude-mem's own default (the plan
     // stops at any other value of the person's): nothing worth a line.
+    if (!dryRun && result.changes.length > 0) info.push(CLAUDE_MEM_RESTART_STEP);
   }
 
   if (managed.tmuxLine) {
@@ -534,6 +581,61 @@ function askStatusline(paths: CliPaths, machine: Machine, managed: Managed): boo
 }
 
 /**
+ * Claude Code's retry watchdog is offered, never taken: asked once, in a terminal, with the
+ * trade-offs in the question; the default is no. Not asked when `--retry-watchdog` or
+ * `--no-retry-watchdog` already decided, when one of its keys is in the settings' `env`
+ * (the person chose; a value that is theirs stays, as ForeignKeyError rules), or after a "no"
+ * (`retryWatchdogDeclinedFile`). True when the answer was "no" (to remember); a "yes" sets
+ * `managed.retryWatchdog`.
+ */
+function askRetryWatchdog(paths: CliPaths, machine: Machine, managed: Managed): boolean {
+  if (machine.confirm === null || !retryWatchdogUndecided(paths, managed)) return false;
+  const yes = machine.confirm(RETRY_WATCHDOG_QUESTION);
+  if (yes) managed.retryWatchdog = "on";
+  return !yes;
+}
+
+/** True while nothing has decided the watchdog: no flag, no "no" on file, no key of its in the settings. */
+function retryWatchdogUndecided(paths: CliPaths, managed: Managed): boolean {
+  if (managed.retryWatchdog !== null) return false;
+  if (existsSync(retryWatchdogDeclinedFile(paths.stateDir))) return false;
+  try {
+    return !retryWatchdogKeysPresent(paths.settingsFile);
+  } catch {
+    // An unreadable file: setup's own pass reports it.
+    return false;
+  }
+}
+
+/**
+ * What a dry run says about the watchdog: it asks nothing, so it names what a real run would
+ * do. Nothing when the choice is made already (a flag, a key in the settings, a "no").
+ */
+function retryWatchdogDryNote(paths: CliPaths, machine: Machine, managed: Managed): string | null {
+  if (!retryWatchdogUndecided(paths, managed)) return null;
+  return machine.confirm === null
+    ? `  retry watchdog: not offered, there is no terminal (nothing changes); ${RETRY_WATCHDOG_FLAG} turns it on`
+    : `  retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); ${RETRY_WATCHDOG_FLAG} turns it on without asking`;
+}
+
+/**
+ * Said before claude-mem's work state goes off (D23): its to-do lists stop showing in a
+ * session, and the person may want to read one last time, or turn it back on (`setup`
+ * leaves a value they set alone, also `"true"`).
+ */
+function workStateWarning(paths: CliPaths): string {
+  return `! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`;
+}
+
+/**
+ * claude-mem's settings change. A new session's start hook reads them at its start, and
+ * claude-mem's worker reads them when it starts, so the running worker keeps the old ones
+ * until then.
+ */
+const CLAUDE_MEM_RESTART_STEP =
+  "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.";
+
+/**
  * The claude-mem keys this run writes, once the backend answered. Null: none. A dry run
  * reaches no network: it says which backend a real run would check.
  */
@@ -548,24 +650,55 @@ async function decideClaudeMem(
     if (planned.note !== null) report.notes.push(planned.note);
     return null;
   }
-  // Nothing to set: no need to ask the backend. Taking out a retired key writes no key, model
-  // or address the backend must answer for.
-  const sets = applyClaudeMem(paths, planned.plan, true).changes.filter(
-    (change) => change.after !== undefined,
+  const plan = planned.plan;
+  report.notes.push(...plan.notes);
+  // A dry run of the plan: what this run would change. No file is written.
+  const changes = applyClaudeMem(paths, plan, true).changes;
+  if (changes.some((change) => change.path.at(-1) === WORK_STATE_KEY)) {
+    report.notes.push(workStateWarning(paths));
+  }
+
+  // The backend is asked only when one of the provider keys changes: taking out a retired
+  // key, or writing only the two start blocks, needs no answer from it.
+  const provider = plan.provider;
+  if (provider === null) return plan;
+  const providerChanges = changes.some((change) =>
+    provider.set.some(([path]) => samePath(path, change.path)),
   );
-  if (sets.length === 0) return planned.plan;
+  if (!providerChanges) return plan;
   if (dryRun) {
     report.info.push(
-      `  claude-mem: would check ${planned.plan.target.backend} (one chat request) before writing its settings`,
+      `  claude-mem: would check ${provider.target.backend} (one chat request) before writing its settings`,
     );
-    return planned.plan;
+    return plan;
   }
-  const problem = await checkAffordableTarget(planned.plan.target);
+  const problem = await checkAffordableTarget(provider.target);
   if (problem !== null) {
+    // The two start blocks are independent of the backend: they are still written.
     report.notes.push(`! claude-mem settings left alone: ${problem}`);
-    return null;
+    return { ...plan, provider: null };
   }
-  return planned.plan;
+  return plan;
+}
+
+/**
+ * Claude Code's own task tools (D23): `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user
+ * settings, so a session whose claude-mem work state is off has a to-do home. A value the
+ * person set themselves is theirs: it stays, and setup names it.
+ */
+function planTodoTools(
+  paths: CliPaths,
+): { kind: "set"; path: KeyPath } | { kind: "kept"; path: KeyPath; value: unknown } {
+  const path: KeyPath = ["env", TODO_TOOLS_KEY];
+  const current = getKey(readJsonObject(paths.settingsFile).data, path);
+  if (!current.found || Bun.deepEquals(current.value, TODO_TOOLS_VALUE)) {
+    return { kind: "set", path };
+  }
+  // A key setup wrote before, and the person changed since, is theirs too (`ownership`).
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  return ownership(records, path, current) === "ours"
+    ? { kind: "set", path }
+    : { kind: "kept", path, value: current.value };
 }
 
 /** What `--warp`, `--remove-warp` or plain setup does about Warp. */
@@ -691,6 +824,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       choice: options.instructions,
     },
     statusline: options.statusline,
+    retryWatchdog: options.retryWatchdog === null ? null : options.retryWatchdog ? "on" : "off",
     tavilyKeyPlan:
       tavily.source === "file"
         ? { kind: "write", value: tavily.value }
@@ -707,19 +841,21 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // Claude Code's own config cannot be read, nothing is touched at all. A retired server
   // setup registered itself is taken back the same way (`retired.ts`).
   let records: Record<string, McpRecord> = {};
+  let recordsProblem: null | string = null;
   try {
     records = readMcpRecords(paths.stateDir);
   } catch (error) {
-    report.notes.push(
-      `! the MCP servers cc-smart-dev-kit registered cannot be read back (${messageOf(error)}): they are registered again`,
-    );
+    recordsProblem = messageOf(error);
   }
-  const liveServers = readUserServers(paths.userConfigFile);
+  // Either file unread means nothing is known about the servers, so nothing is touched (ST-5):
+  // without the record, every server setup registered would read as someone else's, and a
+  // record written now would replace the one that holds what setup really registered.
+  const liveServers = recordsProblem === null ? readUserServers(paths.userConfigFile) : null;
   const mcpPlan = [
     ...planMcpServers(
       mcpServers({
         bunx: machine.which("bunx") ?? "bunx",
-        launcher: join(paths.binDir, LAUNCHER_NAME),
+        launcher: launcherArgv(paths.binDir, machine.platform),
         tavily: tavily.source === "none" ? { key: false, reason: tavily.reason } : { key: true },
       }),
       records,
@@ -732,7 +868,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     .filter((entry) => entry.action === "remove")
     .map((entry) => entry.name);
   // One line, not one per server: nothing was added, removed, updated or forgotten.
-  if (liveServers === null) {
+  if (recordsProblem !== null) {
+    report.notes.push(unreadableRecordsNote(short(mcpRecordsFile(paths.stateDir)), recordsProblem));
+  } else if (liveServers === null) {
     report.notes.push(
       unreadableUserConfigNote(short(paths.userConfigFile), Object.keys(records).sort()),
     );
@@ -749,6 +887,11 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const browser = browserSetupReport(paths, realBrowserSetupDeps(machine, paths.home));
   report.info.push(...browser.info);
   report.notes.push(...browser.notes);
+
+  // The repos the saved sessions name that still carry a piece of the retired worktree engine
+  // (D33): one `!` line each, with the `project init` that takes it out. Read-only: setup never
+  // changes another repo.
+  report.notes.push(...retiredRepoLines(paths, options.env));
 
   // A read-only pass: a key the user set (autoUpdate: true) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.
@@ -769,6 +912,8 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       const asking = autoModeAsking(machine, autoMode);
       if (!asking.ask && asking.note !== null) report.notes.push(asking.note);
     }
+    const watchdogNote = retryWatchdogDryNote(paths, machine, managed);
+    if (watchdogNote !== null) report.info.push(watchdogNote);
     printReport(
       {
         changes,
@@ -785,6 +930,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // only what depends on it goes (Warp's plugin and shortcuts go with Warp's commands).
   if (autoMode !== null) managed.autoMode = askAutoMode(paths, options, autoMode, report.notes);
   const declined = askStatusline(paths, machine, managed);
+  // `--no-retry-watchdog` is a "no" as well: remembered, so a later plain setup does not ask.
+  const watchdogDeclined =
+    askRetryWatchdog(paths, machine, managed) || options.retryWatchdog === false;
   let warpYes = true;
   if (warp.commands.length > 0) {
     const what = options.removeWarp
@@ -821,39 +969,52 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   for (const line of steps.lines) (line.startsWith("!") ? report.notes : report.changes).push(line);
   if (!steps.ok) ok = false;
 
-  // The MCP servers, at user scope, through Claude Code's own `claude mcp` commands. An
-  // update marks its record before its own `remove` runs, so a crash in between is known
-  // the next time (`markMcpServerPending`).
-  const applied = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name) => {
-    markMcpServerPending(paths.stateDir, name);
-  });
-  report.changes.push(...applied.changes);
-  report.notes.push(...applied.notes);
-  if (!applied.ok) ok = false;
-
-  // The first run: claude-mem came with a companion step just now, so plan it again.
+  // The first run: claude-mem came with a companion step just now, so plan it again. Before
+  // the lock: it asks the backend over the network. Its lines come after the MCP servers'.
+  const claudeMemAgain: Report = { changes: [], info: [], notes: [] };
   if (claudeMem === "not-installed" && claudeSteps.length > 0) {
-    const again = await decideClaudeMem(paths, false, report);
+    const again = await decideClaudeMem(paths, false, claudeMemAgain);
     if (again !== "not-installed") managed.claudeMem = again;
   }
 
+  const now = new Date().toISOString();
   const written = await withLock(
     paths.stateDir,
     () => {
+      // The MCP servers, at user scope, through Claude Code's own `claude mcp` commands —
+      // inside the lock, with each add's or update's record written before its first command
+      // (`markMcpServerAdding`): a run that dies after an add, or that would find the lock
+      // busy, can no longer leave a server registered with no record of it (ST-4).
+      const mcp = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name, json) => {
+        markMcpServerAdding(paths.stateDir, name, json, now);
+      });
       const shortcuts =
         warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
       // Only what was really taken out counts: a `claude mcp remove` that failed leaves the
       // registration, and whatever it names, where it was.
-      const files = applySetup(paths, managed, false, applied.removed, machine.platform);
+      const files = applySetup(paths, managed, false, mcp.removed, machine.platform);
       // Which servers setup registered: cc-smart-dev-kit's own state, like the lock — not a
       // user file, so no backup (restore reads it to take exactly those back).
-      recordApplied(paths.stateDir, applied, new Date().toISOString());
+      recordApplied(paths.stateDir, mcp, now);
       // cc-smart-dev-kit's own state, like the lock: not a user file, so no backup.
       if (declined) atomicWrite(statuslineDeclinedFile(paths.stateDir), "no\n", 0o600);
-      return { changes: [...shortcuts, ...files.changes], info: files.info, notes: files.notes };
+      if (watchdogDeclined) {
+        atomicWrite(retryWatchdogDeclinedFile(paths.stateDir), "no\n", 0o600);
+      }
+      return {
+        mcp,
+        changes: [...shortcuts, ...files.changes],
+        info: files.info,
+        notes: files.notes,
+      };
     },
     { waitMs: 10_000 },
   );
+  report.changes.push(...written.mcp.changes);
+  report.notes.push(...written.mcp.notes);
+  if (!written.mcp.ok) ok = false;
+  report.info.push(...claudeMemAgain.info);
+  report.notes.push(...claudeMemAgain.notes);
   report.changes.push(...written.changes);
   report.info.push(...written.info);
   report.notes.push(...written.notes);

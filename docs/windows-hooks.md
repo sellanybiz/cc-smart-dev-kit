@@ -63,29 +63,40 @@ On Windows it runs under Git Bash, where
   Windows, the live tests.)
 
 A hook still never needs bun: with none found, `--missing=ask` prints the PreToolUse ask and
-`--missing=quiet` writes one line, both exit 0.
+`--missing=quiet` writes one line, both exit 0. The command (`plugin/bin/cc-smart-dev-kit`)
+passes `--missing=fail` instead: one line on stderr and **exit 1**, because a command must
+never report success when it did not run. The Windows CI job runs that mode too.
 
-## The project's own hook lines
+## The PowerShell tool is judged too
 
-A project that turns the worktree engine on wires the launcher in its own
-`.claude/settings.json`:
+Claude Code has a PowerShell tool beside Bash on native Windows (`docs/claude-code-contract.md`
+§ Windows). The plugin's shell judge, `job-route`, is therefore wired on `Bash|PowerShell`, and
+it reads each line in the dialect of the tool that runs it — the one shell reader every guard
+uses (`src/shell/command.ts`). A raw `claude --bg`, a crew session's `crew start` and a polling
+loop are judged the same in PowerShell; only the queue rewrite stays Bash-only, because the
+rewritten line is a `sh` line the PowerShell tool cannot run. `src/hooks/entries.test.ts` pins
+the matcher, and `src/hooks/bash-judge.test.ts` has the PowerShell cases, both run by the
+Windows CI job.
+
+## The user's own hook line
+
+The **user-level notification hook** `setup` writes uses shell form, with the launcher and
+the same reasoning:
 
 ```json
-{ "type": "command", "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook worktree-create", "timeout": 600 }
+{ "type": "command", "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook notify", "timeout": 10 }
 ```
 
-That is shell form too (no `args`), and the quoting wraps the whole path including `$HOME`.
-On Windows the shell is Git Bash: it sets `$HOME`, and it runs the extensionless launcher
-because the file starts with `#!` — MSYS2 marks a file executable by its first two
-characters as well as by extension, which matters because Windows has no execute bit for
-`setup` to set. The Windows CI job runs this exact line against a stand-in launcher, so the
-form is proved there; the real launcher's own body (bun from its baked path, the installed
-plugin's CLI) is proved on Linux and macOS and is owed one Windows run.
+No `args`, and the quoting wraps the whole path including `$HOME`. On Windows the shell is
+Git Bash: it sets `$HOME`, and it runs the extensionless launcher because the file starts
+with `#!` — MSYS2 marks a file executable by its first two characters as well as by
+extension, which matters because Windows has no execute bit for `setup` to set. The Windows
+CI job runs this exact line against a stand-in launcher, so the form is proved there; the
+real launcher's own body (bun from its baked path, the installed plugin's CLI) is proved on
+Linux and macOS and is owed one Windows run.
 
-The **user-level notification hook** `setup` writes uses the same form, with the same
-launcher and the same reasoning: `"$HOME/.local/bin/cc-smart-dev-kit" hook notify`. It sits
-in Claude Code's user settings, not a project's, and agent view runs it there on Windows
-through Git Bash like any other shell-form hook.
+The line sits in Claude Code's user settings, not a project's, and agent view runs it there
+on Windows through Git Bash like any other shell-form hook.
 
 ## What Windows costs these hooks
 

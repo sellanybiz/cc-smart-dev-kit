@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
+import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import {
   clearWorktreeNote,
+  exactMergeOf,
   mergeOutcome,
   mergesPullRequest,
   mergeTargetOf,
@@ -14,6 +15,7 @@ import {
   sameRepository,
   tellSessionsNote,
 } from "./after-merge";
+import { GUARD_BUDGET_ENV } from "./budget";
 import { afterMergeHook } from "./specs";
 
 describe("did the command merge a pull request?", () => {
@@ -33,6 +35,17 @@ describe("did the command merge a pull request?", () => {
     ['sh <<< "gh pr merge 2"', true],
     ['echo "gh pr merge 3" | sh', true],
     ["cat <<EOF\ngh pr merge 1\nEOF", false],
+    // HK-2: bash runs the substitutions of an unquoted here-doc body; a quoted one is text.
+    ["cat <<EOF\n$(gh pr merge 1)\nEOF", true],
+    ["cat <<'EOF'\n$(gh pr merge 1)\nEOF", false],
+    // HK-5: a trailing `\` may end a Windows path, so the line is also read unjoined.
+    ["cd C:\\repo\\\ngh pr merge 5", true],
+    // HK hunch 6: the line job-route queues is read through `job run`.
+    [
+      `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind test -- bash -c 'bun test && gh pr merge 5'`,
+      true,
+    ],
+    ["cc-smart-dev-kit job run --kind test -- gh pr merge 5", true],
     ["gh pr view 1", false],
     // gh's own flags may come before the command word (both are live gh 2.102.0 forms).
     ["gh -R org/app pr merge 18", true],
@@ -108,6 +121,7 @@ describe("did the command merge a pull request?", () => {
         disarms: false,
         admin: false,
         unknown: null,
+        unknownFlag: null,
       },
     ]);
     expect(refusal("gh --admin=true pr merge 20")).toEqual([
@@ -190,6 +204,55 @@ describe("did the command merge a pull request?", () => {
       mergedAt: null,
     });
     expect(parsePullRequestView("nope")).toBeNull();
+  });
+});
+
+describe("the exact merge (D31)", () => {
+  test.each([
+    // The exact form: `gh pr merge <n>` alone, with flags gh 2.102.0 has.
+    "gh pr merge 7",
+    "gh pr merge 7 --squash --delete-branch",
+    "gh pr merge 7 --match-head-commit abc123 --merge",
+    "gh pr -R org/app merge 7",
+    "gh pr --repo=org/app merge 7",
+    "gh -R org/app pr merge 7",
+  ])("%j: the exact merge", (command) => {
+    expect(exactMergeOf(command, "bash")?.target?.ref).toBe("7");
+  });
+
+  test.each([
+    // Anything else on the line would skip auto mode's rule for work the guard never judged.
+    "timeout 60 gh pr merge 7",
+    "CI=1 gh pr merge 7",
+    "gh pr merge 5 && gh pr merge 6",
+    "gh pr merge 7 > merge.log",
+    'bash -c "gh pr merge 7"',
+    "gh m 7",
+    // Not the exact form: a branch, a URL, an unknown flag, `--admin`, `--disable-auto`, and
+    // an armed merge, which lands later without this check seeing a new commit.
+    "gh pr merge fix/login",
+    "gh pr merge https://github.com/example-org/app/pull/7",
+    "gh pr merge 7 --frobnicate",
+    "gh pr merge 7 -Z",
+    "gh pr merge 7 --admin",
+    "gh pr merge 7 --disable-auto",
+    "gh pr merge 7 --auto",
+  ])("%j: not the exact merge", (command) => {
+    expect(exactMergeOf(command, "bash")).toBeNull();
+  });
+
+  test("the tool's dialect decides: an unknown one is never exact", () => {
+    expect(exactMergeOf("gh pr merge 7", "powershell")?.target?.ref).toBe("7");
+    // The guard is not told which shell runs the line: both readings count, so no allow.
+    expect(exactMergeOf("gh pr merge 7")).toBeNull();
+  });
+
+  test("an unknown flag on a merge is a refusal, named, and never exact", () => {
+    const [call] = pullRequestMerges("gh pr merge 7 --frobnicate", null, "bash");
+    expect(call?.unknownFlag).toBe("--frobnicate");
+    expect(call?.refusal).toBe(
+      "the merge carries `--frobnicate`, a flag this guard does not know, so it cannot tell what it does",
+    );
   });
 });
 
@@ -283,7 +346,7 @@ describe("the hook", () => {
     const { repo } = makeClone();
     git(repo, "remote", "set-url", "origin", "git@github.com:example-org/app.git");
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", ...(bases === undefined ? {} : { bases }) },
+      worktrees: { base: "main", ...(bases === undefined ? {} : { bases }) },
     });
     const worktree = join(repo, "..", "app-wt-fix-a");
     git(repo, "worktree", "add", "-q", "-b", "fix/a", worktree);
@@ -335,6 +398,52 @@ describe("the hook", () => {
     expect(again.stdout).not.toContain("Tell the other sessions");
   });
 
+  test("a merge into the base starts the background clean once: detached, with the repo and the session's folder (D48)", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    const { start, started } = recordingStarter();
+    const input = ran(join(worktree, "src"), "gh pr merge --squash");
+
+    await runHook(afterMergeHook, input, env, start);
+
+    // Asked for once, as a "merge" run (it ignores the hourly limit), for the main checkout,
+    // naming the folder the merging session works in. The worktree is untouched: nothing ran.
+    expect(started).toHaveLength(1);
+    expect(started[0]?.argv.slice(-3)).toEqual([repo, "merge", join(worktree, "src")]);
+    expect(started[0]?.argv[0]).toBe(process.execPath);
+    expect(started[0]?.options.cwd).toBe(env.HOME);
+    expect(existsSync(worktree)).toBe(true);
+
+    // The same pull request again is announced no more, and starts no second clean.
+    await runHook(afterMergeHook, input, env, start);
+    expect(started).toHaveLength(1);
+  });
+
+  test("no clean starts for a pull request into another base, for a merge gh cannot vouch for, or with autoClean off", async () => {
+    const other = project();
+    const { start, started } = recordingStarter();
+    await runHook(
+      afterMergeHook,
+      ran(join(other.worktree, "src"), "gh pr merge"),
+      fakeGh({ ...merged, baseRefName: "release" }),
+      start,
+    );
+    await runHook(afterMergeHook, ran(other.worktree, "gh pr merge"), fakeGh(null), start);
+    expect(started).toHaveLength(0);
+
+    const off = project();
+    writeClaudeFile(off.repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", autoClean: false },
+    });
+    await runHook(
+      afterMergeHook,
+      ran(off.worktree, "gh pr merge"),
+      fakeGh({ ...merged, number: 8 }),
+      start,
+    );
+    expect(started).toHaveLength(0);
+  });
+
   test("the hook's message carries the caution when the project names other bases", async () => {
     // A branch there goes into `dev`, not into this merge's base (`main`).
     const { worktree } = project({ "hotfix/": "dev", "release/": "dev" });
@@ -378,8 +487,8 @@ describe("the hook", () => {
     expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
       [
         "That merged the pull request of this worktree's branch, fix/a. Clear the worktree now, unless the user wants more work on this branch:",
-        'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true. The deprecated cc-smart-dev-kit engine\'s WorktreeRemove hook is then the only check: it removes the folder only when nothing in it is uncommitted, and the branch only when every commit on it is on another branch.',
-        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "/code/app-wt-fix-a", then git branch -d fix/a. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
+        'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
+        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/app-wt-fix-a" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
       ].join("\n"),
     );
     // Claude Code's own worktree, inside the repo: it checks the worktree itself, so no
@@ -388,9 +497,60 @@ describe("the hook", () => {
       [
         "That merged the pull request of this worktree's branch, worktree-fix-a. Clear the worktree now, unless the user wants more work on this branch:",
         'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.',
-        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: git worktree remove "/code/my-app/.claude/worktrees/fix-a", then git branch -d worktree-fix-a. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
+        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/my-app/.claude/worktrees/fix-a" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
       ].join("\n"),
     );
+  });
+
+  /** The note the hook gave after `gh pr merge --squash` in the worktree. */
+  async function noteAfterMerge(cwd: string, env: Record<string, string>): Promise<string> {
+    const result = await runHook(afterMergeHook, ran(cwd, "gh pr merge --squash"), env);
+    return JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.additionalContext ?? "";
+  }
+
+  test("HK-1: a worktree outside .claude/worktrees/: discard_changes only after the session's own check", async () => {
+    const { worktree } = project();
+    const note = await noteAfterMerge(join(worktree, "src"), fakeGh(merged));
+    expect(note).toContain("Clear the worktree now");
+    const check = note.indexOf("`git status --porcelain` is empty");
+    expect(check).toBeGreaterThan(-1);
+    expect(note.indexOf("discard_changes true")).toBeGreaterThan(check);
+    expect(note).toContain('worktrees --remove "');
+  });
+
+  test("HK hunch 9: the hook's children share one budget, so their limits cannot add up", async () => {
+    const { worktree } = project();
+    // Room for every call: the whole note.
+    const env: Record<string, string> = { ...fakeGh(merged), [GUARD_BUDGET_ENV]: "10000" };
+    expect((await runHook(afterMergeHook, ran(worktree, "gh pr merge"), env)).stdout).toContain(
+      "Clear the worktree now",
+    );
+    // A small budget: the note is either written from a lookup that fit, or skipped whole,
+    // and gh is never given more time than the budget holds.
+    const small: Record<string, string> = { ...fakeGh(merged), [GUARD_BUDGET_ENV]: "1000" };
+    const answer = await runHook(afterMergeHook, ran(worktree, "gh pr merge"), small);
+    const called = () => {
+      try {
+        return readFileSync(small.GH_LOG ?? "", "utf8");
+      } catch {
+        return "";
+      }
+    };
+    expect(answer.stdout === undefined ? called() === "" : called() !== "").toBe(true);
+    // A budget with nothing left at all: no child runs, and no note names a pull request.
+    const none: Record<string, string> = { ...fakeGh(merged), [GUARD_BUDGET_ENV]: "200" };
+    expect(await runHook(afterMergeHook, ran(worktree, "gh pr merge"), none)).toEqual({});
+    expect(() => readFileSync(none.GH_LOG ?? "", "utf8")).toThrow();
+  });
+
+  test("HK hunch 9: an alias read that is given no time is never started", async () => {
+    const { worktree } = project();
+    const env: Record<string, string> = {
+      ...fakeGh(merged, "m: pr merge"),
+      [GUARD_BUDGET_ENV]: "500",
+    };
+    expect(await runHook(afterMergeHook, ran(worktree, "gh m 7"), env)).toEqual({});
+    expect(() => readFileSync(env.GH_LOG ?? "", "utf8")).toThrow();
   });
 
   test("a command that merges nothing never asks gh", async () => {

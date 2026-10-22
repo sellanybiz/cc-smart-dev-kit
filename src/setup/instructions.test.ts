@@ -8,9 +8,10 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
+  copiesUnder,
   copyDifferences,
   forgetInstructionsState,
   type InstructionsPaths,
@@ -458,5 +459,21 @@ describe("copyDifferences", () => {
     // A newer plugin dropped the opt-in file; the old copy of it is still there.
     rmSync(join(source, "optin"), { recursive: true });
     expect(copyDifferences(paths)).toEqual(["optin/worktrees.md is not shipped any more"]);
+  });
+});
+
+describe("copiesUnder", () => {
+  test("ST-6: the copy's files are found on Windows, where every path has `\\`", () => {
+    // What changed.json holds on Windows: real paths with backslashes. The old prefix test
+    // (`${root}/`) found none of them, so the copy looked "not installed" and doctor failed.
+    const root = "C:\\Users\\me\\.claude\\cc-smart-dev-kit\\instructions";
+    const core = win32.join(root, "core.md");
+    const optin = win32.join(root, "optin", "worktrees.md");
+    const settings = "C:\\Users\\me\\.claude\\settings.json";
+    const sibling = "C:\\Users\\me\\.claude\\cc-smart-dev-kit\\instructions-old\\core.md";
+    expect(copiesUnder([settings, core, sibling, optin], root, true)).toEqual([core, optin]);
+    expect(copiesUnder(["/home/user/.claude/x/core.md"], "/home/user/.claude/x", false)).toEqual([
+      "/home/user/.claude/x/core.md",
+    ]);
   });
 });

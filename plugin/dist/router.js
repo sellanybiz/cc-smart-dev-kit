@@ -119,10 +119,6 @@ function atomicWrite(file, content, mode, beforeRename) {
   }
 }
 
-// src/gateway/config.ts
-import { createHash } from "crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
-
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
   const numericValues = Object.values(entries).filter((v) => typeof v === "number");
@@ -5955,8 +5951,92 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  version: literal(1)
+});
+function emptyLimitState() {
+  return { fallbacks: {}, limits: {}, version: 1 };
+}
+function formatLimitState(state) {
+  return `${JSON.stringify(state, null, 2)}
+`;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+var SLOT_PREFIX = "cc-smart-dev-kit-";
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
@@ -6065,9 +6145,10 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-opus": "opus"
 };
 var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
-  "cc-smart-dev-kit-worker": "sonnet",
+  [WORKER_SLOT]: "sonnet",
   ...MODEL_SLOTS
 };
 var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
@@ -6078,6 +6159,24 @@ function claudeFamily(model) {
     return null;
   const id = name.slice(prefix[0].length - "claude-".length);
   return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
+}
+var VERSION_AT_START = /^(\d{1,3})(?:-(\d{1,2})(?!\d))?(?!\d)/;
+function claudeVersion(model) {
+  const family = claudeFamily(model);
+  if (family === null)
+    return null;
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  const id = name.slice((PROVIDER_PREFIX.exec(name)?.[0].length ?? 0) - "claude-".length);
+  const at = id.indexOf(`-${family}-`);
+  const before = id.slice("claude-".length, at);
+  const after = id.slice(at + family.length + 2);
+  const match = VERSION_AT_START.exec(before === "" ? after : before);
+  if (match === null)
+    return null;
+  return { major: Number(match[1]), minor: match[2] === undefined ? 0 : Number(match[2]) };
+}
+function versionAtLeast(version, since) {
+  return version.major !== since.major ? version.major > since.major : version.minor >= since.minor;
 }
 function familySlotKey(family) {
   return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
@@ -6091,7 +6190,7 @@ function familySlotFor(model) {
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
+var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 function targetsInUse(targets, fallback) {
   return fallback ? [...targets] : targets.slice(0, 1);
 }
@@ -6111,9 +6210,12 @@ function planUsageLimit(status, header) {
     resetsAt: Number.isInteger(reset) && reset > 0 ? reset : null
   };
 }
-var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+function capacityFailureStatus(status) {
+  return CAPACITY_STATUSES.has(status) || status >= 500 && status <= 599;
+}
 function fallbackKind(status, target) {
-  if (FALLBACK_ANY.has(status))
+  if (CAPACITY_STATUSES.has(status))
     return "next";
   if (target.kind === "backend" && (status < 200 || status > 299))
     return "next-warn";
@@ -6133,10 +6235,74 @@ function cooldownSeconds(status, retryAfter) {
   return Math.min(Math.max(seconds, 0), COOLDOWN_MAX_SEC);
 }
 
+// src/gateway/breaker.ts
+var BREAKER_MAX_HELD = 64;
+var CLIENT_RETRY_AFTER_CEILING_SEC = 60;
+var BREAKER_RETRY_AFTER_UNKNOWN_SEC = 30;
+var BREAKER_POLL_MS = 1000;
+var BREAKER_HEARTBEAT_WAIT_MS = 180000;
+var BREAKER_REMINDER_MS = 10 * 60000;
+var BREAKER_SHUTDOWN_RETRY_AFTER_SEC = 5;
+var BREAKER_RELEASED_RETRY_AFTER_SEC = 1;
+function isCapacityFailure(status) {
+  return status === null || CAPACITY_STATUSES.has(status);
+}
+function capRetryAfter(seconds) {
+  return Math.min(seconds, CLIENT_RETRY_AFTER_CEILING_SEC);
+}
+function clientRetryAfter(seconds) {
+  if (seconds === null)
+    return BREAKER_RETRY_AFTER_UNKNOWN_SEC;
+  return Math.max(1, capRetryAfter(Math.ceil(seconds)));
+}
+function slotShortName(slot) {
+  return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
+}
+function earliestRestSeconds(failures, nowMs) {
+  if (failures.length === 0)
+    return null;
+  const earliest = Math.min(...failures.map((failure) => failure.until));
+  return Math.max(0, Math.ceil((earliest - nowMs) / 1000));
+}
+function describeFailures(failures, nowMs) {
+  return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
+}
+function breakerMessage(slot, sinceMs, failures, nowMs) {
+  const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
+  const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
+  return `cc-smart-dev-kit-router: every target of ${slot} is limited or down since ${since}${named}; change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`;
+}
+function breakerAnswer(answer) {
+  const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
+  return Response.json({
+    error: {
+      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs),
+      type: "rate_limit_error"
+    },
+    type: "error"
+  }, { headers: { "retry-after": String(retryAfter), "x-should-retry": "true" }, status: 429 });
+}
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60)
+    return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
+}
+
 // src/gateway/config.ts
+import { createHash } from "crypto";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
+var BREAKER_HOLD_CEILING_MS = 240000;
+var BREAKER_HOLD_NON_STREAMING_MS = 60000;
+var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
 var NO_CONFIG_MEANS = "every slot is off: each Claude model goes to Anthropic as Claude Code sent it (your own Claude login) until it is fixed";
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
 var backendSchema = looseObject({
@@ -6149,10 +6315,14 @@ var gatewayConfigSchema = looseObject({
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
   fallback: record(string2(), boolean2()).optional(),
+  breaker: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
-  timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
+  timeouts: looseObject({
+    breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
+    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
+  }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
   for (const [slot, targets] of Object.entries(config.slots)) {
@@ -6160,12 +6330,6 @@ var gatewayConfigSchema = looseObject({
       const parsed = parseTarget(text);
       if ("error" in parsed) {
         ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-      } else if (slot === JUDGE_SLOT && parsed.target.kind === "anthropic") {
-        ctx.addIssue({
-          code: "custom",
-          message: `${JUDGE_SLOT} takes no claude-\u2026 target; use "${COMMAND} gateway slot judge off" to put the checks on Claude`,
-          path: ["slots", slot, index]
-        });
       } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
         ctx.addIssue({
           code: "custom",
@@ -6187,11 +6351,26 @@ var gatewayConfigSchema = looseObject({
     }
   }
   for (const slot of Object.keys(config.fallback ?? {})) {
-    if (!Object.hasOwn(config.slots, slot)) {
+    if (slot !== JUDGE_SLOT && !Object.hasOwn(config.slots, slot)) {
       ctx.addIssue({
         code: "custom",
         message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
         path: ["fallback", slot]
+      });
+    }
+  }
+  for (const slot of Object.keys(config.breaker ?? {})) {
+    if (slot === JUDGE_SLOT) {
+      ctx.addIssue({
+        code: "custom",
+        message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+        path: ["breaker", slot]
+      });
+    } else if (!Object.hasOwn(config.slots, slot)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `breaker names slot "${slot}", which is not in slots (a slot with no chain has no request to hold)`,
+        path: ["breaker", slot]
       });
     }
   }
@@ -6220,6 +6399,17 @@ function fallbackOn(config, slot) {
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
   return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+}
+function breakerOn(config, slot) {
+  if (slot === JUDGE_SLOT)
+    return false;
+  const set = config.breaker;
+  if (set !== undefined && Object.hasOwn(set, slot))
+    return set[slot] === true;
+  return true;
+}
+function breakerHoldMs(config) {
+  return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
 }
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
@@ -6259,6 +6449,24 @@ function judgeTargetTested(config, target) {
   const backend = Object.hasOwn(config.backends, parsed.target.backend) ? config.backends[parsed.target.backend] : undefined;
   const proof = config.judgeTested !== undefined && Object.hasOwn(config.judgeTested, target) ? config.judgeTested[target] : undefined;
   return backend !== undefined && proof !== undefined && proof === judgeTestProof(target, backend.baseUrl);
+}
+function judgeTargetUsable(config, target) {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed))
+    return false;
+  return parsed.target.kind === "anthropic" || judgeTargetTested(config, target);
+}
+function workerJudgeTargets(config) {
+  const chain = Object.hasOwn(config.slots, WORKER_SLOT) ? config.slots[WORKER_SLOT] ?? [] : [];
+  const targets = [];
+  for (const text of chain) {
+    if (!judgeTargetTested(config, text))
+      continue;
+    const parsed = parseTarget(text);
+    if ("target" in parsed)
+      targets.push(parsed.target);
+  }
+  return targets;
 }
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
@@ -6346,17 +6554,104 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
 }
 
 // src/gateway/fallback-answer.ts
-import { createHash as createHash2 } from "crypto";
-var DROPPED_BLOCKS = new Set(["redacted_thinking", "thinking"]);
+import { createHash as createHash2, randomUUID } from "crypto";
+var ROUTER_THINKING_MARK = "cc-smart-dev-kit-router:thinking:";
+var MARK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+var MARK_ID_LENGTH = 36;
+function routerSignature(own) {
+  return carrying(`${ROUTER_THINKING_MARK}${randomUUID()}`, own);
+}
+function carrying(mark, own) {
+  return own === undefined ? mark : `${mark}:${own}`;
+}
+function backendSignatureOf(signature) {
+  if (!signature.startsWith(ROUTER_THINKING_MARK))
+    return;
+  const rest = signature.slice(ROUTER_THINKING_MARK.length);
+  if (!MARK_ID.test(rest.slice(0, MARK_ID_LENGTH)))
+    return null;
+  if (rest.length === MARK_ID_LENGTH || rest[MARK_ID_LENGTH] !== ":")
+    return null;
+  return { own: rest.slice(MARK_ID_LENGTH + 1) };
+}
+var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
 var TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
 var EMPTY_ANSWER_TEXT = "(The fallback model answered with thinking only.)";
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function isRouterThinking(block) {
+  return isJsonObject(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
+}
+function holdsRouterMark(bytes) {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).includes(ROUTER_THINKING_MARK);
+}
+function withoutRouterThinking(body) {
+  const messages = body.messages;
+  if (!Array.isArray(messages))
+    return { body, filled: 0, removed: 0 };
+  let removed = 0;
+  let filled = 0;
+  const out = messages.map((message, at) => {
+    if (!isJsonObject(message) || message.role !== "assistant")
+      return message;
+    if (!Array.isArray(message.content))
+      return message;
+    const content = message.content.filter((block) => !isRouterThinking(block));
+    if (content.length === message.content.length)
+      return message;
+    removed += message.content.length - content.length;
+    if (content.length === 0 && at < messages.length - 1) {
+      filled += 1;
+      content.push({ text: EMPTY_ANSWER_TEXT, type: "text" });
+    }
+    return { ...message, content };
+  });
+  if (removed === 0)
+    return { body, filled, removed };
+  return { body: { ...body, messages: out }, filled, removed };
+}
+function thinkingForBackend(body) {
+  const messages = body.messages;
+  if (!Array.isArray(messages))
+    return { bare: 0, body, restored: 0 };
+  let restored = 0;
+  let bare = 0;
+  const out = messages.map((message) => {
+    if (!isJsonObject(message) || message.role !== "assistant")
+      return message;
+    if (!Array.isArray(message.content))
+      return message;
+    let changed = false;
+    const content = message.content.map((block) => {
+      if (!isJsonObject(block) || !isRouterThinking(block))
+        return block;
+      changed = true;
+      const carried = backendSignatureOf(String(block.signature));
+      if (carried) {
+        restored += 1;
+        return { ...block, signature: carried.own };
+      }
+      bare += 1;
+      const { signature: _mark, ...unsigned } = block;
+      return unsigned;
+    });
+    return changed ? { ...message, content } : message;
+  });
+  if (restored === 0 && bare === 0)
+    return { bare, body, restored };
+  return { bare, body: { ...body, messages: out }, restored };
+}
 function safeToolUseId(id) {
   if (TOOL_USE_ID.test(id))
     return id;
   return `toolu_cc-smart-dev-kit_${createHash2("sha256").update(id).digest("hex").slice(0, 24)}`;
+}
+function noChanges() {
+  return { ids: 0, marked: 0, redacted: 0 };
+}
+function changedAny(changes) {
+  return changes.ids > 0 || changes.marked > 0 || changes.redacted > 0;
 }
 function withSafeId(block, changes) {
   if (block.type !== "tool_use" || typeof block.id !== "string")
@@ -6367,19 +6662,28 @@ function withSafeId(block, changes) {
   changes.ids += 1;
   return { ...block, id };
 }
+function isDropped(block) {
+  return isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
+}
 function cleanFallbackMessage(message) {
-  const changes = { ids: 0, thinking: 0 };
+  const changes = noChanges();
   if (!isJsonObject(message) || !Array.isArray(message.content))
     return { changes, message };
   const content = [];
   for (const block of message.content) {
-    if (isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
-      changes.thinking += 1;
+    if (isDropped(block)) {
+      changes.redacted += 1;
+      continue;
+    }
+    if (isJsonObject(block) && block.type === "thinking") {
+      changes.marked += 1;
+      const own = typeof block.signature === "string" ? block.signature : undefined;
+      content.push({ ...block, signature: routerSignature(own) });
       continue;
     }
     content.push(isJsonObject(block) ? withSafeId(block, changes) : block);
   }
-  if (changes.thinking === 0 && changes.ids === 0)
+  if (!changedAny(changes))
     return { changes, message };
   if (content.length === 0)
     content.push({ text: EMPTY_ANSWER_TEXT, type: "text" });
@@ -6417,8 +6721,9 @@ function cleanFallbackStream(onDone = () => {
 }) {
   const decoder = new TextDecoder;
   const encoder = new TextEncoder;
-  const changes = { ids: 0, thinking: 0 };
+  const changes = noChanges();
   const dropped = new Set;
+  const thinking = new Map;
   let kept = 0;
   let filled = false;
   let buffer = "";
@@ -6465,24 +6770,50 @@ function cleanFallbackStream(onDone = () => {
     if (!isBlock || typeof event.index !== "number")
       return text;
     const index = event.index;
+    const next = renumber(index);
     if (event.type === "content_block_start") {
       const block = event.content_block;
-      if (isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type)) {
+      if (isDropped(block)) {
         dropped.add(index);
-        changes.thinking += 1;
+        changes.redacted += 1;
         return "";
       }
       kept += 1;
+      if (isJsonObject(block) && block.type === "thinking") {
+        const mark = routerSignature();
+        thinking.set(index, { mark, own: "" });
+        changes.marked += 1;
+        return eventText(label, {
+          ...event,
+          content_block: { ...block, signature: mark },
+          index: next
+        });
+      }
       const safe = isJsonObject(block) ? withSafeId(block, changes) : block;
-      const next = renumber(index);
       if (next === index && safe === block)
         return text;
       return eventText(label, { ...event, content_block: safe, index: next });
     }
     if (dropped.has(index))
       return "";
-    const next = renumber(index);
-    return next === index ? text : eventText(label, { ...event, index: next });
+    const open = thinking.get(index);
+    if (open !== undefined && event.type === "content_block_delta") {
+      const delta = event.delta;
+      if (isJsonObject(delta) && delta.type === "signature_delta") {
+        if (typeof delta.signature === "string")
+          open.own = delta.signature;
+        return "";
+      }
+    }
+    const passed = next === index ? text : eventText(label, { ...event, index: next });
+    if (open === undefined || event.type !== "content_block_stop")
+      return passed;
+    thinking.delete(index);
+    return eventText("content_block_delta", {
+      delta: { signature: carrying(open.mark, open.own), type: "signature_delta" },
+      index: next,
+      type: "content_block_delta"
+    }) + passed;
   };
   const drain = (controller) => {
     for (;; ) {
@@ -6538,7 +6869,7 @@ function cleanFallbackResponse(response, onChanged) {
   const format = decoding(encoding);
   if (format === null) {
     return {
-      note: `its answer is "${encoding.slice(0, 40)}" encoded, which the router cannot read: thinking blocks were not removed`,
+      note: `its answer is "${encoding.slice(0, 40)}" encoded, which the router cannot read: its thinking blocks were not marked as the router's`,
       response
     };
   }
@@ -6547,7 +6878,7 @@ function cleanFallbackResponse(response, onChanged) {
   headers.delete("content-length");
   const plain = format === "identity" ? response.body : response.body.pipeThrough(new DecompressionStream(format));
   const report = (changes) => {
-    if (changes.thinking > 0 || changes.ids > 0)
+    if (changedAny(changes))
       onChanged(changes);
   };
   const init = { headers, status: response.status, statusText: response.statusText };
@@ -6566,7 +6897,7 @@ function cleanFallbackResponse(response, onChanged) {
     }
     const result = cleanFallbackMessage(parsed);
     report(result.changes);
-    return result.changes.thinking > 0 || result.changes.ids > 0 ? new TextEncoder().encode(JSON.stringify(result.message)) : new Uint8Array(bytes);
+    return changedAny(result.changes) ? new TextEncoder().encode(JSON.stringify(result.message)) : new Uint8Array(bytes);
   });
   const body = new ReadableStream({
     async pull(controller) {
@@ -6621,7 +6952,7 @@ function normalHost(hostname) {
 }
 function isLoopbackHost(hostname) {
   const host = normalHost(hostname);
-  if (host === "localhost")
+  if (host === "localhost" || host.endsWith(".localhost"))
     return true;
   const v4 = ipv4Parts(host);
   if (v4 !== null)
@@ -6640,40 +6971,8 @@ function directIfLoopback(url) {
     return {};
   return { proxy: false };
 }
-
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var stateSchema = object({
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  version: literal(1)
-});
-function emptyLimitState() {
-  return { fallbacks: {}, limits: {}, version: 1 };
-}
-function formatLimitState(state) {
-  return `${JSON.stringify(state, null, 2)}
-`;
-}
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
-}
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
+  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
 
 // src/gateway/listen.ts
@@ -6839,6 +7138,53 @@ function oneLine(text, max, options = {}) {
   const line = flat.trim();
   return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
 }
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+var KNOWN_SECRET_MIN = 4;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function knownSecretForms(known) {
+  const forms = new Map;
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN)
+      continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice])
+      if (!forms.has(form))
+        forms.set(form, secret);
+  }
+  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
+}
+function maskSecrets(text, known = []) {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
+}
+function maskedLine(text, known, max, options = {}) {
+  return oneLine(maskSecrets(text, known), max, options);
+}
+
+// src/gateway/refusal.ts
+var REFUSAL_STATUS = 424;
+var LENGTH_REFUSAL = /too long|too large|too many tokens|token limit|exceeds? (?:the |this )?(?:model'?s? )?(?:maximum )?(?:context|token)|(?:maximum|max) context|context (?:length|window|limit)/i;
+function isLengthRefusal(reason) {
+  return LENGTH_REFUSAL.test(reason);
+}
+function isRefusalStatus(status) {
+  return status === 400 || status === 422;
+}
+function errorBody(status, message, headers) {
+  return Response.json({ error: { message, type: "invalid_request_error" }, type: "error" }, { headers, status });
+}
+function backendRefusal(label, status, reason) {
+  if (isLengthRefusal(reason)) {
+    return errorBody(400, `prompt is too long: ${label} refused this conversation as too long for it (HTTP ${status}: ${reason}). Put a target with a larger window first in the slot: ${COMMAND} gateway slot <slot> <targets>`, { "x-should-retry": "false" });
+  }
+  return errorBody(REFUSAL_STATUS, `cc-smart-dev-kit-router: ${label} refused this request (HTTP ${status}): ${reason}`, { "x-should-retry": "false" });
+}
 
 // src/gateway/safety-checks.ts
 var SAFETY_CHECK_DAYS = 30;
@@ -6986,12 +7332,99 @@ function checkUsageFromAnswer(text, streaming) {
   };
 }
 
+// src/gateway/server-tools.ts
+import { randomUUID as randomUUID2 } from "crypto";
+
+// src/mcp/names.ts
+var TAVILY_SERVER_NAME = "tavily-websearch";
+
+// src/gateway/server-tools.ts
+var ANTHROPIC_SERVER_TOOL_PREFIXES = ["web_search_", "web_fetch_"];
+function anthropicServerTool(body) {
+  if (!Array.isArray(body.tools))
+    return null;
+  for (const tool of body.tools) {
+    if (typeof tool !== "object" || tool === null || !("type" in tool))
+      continue;
+    if (typeof tool.type !== "string")
+      continue;
+    const type = tool.type;
+    const prefix = ANTHROPIC_SERVER_TOOL_PREFIXES.find((start) => type.startsWith(start));
+    if (prefix !== undefined)
+      return prefix.slice(0, -1);
+  }
+  return null;
+}
+function claudeUnavailableWords(status, limit) {
+  if (limit !== null) {
+    const claim = limit.claim === null ? "" : ` (${limit.claim})`;
+    const reset = limit.resetsAt === null ? "the reset time is not known" : `it resets at ${new Date(limit.resetsAt * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+    return `is at its usage limit${claim}; ${reset}`;
+  }
+  return status === null ? "could not be reached (no answer came)" : `could not answer now (HTTP ${status})`;
+}
+function claudeSearchNotice(tool, why) {
+  return `The ${COMMAND} router answered this ${tool} request, not Anthropic: ${tool} runs on Claude, and Claude ${why}. Use the Tavily MCP server instead (its tools are named mcp__${TAVILY_SERVER_NAME}__\u2026), if it is set up.`;
+}
+function routerMessageId() {
+  return `msg_router_${randomUUID2().replaceAll("-", "")}`;
+}
+function searchMessageAnswer(model, text) {
+  return JSON.stringify({
+    content: [{ text, type: "text" }],
+    id: routerMessageId(),
+    model: typeof model === "string" ? model : "unknown",
+    role: "assistant",
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    type: "message",
+    usage: { input_tokens: 0, output_tokens: 0 }
+  });
+}
+function searchStreamAnswer(model, text) {
+  const message = {
+    content: [],
+    id: routerMessageId(),
+    model: typeof model === "string" ? model : "unknown",
+    role: "assistant",
+    stop_reason: null,
+    stop_sequence: null,
+    type: "message",
+    usage: { input_tokens: 0, output_tokens: 0 }
+  };
+  const event = (name, data) => `event: ${name}
+data: ${JSON.stringify(data)}
+
+`;
+  return [
+    event("message_start", { message, type: "message_start" }),
+    event("content_block_start", {
+      content_block: { text: "", type: "text" },
+      index: 0,
+      type: "content_block_start"
+    }),
+    event("content_block_delta", {
+      delta: { text, type: "text_delta" },
+      index: 0,
+      type: "content_block_delta"
+    }),
+    event("content_block_stop", { index: 0, type: "content_block_stop" }),
+    event("message_delta", {
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      type: "message_delta",
+      usage: { output_tokens: 0 }
+    }),
+    event("message_stop", { type: "message_stop" })
+  ].join("");
+}
+
 // src/gateway/router.ts
 var FALLBACK_SAVE_EVERY_MS = 60000;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
 var UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
 var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
+var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -7013,6 +7446,15 @@ var BACKEND_HEADER_ALLOW_LIST = [
 var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 function anthropicError(status, type, message) {
   return Response.json({ error: { message, type }, type: "error" }, { status });
+}
+function backendKeyRefused(label, backend, status, resendSafe = true) {
+  return Response.json({
+    error: {
+      message: `cc-smart-dev-kit-router: ${label} refused the key the gateway config holds for ${backend} (HTTP ${status}${status === 403 ? ": the key, or what it may reach, such as a provider connection it is not allowed to use" : ""}). Your Claude login is not the problem. Check it: ${COMMAND} gateway check`,
+      type: "invalid_request_error"
+    },
+    type: "error"
+  }, { headers: { "x-should-retry": "false" }, status: resendSafe ? REFUSAL_STATUS : 400 });
 }
 function droppedHeaders(headers) {
   const dropped = new Set(HOP_BY_HOP);
@@ -7043,6 +7485,7 @@ function backendRequestHeaders(client, apiKey) {
   }
   if (!out.has("content-type"))
     out.set("content-type", "application/json");
+  out.set("accept-encoding", "identity");
   out.set("authorization", `Bearer ${apiKey}`);
   return out;
 }
@@ -7067,7 +7510,7 @@ function responseHeaders(upstream, normalizeRetryAfterAt) {
     if (name === "retry-after" && normalizeRetryAfterAt !== null) {
       const seconds = retryAfterSeconds(value, normalizeRetryAfterAt);
       if (seconds !== null)
-        out.set(name, String(seconds));
+        out.set(name, String(capRetryAfter(seconds)));
       return;
     }
     out.append(name, value);
@@ -7079,8 +7522,11 @@ function sseScanner() {
   let event = null;
   let data = [];
   let fields = false;
+  let decided = "";
   const decide = () => {
     const name = event ?? "message";
+    decided = data.join(`
+`);
     if (name === "error")
       return "error";
     if (name === "ping")
@@ -7095,6 +7541,7 @@ function sseScanner() {
     return "event";
   };
   return {
+    decidedData: () => decided,
     push(text) {
       buffer += text;
       for (;; ) {
@@ -7129,34 +7576,6 @@ function sseScanner() {
 }
 function printable(text, max = 120) {
   return oneLine(text, max, { ascii: true });
-}
-function maskedTail(secret) {
-  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
-}
-var KNOWN_SECRET_MIN = 4;
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function knownSecretForms(known) {
-  const forms = new Map;
-  for (const secret of known) {
-    if (secret.length < KNOWN_SECRET_MIN)
-      continue;
-    const once = JSON.stringify(secret).slice(1, -1);
-    const twice = JSON.stringify(once).slice(1, -1);
-    for (const form of [secret, once, twice])
-      if (!forms.has(form))
-        forms.set(form, secret);
-  }
-  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
-}
-function maskSecrets(text, known = []) {
-  let out = text;
-  for (const { form, secret } of knownSecretForms(known)) {
-    out = out.split(form).join(maskedTail(secret));
-  }
-  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
-}
-function maskedLine(text, known, max, options = {}) {
-  return oneLine(maskSecrets(text, known), max, options);
 }
 var SNIPPET_MAX = 300;
 var SNIPPET_READ_BYTES = 2048;
@@ -7243,17 +7662,122 @@ function reasoningOffForBackend(body, options = {}) {
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 var CLAUDE_TARGET_RULES = {
-  opus: { thinkingOff: "left out" },
-  sonnet: { thinkingOff: "between_tools" }
+  fable: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 0 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: false,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 1 }
+    }
+  ],
+  haiku: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: true,
+        thinkingOff: "capped"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ],
+  opus: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "capped"
+      },
+      since: { major: 5, minor: 0 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ],
+  sonnet: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null
+      },
+      since: { major: 4, minor: 7 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "between_tools"
+      },
+      since: { major: 5, minor: 5 }
+    }
+  ]
 };
+function claudeTargetRules(model) {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null)
+    return null;
+  let found = null;
+  for (const row of CLAUDE_TARGET_RULES[family] ?? []) {
+    if (versionAtLeast(version, row.since))
+      found = row.rules;
+  }
+  return found;
+}
 var ABOVE_HIGH = new Set(["max", "xhigh"]);
 function requestForClaudeFallback(body, model) {
-  const family = claudeFamily(model);
-  const rules = family === null ? undefined : CLAUDE_TARGET_RULES[family];
-  if (rules === undefined)
+  const rules = claudeTargetRules(model);
+  if (rules === null)
     return { body, changes: [] };
   const out = { ...body };
   const changes = [];
+  const capEffort = (why) => {
+    const outputConfig = body.output_config;
+    if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+      out.output_config = { ...outputConfig, effort: "high" };
+      changes.push(`effort ${outputConfig.effort} -> high${why}`);
+    }
+  };
   const thinking = body.thinking;
   if (isJsonObject3(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
@@ -7264,32 +7788,32 @@ function requestForClaudeFallback(body, model) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
       }
-    } else {
+    } else if (rules.thinkingOff === "between_tools") {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
-      const outputConfig = body.output_config;
-      if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
-        out.output_config = { ...outputConfig, effort: "high" };
-        changes.push(`effort ${outputConfig.effort} -> high`);
-      }
+      capEffort("");
+    } else if (rules.thinkingOff === "capped") {
+      capEffort(" (thinking off)");
     }
-  } else if (isJsonObject3(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject3(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (rules.forcedToolChoice && isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
-  if (body.temperature !== undefined && body.temperature !== 1) {
-    delete out.temperature;
-    changes.push("temperature left out");
-  }
-  for (const field of ["top_p", "top_k"]) {
-    if (body[field] !== undefined) {
-      delete out[field];
-      changes.push(`${field} left out`);
+  if (rules.sampling) {
+    if (body.temperature !== undefined && body.temperature !== 1) {
+      delete out.temperature;
+      changes.push("temperature left out");
+    }
+    for (const field of ["top_p", "top_k"]) {
+      if (body[field] !== undefined) {
+        delete out[field];
+        changes.push(`${field} left out`);
+      }
     }
   }
   return changes.length > 0 ? { body: out, changes } : { body, changes };
@@ -7316,6 +7840,11 @@ function deadline(ms) {
 }
 function sameModel(a, b) {
   return withoutContextSuffix(a) === withoutContextSuffix(b);
+}
+function withoutEmptyBreakers(state) {
+  if (state.breakers !== undefined && Object.keys(state.breakers).length === 0) {
+    delete state.breakers;
+  }
 }
 var CHECK_USAGE_MAX_BYTES = 256 * 1024;
 function stateWriter(deps, what, save) {
@@ -7357,31 +7886,50 @@ function createRouter(deps) {
   const cooling = new Map;
   const aliasesLogged = new Set;
   const translationsLogged = new Set;
-  const limitState = emptyLimitState();
-  const safetyChecks = loadedSafetyChecks();
+  const limitState = loadedState(deps.loadState, parseLimitState, emptyLimitState, {
+    file: "the limit state file",
+    name: "the limit state",
+    after: "it starts over"
+  });
+  for (const slot of Object.keys(limitState.breakers ?? {})) {
+    if (!currentBreakers(limitState, deps.now()).some(([key]) => key === slot)) {
+      delete limitState.breakers?.[slot];
+    }
+  }
+  withoutEmptyBreakers(limitState);
+  const safetyChecks = loadedState(deps.loadSafetyChecks, parseSafetyCheckState, emptySafetyChecks, {
+    file: "the safety-check file",
+    name: "the safety-check counts",
+    after: "counting starts over"
+  });
   const fellBack = new Set;
   const untestedLogged = new Set;
   const cleanedLogged = new Set;
+  const markedLogged = new Set;
+  const restoredLogged = new Set;
   let checkedConfig = null;
+  const openBreakers = new Map;
+  const probing = new Set;
+  const restReasons = new Map;
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
   const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
-  function loadedSafetyChecks() {
-    const load = deps.loadSafetyChecks;
+  function loadedState(load, parse, empty, words) {
     if (load === undefined)
-      return emptySafetyChecks();
+      return empty();
     let text;
     try {
       text = load();
     } catch (error) {
-      deps.log(`WARN cannot read the safety-check counts: ${messageOf(error)}`);
-      return emptySafetyChecks();
+      deps.log(`WARN cannot read ${words.name}: ${messageOf(error)}`);
+      return empty();
     }
     if (text === null)
-      return emptySafetyChecks();
-    const parsed = parseSafetyCheckState(text);
+      return empty();
+    const parsed = parse(text);
     if (parsed === null) {
-      deps.log("WARN the safety-check file is not one this version reads; counting starts over");
-      return emptySafetyChecks();
+      deps.log(`WARN ${words.file} is not one this version reads; ${words.after}`);
+      return empty();
     }
     return parsed;
   }
@@ -7453,6 +8001,14 @@ function createRouter(deps) {
     }
     if (changed)
       persist();
+    for (const slot of new Set([
+      ...openBreakers.keys(),
+      ...Object.keys(limitState.breakers ?? {})
+    ])) {
+      if (Object.hasOwn(config.slots, slot) && breakerOn(config, slot))
+        continue;
+      closeBreaker(slot, "removed from the config or switched off");
+    }
   }
   function judgeTargetsOf(config) {
     const judge = resolveRoute(JUDGE_SLOT, config);
@@ -7460,7 +8016,7 @@ function createRouter(deps) {
       return [];
     return targetsInUse(judge.targets, fallbackOn(config, JUDGE_SLOT)).filter((target) => {
       const text = formatTarget(target);
-      if (judgeTargetTested(config, text))
+      if (judgeTargetUsable(config, text))
         return true;
       if (!untestedLogged.has(text)) {
         untestedLogged.add(text);
@@ -7551,15 +8107,14 @@ function createRouter(deps) {
     const controller = new AbortController;
     req.signal.addEventListener("abort", () => controller.abort(req.signal.reason), { once: true });
     const timer = deadlineAt === null ? null : deadline(deadlineAt - deps.now());
-    const pending = deps.fetch(upstream.url, {
+    const init = {
       body: upstream.body,
       decompress: false,
       headers: upstream.headers,
       method: upstream.method,
-      redirect: "manual",
-      signal: controller.signal,
-      ...directIfLoopback(upstream.url)
-    });
+      signal: controller.signal
+    };
+    const pending = backendFetch(upstream.url, init, deps.fetch);
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout")
@@ -7575,7 +8130,7 @@ function createRouter(deps) {
       timer?.clear();
     }
   }
-  async function holdFirstEvent(response, deadlineAt) {
+  async function holdFirstEvent(response, deadlineAt, options) {
     const body = response.body;
     if (body === null)
       return { failure: "an event stream with no body", status: response.status };
@@ -7583,12 +8138,10 @@ function createRouter(deps) {
     const decoder = new TextDecoder;
     const scanner = sseScanner();
     const held = [];
-    const fail = async (failure, status) => {
-      try {
-        await reader.cancel();
-      } catch (error) {
+    const fail = (failure, status) => {
+      reader.cancel().catch((error) => {
         deps.log(`WARN could not cancel a held upstream stream: ${messageOf(error)}`);
-      }
+      });
       return { failure, status };
     };
     for (;; ) {
@@ -7605,14 +8158,21 @@ function createRouter(deps) {
         timer?.clear();
       }
       if (step === "timeout")
-        return fail("no event in time (only heartbeats)", null);
-      if (step.done)
+        return fail(NO_EVENT_IN_TIME, null);
+      if (step.done) {
+        if (options.last)
+          break;
         return { failure: "the stream ended before its first event", status: response.status };
+      }
       held.push(step.value);
       const verdict = scanner.push(decoder.decode(step.value, { stream: true }));
-      if (verdict === "error")
-        return fail("an error event before the first real one", response.status);
-      if (verdict === "event")
+      if (verdict === "error" && !options.last) {
+        const reason = maskedLine(scanner.decidedData(), options.known, SNIPPET_MAX, {
+          ascii: true
+        });
+        return fail(`an error event before the first real one${reason === "" ? "" : `: ${reason}`}`, response.status);
+      }
+      if (verdict !== null)
         break;
     }
     const replay = new ReadableStream({
@@ -7638,6 +8198,32 @@ function createRouter(deps) {
       })
     };
   }
+  async function readJsonAnswer(response, known) {
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    if (encoding !== "" && encoding !== "identity")
+      return { response };
+    let bytes;
+    try {
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      return { failure: `the answer broke off: ${messageOf(error)}`, status: null };
+    }
+    const parsed = parseBody(bytes);
+    if (parsed !== null && parsed.type === "error") {
+      const reason = snippetText(bytes, known);
+      return {
+        failure: `an error in its ${response.status} answer: ${reason}`,
+        status: response.status
+      };
+    }
+    return {
+      response: new Response(bytes, {
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText
+      })
+    };
+  }
   function relay(upstream, target) {
     const headers = responseHeaders(upstream.headers, target?.kind === "backend" ? deps.now() : null);
     return new Response(NULL_BODY_STATUS.has(upstream.status) ? null : upstream.body, {
@@ -7648,11 +8234,30 @@ function createRouter(deps) {
   }
   function anthropicUpstream(req, url, config, body) {
     return {
-      body,
+      body: forClaude(url, body),
       headers: anthropicRequestHeaders(req.headers),
       method: req.method,
       url: `${deps.anthropicBaseUrl ?? config.anthropicBaseUrl}${url.pathname}${url.search}`
     };
+  }
+  function forClaude(url, body) {
+    if (body === null || url.pathname !== MESSAGES_PATH && url.pathname !== COUNT_TOKENS_PATH) {
+      return body;
+    }
+    if (!holdsRouterMark(body))
+      return body;
+    const parsed = parseBody(body);
+    if (parsed === null)
+      return body;
+    const out = withoutRouterThinking(parsed);
+    if (out.removed === 0)
+      return body;
+    const model = typeof parsed.model === "string" ? parsed.model : "-";
+    if (!markedLogged.has(model)) {
+      markedLogged.add(model);
+      deps.log(`removed ${out.removed} of the router's own thinking blocks for ${printable(model)} (a Claude model refuses a signature it did not issue; logged once per model)`);
+    }
+    return encoder.encode(JSON.stringify(out.body));
   }
   function fitForClaude(body, model, guard) {
     if (guard)
@@ -7665,19 +8270,33 @@ function createRouter(deps) {
     }
     return fitted.body;
   }
+  function ownThinkingFor(body, target) {
+    const out = thinkingForBackend(body);
+    const label = formatTarget(target);
+    if (out.restored + out.bare > 0 && !restoredLogged.has(label)) {
+      restoredLogged.add(label);
+      deps.log(`${printable(label)} got its own signature back on ${out.restored} of the router's thinking blocks, ${out.bare} sent with none (thinkingForBackend; logged once per target)`);
+    }
+    return out.body;
+  }
   function targetUpstream(req, url, config, body, target, guard, asked) {
     if (target.kind === "anthropic" && asked !== null && sameModel(target.model, asked.model)) {
       return { upstream: anthropicUpstream(req, url, config, asked.sent) };
     }
     if (target.kind === "anthropic") {
-      const bytes = encoder.encode(JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }));
+      const bytes = encoder.encode(JSON.stringify({
+        ...fitForClaude(body, target.model, guard),
+        model: withoutContextSuffix(target.model)
+      }));
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
     const backend = Object.hasOwn(config.backends, target.backend) ? config.backends[target.backend] : undefined;
     if (backend === undefined)
       return { error: `backend "${target.backend}" is not in the config` };
     const affordableBody = {
-      ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
+      ...reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
+        absentIsOff: guard
+      }),
       model: target.model
     };
     delete affordableBody.metadata;
@@ -7700,8 +8319,13 @@ function createRouter(deps) {
       return;
     const retryAfter = "response" in result ? retryAfterSeconds(result.response.headers.get("retry-after"), deps.now()) : null;
     const seconds = cooldownSeconds(status, retryAfter);
-    if (seconds !== null)
-      cooling.set(label, deps.now() + seconds * 1000);
+    if (seconds === null)
+      return;
+    cooling.set(label, deps.now() + seconds * 1000);
+    restReasons.set(label, {
+      reason: printable("response" in result ? `HTTP ${status}` : result.failure, 120),
+      status
+    });
   }
   function coolingNow() {
     const now = deps.now();
@@ -7724,9 +8348,19 @@ function createRouter(deps) {
       target: label
     };
   }
-  async function chain(req, url, config, body, targets, name, guard, asked = null) {
-    const standsInFor = asked?.model ?? null;
+  async function chain(req, url, config, body, targets, name, guard, asked = null, hold = null) {
+    const standsInFor = guard ? null : asked?.model ?? null;
     const failures = [];
+    const records = [];
+    const note = (label, status, reason, capacity, until = cooling.get(label) ?? deps.now()) => {
+      records.push({ capacity, reason: printable(reason, 120), status, target: label, until });
+    };
+    const capacityOf = () => hold !== null && records.length > 0 && records.every((record) => record.capacity) ? records.map((record) => ({
+      reason: record.reason,
+      status: record.status,
+      target: record.target,
+      until: record.until
+    })) : undefined;
     let fallbacks = 0;
     let skipped = 0;
     let lastTimedOut = false;
@@ -7734,29 +8368,65 @@ function createRouter(deps) {
       const last = index === targets.length - 1;
       const label = formatTarget(target);
       const restsUntil = cooling.get(label);
-      if (!last && restsUntil !== undefined && restsUntil > deps.now()) {
+      const resting = restsUntil !== undefined && restsUntil > deps.now();
+      if (resting && (!last || hold?.holding === true && target.kind === "backend")) {
         failures.push(`${label}: resting after a failure`);
+        const why = restReasons.get(label);
+        note(label, why?.status ?? null, why?.reason ?? "resting after a failure", true, restsUntil);
         skipped += 1;
         continue;
       }
-      const deadlineAt = target.kind === "backend" && (guard || !last && body.stream === true) ? deps.now() + config.timeouts.firstByteMs : null;
-      const built = targetUpstream(req, url, config, body, target, guard, asked);
-      let result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
-      if (req.signal.aborted)
-        return closed(result, label);
-      if (target.kind === "anthropic" && "response" in result) {
-        observeClaude(target.model, result.response, url.pathname);
+      if (hold?.holding === true && probing.has(label)) {
+        failures.push(`${label}: another request is asking it`);
+        note(label, null, "another request is probing it", true);
+        skipped += 1;
+        continue;
       }
-      if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-        result = await holdFirstEvent(result.response, deadlineAt);
+      const firstByteWait = target.kind === "backend" && (guard || !last && body.stream === true) ? config.timeouts.firstByteMs : null;
+      const lastWaitMs = hold !== null && last && target.kind === "backend" && body.stream === true ? hold.lastWaitMs : null;
+      const budgetMs = last && target.kind === "backend" && body.stream === true && hold !== null ? BREAKER_HEARTBEAT_WAIT_MS : firstByteWait ?? config.timeouts.firstByteMs;
+      const probeWaitMs = hold?.holding === true && target.kind === "backend" ? Math.min(budgetMs, hold.leftMs) : null;
+      const waitMs = probeWaitMs ?? lastWaitMs ?? firstByteWait;
+      const deadlineAt = waitMs === null ? null : deps.now() + waitMs;
+      const holdCutShort = hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
+      const built = targetUpstream(req, url, config, body, target, guard, asked);
+      const probe = hold?.holding === true && !("error" in built);
+      if (probe) {
+        probing.add(label);
+        if (hold !== null)
+          hold.probes.count += 1;
+      }
+      let result;
+      try {
+        result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
         if (req.signal.aborted)
           return closed(result, label);
+        if (target.kind === "anthropic" && "response" in result) {
+          observeClaude(target.model, result.response, url.pathname);
+        }
+        if ("response" in result && (!last || guard || lastWaitMs !== null) && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+          result = await holdFirstEvent(result.response, deadlineAt, {
+            known: knownSecrets(req, config),
+            last
+          });
+          if (req.signal.aborted)
+            return closed(result, label);
+        } else if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("application/json")) {
+          result = await readJsonAnswer(result.response, knownSecrets(req, config));
+          if (req.signal.aborted)
+            return closed(result, label);
+        }
+      } finally {
+        if (probe)
+          probing.delete(label);
       }
-      if (url.pathname === MESSAGES_PATH)
+      const timeoutCutShort = holdCutShort && "failure" in result && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
+      if (url.pathname === MESSAGES_PATH && !timeoutCutShort)
         noteCooldown(label, result);
       if ("failure" in result) {
-        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
+        lastTimedOut = last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
         failures.push(`${label}: ${result.failure}`);
+        note(label, result.status, result.failure, !("error" in built) && isCapacityFailure(result.status));
         if (!last) {
           fallbacks += 1;
           deps.log(`WARN ${label} failed (${result.failure}); trying the next target`);
@@ -7775,23 +8445,57 @@ function createRouter(deps) {
             target: label
           };
         }
+        if (target.kind === "backend" && (status === 401 || status === 403)) {
+          const refused = backendKeyRefused(label, target.backend, status, !guard);
+          logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; returned as a ${refused.status} (the backend refused its key)`);
+          return {
+            fallbacks,
+            response: refused,
+            skipped,
+            target: label
+          };
+        }
         if (status >= 400) {
-          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`, target.kind === "anthropic" ? signatureWarn(target.model, status) : standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
+          const known = knownSecrets(req, config);
+          const follow = target.kind === "anthropic" ? signatureWarn(target.model, status) : standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
             const kind = TOO_LONG.test(snippet) ? "too long" : UNSUPPORTED.test(snippet) ? "a kind of content it does not take" : null;
             if (kind === null)
               return;
             deps.log(`WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than ${label} takes: /compact it, start a new one, or put a target that takes it first in ${name}`);
-          });
+          };
+          if (target.kind === "backend" && !guard && url.pathname === MESSAGES_PATH && isRefusalStatus(status)) {
+            const snippet = await errorSnippet(result.response, known);
+            const refused = backendRefusal(label, status, snippet);
+            deps.log(`WARN ${label} answered ${status}; returned as a ${refused.status} (Claude Code would send a ${status} again without its deferred tools) \u2014 ${snippet}`);
+            follow?.(snippet);
+            return { fallbacks, response: refused, skipped, target: label };
+          }
+          logErrorAnswer(result.response.clone(), known, `WARN ${label} answered ${status}; returned as it is`, follow);
         }
-        return { fallbacks, response: relay(result.response, target), skipped, target: label };
+        const answer = {
+          fallbacks,
+          response: relay(result.response, target),
+          skipped,
+          target: label
+        };
+        if (last && hold !== null && target.kind === "backend" && isCapacityFailure(status)) {
+          note(label, status, `HTTP ${status}`, true);
+          const capacity = capacityOf();
+          if (capacity !== undefined)
+            answer.capacity = capacity;
+        }
+        return answer;
       }
       logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; trying the next target`);
       failures.push(`${label}: HTTP ${status}`);
+      note(label, status, `HTTP ${status}`, isCapacityFailure(status));
       fallbacks += 1;
     }
     const lastTarget = targets.at(-1);
     const answered = failures.join("; ") || "no targets";
+    const capacity = capacityOf();
     return {
+      ...capacity === undefined ? {} : { capacity },
       fallbacks,
       response: lastTimedOut ? anthropicError(504, "timeout_error", `cc-smart-dev-kit-router: no target for ${name} answered within ${config.timeouts.firstByteMs} ms (${answered})`) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${answered})`),
       skipped,
@@ -7806,10 +8510,193 @@ function createRouter(deps) {
       target: "refused"
     };
   }
+  function holdLimitMs(config, body) {
+    const limit = breakerHoldMs(config);
+    return body.stream === true ? limit : Math.min(limit, BREAKER_HOLD_NON_STREAMING_MS);
+  }
+  function holdMode(config, body, startMs, holding, probes) {
+    const limit = holdLimitMs(config, body);
+    const left = limit === 0 ? Number.POSITIVE_INFINITY : Math.max(startMs + limit - deps.now(), 0);
+    return {
+      holding,
+      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, Math.max(left, 1)),
+      leftMs: left,
+      probes
+    };
+  }
+  function recordBreaker(slot, open) {
+    const now = deps.now();
+    open.savedAt = now;
+    limitState.breakers = {
+      ...limitState.breakers,
+      [slot]: {
+        held: open.held,
+        lastAt: now,
+        since: open.since,
+        targets: open.failures.map((failure) => ({
+          status: failure.status,
+          target: failure.target,
+          until: failure.until
+        }))
+      }
+    };
+    persist();
+  }
+  function breakerFor(slot, failures, holdMs) {
+    const now = deps.now();
+    const existing = openBreakers.get(slot);
+    if (existing !== undefined) {
+      existing.failures = failures;
+      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS)
+        recordBreaker(slot, existing);
+      return existing;
+    }
+    const before = currentBreakers(limitState, now).find(([key]) => key === slot)?.[1];
+    const open = {
+      failures,
+      held: before?.held ?? 0,
+      heldNow: 0,
+      reminderAt: now,
+      savedAt: now,
+      since: before?.since ?? now
+    };
+    openBreakers.set(slot, open);
+    recordBreaker(slot, open);
+    const wait = clientRetryAfter(earliestRestSeconds(failures, now));
+    deps.log(`WARN ${slot}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`);
+    return open;
+  }
+  function closeBreaker(slot, why) {
+    const open = openBreakers.get(slot);
+    const stored = limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, slot) ? limitState.breakers[slot] : undefined;
+    if (open === undefined && stored === undefined)
+      return;
+    const since = open?.since ?? stored?.since ?? deps.now();
+    const held = open?.held ?? stored?.held ?? 0;
+    openBreakers.delete(slot);
+    delete limitState.breakers?.[slot];
+    withoutEmptyBreakers(limitState);
+    persist();
+    deps.log(`${slot}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
+  }
+  function breakersNow() {
+    return Object.fromEntries([...openBreakers].map(([slot, open]) => [
+      slot,
+      {
+        held: open.held,
+        heldNow: open.heldNow,
+        since: open.since,
+        targets: open.failures.map((failure) => ({
+          status: failure.status,
+          target: failure.target,
+          until: failure.until
+        }))
+      }
+    ]));
+  }
+  function pause(ms, ...signals) {
+    return new Promise((resolve) => {
+      const live = signals.filter((signal) => signal !== undefined);
+      const finish = () => {
+        for (const signal of live)
+          signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      if (live.some((signal) => signal.aborted))
+        return finish();
+      for (const signal of live)
+        signal.addEventListener("abort", finish, { once: true });
+      sleep(ms).then(finish);
+    });
+  }
+  async function holdRequest(ctx, config0, targets0, first) {
+    const { asked, body, probes, req, slot, startMs, url } = ctx;
+    let config = config0;
+    let targets = targets0;
+    let outcome = first;
+    let open = breakerFor(slot, first.capacity ?? [], holdLimitMs(config, body));
+    let counted = null;
+    const stopping = () => deps.shutdown?.aborted === true;
+    const answer = (response) => ({
+      outcome: {
+        breaker: { held: counted !== null, probes: probes.count },
+        fallbacks: 0,
+        response,
+        skipped: 0,
+        target: `breaker(${slot})`
+      },
+      targets
+    });
+    const remind = (nowMs) => {
+      if (nowMs - open.reminderAt < BREAKER_REMINDER_MS)
+        return;
+      open.reminderAt = nowMs;
+      deps.log(`WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`);
+    };
+    try {
+      for (;; ) {
+        discard(outcome.response);
+        const now = deps.now();
+        const failures = outcome.capacity ?? [];
+        const endsAt = startMs + holdLimitMs(config, body);
+        const reply = (nowMs, retryAfterSec, message) => breakerAnswer({
+          failures,
+          nowMs,
+          sinceMs: open.since,
+          slot,
+          ...retryAfterSec === undefined ? {} : { retryAfterSec },
+          ...message === undefined ? {} : { message }
+        });
+        if (stopping()) {
+          return answer(reply(now, BREAKER_SHUTDOWN_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: the router is restarting; ${slot} had no target answering. Ask again`));
+        }
+        if (now >= endsAt) {
+          remind(now);
+          return answer(reply(now));
+        }
+        if (counted === null) {
+          if (open.heldNow >= BREAKER_MAX_HELD)
+            return answer(reply(now));
+          counted = open;
+          open.heldNow += 1;
+          open.held += 1;
+        }
+        await pause(Math.min(BREAKER_POLL_MS, endsAt - now), req.signal, deps.shutdown);
+        if (req.signal.aborted) {
+          return answer(anthropicError(499, "api_error", "client closed the request"));
+        }
+        if (stopping())
+          continue;
+        const next = deps.getConfig();
+        const route = resolveRoute(slot, next);
+        if (route.kind !== "slot" || route.targets.length === 0) {
+          return answer(reply(now, BREAKER_RELEASED_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`));
+        }
+        config = next;
+        targets = targetsInUse(route.targets, fallbackOn(next, slot));
+        const holds = breakerOn(next, slot);
+        const probingAt = deps.now();
+        if (holds && startMs + holdLimitMs(next, body) - probingAt < next.timeouts.firstByteMs) {
+          remind(probingAt);
+          return answer(reply(probingAt));
+        }
+        outcome = await chain(req, url, config, body, targets, slot, false, asked, holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null);
+        if (req.signal.aborted)
+          return { outcome, targets };
+        if (outcome.capacity === undefined)
+          return { outcome, targets };
+        open = breakerFor(slot, outcome.capacity, holdLimitMs(config, body));
+      }
+    } finally {
+      if (counted !== null)
+        counted.heldNow -= 1;
+    }
+  }
   async function slotRequest(req, url, config, body, slot, chained, guard, asked) {
-    const targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
-    const first = targets[0];
+    const startMs = deps.now();
+    let targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
     if (url.pathname === COUNT_TOKENS_PATH) {
+      const first = targets[0];
       if (first === undefined || first.kind === "backend") {
         return {
           fallbacks: 0,
@@ -7820,8 +8707,19 @@ function createRouter(deps) {
       }
       return chain(req, url, config, body, [first], slot, guard, asked);
     }
-    const outcome = await chain(req, url, config, body, targets, slot, guard, asked);
-    if (req.signal.aborted || first === undefined)
+    const breaks = !guard && url.pathname === MESSAGES_PATH && breakerOn(config, slot);
+    const probes = { count: 0 };
+    let outcome = await chain(req, url, config, body, targets, slot, guard, asked, breaks ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null);
+    if (breaks && outcome.capacity !== undefined && !req.signal.aborted) {
+      const held = await holdRequest({ asked, body, probes, req, slot, startMs, url }, config, targets, outcome);
+      outcome = held.outcome;
+      targets = held.targets;
+    }
+    const first = targets[0];
+    if (breaks && outcome.breaker === undefined && !req.signal.aborted && outcome.response.ok) {
+      closeBreaker(slot, "answers again");
+    }
+    if (req.signal.aborted || first === undefined || outcome.breaker !== undefined)
       return outcome;
     if (first.kind === "anthropic" && outcome.target !== formatTarget(first)) {
       const limited = withoutContextSuffix(first.model);
@@ -7833,21 +8731,25 @@ function createRouter(deps) {
       return outcome;
     if (outcome.response.ok)
       fellBack.add(asked.model);
-    return { ...outcome, response: cleanAnswer(slot, asked.model, outcome) };
+    const answered = targets.find((target) => formatTarget(target) === outcome.target);
+    if (answered?.kind !== "backend")
+      return outcome;
+    return { ...outcome, response: cleanAnswer(slot, outcome) };
   }
-  function cleanAnswer(slot, model, outcome) {
+  function cleanAnswer(slot, outcome) {
     if (deps.fallbackAnswersAsIs === true)
       return outcome.response;
     const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
       const kinds = [
-        changes.thinking > 0 ? "thinking blocks removed" : "",
+        changes.marked > 0 ? "thinking blocks marked as the router's (removed on the way to a Claude model, their own signature given back on the way to a backend)" : "",
+        changes.redacted > 0 ? "redacted_thinking blocks removed" : "",
         changes.ids > 0 ? "tool_use ids made safe" : ""
       ].filter((part) => part !== "");
       const text = `${slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
       if (cleanedLogged.has(text))
         return;
       cleanedLogged.add(text);
-      deps.log(`${text} (${model} refuses them in its history; logged once per kind)`);
+      deps.log(`${text}; logged once per kind`);
     });
     if (cleaned.note !== null)
       deps.log(`WARN ${slot}: ${outcome.target}: ${cleaned.note}`);
@@ -7997,9 +8899,68 @@ function createRouter(deps) {
     }
     if (guard)
       model.name = `${model.name} (safety check)`;
+    const serverTool = guard || alias !== null || resolveRoute(body.model, config).kind !== "anthropic" ? null : anthropicServerTool(body);
+    if (serverTool !== null)
+      return serverToolRoute(serverTool);
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
-    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : claudeRoute();
+    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : (guard ? claudeFirstJudge() : null) ?? claudeRoute();
     return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
+    async function serverToolRoute(tool) {
+      const why = `server tool ${tool}`;
+      const named = typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
+      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
+      if (req.signal.aborted)
+        return closed(result, `anthropic (${why})`);
+      const status = "response" in result ? result.response.status : null;
+      if (url.pathname !== MESSAGES_PATH || status !== null && !capacityFailureStatus(status)) {
+        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+      }
+      let limit = null;
+      if ("response" in result) {
+        const upstream = result.response;
+        limit = planUsageLimit(upstream.status, (name) => upstream.headers.get(name));
+        if (named !== null)
+          observeClaude(named, upstream, url.pathname);
+        logErrorAnswer(upstream, knownSecrets(req, config), `WARN anthropic answered ${upstream.status} to a ${tool} request; the router answered with a note naming Tavily instead`);
+      } else {
+        const reason = maskedLine(result.failure, knownSecrets(req, config), SNIPPET_MAX);
+        deps.log(`WARN anthropic did not answer a ${tool} request (${reason}); the router answered with a note naming Tavily instead`);
+      }
+      const text = claudeSearchNotice(tool, claudeUnavailableWords(status, limit));
+      const streamed = body.stream === true;
+      return {
+        fallbacks: 0,
+        response: new Response(streamed ? searchStreamAnswer(body.model, text) : searchMessageAnswer(body.model, text), {
+          headers: {
+            "cache-control": "no-cache",
+            "content-type": streamed ? "text/event-stream" : "application/json"
+          },
+          status: 200
+        }),
+        skipped: 0,
+        target: `router (${why}; anthropic ${status ?? "did not answer"})`
+      };
+    }
+    function claudeFirstJudge() {
+      if (url.pathname !== MESSAGES_PATH || Object.hasOwn(config.slots, JUDGE_SLOT) || !fallbackOn(config, JUDGE_SLOT)) {
+        return null;
+      }
+      const standIns = workerJudgeTargets(config);
+      if (standIns.length === 0)
+        return null;
+      const decided = resolveRequestRoute(body, config, true);
+      if (decided.kind === "anthropic" && typeof body.model === "string") {
+        const claude = { kind: "anthropic", model: withoutContextSuffix(body.model) };
+        return chain(req, url, config, body, [claude, ...standIns], JUDGE_SLOT, true, {
+          model: body.model,
+          sent: bytes
+        });
+      }
+      if (decided.kind === "slot") {
+        return chain(req, url, config, body, [...decided.targets, ...standIns], JUDGE_SLOT, true, null);
+      }
+      return null;
+    }
     function claudeRoute() {
       const found = guard || alias !== null ? null : familySlotFor(body.model);
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);
@@ -8046,7 +9007,7 @@ function createRouter(deps) {
     const startMs = deps.now();
     const url = new URL(req.url);
     const model = { name: "-" };
-    const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`;
+    const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
       const outcome = refusal("cc-smart-dev-kit-router accepts requests from this machine only");
@@ -8055,6 +9016,7 @@ function createRouter(deps) {
     }
     if (req.method === "GET" && url.pathname === HEALTH_PATH) {
       return Response.json({
+        breakers: breakersNow(),
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
         ok: true,
@@ -8092,24 +9054,28 @@ async function startRouter(paths, env = process.env) {
     mkdirSync3(dirname2(file), { mode: 448, recursive: true });
     atomicWrite(file, text, 384);
   };
+  const readState = (file) => {
+    try {
+      return readFileSync3(file, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return null;
+      throw error;
+    }
+  };
+  const shutdown = new AbortController;
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
-    loadSafetyChecks: () => {
-      try {
-        return readFileSync3(paths.safetyChecksFile, "utf8");
-      } catch (error) {
-        if (error.code === "ENOENT")
-          return null;
-        throw error;
-      }
-    },
+    loadSafetyChecks: () => readState(paths.safetyChecksFile),
+    loadState: () => readState(statePath),
     log,
     now: () => Date.now(),
     port,
     saveSafetyChecks: (text) => writeState(paths.safetyChecksFile, text),
-    saveState: (text) => writeState(statePath, text)
+    saveState: (text) => writeState(statePath, text),
+    shutdown: shutdown.signal
   });
   const fd = inheritedListenFd(env, process.pid);
   for (const name of LISTEN_VARS)
@@ -8124,6 +9090,7 @@ async function startRouter(paths, env = process.env) {
     log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      shutdown.abort();
       exitWhenDone(server.stop(false), log, () => {});
     });
     return;
@@ -8142,6 +9109,7 @@ async function startRouter(paths, env = process.env) {
   log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
   process.once("SIGTERM", () => {
     log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
+    shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
     exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);

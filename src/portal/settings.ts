@@ -17,12 +17,12 @@
  * settings are made.
  */
 
-import type {
-  AlertEvent,
-  ResolvedValue,
-  ResolvedWorkflow,
-  WorkflowKey,
-  WorkflowSource,
+import {
+  type AlertEvent,
+  type ResolvedWorkflow,
+  resolvedValueOf,
+  type WorkflowKey,
+  type WorkflowSource,
 } from "./workflow-adapter";
 
 /** One row's control. */
@@ -219,47 +219,6 @@ export interface SettingsRow extends SettingSpec {
   why: null | string;
 }
 
-/** The value the resolver holds for one key, with its source. */
-export function resolvedValue(
-  resolved: ResolvedWorkflow,
-  key: WorkflowKey,
-): ResolvedValue<unknown> {
-  switch (key) {
-    case "autoCommit":
-      return resolved.autoCommit;
-    case "autoPush":
-      return resolved.autoPush;
-    case "openPr":
-      return resolved.openPr;
-    case "autoMerge":
-      return resolved.autoMerge;
-    case "mergeMethod":
-      return resolved.mergeMethod;
-    case "deleteBranch":
-      return resolved.deleteBranch;
-    case "reviewBeforePush":
-      return resolved.reviewBeforePush;
-    case "reviewAgents":
-      return resolved.reviewAgents;
-    case "clearWorktreeAfterMerge":
-      return resolved.clearWorktreeAfterMerge;
-    case "alerts.events":
-      return resolved.alerts.events;
-    case "alerts.sound":
-      return resolved.alerts.sound;
-    case "alerts.usagePercent":
-      return resolved.alerts.usagePercent;
-    case "switches.statusLine":
-      return resolved.switches.statusLine;
-    case "switches.sessionNames":
-      return resolved.switches.sessionNames;
-    case "switches.jobRoute":
-      return resolved.switches.jobRoute;
-    case "switches.updateHold":
-      return resolved.switches.updateHold;
-  }
-}
-
 /**
  * Every row, with its value and whether this page may change it. A row the project sets is
  * read-only here — the project's choice wins (`resolveWorkflow`), and the Project card on
@@ -271,7 +230,7 @@ export function settingsRows(
   options: { projectFile: boolean },
 ): SettingsRow[] {
   return SETTINGS.map((spec) => {
-    const { source, value } = resolvedValue(resolved, spec.key);
+    const { source, value } = resolvedValueOf(resolved, spec.key);
     if (source === "project") {
       return { ...spec, readOnly: true, source, value, why: "this project sets it" };
     }

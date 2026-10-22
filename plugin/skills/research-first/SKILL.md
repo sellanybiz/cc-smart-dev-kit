@@ -57,7 +57,8 @@ tool failed.
 4. Cross-check **at least two** authoritative sources. If they disagree, say so.
 5. Nothing found? Change the query, search the library's own source or issues, read the
    types, or ask. Never fill the gap with a guess.
-6. Write the findings where the next session finds them: the plan file, or one plain line in
+6. Write the findings where the next session finds them: for a plan, its research file
+   (`/cc-smart-dev-kit:plan-task` § 1 says where, and when it moves); else one plain line in
    your reply.
 
 ## Query hygiene

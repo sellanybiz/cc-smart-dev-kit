@@ -9,16 +9,29 @@ import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runDoctor } from "../cli/doctor";
-import { type LiveRunner, liveHookCommand } from "../cli/live-check";
+import {
+  asksForHelp,
+  commandWords,
+  HELP_COMMAND,
+  HOOK_HELP,
+  HOOK_NAMES,
+  helpTextFor,
+  unknownCommand,
+  usageError,
+} from "../cli/help";
+import type { LiveRunner } from "../cli/live-check";
 import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
 import { runProjectInit } from "../cli/project-init";
+import { runReport } from "../cli/report";
 import { runRestore } from "../cli/restore";
 import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
+import { runCrew } from "../crew/command";
+import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { realProbe } from "../gateway/health";
@@ -32,10 +45,8 @@ import {
 } from "../hooks/desktop-alert";
 import { runtimeDir } from "../hooks/notify";
 import { runNotifyEntry } from "../hooks/notify-entry";
-import { projectHookSettingsText } from "../hooks/project-wiring";
-import { runHookEntry } from "../hooks/run";
 import { recordSessionName } from "../hooks/session-name";
-import { PROJECT_HOOKS } from "../hooks/specs";
+import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
@@ -44,193 +55,17 @@ import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
+import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { locateCheckout } from "../project/resolve";
-import { runSearch } from "../search/command";
 import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
-
-/**
- * Every name `cc-smart-dev-kit hook` accepts: the project hooks, then the user-level notifier
- * setup writes. The help, the dispatch below and the README's row all name these.
- */
-const HOOK_NAMES = [...PROJECT_HOOKS.map((spec) => spec.name), USER_NOTIFY_HOOK_NAME];
-
-const HELP = `cc-smart-dev-kit ${VERSION} - set up and check the cc-smart-dev-kit plugin for Claude Code
-
-Usage: cc-smart-dev-kit <command> [options]
-
-Commands:
-  setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
-        [--no-instructions | --instructions] [--statusline]
-                     Install the launcher in ~/.local/bin, turn on plugin auto-update,
-                     install the plugin's instructions for Claude (a copy in
-                     ~/.claude/cc-smart-dev-kit/instructions/, imported by a block in
-                     ~/.claude/CLAUDE.md), add the companion plugins' marketplaces, point
-                     claude-mem at the scout slot's affordable model (when its chain starts
-                     with one), and copy the project's auto-mode entries into your
-                     settings. The entries are trust rules: they are shown and asked on a
-                     terminal (--yes: shown, not asked); with no terminal they are left
-                     out, also with --yes.
-                     --project <dir>: the project to read .claude/cc-smart-dev-kit.json from
-                     (default: this folder). --warp: install the Warp terminal (the
-                     commands are shown and asked; sudo asks for your password) and its
-                     Claude plugin. --remove-warp: take them out again.
-                     --tavily-key-stdin: the Tavily key on stdin (never an argument);
-                     setup writes it to the key file it reads a key from, mode 600
-                     (README § MCP servers).
-                     --no-instructions takes the instructions out and keeps them out: a
-                     later plain setup leaves them out too. --instructions brings them
-                     back. restore forgets the choice.
-                     --statusline also sets Claude Code's status line to
-                     "cc-smart-dev-kit statusline" (asked when run in a terminal).
-                     --dry-run prints what would change, and writes, runs and checks
-                     nothing.
-  doctor [--live]    Check the install, the cc-smart-dev-kit files the current project's CLAUDE.md
-                     imports, and the project of the current folder. Exit code 1 when a
-                     check fails.
-                     --live: also run two throwaway Claude Code sessions in temp repos,
-                     to prove the hooks and the worktree engine on this Claude Code
-                     (uses your login; a few cents). Records the version it passed on.
-  project init [--dry-run] [--yes] [flags]
-                     Set this project up: write .claude/cc-smart-dev-kit.json (the worktrees, the
-                     protected branches, the guards, and optionally the workflow policy)
-                     and, unless the project runs an engine of its own, the worktree
-                     engine's three lines in .claude/settings.json. It asks first, showing
-                     each default; every question has a flag, so a run with no terminal
-                     writes nothing unless --yes is given. It never commits.
-                     cc-smart-dev-kit project init --help lists the flags.
-  workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
-           | review-done [--sha <commit>]
-                     What cc-smart-dev-kit may do by itself here (commit, push, open a pull
-                     request, merge) and the switches that map onto settings which already
-                     exist. show (the default) prints each value with where it came from:
-                     the project's .claude/cc-smart-dev-kit.json, your own
-                     ~/.config/cc-smart-dev-kit/workflow.json, or the built-in default, and
-                     whether the commit here has a recorded review. set and unset write one
-                     value; --project writes the project's file. review-done records that a
-                     commit (default HEAD, or --sha <commit>) had its one premium review;
-                     the merge guard reads that record. It is for your own terminal: inside
-                     Claude Code the review-record hook writes the record when a review
-                     agent returns, so review-done refuses there.
-  hook <${HOOK_NAMES.join("|")}>
-                     The worktree engine, for a project that wires it in its own
-                     .claude/settings.json, and the notifier hook setup wires in your user
-                     settings: reads the hook's input on stdin and answers as Claude Code
-                     expects. Without a name: prints the lines to paste.
-  session-name <session id> <name>
-                     Name a Claude session after its task (for the session-name hook).
-  restore [--yes] [--now]
-                     Remove what cc-smart-dev-kit added, and keep everything else: its settings
-                     keys and entries (claude-mem's settings, the auto-mode entries), its
-                     Markdown blocks, and the files it created (the launcher, the
-                     instructions, the router copy and units). Each changed file gets a
-                     backup first. Plugins and marketplaces setup added stay installed.
-                     With the gateway on, it runs in two stages: first everything but the
-                     router, which the running sessions still use; after you restart
-                     them, again to stop and remove the router (it asks; --yes: without
-                     asking). --now: both at once, and every running session fails until
-                     it restarts.
-  migrate [--dry-run] [--yes]
-                     Move a machine that still has this plugin's old "anymodel" names:
-                     its folders, its state folder's records and backups, the settings
-                     keys the old setup owned (the slots' names and words), the
-                     instructions block in ~/.claude/CLAUDE.md, the gateway config's
-                     slots (with an alias for each old name, so running sessions keep
-                     working), and the router units. On a 0.2.x machine this command does
-                     not exist yet: run the installed plugin's dist/cli.js with
-                     bun --no-env-file --config=<its own bunfig.toml> (README, Moving from
-                     anymodel: without the flags bun loads the working folder's .env files
-                     into the command and runs its bunfig.toml).
-                     It reads and checks everything, then asks every question, and writes
-                     nothing before they are answered: a "no" leaves the machine as it
-                     was. It then prints its steps and walks them; a step that fails keeps
-                     what the steps before it did, and running it again goes on from there.
-                     Refuses to run inside a Claude Code session: run it in your own
-                     terminal, then restart your sessions.
-                     --yes: no questions (the router is replaced without asking). The old
-                     plugin is uninstalled only after a terminal yes.
-  update [--check | --hold | --resume]
-                     Install a newer cc-smart-dev-kit now, with the output of each step.
-                     --check: only say whether a newer version exists. A new Claude
-                     session checks by itself, at most once an hour, and installs it in
-                     the background; --hold stops that on this machine, --resume starts
-                     it again. Nothing restarts: restart the sessions to load it.
-  gateway <command>  The AI gateway: status, models, slot, setup, on, off, serve.
-                     cc-smart-dev-kit gateway --help lists them.
-  browser <command>  The browser. cc-smart-dev-kit browser mcp starts the Playwright MCP
-                     server on YOUR OWN Chrome, through the Playwright extension, in the
-                     profile "claude-code" (setup registers it as the "playwright" MCP
-                     server). browser setup finds Chrome, makes that profile and prints the
-                     five steps that are left for you. browser token saves the extension's
-                     token, pasted from its status page: it is REQUIRED, because without it
-                     the extension would ask you to approve every connection. browser check
-                     proves a real connection, a file:// page, screenshots, an upload and a
-                     download end to end (it opens that Chrome window once).
-  mcp status [--json]
-                     The four MCP servers cc-smart-dev-kit registers for your user, and which
-                     of them are registered by something else instead (a project's own script,
-                     say): one line each, --json for a machine. Read-only. The installer uses
-                     it to ASK before it replaces one of yours.
-  sessions [--open] [--dry-run]
-                     This project's Claude Code sessions of the last two days, by name and
-                     worktree, with the command that resumes each. --open reopens every
-                     session that was open when the machine went down or its window closed
-                     (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what it
-                     would open and opens nothing.
-  worktrees [--clean] [--remove <path>] [--no-fetch]
-                     Every worktree of this repo: who works in it, and which are finished
-                     (every commit on origin/<base>, nothing uncommitted, no local files, no
-                     running session, no program or Docker container using it). --clean
-                     removes the finished ones with their branches; --remove <path> removes
-                     one now, without the one-hour wait. Both run in the main checkout only.
-  omniroute <command>
-                     The OmniRoute behind the affordable slots: status, update, rollback.
-                     cc-smart-dev-kit omniroute --help lists them. An update restarts it.
-  portal [--port <port>] [--no-open]
-                     The local portal: a page on this machine to see and change the
-                     gateway's slots and switches, the updates, the heavy-job queue, the
-                     companions and the OmniRoute. It binds 127.0.0.1 only, prints a link
-                     with a one-time token, and stops after 30 minutes with no request. It
-                     refuses inside a Claude Code session: run it in your own terminal.
-  job <command>      The queue for heavy jobs (type checks, test runs, builds):
-                     run, status, kinds. cc-smart-dev-kit job --help lists them.
-  search "<query>" [--max <n>] [--json]
-  search --fetch <url> [--json]
-                     Search the web through the gateway (OmniRoute, Ollama's web search):
-                     each result's title, URL and a short snippet. --fetch: one page's
-                     text. The query or URL goes to that provider on the internet. Needs
-                     the gateway set up.
-  statusline         One line for Claude Code's status bar: plan usage (a warning from
-                     85 %), and any fallback the gateway is using. Reads the JSON
-                     Claude Code passes on stdin.
-  usage [--hours <n>] [--project <folder or name>]
-                     Which models answered on this machine, per session: the main
-                     session's replies and its subagents' apart (how each subagent was
-                     launched, and the share on Opus), from Claude Code's transcripts
-                     (default: the last 6 hours). Read only; no message text.
-  version            Print the version.
-  --help             Print this help.
-
-Paths follow HOME and CLAUDE_CONFIG_DIR.`;
-
-const HOOK_HELP = `Usage: ${COMMAND} hook <${HOOK_NAMES.join("|")}>
-
-The worktree engine is opt-in per project. To turn it on in a project, give its
-.claude/cc-smart-dev-kit.json a "worktrees" field, and paste these hooks into its
-.claude/settings.json (merge them with any "hooks" it has):
-
-${projectHookSettingsText()}
-
-notify is the notifier hook, with the same input and answer as the plugin's own bundle.
-${COMMAND} setup wires it in your user settings for agent view, which runs no plugin hooks
-(Claude Code's list of sessions raises agent_needs_input and agent_completed there). It is
-not a project hook: it needs no settings from a project, and it works in every folder.`;
 
 /**
  * The plugin's other bundles beside this one (plugin/dist/<name>.js): the router, and the
@@ -363,6 +198,19 @@ const watchLines: Watch = (argv, onLine) => {
 };
 
 async function main(argv: string[]): Promise<number> {
+  // The one argument step, before any command runs: `-h` or `--help` anywhere before a `--`
+  // prints that command's own help and exits 0. So `worktrees --help` never scans, and neither
+  // does a typo (`worktrees --clena` is refused, not run). It runs before the Bun check too:
+  // printing help needs no Bun, no machine and no key.
+  const asked = asksForHelp(argv);
+  const helpWords = commandWords(argv);
+  if (asked) {
+    const text = helpTextFor(helpWords);
+    if (text !== null) {
+      console.log(text);
+      return 0;
+    }
+  }
   const [command, ...rest] = argv;
   const refusal = oldBunRefusal(command, Bun.version, process.execPath);
   if (refusal !== null) {
@@ -381,6 +229,8 @@ async function main(argv: string[]): Promise<number> {
         "--no-instructions",
         "--instructions",
         "--statusline",
+        RETRY_WATCHDOG_FLAG,
+        NO_RETRY_WATCHDOG_FLAG,
         "--tavily-key-stdin",
       ];
       let project = process.cwd();
@@ -390,7 +240,7 @@ async function main(argv: string[]): Promise<number> {
         if (arg === "--project") {
           const dir = rest[index + 1];
           if (dir === undefined || dir.startsWith("--")) {
-            console.error(`--project needs a folder\n\n${HELP}`);
+            console.error(usageError("--project needs a folder", "setup"));
             return 2;
           }
           project = resolve(dir);
@@ -400,22 +250,33 @@ async function main(argv: string[]): Promise<number> {
         }
       }
       if (unknown.length > 0) {
-        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "setup"));
         return 2;
       }
       const off = rest.includes("--no-instructions");
       const on = rest.includes("--instructions");
       if (off && on) {
-        console.error(`Use --no-instructions or --instructions, not both.\n\n${HELP}`);
+        console.error(usageError("Use --no-instructions or --instructions, not both.", "setup"));
+        return 2;
+      }
+      const watchdogOn = rest.includes(RETRY_WATCHDOG_FLAG);
+      const watchdogOff = rest.includes(NO_RETRY_WATCHDOG_FLAG);
+      if (watchdogOn && watchdogOff) {
+        console.error(
+          usageError(`Use ${RETRY_WATCHDOG_FLAG} or ${NO_RETRY_WATCHDOG_FLAG}, not both.`, "setup"),
+        );
         return 2;
       }
       if (rest.includes("--warp") && rest.includes("--remove-warp")) {
-        console.error(`--warp and --remove-warp do opposite things: give one\n\n${HELP}`);
+        console.error(usageError("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
       if (!existsSync(project) || !statSync(project).isDirectory()) {
-        console.error(`--project: ${project} is not a folder`);
-        return 2;
+        // Not a usage mistake: the option is spelled right, the folder is wrong (UX-13).
+        console.error(
+          `Not a folder: ${project}\nFix: give the folder of a project, or leave --project out to use the folder you are in`,
+        );
+        return 1;
       }
       // The Tavily key on stdin, never an argument (a command line is readable in `/proc`
       // and lands in the shell's history). Read before anything else is planned, so the
@@ -424,7 +285,10 @@ async function main(argv: string[]): Promise<number> {
       let tavilyKeyStdin: null | string = null;
       if (rest.includes("--tavily-key-stdin")) {
         const value = cleanSecretLine(await Bun.stdin.text());
-        if (value === "") throw new Error("no key on stdin");
+        if (value === "") {
+          console.error(usageError("No key arrived on stdin", "setup"));
+          return 2;
+        }
         tavilyKeyStdin = value;
       }
       return runSetup(paths, {
@@ -439,6 +303,7 @@ async function main(argv: string[]): Promise<number> {
         instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(import.meta.dir),
         statusline: rest.includes("--statusline"),
+        retryWatchdog: watchdogOn ? true : watchdogOff ? false : null,
       });
     }
     case "statusline":
@@ -452,6 +317,9 @@ async function main(argv: string[]): Promise<number> {
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
+    case "report":
+      // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
+      return runReport(paths, rest, Date.now());
     case ALERT_WORKER_COMMAND: {
       // Not in --help: the two alert hooks start it, detached, through the launcher, so the
       // wait for a click — a minute on screen, half an hour for the usage-limit alert —
@@ -490,7 +358,7 @@ async function main(argv: string[]): Promise<number> {
     case "doctor": {
       const unknown = rest.filter((arg) => arg !== "--live");
       if (unknown.length > 0) {
-        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "doctor"));
         return 2;
       }
       return runDoctor(paths, process.env, {
@@ -508,7 +376,6 @@ async function main(argv: string[]): Promise<number> {
         live: rest.includes("--live")
           ? {
               pluginDir: pluginDir(),
-              hookCommand: liveHookCommand(pluginDir(), process.execPath),
               run: liveRunner,
             }
           : null,
@@ -516,7 +383,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case "hook": {
       const [name, ...extra] = rest;
-      if (name === undefined || name === "--help" || name === "-h") {
+      if (name === undefined) {
         console.log(HOOK_HELP);
         return 0;
       }
@@ -527,36 +394,56 @@ async function main(argv: string[]): Promise<number> {
         await runNotifyEntry();
         return 0;
       }
-      const spec = PROJECT_HOOKS.find((one) => one.name === name);
-      if (spec === undefined || extra.length > 0) {
-        console.error(`Unknown hook: ${[name, ...extra].join(" ")}\n\n${HOOK_HELP}`);
-        return 2;
+      // A line the retired worktree engine had a project wire: the fix, never the old answer.
+      // Read nothing: whatever Claude Code sent on stdin does not change it.
+      //
+      // Exit 1, never 2. Exit 2 is Claude Code's blocking exit (its hooks reference): on
+      // `SubagentStop` it blocks the stop, and nothing here reads `stop_hook_active`, so a
+      // leftover `hook subagent-stop` line would block every subagent's stop for ever. Exit 1
+      // is a non-blocking error on `SubagentStop` (the subagent stops) and on `WorktreeRemove`
+      // (the worktree is kept and the session goes on), and on `WorktreeCreate` any non-zero
+      // exit still fails the creation and shows this line. The rows:
+      // `docs/claude-code-contract.md` § Hooks — the SubagentStop row (its blocking answer
+      // repeats with `stop_hook_active`), the WorktreeCreate row (a failing line stops the
+      // creation and shows its stderr) and the WorktreeRemove row (exit 1 keeps the worktree).
+      if (RETIRED_ENGINE_HOOKS.some((retired) => retired === name)) {
+        console.error(
+          `${COMMAND} hook ${name}: this hook was retired in ${WORKTREE_ENGINE_RETIRED_IN}: remove its line from your settings — \`${COMMAND} project init\` does it`,
+        );
+        return 1;
       }
-      // Reads stdin, answers, and exits with the hook's code.
-      return runHookEntry(spec);
+      // The only hook left is the notifier, which ran above. Every other name is unknown.
+      console.error(
+        `Unknown hook: ${[name, ...extra].join(" ")}\n\n${usageError(`Usage: ${COMMAND} hook <${HOOK_NAMES}>`, "hook")}`,
+      );
+      return 2;
     }
     case "project": {
       const [sub, ...flags] = rest;
       if (sub !== "init") {
-        console.error(`Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]\n\n${HELP}`);
+        console.error(
+          usageError(`Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]`, "project init"),
+        );
         return 2;
       }
-      // `--help` works anywhere; the repo is resolved only for a run that would write.
+      // `--help` is answered above, before this runs; the repo is resolved only for a run that
+      // would write.
       let root = process.cwd();
-      if (!flags.includes("--help") && !flags.includes("-h")) {
-        try {
-          const checkout = locateCheckout(process.cwd(), { env: process.env });
-          if (checkout === null) {
-            console.error(`${COMMAND} project init: this folder is not in a git project`);
-            return 2;
-          }
-          root = checkout.root;
-        } catch (error) {
+      try {
+        const checkout = locateCheckout(process.cwd(), { env: process.env });
+        if (checkout === null) {
+          // Not a usage mistake: the command is spelled right, the folder is wrong (UX-13).
           console.error(
-            `${COMMAND} project init: ${error instanceof Error ? error.message : String(error)}`,
+            `${COMMAND} project init: this folder is not in a git project\nFix: run it in the project's folder, or run git init here first`,
           );
           return 1;
         }
+        root = checkout.root;
+      } catch (error) {
+        console.error(
+          `${COMMAND} project init: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return 1;
       }
       return runProjectInit(flags, {
         root,
@@ -585,17 +472,31 @@ async function main(argv: string[]): Promise<number> {
     case "session-name": {
       const [sessionId, ...words] = rest;
       if (sessionId === undefined || words.length === 0) {
-        console.error(`Usage: ${COMMAND} session-name <session id> <name>\n\n${HELP}`);
+        // The usage line, then the help that explains it: `hook-commands.test.ts` pins the
+        // first line, and `session-name --help` prints the rest.
+        console.error(
+          usageError(`Usage: ${COMMAND} session-name <session id> <name>`, "session-name"),
+        );
         return 2;
       }
-      const name = recordSessionName(sessionId, words.join(" "), process.env);
+      let name: string;
+      try {
+        name = recordSessionName(sessionId, words.join(" "), process.env);
+      } catch (error) {
+        // A wrong argument (a name that is not a session id, a name that is empty) is a
+        // usage mistake, not a failed command: exit 2, and say what is wrong.
+        console.error(
+          usageError(error instanceof Error ? error.message : String(error), "session-name"),
+        );
+        return 2;
+      }
       console.log(`This session will be named "${name}" from the next prompt.`);
       return 0;
     }
     case "restore": {
       const unknown = rest.filter((arg) => arg !== "--yes" && arg !== "--now");
       if (unknown.length > 0) {
-        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "restore"));
         return 2;
       }
       return runRestore(paths, {
@@ -620,12 +521,12 @@ async function main(argv: string[]): Promise<number> {
     case "mcp": {
       const [sub, ...mcpRest] = rest;
       if (sub !== "status") {
-        console.error(`Usage: ${COMMAND} mcp status [--json]\n\n${HELP}`);
+        console.error(usageError(`Usage: ${COMMAND} mcp status [--json]`, "mcp status"));
         return 2;
       }
       const unknown = mcpRest.filter((arg) => arg !== "--json");
       if (unknown.length > 0) {
-        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "mcp status"));
         return 2;
       }
       const servers = mcpServerStatus(paths);
@@ -643,7 +544,7 @@ async function main(argv: string[]): Promise<number> {
     case "migrate": {
       const unknown = rest.filter((arg) => arg !== "--dry-run" && arg !== "--yes");
       if (unknown.length > 0) {
-        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "migrate"));
         return 2;
       }
       return runMigrate(paths, {
@@ -669,11 +570,13 @@ async function main(argv: string[]): Promise<number> {
       if (sub === "mcp") {
         // Runs until the MCP exits. Nothing here may write to stdout: it IS the MCP stream.
         return await runBrowserMcp(paths, extra, {
+          chrome: browserDeps,
           log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
           spawn: (argv, options) => {
             // The token goes on top of this process's environment: the MCP must find bun and
-            // everything else as usual.
+            // everything else as usual. The folder is the launcher's choice, never this one's.
             const child = Bun.spawn(argv, {
+              cwd: options.cwd,
               env: { ...process.env, ...options.env },
               stdio: [options.stdio, options.stdio, options.stdio],
             });
@@ -685,7 +588,7 @@ async function main(argv: string[]): Promise<number> {
       if (sub === "setup") {
         const unknown = extra.filter((arg) => arg !== "--dry-run");
         if (unknown.length > 0) {
-          console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+          console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "browser setup"));
           return 2;
         }
         const apply = !extra.includes("--dry-run");
@@ -703,7 +606,7 @@ async function main(argv: string[]): Promise<number> {
       if (sub === "token") {
         const unknown = extra.filter((arg) => arg !== "--clear");
         if (unknown.length > 0) {
-          console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+          console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "browser token"));
           return 2;
         }
         if (extra.includes("--clear")) {
@@ -731,7 +634,7 @@ async function main(argv: string[]): Promise<number> {
       }
       if (sub === "check") {
         if (extra.length > 0) {
-          console.error(`Unknown option: ${extra.join(" ")}\n\n${HELP}`);
+          console.error(usageError(`Unknown option: ${extra.join(" ")}`, "browser check"));
           return 2;
         }
         // One real launcher (this CLI) with a real Playwright MCP, on the person's own Chrome
@@ -756,13 +659,20 @@ async function main(argv: string[]): Promise<number> {
         );
         return result.failed === 0 ? 0 : 1;
       }
-      console.error(`Usage: ${COMMAND} browser <mcp|setup|token|check> [options]\n\n${HELP}`);
+      console.error(
+        usageError(
+          sub === undefined
+            ? `Usage: ${COMMAND} browser <mcp|setup|token|check> [options]`
+            : `Unknown browser command: ${sub}`,
+          "browser",
+        ),
+      );
       return 2;
     }
     case "sessions": {
       const unknown = rest.filter((arg) => arg !== "--open" && arg !== "--dry-run");
       if (unknown.length > 0) {
-        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "sessions"));
         return 2;
       }
       return await runSessions(
@@ -789,16 +699,29 @@ async function main(argv: string[]): Promise<number> {
     case "worktrees": {
       const removeAt = rest.indexOf("--remove");
       const removeTarget = removeAt === -1 ? null : (rest[removeAt + 1] ?? "");
-      if (removeAt !== -1 && removeTarget === "") {
-        console.error(`Say which worktree: ${COMMAND} worktrees --remove <path>\n\n${HELP}`);
+      // The word after --remove is the path, whatever it looks like: an option there means the
+      // path is missing (`--remove --clean` removed what --clean named, or scanned it, silently).
+      if (
+        removeAt !== -1 &&
+        (removeTarget === null || removeTarget === "" || removeTarget.startsWith("-"))
+      ) {
+        console.error(
+          usageError("--remove needs the path of one worktree: --remove <path>", "worktrees"),
+        );
         return 2;
       }
+      // The word after --remove is the path, so it is never read as an option — and with no
+      // --remove, no word is a path: the first word used to slip through unchecked, and
+      // `worktrees --clena` ran the scan (UX-2).
       const unknown = rest.filter(
         (arg, index) =>
-          arg !== "--clean" && arg !== "--no-fetch" && arg !== "--remove" && index !== removeAt + 1,
+          arg !== "--clean" &&
+          arg !== "--no-fetch" &&
+          arg !== "--remove" &&
+          (removeAt === -1 || index !== removeAt + 1),
       );
       if (unknown.length > 0) {
-        console.error(`Unknown option: ${unknown.join(" ")}\n\n${HELP}`);
+        console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "worktrees"));
         return 2;
       }
       return await runWorktrees(
@@ -849,8 +772,8 @@ async function main(argv: string[]): Promise<number> {
         },
         rest,
       );
-    case "search":
-      return runSearch(rest, { paths });
+    case "crew":
+      return await runCrew(rest, realCrewContext(paths));
     case "job":
       return runJobCommand(rest, {
         paths,
@@ -862,16 +785,24 @@ async function main(argv: string[]): Promise<number> {
       });
     case "version":
     case "--version":
-      console.log(`cc-smart-dev-kit ${VERSION}`);
+      console.log(`${COMMAND} ${VERSION}`);
       return 0;
     case undefined:
     case "help":
     case "--help":
-    case "-h":
-      console.log(HELP);
+    case "-h": {
+      // `help <command>`, and `help` alone (or no command at all) prints the top-level help.
+      // `--help` and `-h` are answered above, before any command runs.
+      const text = helpTextFor(command === HELP_COMMAND ? [HELP_COMMAND, ...rest] : []);
+      if (text === null) {
+        console.error(unknownCommand(rest[0] ?? ""));
+        return 2;
+      }
+      console.log(text);
       return 0;
+    }
     default:
-      console.error(`Unknown command: ${command}\n\n${HELP}`);
+      console.error(unknownCommand(command));
       return 2;
   }
 }
@@ -879,6 +810,6 @@ async function main(argv: string[]): Promise<number> {
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
-  console.error(`cc-smart-dev-kit: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`${COMMAND}: ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

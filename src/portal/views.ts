@@ -525,6 +525,19 @@ ${extra}
 </div>`;
 }
 
+/** The `!` line under a row whose setting cannot work with another (`D16`), or nothing. */
+function clashNote(data: SettingsData, key: string | undefined): string {
+  if (key === undefined) return "";
+  const lines = data.clashes.filter((one) => one.setting === key);
+  if (lines.length === 0) return "";
+  return lines
+    .map(
+      (one) =>
+        `<p class="small rulemore clash" role="note">! ${escapeHtml(one.line)}. Fix: ${escapeHtml(one.fix)}.</p>`,
+    )
+    .join("");
+}
+
 /** The auto-merge row's own rule box: the design's words, with the project's base named. */
 function autoMergeBox(data: SettingsData): string {
   const base = data.autoMerge?.base;
@@ -559,7 +572,10 @@ export function settingsPage(shell: Shell, data: SettingsData): string {
     return `<section aria-labelledby="${card}-h">
 <h2 id="${card}-h">${escapeHtml(title)}</h2>
 <div class="card list" data-scope>
-${rows.map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : "")).join("")}
+${rows
+  .map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : ""))
+  .map((html, index) => html + clashNote(data, rows[index]?.key))
+  .join("")}
 <div class="foot" data-out-for="workflow.set" role="status"></div>
 </div>
 </section>`;
@@ -594,8 +610,18 @@ export interface UpdateFacts {
   summary: string;
 }
 
+/** The auto-mode card's data: the change writing the rules makes, and the hash it carries. */
+export interface AutoModeCardData {
+  added: string[];
+  differsFrom: null | string;
+  from: string;
+  hash: string;
+  removed: string[];
+  settings: string;
+}
+
 export interface MachineData {
-  autoMode: null | { entries: string[]; from: string; settings: string };
+  autoMode: AutoModeCardData | null;
   /** The browser's own card: the guide, its state, and doctor's browser lines. */
   browser: BrowserCardData;
   companions: CompanionRow[];
@@ -666,9 +692,10 @@ function guardRow(options: {
   name: string;
   on: boolean;
 }): string {
+  const id = escapeHtml(options.id);
   return `<div class="setrow">
-<div class="col g2 fill1"><span id="${options.id}" class="bold">${escapeHtml(options.label)}</span><span class="small muted">${escapeHtml(options.help)}</span></div>
-<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${options.id}" class="switch" data-form-switch="${options.name}"><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>
+<div class="col g2 fill1"><span id="${id}" class="bold">${escapeHtml(options.label)}</span><span class="small muted">${escapeHtml(options.help)}</span></div>
+<button type="button" role="switch" aria-checked="${options.on}" aria-labelledby="${id}" class="switch" data-form-switch="${escapeHtml(options.name)}"><span class="track" aria-hidden="true"><span class="knob"></span></span><span data-switch-label>${options.on ? "On" : "Off"}</span></button>
 </div>`;
 }
 
@@ -726,9 +753,12 @@ function projectForm(
 ): string {
   const baseHelp = "Edits happen in a worktree, never in the main checkout.";
   // What the settings file changes: Claude Code's `worktree.baseRef` line, when the base
-  // branch is not the repo's default branch.
-  const settingsNote = settingsLineNote(plan.settingsAdds.length);
-  // The hash of the two files the plan was made against: the write sends it back, and the
+  // branch is not the repo's default branch, and any line of the retired worktree engine.
+  const settingsNote = settingsLineNote(plan.settings);
+  // The personal settings file changes only when it still runs the retired engine: its box is
+  // there for the browser to fill, and hidden while it has nothing to show.
+  const localHidden = plan.localSettings.changed ? "" : " hidden";
+  // The hash of the files the plan was made against: the write sends it back, and the
   // server refuses a write whose preview no longer matches the files on disk.
   const hash = data.filesHash === null ? "" : ` data-files-hash="${escapeHtml(data.filesHash)}"`;
   return `<div class="col g8" data-project-form${data.set ? "" : " hidden"}${hash}>
@@ -769,7 +799,8 @@ ${guardRow({ help: "The type check, the build, the tests and the coverage run he
 <h3>Preview</h3>
 <p class="small muted">Exactly what will be written.</p>
 ${codeBox({ attribute: "data-preview-file", copyLabel: "Copy the contents of .claude/cc-smart-dev-kit.json", label: ".claude/cc-smart-dev-kit.json", text: plan.text })}
-${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the line .claude/settings.json changes by", label: ".claude/settings.json", text: plan.settingsAdds.join("\n") })}
+${codeBox({ attribute: "data-preview-settings", copyLabel: "Copy the lines .claude/settings.json changes by", label: ".claude/settings.json", text: plan.settings.lines.join("\n") })}
+<div data-preview-local-box${localHidden}>${codeBox({ attribute: "data-preview-local-settings", copyLabel: "Copy the lines .claude/settings.local.json changes by", label: ".claude/settings.local.json", text: plan.localSettings.lines.join("\n") })}</div>
 <p class="small muted" data-preview-note>${escapeHtml(settingsNote)}</p>
 <div class="col g2" data-preview-notes>${plan.notes
     .map((note) => `<p class="small muted">${escapeHtml(note)}</p>`)
@@ -905,6 +936,34 @@ function tokenFileWords(platform: NodeJS.Platform): string {
     : "mode 600: readable only by you";
 }
 
+/**
+ * The auto-mode card: the rules as the change writing them makes, in the command line's own
+ * `+` / `-` lines (`cc-smart-dev-kit setup`), the worktree note when its file is not the main
+ * checkout's, and a button that sends back the hash of exactly this change — the write refuses
+ * any other (`automode.apply`). Nothing to change: it says so, and offers no button.
+ */
+export function autoModeCard(change: AutoModeCardData): string {
+  const lines = [
+    ...change.added.map((entry) => ["+", entry] as const),
+    ...change.removed.map((entry) => ["-", entry] as const),
+  ];
+  const worktree =
+    change.differsFrom === null
+      ? ""
+      : `\n<p class="warncolor">This worktree's file is not the same as the main checkout's (<span class="mono">${escapeHtml(change.differsFrom)}</span>). The rules below come from this worktree's file.</p>`;
+  const action =
+    lines.length === 0
+      ? `<p class="muted">Your user settings already hold these rules.</p>`
+      : `<ul class="checks">${lines.map(([mark, entry]) => `<li><span class="mark">${mark}</span><span class="wrap-any">${escapeHtml(entry)}</span></li>`).join("")}</ul>
+<div class="row"><button type="button" class="btn primary" data-action="automode.apply" data-body="${escapeHtml(JSON.stringify({ confirm: true, shownHash: change.hash }))}" data-confirm="Write these trust rules into Claude Code's user settings? Auto mode will treat them as true." data-reload>Write them</button></div>
+<div data-out-for="automode.apply" role="status"></div>`;
+  return `<section class="card pad">
+<h2>Auto mode: trust rules</h2>
+<p class="muted">These come from <span class="mono">${escapeHtml(change.from)}</span> and go into <span class="mono">${escapeHtml(change.settings)}</span>, the only place Claude Code's auto mode reads them from. They are trust rules: read them before you say yes.</p>${worktree}
+${action}
+</section>`;
+}
+
 export function machinePage(shell: Shell, data: MachineData): string {
   const omniroute = data.omniroute;
   const install = omniroute.install;
@@ -974,16 +1033,7 @@ ${
 <div data-out-for="doctor.run" role="status"></div>
 </section>`;
 
-  const autoMode =
-    data.autoMode === null
-      ? ""
-      : `<section class="card pad">
-<h2>Auto mode: trust rules</h2>
-<p class="muted">These come from <span class="mono">${escapeHtml(data.autoMode.from)}</span> and go into <span class="mono">${escapeHtml(data.autoMode.settings)}</span>, the only place Claude Code's auto mode reads them from. They are trust rules: read them before you say yes.</p>
-<ul class="checks">${data.autoMode.entries.map((entry) => `<li><span class="mark">+</span><span class="wrap-any">${escapeHtml(entry)}</span></li>`).join("")}</ul>
-<div class="row"><button type="button" class="btn primary" data-action="automode.apply" data-body="${escapeHtml(JSON.stringify({ confirm: true }))}" data-confirm="Write these trust rules into Claude Code's user settings? Auto mode will treat them as true." data-reload>Write them</button></div>
-<div data-out-for="automode.apply" role="status"></div>
-</section>`;
+  const autoMode = data.autoMode === null ? "" : autoModeCard(data.autoMode);
 
   const body = `<div class="pagehead">
 <div>

@@ -34,6 +34,13 @@ esac
   return path;
 }
 
+/** A real file for the shim to name as the hook's bundle: a guard asks when it is gone. */
+function realBundle(name = "git-guard.js"): string {
+  const file = join(tempDir("shim-bundle"), name);
+  writeFileSync(file, "// the hook's own bundle\n");
+  return file;
+}
+
 function runShim(env: Record<string, string>, args: string[] = ["a", "b c"], stdin?: string) {
   const result = Bun.spawnSync([SHIM, ...args], {
     env,
@@ -167,11 +174,64 @@ describe("cc-smart-dev-kit-bun.sh finds bun without PATH", () => {
     });
   });
 
+  test("no bun and --missing=fail: one line on stderr, exit 1 (a command must not report success)", () => {
+    // The mode for the CLI shim (`plugin/bin/cc-smart-dev-kit`): unlike a hook, a command that
+    // did not run must not report success.
+    const run = runShim({ HOME: tempDir("shim-home"), PATH: tempDir("empty-path") }, [
+      "--missing=fail",
+      "a",
+    ]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toBe(
+      "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, $BUN_INSTALL/bin, ~/.bun/bin or PATH), so the command did not run. Install bun, then run: cc-smart-dev-kit setup\n",
+    );
+  });
+
+  test("no bun and --missing=ask: the bun question wins over the bundle's file being gone", () => {
+    // The bun problem is the real one: no bundle file is named to ask about until bun runs.
+    const run = runShim({ HOME: tempDir("shim-home"), PATH: tempDir("empty-path") }, [
+      "--missing=ask",
+      tempDir("shim-gone"),
+    ]);
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout).hookSpecificOutput.permissionDecisionReason).toContain(
+      "bun was not found",
+    );
+  });
+
+  test("a guard whose bundle file is gone: the shim asks, and bun never starts", () => {
+    // Claude Code deletes an old plugin version folder some time after an update; the person's
+    // session still names the bundle. Bun would print "module not found" and exit 1, which
+    // Claude Code reads as a failure that lets the call through: the shim answers first.
+    const home = tempDir("shim-home");
+    fakeBun(join(home, ".bun", "bin", "bun"), "gone-bundle-bun");
+    const run = runShim({ HOME: home, PATH: tempDir("empty-path") }, [
+      "--missing=ask",
+      join(tempDir("shim-gone"), "git-guard.js"),
+    ]);
+    expect(run.exitCode).toBe(0);
+    expect(run.stderr).toBe("");
+    expect(JSON.parse(run.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason:
+          "cc-smart-dev-kit cannot run its guard: its own program file is missing (an update may have removed this plugin version). Restart Claude Code, then run: cc-smart-dev-kit setup",
+      },
+    });
+  });
+
   test("the mode is the shim's own argument: bun never sees it", () => {
     const home = tempDir("shim-home");
     fakeBun(join(home, ".bun", "bin", "bun"), "home-bun");
     const env = { HOME: home, PATH: tempDir("empty-path") };
-    expect(runShim(env, ["--missing=ask", "a", "b c"]).stdout).toBe(`home-bun ${FLAGS} a b c\n`);
+    // A guard names its bundle (`--missing=ask` checks the file is there, below).
+    const bundle = realBundle();
+    expect(runShim(env, ["--missing=ask", bundle, "b c"]).stdout).toBe(
+      `home-bun ${FLAGS} ${bundle} b c\n`,
+    );
+    expect(runShim(env, ["--missing=fail", "a", "b c"]).stdout).toBe(`home-bun ${FLAGS} a b c\n`);
     expect(runShim(env, ["--missing=quiet", "a", "b c"]).stdout).toBe(`home-bun ${FLAGS} a b c\n`);
     // With no mode, the first argument is the bundle and still reaches bun: quiet is the
     // default, so a hook that forgets one never blocks work.
@@ -240,7 +300,11 @@ describe("cc-smart-dev-kit-bun.sh finds bun without PATH", () => {
     // guard must fail closed — before bun starts anything.
     const home = tempDir("shim-home");
     fakeBun(join(home, ".bun", "bin", "bun"), "old-bun", "1.3.0");
-    const run = runShim({ HOME: home, PATH: tempDir("empty-path") }, ["--missing=ask", "a", "b c"]);
+    const run = runShim({ HOME: home, PATH: tempDir("empty-path") }, [
+      "--missing=ask",
+      realBundle(),
+      "b c",
+    ]);
     expect(run.exitCode).toBe(0);
     expect(run.stderr).toBe("");
     expect(JSON.parse(run.stdout)).toEqual({

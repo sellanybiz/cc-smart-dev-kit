@@ -15,7 +15,7 @@
  * No test reaches the network, a real Claude Code, or the host's HOME: the fakes answer
  * everything, and PATH is the fakes plus the few system tools a shell script needs.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -28,6 +28,7 @@ import { dirname, join } from "node:path";
 import { MIN_BUN } from "../src/build-info/bun";
 import { REPO_ACCESS_FIX_LINES, SSH_REFUSED_WORDS } from "../src/setup/marketplace-access";
 import { tempDir } from "../src/testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../src/testing/timeouts";
 import {
   answer as bun,
   doctorTokenMissingLine as bunDoctorLine,
@@ -36,6 +37,9 @@ import {
 import { answer as claude } from "./install-windows-fakes/claude";
 import { answer as gh } from "./install-windows-fakes/gh";
 import { answer as git } from "./install-windows-fakes/git";
+
+// This file starts the installer as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const REPO = "example-org/cc-smart-dev-kit";
 const INSTALL_SH = join(import.meta.dir, "..", "install.sh");

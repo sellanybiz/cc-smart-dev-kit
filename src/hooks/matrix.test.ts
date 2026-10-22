@@ -1,8 +1,8 @@
 /**
  * Every hook through the same frame (`run.ts`), in a table:
- * - with no cc-smart-dev-kit.json: every plugin hook silent; the worktree engine a project wires
- *   fails closed (it needs `worktrees`);
- * - the project's own copy: a plugin hook its cc-smart-dev-kit.json lists in `ownHooks` is silent,
+ * - with no cc-smart-dev-kit.json: every hook silent, except the machine-wide ones, which
+ *   judge the same way;
+ * - the project's own copy: a hook its cc-smart-dev-kit.json lists in `ownHooks` is silent,
  *   even when the rest of the file is broken or too new; a project hook on the same event
  *   that is not listed silences nothing;
  * - `requires` not met (and a broken cc-smart-dev-kit.json): each fails closed its own way;
@@ -15,7 +15,16 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { PLUGIN_HOOK_NAMES } from "../project/config";
+import { CREW_ENV } from "../crew/session";
+import {
+  createCrew,
+  crewEventsFile,
+  leadFile,
+  notesStateFile,
+  writeStoreFile,
+} from "../crew/store";
+import { PLUGIN_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
+import { locateCheckout } from "../project/resolve";
 import {
   hookEnv,
   makeClone,
@@ -25,34 +34,79 @@ import {
   writeSessionRecord,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { CREW_PUSH_REFUSAL } from "./git-guard";
 import type { HookResult } from "./io";
+import { CREW_PR_REFUSAL } from "./merge-guard";
 import type { HookSpec } from "./run";
 import {
   afterMergeHook,
   agentGuardHook,
+  crewRoleHook,
   fableSessionHook,
   gitGuardHook,
   HOOKS,
   jobRouteHook,
+  leadNotesHook,
   mainFolderGuardHook,
   mergeGuardHook,
   messageGuardHook,
-  PROJECT_HOOKS,
   reviewRecordHook,
+  sessionEscapeGuardHook,
   sessionNameHook,
-  subagentStopHook,
-  worktreeCreateHook,
+  subagentBackgroundHook,
   worktreeLeftoversHook,
-  worktreeRemoveHook,
 } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const AGENT = "0a1b2c3d4e5f60718";
 const FULL_CONFIG = {
   jobs: { route: true },
-  worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+  worktrees: { base: "main", guardMainFolder: true },
   sessionNames: true,
 };
+
+/** The crew session a hook test runs as; `crew-role` is silent without one. */
+const CREW_ID = "W2-x-1a2b3c";
+/** What a `step` event carries, so its watch line ends with the short sha. */
+const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const AT = "2026-10-21T10:00:00.000Z";
+
+/**
+ * A lead record, a crew step event, and a notes cursor before it: the three files that make
+ * `lead-notes` speak. Written by hand, so the note's expected line is not computed by the code
+ * under test.
+ */
+function seedLeadNotes(stateDir: string, repo: string): void {
+  writeStoreFile(
+    leadFile(stateDir, repo, SESSION),
+    `${JSON.stringify({
+      cwd: repo,
+      createdAt: AT,
+      name: "LEAD app plan",
+      plan: "plan",
+      repo,
+      sessionId: SESSION,
+      tag: "app",
+      updatedAt: AT,
+      version: 1,
+    })}\n`,
+  );
+  writeStoreFile(notesStateFile(stateDir, repo, SESSION), `${JSON.stringify({ offset: 0 })}\n`);
+  writeStoreFile(
+    crewEventsFile(stateDir, repo),
+    `${JSON.stringify({
+      at: AT,
+      crew: CREW_ID,
+      lead: SESSION,
+      name: "C app W2 hooks",
+      sha: SHA,
+      state: "working",
+      text: "tests-green",
+      type: "step",
+      version: 1,
+    })}\n`,
+  );
+}
 
 interface Case {
   spec: HookSpec;
@@ -67,6 +121,8 @@ interface Case {
    * does not depend on the project's file, so the shared rows below say so.
    */
   machineWide?: boolean;
+  /** A hook `ownHooks` cannot switch off (`HookSpec.alwaysOn`): listing it silences nothing. */
+  alwaysOn?: boolean;
 }
 
 function project(config: unknown) {
@@ -109,7 +165,7 @@ const denyLine = (result: HookResult) => {
   expect(result.exitCode ?? 0).toBe(0);
   const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
   expect(output.permissionDecision).toBe("deny");
-  expect(output.permissionDecisionReason).toContain("asks for effort `medium`");
+  expect(output.permissionDecisionReason).toContain("asks for effort `low`");
 };
 const contextLine = (result: HookResult) => {
   const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
@@ -119,70 +175,6 @@ const contextLine = (result: HookResult) => {
 };
 
 const CASES: Case[] = [
-  {
-    spec: worktreeCreateHook,
-    own: { event: "WorktreeCreate" },
-    setup: (config) => ({
-      input: {
-        hook_event_name: "WorktreeCreate",
-        session_id: SESSION,
-        cwd: project(config),
-        name: "x",
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: (result) => {
-      expect(result.exitCode).toBe(1);
-      expect(result.stdout).toBeUndefined();
-      expect(result.stderr).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
-    },
-  },
-  {
-    spec: worktreeRemoveHook,
-    own: { event: "WorktreeRemove" },
-    setup: (config) => {
-      const repo = project(config);
-      const folder = join(repo, ".claude", "worktrees", "x");
-      git(repo, "worktree", "add", "-q", "-b", "worktree-x", folder);
-      return {
-        input: {
-          hook_event_name: "WorktreeRemove",
-          session_id: SESSION,
-          cwd: folder,
-          worktree_path: folder,
-        },
-        env: hookEnv(),
-      };
-    },
-    failsClosed: (result) => {
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
-    },
-  },
-  {
-    spec: subagentStopHook,
-    own: { event: "SubagentStop", matcher: "general-purpose" },
-    setup: (config) => {
-      const repo = project(config);
-      const folder = join(repo, ".claude", "worktrees", `agent-${AGENT}`);
-      git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${AGENT}`, folder);
-      return {
-        input: {
-          hook_event_name: "SubagentStop",
-          session_id: SESSION,
-          cwd: folder,
-          agent_id: AGENT,
-          agent_type: "general-purpose",
-        },
-        env: hookEnv(),
-      };
-    },
-    failsClosed: (result) => {
-      expect(result.exitCode ?? 0).toBe(0);
-      expect(result.stdout).toBeUndefined();
-      expect(result.stderr).toStartWith("subagent worktree kept: ");
-    },
-  },
   {
     spec: gitGuardHook,
     own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
@@ -223,11 +215,33 @@ const CASES: Case[] = [
         session_id: SESSION,
         cwd: project(config),
         tool_name: "Agent",
-        tool_input: { effort: "medium", model: "opus", prompt: "do it" },
+        tool_input: { effort: "low", model: "opus", prompt: "do it" },
       },
       env: hookEnv(),
     }),
     failsClosed: denyLine,
+  },
+  {
+    spec: sessionEscapeGuardHook,
+    own: { event: "PreToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
+    machineWide: true,
+    alwaysOn: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "Bash",
+        tool_input: { command: "env -u CLAUDECODE cc-smart-dev-kit workflow set autoMerge true" },
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("deny");
+      expect(output.permissionDecisionReason).toContain("with CLAUDECODE removed");
+    },
   },
   {
     spec: fableSessionHook,
@@ -252,17 +266,26 @@ const CASES: Case[] = [
   {
     spec: jobRouteHook,
     own: { event: "PreToolUse", matcher: "Bash" },
+    machineWide: true,
+    alwaysOn: true,
     setup: (config) => ({
       input: {
         hook_event_name: "PreToolUse",
         session_id: SESSION,
         cwd: project(config),
         tool_name: "Bash",
-        tool_input: { command: "bunx tsc --noEmit" },
+        tool_input: { command: "claude --bg 'do the phase'" },
       },
       env: hookEnv(),
     }),
-    failsClosed: askLine,
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("ask");
+      expect(output.permissionDecisionReason).toContain(
+        "crew start <phase> --slug <slug> --kind <kind> --brief <file|->",
+      );
+    },
   },
   {
     spec: mainFolderGuardHook,
@@ -363,6 +386,75 @@ const CASES: Case[] = [
     },
   },
   {
+    spec: subagentBackgroundHook,
+    own: { event: "SubagentStop" },
+    setup: (config) => {
+      const repo = project(config);
+      // The subagent's own transcript, where a background Bash tool result names the task id:
+      // the input's `background_tasks` is the session's list, so this is what proves the task
+      // is this agent's (src/hooks/subagent-background.ts). The `tool_use` line comes first,
+      // as Claude Code writes it: only a result of the agent's own Bash call counts.
+      const transcript = join(tempDir("subagent-transcript"), "agent.jsonl");
+      writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: "assistant",
+          agentId: AGENT,
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_bash",
+                name: "Bash",
+                input: { command: "bun test", run_in_background: true },
+              },
+            ],
+          },
+        })}\n${JSON.stringify({
+          type: "user",
+          agentId: AGENT,
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_bash",
+                content:
+                  "Command running in background with ID: shell1234. Output is being written to: /tmp/claude/tasks/shell1234.output.",
+              },
+            ],
+          },
+        })}\n`,
+      );
+      return {
+        input: {
+          hook_event_name: "SubagentStop",
+          session_id: SESSION,
+          cwd: repo,
+          agent_id: AGENT,
+          agent_type: "general-purpose",
+          agent_transcript_path: transcript,
+          stop_hook_active: false,
+          background_tasks: [
+            {
+              id: "shell1234",
+              type: "shell",
+              status: "running",
+              description: "the tests",
+              command: "bun test",
+            },
+          ],
+        },
+        env: hookEnv(),
+      };
+    },
+    // One stderr line, exit 0: a subagent must always finish.
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      expect(result.stdout).toBeUndefined();
+      expect(result.stderr).toStartWith("cc-smart-dev-kit subagent-background: ");
+    },
+  },
+  {
     spec: worktreeLeftoversHook,
     own: { event: "SessionStart", matcher: "startup|resume" },
     setup: (config) => {
@@ -399,24 +491,80 @@ const CASES: Case[] = [
       expect(result.stderr).toStartWith("cc-smart-dev-kit session-name: ");
     },
   },
+  {
+    spec: crewRoleHook,
+    own: { event: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
+    // Machine-wide: the ask is denied the same way with no file, a broken one, or one from a
+    // newer plugin, because the answer reads no store at all.
+    machineWide: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "AskUserQuestion",
+        tool_input: { questions: [] },
+      },
+      env: { ...hookEnv(), [CREW_ENV]: CREW_ID },
+    }),
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("deny");
+      expect(output.permissionDecisionReason).toBe(
+        'cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>',
+      );
+    },
+  },
+  {
+    spec: leadNotesHook,
+    own: { event: "UserPromptSubmit" },
+    // Machine-wide: a registered lead hears its news with no file and with a broken one alike.
+    machineWide: true,
+    setup: (config) => {
+      const repo = project(config);
+      const env = hookEnv();
+      seedLeadNotes(cliPaths(env).stateDir, repo);
+      return {
+        input: {
+          hook_event_name: "UserPromptSubmit",
+          session_id: SESSION,
+          cwd: repo,
+          prompt: "go on",
+        },
+        env,
+      };
+    },
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
+      expect(text).toBe("C app W2 hooks: tests-green · a1b2c3d");
+    },
+  },
 ];
 
-test("the table covers every hook, the plugin's and the project's", () => {
-  expect(CASES.map((c) => c.spec.name).sort()).toEqual(
-    [...HOOKS, ...PROJECT_HOOKS].map((spec) => spec.name).sort(),
-  );
-  expect(HOOKS.every((spec) => spec.wiring === "plugin")).toBe(true);
-  expect(PROJECT_HOOKS.every((spec) => spec.wiring === "project")).toBe(true);
+test("the table covers every hook", () => {
+  expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
 });
 
-test("ownHooks accepts exactly the plugin's hooks", () => {
+test("ownHooks accepts exactly the plugin's hooks that a project can switch off", () => {
   const listed: string[] = [...PLUGIN_HOOK_NAMES];
-  expect(listed.sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
+  const switchable = HOOKS.filter((spec) => spec.alwaysOn !== true).map((spec) => spec.name);
+  expect(listed.sort()).toEqual(switchable.sort());
+  // An `alwaysOn` hook is wired and in the table, and `ownHooks` cannot switch it off. A name
+  // a project file may already list for one (`UNSWITCHABLE_HOOK_NAMES`) still parses and
+  // silences nothing.
+  expect(HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name)).toEqual([
+    "session-escape-guard",
+    "job-route",
+  ]);
+  const alwaysOn = HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name);
+  expect([...UNSWITCHABLE_HOOK_NAMES].every((name) => alwaysOn.includes(name))).toBe(true);
 });
 
-/** The full config, with `ownHooks` listing this hook when the plugin wires it. */
+/** The full config, with `ownHooks` listing this hook. */
 function listing(c: Case, config: Record<string, unknown> = FULL_CONFIG) {
-  return c.spec.wiring === "plugin" ? { ...config, ownHooks: [c.spec.name] } : config;
+  return { ...config, ownHooks: [c.spec.name] };
 }
 
 /** What a hook says: anything at all on stdout or stderr. */
@@ -442,9 +590,11 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
   );
 
   test("listed in ownHooks: a plugin hook stays silent (the project's copy answers)", async () => {
-    if (c.spec.wiring !== "plugin") return;
     const { input, env } = c.setup(listing(c));
-    expect(await runHook(c.spec, input, env)).toEqual({});
+    const result = await runHook(c.spec, input, env);
+    // An `alwaysOn` hook is the one no project can switch off: it answers all the same.
+    if (c.alwaysOn === true) expect(speaks(result)).toBe(true);
+    else expect(result).toEqual({});
   });
 
   test("a retired name in ownHooks (serena-root): the file still reads, and this hook still speaks", async () => {
@@ -473,12 +623,12 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     expect(said).toContain("cc-smart-dev-kit.json: worktree: unknown field");
   });
 
-  test("requires not met, and listed in ownHooks: a plugin hook stays silent (the project's copy runs), a project-wired one fails closed", async () => {
+  test("requires not met, and listed in ownHooks: the hook stays silent (the project's copy runs)", async () => {
     const { input, env } = c.setup(listing(c, { requires: ">=99", fieldFromTheFuture: true }));
     wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
     const result = await runHook(c.spec, input, env);
-    if (c.spec.wiring === "plugin") expect(result).toEqual({});
-    else c.failsClosed(result);
+    if (c.alwaysOn === true) expect(speaks(result)).toBe(true);
+    else expect(result).toEqual({});
   });
 
   test("requires not met, another hook for the same event, not listed: fails closed all the same", async () => {
@@ -489,42 +639,19 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
 });
 
 describe("no cc-smart-dev-kit.json", () => {
-  test.each(
-    CASES.filter((c) => c.spec.wiring === "plugin" && c.machineWide !== true).map(
-      (c) => [c.spec.name, c] as const,
-    ),
-  )("the plugin's %s is silent", async (_name, c) => {
-    const { input, env } = c.setup(undefined);
-    expect(await runHook(c.spec, input, env)).toEqual({});
-  });
+  test.each(CASES.filter((c) => c.machineWide !== true).map((c) => [c.spec.name, c] as const))(
+    "the plugin's %s is silent",
+    async (_name, c) => {
+      const { input, env } = c.setup(undefined);
+      expect(await runHook(c.spec, input, env)).toEqual({});
+    },
+  );
 
   test.each(CASES.filter((c) => c.machineWide === true).map((c) => [c.spec.name, c] as const))(
     "the machine-wide %s judges the same without cc-smart-dev-kit.json",
     async (_name, c) => {
       const { input, env } = c.setup(undefined);
       c.failsClosed(await runHook(c.spec, input, env));
-    },
-  );
-
-  const NEEDS =
-    "this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json. " +
-    'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of .claude/settings.json (the cc-smart-dev-kit README, § Worktrees)';
-
-  test.each([
-    [
-      "worktree-create",
-      worktreeCreateHook,
-      { exitCode: 1, stderr: `worktree not created: ${NEEDS}` },
-    ],
-    ["worktree-remove", worktreeRemoveHook, { exitCode: 1, stderr: `worktree kept: ${NEEDS}` }],
-    ["subagent-stop", subagentStopHook, { stderr: `subagent worktree kept: ${NEEDS}` }],
-  ] as const)(
-    "the project-wired %s fails closed: it needs worktrees",
-    async (_name, spec, expected) => {
-      const c = CASES.find((one) => one.spec === spec);
-      if (c === undefined) throw new Error("no case");
-      const { input, env } = c.setup(undefined);
-      expect(await runHook(c.spec, input, env)).toEqual(expected);
     },
   );
 });
@@ -568,11 +695,178 @@ describe("the guard matrix", () => {
   );
 });
 
-test("an input that is not JSON, or for another event: nothing (and no crash)", async () => {
+/**
+ * A crew session's refusals (D24, D47) hold in a project that never opted in, and in one whose
+ * `ownHooks` names its own copy of the guard: the frame runs each guard's crew part before
+ * `ownHooks` and before the project's file (`HookSpec.crewLimits`, `run.ts`). The same rows
+ * prove a plain session keeps the old behaviour: silent with no file, and the project's own
+ * guard alone when it is listed.
+ */
+describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1, F2b-2)", () => {
+  const SELF = { id: "B1-lookup-1a2b3c", name: "C app B1 lookup", phase: "B1" };
+  const PEER = { id: "B2-api-4d5e6f", name: "C app B2 api", phase: "B2" };
+  const LEAD = "LEAD app lead";
+
+  /** One crew session's record, as `crew start` writes it. */
+  async function record(
+    stateDir: string,
+    repo: string,
+    one: { id: string; name: string; phase: string },
+  ): Promise<void> {
+    await createCrew(
+      stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: `crew/${one.phase}-${one.id}`,
+        effort: "high",
+        files: [],
+        id: one.id,
+        kind: "build",
+        lastLine: null,
+        leadName: LEAD,
+        leadSessionId: "c00f9bb5-1111-2222-3333-444444444444",
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: one.name,
+        permissionMode: "auto",
+        phase: one.phase,
+        plan: "lead",
+        pr: null,
+        questions: [],
+        repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: one.id,
+        state: "working",
+        waitsFor: [],
+        worktree: join(repo, ".claude", "worktrees", one.id),
+      },
+      Date.parse("2026-10-21T10:00:00.000Z"),
+    );
+  }
+
+  /** A repo (with the project's file only when `config` is given) and the two crew records. */
+  async function world(config?: unknown): Promise<{
+    crew: Record<string, string>;
+    env: Record<string, string>;
+    repo: string;
+  }> {
+    const { repo } = makeClone();
+    if (config !== undefined) writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+    const env = hookEnv();
+    const root = locateCheckout(repo)?.root ?? repo;
+    const stateDir = cliPaths(env).stateDir;
+    for (const one of [SELF, PEER]) await record(stateDir, root, one);
+    return { crew: { ...env, [CREW_ENV]: SELF.id }, env, repo };
+  }
+
+  /** The shell call a crew session may not run. */
+  function shell(repo: string, command: string): Record<string, unknown> {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION,
+      cwd: repo,
+      tool_name: "Bash",
+      tool_input: { command },
+    };
+  }
+
+  /** The message a crew session sends. */
+  function message(repo: string, to: string, text: string): Record<string, unknown> {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION,
+      cwd: repo,
+      tool_name: "SendMessage",
+      tool_input: { message: text, to },
+    };
+  }
+
+  /** A denial, checked as the guard's answer: the reason is written by hand, never computed. */
+  function denied(result: HookResult, reason: string): void {
+    expect(result.exitCode ?? 0).toBe(0);
+    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    expect(output.permissionDecision).toBe("deny");
+    expect(output.permissionDecisionReason).toBe(reason);
+  }
+
+  /** The refusal of an untagged message to the peer, in the guard's own words. */
+  const UNTAGGED = [
+    `"C app B2 api" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
+    `Fix: cc-smart-dev-kit crew tell "C app B2 api" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
+    `It writes the first line the note must carry ("[B1] CONTRACT: …"), and records the note for your lead.`,
+    `That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done.`,
+  ].join("\n");
+
+  /** The refusal of a message to the lead, in the guard's own words. */
+  const TO_LEAD = [
+    `"LEAD app lead" is your lead, and a crew session reaches its lead through crew report, not a message.`,
+    `Fix: cc-smart-dev-kit crew report --status done, or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    "The report is recorded for the lead, and its watch wakes the lead on the line.",
+  ].join("\n");
+
+  async function expectRefused(crew: Record<string, string>, repo: string): Promise<void> {
+    denied(
+      await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), crew),
+      CREW_PUSH_REFUSAL,
+    );
+    denied(
+      await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), crew),
+      CREW_PR_REFUSAL,
+    );
+    denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
+    denied(await runHook(messageGuardHook, message(repo, LEAD, "done"), crew), TO_LEAD);
+  }
+
+  test("no cc-smart-dev-kit.json: the push, the pull request and the untagged peer message are denied", async () => {
+    const { crew, repo } = await world(undefined);
+    await expectRefused(crew, repo);
+  });
+
+  test('ownHooks: ["git-guard", "merge-guard"] silences none of the crew refusals', async () => {
+    const { crew, repo } = await world({ ownHooks: ["git-guard", "merge-guard"] });
+    await expectRefused(crew, repo);
+  });
+
+  test("ownHooks listing message-guard silences no crew message refusal", async () => {
+    const { crew, repo } = await world({ ownHooks: ["message-guard"] });
+    denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
+  });
+
+  test("a file that needs a newer plugin does not soften them either", async () => {
+    const { crew, repo } = await world({ requires: ">=99" });
+    await expectRefused(crew, repo);
+  });
+
+  test("a plain session with no file keeps today's silence; a crew session's other git work is not judged", async () => {
+    const { crew, env, repo } = await world(undefined);
+    expect(await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), env)).toEqual({});
+    expect(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), env)).toEqual({});
+    // A crew session's other git work is not refused either: this part judges a push only.
+    expect(await runHook(gitGuardHook, shell(repo, "git status"), crew)).toEqual({});
+  });
+});
+
+test("an input that is not JSON: a guard asks, any other hook says one line; for another event: nothing", async () => {
   const { handleHook } = await import("./run");
+  // A guard that cannot read its input cannot judge the call, so it asks (fails closed).
   expect(await handleHook(gitGuardHook, "not json", hookEnv())).toEqual({
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason:
+          "cc-smart-dev-kit cannot check this git command: the hook input is not JSON",
+      },
+    }),
+  });
+  // An informational hook never stops a person's work: one line on stderr, exit 0.
+  expect(await handleHook(sessionNameHook, "not json", hookEnv())).toEqual({
     exitCode: 0,
-    stderr: "cc-smart-dev-kit git-guard: the hook input is not JSON",
+    stderr: "cc-smart-dev-kit session-name: the hook input is not JSON",
   });
   expect(
     await handleHook(

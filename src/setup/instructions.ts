@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { type CliPaths, tildify } from "../cli/paths";
+import { IGNORE_CASE, isStrictlyInside } from "../path-compare";
 import { isOlder } from "../update/check";
 import { findUserInstall } from "./installed-plugins";
 import { withLock } from "./lock";
@@ -141,10 +142,17 @@ export function listInstructionFiles(source: string): string[] {
   return files;
 }
 
+/**
+ * The files of `files` inside the folder `root`, in their order. Through `isInside`: on Windows
+ * every path has `\`, so a `${root}/` prefix test never matched one there.
+ */
+export function copiesUnder(files: string[], root: string, ignoreCase = IGNORE_CASE): string[] {
+  return files.filter((file) => isStrictlyInside(file, root, ignoreCase));
+}
+
 /** The files of the managed copy that changed.json tracks (real paths). */
 function trackedCopies(target: string, stateDir: string): string[] {
-  const root = `${realTarget(target)}/`;
-  return Object.keys(readChanged(stateDir)).filter((file) => file.startsWith(root));
+  return copiesUnder(Object.keys(readChanged(stateDir)), realTarget(target));
 }
 
 function lineOf(result: RestoreResult, block: boolean): InstructionsLine | null {
@@ -200,11 +208,11 @@ export function copyDifferences(paths: InstructionsPaths): string[] {
       out.push(`${name} differs`);
     }
   }
-  const root = `${realTarget(paths.target)}/`;
+  const root = realTarget(paths.target);
   const wanted = new Set(files.map((name) => realTarget(join(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
     if (!wanted.has(file) && existsSync(file)) {
-      out.push(`${file.slice(root.length)} is not shipped any more`);
+      out.push(`${relative(root, file).split(sep).join("/")} is not shipped any more`);
     }
   }
   return out;

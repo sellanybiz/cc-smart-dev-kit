@@ -7,12 +7,30 @@
  * `ownHooks` and cc-smart-dev-kit.json, is tested at the end and in `matrix.test.ts`.
  */
 import { afterAll, beforeAll, describe, expect, test as it } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { hookEnv, makeRepo, runHook, wireProjectHook, writeClaudeFile } from "../testing/hooks";
-import { cleanGitEnv, git } from "../testing/temp";
-import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
+import { basename, dirname, join } from "node:path";
+import { cliPaths } from "../cli/paths";
+import { CREW_ENV } from "../crew/session";
+import type { Dialect } from "../shell/command";
+import {
+  commitConfig,
+  hookEnv,
+  makeRepo,
+  runHook,
+  wireProjectHook,
+  writeClaudeFile,
+  writePersonalWorkflow,
+} from "../testing/hooks";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import {
+  CREW_PUSH_REFUSAL,
+  DEFAULT_PROTECTED_BRANCHES,
+  guardQuestions,
+  guardVerdict,
+  PUSH_FREE,
+  runsGit,
+} from "./git-guard";
 import { gitGuardHook } from "./specs";
 
 // Folders made once for this file (the preload removes only tempDir() folders after each test).
@@ -35,11 +53,20 @@ beforeAll(() => {
 
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
-const OPTIONS = { protectedBranches: ["dev", "main"], sharedStash: true };
+const OPTIONS = { protectedBranches: ["dev", "main"], pushRules: PUSH_FREE, sharedStash: true };
 
-/** The one question string the hook would ask, or undefined when it asks nothing. */
-function guard(command: string, cwd: string = neutral, sharedStash = true): string | undefined {
-  const questions = guardQuestions(command, cwd, { ...OPTIONS, sharedStash, env: cleanGitEnv() });
+/**
+ * The one question string the hook would ask, or undefined when it asks nothing. `dialect`:
+ * the tool's (`Bash` or `PowerShell`); not given, the guard reads the line both ways.
+ */
+function guard(
+  command: string,
+  cwd: string = neutral,
+  sharedStash = true,
+  dialect?: Dialect,
+): string | undefined {
+  const env = cleanGitEnv();
+  const questions = guardQuestions(command, cwd, { ...OPTIONS, sharedStash, env, dialect });
   return questions.length === 0 ? undefined : questions.join("\n");
 }
 
@@ -79,6 +106,57 @@ describe("a force-push asks", () => {
     ["git fetch --force"],
   ])("lets %j through", (command) => {
     expect(guard(command)).toBeUndefined();
+  });
+});
+
+describe("F2a-1: a push behind a wrapper, a shell, an alias, send-pack or a computed program", () => {
+  it.each([
+    ["setsid git push --force origin fix/x"],
+    ["flock /tmp/l git push --force origin fix/x"],
+    ["unbuffer git push --force origin fix/x"],
+    ["chrt -f 50 git push --force origin fix/x"],
+    ["taskset -c 0-3 git push --force origin fix/x"],
+    ["script -qc 'git push -f origin fix/x'"],
+    ["ksh -c 'git push -f origin fix/x'"],
+    ["mksh -c 'git push -f origin fix/x'"],
+    ["fish -c 'git push -f origin fix/x'"],
+    ["busybox sh -c 'git push -f origin fix/x'"],
+    ["git send-pack --force origin fix/x"],
+    ["git -c alias.p=push p --force origin fix/x"],
+    ["git -c alias.s=send-pack s --force origin fix/x"],
+  ])("%j asks", (command) => {
+    expect(guard(command)).toContain("force-push");
+  });
+
+  it("send-pack and an alias reach a protected branch", () => {
+    expect(guard("git send-pack origin dev")).toContain("straight to `dev`");
+    expect(guard("git -c alias.p=push p origin dev")).toContain("straight to `dev`");
+  });
+
+  it.each([["$(which git) push --force origin main"], ["GIT=git; $GIT push origin HEAD"]])(
+    "a computed program whose words name a push asks: %j",
+    (command) => {
+      expect(guard(command)).toContain("cannot tell whether it pushes");
+    },
+  );
+
+  it("a computed program with no push word passes, and so does a plain `echo push`", () => {
+    expect(guard("$(which git) status")).toBeUndefined();
+    expect(guard("echo push")).toBeUndefined();
+  });
+});
+
+describe("F2a-3: PowerShell Start-Process runs what it is given", () => {
+  it.each([
+    "Start-Process -FilePath git -ArgumentList 'push -f origin fix/x'",
+    "Start-Process git 'push -f origin fix/x'",
+    "Start-Process -FilePath git -ArgumentList 'push origin dev'",
+  ])("%j asks", (command) => {
+    expect(guard(command, neutral, true, "powershell")).toBeDefined();
+  });
+
+  it("a Start-Process that runs no git passes", () => {
+    expect(guard("Start-Process notepad 'notes.txt'", neutral, true, "powershell")).toBeUndefined();
   });
 });
 
@@ -125,6 +203,7 @@ describe("a push to a protected branch asks", () => {
     const only = (command: string) =>
       guardQuestions(command, neutral, {
         protectedBranches: DEFAULT_PROTECTED_BRANCHES,
+        pushRules: PUSH_FREE,
         sharedStash: false,
         env: cleanGitEnv(),
       });
@@ -246,12 +325,13 @@ describe("a heredoc or here-string body is data, whatever its last line ends in"
       "git commit -F - <<'EOF'\nfix\n\ngit push --force is gone\nRun `bun run test`\nEOF",
     ],
     ["backslash", "git commit -F - <<'EOF'\nfix\n\ngit reset --hard is gone\nSee C:\\work\\\nEOF"],
-    [
-      "PowerShell here-string, backtick, with an apostrophe",
-      "git commit -m @'\nIt's fixed\ngit stash pop is gone\nRun `bun run test`\n'@",
-    ],
   ])("lets a body ending in a %s through", (_name, command) => {
     expect(guard(command)).toBeUndefined();
+  });
+
+  it("lets a PowerShell here-string through in the PowerShell tool, an apostrophe and a backtick in it", () => {
+    const command = "git commit -m @'\nIt's fixed\ngit stash pop is gone\nRun `bun run test`\n'@";
+    expect(guard(command, neutral, true, "powershell")).toBeUndefined();
   });
 
   it("still reads a real command after such a body", () => {
@@ -640,7 +720,9 @@ describe("the hook", () => {
   it("asks, as a PreToolUse decision, in a project with cc-smart-dev-kit.json", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { protectedBranches: ["release"] });
-    const result = await runHook(gitGuardHook, input(repo, "git push origin release"), hookEnv());
+    const env = hookEnv();
+    writePersonalWorkflow(env, { autoPush: true });
+    const result = await runHook(gitGuardHook, input(repo, "git push origin release"), env);
     expect(result).toEqual({
       stdout: JSON.stringify({
         hookSpecificOutput: {
@@ -674,5 +756,424 @@ describe("the hook", () => {
     wireProjectHook(repo, "PreToolUse", "Bash", "settings.local.json");
     const result = await runHook(gitGuardHook, input(repo, "git push -f"), hookEnv());
     expect(result.stdout).toContain('"permissionDecision":"ask"');
+  });
+});
+
+/** Every hook in `hooks.json` gets 10 s; the guard must answer well within that. */
+const GUARD_TIME_LIMIT_MS = 3_000;
+
+/** The force-push question's own words. */
+const FORCE = "This is a force-push";
+
+describe("the guard bypasses of the 0.6.0 audit: each spelling asks", () => {
+  const asks = (command: string, dialect?: Dialect) => guard(command, neutral, true, dialect);
+
+  it("HK-2: a command inside an unquoted here-doc body is read", () => {
+    expect(asks("cat <<EOF\n$(git push --force origin x)\nEOF")).toContain(FORCE);
+    expect(asks("git commit -F - <<EOF\nfix: `git reset --hard`\nEOF")).toContain("reset --hard");
+    // With no closing line bash still expands the body, to the end of the text.
+    expect(asks("cat <<EOF\n$(git push --force origin x)")).toContain(FORCE);
+    // A quoted word, in any of its spellings, keeps the body text.
+    expect(asks("cat <<'EOF'\n$(git push --force origin x)\nEOF")).toBeUndefined();
+    expect(asks('cat <<"EOF"\n$(git push --force origin x)\nEOF')).toBeUndefined();
+    expect(asks("cat <<\\EOF\n$(git push --force origin x)\nEOF")).toBeUndefined();
+    expect(asks('cat <<E"O"F\n$(git push --force origin x)\nEOF')).toBeUndefined();
+  });
+
+  it("HK-3: a PowerShell line is read with PowerShell's quoting", () => {
+    // A backslash is a plain character in PowerShell, so each path ends at its quote.
+    const paths = 'cd "C:\\a\\"; git push --force origin x; cd "C:\\b\\"';
+    expect(asks(paths, "powershell")).toContain(FORCE);
+    // `<# … #>` is a block comment; the command after it runs.
+    expect(asks("<# tidy up #> git push --force origin x", "powershell")).toContain(FORCE);
+    // A typographic quote closes a string in PowerShell.
+    const typographic = "echo 'a\u2018 ; git push --force origin x ; \u2018b'";
+    expect(asks(typographic, "powershell")).toContain(FORCE);
+    // `@"…"@` expands its `$( … )`; `@'…'@` does not.
+    expect(asks('echo @"\n$(git push --force origin x)\n"@', "powershell")).toContain(FORCE);
+    expect(asks("echo @'\n$(git push --force origin x)\n'@", "powershell")).toBeUndefined();
+    // Not told the tool, the guard reads both ways: PowerShell's reading finds it.
+    expect(asks(paths)).toContain(FORCE);
+  });
+
+  it("HK-4: a brace inside a word does not cut the line", () => {
+    expect(asks("git push origin HEAD@{0}:main")).toContain("straight to `main`");
+    expect(asks("f(){ git push --force origin x; }; f")).toContain(FORCE);
+  });
+
+  it("HK-7: git's own options that take a value, and one the guard does not know", () => {
+    expect(asks("git --config-env x.y=HOME push --force origin x")).toContain(FORCE);
+    expect(asks("git --config-env=x.y=HOME push --force origin x")).toContain(FORCE);
+    expect(asks("git --attr-source HEAD push --force origin x")).toContain(FORCE);
+    expect(asks("git --future-option some-value push --force origin x")).toContain(FORCE);
+    expect(asks("git --no-pager -P push --force origin x")).toContain(FORCE);
+    // git only prints, and runs no subcommand.
+    expect(asks("git --version push --force")).toBeUndefined();
+    expect(asks("git --exec-path push --force")).toBeUndefined();
+  });
+
+  it("HK-8: a program name spelled with an escape or an ANSI-C quote", () => {
+    expect(asks("g\\it push --force origin x")).toContain(FORCE);
+    expect(asks("$'git' push --force origin x")).toContain(FORCE);
+    expect(asks("$'\\x67it' push --force origin x")).toContain(FORCE);
+    expect(asks("git push origin ma\\in")).toContain("straight to `main`");
+  });
+
+  it("HK-9: `bash -c --` and `env -S`", () => {
+    expect(asks("bash -c -- 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("bash -c -e 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("bash -O extglob -c 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("env -S 'git push --force origin x'")).toContain(FORCE);
+    expect(asks("env -S'git push --force origin x'")).toContain(FORCE);
+    expect(asks("env --split-string='git push --force' origin x")).toContain(FORCE);
+    expect(asks("env -iS 'GIT_TRACE=1 git push --force origin x'")).toContain(FORCE);
+  });
+
+  it("HK-10: doas runs the command after it", () => {
+    expect(asks("doas git push --force origin x")).toContain(FORCE);
+    expect(asks("doas -u me git push --force origin x")).toContain(FORCE);
+  });
+
+  it("a backtick substitution, an arithmetic expansion and an escaped space before a #", () => {
+    expect(asks("echo `git push --force origin x`")).toContain(FORCE);
+    expect(asks('echo "`git push --force origin x`"')).toContain(FORCE);
+    expect(asks("echo $(( $(git push --force origin x) ))")).toContain(FORCE);
+    expect(asks("echo \\ #; git push --force origin x")).toContain(FORCE);
+    expect(asks("echo $(true)#; git push --force origin x")).toContain(FORCE);
+    // A PowerShell here-string means nothing to bash: its `$( … )` runs there.
+    expect(asks('echo @"\n$(git push --force origin x)\n"@', "bash")).toContain(FORCE);
+  });
+
+  it("a redirection is never a refspec, before the program or after it", () => {
+    expect(asks("2>/dev/null git push --force origin x")).toContain(FORCE);
+    expect(guard("git push origin 2>&1", onDev)).toContain("straight to `dev`");
+    expect(guard("git push origin > /dev/null", onDev)).toContain("straight to `dev`");
+    expect(asks("git push origin main>log")).toContain("straight to `main`");
+  });
+
+  it("a CRLF line, and a line that goes on with CRLF, are read", () => {
+    expect(asks("git status\r\ngit push --force origin x\r\n")).toContain(FORCE);
+    expect(asks("git push \\\r\n  --force origin x")).toContain(FORCE);
+  });
+
+  it("HK: `claude plugin eval` is not the shell's eval", () => {
+    expect(asks("claude plugin eval . --eval-dir evals/cases")).toBeUndefined();
+    expect(asks("claude plugin eval 'git push --force origin x'")).toBeUndefined();
+    // The shell's own eval still runs the line it is given.
+    expect(asks('eval "git push --force origin x"')).toContain(FORCE);
+  });
+
+  it("job run's queued command is read", () => {
+    const queued = `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind test -- bash -c 'bun test && git push --force origin x'`;
+    expect(asks(queued)).toContain(FORCE);
+  });
+});
+
+describe("a push sends what git would send", () => {
+  /** A repo on `branch`, with each `key value` set in its own git config. */
+  function repoOn(branch: string, config: [string, string][] = []): string {
+    const dir = tempDir("guard-push");
+    git(dir, "init", "-q", "-b", branch);
+    for (const [key, value] of config) git(dir, "config", key, value);
+    return dir;
+  }
+
+  it("HK hunch 7: with push.default=upstream, a bare push goes to the branch it tracks", () => {
+    const repo = repoOn("feature", [
+      ["push.default", "upstream"],
+      ["branch.feature.remote", "origin"],
+      ["branch.feature.merge", "refs/heads/main"],
+    ]);
+    expect(guard("git push", repo)).toContain("straight to `main`");
+    expect(guard("git push origin", repo)).toContain("straight to `main`");
+    // `HEAD` is the branch's own name, whatever push.default says.
+    expect(guard("git push origin HEAD", repo)).toBeUndefined();
+  });
+
+  it("a push.default set on the line counts, and one read from the environment asks", () => {
+    const repo = repoOn("feature", [["branch.feature.merge", "refs/heads/main"]]);
+    expect(guard("git push", repo)).toBeUndefined();
+    expect(guard("git -c push.default=upstream push", repo)).toContain("straight to `main`");
+    expect(guard("git --config-env push.default=MODE push", repo)).toContain("straight to `");
+  });
+
+  it("push.default=matching and the matching refspec `:` send every branch both sides have", () => {
+    const matching = repoOn("feature", [["push.default", "matching"]]);
+    expect(guard("git push", matching)).toContain("straight to `");
+    expect(guard("git push origin :", onFeature)).toContain("straight to `");
+    expect(guard("git push", repoOn("feature", [["push.default", "nothing"]]))).toBeUndefined();
+  });
+
+  it("a remote's own push refspecs are what a bare push sends", () => {
+    const forced = repoOn("feature", [["remote.origin.push", "+refs/heads/*:refs/heads/*"]]);
+    const answer = guard("git push", forced);
+    expect(answer).toContain(FORCE);
+    expect(answer).toContain("straight to `");
+    const narrow = repoOn("feature", [
+      ["remote.origin.push", "refs/heads/feature:refs/heads/review"],
+    ]);
+    expect(guard("git push", narrow)).toBeUndefined();
+  });
+
+  it("HK improvement 7: a wildcard refspec that reaches a protected branch asks", () => {
+    expect(guard("git push origin 'refs/heads/*:refs/heads/*'")).toContain("straight to `");
+    expect(guard("git push origin '*:*'")).toContain("straight to `");
+    expect(guard("git push origin 'refs/heads/fix-*:refs/heads/fix-*'")).toBeUndefined();
+  });
+
+  it("reads git once a folder, however many pushes the line has", () => {
+    const line = Array.from({ length: 200 }, () => "git push").join("; ");
+    const started = Date.now();
+    expect(guard(line, onFeature)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(GUARD_TIME_LIMIT_MS);
+  });
+});
+
+describe("a 64 KB command line is read within the guard's time", () => {
+  const SIZE = 64 * 1024;
+  const fill = (piece: string) => piece.repeat(Math.ceil(SIZE / piece.length)).slice(0, SIZE);
+  it.each([
+    ["a long commit message", `git commit -m "${fill("word; git push --force ")}"`],
+    ["many commands", fill("git status; ")],
+    ["many here-docs", fill("cat <<A ")],
+    ["deep arithmetic", `echo ${"$((".repeat(SIZE / 6)}1${"))".repeat(SIZE / 6)}`],
+    ["nested quotes and substitutions", fill("\"$(echo `a` 'b')\" ")],
+    ["many PowerShell comments", fill("<# x #> ")],
+    ["an unclosed quote", `echo "${fill("a; b ")}`],
+  ])("%s", (_name, command) => {
+    const started = Date.now();
+    guard(command);
+    expect(Date.now() - started).toBeLessThan(GUARD_TIME_LIMIT_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D15: `autoPush` off is enforced. D24: a crew session never pushes.
+// ---------------------------------------------------------------------------------------
+
+/** The project's file as committed on `origin/dev`, the integration base. */
+const BASE_CONFIG = { requires: ">=0.4", worktrees: { base: "dev" } };
+
+/** A repo whose `origin/dev` holds `config`, and the hook's environment. */
+function policyRepo(config: unknown = BASE_CONFIG): { env: Record<string, string>; repo: string } {
+  const repo = makeRepo();
+  commitConfig(repo, config, ["dev"]);
+  return { env: hookEnv(), repo };
+}
+
+/** The hook's decision and reason for one command, or null when it was silent. */
+async function pushAnswer(
+  env: Record<string, string>,
+  repo: string,
+  command: string,
+  tool = "Bash",
+): Promise<{ decision: string; reason: string } | null> {
+  const result = await runHook(
+    gitGuardHook,
+    {
+      hook_event_name: "PreToolUse",
+      session_id: "s1",
+      cwd: repo,
+      tool_name: tool,
+      tool_input: { command },
+    },
+    env,
+  );
+  if (result.stdout === undefined) return null;
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  return { decision: output.permissionDecision, reason: output.permissionDecisionReason };
+}
+
+/** What the guard says when `autoPush` is off, read from the project's committed file on `dev`. */
+const AUTO_PUSH_OFF =
+  'This push leaves the machine, and autoPush is off (default), so a push is yours to approve: turn it on for yourself with `cc-smart-dev-kit workflow set autoPush true`, or for the project in .claude/cc-smart-dev-kit.json ("workflow": {"autoPush": true}), committed to dev and pushed. Approve it yourself if you meant it.';
+
+describe("D15: autoPush off asks before any git push", () => {
+  it("D15: off (the default) asks for a feature-branch push, naming the setting and the fix", async () => {
+    const { env, repo } = policyRepo();
+    expect(await pushAnswer(env, repo, "git push origin fix/x")).toEqual({
+      decision: "ask",
+      reason: AUTO_PUSH_OFF,
+    });
+  });
+
+  it("D15: every spelling of a push asks: bare, -C, a shell string, a chain, PowerShell", async () => {
+    const { env, repo } = policyRepo();
+    for (const [command, tool] of [
+      ["git push", "Bash"],
+      ["git push -u origin HEAD", "Bash"],
+      ["git -C ../other push", "Bash"],
+      ["bash -c 'git push origin fix/x'", "Bash"],
+      ["cd sub && git commit -m x && git push", "Bash"],
+      ["env GIT_TRACE=1 git push origin fix/x", "Bash"],
+      ["git push origin fix/x; git status", "PowerShell"],
+    ] as const) {
+      const answer = await pushAnswer(env, repo, command, tool);
+      expect([command, answer?.decision]).toEqual([command, "ask"]);
+      expect(answer?.reason).toContain("autoPush is off");
+    }
+  });
+
+  it("D15: what sends nothing, and what is no push, stays silent", async () => {
+    const { env, repo } = policyRepo();
+    for (const command of [
+      "git push --dry-run origin fix/x",
+      "git push -n",
+      "git status",
+      "git commit -m 'git push later'",
+      'echo "git push"',
+      "git fetch origin",
+    ]) {
+      expect([command, await pushAnswer(env, repo, command)]).toEqual([command, null]);
+    }
+  });
+
+  it("D15: on (committed on the base) is silent for a feature branch, and main still asks", async () => {
+    const { env, repo } = policyRepo({ ...BASE_CONFIG, workflow: { autoPush: true } });
+    expect(await pushAnswer(env, repo, "git push origin fix/x")).toBeNull();
+    // A bare push from a feature branch sends that branch, and from main it asks for main.
+    expect((await pushAnswer(env, repo, "git push"))?.reason).toContain("straight to `main`");
+    git(repo, "switch", "-q", "-c", "fix/x");
+    expect(await pushAnswer(env, repo, "git push")).toBeNull();
+    const main = await pushAnswer(env, repo, "git push origin main");
+    expect(main?.reason).toBe(
+      "This pushes straight to `main`, a protected branch: work usually reaches it through a pull request. Approve only if you meant to push there.",
+    );
+    expect((await pushAnswer(env, repo, "git push -f origin fix/x"))?.reason).toStartWith(
+      "This is a force-push",
+    );
+  });
+
+  it("D15: off and a force-push are both asked, in one answer", async () => {
+    const { env, repo } = policyRepo();
+    const answer = await pushAnswer(env, repo, "git push --force origin fix/x");
+    expect(answer?.reason).toContain("This is a force-push");
+    expect(answer?.reason).toContain(AUTO_PUSH_OFF);
+  });
+
+  it("D15: the person's own workflow file turns it on", async () => {
+    const { env, repo } = policyRepo();
+    writePersonalWorkflow(env, { autoPush: true });
+    expect(await pushAnswer(env, repo, "git push origin fix/x")).toBeNull();
+  });
+
+  it("D15: a worktree's uncommitted autoPush: true counts for nothing", async () => {
+    const { env, repo } = policyRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...BASE_CONFIG,
+      workflow: { autoPush: true },
+    });
+    expect((await pushAnswer(env, repo, "git push origin fix/x"))?.reason).toBe(AUTO_PUSH_OFF);
+    // Nor does a worktree of the repo with its own file.
+    const worktree = join(repo, "..", "app-wt-session");
+    git(repo, "worktree", "add", "-q", "-b", "session-branch", worktree);
+    writeClaudeFile(worktree, "cc-smart-dev-kit.json", {
+      ...BASE_CONFIG,
+      workflow: { autoPush: true },
+    });
+    expect((await pushAnswer(env, worktree, "git push origin fix/x"))?.reason).toBe(AUTO_PUSH_OFF);
+  });
+
+  it("D15: a policy that cannot be read asks, with the reason", async () => {
+    const lost = policyRepo({ ...BASE_CONFIG, worktrees: { base: "nowhere" } });
+    git(lost.repo, "update-ref", "-d", "refs/remotes/origin/nowhere");
+    expect((await pushAnswer(lost.env, lost.repo, "git push origin fix/x"))?.reason).toStartWith(
+      "cc-smart-dev-kit cannot tell whether this push is allowed: the push policy committed on nowhere cannot be read",
+    );
+    const { env, repo } = policyRepo();
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "{ not json");
+    expect((await pushAnswer(env, repo, "git push origin fix/x"))?.reason).toStartWith(
+      "cc-smart-dev-kit cannot tell whether this push is allowed: the workflow settings cannot be read",
+    );
+  });
+
+  it("D15: a project with no integration base reads the default and the person's own file", async () => {
+    const { env, repo } = policyRepo({ requires: ">=0.4" });
+    expect((await pushAnswer(env, repo, "git push origin fix/x"))?.reason).toContain(
+      "committed to the integration base (worktrees.base) and pushed",
+    );
+    writePersonalWorkflow(env, { autoPush: true });
+    expect(await pushAnswer(env, repo, "git push origin fix/x")).toBeNull();
+  });
+});
+
+describe("D24: a crew session never pushes", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  it("D24: any git push is denied, whatever autoPush says", async () => {
+    const { env, repo } = policyRepo({ ...BASE_CONFIG, workflow: { autoPush: true } });
+    const crew = { ...env, ...CREW };
+    for (const [command, tool] of [
+      ["git push", "Bash"],
+      ["git push origin fix/x", "Bash"],
+      ["git push -u origin HEAD", "Bash"],
+      ["git -C ../other push origin fix/x", "Bash"],
+      ["bash -c 'git push origin HEAD'", "Bash"],
+      ['sh -c "cd sub && git push"', "Bash"],
+      ["git commit -m x && git push", "Bash"],
+      ["git push --dry-run origin fix/x", "Bash"],
+      ["git push --force origin main", "Bash"],
+      ["git push origin :old-branch", "Bash"],
+      ["git push origin fix/x", "PowerShell"],
+    ] as const) {
+      expect([command, await pushAnswer(crew, repo, command, tool)]).toEqual([
+        command,
+        { decision: "deny", reason: CREW_PUSH_REFUSAL },
+      ]);
+    }
+    // The lead (no variable) keeps today's behaviour: autoPush on is silent for a feature branch.
+    expect(await pushAnswer(env, repo, "git push origin fix/x")).toBeNull();
+  });
+
+  it("D24: with autoPush off a crew session is denied, not asked", async () => {
+    const { env, repo } = policyRepo();
+    expect(await pushAnswer({ ...env, ...CREW }, repo, "git push origin fix/x")).toEqual({
+      decision: "deny",
+      reason: CREW_PUSH_REFUSAL,
+    });
+  });
+
+  it("D24: the rest of git is as for anyone: commits and reads are silent", async () => {
+    const { env, repo } = policyRepo();
+    const crew = { ...env, ...CREW };
+    for (const command of [
+      "git commit -m x",
+      "git status",
+      "git fetch origin",
+      "git merge origin/dev",
+      "git log --oneline -3",
+    ]) {
+      expect([command, await pushAnswer(crew, repo, command)]).toEqual([command, null]);
+    }
+    // A thing git guards for everyone is still asked for a crew session.
+    expect((await pushAnswer(crew, repo, "git reset --hard"))?.decision).toBe("ask");
+  });
+
+  it("D24: an empty variable names no crew session", async () => {
+    const { env, repo } = policyRepo({ ...BASE_CONFIG, workflow: { autoPush: true } });
+    expect(
+      await pushAnswer({ ...env, [CREW_ENV]: "  " }, repo, "git push origin fix/x"),
+    ).toBeNull();
+  });
+
+  it("D24: the verdict names the denial apart from the questions", () => {
+    const options = {
+      protectedBranches: ["main"],
+      pushRules: { crew: true, autoPushAsk: () => "asked" },
+      sharedStash: false,
+      env: cleanGitEnv(),
+    };
+    expect(guardVerdict("git push -f origin main", neutral, options)).toEqual({
+      refuse: [CREW_PUSH_REFUSAL],
+      ask: [],
+    });
+    expect(guardVerdict("git reset --hard", neutral, options).refuse).toEqual([]);
+    const lead = { ...options, pushRules: { crew: false, autoPushAsk: () => "asked" } };
+    expect(guardVerdict("git push origin fix/x", neutral, lead)).toEqual({
+      refuse: [],
+      ask: ["asked"],
+    });
   });
 });

@@ -40,13 +40,25 @@ claude plugin validate plugin --strict
 claude plugin validate . --strict
 ```
 
-All three must pass. `bun run check` runs the type check, Biome, the neutrality check,
-the tests and the bundle check, in CI's order. Fix a failure at its cause; never skip
-a check.
+All three must pass. `bun run check` runs the type check, Biome, the neutrality check
+(`check:neutral`), the duplicate-sentence check (`check:duplicates`), the general
+instructions' line budget (`check:core-lines`), the tests and the bundle check
+(`build:check`), in CI's order (`package.json`, the `check` script). Fix a failure at its
+cause; never skip a check.
+
+The docs stay true in the same change (`.claude/CLAUDE.md` § Docs): a release that changes a
+command or a `cc-smart-dev-kit.json` field updates `README.md`, one that changes how a part works
+updates `docs/design.md`, and one that relies on a new Claude Code behaviour adds its row to
+`docs/claude-code-contract.md` — before the pull request, never after it.
+
+The second opinion, once, before the first push (`plugin/instructions/core.md` § Review): the
+read-only `cc-smart-dev-kit:reviewer` agent, for anything beyond a small fix. A release is a risky
+change set there, so the reviewer runs on `opus` at `xhigh`. A release that only raises the
+version and rebuilds the bundle counts as a small fix.
 
 ## 4. Pull request
 
-1. Commit `plugin.json`, `plugin/dist/` and the change in one commit.
+1. Commit `plugin.json` and `plugin/dist/` with the change that needs them.
 2. Open a pull request into `main`. In its body: what changed for a user, the version
    step and why, and anything a user must run (`cc-smart-dev-kit setup`, a restart).
    The router changed (`plugin/dist/router.js` differs from the last release, which is

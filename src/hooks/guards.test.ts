@@ -2,6 +2,9 @@
 import { describe, expect, test } from "bun:test";
 import { symlinkSync } from "node:fs";
 import { join } from "node:path";
+import { cliPaths } from "../cli/paths";
+import { createCrew, crewFile, writeStoreFile } from "../crew/store";
+import { locateCheckout } from "../project/resolve";
 import {
   hookEnv,
   makeRepo,
@@ -48,7 +51,7 @@ describe("the main-folder guard", () => {
   function guarded(guardMainFolder = true) {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder },
+      worktrees: { base: "main", guardMainFolder },
     });
     const worktree = join(repo, "..", "app-wt-fix");
     git(repo, "worktree", "add", "-q", "-b", "fix", worktree);
@@ -111,7 +114,7 @@ describe("the main-folder guard", () => {
   test("cc-smart-dev-kit.json lists it in ownHooks (the project runs its own copy): silent", async () => {
     const { repo } = guarded();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+      worktrees: { base: "main", guardMainFolder: true },
       ownHooks: ["main-folder-guard"],
     });
     wireProjectHook(repo, "PreToolUse", "Edit|Write|NotebookEdit");
@@ -125,7 +128,7 @@ describe("the main-folder guard", () => {
     // repo ("cannot check"); it is accepted and silences nothing.
     const { repo, worktree } = guarded();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      worktrees: { base: "main", prefix: "app-wt-", guardMainFolder: true },
+      worktrees: { base: "main", guardMainFolder: true },
       ownHooks: ["serena-root"],
     });
     expect(
@@ -251,5 +254,207 @@ describe("the message guard", () => {
     expect(result.stdout).toContain('"permissionDecision":"deny"');
     // The refusal names the folder as the session record has it (what ListAgents shows).
     expect(result.stdout).toContain(`works in ${join(link, "src")}`);
+  });
+});
+
+/**
+ * The store of a repo's crew sessions, in the hook's own state folder: two crew sessions of one
+ * lead, and the environment a crew session's hooks run with (`CREW_ENV`).
+ */
+async function crewStore(
+  env: Record<string, string>,
+  repo: string,
+  records: { id: string; name: string; phase: string }[],
+): Promise<{
+  send: (to: string, message: string) => Promise<{ stdout?: string }>;
+  env: Record<string, string>;
+}> {
+  const paths = cliPaths(env);
+  const root = locateCheckout(repo)?.root ?? repo;
+  for (const one of records) {
+    await createCrew(
+      paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: `crew/${one.phase}-${one.id}`,
+        effort: "high",
+        files: [],
+        id: one.id,
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD app lead",
+        leadSessionId: "c00f9bb5-1111-2222-3333-444444444444",
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: one.name,
+        permissionMode: "auto",
+        phase: one.phase,
+        plan: "lead",
+        pr: null,
+        questions: [],
+        repo: root,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: one.id,
+        state: "working",
+        waitsFor: [],
+        worktree: join(repo, ".claude", "worktrees", one.id),
+      },
+      Date.parse("2026-10-21T10:00:00.000Z"),
+    );
+  }
+  // The sender is the first crew session: its own session's hooks carry its id.
+  return {
+    env: { ...env, CC_SMART_DEV_KIT_CREW: records[0]?.id ?? "" },
+    send: (to, message) =>
+      runHook(
+        messageGuardHook,
+        {
+          cwd: repo,
+          hook_event_name: "PreToolUse",
+          session_id: "aaaa1111-2222-3333-4444-555555555555",
+          tool_input: { message, to },
+          tool_name: "SendMessage",
+        },
+        { ...env, CC_SMART_DEV_KIT_CREW: records[0]?.id ?? "" },
+      ),
+  };
+}
+
+describe("the message guard: crew sessions talk in contract notes (D47)", () => {
+  const SELF = { id: "B1-lookup-1a2b3c", name: "C app B1 lookup", phase: "B1" };
+  const PEER = { id: "B2-api-4d5e6f", name: "C app B2 api", phase: "B2" };
+
+  test("an untagged message to another crew session is refused, naming crew tell", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+    expect(await crew.send(PEER.name, "done!")).toEqual(
+      deny(
+        [
+          '"C app B2 api" is a crew session too, and one crew session messages another only with a contract note or a contract question.',
+          'Fix: cc-smart-dev-kit crew tell "C app B2 api" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"',
+          'It writes the first line the note must carry ("[B1] CONTRACT: …"), and records the note for your lead.',
+          "That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done.",
+        ].join("\n"),
+      ),
+    );
+  });
+
+  test("a message with the sender's own tag goes through, of either kind", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+    expect(
+      await crew.send(PEER.name, "[B1] CONTRACT: x.ts:lookup is gone\nNo reply needed."),
+    ).toEqual({});
+    expect(await crew.send(PEER.name, "[B1] QUESTION: does your endpoint page after 50?")).toEqual(
+      {},
+    );
+  });
+
+  test("a tag of another phase, or not on the first line, is not the tag", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+    const result = await crew.send(PEER.name, "[B2] CONTRACT: x.ts:lookup is gone");
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const late = await crew.send(PEER.name, "heads up\n[B1] CONTRACT: x.ts:lookup is gone");
+    expect(late.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  test("a message to yourself, or to a session outside the store goes through", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+    expect(await crew.send(SELF.name, "note to self")).toEqual({});
+    expect(await crew.send("someone else", "hello")).toEqual({});
+  });
+
+  test("F2b-3: a message to its own lead is refused, naming crew report", async () => {
+    // `crew tell` matches the lead too (src/crew/tell.ts): a crew session reaches its lead
+    // through the recorded report, never a raw message. The tag does not change that — the
+    // lead is not a peer.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+    for (const message of ["done", "[B1] CONTRACT: x.ts:lookup is gone"]) {
+      expect([message, await crew.send("LEAD app lead", message)]).toEqual([
+        message,
+        deny(
+          [
+            '"LEAD app lead" is your lead, and a crew session reaches its lead through crew report, not a message.',
+            'Fix: cc-smart-dev-kit crew report --status done, or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>',
+            "The report is recorded for the lead, and its watch wakes the lead on the line.",
+          ].join("\n"),
+        ),
+      ]);
+    }
+  });
+
+  test("a session that is no crew session is not judged: the lead messages as it likes", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const plain = hookEnv();
+    const crew = await crewStore(plain, repo, [SELF, PEER]);
+    // The same message, from a session whose environment names no crew session.
+    expect(
+      await runHook(
+        messageGuardHook,
+        {
+          cwd: repo,
+          hook_event_name: "PreToolUse",
+          session_id: SESSION,
+          tool_input: { message: "done", to: PEER.name },
+          tool_name: "SendMessage",
+        },
+        plain,
+      ),
+    ).toEqual({});
+    // A crew id the store does not know is no crew session of this repo either.
+    expect(
+      await runHook(
+        messageGuardHook,
+        {
+          cwd: repo,
+          hook_event_name: "PreToolUse",
+          session_id: SESSION,
+          tool_input: { message: "done", to: PEER.name },
+          tool_name: "SendMessage",
+        },
+        { ...plain, CC_SMART_DEV_KIT_CREW: "no-such-crew" },
+      ),
+    ).toEqual({});
+    expect(crew.env.CC_SMART_DEV_KIT_CREW).toBe(SELF.id);
+  });
+
+  test("the other-repo rule is unchanged for a crew session", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+    const elsewhere = tempDir("elsewhere");
+    writeSessionRecord(crew.env, { sessionId: "x", cwd: elsewhere, name: "other project" });
+    expect(await crew.send("other project", "hi")).toEqual(
+      deny(
+        [
+          `"other project" works in ${elsewhere}, outside this repo: sessions message only sessions of their own repo.`,
+          "ListAgents lists every Claude session on the machine, other projects too.",
+        ].join("\n"),
+      ),
+    );
+  });
+
+  test("a store whose sender record cannot be read lets the message through (fails open)", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const env = hookEnv();
+    const crew = await crewStore(env, repo, [SELF, PEER]);
+    writeStoreFile(
+      crewFile(cliPaths(env).stateDir, locateCheckout(repo)?.root ?? repo, SELF.id),
+      "{",
+    );
+    expect(await crew.send(PEER.name, "done")).toEqual({});
   });
 });

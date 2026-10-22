@@ -10,7 +10,11 @@
  *      reach the portal (DNS rebinding); the browser then sends `Host: evil.example`. Only
  *      `127.0.0.1:<port>` and `localhost:<port>` pass, so that page gets a 403.
  *   2. **No foreign `Origin`.** A request that carries an `Origin` header carries it because
- *      a page made it. Only our own two origins pass, on any method.
+ *      a page made it. Only our own two origins pass, on any method. **And no other page's
+ *      load:** a browser names where a request comes from in `Sec-Fetch-Site`. Anything but a
+ *      navigation must be `same-origin` (our own page) or `none` (the person typed it): a page
+ *      on another `127.0.0.1` port is the SAME site (a cookie has no port), so its `<img>`
+ *      carried our cookie past `SameSite=Strict` and was served.
  *   3. **A session cookie, or the one-time token.** Nothing else is served.
  *   4. **A POST carries our CSRF token.** The cookie alone is never enough: `SameSite=Strict`
  *      stops most cross-site sends, and this stops the rest (and a same-site page that is
@@ -110,7 +114,25 @@ export const COOKIE_BASE = "ccsdk_portal";
 export const CSRF_HEADER = "x-ccsdk-csrf";
 
 /** Why a request was refused, in one word. */
-export type Refusal = "csrf" | "host" | "origin" | "session";
+export type Refusal = "csrf" | "host" | "origin" | "session" | "site";
+
+/** What a browser says about where a request comes from (`Sec-Fetch-Site`, `Sec-Fetch-Mode`). */
+export interface FetchMetadata {
+  mode: null | string;
+  site: null | string;
+}
+
+/**
+ * True when a browser's own word on where a request comes from lets it in: a navigation (the
+ * person followed a link, or opened the printed one), or anything from our own page
+ * (`same-origin`) or from no page at all (`none`: typed, a bookmark). A request with no
+ * `Sec-Fetch-Site` is not from a browser that sends it (every current one does): the other rules
+ * judge it, and only a session or the one-time token lets it in.
+ */
+export function fetchSiteAllowed(meta: FetchMetadata): boolean {
+  if (meta.site === null || meta.mode === "navigate") return true;
+  return meta.site === "same-origin" || meta.site === "none";
+}
 
 /** What the door says about one request. */
 export type Admission =
@@ -124,17 +146,20 @@ export type Admission =
   | { kind: "refused"; reason: Refusal };
 
 /**
- * The two rules that hold for **every** request, before anything is looked at: the `Host`
- * must be ours (else a page at `evil.example` that points its DNS here reaches the portal),
- * and an `Origin`, when there is one, must be ours too.
+ * The rules that hold for **every** request, before anything is looked at: the `Host` must be
+ * ours (else a page at `evil.example` that points its DNS here reaches the portal), an
+ * `Origin`, when there is one, must be ours too, and no other page may load anything of ours
+ * (`fetchSiteAllowed`).
  */
 export function networkAllowed(
   host: null | string,
   origin: null | string,
   port: number,
+  fetchMeta: FetchMetadata,
 ): null | Refusal {
   if (!hostAllowed(host, port)) return "host";
   if (origin !== null && !originAllowed(origin, port)) return "origin";
+  if (!fetchSiteAllowed(fetchMeta)) return "site";
   return null;
 }
 
@@ -150,6 +175,7 @@ export function admit(options: {
   cookie: null | string;
   csrf: null | string;
   expectedCsrf: null | string;
+  fetchMeta: FetchMetadata;
   host: null | string;
   method: string;
   origin: null | string;
@@ -157,7 +183,7 @@ export function admit(options: {
   session: null | string;
   tokenValid: boolean;
 }): Admission {
-  const network = networkAllowed(options.host, options.origin, options.port);
+  const network = networkAllowed(options.host, options.origin, options.port, options.fetchMeta);
   if (network !== null) return { kind: "refused", reason: network };
   if (secretsMatch(options.cookie, options.session)) {
     if (options.method !== "POST") return { kind: "admits" };

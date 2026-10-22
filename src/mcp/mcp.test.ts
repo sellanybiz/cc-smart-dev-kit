@@ -10,10 +10,16 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { applyManagedJson } from "../setup/managed-json";
 import { listBackups, readChanged, writeManagedFile } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import { mcpChecks } from "./doctor";
-import { markMcpServerPending, readMcpRecords, recordMcpServer } from "./records";
+import {
+  markMcpServerAdding,
+  markMcpServerPending,
+  readMcpRecords,
+  recordMcpServer,
+} from "./records";
 import {
   applyMcpServers,
   type ClaudeRun,
@@ -76,7 +82,7 @@ function fakeClaude(home: string) {
 
 const context = (home: string) => ({
   bunx: "bunx",
-  launcher: join(home, ".local", "bin", "cc-smart-dev-kit"),
+  launcher: [join(home, ".local", "bin", "cc-smart-dev-kit")],
   tavily: { key: true } as const,
 });
 
@@ -118,6 +124,19 @@ describe("the servers the plugin registers", () => {
       url: TAVILY_MCP_URL,
     });
     expect(servers[2]?.json).not.toContain("tvly-");
+  });
+
+  test("ST-7: on Windows the browser server starts the .cmd launcher through cmd.exe", () => {
+    const servers = mcpServers({
+      ...context("C:\\Users\\me"),
+      launcher: ["cmd.exe", "/c", "C:\\Users\\me\\.local\\bin\\cc-smart-dev-kit.cmd"],
+    });
+    expect(servers[0]?.json).toBe(
+      JSON.stringify({
+        command: "cmd.exe",
+        args: ["/c", "C:\\Users\\me\\.local\\bin\\cc-smart-dev-kit.cmd", "browser", "mcp"],
+      }),
+    );
   });
 
   test("no Tavily key: it is skipped, with a note, and never registered", () => {
@@ -375,6 +394,51 @@ describe("what setup registers, and what it leaves alone", () => {
     });
   });
 
+  test("ST-4: an add whose record never landed is still setup's own the next time", () => {
+    // The process died (or the lock was busy) right after `claude mcp add-json`, before the
+    // record was written. Without a record written BEFORE the add, the next setup read the
+    // server as someone else's, and never managed it again.
+    const home = tempDir("mcp-add-pending");
+    const fake = fakeClaude(home);
+    const servers = mcpServers(context(home));
+    const seen: (boolean | undefined)[] = [];
+    const run: ClaudeRun = (argv) => {
+      if (argv[2] === "add-json")
+        seen.push(readMcpRecords(fake.paths.stateDir)[argv[5] ?? ""]?.pending);
+      return fake.run(argv);
+    };
+    const plan = planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile));
+    applyMcpServers(
+      plan,
+      run,
+      () => "/usr/bin/claude",
+      false,
+      (name, json) => {
+        markMcpServerAdding(fake.paths.stateDir, name, json, "then");
+      },
+    );
+    // Each add ran with its pending record already there.
+    expect(seen).toEqual([true, true, true]);
+    // ... and no `recordApplied`: the run stopped here. The next setup keeps them all as ours.
+    const again = planMcpServers(
+      servers,
+      readMcpRecords(fake.paths.stateDir),
+      readUserServers(fake.paths.userConfigFile),
+    );
+    expect(again.map((entry) => [entry.action, entry.clearPending ?? false])).toEqual([
+      ["keep", true],
+      ["keep", true],
+      ["keep", true],
+    ]);
+    const applied = applyMcpServers(again, fake.run, () => "/usr/bin/claude", false, noPending);
+    expect(fake.calls).toHaveLength(3);
+    recordApplied(fake.paths.stateDir, applied, "later");
+    expect(readMcpRecords(fake.paths.stateDir).playwright).toEqual({
+      at: "later",
+      json: servers[0]?.json ?? "",
+    });
+  });
+
   test("a record still pending, its server gone: setup finishes its own update", () => {
     const home = tempDir("mcp-pending");
     const fake = fakeClaude(home);
@@ -594,7 +658,14 @@ describe("restore: exactly what setup registered", () => {
     const home = tempDir("mcp-restore");
     const fake = fakeClaude(home);
     const removal = removeMcpServers(fake.paths, fake.run, () => "/usr/bin/claude", false);
-    expect(removal).toEqual({ forgotten: [], kept: [], notes: [], removed: [], wouldRun: [] });
+    expect(removal).toEqual({
+      forgotten: [],
+      kept: [],
+      notes: [],
+      recordsUnreadable: false,
+      removed: [],
+      wouldRun: [],
+    });
     expect(fake.calls).toEqual([]);
     expect(existsSync(fake.paths.userConfigFile)).toBe(false);
   });
@@ -956,6 +1027,58 @@ describe("a Tavily key the settings hold, and nowhere else", () => {
     // A settings file that cannot be read is not a key either, and never an error.
     writeFileSync(paths_.settingsFile, "{not json");
     expect(readTavilyKey(paths_, {}).source).toBe("file");
+  });
+
+  /** Setup's own copy of the key in the settings: an owned secret, as setup writes it. */
+  function ownedCopy(paths_: ReturnType<typeof paths>, value: string): void {
+    mkdirSync(dirname(paths_.settingsFile), { recursive: true });
+    applyManagedJson({
+      file: paths_.settingsFile,
+      stateDir: paths_.stateDir,
+      set: [[["env", "TAVILY_API_KEY"], value]],
+      secret: () => true,
+    });
+  }
+
+  test("ST-3: inside a Claude Code session the environment holds setup's own copy: that is not the person's key", () => {
+    // Claude Code hands the settings' `env` to its Bash tool, so a setup run there sees the
+    // copy setup wrote as `TAVILY_API_KEY` in its environment. Read as "the person's own key",
+    // it made setup REMOVE the copy from the settings.
+    const home = tempDir("mcp-tavily-session");
+    const paths_ = paths(home);
+    ownedCopy(paths_, "tvly-from-file");
+    mkdirSync(dirname(paths_.tavilyKeyFile), { recursive: true });
+    writeFileSync(paths_.tavilyKeyFile, "tvly-from-file\n", { mode: 0o600 });
+    expect(readTavilyKey(paths_, { TAVILY_API_KEY: "tvly-from-file" })).toEqual({
+      source: "file",
+      value: "tvly-from-file",
+    });
+    // Another value in the environment is the person's own, as before.
+    expect(readTavilyKey(paths_, { TAVILY_API_KEY: "tvly-theirs" })).toEqual({
+      source: "environment",
+    });
+  });
+
+  test("ST-3: a rotated key file wins over setup's own copy of the old key", () => {
+    const home = tempDir("mcp-tavily-rotated");
+    const paths_ = paths(home);
+    ownedCopy(paths_, "tvly-old");
+    mkdirSync(dirname(paths_.tavilyKeyFile), { recursive: true });
+    writeFileSync(paths_.tavilyKeyFile, "tvly-new\n", { mode: 0o600 });
+    expect(readTavilyKey(paths_, {})).toEqual({ source: "file", value: "tvly-new" });
+    // A key the PERSON put in the settings still comes first (the order stays).
+    writeFileSync(paths_.settingsFile, JSON.stringify({ env: { TAVILY_API_KEY: "tvly-mine" } }));
+    expect(readTavilyKey(paths_, {})).toEqual({ source: "settings" });
+  });
+
+  test("ST-3: setup's own copy with no key file left is kept (M2)", () => {
+    const home = tempDir("mcp-tavily-copy-only");
+    const paths_ = paths(home);
+    ownedCopy(paths_, "tvly-only-copy");
+    expect(readTavilyKey(paths_, {})).toEqual({ source: "settings" });
+    expect(readTavilyKey(paths_, { TAVILY_API_KEY: "tvly-only-copy" })).toEqual({
+      source: "settings",
+    });
   });
 
   test("setup registers the server, and leaves the key where it is", () => {

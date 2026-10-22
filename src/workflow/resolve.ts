@@ -10,6 +10,10 @@
  * 3. **the built-in default** — the safe one (nothing is committed, pushed or merged by
  *    itself), from `schema.ts`.
  *
+ * **The review gate** (`REVIEW_GATE_KEYS`, what the merge guard judges with) resolves the same
+ * way, with one change of source: the project's part is the file as committed on a branch
+ * (`resolveGate`), never a checkout's working copy, which a session can edit.
+ *
  * A **switch** is different on purpose: it names a setting that already exists — the status
  * line in Claude Code's `settings.json` (setup's `--statusline`), the project's
  * `sessionNames`, its `jobs.route`, and the update hold file (`update --hold`). The value
@@ -26,7 +30,14 @@ import { existsSync, readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
 import { statuslineSetting } from "../cli/setup";
 import type { CcSmartDevKitConfig } from "../project/config";
+import {
+  type Checkout,
+  type CommittedConfig,
+  type CommittedOptions,
+  readCommittedConfig,
+} from "../project/resolve";
 import { isHeld, updateFiles } from "../update/state";
+import { describeIssues } from "../zod-issues";
 import {
   type AlertEvent,
   type Workflow,
@@ -53,11 +64,29 @@ export interface ResolvedWorkflow {
   deleteBranch: ResolvedValue<boolean>;
   reviewBeforePush: ResolvedValue<boolean>;
   reviewAgents: ResolvedValue<string[]>;
+  fixesAfterReview: {
+    lines: ResolvedValue<number>;
+    files: ResolvedValue<number>;
+    percent: ResolvedValue<number>;
+  };
   clearWorktreeAfterMerge: ResolvedValue<boolean>;
   alerts: {
     events: ResolvedValue<AlertEvent[]>;
     sound: ResolvedValue<boolean>;
     usagePercent: ResolvedValue<number>;
+  };
+  crew: {
+    enabled: ResolvedValue<boolean>;
+    idleStopMinutes: ResolvedValue<number>;
+    max: ResolvedValue<number>;
+    maxOpus: ResolvedValue<number>;
+    memoryGb: ResolvedValue<number>;
+    quietMinutes: ResolvedValue<number>;
+    handoffPercent: ResolvedValue<number>;
+    softHours: ResolvedValue<number>;
+    maxHours: ResolvedValue<number>;
+    /** Null: no tag is set, and the main checkout's folder name stands in. */
+    tag: ResolvedValue<null | string>;
   };
   switches: {
     statusLine: ResolvedValue<boolean>;
@@ -89,22 +118,44 @@ export function loadWorkflow(file: string): Workflow {
   }
   const parsed = workflowSchema.safeParse(raw);
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((issue) => {
-      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-      return issue.code === "unrecognized_keys"
-        ? `${issue.keys.join(", ")}: unknown field`
-        : `${field}: ${issue.message}`;
-    });
-    throw new WorkflowConfigError(`Invalid ${file}: ${issues.join("; ")}`);
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
   return parsed.data;
 }
 
-/** The project's workflow object and the person's, the project's over it, field by field. */
+/**
+ * The person's own workflow values, or `{}` when the file is not there or cannot be read.
+ * For a caller that judges the policy but must not fail on a broken file — D16's clash
+ * warning, in `project init`'s plan and the portal's preview. A broken file is `workflow
+ * show`'s and the guards' own question, in their own words; a plan must still be shown.
+ */
+export function personalWorkflowOrDefault(paths: CliPaths): Workflow {
+  try {
+    return loadWorkflow(personalWorkflowFile(paths));
+  } catch {
+    return {};
+  }
+}
+
+/** One group of both objects, the project's fields over the person's. */
+function mergedGroup<T extends object>(personal: T | undefined, project: T | undefined) {
+  if (personal === undefined) return project;
+  if (project === undefined) return personal;
+  return { ...personal, ...project };
+}
+
+/**
+ * The project's workflow object and the person's, the project's over it, field by field — a
+ * group's fields too (`alerts`, `fixesAfterReview`, `crew`).
+ */
 export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow {
   const merged: Workflow = { ...personal, ...project };
-  const alerts = { ...personal.alerts, ...project.alerts };
-  if (Object.keys(alerts).length > 0) merged.alerts = alerts;
+  const alerts = mergedGroup(personal.alerts, project.alerts);
+  if (alerts !== undefined) merged.alerts = alerts;
+  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
+  if (fixes !== undefined) merged.fixesAfterReview = fixes;
+  const crew = mergedGroup(personal.crew, project.crew);
+  if (crew !== undefined) merged.crew = crew;
   return merged;
 }
 
@@ -185,6 +236,107 @@ function projectFlag(value: boolean | undefined): ResolvedValue<boolean> {
 }
 
 /**
+ * Where a value came from, as a person reads it: `project, committed on origin/dev` when the
+ * project's part was read from a branch's committed file (`resolveGate`), else the bare source.
+ */
+export function sourceLabel(value: ResolvedValue<unknown>, branch: string | null): string {
+  return value.source === "project" && branch !== null
+    ? `project, committed on origin/${branch}`
+    : value.source;
+}
+
+/**
+ * The review gate (`REVIEW_GATE_KEYS`) as the merge guard reads it: the built-in default, the
+ * person's own file, and the project's file **as committed on `origin/<branch>`**, never the
+ * working copy of a checkout. A session can edit its own worktree's file; it cannot change
+ * what a branch it has not pushed to says.
+ */
+export interface Gate {
+  /** The branch whose committed file holds the project's part; null when none was named. */
+  branch: string | null;
+  /** That committed file; null when no branch was named. */
+  config: CcSmartDevKitConfig | null;
+  /** Every value, resolved over that committed file. */
+  resolved: ResolvedWorkflow;
+}
+
+/** The gate, or why it cannot be read (the caller asks the person). */
+export type GateRead = { ok: true; gate: Gate } | { ok: false; why: string };
+
+/**
+ * The gate for `branch`. With `branch` null (the project names no `worktrees.base`), only the
+ * default and the person's file count. A ref or a file that is not there, or a committed file
+ * that cannot be used, is `ok: false` with the reason; a broken personal file throws
+ * `WorkflowConfigError`, as `resolveWorkflow` does.
+ */
+export function resolveGate(
+  paths: CliPaths,
+  checkout: Checkout,
+  branch: string | null,
+  options: CommittedOptions = {},
+): GateRead {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed: CommittedConfig;
+  try {
+    committed = readCommittedConfig(checkout, branch, options);
+  } catch (error) {
+    // A committed file too new or broken, or no git at all: the gate is unknown, never guessed.
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (!committed.found) return { ok: false, why: committed.why };
+  const resolved = resolveWorkflow(paths, committed.config);
+  return { ok: true, gate: { branch, config: committed.config, resolved } };
+}
+
+/** Where each key's value sits in a resolved workflow: one entry per key, so none is missed. */
+const RESOLVED: {
+  readonly [K in WorkflowKey]: (resolved: ResolvedWorkflow) => ResolvedValue<unknown>;
+} = {
+  autoCommit: (r) => r.autoCommit,
+  autoPush: (r) => r.autoPush,
+  openPr: (r) => r.openPr,
+  autoMerge: (r) => r.autoMerge,
+  mergeMethod: (r) => r.mergeMethod,
+  deleteBranch: (r) => r.deleteBranch,
+  reviewBeforePush: (r) => r.reviewBeforePush,
+  reviewAgents: (r) => r.reviewAgents,
+  "fixesAfterReview.lines": (r) => r.fixesAfterReview.lines,
+  "fixesAfterReview.files": (r) => r.fixesAfterReview.files,
+  "fixesAfterReview.percent": (r) => r.fixesAfterReview.percent,
+  clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
+  "alerts.events": (r) => r.alerts.events,
+  "alerts.sound": (r) => r.alerts.sound,
+  "alerts.usagePercent": (r) => r.alerts.usagePercent,
+  "crew.enabled": (r) => r.crew.enabled,
+  "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
+  "crew.max": (r) => r.crew.max,
+  "crew.maxOpus": (r) => r.crew.maxOpus,
+  "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.quietMinutes": (r) => r.crew.quietMinutes,
+  "crew.handoffPercent": (r) => r.crew.handoffPercent,
+  "crew.softHours": (r) => r.crew.softHours,
+  "crew.maxHours": (r) => r.crew.maxHours,
+  "crew.tag": (r) => r.crew.tag,
+  "switches.statusLine": (r) => r.switches.statusLine,
+  "switches.sessionNames": (r) => r.switches.sessionNames,
+  "switches.jobRoute": (r) => r.switches.jobRoute,
+  "switches.updateHold": (r) => r.switches.updateHold,
+};
+
+/**
+ * The value and source the resolver holds for one key. The one map from a key to its value:
+ * `workflow show` and the portal's Settings page both read through it.
+ */
+export function resolvedValueOf(
+  resolved: ResolvedWorkflow,
+  key: WorkflowKey,
+): ResolvedValue<unknown> {
+  return RESOLVED[key](resolved);
+}
+
+/**
  * Every workflow value, resolved. Reads the person's file and the three settings a switch
  * maps onto; throws `WorkflowConfigError` when the person's file is broken.
  */
@@ -199,6 +351,8 @@ export function resolveWorkflow(
     value,
     source: sourceOf(personal, project, key),
   });
+  const fixes = merged.fixesAfterReview ?? {};
+  const crew = merged.crew ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -211,12 +365,41 @@ export function resolveWorkflow(
       merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush,
     ),
     reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
+    fixesAfterReview: {
+      lines: of("fixesAfterReview.lines", fixes.lines ?? workflowDefaults.fixesAfterReview.lines),
+      files: of("fixesAfterReview.files", fixes.files ?? workflowDefaults.fixesAfterReview.files),
+      percent: of(
+        "fixesAfterReview.percent",
+        fixes.percent ?? workflowDefaults.fixesAfterReview.percent,
+      ),
+    },
     clearWorktreeAfterMerge: of(
       "clearWorktreeAfterMerge",
       merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge,
     ),
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
+    crew: {
+      enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      idleStopMinutes: of(
+        "crew.idleStopMinutes",
+        crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes,
+      ),
+      max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
+      maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
+      memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      quietMinutes: of(
+        "crew.quietMinutes",
+        crew.quietMinutes ?? workflowDefaults.crew.quietMinutes,
+      ),
+      handoffPercent: of(
+        "crew.handoffPercent",
+        crew.handoffPercent ?? workflowDefaults.crew.handoffPercent,
+      ),
+      softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
+      maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
+      tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
+    },
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),

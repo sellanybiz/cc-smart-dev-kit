@@ -17,8 +17,9 @@
  * A file last changed before the window holds nothing in it, and is not read.
  *
  * Beside the transcripts it lists the Opus and Fable launches the Agent guard allowed
- * (`src/hooks/agent-launches.ts`), with why: an Opus or Fable agent spends the person's own
- * plan usage, and the reason the guard accepted is the one thing the transcripts cannot say.
+ * (`src/hooks/agent-launches.ts`), counted by the effort each ran at and by why (its reason
+ * word): an Opus or Fable agent spends the person's own plan usage, and the reason the guard
+ * accepted is the one thing the transcripts cannot say.
  *
  * It also shows the auto-mode safety checks the router counted (`../gateway/safety-checks.ts`),
  * by day: those requests are not in the transcripts, since they belong to no session's
@@ -71,7 +72,7 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** The entries of a folder, by kind; empty when it is not there or not readable. */
-function entries(path: string): { dirs: string[]; files: string[] } {
+export function entries(path: string): { dirs: string[]; files: string[] } {
   try {
     const all = readdirSync(path, { withFileTypes: true });
     return {
@@ -155,7 +156,11 @@ function readTranscript(
   return { cwd, replies };
 }
 
-function matches(project: null | string, folder: string, cwd: null | string): boolean {
+/**
+ * Whether a session belongs to `project`: its folder, its last part, or the session's `cwd`.
+ * `flow.ts` reads the same transcripts and matches a project the same way.
+ */
+export function matches(project: null | string, folder: string, cwd: null | string): boolean {
   if (project === null) return true;
   if (folder === project) return true;
   if (cwd === null) return false;
@@ -385,7 +390,7 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
     );
     return 2;
   }
-  const projectsDir = join(paths.claudeConfigDir, "projects");
+  const projectsDir = paths.projectsDir;
   const sinceMs = nowMs - options.hours * 3_600_000;
   const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
   console.log(

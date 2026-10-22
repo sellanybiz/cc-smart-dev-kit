@@ -123,13 +123,17 @@ Bias upward when unsure. If everything is a Suggestion, say so plainly.
 You cannot see your own blind spots. So after your own pass, for every change beyond a small
 fix, start **one** `cc-smart-dev-kit:reviewer` agent (model and effort: the core instructions).
 For a hard or high-stakes change — security, money, permissions, a big architecture change —
-you may run the reviewer on `fable` instead of `opus`, on your own judgment or when the person
-asks, with the line `Fable reason: review - <why>`; `agent-guard` then asks the person.
+you may run the reviewer on `fable` instead of its usual model, on your own judgment or when the
+person asks, with the line `Fable reason: review - <why>`; `agent-guard` then asks the person.
 
 - **When** (the rule is in the core instructions § Review): phases built in parallel that
   ship together get one read, not one each. A phase built on another open pull request is a
   new change set: its own branch, its own read. Fixes to code the agent already read are a
   re-push, not a new change set.
+- **Crew sessions:** each crew session's phase is its own change set, and the crew session runs its one read
+  (`/cc-smart-dev-kit:crew` § 2). The lead's integration commits — conflict fixes, the shared
+  files, the glue between phases — are one more: one small integration review before the push,
+  on that diff alone.
 - **The brief:** the diff (or how to get it: base and branch), what the change is meant to
   do, your own edge-case list, and the checkout's absolute path (in a worktree, the
   worktree's).

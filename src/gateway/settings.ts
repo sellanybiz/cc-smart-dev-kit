@@ -26,11 +26,13 @@ import { realTarget } from "../setup/write";
  * chain (haiku → scout, sonnet → worker, opus, fable), or to Anthropic unchanged when it has
  * none. No `ANTHROPIC_AUTH_TOKEN`: without one, Claude Code sends the person's own login.
  *
- * `ENABLE_TOOL_SEARCH`: with a base URL that is not Anthropic's, Claude Code turns MCP tool
- * search off and sends every tool definition up front (measured: an Opus session started
- * at 184K tokens through the router, against 70K without it). On `true` the tools stay
- * deferred; Anthropic expands them itself, and the router expands them for an affordable backend
- * (`toolSearchForBackend` in router.ts). https://code.claude.com/docs/en/env-vars
+ * `ENABLE_TOOL_SEARCH`: Claude Code 2.1.304 and later keep MCP tool search on behind a base
+ * URL that is not Anthropic's, so this key is not needed there. It stays written for an older
+ * Claude Code, which turned tool search off behind a gateway and sent every tool definition up
+ * front (measured before 2.1.304: an Opus session started at 184K tokens through the router,
+ * against 70K without it), and it says "on" on purpose: Anthropic expands the deferred tools
+ * itself, and the router expands them for an affordable backend (`toolSearchForBackend` in
+ * router.ts). https://code.claude.com/docs/en/env-vars
  */
 export function gatewayEnv(port: number): Record<string, string> {
   return {
@@ -110,22 +112,33 @@ export function maskKey(key: string): string {
 }
 
 /**
- * A backend's address as a person reads it: the URL without any credentials in it, then its
- * key in the masked form. One home, because two callers show it — `omniroute status` and the
- * portal's pages — and neither may print a whole key.
+ * A backend's address with nothing secret left in it: no user name or password, no query and
+ * no fragment — a key can ride in any of them (`?key=…`), and the router never needs one there:
+ * it adds its paths to the address. Null when the text is not a URL, so nothing of it is shown.
+ * What a page may show or link to (the OmniRoute dashboard), without its last slash.
+ */
+export function backendAddress(baseUrl: string): null | string {
+  try {
+    const url = new URL(baseUrl);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A backend's address as a person reads it: `backendAddress`, then its key in the masked form.
+ * One home, because two callers show it — `omniroute status` and the portal's pages — and
+ * neither may print a whole key.
  */
 export function shownBackendUrl(baseUrl: string, apiKey: string): string {
   const masked = maskKey(apiKey);
-  try {
-    const url = new URL(baseUrl);
-    if (url.username !== "" || url.password !== "") {
-      url.username = "";
-      url.password = "";
-    }
-    return `${url.href.replace(/\/$/, "")} (key ${masked})`;
-  } catch {
-    return `(key ${masked})`;
-  }
+  const address = backendAddress(baseUrl);
+  return address === null ? `(key ${masked})` : `${address} (key ${masked})`;
 }
 
 /** A settings value as output may show it: anything that looks like a key or a credential is masked. */

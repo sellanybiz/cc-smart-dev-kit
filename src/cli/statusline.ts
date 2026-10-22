@@ -17,6 +17,9 @@
  *   - a plan limit the router saw, with no fallback (`⛔ claude-opus-5-5 at its plan limit
  *     until 13:00`): a refused request brings Claude Code no new numbers, so only the
  *     router's state file (`limit-state.ts`) knows it;
+ *   - a slot whose breaker is open (`worker slot: every target limited since 21:05 →
+ *     gateway slot worker <targets>`, `currentBreakers`): every target is limited or down, so
+ *     the router holds its requests and then asks Claude Code to retry;
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
  *
  * It reads two small files and prints; no network. **The warning share is a setting**
@@ -26,7 +29,9 @@
  */
 
 import { readFileSync } from "node:fs";
+import { slotShortName } from "../gateway/breaker";
 import {
+  currentBreakers,
   currentFallbacks,
   currentLimits,
   formatClock,
@@ -84,6 +89,12 @@ export function statuslineText(
     for (const [limited, record] of currentLimits(state, nowMs)) {
       if (!covered.has(limited))
         parts.push(`⛔ ${limited} at its plan limit${until(record.resetsAt)}`);
+    }
+    for (const [slot, record] of currentBreakers(state, nowMs)) {
+      const short = slotShortName(slot);
+      parts.push(
+        `${short} slot: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} → gateway slot ${short} <targets>`,
+      );
     }
   }
 

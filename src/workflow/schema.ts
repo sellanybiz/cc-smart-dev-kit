@@ -17,9 +17,13 @@
  * the schema does not accept one (`workflowSchema` has no `switches` field).
  *
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
- * without the person, and every alert is on.
+ * without the person, every alert is on, and no crew session starts.
+ *
+ * **A group** (`alerts`, `crew`, `fixesAfterReview`) is merged field by field like the rest,
+ * and its fields are named with a dot (`crew.enabled`).
  */
 import { z } from "zod";
+import { isNameTag, TAG_RULE } from "../crew/names";
 
 /** The four moments an alert is worth having. */
 export const ALERT_EVENTS = ["needs-you", "question", "finished", "failed"] as const;
@@ -29,6 +33,51 @@ const alertEventsSchema = z
   .array(z.enum(ALERT_EVENTS))
   .min(1)
   .refine((events) => new Set(events).size === events.length, "an event is listed twice");
+
+/**
+ * What a number setting takes: a whole number from `min` (up to `max`, when there is one), or
+ * any number above 0. One home: the schema checks a file with it, and `parseWorkflowValue` a
+ * value a person types, in the same words.
+ */
+type NumberRule = { kind: "whole"; max?: number; min: number } | { kind: "positive" };
+
+const PERCENT: NumberRule = { kind: "whole", max: 100, min: 1 };
+const AT_LEAST_ONE: NumberRule = { kind: "whole", min: 1 };
+const AT_LEAST_ZERO: NumberRule = { kind: "whole", min: 0 };
+const ABOVE_ZERO: NumberRule = { kind: "positive" };
+
+/** The schema for a number of `rule`. */
+function numberSchema(rule: NumberRule): z.ZodNumber {
+  if (rule.kind === "positive") return z.number().positive();
+  const whole = z.number().int().min(rule.min);
+  return rule.max === undefined ? whole : whole.max(rule.max);
+}
+
+/** Every number setting, and what it takes. */
+const NUMBER_RULES = {
+  "alerts.usagePercent": PERCENT,
+  "crew.idleStopMinutes": AT_LEAST_ONE,
+  "crew.max": AT_LEAST_ONE,
+  "crew.maxOpus": AT_LEAST_ONE,
+  "crew.memoryGb": ABOVE_ZERO,
+  "crew.quietMinutes": AT_LEAST_ONE,
+  "crew.handoffPercent": PERCENT,
+  "crew.softHours": ABOVE_ZERO,
+  "crew.maxHours": ABOVE_ZERO,
+  "fixesAfterReview.lines": AT_LEAST_ZERO,
+  "fixesAfterReview.files": AT_LEAST_ZERO,
+  "fixesAfterReview.percent": AT_LEAST_ZERO,
+} as const satisfies Partial<Record<WorkflowKey, NumberRule>>;
+
+type NumberKey = keyof typeof NUMBER_RULES;
+
+/** The optional schema of one number setting. */
+function numberField(key: NumberKey) {
+  return numberSchema(NUMBER_RULES[key]).optional();
+}
+
+/** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
+const tagSchema = z.string().refine(isNameTag, TAG_RULE);
 
 export const workflowSchema = z.strictObject({
   /** Commit each finished, reviewed step without asking. */
@@ -55,6 +104,24 @@ export const workflowSchema = z.strictObject({
     .min(1)
     .refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice")
     .optional(),
+  /**
+   * How much a branch may change after its review and still count as reviewed (decision D17).
+   * The change since the reviewed commit, the base's own changes taken out, is covered while its
+   * lines stay within `lines` or `percent`% of the reviewed change's lines, whichever is more,
+   * and its files within `files` or `percent`% of the reviewed files, whichever is more.
+   * `0`/`0`/`0` means the exact reviewed commit only. A review-gate group: read from the base's
+   * committed file. `readCover` (`review-cover.ts`) judges with it; the merge guard from D17b.
+   */
+  fixesAfterReview: z
+    .strictObject({
+      /** Lines changed after the review (added and removed). Default: 200. */
+      lines: numberField("fixesAfterReview.lines"),
+      /** Files changed after the review. Default: 10. */
+      files: numberField("fixesAfterReview.files"),
+      /** The same two counts, in percent of the reviewed change's own. Default: 20. */
+      percent: numberField("fixesAfterReview.percent"),
+    })
+    .optional(),
   /** Clear the worktree once its pull request merged. */
   clearWorktreeAfterMerge: z.boolean().optional(),
   alerts: z
@@ -64,7 +131,37 @@ export const workflowSchema = z.strictObject({
       /** A sound with the alert. Default: no sound. */
       sound: z.boolean().optional(),
       /** The plan usage, in percent, a warning starts at. Default: 85. */
-      usagePercent: z.number().int().min(1).max(100).optional(),
+      usagePercent: numberField("alerts.usagePercent"),
+    })
+    .optional(),
+  /**
+   * Lead and crew sessions (decisions D34, D35, D37): the switch, the limits a lead keeps its
+   * crew sessions to, and the tag in their names. In the person's file it is every project's default;
+   * a project's file wins field by field. `crew lead` and `crew start` read `enabled`, `max`,
+   * `maxOpus`, `memoryGb` and `tag` (`src/crew/`); the rest is for the parts after them.
+   */
+  crew: z
+    .strictObject({
+      /** Crew sessions may start here: off, a lead uses subagents only. Default: false. */
+      enabled: z.boolean().optional(),
+      /** Minutes a blocked crew session waits before its session is stopped; an answer brings it back. Default: 10. */
+      idleStopMinutes: numberField("crew.idleStopMinutes"),
+      /** At most this many crew sessions run on this machine at once, across leads (D37). Default: 6. */
+      max: numberField("crew.max"),
+      /** At most this many of them on the opus tier, inside `max` (D37). Default: 2. */
+      maxOpus: numberField("crew.maxOpus"),
+      /** The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. Default: 2. */
+      memoryGb: numberField("crew.memoryGb"),
+      /** Minutes a working crew session's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
+      quietMinutes: numberField("crew.quietMinutes"),
+      /** The share of its context, in percent, at which a crew session hands off to a next one. Default: 70. */
+      handoffPercent: numberField("crew.handoffPercent"),
+      /** Hours after which the lead gets a note about a crew session still running. Default: 2. */
+      softHours: numberField("crew.softHours"),
+      /** Hours after which a crew session hands off. Default: 4. */
+      maxHours: numberField("crew.maxHours"),
+      /** The tag in every lead's and crew session's name (D26). Default: the main checkout's folder name. */
+      tag: tagSchema.optional(),
     })
     .optional(),
 });
@@ -81,13 +178,37 @@ export const workflowDefaults = {
   deleteBranch: false,
   reviewBeforePush: true,
   reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  // The lead's limits from the measured fix rounds (R5): 10% is covered, 105% and 160% ask.
+  fixesAfterReview: {
+    lines: 200,
+    files: 10,
+    percent: 20,
+  },
   clearWorktreeAfterMerge: false,
   alerts: {
     events: [...ALERT_EVENTS] as AlertEvent[],
     sound: false,
     usagePercent: 85,
   },
+  // Off by default (D34). The cap, the memory and the times are the plan's starting values,
+  // approved with it; the first long crew session run (P14) tunes them.
+  crew: {
+    enabled: false,
+    idleStopMinutes: 10,
+    max: 6,
+    maxOpus: 2,
+    memoryGb: 2,
+    quietMinutes: 20,
+    handoffPercent: 70,
+    softHours: 2,
+    maxHours: 4,
+    /** Null: the main checkout's folder name stands in (`crewTag` in `src/crew/names.ts`). */
+    tag: null,
+  },
 } as const;
+
+/** What `workflow show` prints for `crew.tag` while nobody sets it. */
+export const CREW_TAG_UNSET = "the main checkout's folder name";
 
 /**
  * The switches, and where each one really lives: read and written through the setting that
@@ -106,10 +227,23 @@ export type WorkflowKey =
   | "deleteBranch"
   | "reviewBeforePush"
   | "reviewAgents"
+  | "fixesAfterReview.lines"
+  | "fixesAfterReview.files"
+  | "fixesAfterReview.percent"
   | "clearWorktreeAfterMerge"
   | "alerts.events"
   | "alerts.sound"
   | "alerts.usagePercent"
+  | "crew.enabled"
+  | "crew.idleStopMinutes"
+  | "crew.max"
+  | "crew.maxOpus"
+  | "crew.memoryGb"
+  | "crew.quietMinutes"
+  | "crew.handoffPercent"
+  | "crew.softHours"
+  | "crew.maxHours"
+  | "crew.tag"
   | `switches.${SwitchName}`;
 
 /** Every policy key, in the order `workflow show` and `--help` print them. */
@@ -122,10 +256,38 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "deleteBranch",
   "reviewBeforePush",
   "reviewAgents",
+  "fixesAfterReview.lines",
+  "fixesAfterReview.files",
+  "fixesAfterReview.percent",
   "clearWorktreeAfterMerge",
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
+  "crew.enabled",
+  "crew.idleStopMinutes",
+  "crew.max",
+  "crew.maxOpus",
+  "crew.memoryGb",
+  "crew.quietMinutes",
+  "crew.handoffPercent",
+  "crew.softHours",
+  "crew.maxHours",
+  "crew.tag",
+];
+
+/**
+ * The settings the merge guard judges a merge with: the **review gate**. The guard reads them
+ * from the person's own file and from the project's file as committed on the pull request's
+ * base, never a checkout's working copy (`resolveGate` in `resolve.ts`), and `workflow set`
+ * and `unset` refuse them inside Claude Code (`commands.ts`): only the person changes the gate.
+ */
+export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
+  "autoMerge",
+  "reviewBeforePush",
+  "reviewAgents",
+  "fixesAfterReview.lines",
+  "fixesAfterReview.files",
+  "fixesAfterReview.percent",
 ];
 
 /** Every switch key, in the order `workflow show` prints them. */
@@ -186,6 +348,30 @@ export function unsetWorkflowValue(workflow: Workflow, key: WorkflowKey): Workfl
 
 export type ParsedValue = { ok: true; value: unknown } | { ok: false; why: string };
 
+/** True when the key names a number setting (`NUMBER_RULES`). */
+function isNumberKey(key: string): key is NumberKey {
+  return Object.hasOwn(NUMBER_RULES, key);
+}
+
+/** What a number setting takes, in words: `crew.max is a whole number, 1 or more`. */
+function numberRuleText(key: NumberKey): string {
+  const rule: NumberRule = NUMBER_RULES[key];
+  if (rule.kind === "positive") return `${key} is a number above 0`;
+  return rule.max === undefined
+    ? `${key} is a whole number, ${rule.min} or more`
+    : `${key} is a whole number ${rule.min}-${rule.max}`;
+}
+
+/** A number setting as a person typed it: digits (and a decimal point where one may be). */
+function parseNumber(key: NumberKey, value: string): ParsedValue {
+  const rule: NumberRule = NUMBER_RULES[key];
+  const shape = rule.kind === "whole" ? /^\d+$/ : /^\d+(?:\.\d+)?$/;
+  const number = Number(value);
+  return shape.test(value) && numberSchema(rule).safeParse(number).success
+    ? { ok: true, value: number }
+    : { ok: false, why: numberRuleText(key) };
+}
+
 /**
  * One value as a person typed it, for the key it belongs to. Refuses anything else with the
  * reason, so a typo never writes a value of the wrong kind.
@@ -199,13 +385,9 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
       ? { ok: true, value }
       : { ok: false, why: `${key} is one of ${words.join(", ")}` };
   }
-  if (key === "alerts.usagePercent") {
-    if (!/^\d+$/.test(value))
-      return { ok: false, why: "alerts.usagePercent is a whole number 1-100" };
-    const percent = Number(value);
-    return percent >= 1 && percent <= 100
-      ? { ok: true, value: percent }
-      : { ok: false, why: "alerts.usagePercent is a whole number 1-100" };
+  if (isNumberKey(key)) return parseNumber(key, value);
+  if (key === "crew.tag") {
+    return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }
   if (key === "reviewAgents") {
     const named = value
@@ -241,8 +423,12 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
   return { ok: false, why: `${key} is true or false` };
 }
 
-/** A value as `workflow show` prints it. */
-export function showValue(value: unknown): string {
-  if (Array.isArray(value)) return (value as string[]).join(", ");
+/**
+ * A value as `workflow show` prints it: a list as words, a number, a boolean, a word — and an
+ * unset `crew.tag` as what stands in for it.
+ */
+export function showValue(key: WorkflowKey, value: unknown): string {
+  if (key === "crew.tag" && value === null) return `(${CREW_TAG_UNSET})`;
+  if (Array.isArray(value)) return value.join(", ");
   return String(value);
 }

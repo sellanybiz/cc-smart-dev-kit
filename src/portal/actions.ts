@@ -17,6 +17,7 @@
  * Nothing here writes HTML or JSON: it returns lines, and the page shows them.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
@@ -38,7 +39,7 @@ import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
-import { applyAutoMode, autoModeSource } from "../setup/auto-mode";
+import { type AutoModeSource, applyAutoMode, autoModeSource } from "../setup/auto-mode";
 import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
@@ -53,6 +54,7 @@ import {
   projectFileTexts,
   readProject,
   settingsLineNote,
+  shownDetail,
 } from "./facts";
 import { parseSettingValue, settingSpec } from "./settings";
 import type { ProjectInitAnswers, ProjectInitPlan, WorkflowAdapter } from "./workflow-adapter";
@@ -320,9 +322,11 @@ async function testTargets(
       });
       continue;
     }
+    // A backend's own words can hold the key it was sent: every detail below is masked first.
+    const keys = [backend.apiKey];
     const listed = await listModels(backend.baseUrl, backend.apiKey, 8_000);
     if ("error" in listed || listed.status !== 200) {
-      const why = "error" in listed ? listed.error : `HTTP ${listed.status}`;
+      const why = "error" in listed ? shownDetail(listed.error, keys) : `HTTP ${listed.status}`;
       results.push({ detail: `the backend did not answer (${why})`, target: text, verdict: "bad" });
       lines.push(`${text}: ✗ ${why}`);
       continue;
@@ -338,15 +342,16 @@ async function testTargets(
     }
     if (judge) {
       const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
+      const detail = shownDetail(result.detail, keys);
       results.push({
-        detail: result.detail,
+        detail,
         target: text,
         verdict: result.verdict === "block" ? "blocked" : "bad",
       });
       lines.push(
         result.verdict === "block"
           ? `${text}: blocked the force-push test`
-          : `${text}: ✗ it did not block the force-push test (${result.detail})`,
+          : `${text}: ✗ it did not block the force-push test (${detail})`,
       );
       continue;
     }
@@ -356,8 +361,9 @@ async function testTargets(
       fetchImpl: action.portal.fetch,
       model: parsed.target.model,
     });
-    results.push({ detail: probe.detail, target: text, verdict: probe.ok ? "good" : "bad" });
-    lines.push(`${text}: ${probe.ok ? "✓" : "✗"} ${probe.detail}`);
+    const detail = shownDetail(probe.detail, keys);
+    results.push({ detail, target: text, verdict: probe.ok ? "good" : "bad" });
+    lines.push(`${text}: ${probe.ok ? "✓" : "✗"} ${detail}`);
   }
   const ok = results.every((one) => one.verdict !== "bad");
   // One rule, said exactly: Save is held off for the judge slot alone, because a judge is set
@@ -673,10 +679,62 @@ async function companionEnable(action: ActionContext, id: string): Promise<Actio
       };
 }
 
+/** The auto-mode change a page shows: the command line's `+` / `-` lines, and their hash. */
+export interface AutoModeChange {
+  /** Rules that go into the user's settings (`+`). */
+  added: string[];
+  /** In a worktree with its own file: the main checkout's, when its rules differ. */
+  differsFrom: null | string;
+  /** The project file the rules come from. */
+  from: string;
+  /** `autoModeHash` of everything above and the rules wanted: what the write sends back. */
+  hash: string;
+  /** Rules this project put there before and no longer asks for (`-`). */
+  removed: string[];
+  /** Claude Code's user settings, where they go. */
+  settings: string;
+  wanted: AutoModeSource;
+}
+
+/**
+ * The project's auto-mode rules for the folder the portal runs in, and the change writing
+ * them makes — the same dry run `cc-smart-dev-kit setup` shows as `+` / `-` lines. Null outside a
+ * git project. Throws what `autoModeSource` throws (a broken or too-new project file).
+ */
+export function autoModeChange(action: ActionContext): AutoModeChange | null {
+  const { paths, which } = action.portal;
+  const wanted = autoModeSource(action.cwd, which);
+  if (wanted === null) return null;
+  const diff = applyAutoMode(paths.settingsFile, paths.stateDir, wanted, true);
+  const from = wanted.file ?? wanted.source;
+  const shown = {
+    added: diff.added,
+    differsFrom: wanted.differsFrom,
+    entries: wanted.entries,
+    from,
+    removed: diff.removed,
+    source: wanted.source,
+  };
+  return {
+    added: diff.added,
+    differsFrom: wanted.differsFrom,
+    from,
+    hash: createHash("sha256").update(JSON.stringify(shown)).digest("hex").slice(0, 32),
+    removed: diff.removed,
+    settings: paths.settingsFile,
+    wanted,
+  };
+}
+
 /**
  * Writes the project's auto-mode trust rules into Claude Code's user settings. The page's
  * own confirmation stands in for the terminal question the CLI asks; without it, nothing is
  * written. The whole thing runs under setup's lock, like every other managed write.
+ *
+ * **Only what the page showed.** The change is planned again under the lock, and written only
+ * when its hash is the one the page drew (`autoModeChange`): a rule added to the project's
+ * file after the page was drawn — by a session, in the folder the portal runs in — would be
+ * trusted without anyone having read it. A hand-made POST without the hash writes nothing.
  */
 async function applyAutoModeAction(
   action: ActionContext,
@@ -686,27 +744,41 @@ async function applyAutoModeAction(
     return { lines: ["The rules were not confirmed, so nothing was written."], ok: false };
   }
   const { portal } = action;
-  const wanted = autoModeSource(action.cwd, portal.which);
-  if (wanted === null) {
-    return {
-      lines: ["This folder is not inside a git project, so there is nothing to copy."],
-      ok: false,
-    };
-  }
-  if (wanted.entries.length === 0) {
-    return { lines: ["This project asks for no auto-mode rules."], ok: false };
-  }
   try {
-    const lines = await withLock(
+    return await withLock(
       portal.paths.stateDir,
-      () =>
-        entryLines(applyAutoMode(portal.paths.settingsFile, portal.paths.stateDir, wanted, false)),
+      (): ActionResult => {
+        const change = autoModeChange(action);
+        if (change === null) {
+          return {
+            lines: ["This folder is not inside a git project, so there is nothing to copy."],
+            ok: false,
+          };
+        }
+        if (body.shownHash !== change.hash) {
+          return {
+            lines: [
+              "The trust rules changed since this page showed them, so nothing was written. Read them again on the page, then write them.",
+            ],
+            ok: false,
+          };
+        }
+        const result = applyAutoMode(
+          portal.paths.settingsFile,
+          portal.paths.stateDir,
+          change.wanted,
+          false,
+        );
+        return {
+          lines: [
+            ...entryLines(result),
+            "Auto mode reads these from your user settings, the only place it trusts.",
+          ],
+          ok: true,
+        };
+      },
       { waitMs: 10_000 },
     );
-    return {
-      lines: [...lines, "Auto mode reads these from your user settings, the only place it trusts."],
-      ok: true,
-    };
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
@@ -842,6 +914,7 @@ function projectAnswers(
       /** The repo's default branch, which the plan compares the base with. */
       defaultBranch: string;
       existing: null | string;
+      existingLocalSettings: null | string;
       existingSettings: null | string;
       root: string;
     }
@@ -879,17 +952,15 @@ async function projectPreview(
       answers: built.answers,
       defaultBranch: built.defaultBranch,
       existing: built.existing,
+      existingLocalSettings: built.existingLocalSettings,
       existingSettings: built.existingSettings,
       root: built.root,
     });
     // The line under the settings box travels with the plan: the page draws the same sentence
     // from the same helper, so the two can never describe different plans.
     return {
-      filesHash: projectFilesHash({
-        existing: built.existing,
-        existingSettings: built.existingSettings,
-      }),
-      lines: [settingsLineNote(plan.settingsAdds.length)],
+      filesHash: projectFilesHash(built),
+      lines: [settingsLineNote(plan.settings)],
       ok: true,
       preview: plan,
     };
@@ -903,7 +974,7 @@ async function projectPreview(
  * write, and **never a commit**: both files belong to the project, and the person commits
  * them.
  *
- * **The plan is made again, and only while the two files are still the ones the page planned
+ * **The plan is made again, and only while the files are still the ones the page planned
  * against.** The form holds the whole file it would write — the protected branches, the
  * bases, the guards — so a field filled in from a plan made before someone else edited the
  * project's file would quietly write their change away. The page sends back the hash its
@@ -930,6 +1001,7 @@ async function projectWrite(
       answers: built.answers,
       defaultBranch: built.defaultBranch,
       existing: built.existing,
+      existingLocalSettings: built.existingLocalSettings,
       existingSettings: built.existingSettings,
       root: built.root,
     });

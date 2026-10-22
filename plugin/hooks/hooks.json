@@ -1,5 +1,5 @@
 {
-  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit), message, merge and agent guards, a caller-named screenshot put in the browser's output folder, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777 or Warp's own format, or left to Warp's own plugin), notes after a merge and at session start, one note to the person when the session itself runs on Claude Fable, the review record a finished review agent writes, session names, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event. Agent view's own waiting or finished session alert runs from a user-level hook cc-smart-dev-kit setup writes, because agent view runs no plugin hooks.",
+  "description": "cc-smart-dev-kit: git, edit (Edit/Write/NotebookEdit), message, merge, agent and session-escape guards, a caller-named screenshot put in the browser's output folder, notifications (a finished turn, a question, a plan, a permission prompt, a stopped turn; on the desktop, in an SSH terminal as OSC 777 or Warp's own format, or left to Warp's own plugin), notes after a merge and at session start, one note to the person when the session itself runs on Claude Fable, the review record a finished review agent writes, session names, a crew session's role card and its one way to ask, its pause when a model limit ends its turn, a lead's crew news, the usage-limit alert and the background update check. Each hook stays silent while the project wires its own for the same event. Agent view's own waiting or finished session alert runs from a user-level hook cc-smart-dev-kit setup writes, because agent view runs no plugin hooks.",
   "hooks": {
     "StopFailure": [
       {
@@ -20,6 +20,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/crew-role.js\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -29,6 +38,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/git-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -39,6 +49,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/merge-guard.js\"",
+            "onFailure": "block",
             "timeout": 30
           }
         ]
@@ -49,6 +60,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/main-folder-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -59,16 +71,18 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/message-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/job-route.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -79,6 +93,18 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/agent-guard.js\"",
+            "onFailure": "block",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/session-escape-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -89,6 +115,12 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/notify.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/crew-role.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -104,12 +136,28 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/review-record.js\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/review-record.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/subagent-background.js\"",
             "timeout": 10
           }
         ]
@@ -145,6 +193,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/crew-role.js\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -164,6 +221,16 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/notify.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/agent-guard.js\"",
             "timeout": 10
           }
         ]
@@ -209,6 +276,16 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/session-name.js\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/crew-role.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/lead-notes.js\"",
+            "timeout": 10
           }
         ]
       },
@@ -246,6 +323,15 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/notify.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/lead-notes.js\"",
             "timeout": 10
           }
         ]

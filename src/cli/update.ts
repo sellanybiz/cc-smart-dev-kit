@@ -3,7 +3,8 @@
  *
  *   update            check now and install a newer version, in this terminal, with the
  *                     output of each `claude plugin` command; a new major version too (the
- *                     background check holds one for this, D33)
+ *                     background check holds one for this, D33), after the repos that still
+ *                     carry a retired piece are listed
  *   update --check    only say whether a newer version exists; changes nothing
  *   update --hold     the SessionStart hook stops checking on this machine
  *   update --resume   it checks again (at most once an hour)
@@ -37,6 +38,7 @@ import {
   majorSetupLine,
   majorStillWaitsLine,
 } from "../update/major";
+import { retiredRepoLines } from "../update/retired-repos";
 import {
   type CheckResult,
   checkRunning,
@@ -176,10 +178,12 @@ async function updateNow(
           claude,
           sinks.run ?? terminalRunner(env, paths.home),
           (line) => print(`$ ${line}`),
-          // The person's own `update` is their word for a new major version (D33).
+          // The person's own `update` is their word for a new major version (D33). First the
+          // repos it would break, so they know where `project init` has work to do.
           (major) => {
             seen.major = major;
             print(majorInstallLine(major.to, major.notes));
+            for (const line of retiredRepoLines(paths, env)) print(line);
             return true;
           },
         );

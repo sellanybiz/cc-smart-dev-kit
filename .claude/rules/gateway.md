@@ -27,13 +27,21 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   `claude-…` model, change `model`, and only the fields that model refuses, through
   `requestForClaudeFallback` (its table names each FAMILY's rules, from Anthropic's
   migration guides). Never `system`, a message or a tool.
+  **The one named exception (the owner's D6, 2026-10-17):** every request to a Claude
+  target loses the thinking blocks whose signature carries the router's own mark, and
+  nothing else (`forClaude` → `withoutRouterThinking`; § Answers another target gives for a
+  Claude model). Its tests: `gateway.test.ts` › "prompts stay as Claude Code wrote them" ›
+  "D6: the one exception on the way to Claude: …", and the "D6: …" tests in "model slots"
+  and "auto mode's safety check".
   **Auto mode's safety check is never translated for a Claude target**, on any route: it
-  reaches it with only `model` changed (the router skips the translation when `guard` is
-  set). On the opt-in judge route to an affordable backend, the check gets that backend's named
-  translations (`reasoningOffForBackend`, `toolSearchForBackend`), like any request there.
+  reaches it with only `model` changed, and only D6's marked blocks gone (the router skips
+  the translation when `guard` is set). On the opt-in judge route to an affordable backend, the check gets that backend's named
+  translations (`reasoningOffForBackend`, `toolSearchForBackend`, `thinkingForBackend`), like
+  any request there.
 - An affordable backend gets only the **named format translations**: `toolSearchForBackend`
-  (tool search made plain) and `reasoningOffForBackend` ("no reasoning" in a form the
-  backend reads). **A new translation, or a new row in a translation's table, needs its
+  (tool search made plain), `reasoningOffForBackend` ("no reasoning" in a form the backend
+  reads) and `thinkingForBackend` (each router-marked thinking block gets back the signature
+  its backend wrote; § Answers another target gives for a Claude model). **A new translation, or a new row in a translation's table, needs its
   own named, tested function or test, plus a row in `docs/claude-code-contract.md`** naming
   the Claude Code shape it relies on. The tests in `gateway.test.ts` › "prompts stay as
   Claude Code wrote them" and "a slot's Claude target: only the fields it refuses change"
@@ -66,55 +74,151 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   the router never picks a Claude model for it.
 - **A chain is the person's**: any targets, any order, any one first. The router never adds
   a target, Claude included: not at the end of a chain, not when every target fails, not
-  when one rests. A used-up chain returns its last answer, or a 502.
+  when one rests. A used-up chain returns its last answer, or a 502 — **except with the slot's
+  breaker on**: when every target failed for want of capacity (`isCapacityFailure`) and the last
+  one is a backend, the request is held and then answered with the breaker's 429
+  (`slotRequest`, `holdRequest`). **Anthropic's own answers always pass unchanged**, its quota
+  429 included: Claude Code's auto-continue, its watchdog and our StopFailure alert read the
+  real headers. A last target that is Anthropic is never held.
 - **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
   answers on the statuses `fallbackKind` names; off, only the first target ever answers.
-  Default on for scout, worker and a machine's own slots; off for opus, fable and judge
+  Default on for scout, worker, the judge and a machine's own slots; off for opus and fable
   (`FALLBACK_OFF_BY_DEFAULT`). A 0.4.x opus or fable chain gets that default, off: "on" moves
   on at far more than the plan limit it was set up for. `gateway setup` drops 0.4.x's hidden
   `claude-sonnet-5-5` from a scout or worker chain only while that chain is still 0.4.x's
   exact default (`withoutRetiredDefaultClaude`); a chain the person changed is theirs.
+- **The breaker switch** (`breaker` in the config, `breakerOn`, `gateway breaker <slot> on|off`)
+  is set the same way, and is on by default for every slot but the judge (below). How long a
+  hold may last is `timeouts.breakerHoldMs`, which a person can only shorten (0: none): never
+  above `BREAKER_HOLD_CEILING_MS`, because Claude Code gives up on a request held too long.
+  A slot's switch goes when the slot is turned off (`slot <slot> off`), the judge's excepted
+  (below), and stays when its chain is only changed. The contract, with the state file's `breakers`: `docs/gateway.md` § The
+  breaker switch and its hold.
+- **The breaker's rules** (`docs/gateway.md` § The breaker):
+  - **Never fake Anthropic's quota headers.** Its 429 carries `x-should-retry: true` and a
+    `retry-after` of 1 to 60, and never an `anthropic-ratelimit-unified-*` header: Claude Code
+    would show plan-limit and upsell messages, and `/usage` would mislead.
+  - **Every `retry-after` the router relays from a backend, or sends, is 60 or less**
+    (`capRetryAfter`), breaker on or off: above 60 Claude Code ends the request at once.
+  - **A hold counts from the request's start** and never exceeds `timeouts.breakerHoldMs`
+    (60 s for a request that does not stream). The longest wait for the last target's first
+    event is part of that hold, not added to it. While holding, every backend probe's wait is
+    capped by what is left (a probe of a request that does not stream gets `firstByteMs` too,
+    or a hung one would block its target's only probe for ever).
+  - **Held means asked once.** While a breaker is open, a resting backend is not asked, the
+    last one included, and one request at a time probes each target. A hang-up rests nothing.
+    A probe is made only while what is left of the hold is at least `timeouts.firstByteMs`;
+    with less it could only fail on the hold's own deadline, so the request is answered at
+    once. A probe whose wait the hold's end cut short rests nothing either: its timeout is
+    the router's, not the target's.
+  - **A refused key or request is never held**, and never relayed as a 400 or 422 Claude Code
+    does not know: since 2.1.304 it sends such a request again without its deferred tools,
+    and the chain is walked twice. A model call's refusal is a 424, or "prompt is too long"
+    when its reason says so (`refusal.ts`); Anthropic's own 400 passes unchanged.
 - **A safety check on a backend has a deadline on every target, the last too** (a lone judge
   that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.
 - **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
   no chain; the person picks from the live list (`gateway models`, the portal). A rule that
-  must name a model is keyed by family (`CLAUDE_TARGET_RULES`), never by one exact id.
+  must name a model is keyed by family and the first version it holds for
+  (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
+  id: a newer version gets its family's newest row, and a version below every row, or an id
+  with no version, is left untouched.
   Examples in help and errors take `<model>`, or an id from the person's own config.
 - `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a
   `/v1/messages` answer starts or ends a target's rest, or notes or ends a plan limit
   (`observeClaude`).
 
-## The judge: the person's choice, always tested
+## The judge: Claude first, a tested stand-in, never an untested one (D44)
 
-Claude judges auto mode's safety checks unless the person gives the judge slot a chain.
+Claude judges auto mode's safety checks first.
 
-- **Off by default:** `defaultConfig()` has no judge slot; only the person sets one. With
-  none, a check takes the way it always took to Claude (`resolveRequestRoute`).
-- **With a chain:** the judge's first TESTED target judges every check (the next one only
-  with the judge's fallback on). No hidden Claude step: the judge's failure is the answer.
-- **Never set untested:** `gateway slot judge` runs the judge test (`judge-test.ts`) on
-  each target and refuses one that does not block it. No skip flag, ever. A target that
-  passed gets its proof in the config's `judgeTested` (`judgeTestProof`: the test
-  version, the target, its backend's URL); **the router uses only a target with a
-  matching proof**, ignores any other with one WARN (Claude then judges), and doctor fails
-  on it. Raise `JUDGE_TEST_VERSION` when the test changes, or what passing it lets a target
-  do (3 since 0.5.0, when a judge started judging first).
-- The judge takes no `claude-…` target.
-- **Say the trade-off** wherever a judge is set or shown (`JUDGE_WARNING`): a weaker judge
-  can block good work or let a risky command through, and it reads the conversation.
+- **No judge chain (the default):** Claude judges. While Claude is limited or down (the
+  statuses a chain moves on for), the worker chain's backend targets that passed the judge test
+  judge in its place, in that chain's order (`claudeFirstJudge`, `workerJudgeTargets`). The
+  judge's fallback switch is on by default and needs no judge chain: `gateway fallback judge
+  off` keeps Claude alone. `defaultConfig()` still has no judge slot. A Claude 400 or 401 is
+  Claude's answer, never a reason to use a stand-in. An untested worker target, and a
+  `claude-…` target in the worker chain, never judge.
+- **A chain the person sets wins:** its first usable target judges (the next only with the
+  switch on; with it off, the chain's first target alone is considered, so an untested first
+  target leaves Claude alone), and the worker's targets are never added to it, even when none
+  of its targets is usable (Claude then judges alone). It may hold a `claude-…` target, used
+  as it is with no test, with only `model` changed like any slot's Claude target. No hidden
+  Claude step after it: the chain's failure is the answer.
+- **Never used untested:** `gateway slot judge`, `gateway slot worker …` and `gateway setup` run
+  the judge test (`judge-test.ts`) on each backend target; `slot judge` refuses one that does
+  not block it, `slot worker` and `setup` set the worker either way and name each target that
+  passed and each that failed. No skip flag, ever. A target that passed gets its proof in the
+  config's `judgeTested` (`judgeTestProof`: the test version, the target, its backend's URL);
+  **the router uses only a target with a matching proof**, ignores any other with one WARN
+  (Claude then judges), and doctor fails on a judge chain's. An untested worker target is no
+  doctor failure. Raise `JUDGE_TEST_VERSION` when the test changes, or when passing it lets a
+  target do MORE (3 since 0.5.0, when a judge started judging first; D44 let a worker target
+  judge only while Claude cannot, which is less, so it stayed 3).
+- **The judge never holds a request** (the breaker): a held safety check would freeze every
+  action in auto mode, so it has no breaker switch, `breakerOn` is false for it, and the schema
+  refuses a `breaker` entry for it (`JUDGE_NEVER_HOLDS`).
+- **Say the trade-off** wherever a judge is set or shown (`JUDGE_WARNING`), the worker's stand-ins
+  included: a weaker judge can block good work or let a risky command through, and it reads the
+  conversation. `gateway status` and `doctor` show one judge line and the warning.
+
+## Anthropic's server tools (D41, D44)
+
+- **A request whose `tools` hold a server-tool type goes to Anthropic as sent, whatever its
+  slot** (`anthropicServerTool`; the types are one list, `ANTHROPIC_SERVER_TOOL_PREFIXES`, matched
+  by prefix: `web_search_*`, `web_fetch_*`). No affordable backend can run the tool. Tool search's
+  types are not in the list. A slot name, an alias or `<backend>:<model>` keeps its route, and a
+  safety check is never one. The log line says why.
+- **At a Claude capacity failure** (`capacityFailureStatus`: 408, 429, any 5xx, 529) **or no
+  answer**, the router gives one plain text block in Anthropic's message format, a stream when
+  the request streams (`claudeSearchNotice`). It says it is the router's, names the server
+  tool that failed (`web_search` or `web_fetch`), says that tool runs on Claude, and points to
+  the Tavily MCP server "if it is set up". The server's name comes from
+  `src/mcp/names.ts`; the router never reads Claude Code's config. It is the one place the router
+  writes words of its own to a model, as a whole answer, never an edit. **Any other status passes
+  unchanged**: Claude Code 2.1.304 and later resend a request that got an unrecognised 400 or 422
+  without its deferred tools, so the router never makes one up. The breaker never holds it.
 
 ## Answers another target gives for a Claude model
 
-**The owner's yes (2026-10-15), first for a model slot's fallback, now for every answer that
-another target gives to a request that named a Claude model** (every slot is reached by
-family since 0.5.0, and the history problem is the same): the answer loses its `thinking` /
-`redacted_thinking` blocks, gets one text block when nothing is left, and gets a safe
-`tool_use` id (`cleanFallbackResponse`, `fallback-answer.ts`). Claude Code keeps the answer,
-and the Claude model refuses a thinking block it cannot verify once it answers that
-conversation again. Never an answer of the model itself, never an answer to a slot-named
-request, never a request. `fallbackAnswersAsIs` is a test-only switch for the live proof;
-never set it in use.
+**Thinking stays visible (the owner's D6, 2026-10-17; before it, from 2026-10-15, such
+answers lost their thinking).** Every slot is reached by a Claude model's family, so a
+backend's answer lands in that model's conversation, and a Claude model refuses a thinking
+block whose signature it did not issue. So, in `fallback-answer.ts`:
+
+- **What is kept and marked:** a BACKEND's answer to a request that named a Claude model
+  (`cleanAnswer` → `cleanFallbackResponse`) keeps each `thinking` block, its `signature`
+  replaced by the router's mark (`routerSignature`): `ROUTER_THINKING_MARK`, a fixed prefix
+  with a `:` in it (never in base64, so never at the start of a signature Anthropic issues),
+  a random UUID, then `:` and the backend's own signature exactly as it came (`""`
+  included). The UUID's fixed 36 characters make it unambiguous whatever the signature
+  holds (`backendSignatureOf`). A block the backend sent with no signature gets the bare
+  mark (prefix and UUID). In a stream the start carries the bare mark, the backend's
+  `signature_delta`s are held back, and one marked delta comes just before the block's stop,
+  carrying the last of them ("" for none): what Claude Code would have stored (it sets the
+  signature to "" at the start and to each delta in turn). Never change the prefix or this
+  shape: people's stored conversations hold it.
+- **What the answer loses:** a backend's `redacted_thinking` block (nobody can read it); an
+  answer left with no block gets one text block; a `tool_use` id Anthropic would refuse gets
+  a safe one (`safeToolUseId`).
+- **What is stripped, and where:** every request to a Claude target (`anthropicUpstream` →
+  `forClaude` → `withoutRouterThinking`: an off slot, a chain's `claude-…` target, an alias
+  to one, the safety check; `/v1/messages` and `count_tokens`) loses exactly the `thinking`
+  blocks in assistant messages whose signature starts with the mark, and nothing else; an
+  assistant message left empty, other than the last, gets the one text block. A body without
+  the mark goes as its own bytes.
+- **What a backend gets back:** every request to a backend (`targetUpstream` →
+  `thinkingForBackend`) gives each marked block exactly the signature its mark carries; a
+  bare mark (the backend sent none, or an older router marked it) goes with no `signature`
+  field. So a backend gets the history it would get with no router in between. The mark does
+  not say which backend wrote a block: another backend gets that signature too, as it would
+  without the router.
+- **Never touched:** an answer of the model itself, another Claude model's answer (Anthropic
+  drops a block the target cannot read), an answer to a slot-named request or an explicit
+  `<backend>:<model>`, and any block Anthropic signed.
+
+`fallbackAnswersAsIs` is a test-only switch for the live proof; never set it in use.
 
 ## Settings and secrets
 
@@ -132,8 +236,8 @@ never set it in use.
   needs Bun ≥ `MIN_BUN` (`src/build-info/bun.ts`): never add a workaround for an older
   Bun (owner, 2026-10-15). A new command that sends a key must not be on the CLI's
   any-Bun list (`src/cli/bun-check.ts`).
-- Text from outside (an upstream's answer, a fetch error, web text) is printed or logged
-  only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`, `printableJson`;
+- Text from outside (an upstream's answer, a fetch error) is printed or logged
+  only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`;
   `maskedLine` for an error): never a second copy of that logic.
 - **A key is tested before it is saved** (`checkBackendKey`, `src/gateway/backends.ts`): one
   cheap authenticated request (`GET /v1/models`, `KEY_CHECK_TIMEOUT_MS`) with the key. 401/403
@@ -223,8 +327,8 @@ never set it in use.
 ## Names
 
 Slots `cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`, `cc-smart-dev-kit-judge`, and the model slots
-`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`; the CLI's `gateway slot` and `gateway fallback`;
-the limit state `~/.local/state/cc-smart-dev-kit/gateway-state.json`; config
+`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`; the CLI's `gateway slot`, `gateway fallback`
+and `gateway breaker`; the limit state `~/.local/state/cc-smart-dev-kit/gateway-state.json`; config
 `~/.config/cc-smart-dev-kit/gateway.json`; unit and log name `cc-smart-dev-kit-router`; health path
 `/__cc-smart-dev-kit/health`. A project's old names reach the new ones through the config's
 `aliases` map, which its own migration writes; the plugin ships none, and writes them on

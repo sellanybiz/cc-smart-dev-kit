@@ -4,9 +4,11 @@
  * `src/entries/<name>.ts` with the input on stdin).
  */
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { cliPaths } from "../cli/paths";
+import type { DetachedOptions } from "../hooks/detached";
 import type { HookResult } from "../hooks/io";
-import { type HookSpec, handleHook } from "../hooks/run";
+import { type DetachedStarter, type HookSpec, handleHook } from "../hooks/run";
 import { subprocessGuard } from "./port-guard";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
@@ -94,9 +96,17 @@ export function runHook(
   spec: HookSpec,
   input: Record<string, unknown>,
   env: Record<string, string>,
+  start: DetachedStarter = noBackground,
 ): Promise<HookResult> {
-  return handleHook(spec, JSON.stringify(input), env);
+  return handleHook(spec, JSON.stringify(input), env, Date.now(), start);
 }
+
+/**
+ * The starter a hook test gets unless it hands in its own recorder: it starts nothing. A hook
+ * that starts a background program (the worktree clean, `src/worktrees/auto-start.ts`) must
+ * never launch a real process from a test that is about something else.
+ */
+const noBackground: DetachedStarter = () => undefined;
 
 const ENTRIES = join(import.meta.dir, "..", "entries");
 
@@ -134,4 +144,44 @@ export function writeSessionRecord(
     join(dir, `${pid}.json`),
     JSON.stringify({ pid, sessionId: record.sessionId, cwd: record.cwd, name: record.name }),
   );
+}
+
+/** One background program a hook asked to start. */
+export interface StartedProgram {
+  argv: string[];
+  options: DetachedOptions;
+  platform: NodeJS.Platform;
+}
+
+/**
+ * A starter that records what a hook asked to start and starts nothing: the test asserts the
+ * spawn was asked for, and that nothing ran in the hook's own process.
+ */
+export function recordingStarter(): { start: DetachedStarter; started: StartedProgram[] } {
+  const started: StartedProgram[] = [];
+  return {
+    started,
+    start: (platform, argv, options) => {
+      started.push({ argv, options, platform });
+    },
+  };
+}
+
+/**
+ * Commits the project's file in `repo` and points `origin/<branch>` at that commit for every
+ * branch named: the policy a guard judges with is the one committed on a base
+ * (`resolveGate`), never the working copy. A plain ref, no fetch: the guards fetch nothing.
+ */
+export function commitConfig(repo: string, config: unknown, branches: Iterable<string>): void {
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+  git(repo, "add", ".claude/cc-smart-dev-kit.json");
+  git(repo, "commit", "-q", "-m", "the project's policy");
+  for (const branch of branches) git(repo, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
+}
+
+/** Writes the person's own workflow settings (`workflow.json`) where the hook `env` reads them. */
+export function writePersonalWorkflow(env: Record<string, string>, workflow: unknown): void {
+  const file = cliPaths(env).workflowConfigFile;
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(workflow, null, 2)}\n`);
 }

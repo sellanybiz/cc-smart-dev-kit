@@ -284,6 +284,12 @@ export const CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"] as const;
 export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
 
 /**
+ * The slot that answers for Sonnet: the worker. Its tested targets also judge auto mode's
+ * checks while Claude cannot (owner D44, `workerJudgeTargets` in `config.ts`).
+ */
+export const WORKER_SLOT = "cc-smart-dev-kit-worker";
+
+/**
  * The slot that answers for each Claude family, when it has a chain. Read from the id Claude
  * Code sends, so a newer version of a family (`claude-opus-6-0`) reaches its slot with no
  * change here. Scout and worker are Haiku's and Sonnet's: background calls, `haiku` and
@@ -291,7 +297,7 @@ export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
  */
 export const FAMILY_SLOTS: Readonly<Record<string, ClaudeFamily>> = {
   "cc-smart-dev-kit-scout": "haiku",
-  "cc-smart-dev-kit-worker": "sonnet",
+  [WORKER_SLOT]: "sonnet",
   ...MODEL_SLOTS,
 };
 
@@ -316,6 +322,43 @@ export function claudeFamily(model: string): ClaudeFamily | null {
   return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
 }
 
+/** A Claude model's version: `claude-opus-5-5` is 5.5, `claude-opus-5` is 5.0. */
+export interface ClaudeVersion {
+  major: number;
+  minor: number;
+}
+
+/**
+ * A version at the start of `text`: `5-5`, `4`, never a date (`4-20250514` is 4.0: a minor
+ * has one or two digits, a date eight).
+ */
+const VERSION_AT_START = /^(\d{1,3})(?:-(\d{1,2})(?!\d))?(?!\d)/;
+
+/**
+ * The version a Claude model id names, `[1m]` and a provider's prefix ignored: after its
+ * family (`claude-opus-4-5-20251101` → 4.5, `claude-sonnet-5` → 5.0,
+ * `us.anthropic.claude-fable-5-1-20261001-v1:0` → 5.1), or before it in the older form
+ * (`claude-3-5-haiku-20241022` → 3.5). Null when the id names no family, or no version
+ * (`claude-opus-latest`).
+ */
+export function claudeVersion(model: string): ClaudeVersion | null {
+  const family = claudeFamily(model);
+  if (family === null) return null;
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  const id = name.slice((PROVIDER_PREFIX.exec(name)?.[0].length ?? 0) - "claude-".length);
+  const at = id.indexOf(`-${family}-`);
+  const before = id.slice("claude-".length, at);
+  const after = id.slice(at + family.length + 2);
+  const match = VERSION_AT_START.exec(before === "" ? after : before);
+  if (match === null) return null;
+  return { major: Number(match[1]), minor: match[2] === undefined ? 0 : Number(match[2]) };
+}
+
+/** Is `version` this one, or newer? */
+export function versionAtLeast(version: ClaudeVersion, since: ClaudeVersion): boolean {
+  return version.major !== since.major ? version.major > since.major : version.minor >= since.minor;
+}
+
 /**
  * The slot key that answers for a Claude family (`familySlotKey("opus")` →
  * `cc-smart-dev-kit-opus`), from `FAMILY_SLOTS`; null for a family no slot answers for.
@@ -338,11 +381,13 @@ export function familySlotFor(model: unknown): null | { model: string; slot: str
 }
 
 /**
- * The slots whose fallback switch is off until the person turns it on: the model slots and
- * the judge, whose next targets stand in for a premium model or for the safety judge. Every
- * other slot (scout, worker, a machine's own) starts with it on.
+ * The slots whose fallback switch is off until the person turns it on: the model slots,
+ * whose next targets stand in for a premium model. Every other slot (scout, worker, the
+ * judge, a machine's own) starts with it on. The judge is on so that, with no judge chain of
+ * the person's own, the worker's tested targets answer while Claude cannot (D44); `gateway
+ * fallback judge off` keeps Claude alone.
  */
-export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
+export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS)];
 
 /**
  * The targets a slot's request may use: the whole chain while its fallback switch is on, its
@@ -389,8 +434,23 @@ export function planUsageLimit(
   };
 }
 
-/** Statuses that mean "this target cannot answer now: try the next one". */
-const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+/**
+ * Statuses that mean "this target cannot answer now: try the next one". They are also the
+ * statuses of a capacity failure, the ones the breaker holds a request for
+ * (`isCapacityFailure`, `./breaker.ts`).
+ */
+export const CAPACITY_STATUSES: ReadonlySet<number> = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+/**
+ * Is this status a capacity failure of Claude: it cannot answer now? The statuses a chain
+ * moves on for (`fallbackKind`) and every other 5xx, such as the 52x a proxy in front of
+ * Anthropic answers when its origin is down. For the answer that stands in for a web search
+ * (D44): a search that failed any of these ways would be retried for minutes, and a note
+ * naming Tavily is better at once. A chain's own list stays `fallbackKind`'s.
+ */
+export function capacityFailureStatus(status: number): boolean {
+  return CAPACITY_STATUSES.has(status) || (status >= 500 && status <= 599);
+}
 
 /**
  * Does this status move on to the next target?
@@ -403,7 +463,7 @@ const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
  * The caller returns the last target's answer whatever it is.
  */
 export function fallbackKind(status: number, target: Target): "next" | "next-warn" | "stay" {
-  if (FALLBACK_ANY.has(status)) return "next";
+  if (CAPACITY_STATUSES.has(status)) return "next";
   if (target.kind === "backend" && (status < 200 || status > 299)) return "next-warn";
   return "stay";
 }

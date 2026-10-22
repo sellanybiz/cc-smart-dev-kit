@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
+import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { localDay } from "../gateway/safety-checks";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { recordMcpServer } from "../mcp/records";
@@ -21,12 +22,21 @@ import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { installLauncherCmd } from "../setup/launcher-cmd";
 import { applyManagedJson } from "../setup/managed-json";
+import { restore } from "../setup/restore";
+import { retryWatchdogDeclinedFile } from "../setup/retry-watchdog";
+import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { listBackups, writeManagedFile } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
+import { workflowDefaults } from "../workflow/schema";
 import { ccSmartDevKitImports, runDoctor } from "./doctor";
+import { COMMAND_HELP, HELP_COMMAND } from "./help";
 import { cliPaths } from "./paths";
 import { type SetupOptions as RunSetupOptions, runSetup } from "./setup";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -421,6 +431,7 @@ function setupOptions(
     instructions: null,
     instructionsSource: PLUGIN_INSTRUCTIONS,
     statusline: false,
+    retryWatchdog: null,
     // No environment of its own: a test that wants a key sets one through `extra`.
     env: {},
     tavilyKeyStdin: null,
@@ -443,6 +454,9 @@ const MCP_REGISTERED = [
   "+ MCP server playwright registered for your user",
   "+ MCP server sequential-thinking registered for your user",
 ];
+/** What a dry run with no terminal says about the retry watchdog question (`src/setup/retry-watchdog.ts`). */
+const WATCHDOG_NOT_OFFERED =
+  "  retry watchdog: not offered, there is no terminal (nothing changes); --retry-watchdog turns it on";
 const TAVILY_SKIPPED =
   "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, in the settings, or in a key file: put the key there (chmod 600), or set the variable, then run setup again";
 
@@ -510,8 +524,14 @@ describe("cc-smart-dev-kit setup", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+        // D23: work state off gives sessions Claude Code's own task tools.
+        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
         NOTIFY_HOOK_ADDED,
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
         ...INSTRUCTIONS_CREATED,
+        "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
+        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
@@ -521,6 +541,7 @@ describe("cc-smart-dev-kit setup", () => {
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
       hooks: { Notification: [NOTIFY_HOOK_ENTRY] },
+      env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" },
       enabledPlugins: {
         "cc-smart-dev-kit@cc-smart-dev-kit": true,
         "claude-mem@thedotmack": true,
@@ -602,8 +623,14 @@ describe("cc-smart-dev-kit setup", () => {
         ...mcpDryRunLines(home),
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+        // D23: work state off gives sessions Claude Code's own task tools.
+        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
         NOTIFY_HOOK_ADDED,
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
         ...INSTRUCTIONS_CREATED,
+        WATCHDOG_NOT_OFFERED,
+        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
         TAVILY_SKIPPED,
         "Dry run: nothing was written or run.",
         "",
@@ -658,6 +685,7 @@ describe("cc-smart-dev-kit setup", () => {
       [
         "Nothing to change. Setup is up to date.",
         '  ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
+        "  ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: already set by someone else; left alone",
         TAVILY_SKIPPED,
         "",
       ].join("\n"),
@@ -738,8 +766,14 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         ...MCP_REGISTERED,
         "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
         '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+        // D23: work state off gives sessions Claude Code's own task tools.
+        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
         NOTIFY_HOOK_ADDED,
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
         OPT_OUT_STORED,
+        "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
+        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
         TAVILY_SKIPPED,
         "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "",
@@ -762,7 +796,13 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
       "- ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed",
     ];
     expect(dry.stdout).toBe(
-      [...expected, TAVILY_SKIPPED, "Dry run: nothing was written or run.", ""].join("\n"),
+      [
+        ...expected,
+        WATCHDOG_NOT_OFFERED,
+        TAVILY_SKIPPED,
+        "Dry run: nothing was written or run.",
+        "",
+      ].join("\n"),
     );
     expect(readFileSync(claudeMd, "utf8")).toContain(BLOCK);
 
@@ -814,6 +854,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
       [
         OPT_OUT_CLEARED,
         ...INSTRUCTIONS_CREATED,
+        WATCHDOG_NOT_OFFERED,
         TAVILY_SKIPPED,
         "Dry run: nothing was written or run.",
         "",
@@ -887,12 +928,16 @@ describe("cc-smart-dev-kit doctor", () => {
         INSTRUCTIONS_OK,
         "✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git",
         "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
+        "· retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
         "✓ plugin updates are not switched off",
         // The self-update has not checked yet: information, not a failure.
         "· background update: no check yet (a new Claude session checks, at most once an hour)",
         "✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ claude-mem@thedotmack 13.39.0 is installed and on",
         "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
+        // D23: claude-mem's two start blocks off, and Claude Code's own task tools on.
+        "✓ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)",
+        '✓ Claude Code\'s task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ~/.claude/settings.json',
         ...MCP_DOCTOR_OK,
         // Tavily is optional: without a key its server is skipped, never a failure.
         tavilyDoctorSkipped(home),
@@ -1091,11 +1136,14 @@ describe("cc-smart-dev-kit doctor", () => {
       "✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/. Run: cc-smart-dev-kit setup",
       "✓ the marketplace folder ~/marketplace exists",
       "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
+      "· retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
       "✓ plugin updates are not switched off",
       "· background update: no check yet (a new Claude session checks, at most once an hour)",
       "✓ no other enabled plugin is named cc-smart-dev-kit",
       "✓ claude-mem@thedotmack 13.39.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
+      // No setup ran here: claude-mem's two start blocks are still on (D23).
+      "✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). Together they overflow Claude Code's start context in about one start in six. Run: cc-smart-dev-kit setup",
       "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
       "✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive. Run: cc-smart-dev-kit setup",
       "· gateway: not checked on this Bun (its checks send the backend key)",
@@ -1815,7 +1863,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     const result = run(["doctor"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ claude-mem@thedotmack 13.28.0 is outside >=13.29.0. Run: claude plugin update claude-mem@thedotmack\n" +
+      "✗ claude-mem@thedotmack 13.28.0 is outside >=13.36.0. Run: claude plugin update claude-mem@thedotmack\n" +
         "✗ frontend-design@claude-plugins-official is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable frontend-design@claude-plugins-official\n",
     );
   });
@@ -1825,10 +1873,10 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     run(["setup"]);
     const installed = join(configDir, "plugins", "installed_plugins.json");
     const plugins = readJson(installed);
-    plugins.plugins["claude-mem@thedotmack"][0].version = "13.30.0-8713c5b11005";
+    plugins.plugins["claude-mem@thedotmack"][0].version = "13.36.0-8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     expect(run(["doctor"]).stdout).toContain(
-      "✓ claude-mem@thedotmack 13.30.0-8713c5b11005 is installed and on\n",
+      "✓ claude-mem@thedotmack 13.36.0-8713c5b11005 is installed and on\n",
     );
   });
 
@@ -1839,7 +1887,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     plugins.plugins["claude-mem@thedotmack"][0].version = "8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     const unknown =
-      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.29.0. Run: claude plugin update claude-mem@thedotmack";
+      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.36.0. Run: claude plugin update claude-mem@thedotmack";
     expect(run(["doctor"]).stdout).toContain(`✗ ${unknown}\n`);
     // With the gateway there, claude-mem's own check would say it again: it does not.
     writeGatewayConfig(home, "http://127.0.0.1:9");
@@ -1847,21 +1895,6 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     expect(result.stdout).toContain(`! ${unknown}\n`);
     expect(result.stdout).not.toContain("older");
     expect(result.stdout).not.toContain("claude-mem settings left alone");
-  });
-
-  test("claude-mem older than 13.35.0: a warning (its vector search), never a failure", () => {
-    const { configDir, run } = setup();
-    run(["setup"]);
-    const installed = join(configDir, "plugins", "installed_plugins.json");
-    const plugins = readJson(installed);
-    plugins.plugins["claude-mem@thedotmack"][0].version = "13.34.2";
-    writeFileSync(installed, JSON.stringify(plugins));
-    const result = run(["doctor"]);
-    expect(result.stdout).toContain("✓ claude-mem@thedotmack 13.34.2 is installed and on\n");
-    expect(result.stdout).toContain(
-      "\n! claude-mem@thedotmack 13.34.2 is older than 13.35.0: on a fresh install its vector search may not start (pydantic 2.14 broke chroma-mcp; 13.35.0 pins pydantic below it). Run: claude plugin update claude-mem@thedotmack\n",
-    );
-    expect(result.exitCode).toBe(0);
   });
 });
 
@@ -2089,6 +2122,9 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(backend.seen).toEqual([CHAT_CHECK]);
     expect(readJson(file)).toEqual({
       ...SEEDED,
+      // D23: claude-mem's two start blocks, off.
+      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
+      CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
       CLAUDE_MEM_OPENAI_COMPAT_API_KEY: PLANTED_KEY,
@@ -2160,25 +2196,37 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       const backend = fakeBackend();
       writeGatewayConfig(home, backend.url, slots);
       const file = writeClaudeMem(home, SEEDED);
-      const before = readFileSync(file, "utf8");
-      expect((await runAsync(["setup"])).stdout).not.toContain("claude-mem");
-      expect(readFileSync(file, "utf8")).toBe(before);
+      const result = await runAsync(["setup"]);
+      // No provider key is written: claude-mem stays on Claude.
+      expect(result.stdout).not.toContain("CLAUDE_MEM_PROVIDER");
+      expect(result.stdout).not.toContain("CLAUDE_MEM_OPENAI_COMPAT");
+      const written = readJson(file);
+      expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+      expect(written.CLAUDE_MEM_OPENAI_COMPAT_PRESET).toBe("");
+      // D23's two start blocks do not depend on the gateway: they are set all the same.
+      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+      expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
       expect(backend.seen).toEqual([]);
     }
   });
 
-  test("the person chose another provider: every claude-mem key is left alone, said once", () => {
+  test("the person chose another provider: the five provider keys stay, and D23's two are set", () => {
     const { home, run } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
     const file = writeClaudeMem(home, { ...SEEDED, CLAUDE_MEM_PROVIDER: "gemini" });
-    const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
       '  claude-mem settings left alone: CLAUDE_MEM_PROVIDER is "gemini" in ~/.claude-mem/settings.json (your choice)\n',
     );
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    // The provider keys stay exactly as the person left them...
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("gemini");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_PRESET).toBe("");
+    // ...while D23's two start blocks are still turned off.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     expect(backend.seen).toEqual([]);
   });
 
@@ -2196,26 +2244,33 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(result.stdout).not.toContain("sk-their-own-key");
   });
 
-  test("the backend refuses the key: nothing written to claude-mem's settings", async () => {
+  test("the backend refuses the key: the provider keys stay, and D23's two are still set", async () => {
     const { home, runAsync } = setup();
     writeGatewayConfig(home, fakeBackend(401).url);
     const file = writeClaudeMem(home, SEEDED);
-    const before = readFileSync(file, "utf8");
     const result = await runAsync(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
       "! claude-mem settings left alone: omniroute refused its key (HTTP 401)\n",
     );
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    // Nothing of the provider's is written...
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+    // ...and the two start blocks, which need no backend, are written anyway.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 
-  test("claude-mem never ran yet: its settings file is made with the five keys, mode 600", async () => {
+  test("claude-mem never ran yet: its settings file is made with the five keys and D23's two, mode 600", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
     expect((await runAsync(["setup"])).exitCode).toBe(0);
     const file = join(home, ".claude-mem", "settings.json");
     expect(readJson(file)).toEqual({
+      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
+      CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${backend.url}/v1`,
@@ -2238,7 +2293,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(written.CLAUDE_MEM_PROVIDER).toBeUndefined();
   });
 
-  test("claude-mem older than 13.29.0: one note (the range check's), and nothing written", () => {
+  test("claude-mem older than 13.29.0: one note (the range check's), the provider keys left alone, D23's two still set", () => {
     const { home, configDir, run } = setup();
     writeGatewayConfig(home, fakeBackend().url);
     const file = writeClaudeMem(home, SEEDED);
@@ -2246,13 +2301,18 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const plugins = readJson(installed);
     plugins.plugins["claude-mem@thedotmack"][0].version = "13.28.0";
     writeFileSync(installed, JSON.stringify(plugins));
-    const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "! claude-mem@thedotmack 13.28.0 is outside >=13.29.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
+      "! claude-mem@thedotmack 13.28.0 is outside >=13.36.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
     );
     expect(result.stdout.match(/13\.28\.0/g)).toHaveLength(1);
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    // No provider key: that provider came in 13.29.0.
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+    // Both start blocks are still planned: an unknown key is harmless to an older claude-mem.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 
   test("the backend has no chat endpoint (404), or does not serve the model: said so; the key never shows", async () => {
@@ -2278,12 +2338,17 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       const backend = fakeBackend(status, body);
       writeGatewayConfig(home, backend.url);
       const file = writeClaudeMem(home, SEEDED);
-      const before = readFileSync(file, "utf8");
       const result = await runAsync(["setup"]);
       expect(result.stdout).toContain(note.replace("URL", backend.url));
       expect(result.stdout).not.toContain("refused its key");
       expect(`${result.stdout}${result.stderr}`).not.toContain(PLANTED_KEY);
-      expect(readFileSync(file, "utf8")).toBe(before);
+      const written = readJson(file);
+      // The provider keys stay as they were: they point at a backend that failed.
+      expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+      expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+      // D23's two start blocks need no backend: they are written anyway.
+      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+      expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     }
   });
 
@@ -2371,7 +2436,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  test("a key pool of the person's (CLAUDE_MEM_OPENAI_COMPAT_API_KEYS): left alone, never printed", () => {
+  test("a key pool of the person's (CLAUDE_MEM_OPENAI_COMPAT_API_KEYS): the provider keys left alone, never printed; D23's two set", () => {
     const { home, run } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -2379,13 +2444,16 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       ...SEEDED,
       CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: "sk-pool-one-000000,sk-pool-two-000000",
     });
-    const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
       "  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_API_KEYS holds your own keys in ~/.claude-mem/settings.json (your choice)\n",
     );
     expect(result.stdout).not.toContain("sk-pool");
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const written = readJson(file);
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS).toBe("sk-pool-one-000000,sk-pool-two-000000");
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     expect(backend.seen).toEqual([]);
   });
 
@@ -2401,21 +2469,36 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
-  test("no gateway: claude-mem's settings are not touched, and nothing is said", () => {
+  test("no gateway: only the two start blocks are set, and no provider key", () => {
     const { home, run } = setup();
     const file = writeClaudeMem(home, SEEDED);
-    const before = readFileSync(file, "utf8");
-    expect(run(["setup"]).stdout).not.toContain("claude-mem");
-    expect(readFileSync(file, "utf8")).toBe(before);
+    const result = run(["setup"]);
+    expect(result.stdout).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"\n',
+    );
+    expect(result.stdout).not.toContain("CLAUDE_MEM_PROVIDER");
+    const written = readJson(file);
+    expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
+    expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 });
 
 describe("cc-smart-dev-kit setup: options", () => {
-  test("--warp and --remove-warp together, a --project with no folder, or one that is not there: exit 2", () => {
+  test("--warp and --remove-warp together, or a --project with no folder: exit 2", () => {
     const { run } = setup();
     expect(run(["setup", "--warp", "--remove-warp"]).exitCode).toBe(2);
     expect(run(["setup", "--project"]).exitCode).toBe(2);
-    expect(run(["setup", "--project", "/no/such/folder"]).exitCode).toBe(2);
+  });
+
+  test("UX-13: a --project folder that is not there is not a usage mistake: exit 1, with a fix", () => {
+    const result = setup().run(["setup", "--project", "/no/such/folder"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe(
+      "Not a folder: /no/such/folder\n" +
+        "Fix: give the folder of a project, or leave --project out to use the folder you are in\n",
+    );
   });
 });
 
@@ -2424,10 +2507,132 @@ describe("cc-smart-dev-kit version and help", () => {
     expect(setup().run(["version"]).stdout).toBe(`cc-smart-dev-kit ${VERSION}\n`);
   });
 
-  test("an unknown command prints help and exits 2", () => {
+  test("UX-3: an unknown command prints one line and where to read the rest, exit 2", () => {
     const result = setup().run(["nope"]);
     expect(result.exitCode).toBe(2);
-    expect(result.stderr).toContain("Unknown command: nope");
+    // One line, and the command that explains it: never the wall of help again on stderr.
+    expect(result.stderr).toBe(`Unknown command: nope\nSee: ${COMMAND} --help\n`);
+    expect(result.stdout).toBe("");
+  });
+
+  test("UX-3: a wrong option prints one line and that command's help, exit 2", () => {
+    const result = setup().run(["doctor", "--lively"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toBe(`Unknown option: --lively\nSee: ${COMMAND} doctor --help\n`);
+    expect(result.stdout).toBe("");
+  });
+
+  test("UX-3: `help <command>` prints that command's help on stdout, exit 0", () => {
+    const world = setup();
+    expect(world.run(["help", "worktrees"]).stdout).toBe(world.run(["worktrees", "--help"]).stdout);
+    expect(world.run(["help", "worktrees"]).exitCode).toBe(0);
+    // `help` alone, and no command at all: the top-level help, on stdout.
+    expect(world.run(["help"]).stdout).toBe(world.run([]).stdout);
+    expect(world.run(["help"]).stdout).toStartWith(`${COMMAND} ${VERSION}: `);
+    // A command the table does not know is still an unknown command.
+    const unknown = world.run(["help", "nope"]);
+    expect(unknown.exitCode).toBe(2);
+    expect(unknown.stderr).toBe(`Unknown command: nope\nSee: ${COMMAND} --help\n`);
+  });
+
+  // One subprocess per command, on a machine other builders share: the default 5 s is the
+  // machine's speed, not this test's work, so it gets a minute.
+  test("UX-2: every command's and subcommand's --help prints its help and exits 0, running nothing", () => {
+    const world = setup();
+    for (const row of COMMAND_HELP) {
+      const result = world.run([...row.name.split(" "), "--help"]);
+      // Each check names the command it read, so a failure points at the row that broke.
+      if (result.exitCode !== 0) expect(`${row.name}: exit ${String(result.exitCode)}`).toBe("0");
+      if (result.stderr !== "") expect(`${row.name}: stderr`).toBe(`"${result.stderr}"`);
+      // `help --help` prints the top-level help, which opens with the version line.
+      const prefix = row.name === HELP_COMMAND ? `${COMMAND} ${VERSION}` : `Usage: ${COMMAND}`;
+      if (!result.stdout.startsWith(prefix)) expect(`${row.name}: ${result.stdout}`).toBe(prefix);
+    }
+    // Nothing ran: a scan or a setup would have called the fake git or the fake claude.
+    expect(world.gitCalls()).toBe("");
+    expect(world.claudeCalls()).toBe("");
+  }, 60_000);
+
+  test("UX-2: `worktrees --help` never scans, and a typo is refused instead of run", () => {
+    const world = setup();
+    const help = world.run(["worktrees", "--help"]);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toStartWith(`Usage: ${COMMAND} worktrees`);
+    expect(help.stderr).toBe("");
+    expect(world.gitCalls()).toBe("");
+
+    const typo = world.run(["worktrees", "--clena"]);
+    expect(typo.exitCode).toBe(2);
+    expect(typo.stderr).toBe(`Unknown option: --clena\nSee: ${COMMAND} worktrees --help\n`);
+    expect(world.gitCalls()).toBe("");
+
+    // The proof that the fake git would have seen a scan: the command itself calls it.
+    world.run(["worktrees"]);
+    expect(world.gitCalls()).not.toBe("");
+  });
+
+  test("UX-17: the help names the commands from the table, so a list cannot drift", () => {
+    const world = setup();
+    // The top-level help used to list the gateway's subcommands by hand — and missed `check`
+    // and `fallback`. It names the command now; the command's own text lists the rest.
+    const top = world.run([]).stdout;
+    expect(top).not.toContain("status, models, slot");
+    expect(top).not.toContain("<worktree-create");
+    // Every name the top-level help shows can be asked for its own help: the table's own text,
+    // the same text its own `--help` prints (one home, so the two can never drift).
+    for (const name of ["gateway setup", "browser setup", "project init"]) {
+      // `help gateway setup`: the words of the command name, as a person types them.
+      const words = name.split(" ");
+      const result = world.run(["help", ...words]);
+      expect(`${name}: ${String(result.exitCode)}`).toBe(`${name}: 0`);
+      const own = world.run([...words, "--help"]);
+      expect(`${name}: ${String(own.exitCode)}`).toBe(`${name}: 0`);
+      expect(`${name}: ${result.stdout}`).toBe(`${name}: ${own.stdout}`);
+    }
+    // The gateway's own module writes `gateway --help`: the row imports it, never copies it,
+    // so `check` and `fallback` can never be missing again.
+    const gateway = world.run(["gateway", "--help"]);
+    expect(gateway.exitCode).toBe(0);
+    expect(gateway.stdout).toBe(`${GATEWAY_USAGE}\n`);
+    expect(gateway.stdout).toContain("check");
+    expect(gateway.stdout).toContain("fallback <slot> on|off");
+  });
+
+  test("CM-12: the hook list is the one name left, and the top-level help types none", () => {
+    // The worktree engine's names are retired: `notify` is the one hook left, and the help and
+    // the refusal both read its constant rather than typing it.
+    expect(USER_NOTIFY_HOOK_NAME).toBe("notify");
+    const result = setup().run(["hook", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.split("\n")[0]).toBe(`Usage: ${COMMAND} hook <${USER_NOTIFY_HOOK_NAME}>`);
+    // No engine name survives in the help a person reads.
+    expect(result.stdout).not.toContain("worktree-create");
+    expect(result.stdout).not.toContain("worktree-remove");
+    expect(result.stdout).not.toContain("subagent-stop");
+    // The dispatcher's own refusal reads the same name.
+    const refused = setup().run(["hook", "git-guard"]);
+    expect(refused.exitCode).toBe(2);
+    expect(refused.stderr).toContain(`Usage: ${COMMAND} hook <${USER_NOTIFY_HOOK_NAME}>`);
+    // The list is written once, in the constant: the top-level help does not repeat it.
+    expect(setup().run([]).stdout).not.toContain("<worktree-create");
+  });
+
+  test("CM-12: the status line's help names the workflow's own warning share, not a typed 85", () => {
+    const result = setup().run(["statusline", "--help"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`a warning from ${workflowDefaults.alerts.usagePercent} %`);
+  });
+
+  test("CM hunch: `worktrees --remove --clean` is refused as a usage mistake, not read as the path", () => {
+    const world = setup();
+    for (const path of ["--clean", "--no-fetch"]) {
+      const result = world.run(["worktrees", "--remove", path]);
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toBe(
+        `--remove needs the path of one worktree: --remove <path>\nSee: ${COMMAND} worktrees --help\n`,
+      );
+    }
+    expect(world.gitCalls()).toBe("");
   });
 });
 
@@ -2505,6 +2710,9 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     try {
       const { home, configDir, stateDir, settingsFile } = setup();
       const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      // This test is about the status line: the retry watchdog question was answered "no" before.
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      writeFileSync(retryWatchdogDeclinedFile(stateDir), "no\n");
       const asked: string[] = [];
       const say = (answer: boolean) => (question: string) => {
         asked.push(question);
@@ -2730,6 +2938,257 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
   });
 });
 
+describe("D42: setup offers Claude Code's retry watchdog", () => {
+  const WATCHDOG = "CLAUDE_CODE_RETRY_WATCHDOG";
+  const RECHECK = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+  /** The key setup writes beside them whenever claude-mem is installed (D23). */
+  const TODO = { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" };
+  const ON_LINE = `~ ~/.claude/settings.json: env.${WATCHDOG}: (none) -> "1"`;
+  const RECHECK_LINE = `~ ~/.claude/settings.json: env.${RECHECK}: (none) -> "300000"`;
+  const DOCTOR_OFF =
+    "· retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog\n";
+
+  /** Terminal tests run setup in this process: silence its output, run `body`, put the output back. */
+  async function quietly(body: () => Promise<void>): Promise<void> {
+    const quiet = spyOn(console, "log").mockImplementation(() => undefined);
+    const loud = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await body();
+    } finally {
+      quiet.mockRestore();
+      loud.mockRestore();
+    }
+  }
+
+  /** Writes `env` into the settings, as a person would by hand. */
+  function setEnv(settingsFile: string, env: Record<string, string>): void {
+    writeFileSync(settingsFile, JSON.stringify({ ...readJson(settingsFile), env }));
+  }
+
+  test("a yes to the question writes exactly the two keys, no time limit; restore removes them and the env they made", async () => {
+    await quietly(async () => {
+      const { home, configDir, settingsFile } = setup();
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      const asked: string[] = [];
+      const say = (question: string) => {
+        asked.push(question);
+        return true;
+      };
+      // Exit 1: this world has no `claude` on PATH, so the MCP servers are skipped and named.
+      expect(await runSetup(paths, setupOptions(home, say, { statusline: true }))).toBe(1);
+      expect(asked).toHaveLength(1);
+      const question = asked[0] ?? "";
+      expect(question).toStartWith(
+        "Make Claude Code wait and retry, instead of failing, when a model is limited or down? ",
+      );
+      expect(question).toContain(
+        'Every Claude session on this machine then waits ("Retrying in …"; Esc cancels)',
+      );
+      expect(question).toContain("with no time limit");
+      expect(question).toContain("a `claude -p` script can hang until a model answers");
+      expect(question).toContain("the lead's own subagents survive a limit only this way");
+      // Exactly these two keys: no ..._MAX_WAIT_MS, no ..._MAX_USAGE_LIMIT_WAIT_MS.
+      expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+      // The rest of the settings is untouched.
+      expect(readJson(settingsFile).model).toBe("opus");
+      // restore removes both, and the `env` setup made goes with them.
+      expect(readJson(settingsFile)).toHaveProperty("env");
+      restore(paths.stateDir);
+      expect(readJson(settingsFile)).not.toHaveProperty("env");
+    });
+  });
+
+  test("a no writes nothing, is remembered in retry-watchdog-declined, and is not asked again", async () => {
+    await quietly(async () => {
+      const { home, configDir, stateDir, settingsFile } = setup();
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      const asked: string[] = [];
+      const say = (answer: boolean) => (question: string) => {
+        asked.push(question);
+        return answer;
+      };
+      expect(await runSetup(paths, setupOptions(home, say(false)))).toBe(1);
+      expect(asked.filter((q) => q.startsWith("Make Claude Code wait"))).toHaveLength(1);
+      expect(readJson(settingsFile).env).toEqual(TODO);
+      expect(readFileSync(join(stateDir, "retry-watchdog-declined"), "utf8")).toBe("no\n");
+      asked.length = 0;
+      expect(await runSetup(paths, setupOptions(home, say(true)))).toBe(1);
+      expect(asked.filter((q) => q.startsWith("Make Claude Code wait"))).toEqual([]);
+      expect(readJson(settingsFile).env).toEqual(TODO);
+    });
+  });
+
+  test("with no terminal setup asks nothing and changes nothing; a dry run says so", () => {
+    const { settingsFile, stateDir, run } = setup();
+    const before = readFileSync(settingsFile, "utf8");
+    const dry = run(["setup", "--dry-run"]);
+    expect(dry.exitCode).toBe(0);
+    expect(dry.stdout).toContain(
+      "  retry watchdog: not offered, there is no terminal (nothing changes); --retry-watchdog turns it on\n",
+    );
+    expect(readFileSync(settingsFile, "utf8")).toBe(before);
+    const real = run(["setup"]);
+    expect(real.exitCode).toBe(0);
+    expect(real.stdout).not.toContain("retry watchdog");
+    expect(readJson(settingsFile).env).toEqual(TODO);
+    expect(existsSync(join(stateDir, "retry-watchdog-declined"))).toBe(false);
+  });
+
+  test("a dry run on a terminal asks nothing, writes nothing, and names what a real run does", async () => {
+    const lines: string[] = [];
+    const log = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    try {
+      const { home, configDir, stateDir, settingsFile } = setup();
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      const before = readFileSync(settingsFile, "utf8");
+      const asked: string[] = [];
+      const say = (question: string) => {
+        asked.push(question);
+        return true;
+      };
+      expect(await runSetup(paths, setupOptions(home, say, { dryRun: true }))).toBe(0);
+      expect(asked).toEqual([]);
+      expect(lines.join("\n")).toContain(
+        "  retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); --retry-watchdog turns it on without asking",
+      );
+      expect(readFileSync(settingsFile, "utf8")).toBe(before);
+      expect(existsSync(join(stateDir, "retry-watchdog-declined"))).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("--retry-watchdog skips the question; a dry run shows the two changes and writes nothing", async () => {
+    const { settingsFile, run } = setup();
+    const before = readFileSync(settingsFile, "utf8");
+    const dry = run(["setup", "--dry-run", "--retry-watchdog"]);
+    expect(dry.exitCode).toBe(0);
+    expect(dry.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+    expect(dry.stdout).not.toContain("retry watchdog:");
+    expect(readFileSync(settingsFile, "utf8")).toBe(before);
+
+    const real = run(["setup", "--retry-watchdog"]);
+    expect(real.stderr).toBe("");
+    expect(real.exitCode).toBe(0);
+    expect(real.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+    // Again: nothing to change.
+    expect(run(["setup", "--retry-watchdog"]).stdout).toStartWith(
+      "Nothing to change. Setup is up to date.",
+    );
+  });
+
+  test("with the flag, a terminal is not asked", async () => {
+    await quietly(async () => {
+      const { home, configDir, settingsFile } = setup();
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      const asked: string[] = [];
+      const say = (question: string) => {
+        asked.push(question);
+        return false;
+      };
+      expect(await runSetup(paths, setupOptions(home, say, { retryWatchdog: true }))).toBe(1);
+      expect(asked.filter((q) => q.startsWith("Make Claude Code wait"))).toEqual([]);
+      expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+    });
+  });
+
+  test("a value the person set is left alone: not asked; with the flag, same value is named and the other key is added, a different one stops setup", async () => {
+    const { home, configDir, settingsFile, run } = setup();
+    // A different value of their own: a terminal is not asked, the value stays.
+    setEnv(settingsFile, { [WATCHDOG]: "0" });
+    await quietly(async () => {
+      const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
+      const asked: string[] = [];
+      const say = (question: string) => {
+        asked.push(question);
+        return true;
+      };
+      expect(await runSetup(paths, setupOptions(home, say))).toBe(1);
+      expect(asked.filter((q) => q.startsWith("Make Claude Code wait"))).toEqual([]);
+    });
+    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "0" });
+    // The flag may not overwrite it: setup stops, and writes nothing.
+    const refused = run(["setup", "--retry-watchdog"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain(`env.${WATCHDOG} is "0", set by someone else`);
+    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "0" });
+    // The same value, set by hand: left alone and named, and the other key is ours.
+    setEnv(settingsFile, { [WATCHDOG]: "1" });
+    const same = run(["setup", "--retry-watchdog"]);
+    expect(same.exitCode).toBe(0);
+    expect(same.stdout).toContain(
+      `  ~/.claude/settings.json: env.${WATCHDOG}: already set by someone else; left alone\n`,
+    );
+    expect(same.stdout).toContain(RECHECK_LINE);
+    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+    // restore takes out only the one that is ours.
+    expect(run(["restore", "--yes"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).env).toEqual({ [WATCHDOG]: "1" });
+  });
+
+  test("restore removes both keys; a value the person changed since stays", () => {
+    const { settingsFile, run } = setup();
+    expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(0);
+    setEnv(settingsFile, { [WATCHDOG]: "1", [RECHECK]: "60000" });
+    expect(run(["restore", "--yes"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).env).toEqual({ [RECHECK]: "60000" });
+    expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(1);
+  });
+
+  test("--no-retry-watchdog takes ours out and is remembered; a key of the person's own is not touched", () => {
+    const { settingsFile, stateDir, run } = setup();
+    expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(0);
+    const off = run(["setup", "--no-retry-watchdog"]);
+    expect(off.exitCode).toBe(0);
+    expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${WATCHDOG}: "1" -> (none)\n`);
+    expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${RECHECK}: "300000" -> (none)\n`);
+    expect(readJson(settingsFile).env).toEqual(TODO);
+    expect(readFileSync(join(stateDir, "retry-watchdog-declined"), "utf8")).toBe("no\n");
+    // A key the person wrote is not named, not touched.
+    setEnv(settingsFile, { [WATCHDOG]: "1" });
+    const again = run(["setup", "--no-retry-watchdog"]);
+    expect(again.exitCode).toBe(0);
+    expect(again.stdout).not.toContain(WATCHDOG);
+    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1" });
+  });
+
+  test("both flags at once are a usage error", () => {
+    const { settingsFile, run } = setup();
+    const before = readFileSync(settingsFile, "utf8");
+    const result = run(["setup", "--retry-watchdog", "--no-retry-watchdog"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("Use --retry-watchdog or --no-retry-watchdog, not both.");
+    expect(readFileSync(settingsFile, "utf8")).toBe(before);
+  });
+
+  test("doctor: off, on by setup, on by the person, off by the person: one · line each, never a failure", () => {
+    const { settingsFile, run } = setup();
+    const line = (stdout: string) =>
+      stdout.split("\n").filter((text) => text.includes("retry watchdog"));
+    expect(run(["doctor"]).stdout).toContain(DOCTOR_OFF);
+    expect(line(run(["doctor"]).stdout)).toEqual([DOCTOR_OFF.trimEnd()]);
+
+    expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(0);
+    expect(line(run(["doctor"]).stdout)).toEqual([
+      "· retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog",
+    ]);
+
+    expect(run(["restore", "--yes"]).exitCode).toBe(0);
+    setEnv(settingsFile, { [WATCHDOG]: "1" });
+    expect(line(run(["doctor"]).stdout)).toEqual([
+      `· retry watchdog: on (your own ${WATCHDOG} in ~/.claude/settings.json)`,
+    ]);
+
+    setEnv(settingsFile, { [WATCHDOG]: "0" });
+    expect(line(run(["doctor"]).stdout)).toEqual([
+      `· retry watchdog: off (your own ${WATCHDOG} in ~/.claude/settings.json leaves it off; change it by hand to turn it on)`,
+    ]);
+  });
+});
+
 describe("cc-smart-dev-kit setup: the MCP servers", () => {
   test("setup registers them at user scope, doctor checks them, restore takes them back", () => {
     const { configDir, home, run } = setup();
@@ -2801,6 +3260,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
       [
         "$ claude mcp remove serena --scope user",
         ...removed,
+        WATCHDOG_NOT_OFFERED,
         TAVILY_SKIPPED,
         "Dry run: nothing was written or run.",
         "",
@@ -2922,7 +3382,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     // The line names the key's PATH, never its value. The `env` object setup made for it goes
     // with the key: this settings file had none of its own.
     expect(restored.stdout).toContain(
-      "env.TAVILY_API_KEY, env, the hook entry in hooks.Notification; everything else kept",
+      "env.TAVILY_API_KEY, env.CLAUDE_CODE_ENABLE_TODO_TOOLS, env, the hook entry in hooks.Notification; everything else kept",
     );
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });
@@ -2977,10 +3437,11 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
       "tvly-stdin-secret",
     );
     expect(`${again.stdout}${again.stderr}`).not.toContain("tvly-stdin-secret");
-    // An empty stdin is refused, and nothing is written.
+    // An empty stdin is refused as a usage mistake: the option was given with nothing to
+    // read, so exit 2 and the one line that says which help explains it.
     const empty = run(["setup", "--tavily-key-stdin"], {}, home, "");
-    expect(empty.exitCode).toBe(1);
-    expect(empty.stderr).toContain("no key on stdin");
+    expect(empty.exitCode).toBe(2);
+    expect(empty.stderr).toBe(`No key arrived on stdin\nSee: ${COMMAND} setup --help\n`);
   });
 
   test("a Tavily key the environment already has: nothing is written for it", () => {

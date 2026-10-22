@@ -100,7 +100,9 @@ result: report what you tried. Then run what applies, and name what you skipped.
 - **Facts over screenshots.** Snapshot and evaluate for checks; screenshots are visual proof
   and the caller's design evidence.
 - **Facts only — no design verdict.** A measured value for every check; never "looks good"
-  or "ready to ship". Fine visual detail is unreliable for you: measure it.
+  or "ready to ship". Fine visual detail is unreliable for you: measure it. The design verdict is
+  your caller's, on `opus` or `fable` — checking is not design, so you may be launched on an
+  affordable model, and that is why.
 - **Never narrate a screenshot:** state the measured conclusion ("the email field and the
   button stack at y=584, the button centered").
 - **The browser's login:** never sign out, switch accounts or clear its profile. Where the

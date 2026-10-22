@@ -81,10 +81,13 @@ describe("classifyHeavyCommand: tests", () => {
       "./node_modules/.bin/vitest run",
       "node node_modules/vitest/vitest.mjs run",
       "node --max-old-space-size=8192 node_modules/vitest/vitest.mjs run",
-      "node node_modules\\vitest\\vitest.mjs run",
+      // A Windows path in a Bash line is quoted: bash (Git Bash too) reads an unquoted `\` as
+      // an escape, so `node node_modules\vitest\…` runs `node_modulesvitest…`, no vitest.
+      'node "node_modules\\vitest\\vitest.mjs" run',
       "timeout -s KILL 120 vitest run",
       "echo start; bunx vitest run",
     ]);
+    expect(kindOf("node node_modules\\vitest\\vitest.mjs run")).toBeNull();
     expectKind("test:coverage", [
       "bunx vitest run --coverage",
       "npx vitest run --coverage.enabled",
@@ -111,6 +114,40 @@ describe("classifyHeavyCommand: tests", () => {
     ]) {
       expect({ command, kind: kindOf(command) }).toEqual({ command, kind: null });
     }
+  });
+});
+
+describe("classifyHeavyCommand: the wrappers the guards read through", () => {
+  test("CM-9: a wrapper's own options are stepped over: `time -p`, `env -i`, `sudo -u x`", () => {
+    expectKind("tsc", [
+      "time -p bunx tsc --noEmit",
+      "env -i bunx tsc --noEmit",
+      "env -u HOME PATH=/x bunx tsc --noEmit",
+      "/usr/bin/env bunx tsc --noEmit",
+      "sudo -u x bunx tsc --noEmit",
+      "doas -u x bunx tsc --noEmit",
+      "ionice -c 3 nice -n 5 bunx tsc --noEmit",
+      "env -S 'bunx tsc --noEmit'",
+    ]);
+  });
+
+  test("a keyword, a substitution, and a here-doc fed to a shell", () => {
+    expectKind("tsc", [
+      "if bunx tsc --noEmit; then echo ok; fi",
+      "! bunx tsc --noEmit",
+      "echo `bunx tsc --noEmit`",
+      "cat <<EOF\n$(bunx tsc --noEmit)\nEOF",
+      "sh <<'EOF'\nbunx tsc --noEmit\nEOF",
+      "echo 'bunx tsc --noEmit' | sh",
+      "bash -c -- 'bunx tsc --noEmit'",
+    ]);
+    expect(kindOf("cat <<'EOF'\nbunx tsc --noEmit\nEOF")).toBeNull();
+    expect(kindOf("command -v tsc")).toBeNull();
+  });
+
+  test("a redirection is no argument: a type check that only prints, into a file, is not heavy", () => {
+    expect(kindOf("bunx tsc --version > version.txt")).toBeNull();
+    expect(kindOf("bunx tsc --noEmit > out.txt")).toBe("tsc");
   });
 });
 

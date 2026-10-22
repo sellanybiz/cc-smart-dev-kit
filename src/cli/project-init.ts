@@ -11,8 +11,10 @@
  * **Every project uses Claude Code's own worktrees**, so no worktree hook is written. When
  * the base branch is not the repo's default branch, `.claude/settings.json` gets
  * `"worktree": {"baseRef": "head"}`, so a new worktree starts from the branch the session is
- * on. The plugin's old engine's fields (`worktrees.prefix`, `worktrees.setup`,
- * `worktrees.engine`) are deprecated and neither asked for nor written.
+ * on. What the retired worktree engine left — its fields in the project's file, its hook lines
+ * in `.claude/settings.json` and `.claude/settings.local.json` — is taken out, shown as `-`
+ * lines first (`src/project/init.ts`). Its old flags (`--prefix`, `--setup`, `--no-setup`,
+ * `--engine`) are refused, exit 2.
  *
  * **Every question has a flag**, so a run with no terminal and `--yes` writes the whole file
  * from the flags and the defaults. With no terminal and no `--yes`, nothing is written: the
@@ -26,6 +28,7 @@ import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
+import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import {
   applyProjectInit,
   type ProjectInitAnswers,
@@ -34,6 +37,7 @@ import {
   requiresFor,
 } from "../project/init";
 import { isObject } from "../setup/managed-json";
+import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   isSwitchKey,
   parseWorkflowValue,
@@ -41,7 +45,7 @@ import {
   type Workflow,
   type WorkflowKey,
 } from "../workflow/schema";
-import { tildify } from "./paths";
+import { cliPaths, tildify } from "./paths";
 
 type Env = Record<string, string | undefined>;
 
@@ -213,8 +217,6 @@ export interface ProjectInitFlags {
   base?: string;
   bases?: Record<string, string>;
   protectedBranches?: string[];
-  /** The deprecated engine's flags the person still passed: accepted, and ignored. */
-  deprecatedFlags?: string[];
   guardMainFolder?: boolean;
   sessionNames?: boolean;
   jobRoute?: boolean;
@@ -226,10 +228,15 @@ export interface ProjectInitFlags {
 export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { error: string } {
   const flags: ProjectInitFlags = { dryRun: false, yes: false };
   const workflow: string[] = [];
-  const deprecated: string[] = [];
   const value = (name: string, next: string | undefined): string => {
     if (next === undefined || next.startsWith("--")) throw new Error(`${name} needs a value`);
     return next;
+  };
+  /** A flag whose value must say something: a blank one is a mistake, not an empty answer. */
+  const words = (name: string, next: string | undefined): string => {
+    const given = value(name, next);
+    if (given.trim() === "") throw new Error(`${name} needs a value`);
+    return given;
   };
   try {
     for (let index = 0; index < argv.length; index += 1) {
@@ -242,32 +249,22 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
           flags.yes = true;
           break;
         case "--base":
-          flags.base = value(arg, argv[index + 1]);
+          flags.base = words(arg, argv[index + 1]);
           index += 1;
           break;
-        // The deprecated engine's flags are accepted until the next minor version, and
-        // ignored: they are named in one `!` line with the plan.
+        // The retired engine's flags: a usage mistake now, named as one, never ignored.
         case "--prefix":
         case "--setup":
-        case "--engine":
-          value(arg, argv[index + 1]);
-          index += 1;
-          deprecated.push(arg);
-          break;
         case "--no-setup":
-          deprecated.push(arg);
-          break;
+        case "--engine":
+          return {
+            error: `${arg} is gone: the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}, and Claude Code's own worktrees need none of its settings`,
+          };
         case "--bases": {
-          const pairs = value(arg, argv[index + 1]);
+          const pairs = words(arg, argv[index + 1]);
           index += 1;
-          flags.bases = {};
-          for (const pair of pairs.split(",")) {
-            const [prefix, base] = pair.split("=");
-            if (prefix === undefined || base === undefined || base === "") {
-              throw new Error(`--bases: "${pair}" is not prefix=base`);
-            }
-            flags.bases[prefix] = base;
-          }
+          // The same parser the question uses: one answer, one rule.
+          flags.bases = parseBases(pairs, "--bases: ");
           break;
         }
         case "--protected":
@@ -276,14 +273,18 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
             .filter((word) => word !== "");
           index += 1;
           break;
+        // Each yes/no question has both flags, so a run with no terminal can answer either way.
         case "--guard-main-folder":
-          flags.guardMainFolder = true;
+        case "--no-guard-main-folder":
+          flags.guardMainFolder = arg === "--guard-main-folder";
           break;
         case "--session-names":
-          flags.sessionNames = true;
+        case "--no-session-names":
+          flags.sessionNames = arg === "--session-names";
           break;
         case "--job-route":
-          flags.jobRoute = true;
+        case "--no-job-route":
+          flags.jobRoute = arg === "--job-route";
           break;
         case "--workflow": {
           // One word, comma separated: `--workflow openPr=draft,alerts.sound=true`.
@@ -301,7 +302,6 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
     return { error: error instanceof Error ? error.message : String(error) };
   }
   if (workflow.length > 0) flags.workflow = workflow;
-  if (deprecated.length > 0) flags.deprecatedFlags = deprecated;
   return { flags };
 }
 
@@ -344,8 +344,8 @@ function setLeaf(data: Record<string, unknown>, path: string[], value: unknown):
 /**
  * Every answer, without a person: the flags first, then what the project's file already
  * says, then what the repo says. This is what a `--yes` run writes, and the defaults the
- * questions offer. The deprecated engine fields in an existing file are left out: the plan
- * keeps them as they are, and never writes one a file does not have.
+ * questions offer. A retired engine field in an existing file is no answer: the plan takes it
+ * out.
  */
 export function defaultAnswers(
   existing: Record<string, unknown> | null,
@@ -459,13 +459,19 @@ export function askedAnswers(
   };
 }
 
-/** `hotfix/=main,release/=main` as a map. An empty answer means no bases. */
-function parseBases(text: string): Record<string, string> {
+/**
+ * `hotfix/=main,release/=main` as a map. An empty answer means no bases. One parser for the
+ * flag and for the question, so the two answers can never differ: the key is a branch-name
+ * prefix and ends with "/" (the file's schema refuses one that does not, and a project with
+ * such a file is refused by every reader). `where` names the flag, for the person reading
+ * the error.
+ */
+export function parseBases(text: string, where = ""): Record<string, string> {
   const bases: Record<string, string> = {};
   for (const pair of listOf(text)) {
     const [prefix, base] = pair.split("=");
-    if (prefix === undefined || base === undefined || !prefix.endsWith("/") || base === "") {
-      throw new Error(`"${pair}" is not prefix=base (the prefix ends with "/")`);
+    if (!prefix?.endsWith("/") || base === undefined || base === "") {
+      throw new Error(`${where}"${pair}" is not prefix=base (the prefix ends with "/")`);
     }
     bases[prefix] = base;
   }
@@ -494,16 +500,17 @@ export function shownWorkflow(workflow: Workflow): string {
 
 const POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
 
-/** The plan, on screen: the file, the changes, the settings line, and what to know. */
+/** The plan, on screen: the file, the changes, each settings file's lines, and what to know. */
 function printPlan(plan: ProjectInitPlan, context: ProjectInitContext): void {
   context.print(`${plan.file} will hold:`);
   if (plan.diff.length === 0) context.print("  (no change)");
   for (const line of plan.diff) context.print(`  ${line}`);
-  if (plan.settingsChanged) {
-    context.print(`${plan.settingsFile} also changes, merged with what it has:`);
-    for (const line of plan.settingsAdds) context.print(`  + ${line}`);
+  const settings = [plan.settings, plan.localSettings].filter((one) => one.changed);
+  for (const one of settings) {
+    context.print(`${one.file} also changes, merged with what it has:`);
+    for (const line of one.lines) context.print(`  ${line}`);
   }
-  if (!plan.changed && !plan.settingsChanged) context.print("Nothing to change.");
+  if (!plan.changed && settings.length === 0) context.print("Nothing to change.");
   for (const note of plan.notes) context.print(`! ${note}`);
 }
 
@@ -528,23 +535,35 @@ export function readExisting(file: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * The person's own workflow values, for D16's clash warning: `{}` when the file is not there
+ * or cannot be read (`personalWorkflowOrDefault`).
+ */
+function personalWorkflow(env: Env): Workflow {
+  return personalWorkflowOrDefault(cliPaths(env));
+}
+
 export const PROJECT_INIT_USAGE = `Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]
 
 Writes this project's .claude/cc-smart-dev-kit.json, and, when the base branch is not the
 repo's default branch, Claude Code's "worktree": {"baseRef": "head"} in
 .claude/settings.json, so a new worktree starts from the branch the session is on. Every
-project uses Claude Code's own worktrees: no worktree hook is written. It asks first, showing
-the defaults; every question has a flag, so a run with no terminal writes nothing unless
---yes is given. Nothing is committed: commit both files with the project.
+project uses Claude Code's own worktrees: no worktree hook is written. What the retired
+worktree engine left is taken out: its fields in the project's file, and its
+"cc-smart-dev-kit hook" lines in .claude/settings.json and .claude/settings.local.json. It asks
+first, showing the defaults and every - line; every question has a flag, so a run with no
+terminal writes nothing unless --yes is given. Nothing is committed: commit both files with
+the project.
 
   --base <branch>        the branch a new worktree starts from (default: origin/HEAD, else the
                          repo's only branch, else main, else master, else the current branch)
   --bases <p=b,p=b>      bases for other branch prefixes (default: hotfix/, release/)
   --protected <a,b>      the branches the git guard asks about (default: the default
                          branch, the base, and GitHub's protected branches)
-  --guard-main-folder    refuse edits in the main checkout itself
-  --session-names        each session names itself after its task
-  --job-route            send heavy commands through the job queue
+  --[no-]guard-main-folder
+                         refuse edits in the main checkout itself (or not)
+  --[no-]session-names   each session names itself after its task (or not)
+  --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
   --dry-run              print the plan and write nothing
   --yes                  no questions: write the flags and the defaults
@@ -581,26 +600,25 @@ export function runProjectInit(
       root: context.root,
       existing,
       existingSettings: readText(join(context.root, ".claude", "settings.json")),
+      existingLocalSettings: readText(join(context.root, ".claude", "settings.local.json")),
       defaultBranch: facts.defaultBranch,
       answers,
+      // D16's clash warning judges the policy the guards will see, so the person's own file
+      // comes with it. A file that cannot be read is no policy here (the guards ask about it
+      // themselves); the plan must still run.
+      personalWorkflow: personalWorkflow(context.env),
     });
   } catch (error) {
     context.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
   printPlan(plan, context);
-  if (flags.deprecatedFlags !== undefined) {
-    const names = flags.deprecatedFlags.join(", ");
-    context.print(
-      `! ${names} ${flags.deprecatedFlags.length === 1 ? "is" : "are"} deprecated and ignored: the plugin's worktree engine retires in the next minor version, and every project uses Claude Code's own worktrees`,
-    );
-  }
   if (flags.dryRun) {
     context.print("A dry run: nothing was written.");
     return 0;
   }
   if (context.terminal !== null && !flags.yes) {
-    if (!context.terminal.confirm("Write these two files?")) {
+    if (!context.terminal.confirm("Write these files?")) {
       context.print("Left alone.");
       return 0;
     }

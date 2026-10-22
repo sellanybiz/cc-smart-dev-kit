@@ -38,6 +38,7 @@ import {
 import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
+import { parseUserJson } from "../setup/user-json";
 import { forgetChange, realTarget, removeManagedFile } from "../setup/write";
 import type { McpCheck } from "./doctor";
 import { type McpRecord, readMcpRecords } from "./records";
@@ -184,7 +185,7 @@ export function registrationsNaming(
   }
   let config: unknown;
   try {
-    config = JSON.parse(text);
+    config = parseUserJson(text);
   } catch {
     return null;
   }

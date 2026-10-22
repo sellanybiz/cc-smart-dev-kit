@@ -11,7 +11,7 @@ import { serenaLeftoverPaths } from "../mcp/retired";
 import { restore } from "../setup/restore";
 import { readChanged, writeManagedFile } from "../setup/write";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
-import { git, tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 
 capturePrinted();
 
@@ -244,6 +244,48 @@ describe("every question comes first", () => {
   });
 });
 
+describe("setup and the MCP servers' record", () => {
+  /** A fake `claude` that says, at each `mcp add-json`, whether the lock and the record are there. */
+  function watchingClaude(stateDir: string, seen: string): string {
+    const lock = JSON.stringify(join(stateDir, "lock"));
+    const records = JSON.stringify(join(stateDir, "mcp-servers.json"));
+    return [
+      'if [ "$1 $2" = "mcp add-json" ]; then',
+      `  if [ -e ${lock} ]; then held=locked; else held=unlocked; fi`,
+      `  if grep -q "\\"$5\\"" ${records} 2>/dev/null; then rec=recorded; else rec=unrecorded; fi`,
+      `  echo "$5 $held $rec" >> ${JSON.stringify(seen)}`,
+      "fi",
+      "exit 0",
+    ].join("\n");
+  }
+
+  test("ST-4: every claude mcp add-json runs inside the lock, with its record written first", async () => {
+    const w = world();
+    const seen = join(w.home, "seen.log");
+    // The world's fake `claude` (it keeps its mode), now watching this world's state folder.
+    writeFileSync(join(w.bin, "claude"), `#!/bin/sh\n${watchingClaude(w.paths.stateDir, seen)}\n`);
+    expect(await w.setup()).toBe(0);
+    expect(readFileSync(seen, "utf8")).toBe(
+      ["playwright locked recorded", "sequential-thinking locked recorded", ""].join("\n"),
+    );
+  });
+
+  test("ST-5: a record setup cannot read: no MCP server is touched, and the file stays", async () => {
+    const w = world();
+    const file = join(w.paths.stateDir, "mcp-servers.json");
+    writeFileSync(file, "{not json");
+    expect(await w.setup()).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe("{not json");
+    // No fake was called at all here, so the log may not exist: either way, no `claude mcp`.
+    const logFile = join(w.home, "calls.log");
+    expect(existsSync(logFile) ? readFileSync(logFile, "utf8") : "").not.toContain("claude mcp ");
+    expect(printed.join("\n")).toContain(
+      "! cannot read ~/.claude/cc-smart-dev-kit/mcp-servers.json (",
+    );
+    expect(printed.join("\n")).not.toContain("registered again");
+  });
+});
+
 describe("setup manages agent view's notification hook", () => {
   const MATCHER = "agent_needs_input|agent_completed";
   const COMMAND = '"$HOME/.local/bin/cc-smart-dev-kit" hook notify';
@@ -418,6 +460,152 @@ describe("setup manages agent view's notification hook", () => {
   });
 });
 
+describe("setup turns claude-mem's two start blocks off (D23)", () => {
+  const WORK_STATE = "CLAUDE_MEM_WORK_STATE_ENABLED";
+  const MEMORY = "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED";
+  /** claude-mem's settings.json as 13.40.0 seeds it on its first run (the keys that matter). */
+  const SEEDED = {
+    CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+    CLAUDE_MEM_PROVIDER: "claude",
+    CLAUDE_MEM_OPENAI_COMPAT_PRESET: "",
+    CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "",
+    CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "",
+    CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
+    [WORK_STATE]: "true",
+    [MEMORY]: "true",
+  };
+  const claudeMemFile = (w: ReturnType<typeof world>) =>
+    join(w.home, ".claude-mem", "settings.json");
+  const seed = (w: ReturnType<typeof world>, settings: unknown = SEEDED) => {
+    const file = claudeMemFile(w);
+    mkdirSync(join(w.home, ".claude-mem"), { recursive: true });
+    writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
+    return file;
+  };
+  /** The claude-mem version the fake world installs. */
+  const installedPlugins = (w: ReturnType<typeof world>) =>
+    JSON.parse(readFileSync(w.paths.installedPluginsFile, "utf8"));
+
+  test("first run: both blocks off, the to-do warning once, the restart step, and the task tools on", async () => {
+    const w = world();
+    const file = seed(w);
+    expect(await w.setup()).toBe(0);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
+    expect(printed).toContain(
+      '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+    );
+    expect(printed).toContain(
+      "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
+    );
+    expect(printed).toContain(
+      "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
+    );
+    expect(printed.filter((line) => line.includes("work_state_read"))).toHaveLength(1);
+    expect(readJson(file)).toEqual({ ...SEEDED, [WORK_STATE]: "false", [MEMORY]: "false" });
+    expect(readJson(w.paths.settingsFile).env.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("1");
+
+    // A second run: nothing to change, nothing about claude-mem or the task tools.
+    printed.length = 0;
+    expect(await w.setup()).toBe(0);
+    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(printed.join("\n")).not.toContain("claude-mem");
+    expect(printed.join("\n")).not.toContain("CLAUDE_CODE_ENABLE_TODO_TOOLS");
+  });
+
+  test("--dry-run: both ~ lines and the task tools shown, nothing written", async () => {
+    const w = world();
+    const file = seed(w);
+    const before = readFileSync(file, "utf8");
+    const settingsBefore = readFileSync(w.paths.settingsFile, "utf8");
+    expect(await w.setup({ dryRun: true })).toBe(0);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
+    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
+    expect(printed).toContain(
+      '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+    );
+    expect(printed).toContain("Dry run: nothing was written or run.");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(settingsBefore);
+  });
+
+  test('a person\'s own "true" is kept, named in a ! line, and the task tools go with it', async () => {
+    const w = world();
+    const file = seed(w);
+    await w.setup();
+    // The way back on from the README: the person sets it to "true".
+    const settings = readJson(file);
+    settings[WORK_STATE] = "true";
+    writeFileSync(file, JSON.stringify(settings, null, 2));
+    printed.length = 0;
+    expect(await w.setup()).toBe(0);
+    expect(printed).toContain(
+      `! claude-mem settings left alone: ${WORK_STATE} is "true" in ~/.claude-mem/settings.json (your choice)`,
+    );
+    expect(readJson(file)[WORK_STATE]).toBe("true");
+    // Its to-do list is back: no task tools are needed, and setup leaves the ones it set.
+    expect(printed).not.toContain("CLAUDE_CODE_ENABLE_TODO_TOOLS");
+  });
+
+  test("claude-mem older than 13.36.0: both keys are still turned off", async () => {
+    const w = world();
+    const file = seed(w);
+    const plugins = installedPlugins(w);
+    plugins.plugins["claude-mem@thedotmack"][0].version = "13.35.0";
+    writeFileSync(w.paths.installedPluginsFile, JSON.stringify(plugins));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(file)[WORK_STATE]).toBe("false");
+    expect(readJson(file)[MEMORY]).toBe("false");
+  });
+
+  test("claude-mem not installed: the plan writes nothing for it (the companion step runs first)", async () => {
+    const w = world();
+    const file = seed(w);
+    const before = readFileSync(file, "utf8");
+    const plugins = installedPlugins(w);
+    delete plugins.plugins["claude-mem@thedotmack"];
+    writeFileSync(w.paths.installedPluginsFile, JSON.stringify(plugins));
+    expect(await w.setup()).toBe(0);
+    // The fake `claude` records the step but installs nothing, so the plan still sees no
+    // claude-mem: nothing of its settings is touched, and no task tools are turned on.
+    expect(printed).toContain("+ plugin claude-mem@thedotmack");
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(readJson(w.paths.settingsFile).env).toBeUndefined();
+  });
+
+  test("a task-tools value the person set is theirs: kept, named, never overwritten", async () => {
+    const w = world();
+    const file = seed(w);
+    const settings = readJson(w.paths.settingsFile);
+    settings.env = { CLAUDE_CODE_ENABLE_TODO_TOOLS: "0" };
+    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
+    expect(await w.setup()).toBe(0);
+    expect(readJson(w.paths.settingsFile).env.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("0");
+    expect(printed).toContain(
+      '  ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" (your choice); left alone',
+    );
+    // claude-mem's own keys are still turned off around it.
+    expect(readJson(file)[WORK_STATE]).toBe("false");
+  });
+
+  test("restore takes both keys and the task tools back", async () => {
+    const w = world();
+    const file = seed(w);
+    expect(await w.setup()).toBe(0);
+    restore(w.paths.stateDir);
+    // The keys go; claude-mem falls back to its own defaults ("true") for both.
+    expect(readJson(file)).toEqual({
+      CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
+      CLAUDE_MEM_PROVIDER: "claude",
+      CLAUDE_MEM_OPENAI_COMPAT_PRESET: "",
+      CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "",
+      CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "",
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
+    });
+    expect(readJson(w.paths.settingsFile).env).toBeUndefined();
+  });
+});
+
 describe("setup takes back what an older setup left for Serena", () => {
   /**
    * What an older setup left: `serena` in Claude Code's own config, naming its context file —
@@ -512,5 +700,42 @@ describe("setup takes back what an older setup left for Serena", () => {
     expect(existsSync(where.contextFile)).toBe(true);
     expect(existsSync(where.recordDir)).toBe(true);
     expect(readMcpRecords(w.paths.stateDir).serena).toBeDefined();
+  });
+});
+
+describe("D33: setup lists the repos that still carry a retired worktree piece", () => {
+  /** A repo a saved session of this machine worked in, with a retired field in its config. */
+  function oldRepo(w: ReturnType<typeof world>): { dir: string; config: string } {
+    const config = JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" } });
+    const dir = project({});
+    writeFileSync(join(dir, ".claude", "cc-smart-dev-kit.json"), config);
+    const folder = join(w.paths.projectsDir, "-old-repo");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "s1.jsonl"), `${JSON.stringify({ cwd: dir, type: "user" })}\n`);
+    return { config, dir };
+  }
+
+  test("D33: every run names each such repo once, with the fix; the repo itself is not changed", async () => {
+    const w = world({ git: true });
+    const { config, dir } = oldRepo(w);
+    const line = `! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`;
+    expect(await w.setup({ env: cleanGitEnv() })).toBe(0);
+    expect(printed.filter((printedLine) => printedLine === line)).toHaveLength(1);
+    printed.length = 0;
+    // A second run, with nothing else to change, still says it.
+    expect(await w.setup({ env: cleanGitEnv() })).toBe(0);
+    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(printed).toContain(line);
+    expect(readFileSync(join(dir, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(config);
+  });
+
+  test("D33: --dry-run names it too", async () => {
+    const w = world({ git: true });
+    const { dir } = oldRepo(w);
+    expect(await w.setup({ dryRun: true, env: cleanGitEnv() })).toBe(0);
+    expect(printed).toContain(
+      `! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`,
+    );
+    expect(printed).toContain("Dry run: nothing was written or run.");
   });
 });

@@ -1,14 +1,17 @@
 /** The commands the hooks brought: `hook`, `session-name`, and `doctor`'s options. */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { PLUGIN_ID, VERSION } from "../build-info";
-import { projectHookCommand } from "../hooks/project-wiring";
 import { launcherScript } from "../setup/launcher";
-import { USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
-import { makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
+import { USER_NOTIFY_COMMAND, USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
-import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { cleanGitEnv, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -39,66 +42,12 @@ function cli(args: string[], options: { stdin?: string; cwd?: string } = {}) {
   };
 }
 
-/** The lines a project pastes, written out by hand: what the README shows. */
-const SETTINGS = `{
-  "hooks": {
-    "WorktreeCreate": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\\"$HOME/.local/bin/cc-smart-dev-kit\\" hook worktree-create",
-            "timeout": 600
-          }
-        ]
-      }
-    ],
-    "WorktreeRemove": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\\"$HOME/.local/bin/cc-smart-dev-kit\\" hook worktree-remove",
-            "timeout": 60
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\\"$HOME/.local/bin/cc-smart-dev-kit\\" hook subagent-stop",
-            "timeout": 60
-          }
-        ]
-      }
-    ]
-  }
-}`;
-
-/** A clone with the worktree engine turned on. */
-function engineClone(): string {
-  const { repo } = makeClone();
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-    worktrees: { base: "main", prefix: "app-wt-" },
-  });
-  return repo;
-}
-
 describe("cc-smart-dev-kit hook", () => {
-  test("no name: the lines to paste, exit 0", () => {
+  test("no name: the help, exit 0 — the notifier hook's, since the engine's names are retired", () => {
     const run = cli(["hook"]);
     expect(run.exitCode).toBe(0);
     expect(run.stdout).toBe(
-      `Usage: cc-smart-dev-kit hook <worktree-create|worktree-remove|subagent-stop|notify>
-
-The worktree engine is opt-in per project. To turn it on in a project, give its
-.claude/cc-smart-dev-kit.json a "worktrees" field, and paste these hooks into its
-.claude/settings.json (merge them with any "hooks" it has):
-
-${SETTINGS}
+      `Usage: cc-smart-dev-kit hook <notify>
 
 notify is the notifier hook, with the same input and answer as the plugin's own bundle.
 cc-smart-dev-kit setup wires it in your user settings for agent view, which runs no plugin hooks
@@ -108,21 +57,13 @@ not a project hook: it needs no settings from a project, and it works in every f
     );
   });
 
-  test("the README and the help name the same hook commands", () => {
-    // One list, written by hand here: a renamed or added hook fails this test rather than
-    // leaving the README or the help behind.
-    const names = ["worktree-create", "worktree-remove", "subagent-stop", "notify"];
+  test("the README and the help name the same hook command", () => {
+    // The help names the one hook left, from its constant; the README names it too.
     const readme = readFileSync(join(import.meta.dir, "..", "..", "README.md"), "utf8");
-    expect(readme).toContain(`\`cc-smart-dev-kit hook <${names.join("\\|")}>\``);
+    expect(readme).toContain(`\`cc-smart-dev-kit hook <${USER_NOTIFY_HOOK_NAME}>\``);
     expect(cli(["hook"]).stdout.split("\n")[0]).toBe(
-      `Usage: cc-smart-dev-kit hook <${names.join("|")}>`,
+      `Usage: cc-smart-dev-kit hook <${USER_NOTIFY_HOOK_NAME}>`,
     );
-  });
-
-  test("the README's § Worktrees shows exactly these lines", () => {
-    const readme = readFileSync(join(import.meta.dir, "..", "..", "README.md"), "utf8");
-    const section = readme.slice(readme.indexOf("\n## Worktrees\n"));
-    expect(section).toContain(`\`\`\`json\n${SETTINGS}\n\`\`\``);
   });
 
   test("an unknown hook: usage, exit 2, nothing read", () => {
@@ -132,71 +73,64 @@ not a project hook: it needs no settings from a project, and it works in every f
     expect(run.stderr).toStartWith("Unknown hook: git-guard\n\nUsage: cc-smart-dev-kit hook <");
   });
 
-  test("worktree-create: the folder on stdout and nothing else, exit 0", () => {
-    const repo = engineClone();
-    const run = cli(["hook", "worktree-create"], {
-      stdin: JSON.stringify({
-        hook_event_name: "WorktreeCreate",
-        session_id: SESSION,
-        cwd: repo,
-        name: "fix/x",
-      }),
-    });
-    expect(run).toMatchObject({
-      exitCode: 0,
-      stdout: join(dirname(repo), "app-wt-fix-x"),
-      stderr: "",
-    });
-  });
+  /** The stderr line every retired name prints, whatever event Claude Code ran it on. */
+  const retiredLine = (name: string) =>
+    `cc-smart-dev-kit hook ${name}: this hook was retired in 1.0.0: remove its line from your settings — \`cc-smart-dev-kit project init\` does it\n`;
 
-  test("worktree-create without worktrees in cc-smart-dev-kit.json: exit 1, the reason, no folder", () => {
+  /** Runs a retired name with the input of one event, in a new repo. */
+  function retired(name: string, event: string, extra: Record<string, unknown>) {
     const repo = makeRepo();
-    const run = cli(["hook", "worktree-create"], {
-      stdin: JSON.stringify({ hook_event_name: "WorktreeCreate", cwd: repo, name: "fix/x" }),
-    });
-    expect(run.exitCode).toBe(1);
-    expect(run.stdout).toBe("");
-    expect(run.stderr).toBe(
-      "worktree not created: this project wires the cc-smart-dev-kit worktree hooks (cc-smart-dev-kit hook ...), but has no .claude/cc-smart-dev-kit.json. " +
-        'Add "worktrees" to .claude/cc-smart-dev-kit.json, or take the three cc-smart-dev-kit hook lines out of .claude/settings.json (the cc-smart-dev-kit README, § Worktrees)\n',
-    );
-  });
-
-  test("worktree-remove: removes a clean worktree, exit 0; input that is not JSON: exit 1", () => {
-    const repo = engineClone();
-    const folder = join(repo, ".claude", "worktrees", "agent-0a1b");
-    git(repo, "worktree", "add", "-q", "-b", "worktree-agent-0a1b", folder);
-    const run = cli(["hook", "worktree-remove"], {
-      cwd: folder,
-      stdin: JSON.stringify({
-        hook_event_name: "WorktreeRemove",
-        cwd: folder,
-        worktree_path: folder,
+    return {
+      repo,
+      run: cli(["hook", name], {
+        cwd: repo,
+        stdin: JSON.stringify({ hook_event_name: event, cwd: repo, ...extra }),
       }),
-    });
+    };
+  }
+
+  // F4: exit 1, never 2. Exit 2 is Claude Code's blocking exit: on `SubagentStop` it blocks
+  // the stop, and nothing here reads `stop_hook_active`, so a leftover `subagent-stop` line
+  // would loop every subagent for ever. Exit 1 is a non-blocking error on `SubagentStop` and
+  // `WorktreeRemove`, and any non-zero exit still fails `WorktreeCreate`
+  // (`docs/claude-code-contract.md` § Hooks: the SubagentStop, WorktreeCreate and
+  // WorktreeRemove rows).
+  test("F4: a retired worktree-create line: exit 1 and the fix on stderr — non-zero still fails the creation", () => {
+    const { repo, run } = retired("worktree-create", "WorktreeCreate", { name: "fix/x" });
     expect(run).toMatchObject({
-      exitCode: 0,
-      stdout: "",
-      stderr: `removed ${folder}; deleted branch worktree-agent-0a1b\n`,
-    });
-    expect(existsSync(folder)).toBe(false);
-    expect(cli(["hook", "worktree-remove"], { stdin: "nope" })).toMatchObject({
       exitCode: 1,
       stdout: "",
-      stderr: "cc-smart-dev-kit worktree-remove: the hook input is not JSON\n",
+      stderr: retiredLine("worktree-create"),
     });
+    // Nothing was made: Claude Code's creation fails, and says why.
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
   });
 
-  test("subagent-stop: input that is not JSON is one line, exit 0 (a subagent must finish)", () => {
-    expect(cli(["hook", "subagent-stop"], { stdin: "nope" })).toMatchObject({
-      exitCode: 0,
+  test("F4: a retired worktree-remove line: exit 1, a non-blocking error — the session goes on", () => {
+    const { run } = retired("worktree-remove", "WorktreeRemove", {
+      worktree_path: "/tmp/app-wt-fix",
+    });
+    expect(run).toMatchObject({
+      exitCode: 1,
       stdout: "",
-      stderr: "cc-smart-dev-kit subagent-stop: the hook input is not JSON\n",
+      stderr: retiredLine("worktree-remove"),
     });
   });
 
-  test("the exact command a project wires: through sh, $HOME and the launcher, with no bun on PATH", () => {
-    const repo = engineClone();
+  test("F4: a retired subagent-stop line never blocks a subagent's stop: exit 1 and the fix on stderr", () => {
+    const { run } = retired("subagent-stop", "SubagentStop", {
+      agent_id: "a1",
+      stop_hook_active: false,
+    });
+    expect(run).toMatchObject({
+      exitCode: 1,
+      stdout: "",
+      stderr: retiredLine("subagent-stop"),
+    });
+  });
+
+  test("F4: the exact line a project still wires: through sh, $HOME and the launcher, the fix, exit 1", () => {
+    const repo = makeRepo();
     const home = tempDir("wired-home");
     const configDir = join(home, ".claude");
     // The installed plugin: its dist/cli.js runs this repo's CLI, with the port guard.
@@ -225,28 +159,32 @@ not a project hook: it needs no settings from a project, and it works in every f
     writeFileSync(
       join(home, ".local", "bin", "cc-smart-dev-kit"),
       launcherScript(process.execPath),
+      { mode: 0o755 },
+    );
+    // The line the old README had a project paste, written out by hand.
+    const run = Bun.spawnSync(
+      ["/bin/sh", "-c", '"$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create'],
       {
-        mode: 0o755,
+        cwd: repo,
+        env: {
+          ...cleanGitEnv(),
+          ...guard.env,
+          HOME: home,
+          CLAUDE_CONFIG_DIR: configDir,
+          PATH: "/usr/bin:/bin",
+        },
+        stdin: Buffer.from(
+          JSON.stringify({ hook_event_name: "WorktreeCreate", cwd: repo, name: "fix/wired" }),
+        ),
+        stdout: "pipe",
+        stderr: "pipe",
       },
     );
-    const run = Bun.spawnSync(["/bin/sh", "-c", projectHookCommand("worktree-create")], {
-      cwd: repo,
-      env: {
-        ...cleanGitEnv(),
-        ...guard.env,
-        HOME: home,
-        CLAUDE_CONFIG_DIR: configDir,
-        PATH: "/usr/bin:/bin",
-      },
-      stdin: Buffer.from(
-        JSON.stringify({ hook_event_name: "WorktreeCreate", cwd: repo, name: "fix/wired" }),
-      ),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    expect(run.stderr.toString()).toBe("");
-    expect(run.exitCode).toBe(0);
-    expect(run.stdout.toString()).toBe(join(dirname(repo), "app-wt-fix-wired"));
+    expect(run.stdout.toString()).toBe("");
+    expect(run.stderr.toString()).toBe(
+      "cc-smart-dev-kit hook worktree-create: this hook was retired in 1.0.0: remove its line from your settings — `cc-smart-dev-kit project init` does it\n",
+    );
+    expect(run.exitCode).toBe(1);
   });
 });
 
@@ -422,13 +360,20 @@ describe("cc-smart-dev-kit session-name", () => {
     ).toBe("Fix the login page");
   });
 
-  test("no name: usage, exit 2; a bad id: the reason, exit 1", () => {
+  test("no name: usage, exit 2; a bad id: the reason, exit 2", () => {
     const usage = cli(["session-name", SESSION]);
     expect(usage.exitCode).toBe(2);
     expect(usage.stderr).toStartWith("Usage: cc-smart-dev-kit session-name <session id> <name>");
+    // A wrong argument is a usage mistake (exit 2), not a failed command (exit 1).
     const bad = cli(["session-name", "../x", "name"]);
-    expect(bad.exitCode).toBe(1);
-    expect(bad.stderr).toBe('cc-smart-dev-kit: "../x" is not a session id\n');
+    expect(bad.exitCode).toBe(2);
+    expect(bad.stderr).toBe(
+      '"../x" is not a session id\nSee: cc-smart-dev-kit session-name --help\n',
+    );
+    // A name that is nothing at all is the same.
+    const empty = cli(["session-name", SESSION, "   "]);
+    expect(empty.exitCode).toBe(2);
+    expect(empty.stderr).toStartWith("the name is empty");
   });
 });
 
@@ -440,17 +385,12 @@ test("doctor refuses an option it does not know", () => {
 
 test("doctor checks the project of the folder it runs in, against the plugin's own hooks", () => {
   const repo = makeRepo();
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-    worktrees: { base: "main", prefix: "app-wt-" },
-  });
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
   writeClaudeFile(repo, "settings.json", {
     hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./g.sh" }] }] },
   });
   const run = cli(["doctor"], { cwd: repo });
   expect(run.exitCode).toBe(1);
-  expect(run.stdout).toContain(
-    `! project: .claude/cc-smart-dev-kit.json still sets "worktrees.prefix": the worktree engine is deprecated and retires in the next minor version. Remove it; Claude Code's own worktrees need no hook, and a project whose base branch is not the repo's default branch adds "worktree": {"baseRef": "head"} to .claude/settings.json\n`,
-  );
   expect(run.stdout).toContain(
     `! project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add ".claude/worktrees/" to the repo's .gitignore and commit it\n`,
   );

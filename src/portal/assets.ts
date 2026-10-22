@@ -769,12 +769,14 @@ export const PORTAL_JS = `(function () {
     var writeOut = projectRoot.querySelector("[data-out-for='project.write']");
     var filePre = projectRoot.querySelector("[data-preview-file]");
     var settingsPre = projectRoot.querySelector("[data-preview-settings]");
+    var localBox = projectRoot.querySelector("[data-preview-local-box]");
+    var localPre = projectRoot.querySelector("[data-preview-local-settings]");
     var noteLine = projectRoot.querySelector("[data-preview-note]");
     var notesBox = projectRoot.querySelector("[data-preview-notes]");
     // Every answer carries the number of the question it answers: a slower, older answer
     // never overwrites a newer one on screen.
     var asked = 0;
-    // The hash of the two files the plan on screen was made from. It travels with the write,
+    // The hash of the files the plan on screen was made from. It travels with the write,
     // and the server refuses a write whose plan no longer matches the files on disk.
     var filesHash = form.getAttribute("data-files-hash") || "";
 
@@ -814,8 +816,12 @@ export const PORTAL_JS = `(function () {
 
     var drawPlan = function (data, preview) {
       filePre.textContent = preview.text;
-      // The settings file gets Claude Code's worktree.baseRef line, or nothing.
-      settingsPre.textContent = (preview.settingsAdds || []).join("\\n");
+      // Each settings file's lines, as the plan shows them: the retired worktree engine's
+      // lines out (-), Claude Code's worktree.baseRef line in (+), or nothing.
+      settingsPre.textContent = ((preview.settings || {}).lines || []).join("\\n");
+      var local = preview.localSettings || {};
+      localPre.textContent = (local.lines || []).join("\\n");
+      localBox.hidden = local.changed !== true;
       if (typeof data.filesHash === "string") filesHash = data.filesHash;
       // The note under the settings box comes from the server, like the boxes: one home for
       // the sentence, and it can never describe a different plan than the one drawn.

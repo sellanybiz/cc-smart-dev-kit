@@ -14,14 +14,25 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
+import { CREW_ENV } from "../crew/session";
+import {
+  commitConfig,
+  hookEnv,
+  makeClone,
+  makeRepo,
+  runHook,
+  writeClaudeFile,
+  writePersonalWorkflow,
+} from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { GUARD_BUDGET_ENV } from "./merge-guard";
+import { GUARD_BUDGET_ENV } from "./budget";
+import { CREW_PR_REFUSAL } from "./merge-guard";
 import { mergeGuardHook } from "./specs";
 
 /** The commit the fake gh reports as the pull request's head. */
@@ -29,7 +40,7 @@ const HEAD = "a".repeat(40);
 
 const CONFIG = {
   requires: ">=0.4",
-  worktrees: { base: "dev", prefix: "app-wt-" },
+  worktrees: { base: "dev" },
   workflow: { autoMerge: true },
 };
 
@@ -103,7 +114,15 @@ exit 1
   return dir;
 }
 
-/** The origin remote every `ready` repo has: the project's own repository, compared case-insensitively. */
+/** The policy is off, read from the project's file committed on `origin/dev`. */
+const OFF_IN_PROJECT =
+  'autoMerge is off (project, committed on origin/dev): turn it on in .claude/cc-smart-dev-kit.json ("workflow": {"autoMerge": true}), commit it to dev and push';
+
+/** The policy is off because nothing turns it on: the built-in default. */
+const OFF_BY_DEFAULT =
+  'autoMerge is off (default): turn it on in .claude/cc-smart-dev-kit.json ("workflow": {"autoMerge": true}), commit it to dev and push';
+
+/** The origin remote every `ready` repo has:the project's own repository, compared case-insensitively. */
 const ORIGIN = "git@github.com:Example-Org/App.git";
 
 /**
@@ -114,7 +133,7 @@ function answers(over: Record<string, string> = {}): Record<string, string> {
   return {
     checks: JSON.stringify([{ bucket: "pass", name: "build" }]),
     repo: JSON.stringify({ defaultBranchRef: { name: "main" } }),
-    view: JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 7 }),
+    view: JSON.stringify({ baseRefName: "dev", headRefName: "feat", headRefOid: HEAD, number: 7 }),
     ...over,
   };
 }
@@ -134,24 +153,53 @@ function envWithGh(gh: string | null, withoutGh = false): Record<string, string>
   return { ...env, PATH: bin ?? "" };
 }
 
-/** A recorded review for `sha`, written by hand into the state folder of `env`. */
-function recordReviewHere(env: Record<string, string>, repo: string, sha: string): void {
+/**
+ * A recorded review for `sha`, written by hand into the state folder of `env`, as the
+ * review-record hook writes one: by the agent `by` (the plugin's reviewer by default), on
+ * `branches` (none: the exact commit only).
+ */
+function recordReviewHere(
+  env: Record<string, string>,
+  repo: string,
+  sha: string,
+  by = "cc-smart-dev-kit:reviewer",
+  branches: string[] = [],
+): void {
   const file = join(
     cliPaths(env).stateDir,
     "reviews",
     `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
   );
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify({ [sha]: "2026-10-16T10:00:00.000Z" }, null, 2)}\n`);
+  const entry =
+    branches.length === 0
+      ? { at: "2026-10-16T10:00:00.000Z", by: [by] }
+      : { at: "2026-10-16T10:00:00.000Z", by: [by], branches };
+  writeFileSync(file, `${JSON.stringify({ [sha]: entry }, null, 2)}\n`);
+}
+
+/** Every branch a fixture's policy and answers name: each gets an `origin/<branch>` ref. */
+function branchesOf(config: unknown, over: Record<string, string>): Set<string> {
+  const branches = new Set(["main"]);
+  const worktrees = (config as { worktrees?: { base?: string; bases?: Record<string, string> } })
+    .worktrees;
+  if (worktrees?.base !== undefined) branches.add(worktrees.base);
+  for (const target of Object.values(worktrees?.bases ?? {})) branches.add(target);
+  for (const [name, json] of Object.entries(answers(over))) {
+    if (!name.startsWith("view") || json === "") continue;
+    const base = (JSON.parse(json) as { baseRefName?: unknown }).baseRefName;
+    if (typeof base === "string") branches.add(base);
+  }
+  return branches;
 }
 
 /** The input Claude Code sends for one Bash command. */
-function input(cwd: string, command: string): Record<string, unknown> {
+function input(cwd: string, command: string, tool = "Bash"): Record<string, unknown> {
   return {
     hook_event_name: "PreToolUse",
     session_id: "11111111-2222-3333-4444-555555555555",
     cwd,
-    tool_name: "Bash",
+    tool_name: tool,
     tool_input: { command },
   };
 }
@@ -166,6 +214,24 @@ function ask(reason: string): string {
     },
   });
 }
+
+/** The exact stdout of an `allow` decision (D31). */
+function allow(reason: string): string {
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: reason,
+    },
+  });
+}
+
+/** The reason an allowed merge gives when the recorded review is of the head itself. */
+const COVERED = "the review of aaaaaaa covers its head, and its required checks are green";
+
+/** The question when no review is recorded for the head or an earlier commit of its branch. */
+const NO_REVIEW =
+  "no review is recorded for aaaaaaa or for an earlier commit of feat (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)";
 
 /** What the guard said when it could not check: gh is missing, or a call did not answer. */
 function couldNotCheck(why: string): string {
@@ -188,9 +254,11 @@ function ghCalls(gh: string): string[] {
 }
 
 /**
- * A repo that opted in, with a fake gh beside it and every answer already right. `withOrigin`:
- * give it an `origin` remote naming `ORIGIN`, which a merge that carries `--repo` is compared
- * against (a repo without one cannot be compared, and such a merge asks).
+ * A repo that opted in, with a fake gh beside it and every answer already right: the
+ * project's file committed, and `origin/<branch>` at that commit for every branch the policy
+ * and the answers name. `withOrigin`: give it an `origin` remote naming `ORIGIN`, which a
+ * merge that carries `--repo` is compared against (a repo without one cannot be compared,
+ * and such a merge asks).
  */
 function ready(
   config: unknown = CONFIG,
@@ -200,20 +268,22 @@ function ready(
 ): { env: Record<string, string>; gh: string; repo: string } {
   const repo = makeRepo();
   if (withOrigin) git(repo, "remote", "add", "origin", ORIGIN);
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+  commitConfig(repo, config, branchesOf(config, over));
   const gh = fakeGh(answers(over));
   const env = envWithGh(gh, withoutGh);
   return { env, gh, repo };
 }
 
 describe("the merge it lets through without a question", () => {
-  test("autoMerge on, the integration base, green checks, the review recorded: silent", async () => {
+  test("autoMerge on, the integration base, green checks, the review recorded: allow (D31)", async () => {
     const { env, gh, repo } = ready();
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
     // It read all three facts, read-only.
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --json number,baseRefName,headRefOid",
+      "pr view 7 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 7 --required --json name,bucket",
     ]);
@@ -227,7 +297,9 @@ describe("the merge it lets through without a question", () => {
       ]),
     });
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
   });
 
   test("reviewBeforePush off: no record is needed", async () => {
@@ -235,7 +307,9 @@ describe("the merge it lets through without a question", () => {
       ...CONFIG,
       workflow: { autoMerge: true, reviewBeforePush: false },
     });
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow("its required checks are green, and reviewBeforePush is off"),
+    });
   });
 
   test("a merge naming this project's own repository: judged, with gh repo view's own form", async () => {
@@ -247,9 +321,9 @@ describe("the merge it lets through without a question", () => {
     recordReviewHere(env, repo, HEAD);
     expect(
       await runHook(mergeGuardHook, input(repo, "gh pr -R Example-Org/App merge 7"), env),
-    ).toEqual({});
+    ).toEqual({ stdout: allow(COVERED) });
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefOid",
+      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefName,headRefOid",
       "repo view Example-Org/App --json defaultBranchRef",
       "pr checks 7 --required --repo Example-Org/App --json name,bucket",
     ]);
@@ -264,9 +338,9 @@ describe("the merge it lets through without a question", () => {
         input(withHost.repo, "gh pr --repo=github.com/example-org/app merge 7"),
         withHost.env,
       ),
-    ).toEqual({});
+    ).toEqual({ stdout: allow(COVERED) });
     expect(ghCalls(withHost.gh)).toEqual([
-      "pr view 7 --repo github.com/example-org/app --json number,baseRefName,headRefOid",
+      "pr view 7 --repo github.com/example-org/app --json number,baseRefName,headRefName,headRefOid",
       "repo view github.com/example-org/app --json defaultBranchRef",
       "pr checks 7 --required --repo github.com/example-org/app --json name,bucket",
     ]);
@@ -285,7 +359,228 @@ describe("the merge it lets through without a question", () => {
     const worktree = join(repo, "..", "app-wt-review");
     git(repo, "worktree", "add", "-q", "-b", "review-branch", worktree);
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
+  });
+});
+
+describe("D31: the allow, and only the exact merge", () => {
+  test("an unknown flag on `gh pr merge` asks, and gh is not called", async () => {
+    const { env, gh, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7 --frobnicate"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        "the merge carries `--frobnicate`, a flag this guard does not know, so it cannot tell what it does",
+      ),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("an unknown short flag on `gh pr merge` asks too", async () => {
+    const { env, gh, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7 -Zs"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        "the merge carries `-Z`, a flag this guard does not know, so it cannot tell what it does",
+      ),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("a wrapper around an allowed merge stays silent, so auto mode's own rule still applies", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "timeout 60 gh pr merge 7"), env)).toEqual({});
+  });
+
+  test("a pull request named by its URL is no exact `<n>`: silent, not allowed", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(
+        mergeGuardHook,
+        input(repo, "gh pr merge https://github.com/example-org/app/pull/7"),
+        env,
+      ),
+    ).toEqual({});
+  });
+
+  test("a crew session never gets allow: the same passing merge is silent", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), {
+        ...env,
+        [CREW_ENV]: "B2-api-aaaaaa",
+      }),
+    ).toEqual({});
+  });
+
+  test("an armed merge (--auto) stays silent: it lands later, and a new commit would be unread", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr merge 7 --auto --squash"), env),
+    ).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D17: a review counts for its fixes. These cases run in a real repository with a bare
+// origin, so `readCover` really replays the reviewed change and measures the fix after it.
+// ---------------------------------------------------------------------------------------
+
+/** `n` lines `<tag> 1` … `<tag> n`, each ending in a newline. */
+function numbered(n: number, tag: string): string {
+  return Array.from({ length: n }, (_, index) => `${tag} ${index + 1}\n`).join("");
+}
+
+/** The commit `repo` is on. */
+function headOf(repo: string): string {
+  return git(repo, "rev-parse", "HEAD").trim();
+}
+
+/**
+ * A clone of a bare origin whose `dev` carries the policy, on a new `feat` branch: the
+ * commits are real, so the change after a review can be measured.
+ */
+function d17Repo(config: unknown = CONFIG): { repo: string; env: Record<string, string> } {
+  const { repo } = makeClone();
+  commitConfig(repo, config, ["dev"]);
+  git(repo, "checkout", "-q", "-b", "feat");
+  return { repo, env: hookEnv() };
+}
+
+/** Writes each file, commits everything, and returns the new commit. */
+function commitFiles(repo: string, files: Record<string, string>, message: string): string {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), content);
+  }
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", message);
+  return headOf(repo);
+}
+
+/** `env`, with a fake gh first on PATH answering for the pull request's real head and branch. */
+function withGh(
+  env: Record<string, string>,
+  head: string,
+  branch = "feat",
+): { env: Record<string, string>; gh: string } {
+  const gh = fakeGh(
+    answers({
+      view: JSON.stringify({
+        baseRefName: "dev",
+        headRefName: branch,
+        headRefOid: head,
+        number: 7,
+      }),
+    }),
+  );
+  return { env: { ...env, PATH: gh }, gh };
+}
+
+/** The reviewed change every D17 case starts from: 100 lines in 2 files. */
+function reviewedChange(repo: string): string {
+  return commitFiles(
+    repo,
+    { "src/a.txt": numbered(60, "a"), "src/b.txt": numbered(40, "b") },
+    "reviewed",
+  );
+}
+
+describe("D17: a review covers the fixes after it", () => {
+  test("review → a small fix → the merge is allowed", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(
+        `the review of ${reviewed.slice(0, 7)} covers its head, and its required checks are green`,
+      ),
+    });
+  });
+
+  test("review → the base merged in → a fix → still allowed (the base counts for nothing)", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    // The base moves on, as a merge into it would: 30 lines in one file, fetched.
+    git(repo, "checkout", "-q", "dev");
+    const moved = commitFiles(repo, { "docs/notes.txt": numbered(30, "n") }, "base work");
+    git(repo, "update-ref", "refs/remotes/origin/dev", moved);
+    git(repo, "checkout", "-q", "feat");
+    git(repo, "merge", "-q", "--no-edit", "origin/dev");
+    const head = commitFiles(repo, { "src/b.txt": numbered(42, "b") }, "fix");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(
+        `the review of ${reviewed.slice(0, 7)} covers its head, and its required checks are green`,
+      ),
+    });
+  });
+
+  test("review → a 600-line rewrite → asks, naming the counts and the limit", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    rmSync(join(repo, "src/a.txt"));
+    rmSync(join(repo, "src/b.txt"));
+    const head = commitFiles(repo, { "src/c.txt": numbered(500, "c") }, "rewrite");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        `600 lines in 3 files changed after the review of ${reviewed.slice(0, 7)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
+      ),
+    });
+  });
+
+  test("0/0/0: only the exact reviewed commit counts", async () => {
+    const { repo, env: base } = d17Repo({
+      ...CONFIG,
+      workflow: {
+        autoMerge: true,
+        fixesAfterReview: { lines: 0, files: 0, percent: 0 },
+      },
+    });
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    const fixed = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
+    const fixedGh = withGh(base, fixed);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), fixedGh.env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        `fixesAfterReview is 0/0/0, so only a review of ${fixed.slice(0, 7)} itself counts`,
+      ),
+    });
+    // The reviewed commit itself is allowed: no fix after it, and no measurement needed.
+    const reviewedGh = withGh(base, reviewed);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), reviewedGh.env)).toEqual({
+      stdout: allow(
+        `the review of ${reviewed.slice(0, 7)} covers its head, and its required checks are green`,
+      ),
+    });
+  });
+
+  test("a review on another branch never covers", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["other"]);
+    const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        `no review is recorded for ${head.slice(0, 7)} or for an earlier commit of feat (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`,
+      ),
+    });
   });
 });
 
@@ -302,10 +597,7 @@ describe("every condition that asks", () => {
     const { env, gh, repo } = ready({ ...CONFIG, workflow: { autoMerge: false } });
     const result = await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env);
     expect(result).toEqual({
-      stdout: willNotMerge(
-        "this pull request",
-        "autoMerge is off (project): turn it on with `cc-smart-dev-kit workflow set autoMerge true --project`",
-      ),
+      stdout: willNotMerge("this pull request", OFF_IN_PROJECT),
     });
     expect(ghCalls(gh)).toEqual([]);
   });
@@ -313,13 +605,10 @@ describe("every condition that asks", () => {
   test("no workflow at all: autoMerge is off by default", async () => {
     const { env, repo } = ready({
       requires: ">=0.4",
-      worktrees: { base: "dev", prefix: "app-wt-" },
+      worktrees: { base: "dev" },
     });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "this pull request",
-        "autoMerge is off (default): turn it on with `cc-smart-dev-kit workflow set autoMerge true --project`",
-      ),
+      stdout: willNotMerge("this pull request", OFF_BY_DEFAULT),
     });
   });
 
@@ -337,7 +626,12 @@ describe("every condition that asks", () => {
 
   test("the base is not the integration base: asks, and reads no checks", async () => {
     const { env, gh, repo } = ready(CONFIG, {
-      view: JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 7 }),
+      view: JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 7,
+      }),
     });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
       stdout: willNotMerge(
@@ -346,7 +640,7 @@ describe("every condition that asks", () => {
       ),
     });
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --json number,baseRefName,headRefOid",
+      "pr view 7 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
     ]);
   });
@@ -363,10 +657,15 @@ describe("every condition that asks", () => {
 
   test("the base is the repository's default branch: asking is a release decision", async () => {
     const { env, repo } = ready(
-      { ...CONFIG, worktrees: { base: "main", prefix: "app-wt-" } },
+      { ...CONFIG, worktrees: { base: "main" } },
       {
         repo: JSON.stringify({ defaultBranchRef: { name: "main" } }),
-        view: JSON.stringify({ baseRefName: "main", headRefOid: HEAD, number: 7 }),
+        view: JSON.stringify({
+          baseRefName: "main",
+          headRefName: "feat",
+          headRefOid: HEAD,
+          number: 7,
+        }),
       },
     );
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
@@ -380,7 +679,7 @@ describe("every condition that asks", () => {
   test("the base feeds another branch family (worktrees.bases): asks", async () => {
     const { env, repo } = ready({
       ...CONFIG,
-      worktrees: { base: "dev", prefix: "app-wt-", bases: { "release/": "dev" } },
+      worktrees: { base: "dev", bases: { "release/": "dev" } },
     });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
       stdout: willNotMerge(
@@ -433,10 +732,7 @@ describe("every condition that asks", () => {
   test("the head commit has no recorded review: asks, and says how to record it", async () => {
     const { env, repo } = ready();
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "#7",
-        "the head commit aaaaaaa has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)",
-      ),
+      stdout: willNotMerge("#7", NO_REVIEW),
     });
   });
 
@@ -444,20 +740,14 @@ describe("every condition that asks", () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, "b".repeat(40));
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "#7",
-        "the head commit aaaaaaa has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)",
-      ),
+      stdout: willNotMerge("#7", NO_REVIEW),
     });
   });
 
   test("an armed merge (--auto) is judged the same way", async () => {
     const { env, repo } = ready({ ...CONFIG, workflow: { autoMerge: false } });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge --auto 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "this pull request",
-        "autoMerge is off (project): turn it on with `cc-smart-dev-kit workflow set autoMerge true --project`",
-      ),
+      stdout: willNotMerge("this pull request", OFF_IN_PROJECT),
     });
   });
 });
@@ -564,8 +854,18 @@ describe("a merge that names another repository asks, whatever the policy says",
 describe("every merge in the command is judged", () => {
   test("the first is allowed, the second refused: asks, naming the second", async () => {
     const { env, gh, repo } = ready(CONFIG, {
-      "view-5": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 5 }),
-      "view-6": JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 6 }),
+      "view-5": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 5,
+      }),
+      "view-6": JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 6,
+      }),
     });
     recordReviewHere(env, repo, HEAD);
     expect(
@@ -579,17 +879,27 @@ describe("every merge in the command is judged", () => {
     // #5 was judged whole (the default branch is read once: it is one repository), then #6
     // was read and refused before its checks.
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
-      "pr view 6 --json number,baseRefName,headRefOid",
+      "pr view 6 --json number,baseRefName,headRefName,headRefOid",
     ]);
   });
 
   test("both allowed: silent, and both were read", async () => {
     const { env, gh, repo } = ready(CONFIG, {
-      "view-5": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 5 }),
-      "view-6": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 6 }),
+      "view-5": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 5,
+      }),
+      "view-6": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 6,
+      }),
       "checks-5": JSON.stringify([{ bucket: "pass", name: "build" }]),
       "checks-6": JSON.stringify([{ bucket: "pass", name: "build" }]),
     });
@@ -598,18 +908,28 @@ describe("every merge in the command is judged", () => {
       await runHook(mergeGuardHook, input(repo, "gh pr merge 5 && gh pr merge 6"), env),
     ).toEqual({});
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
-      "pr view 6 --json number,baseRefName,headRefOid",
+      "pr view 6 --json number,baseRefName,headRefName,headRefOid",
       "pr checks 6 --required --json name,bucket",
     ]);
   });
 
   test("the first refused, the second allowed: asks, naming the first", async () => {
     const { env, repo } = ready(CONFIG, {
-      "view-5": JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 5 }),
-      "view-6": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 6 }),
+      "view-5": JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 5,
+      }),
+      "view-6": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 6,
+      }),
     });
     recordReviewHere(env, repo, HEAD);
     expect(
@@ -651,14 +971,28 @@ describe("a gh api merge is never judged: it asks with the reason", () => {
     });
   });
 
-  test("an UNQUOTED path with placeholders: the guard cannot read it whole, so it asks", async () => {
-    // The lexer splits a line at braces (`shell-command.ts`: the braces of `if (…) { … }`),
-    // so `repos/{owner}/…` reaches the guard as `repos/`: a path it cannot read must ask.
+  test("an UNQUOTED path with placeholders in Bash: one word, so it names the pull request", async () => {
+    // In bash a brace groups commands only as a word of its own: `repos/{owner}/…` is one word.
     const { env, repo } = ready();
     expect(
       await runHook(
         mergeGuardHook,
         input(repo, "gh api -X PUT repos/{owner}/{repo}/pulls/7/merge"),
+        env,
+      ),
+    ).toEqual({
+      stdout: willNotMerge("#7", "it merges with `gh api`, a form this guard does not judge"),
+    });
+  });
+
+  test("an UNQUOTED path with placeholders in PowerShell: cut short, so it asks", async () => {
+    // In PowerShell every brace ends a command (a script block), so `repos/{owner}/…` reaches
+    // the guard as `repos/`: a path it cannot read must ask.
+    const { env, repo } = ready();
+    expect(
+      await runHook(
+        mergeGuardHook,
+        input(repo, "gh api -X PUT repos/{owner}/{repo}/pulls/7/merge", "PowerShell"),
         env,
       ),
     ).toEqual({
@@ -709,7 +1043,7 @@ describe("a gh alias is judged like what it expands to", () => {
     expect(await runHook(mergeGuardHook, input(repo, "gh m 7"), env)).toEqual({});
     expect(ghCalls(gh)).toEqual([
       "alias list",
-      "pr view 7 --json number,baseRefName,headRefOid",
+      "pr view 7 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 7 --required --json name,bucket",
     ]);
@@ -842,9 +1176,9 @@ describe("gh's own flags before the command word", () => {
     recordReviewHere(env, repo, HEAD);
     expect(
       await runHook(mergeGuardHook, input(repo, "gh -R Example-Org/App pr merge 7"), env),
-    ).toEqual({});
+    ).toEqual({ stdout: allow(COVERED) });
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefOid",
+      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefName,headRefOid",
       "repo view Example-Org/App --json defaultBranchRef",
       "pr checks 7 --required --repo Example-Org/App --json name,bucket",
     ]);
@@ -954,7 +1288,7 @@ describe("a merge run by another program", () => {
     ],
     [
       "xargs -I{} gh pr merge {}",
-      "an earlier `xargs` in the same command may feed the merge its arguments from outside the line",
+      "the merge runs from `xargs`, whose arguments come from outside the line",
     ],
     [
       "parallel gh pr merge ::: 7 8",
@@ -983,12 +1317,68 @@ describe("a merge run by another program", () => {
     expect(await runHook(mergeGuardHook, input(repo, "sudo -u me git push -f"), env)).toEqual({});
     expect(ghCalls(gh)).toEqual([]);
   });
+
+  test("in PowerShell, `xargs -I{}` is cut at its braces, and still asks", async () => {
+    const { env, gh, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    const command = "xargs -I{} gh pr merge {}";
+    const result = await runHook(mergeGuardHook, input(repo, command, "PowerShell"), env);
+    const said = JSON.parse(result.stdout ?? "{}").hookSpecificOutput
+      .permissionDecisionReason as string;
+    expect(said).toContain(
+      "an earlier `xargs` in the same command may feed the merge its arguments from outside the line",
+    );
+    expect(ghCalls(gh)).toEqual([]);
+  });
+});
+
+describe("the merge reader's bypasses of the 0.6.0 audit: each spelling asks about --admin", () => {
+  /** The reason the guard gives for `command` run by `tool`, or undefined when it is silent. */
+  async function reason(command: string, tool = "Bash"): Promise<string | undefined> {
+    const { env, repo } = ready();
+    const result = await runHook(mergeGuardHook, input(repo, command, tool), env);
+    return result.stdout === undefined
+      ? undefined
+      : (JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason as string);
+  }
+
+  test("HK-2: a merge inside an unquoted here-doc body is read", async () => {
+    expect(await reason("cat <<EOF\n$(gh pr merge --admin 7)\nEOF")).toContain("--admin");
+    expect(await reason("cat <<'EOF'\n$(gh pr merge --admin 7)\nEOF")).toBeUndefined();
+  });
+
+  test("HK-3: a PowerShell line is read with PowerShell's quoting", async () => {
+    const paths = 'cd "C:\\a\\"; gh pr merge --admin 7; cd "C:\\b\\"';
+    expect(await reason(paths, "PowerShell")).toContain("--admin");
+    expect(await reason("<# x #> gh pr merge --admin 7", "PowerShell")).toContain("--admin");
+  });
+
+  test("HK-5: a line that ends in `\\` is read both joined and not", async () => {
+    // In PowerShell, and at the end of a Windows path, the backslash joins nothing.
+    const command = "cd C:\\repo\\\ngh pr merge --admin 7";
+    expect(await reason(command, "PowerShell")).toContain("--admin");
+    expect(await reason(command)).toContain("--admin");
+  });
+
+  test("HK hunch 6: the merge inside a queued `job run` line is read", async () => {
+    const queued = `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind test -- bash -c 'bun test && gh pr merge --admin 7'`;
+    expect(await reason(queued)).toContain("--admin");
+  });
+
+  test("F2a-1: a program worked out at run time whose words name a merge asks", async () => {
+    for (const command of ["$(which gh) pr merge --admin 7", "G=gh; $G pr merge 7"]) {
+      expect(await reason(command)).toContain("cannot tell whether it merges a pull request");
+    }
+    // A computed program with no merge word is left alone.
+    expect(await reason("$(which gh) pr list")).toBeUndefined();
+  });
 });
 
 describe("the guard's own deadline", () => {
   test("no time left for the first call: asks in time, and runs nothing", async () => {
     // A test sets the budget (`GUARD_BUDGET_ENV`); a hook never does. Below the margin there
     // is no time for any call at all, so the guard must ask — never overrun the hook's 30 s.
+    // The first read is the policy committed on the base (local git, before any gh call).
     const { env, gh, repo } = ready();
     recordReviewHere(env, repo, HEAD);
     const result = await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), {
@@ -997,7 +1387,7 @@ describe("the guard's own deadline", () => {
     });
     expect(result).toEqual({
       stdout: ask(
-        "cc-smart-dev-kit could not check this merge in time: reading the pull request this command names would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.",
+        "cc-smart-dev-kit could not check this merge in time: reading the policy committed on dev would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.",
       ),
     });
     expect(ghCalls(gh)).toEqual([]);
@@ -1024,15 +1414,27 @@ describe("the guard's own deadline", () => {
   test("the same command inside the default budget: judged as always", async () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
   });
 });
 
 describe("a merge with --admin always asks, whatever the policy says", () => {
   /** What `gh pr view 5` and `gh pr view 6` answer: both go into the integration base. */
   const FIVE_AND_SIX = {
-    "view-5": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 5 }),
-    "view-6": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 6 }),
+    "view-5": JSON.stringify({
+      baseRefName: "dev",
+      headRefName: "feat",
+      headRefOid: HEAD,
+      number: 5,
+    }),
+    "view-6": JSON.stringify({
+      baseRefName: "dev",
+      headRefName: "feat",
+      headRefOid: HEAD,
+      number: 6,
+    }),
   };
 
   /** The question an `--admin` merge gets, `which` naming its pull request as the command does. */
@@ -1043,17 +1445,19 @@ describe("a merge with --admin always asks, whatever the policy says", () => {
     );
   }
 
-  test("every auto-merge condition met: the same merge without --admin is silent, with it asks", async () => {
+  test("every auto-merge condition met: the same merge without --admin is allowed, with it asks", async () => {
     const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
     recordReviewHere(env, repo, HEAD);
-    // The control: this merge is one the policy allows by itself.
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge"), env)).toEqual({});
+    // The control: this merge is one the policy allows by itself, and D31 allows it.
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
     expect(
       await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge --admin"), env),
     ).toEqual({ stdout: adminAsks("#5") });
     // Only the allowed merge read anything: the --admin one asked from the line alone.
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
     ]);
@@ -1146,12 +1550,14 @@ describe("a merge with --admin always asks, whatever the policy says", () => {
     "gh pr merge 5 --merge -- --admin",
     // The value-taking flag the parser already knew: its value is not the pull request.
     `gh pr merge 5 --match-head-commit ${HEAD} --merge`,
-  ])("%j: no --admin, so judged as always: silent when allowed", async (command) => {
+  ])("%j: no --admin, so judged as always: allowed when the policy passes", async (command) => {
     const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({
+      stdout: allow(COVERED),
+    });
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
     ]);
@@ -1165,5 +1571,415 @@ describe("a merge with --admin always asks, whatever the policy says", () => {
     const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
     expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({});
     expect(ghCalls(gh)).toEqual([]);
+  });
+});
+
+describe("the review gate is read as committed on the pull request's base (CM-1)", () => {
+  /** A worktree of `repo` whose own copy of the project's file says `config`, uncommitted. */
+  function worktreeSaying(repo: string, config: unknown): string {
+    const worktree = join(repo, "..", "app-wt-session");
+    git(repo, "worktree", "add", "-q", "-b", "session-branch", worktree);
+    writeClaudeFile(worktree, "cc-smart-dev-kit.json", config);
+    return worktree;
+  }
+
+  /** The reason the guard asked with, or null when it was silent. */
+  async function reasonFor(env: Record<string, string>, cwd: string): Promise<string | null> {
+    const result = await runHook(mergeGuardHook, input(cwd, "gh pr merge 7"), env);
+    if (result.stdout === undefined) return null;
+    return JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason;
+  }
+
+  test("CM-1: a worktree's own uncommitted config cannot switch the review gate off", async () => {
+    const { env, repo } = ready();
+    const worktree = worktreeSaying(repo, {
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewBeforePush: false },
+    });
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge("#7", NO_REVIEW),
+    });
+  });
+
+  test("CM-1: a worktree's own uncommitted autoMerge does not turn the gate on", async () => {
+    const { env, gh, repo } = ready({ ...CONFIG, workflow: { autoMerge: false } });
+    recordReviewHere(env, repo, HEAD);
+    const worktree = worktreeSaying(repo, CONFIG);
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge("this pull request", OFF_IN_PROJECT),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("CM-1: a worktree's own reviewAgents cannot make another agent's record count", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD, "general-purpose");
+    const worktree = worktreeSaying(repo, {
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewAgents: ["general-purpose"] },
+    });
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge("#7", NO_REVIEW),
+    });
+  });
+
+  test("CM-1: an uncommitted change in the main checkout itself counts for nothing either", async () => {
+    const { env, repo } = ready();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewBeforePush: false },
+    });
+    expect(await reasonFor(env, repo)).toBe(
+      `cc-smart-dev-kit will not merge #7 by itself: ${NO_REVIEW}. Approve the merge yourself if you meant it.`,
+    );
+  });
+
+  test("CM-1: the committed reviewAgents decides whose record counts", async () => {
+    const { env, repo } = ready({
+      ...CONFIG,
+      workflow: { autoMerge: true, reviewAgents: ["fresh-eyes"] },
+    });
+    recordReviewHere(env, repo, HEAD, "fresh-eyes");
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
+  });
+
+  test("HK-6: another plugin's reviewer recorded the commit: asks", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD, "other-plugin:reviewer");
+    expect(await reasonFor(env, repo)).toContain("no review is recorded");
+  });
+
+  test("CM-1: a record the person made by hand counts whatever the list", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD, "workflow review-done");
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
+  });
+
+  test("CM-1: a policy change counts once it is committed on the base", async () => {
+    const { env, repo } = ready();
+    commitConfig(repo, { ...CONFIG, workflow: { autoMerge: true, reviewBeforePush: false } }, [
+      "dev",
+    ]);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow("its required checks are green, and reviewBeforePush is off"),
+    });
+  });
+
+  test("CM-1: no origin/<base> to read the policy from: asks, naming it, and reads nothing with gh", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const gh = fakeGh(answers());
+    const env = envWithGh(gh);
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "this pull request",
+        "the merge policy committed on dev cannot be read: origin/dev is not known in this repository (no origin, or the branch was never fetched); a policy counts once it is committed, pushed and fetched",
+      ),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("CM-1: a base with no committed project file: asks", async () => {
+    const repo = makeRepo();
+    git(repo, "update-ref", "refs/remotes/origin/dev", "HEAD");
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const gh = fakeGh(answers());
+    const env = envWithGh(gh);
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "this pull request",
+        "the merge policy committed on dev cannot be read: origin/dev has no .claude/cc-smart-dev-kit.json committed; a policy counts once it is committed, pushed and fetched",
+      ),
+    });
+  });
+
+  test("CM-1: a committed file that needs a newer plugin: asks, naming it", async () => {
+    const { env, repo } = ready({ ...CONFIG, requires: ">=99" });
+    // The working copy is usable; only the committed one is too new.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    expect(await reasonFor(env, repo)).toStartWith(
+      "cc-smart-dev-kit will not merge this pull request by itself: the merge policy committed on dev cannot be read: origin/dev:.claude/cc-smart-dev-kit.json: this project needs cc-smart-dev-kit >=99",
+    );
+  });
+
+  test("D20: a committed base file that still holds a retired engine field: asks, naming the field", async () => {
+    const { env, repo } = ready({ ...CONFIG, worktrees: { base: "dev", prefix: "app-wt-" } });
+    // The working copy is clean; only the committed policy still holds the field.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    expect(await reasonFor(env, repo)).toStartWith(
+      "cc-smart-dev-kit will not merge this pull request by itself: the merge policy committed on dev cannot be read: Invalid origin/dev:.claude/cc-smart-dev-kit.json: worktrees.prefix is no longer supported: remove it — Claude Code's own worktrees need none. `cc-smart-dev-kit project init` removes it (README § Worktrees).",
+    );
+  });
+
+  test("CM-1: the pull request's own base is read: a base whose committed file is missing asks", async () => {
+    const { env, repo } = ready(CONFIG, {
+      view: JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 7,
+      }),
+    });
+    // feature/x has a ref, but at the first commit, before the project's file.
+    git(repo, "update-ref", "refs/remotes/origin/feature/x", "HEAD~1");
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        "the merge policy committed on feature/x cannot be read: origin/feature/x has no .claude/cc-smart-dev-kit.json committed; a policy counts once it is committed, pushed and fetched",
+      ),
+    });
+  });
+
+  test("CM-1: the base's committed file lists merge-guard in ownHooks: the project's copy answers", async () => {
+    const { env, gh, repo } = ready({ ...CONFIG, ownHooks: ["merge-guard"] });
+    // The working copy does not list it: the committed policy decides.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(ghCalls(gh)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D16: `openPr` is enforced. `gh pr create` and `gh pr ready` are read with the reader that
+// reads a merge, and a crew session opens no pull request at all (D24).
+// ---------------------------------------------------------------------------------------
+
+/** The project's file with `openPr` set, committed on `origin/dev` (the integration base). */
+const opening = (openPr: "off" | "draft" | "ready") => ({
+  ...CONFIG,
+  workflow: { openPr },
+});
+
+/** The guard's decision and reason for one command, or null when it was silent. */
+async function decide(
+  env: Record<string, string>,
+  repo: string,
+  command: string,
+): Promise<{ decision: string; reason: string } | null> {
+  const result = await runHook(mergeGuardHook, input(repo, command), env);
+  if (result.stdout === undefined) return null;
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  return { decision: output.permissionDecision, reason: output.permissionDecisionReason };
+}
+
+describe("D16: openPr is enforced", () => {
+  test("D16: off (the default) asks before gh pr create, gh pr new and gh pr ready, naming the setting and the fix", async () => {
+    const { env, gh, repo } = ready(CONFIG);
+    const fix =
+      'turn it on for yourself with `cc-smart-dev-kit workflow set openPr draft`, or for the project in .claude/cc-smart-dev-kit.json ("workflow": {"openPr": "draft"}), committed to dev and pushed';
+    for (const [command, what] of [
+      ["gh pr create --title x --body y", "opens a pull request"],
+      ["gh pr new --fill", "opens a pull request"],
+      ["gh pr ready 5", "marks a pull request ready for review"],
+    ]) {
+      expect(await decide(env, repo, command as string)).toEqual({
+        decision: "ask",
+        reason: `cc-smart-dev-kit asks before this ${what}: openPr is off (default), so opening or readying a pull request is yours to approve: ${fix}. Approve it yourself if you meant it.`,
+      });
+    }
+    // Nothing is read with gh: the policy decides alone.
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("D16: draft is silent for a pull request that opens as a draft, in every spelling", async () => {
+    const { env, repo } = ready(opening("draft"));
+    for (const command of [
+      "gh pr create --draft --title x",
+      "gh pr create -d --fill",
+      "gh pr create -fd",
+      "gh pr create --draft=true",
+      "gh pr new --draft",
+      "gh pr create --title x --draft --body y",
+      "bash -c 'gh pr create --draft'",
+    ]) {
+      expect([command, await decide(env, repo, command)]).toEqual([command, null]);
+    }
+  });
+
+  test("D16: draft asks for one that opens ready, and for gh pr ready", async () => {
+    const { env, repo } = ready(opening("draft"));
+    const create = await decide(env, repo, "gh pr create --fill");
+    expect(create?.reason).toContain(
+      "openPr is draft (project, committed on origin/dev), and this pull request does not open as a draft (add `--draft`)",
+    );
+    const readied = await decide(env, repo, "gh pr ready");
+    expect(readied?.reason).toContain(
+      "openPr is draft (project, committed on origin/dev), so marking a pull request ready for review is yours to decide",
+    );
+    // A value is not a flag: a title of `--draft` is a title; `--draft=false` is no draft.
+    for (const command of [
+      "gh pr create --title --draft",
+      "gh pr create -t -d",
+      "gh pr create --draft=false",
+      "gh pr create -- --draft",
+    ]) {
+      expect([command, (await decide(env, repo, command))?.decision]).toEqual([command, "ask"]);
+    }
+  });
+
+  test("D16: ready is silent, and gh pr ready --undo (back to a draft) opens nothing", async () => {
+    const { env, gh, repo } = ready(opening("ready"));
+    for (const command of ["gh pr create --fill", "gh pr ready 5", "gh pr new"]) {
+      expect([command, await decide(env, repo, command)]).toEqual([command, null]);
+    }
+    const off = ready(CONFIG);
+    expect(await decide(off.env, off.repo, "gh pr ready --undo 5")).toBeNull();
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("D16: gh api POST to the pulls endpoint and the GraphQL forms are read too", async () => {
+    const { env, repo } = ready(CONFIG, {}, false, true);
+    for (const command of [
+      "gh api repos/example-org/app/pulls -f title=x -f head=a -f base=dev",
+      "gh api -X POST repos/example-org/app/pulls",
+      "gh api --method=POST repos/{owner}/{repo}/pulls",
+      "gh api graphql -f query='mutation { createPullRequest(input: {}) { pullRequest { id } } }'",
+      "gh api graphql -f query='mutation { markPullRequestReadyForReview(input: {}) { clientMutationId } }'",
+    ]) {
+      const answer = await decide(env, repo, command);
+      expect([command, answer?.decision, answer?.reason]).toEqual([
+        command,
+        "ask",
+        expect.stringContaining("openPr is off (default)"),
+      ]);
+    }
+    // A GET of the same endpoint lists pull requests: no question.
+    expect(await decide(env, repo, "gh api repos/example-org/app/pulls")).toBeNull();
+    expect(await decide(env, repo, "gh api -X GET repos/example-org/app/pulls")).toBeNull();
+    const draft = ready(opening("draft"), {}, false, true);
+    expect(
+      await decide(
+        draft.env,
+        draft.repo,
+        "gh api repos/example-org/app/pulls -F draft=true -f title=x",
+      ),
+    ).toBeNull();
+    // Under `ready` every form is silent.
+    const open = ready(opening("ready"), {}, false, true);
+    expect(
+      await decide(open.env, open.repo, "gh api repos/example-org/app/pulls -f title=x"),
+    ).toBeNull();
+  });
+
+  test("D16: -R, an alias, a runner and an unknown flag are read like a merge's", async () => {
+    const { env, repo } = ready(
+      opening("ready"),
+      { "alias list": "np: pr create --fill\n" },
+      false,
+      true,
+    );
+    // The project's own repository named with -R: the policy covers it.
+    expect(await decide(env, repo, "gh pr create -R example-org/app --fill")).toBeNull();
+    // Another repository: asks, whatever openPr says.
+    const foreign = await decide(env, repo, "gh pr create -R other-org/tool --fill");
+    expect(foreign?.reason).toContain("the command names the repository other-org/tool");
+    // The alias expands to `pr create`: judged like it (here `ready`: silent).
+    expect(await decide(env, repo, "gh np")).toBeNull();
+    const off = ready(CONFIG, { "alias list": "np: pr create --fill\n" });
+    expect((await decide(off.env, off.repo, "gh np"))?.reason).toContain("openPr is off");
+    // A runner or an earlier cd makes the call uncertain: asks, in the opening's words.
+    const sudo = await decide(env, repo, "sudo gh pr create --draft");
+    expect(sudo?.reason).toStartWith(
+      "cc-smart-dev-kit asks before this opens a pull request: the command runs under `sudo`, with another user's login and gh config",
+    );
+    const moved = await decide(env, repo, "cd app && gh pr create --draft");
+    expect(moved?.reason).toContain("changes the folder it runs in");
+    const unknown = await decide(env, repo, "gh --future-flag pr create --fill");
+    expect(unknown?.reason).toBe(
+      "cc-smart-dev-kit asks before this opens a pull request: the command carries `--future-flag` before the gh command, which this guard does not know. Approve it yourself if you meant it.",
+    );
+  });
+
+  test("D16: only a committed policy counts, and one that cannot be read asks", async () => {
+    const { env, repo } = ready(CONFIG);
+    // The working copy says `ready`; what is committed on origin/dev says nothing: still off.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", opening("ready"));
+    expect((await decide(env, repo, "gh pr create --fill"))?.reason).toContain(
+      "openPr is off (default)",
+    );
+    // No origin/dev to read the policy from.
+    const lost = ready({ ...CONFIG, worktrees: { base: "nowhere" } });
+    git(lost.repo, "update-ref", "-d", "refs/remotes/origin/nowhere");
+    expect((await decide(lost.env, lost.repo, "gh pr create --fill"))?.reason).toContain(
+      "the openPr policy committed on nowhere cannot be read",
+    );
+    // The person's own file is the other source of the value.
+    writePersonalWorkflow(env, { openPr: "ready" });
+    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+  });
+
+  test("D16: a project with no integration base reads the default and the person's own file", async () => {
+    const { env, repo } = ready({ requires: ">=0.4" });
+    expect((await decide(env, repo, "gh pr create --fill"))?.reason).toContain(
+      "committed to the integration base (worktrees.base) and pushed",
+    );
+    writePersonalWorkflow(env, { openPr: "draft" });
+    expect(await decide(env, repo, "gh pr create --draft")).toBeNull();
+  });
+
+  test("D16: the base's committed file lists merge-guard in ownHooks: the project's copy answers", async () => {
+    const { env, repo } = ready({ ...CONFIG, ownHooks: ["merge-guard"] });
+    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+  });
+
+  test("D16: merges are untouched: a merge line still asks about autoMerge, an opening line never does", async () => {
+    // `autoMerge` is off here and `openPr` is ready: opening a pull request has nothing to do
+    // with merging, so the question is never about a merge.
+    const { env, repo } = ready({ ...CONFIG, workflow: { openPr: "ready" } });
+    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+    expect((await decide(env, repo, "gh pr merge 7"))?.reason).toContain("autoMerge is off");
+    // Both on one line: the merge is asked about first.
+    expect((await decide(env, repo, "gh pr create --fill && gh pr merge 7"))?.reason).toContain(
+      "autoMerge is off",
+    );
+  });
+});
+
+describe("D24: a crew session opens no pull request", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  test("D24: gh pr create, new and ready are denied, whatever openPr says", async () => {
+    const { env, gh, repo } = ready(opening("ready"));
+    const crew = { ...env, ...CREW };
+    for (const command of [
+      "gh pr create --draft --fill",
+      "gh pr new",
+      "gh pr ready 5",
+      "gh -R example-org/app pr create --fill",
+      "cd app && gh pr create -d",
+      "bash -c 'gh pr create --draft'",
+      "gh api repos/example-org/app/pulls -f title=x",
+      "git push origin HEAD && gh pr create --fill",
+    ]) {
+      const answer = await decide(crew, repo, command);
+      expect([command, answer]).toEqual([command, { decision: "deny", reason: CREW_PR_REFUSAL }]);
+    }
+    expect(ghCalls(gh)).toEqual([]);
+    // The lead (no crew variable) is let through by openPr, as before.
+    expect(await decide(env, repo, "gh pr create --draft --fill")).toBeNull();
+  });
+
+  test("D24: an alias that expands to gh pr create is denied too", async () => {
+    const { env, repo } = ready(opening("ready"), { "alias list": "np: pr create --fill\n" });
+    expect(await decide({ ...env, ...CREW }, repo, "gh np")).toEqual({
+      decision: "deny",
+      reason: CREW_PR_REFUSAL,
+    });
+  });
+
+  test("D24: a merge or a pull request view is none of the opening rule", async () => {
+    const { env, repo } = ready(opening("ready"));
+    const crew = { ...env, ...CREW };
+    expect(await decide(crew, repo, "gh pr view 5")).toBeNull();
+    expect(await decide(crew, repo, "gh pr checks 5")).toBeNull();
+    // A merge keeps its own policy (here autoMerge is off: asks, not denies).
+    expect((await decide(crew, repo, "gh pr merge 7"))?.decision).toBe("ask");
   });
 });

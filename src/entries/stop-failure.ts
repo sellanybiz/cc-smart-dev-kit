@@ -1,8 +1,10 @@
 // The StopFailure hook (plugin/hooks/hooks.json).
 //
-// Reads the input on stdin, decides on an alert (`planAlert`), starts the detached worker
-// that shows it, and exits at once, printing nothing. A background session shows nothing at
-// all (`background-session.ts`). The worker runs through the launcher
+// Reads the input on stdin, decides on an alert (`breakerAlert` for the router's breaker 429,
+// `planAlert` for the plan's usage limit), starts the detached worker that shows it, and
+// exits at once, printing nothing. A breaker alert is written down first, keyed on the
+// opening, so one opening alerts once (`rememberBreakerAlert`). A background session shows
+// nothing at all (`background-session.ts`). The worker runs through the launcher
 // (`~/.local/bin/cc-smart-dev-kit alert-worker <alert JSON>`), never from this file's version
 // folder: it may wait half an hour for a click, and an update may delete the folder
 // meanwhile. With no launcher (setup never ran), a plain notification with no action,
@@ -18,9 +20,11 @@ import { inBackgroundSession } from "../hooks/background-session";
 import { startDetached } from "../hooks/detached";
 import {
   ALERT_WORKER_COMMAND,
+  breakerAlert,
   plainNotification,
   planAlert,
   readAlertContext,
+  rememberBreakerAlert,
   usesAlertWorker,
 } from "../hooks/stop-failure";
 import { LAUNCHER_NAME } from "../setup/launcher";
@@ -47,10 +51,14 @@ async function hook(): Promise<void> {
   if (inBackgroundSession(process.env)) return;
   const paths = cliPaths();
   const ctx = readAlertContext(paths, Date.now(), input, process.env);
-  const alert = planAlert(input, ctx);
+  const breaker = breakerAlert(input, ctx);
+  const alert = breaker?.alert ?? planAlert(input, ctx);
   if (alert === null) return;
   // The alert settings could not be read: one line, and the alert goes on as it always did.
   if (ctx.alertsProblem !== null) console.error(ctx.alertsProblem);
+  // One breaker opening, one alert: written before the worker starts, so a second stop of the
+  // same opening (in this session or another) hears nothing.
+  if (breaker !== null) rememberBreakerAlert(paths, ctx.breakerAlerted, breaker);
   // The sound the alert asks for (`alerts.sound`), where this platform has one: started now,
   // so it lands with the notification the worker shows — that worker may wait half an hour.
   if (ctx.alerts.sound.value) {

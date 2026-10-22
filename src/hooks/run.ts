@@ -3,22 +3,26 @@
  *
  * 1. Read the input. Not a JSON object, a wrong event, or a `cwd` that is not a folder in
  *    git: nothing to do.
- * 2. **The project's own copy**, for a hook the plugin wires (`wiring: "plugin"`): when
- *    the project's cc-smart-dev-kit.json lists the hook in `ownHooks`, exit 0 and print nothing, so
- *    the project's copy runs alone. Only that field is read here (`ownHooksOf`), so it
- *    works even when the rest of the file is broken or needs a newer plugin. Nothing else
- *    silences a plugin hook: a project hook on the same event does not (it may be a logger,
- *    and a guard must not go quiet for it). A hook the project wires itself
- *    (`wiring: "project"`, run as `cc-smart-dev-kit hook <name>`) skips this step: that wiring is
- *    the project's opt-in.
- * 3. Read the project's cc-smart-dev-kit.json. When it is broken, needs a newer plugin, or lacks
- *    what the hook `needs`, the hook **fails closed** in its own way (`onConfigProblem`):
- *    a guard asks, WorktreeCreate fails with the reason, an informational hook prints one
- *    line.
- * 4. Run the hook.
- *
- * A bug never stops a person's work: any error is one line on stderr and exit 0, except
- * where the hook says otherwise (WorktreeCreate cannot succeed without a folder).
+ * 2. **A guard's crew part** (`crewLimits`): what a crew session may never do, run before the
+ *    project's own copy and its file, so a crew session cannot switch it off (`D24`, `D47`).
+ * 3. **The project's own copy**: when the project's cc-smart-dev-kit.json lists the hook in
+ *    `ownHooks`, exit 0 and print nothing, so the project's copy runs alone (a hook with
+ *    `alwaysOn` skips this step: the project cannot switch it off; the crew part above has
+ *    already run). Only that field
+ *    is read here (`ownHooksOf`), so it works even when the rest of the file is broken or
+ *    needs a newer plugin. Nothing else silences a plugin hook: a project hook on the same
+ *    event does not (it may be a logger, and a guard must not go quiet for it).
+ * 4. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
+ *    hook **fails closed** in its own way (`onConfigProblem`): a guard asks, an informational
+ *    hook prints one line.
+ * 5. Run the hook. A guard's own crash answers through `onCrash` (a guard asks about the
+ *    call in its own domain, never a silent pass); an informational hook's crash is one line
+ *    on stderr and exit 0 — a bug never stops a person's work. Claude Code holds the second
+ *    belt: a guard's hooks.json entry carries `onFailure: "block"`, so a hook that cannot
+ *    start, times out or answers nothing readable blocks the tool call.
+ * 6. **Record an ask.** When the answer asks the person, the frame appends one line to
+ *    `guard-asks.jsonl` in the state folder (`src/hooks/ask-log.ts`); a write that fails is
+ *    one line on stderr and never changes the answer.
  *
  * A **machine-wide** hook (`agent-guard`, and the notifier) answers about the machine, not a
  * project: it runs with or without `cc-smart-dev-kit.json`, and its answer never depends on the
@@ -31,7 +35,8 @@
  */
 import { appendFileSync } from "node:fs";
 import { type CliPaths, cliPaths } from "../cli/paths";
-import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
+import { maskedLine } from "../gateway/plain-text";
+import { CcSmartDevKitConfigError } from "../project/config";
 import {
   type Checkout,
   loadProjectConfig,
@@ -39,12 +44,24 @@ import {
   ownHooksOf,
   type Project,
 } from "../project/resolve";
-import { type HookInput, type HookResult, parseHookInput, SILENT, stringField } from "./io";
+import { ASK_REASON_MAX, appendAsk, askLogFile } from "./ask-log";
+import type { startDetached } from "./detached";
+import {
+  askReason,
+  type HookInput,
+  type HookResult,
+  parseHookInput,
+  SILENT,
+  stringField,
+} from "./io";
 
 export type Env = Record<string, string | undefined>;
 
 /** The environment variable naming the file each hook run is logged to. */
 export const HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
+
+/** Starts a program that outlives the hook (`startDetached` in `./detached`). */
+export type DetachedStarter = typeof startDetached;
 
 export interface HookContext {
   input: HookInput;
@@ -54,6 +71,11 @@ export interface HookContext {
   project: Project;
   env: Env;
   paths: CliPaths;
+  /**
+   * How a hook starts a background program. Left out, it is `startDetached`; a test hands in
+   * a recorder, so no program runs in the test (`src/worktrees/auto-start.ts`).
+   */
+  start?: DetachedStarter;
 }
 
 /**
@@ -65,6 +87,8 @@ export interface HookContext {
 export interface HookEnvContext {
   env: Env;
   paths: CliPaths;
+  /** The starter a test hands in (`HookContext.start`). */
+  start?: DetachedStarter;
 }
 
 export interface HookSpec {
@@ -73,20 +97,9 @@ export interface HookSpec {
   /** The events it is wired for. Any other event: nothing to do. */
   events: string[];
   /**
-   * Who wires it. "plugin": `plugin/hooks/hooks.json`, so it runs in every project, and
-   * stays silent in one whose cc-smart-dev-kit.json lists it in `ownHooks`. "project": the project
-   * wires `cc-smart-dev-kit hook <name>` in its own settings; that is its opt-in.
-   */
-  wiring: "plugin" | "project";
-  /**
-   * What the hook needs from cc-smart-dev-kit.json: null when it is there, else why not (the
-   * hook then fails closed with `onConfigProblem`). Left out: it needs nothing.
-   */
-  needs?: (config: CcSmartDevKitConfig | null) => string | null;
-  /**
-   * The answer when cc-smart-dev-kit.json is broken, needs a newer plugin, or lacks what the hook
-   * `needs`: fail closed. `context` (the environment and paths): for a hook whose answer
-   * does not depend on the project's file, so it can judge the same way (`agent-guard`).
+   * The answer when cc-smart-dev-kit.json is broken or needs a newer plugin: fail closed.
+   * `context` (the environment and paths): for a hook whose answer does not depend on the
+   * project's file, so it can judge the same way (`agent-guard`).
    */
   onConfigProblem: (
     message: string,
@@ -94,14 +107,28 @@ export interface HookSpec {
     event: string,
     checkout: Checkout,
     context: HookEnvContext,
-  ) => HookResult;
+  ) => HookResult | Promise<HookResult>;
   /** The answer when `cwd` is missing, not a folder, or outside git. Default: silent. */
   outsideGit?: (
     input: HookInput,
     event: string,
     why: string,
     context: HookEnvContext,
-  ) => HookResult;
+  ) => HookResult | Promise<HookResult>;
+  /**
+   * A guard's **crew part**: what a crew session may never do, whatever the project's file
+   * says — it never pushes, opens no pull request (`D24`), and its message to another crew
+   * session carries the `crew tell` tag (`D47`). The frame runs it after finding the
+   * checkout and **before `ownHooks` and the file**, because those are the two ways a session
+   * could switch the limit off, and it holds in a project with no file at all. It judges no
+   * other call: without `CC_SMART_DEV_KIT_CREW` it must be silent, so an ordinary session
+   * pays nothing for it, and an answer that is not a denial is the same as silence.
+   */
+  crewLimits?: (
+    input: HookInput,
+    checkout: Checkout,
+    context: HookEnvContext,
+  ) => HookResult | Promise<HookResult>;
   /**
    * Facts for the hook log only (`CC_SMART_DEV_KIT_HOOK_LOG`), never part of the answer: what the
    * hook's own parser read in the input, and — where the answer is a judgement — what it
@@ -110,7 +137,30 @@ export interface HookSpec {
    * paths) is there for a machine-wide hook, whose facts do not depend on the project.
    */
   logFacts?: (input: HookInput, context: HookEnvContext) => Record<string, unknown>;
+  /**
+   * The answer when the hook's own code throws. **A guard answers here, never with a
+   * silent pass**: a crash must not let a call through, so the guard asks the person about
+   * the call in its own domain. An informational hook leaves it out: its crash is one line
+   * on stderr and exit 0, because a bug never stops a person's work.
+   *
+   * `why` is the error's message, `input` the hook's input (null when it could not be
+   * read) and `event` the event it was for ("" when it could not be read). The answer must
+   * fit the event: a PreToolUse guard asks, and on any other event it says nothing.
+   */
+  onCrash?: (
+    why: string,
+    input: HookInput | null,
+    event: string,
+    context: HookEnvContext,
+  ) => HookResult;
   run: (context: HookContext) => HookResult | Promise<HookResult>;
+  /**
+   * True when the project cannot switch the hook off: the frame skips the `ownHooks` step, and
+   * `ownHooks` does not accept the name (`PLUGIN_HOOK_NAMES`). For a guard that guards the
+   * project's own file — a session could otherwise list the guard there first
+   * (`session-escape-guard`).
+   */
+  alwaysOn?: boolean;
   /** The exit code when the hook itself fails. Default 0. */
   crashExitCode?: number;
 }
@@ -119,51 +169,149 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Runs one hook on its input text. Never throws. */
-export async function handleHook(spec: HookSpec, text: string, env: Env): Promise<HookResult> {
+/** True when a hook's answer says anything at all: stdout, stderr, or a non-zero exit code. */
+function saysSomething(result: HookResult): boolean {
+  return result.stdout !== undefined || result.stderr !== undefined || (result.exitCode ?? 0) !== 0;
+}
+
+/**
+ * The answer when the hook's own code throws. A hook with `onCrash` answers through it (a
+ * guard asks about the call in its own domain); a hook without it gets one line on stderr
+ * and exit 0 — a bug never stops a person's work. An `onCrash` that throws itself gets the
+ * same one line: the answer must never be worse than the line.
+ */
+function crashResult(
+  spec: HookSpec,
+  why: string,
+  input: HookInput | null,
+  event: string,
+  context: HookEnvContext,
+): HookResult {
+  const line: HookResult = {
+    exitCode: spec.crashExitCode ?? 0,
+    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`,
+  };
+  if (spec.onCrash === undefined) return line;
   try {
-    const input = parseHookInput(text);
+    return spec.onCrash(why, input, event, context);
+  } catch {
+    return line;
+  }
+}
+
+/**
+ * The record of an ask: one line in `guard-asks.jsonl` in the state folder
+ * (`src/hooks/ask-log.ts`), for every answer of the frame that asks the person — from the
+ * hook's `run`, its `onConfigProblem`, its `outsideGit` or its `onCrash`. A question is the
+ * person's judgment, and "which guard asked, and about what" is worth keeping. The reason goes
+ * through `maskedLine` first: a question often quotes the command, and the record never holds
+ * a secret. A write that fails is one line on stderr and never changes the answer.
+ */
+function recordAsk(
+  spec: HookSpec,
+  input: HookInput | null,
+  result: HookResult,
+  context: HookEnvContext,
+  nowMs: number,
+): HookResult {
+  const reason = askReason(result);
+  if (reason === null) return result;
+  try {
+    appendAsk(askLogFile(context.paths.stateDir), {
+      at: nowMs,
+      hook: spec.name,
+      session: stringField(input?.session_id) ?? "",
+      tool: stringField(input?.tool_name) ?? "",
+      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." }),
+    });
+  } catch (error) {
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
+    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}\n${note}` };
+  }
+  return result;
+}
+
+/** The frame's steps 1 to 4 (the file's header): the hook's answer. Never throws. */
+async function answer(
+  spec: HookSpec,
+  input: HookInput | null,
+  context: HookEnvContext,
+): Promise<HookResult> {
+  const { env } = context;
+  let event = "";
+  try {
     if (input === null) {
-      return {
-        exitCode: spec.crashExitCode ?? 0,
-        stderr: `cc-smart-dev-kit ${spec.name}: the hook input is not JSON`,
-      };
+      // The frame cannot know the event, so a guard asks in general (`onCrash`) and any other
+      // hook says one line. Claude Code always sends JSON: this is a broken caller.
+      return crashResult(spec, "the hook input is not JSON", null, "", context);
     }
-    const event = stringField(input.hook_event_name);
-    if (event === null || !spec.events.includes(event)) return SILENT;
+    const named = stringField(input.hook_event_name);
+    if (named === null || !spec.events.includes(named)) return SILENT;
+    event = named;
     const cwd = stringField(input.cwd);
-    const context: HookEnvContext = { env, paths: cliPaths(env) };
     const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null) return outside(input, event, "the hook input has no cwd", context);
+    if (cwd === null) return await outside(input, event, "the hook input has no cwd", context);
 
     let checkout: Checkout | null;
     try {
       checkout = locateCheckout(cwd, { env });
     } catch (error) {
-      return outside(input, event, errorMessage(error), context);
+      return await outside(input, event, errorMessage(error), context);
     }
-    if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`, context);
+    if (checkout === null)
+      return await outside(input, event, `${cwd} is not in a git checkout`, context);
 
-    if (spec.wiring === "plugin" && ownHooksOf(checkout).includes(spec.name)) return SILENT;
+    // A guard's crew part first (step 2): a crew session's own limits are not the project's
+    // to switch off, and hold with no file at all (D24, D47).
+    if (spec.crewLimits !== undefined) {
+      const crew = await spec.crewLimits(input, checkout, context);
+      if (saysSomething(crew)) return crew;
+    }
+
+    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
     let project: Project;
     try {
       project = loadProjectConfig(checkout);
     } catch (error) {
       if (error instanceof CcSmartDevKitConfigError) {
-        return spec.onConfigProblem(error.message, input, event, checkout, context);
+        return await spec.onConfigProblem(error.message, input, event, checkout, context);
       }
       throw error;
     }
-    const missing = spec.needs?.(project.config) ?? null;
-    if (missing !== null) return spec.onConfigProblem(missing, input, event, checkout, context);
-    return await spec.run({ input, event, cwd, project, env, paths: context.paths });
+    return await spec.run({
+      input,
+      event,
+      cwd,
+      project,
+      env,
+      paths: context.paths,
+      ...(context.start !== undefined && { start: context.start }),
+    });
   } catch (error) {
-    return {
-      exitCode: spec.crashExitCode ?? 0,
-      stderr: `cc-smart-dev-kit ${spec.name}: ${errorMessage(error)}`,
-    };
+    return crashResult(spec, errorMessage(error), input, event, context);
   }
+}
+
+/**
+ * Runs one hook on its input text: the answer of the frame's steps, then the record of an ask.
+ * Never throws. `nowMs` is the time a recorded ask carries; `start` is the starter a test
+ * hands in for a hook that starts a background program.
+ */
+export async function handleHook(
+  spec: HookSpec,
+  text: string,
+  env: Env,
+  nowMs: number = Date.now(),
+  start?: DetachedStarter,
+): Promise<HookResult> {
+  const context: HookEnvContext = {
+    env,
+    paths: cliPaths(env),
+    ...(start !== undefined && { start }),
+  };
+  const input = parseHookInput(text);
+  return recordAsk(spec, input, await answer(spec, input, context), context, nowMs);
 }
 
 /**

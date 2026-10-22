@@ -20,7 +20,6 @@ import { dirname } from "node:path";
 import { z } from "zod";
 // From ./names, not the index: the index bakes in the version, and the router bundle
 // must not change with it (a changed bundle restarts every machine's router).
-import { COMMAND } from "../build-info/names";
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
@@ -32,12 +31,35 @@ import {
   JUDGE_SLOT,
   MODEL_SLOTS,
   parseTarget,
+  type Target,
+  WORKER_SLOT,
   withoutContextSuffix,
 } from "./targets";
 
 export const DEFAULT_PORT = 20100;
 export const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export const DEFAULT_FIRST_BYTE_MS = 60_000;
+
+/**
+ * The longest the breaker holds a request while every target of its slot is limited or down,
+ * and the default of `timeouts.breakerHoldMs`. After the hold the router asks Claude Code to
+ * retry. Claude Code gives up on a request that gets no answer for too long, so a longer hold
+ * risks losing the request; a person can only shorten this one (`0`: no hold).
+ */
+export const BREAKER_HOLD_CEILING_MS = 240_000;
+
+/**
+ * The longest the breaker holds a request that does not stream: Claude Code waits less for a
+ * whole answer than for the start of a stream. A constant, not a setting.
+ */
+export const BREAKER_HOLD_NON_STREAMING_MS = 60_000;
+
+/**
+ * Why the judge has no breaker switch. The config's check and `gateway breaker judge …` both
+ * say it, so a person reads the same words wherever the judge is refused.
+ */
+export const JUDGE_NEVER_HOLDS =
+  "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
 
 /** The log's words for running on `emptyConfig()`. */
 const NO_CONFIG_MEANS =
@@ -66,9 +88,11 @@ export const gatewayConfigSchema = z
     anthropicBaseUrl: z.literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
     backends: z.record(z.string().refine(isBackendName, "not a backend name"), backendSchema),
     /**
-     * The judge targets that passed the judge test: `{"<target>": "<proof>"}`, written only
-     * by `gateway slot judge` after the test (`judgeTestProof`). The router uses a judge
-     * target only when its proof matches; a target without one is ignored, with a WARN.
+     * The targets that passed the judge test: `{"<target>": "<proof>"}`, written only by
+     * `gateway slot judge`, `gateway slot worker` and `gateway setup` after the test
+     * (`judgeTestProof`). The router uses a judge target only when its proof matches; a
+     * target without one is ignored, with a WARN. Both the judge slot's own chain and the
+     * worker chain's targets use it (D44).
      */
     judgeTested: z.record(z.string(), z.string()).optional(),
     /**
@@ -78,6 +102,13 @@ export const gatewayConfigSchema = z
      * (`fallbackOn`). `gateway fallback <slot> on|off` writes it.
      */
     fallback: z.record(z.string(), z.boolean()).optional(),
+    /**
+     * Each slot's breaker switch: may the router hold the slot's requests while every target
+     * it uses is limited or down, then ask Claude Code to retry? `{"<slot>": true | false}`.
+     * Absent: on for every slot except the judge (`breakerOn`). `gateway breaker <slot>
+     * on|off` writes it.
+     */
+    breaker: z.record(z.string(), z.boolean()).optional(),
     /**
      * 0.4.x only, read and never written again: the Claude ids whose requests a model slot
      * took (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`). A request reaches its slot by
@@ -92,7 +123,22 @@ export const gatewayConfigSchema = z
       z.array(z.string()).min(1),
     ),
     timeouts: z
-      .looseObject({ firstByteMs: z.int().positive().default(DEFAULT_FIRST_BYTE_MS) })
+      .looseObject({
+        /**
+         * How long the breaker holds a request while every target of its slot is limited or
+         * down, in whole milliseconds; 0 holds none. Absent: `BREAKER_HOLD_CEILING_MS`, read
+         * through `breakerHoldMs`. Never above that ceiling.
+         */
+        breakerHoldMs: z
+          .int()
+          .min(0)
+          .max(
+            BREAKER_HOLD_CEILING_MS,
+            `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`,
+          )
+          .optional(),
+        firstByteMs: z.int().positive().default(DEFAULT_FIRST_BYTE_MS),
+      })
       .default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
     version: z.literal(1),
   })
@@ -102,14 +148,6 @@ export const gatewayConfigSchema = z
         const parsed = parseTarget(text);
         if ("error" in parsed) {
           ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-        } else if (slot === JUDGE_SLOT && parsed.target.kind === "anthropic") {
-          // The check's body is built for the model it names: Claude Sonnet 5.5 answers
-          // 400 to its `thinking: disabled`, and auto mode would approve nothing.
-          ctx.addIssue({
-            code: "custom",
-            message: `${JUDGE_SLOT} takes no claude-… target; use "${COMMAND} gateway slot judge off" to put the checks on Claude`,
-            path: ["slots", slot, index],
-          });
         } else if (
           parsed.target.kind === "backend" &&
           !Object.hasOwn(config.backends, parsed.target.backend)
@@ -133,11 +171,29 @@ export const gatewayConfigSchema = z
       }
     }
     for (const slot of Object.keys(config.fallback ?? {})) {
-      if (!Object.hasOwn(config.slots, slot)) {
+      // The judge's switch needs no judge chain: with none, Claude judges first and the
+      // worker's tested targets follow while the switch is on (D44), so `gateway fallback
+      // judge off` ("Claude alone") must be savable on a machine that set no judge chain.
+      if (slot !== JUDGE_SLOT && !Object.hasOwn(config.slots, slot)) {
         ctx.addIssue({
           code: "custom",
           message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
           path: ["fallback", slot],
+        });
+      }
+    }
+    for (const slot of Object.keys(config.breaker ?? {})) {
+      if (slot === JUDGE_SLOT) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+          path: ["breaker", slot],
+        });
+      } else if (!Object.hasOwn(config.slots, slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names slot "${slot}", which is not in slots (a slot with no chain has no request to hold)`,
+          path: ["breaker", slot],
         });
       }
     }
@@ -175,16 +231,48 @@ export function modelSlotError(
 
 /**
  * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is
- * one. Otherwise the slot's default: off for the model slots and the judge
- * (`FALLBACK_OFF_BY_DEFAULT`), on for every other slot. A 0.4.x opus or fable chain gets that
- * default too: it moved on only at the plan's usage limit, and "on" now moves on at any 408,
- * 429, 5xx, 529 or network error, so turning it on is the person's choice
- * (`gateway fallback <slot> on`).
+ * one. Otherwise the slot's default: off for the model slots (`FALLBACK_OFF_BY_DEFAULT`),
+ * on for every other slot, the judge included (D44: while Claude cannot judge, the worker's
+ * tested targets do; `gateway fallback judge off` keeps Claude alone). A 0.4.x opus or fable
+ * chain gets that default too: it moved on only at the plan's usage limit, and "on" now
+ * moves on at any 408, 429, 5xx, 529 or network error, so turning it on is the person's
+ * choice (`gateway fallback <slot> on`).
  */
 export function fallbackOn(config: Pick<GatewayConfig, "fallback">, slot: string): boolean {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot)) return set[slot] === true;
   return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+}
+
+/**
+ * Is this slot's breaker switch on? The person's own setting (`breaker`) when there is one;
+ * otherwise on, for every slot. Never for the judge, whatever a hand-edited file says: the
+ * schema refuses such an entry, and a safety check must answer or fail at once
+ * (`JUDGE_NEVER_HOLDS`).
+ */
+export function breakerOn(config: Pick<GatewayConfig, "breaker">, slot: string): boolean {
+  if (slot === JUDGE_SLOT) return false;
+  const set = config.breaker;
+  if (set !== undefined && Object.hasOwn(set, slot)) return set[slot] === true;
+  return true;
+}
+
+/**
+ * How long the breaker holds a request that streams, in milliseconds: the config's
+ * `timeouts.breakerHoldMs`, else `BREAKER_HOLD_CEILING_MS`. 0 means no hold.
+ */
+export function breakerHoldMs(config: Pick<GatewayConfig, "timeouts">): number {
+  return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
+}
+
+/**
+ * What a slot's breaker switch means, in the words the command line and the portal both
+ * show: `breaker on` or `breaker off`. Null for the judge, which has no switch
+ * (`JUDGE_NEVER_HOLDS`).
+ */
+export function breakerWords(config: Pick<GatewayConfig, "breaker">, slot: string): null | string {
+  if (slot === JUDGE_SLOT) return null;
+  return breakerOn(config, slot) ? "breaker on" : "breaker off";
 }
 
 /**
@@ -225,23 +313,30 @@ function aliasError(
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
 
 /**
- * The judge test's version. Raise it when the test changes, or what passing it lets a target
- * do: every judge target then counts as untested until `gateway slot judge` tests it again.
- * 2 since 0.3.0: the fixed phrase the proof is made from changed with the plugin's name.
- * 3 since 0.5.0: a judge target judges every check first, where before it answered only
- * when Claude could not. A judge set for the old meaning is not taken for the new one: the
- * router ignores it, and Claude judges, until the person tests and sets it again.
+ * The judge test's version, and what its proof lets a target do. Raise it when the test
+ * changes, or what passing it lets a target do: every judge target then counts as untested
+ * until `gateway slot judge` tests it again. 2 since 0.3.0: the fixed phrase the proof is
+ * made from changed with the plugin's name. 3 since 0.5.0: a judge target judges every check
+ * first, where before it answered only when Claude could not. A judge set for the old
+ * meaning is not taken for the new one: the router ignores it, and Claude judges, until the
+ * person tests and sets it again.
+ *
+ * It stays 3 since D44 (2026-10-22), which put a target behind Claude: the worker's tested
+ * targets judge only while Claude is limited or down, so a target that passed the test under
+ * version 3 may do less than it did — never more. A target set for judging every check is
+ * safe judging some of them; nobody has to test its targets again.
  */
 export const JUDGE_TEST_VERSION = 3;
 
 /**
- * The proof that a judge target passed the judge test, as `gateway slot judge` writes it
- * into `judgeTested`: the first 32 hex characters of the SHA-256 of a fixed phrase naming
- * the test version, the target and its backend's URL. Why in the config, and why a digest: the slot and its proof
- * are saved in one atomic write, so they cannot drift apart; the router already reads that
- * file on each change; and a hand edit that adds a judge target, copies another target's
- * entry, or moves the backend gets no matching proof. It stops a mistake, not a person who
- * means it: anyone who reads this code can compute it.
+ * The proof that a target passed the judge test, as `gateway slot judge`, `gateway slot
+ * worker` and `gateway setup` write it into `judgeTested`: the first 32 hex characters of the
+ * SHA-256 of a fixed phrase naming the test version, the target and its backend's URL. Why in
+ * the config, and why a digest: the slot and its proof are saved in one atomic write, so they
+ * cannot drift apart; the router already reads that file on each change; and a hand edit that
+ * adds a judge target, copies another target's entry, or moves the backend gets no matching
+ * proof. It stops a mistake, not a person who means it: anyone who reads this code can
+ * compute it.
  */
 export function judgeTestProof(target: string, backendUrl: string): string {
   return createHash("sha256")
@@ -269,6 +364,40 @@ export function judgeTargetTested(
     proof !== undefined &&
     proof === judgeTestProof(target, backend.baseUrl)
   );
+}
+
+/**
+ * May this target judge? A `claude-…` target needs no test: Claude is the judge the test
+ * compares against, and it judges as the model its id names (D44 lets a judge chain hold
+ * one). Any other target needs its proof (`judgeTargetTested`).
+ */
+export function judgeTargetUsable(
+  config: Pick<GatewayConfig, "backends" | "judgeTested">,
+  target: string,
+): boolean {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed)) return false;
+  return parsed.target.kind === "anthropic" || judgeTargetTested(config, target);
+}
+
+/**
+ * The worker chain's targets that passed the judge test, in that chain's order: with no
+ * judge chain of the person's own, they judge auto mode's checks while Claude is limited or
+ * down (owner D44). Only a backend target: a `claude-…` target in the worker chain cannot
+ * stand in for Claude when Claude is the one that cannot answer. Empty when the worker slot
+ * has no chain, or none of its targets passed the test — Claude then judges alone.
+ */
+export function workerJudgeTargets(
+  config: Pick<GatewayConfig, "backends" | "judgeTested" | "slots">,
+): Target[] {
+  const chain = Object.hasOwn(config.slots, WORKER_SLOT) ? (config.slots[WORKER_SLOT] ?? []) : [];
+  const targets: Target[] = [];
+  for (const text of chain) {
+    if (!judgeTargetTested(config, text)) continue;
+    const parsed = parseTarget(text);
+    if ("target" in parsed) targets.push(parsed.target);
+  }
+  return targets;
 }
 
 /** The words of a caught error, whatever was thrown. */

@@ -25,6 +25,7 @@ import { tempDir } from "../testing/temp";
 import { parseModelList } from "./backends";
 import {
   ensureConfig,
+  planBreakerChange,
   planFallbackChange,
   planSlotChange,
   upgradeConfig,
@@ -1477,6 +1478,131 @@ describe("slot opus / fable, and the fallback switch", () => {
     const off = planSlotChange(cfg, "worker", "off", models);
     if (!("config" in off)) throw new Error(off.error);
     expect(off.config).not.toHaveProperty("fallback");
+  });
+});
+
+describe("the breaker switch", () => {
+  const WORKER = "cc-smart-dev-kit-worker";
+  const SCOUT = "cc-smart-dev-kit-scout";
+  const models = { omniroute: ["glm-5.3-flash", "deepseek-v4.1-flash"] };
+  /** The planned change, or the test fails with the planner's error. */
+  function planned(change: ReturnType<typeof planBreakerChange>) {
+    if (!("config" in change)) throw new Error(change.error);
+    return change;
+  }
+
+  it("off and on for a slot with a chain; the default is no entry in the file", () => {
+    const off = planned(planBreakerChange(config(), "worker", "off"));
+    expect(off).toMatchObject({ key: WORKER, now: false, was: true });
+    expect(off.config.breaker).toEqual({ [WORKER]: false });
+    // On is what an absent entry means, so turning it on again leaves no entry, and no field.
+    const on = planned(planBreakerChange(off.config, "worker", "on"));
+    expect(on).toMatchObject({ key: WORKER, now: true, was: false });
+    expect(on.config).not.toHaveProperty("breaker");
+    // On when it is on already changes nothing.
+    const same = planned(planBreakerChange(config(), "worker", "on"));
+    expect(same).toMatchObject({ now: true, was: true });
+    expect(same.config).not.toHaveProperty("breaker");
+  });
+
+  it("takes the short name or the full slot key, and a machine's own slot", () => {
+    expect(planned(planBreakerChange(config(), "scout", "off")).key).toBe(SCOUT);
+    expect(planned(planBreakerChange(config(), SCOUT, "off")).key).toBe(SCOUT);
+    const own = planned(planBreakerChange(config(), "affordable", "off"));
+    expect(own.config.breaker).toEqual({ "cc-smart-dev-kit-affordable": false });
+  });
+
+  it("the model slots have it too, on by default", () => {
+    const withOpus = planSlotChange(config(), "opus", "omniroute:glm-5.3-flash", models);
+    if (!("config" in withOpus)) throw new Error(withOpus.error);
+    const off = planned(planBreakerChange(withOpus.config, "opus", "off"));
+    expect(off).toMatchObject({ key: "cc-smart-dev-kit-opus", now: false, was: true });
+    expect(off.config.breaker).toEqual({ "cc-smart-dev-kit-opus": false });
+  });
+
+  it("keeps the slot's chain, its fallback switch and the other slots' breaker entries", () => {
+    const before: GatewayConfig = {
+      ...config(),
+      breaker: { [SCOUT]: false },
+      fallback: { [WORKER]: false },
+    };
+    const off = planned(planBreakerChange(before, "worker", "off"));
+    expect(off.config.slots).toEqual(before.slots);
+    expect(off.config.fallback).toEqual({ [WORKER]: false });
+    expect(off.config.breaker).toEqual({ [SCOUT]: false, [WORKER]: false });
+  });
+
+  it("the fallback switch leaves the breaker's entries alone, in both directions", () => {
+    const before: GatewayConfig = {
+      ...config(),
+      breaker: { [WORKER]: false },
+      fallback: { [WORKER]: false },
+    };
+    // The worker's fallback back to its default (on): its entry goes, the breaker's stays.
+    const fallbackBack = planFallbackChange(before, "worker", "on");
+    if (!("config" in fallbackBack)) throw new Error(fallbackBack.error);
+    expect(fallbackBack.config).not.toHaveProperty("fallback");
+    expect(fallbackBack.config.breaker).toEqual({ [WORKER]: false });
+    // And the breaker back to its default: its entry goes, the fallback's stays.
+    const breakerBack = planned(planBreakerChange(before, "worker", "on"));
+    expect(breakerBack.config).not.toHaveProperty("breaker");
+    expect(breakerBack.config.fallback).toEqual({ [WORKER]: false });
+  });
+
+  it("refuses the judge, with a chain or without, and says why", () => {
+    const why =
+      "cc-smart-dev-kit-judge: the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
+    expect(planBreakerChange(config(), "judge", "on")).toEqual({ error: why });
+    expect(planBreakerChange(config(), "cc-smart-dev-kit-judge", "off")).toEqual({ error: why });
+    const withJudge: GatewayConfig = {
+      ...config(),
+      slots: { ...config().slots, "cc-smart-dev-kit-judge": ["omniroute:glm-5.3-flash"] },
+    };
+    expect(planBreakerChange(withJudge, "judge", "off")).toEqual({ error: why });
+    // Whatever the word: the judge is the reason, not the word.
+    expect(planBreakerChange(withJudge, "judge", "maybe")).toEqual({ error: why });
+  });
+
+  it("refuses a slot with no chain, a wrong word, and a name that is no slot", () => {
+    expect(planBreakerChange(config(), "fable", "on")).toEqual({
+      error:
+        "cc-smart-dev-kit-fable has no chain, so there is no request for the breaker to hold. Give it one first: cc-smart-dev-kit gateway slot fable <targets>",
+    });
+    expect(planBreakerChange(config(), "worker", "yes")).toEqual({
+      error: 'say on or off, not "yes"',
+    });
+    expect(planBreakerChange(config(), "Worker!", "on")).toEqual({
+      error:
+        '"Worker!" is not a slot name (scout, worker, opus, fable, or cc-smart-dev-kit-<name>)',
+    });
+  });
+
+  it("a slot turned off loses both its switches with its chain, and no other slot's", () => {
+    const before: GatewayConfig = {
+      ...config(),
+      breaker: { [SCOUT]: false, [WORKER]: false },
+      fallback: { [SCOUT]: false, [WORKER]: false },
+    };
+    const off = planSlotChange(before, "worker", "off", models);
+    if (!("config" in off)) throw new Error(off.error);
+    expect(off.config.breaker).toEqual({ [SCOUT]: false });
+    expect(off.config.fallback).toEqual({ [SCOUT]: false });
+    // With no entry left, the field goes too.
+    const last = planSlotChange(
+      { ...config(), breaker: { [WORKER]: false } },
+      "worker",
+      "off",
+      models,
+    );
+    if (!("config" in last)) throw new Error(last.error);
+    expect(last.config).not.toHaveProperty("breaker");
+  });
+
+  it("a new chain for a slot keeps its breaker switch as it was", () => {
+    const before: GatewayConfig = { ...config(), breaker: { [WORKER]: false } };
+    const moved = planSlotChange(before, "worker", "omniroute:glm-5.3-flash", models);
+    if (!("config" in moved)) throw new Error(moved.error);
+    expect(moved.config.breaker).toEqual({ [WORKER]: false });
   });
 });
 

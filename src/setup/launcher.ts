@@ -31,6 +31,11 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/** A path as one word for sh: as it is when it needs no quotes, else `shellQuote`d. */
+export function shellWord(path: string): string {
+  return /^[\w./-]+$/.test(path) ? path : shellQuote(path);
+}
+
 /**
  * The bun path baked into a launcher script by launcherScript(), or null when the script
  * has no such line (not ours, or from another version). The reverse of shellQuote.

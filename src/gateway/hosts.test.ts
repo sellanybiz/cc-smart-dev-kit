@@ -1,13 +1,11 @@
 /**
- * Which machine a host is: this one, a private network, or the internet; and the fetch
- * options that keep a request to this machine away from a proxy. `privateHostKind` is
- * tested as a person meets it, through `cc-smart-dev-kit search --fetch`
- * (src/search/command.test.ts); the proxy itself in proxy.test.ts.
+ * Which machine a host is: this one or another; and the fetch options that keep a request
+ * to this machine away from a proxy. The proxy itself in proxy.test.ts.
  * Every expected value is written by hand.
  */
 import { describe, expect, it } from "bun:test";
 import { withProxyEnv } from "../testing/proxy-env";
-import { directIfLoopback, isLoopbackHost, privateHostKind } from "./hosts";
+import { directIfLoopback, isLoopbackHost } from "./hosts";
 
 describe("isLoopbackHost", () => {
   it("this machine: 127.0.0.0/8, ::1 (also IPv4-mapped), localhost", () => {
@@ -24,6 +22,19 @@ describe("isLoopbackHost", () => {
     }
   });
 
+  it("GW hunch 7: a name under .localhost is this machine too (RFC 6761), so its key skips a proxy", () => {
+    for (const url of [
+      "http://app.localhost/",
+      "http://omniroute.localhost:20128",
+      "http://A.B.LOCALHOST./",
+    ]) {
+      expect(`${url} ${isLoopbackHost(new URL(url).hostname)}`).toBe(`${url} true`);
+    }
+    expect(directIfLoopback("http://omniroute.localhost:20128/v1/messages")).toEqual({
+      proxy: false,
+    });
+  });
+
   it("not this machine: other addresses and names", () => {
     for (const url of [
       "http://128.0.0.1/",
@@ -33,18 +44,11 @@ describe("isLoopbackHost", () => {
       "http://[1::1]/",
       "https://api.anthropic.com/",
       "http://localhost.example.test/",
-      "http://app.localhost/",
+      "http://notlocalhost/",
+      "http://app.localhost.example.test/",
     ]) {
       expect(`${url} ${isLoopbackHost(new URL(url).hostname)}`).toBe(`${url} false`);
     }
-  });
-});
-
-describe("privateHostKind", () => {
-  it("null for a host on the internet", () => {
-    expect(privateHostKind("example.com")).toBeNull();
-    expect(privateHostKind("8.8.8.8")).toBeNull();
-    expect(privateHostKind("[2001:db8::1]")).toBeNull();
   });
 });
 

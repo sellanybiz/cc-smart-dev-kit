@@ -22,31 +22,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
+import { cleanSessionName } from "../crew/names";
 import { type HookResult, SILENT } from "./io";
 import type { Env, HookContext } from "./run";
-
-/** The longest name kept: a tab, a ListAgents row and a /resume line stay readable. */
-export const MAX_SESSION_NAME = 60;
 
 /** Claude Code's session ids are UUIDs. Anything else never becomes part of a path. */
 export function isSessionId(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
-}
-
-/**
- * A name fit to be a title: its first line, control characters and runs of spaces gone, at
- * most MAX_SESSION_NAME characters (counted as characters, so an emoji is never split).
- * Null when nothing is left. Claude Code writes the title into the terminal's title bar
- * with an escape sequence, so every control character goes, ESC and the C1 range included.
- */
-export function cleanSessionName(raw: string): string | null {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine
-    .replace(/\p{Cc}/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (plain === "") return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
 }
 
 /** The folder of the name files: `<temp>/cc-smart-dev-kit-session-names`. */

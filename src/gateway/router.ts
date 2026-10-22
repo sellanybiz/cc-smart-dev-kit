@@ -30,7 +30,10 @@
  *     that answered 429 / 5xx rests a while (`cooldownSeconds`); the last target of a
  *     slot is always tried. A client that hangs up rests nothing. When the chain is used
  *     up, its last answer (or a 502) goes back: the router never adds a target of its
- *     own, Claude included.
+ *     own, Claude included. With the slot's breaker on (`breakerOn`) there is one
+ *     exception: when every target failed for want of capacity and the last one is a
+ *     backend, the request is held for a while (`./breaker.ts`) and then answered with a
+ *     429 that Claude Code retries by itself; Anthropic's own answers always pass.
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
  *     name in `aliases` is seen too) → the `cc-smart-dev-kit-judge` slot's tested targets when
@@ -48,9 +51,14 @@
  *     StopFailure alert (`limit-state.ts`), with the slot whose next target answers while
  *     its first, a Claude model, is at that limit.
  *   - No prompt text is ever changed. An affordable backend gets only the named format
- *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as.
+ *     translations below; a `claude-…` request reaches Anthropic as the bytes it came as,
+ *     but for one named exception (the owner's D6): the thinking blocks a backend wrote,
+ *     which the router marked in that backend's answer, leave every request to a Claude
+ *     target (`forClaude`), because a Claude model refuses a signature it did not issue.
  *   - An affordable backend never sees Claude Code's tool search: `toolSearchForBackend`.
  *   - An affordable backend gets "no reasoning" in a form it reads: `reasoningOffForBackend`.
+ *   - An affordable backend gets its own thinking blocks back as it wrote them, signature
+ *     and all: `thinkingForBackend` (the router's mark carries that signature).
  *   - A redirect from an affordable backend becomes a 502: Claude Code must never follow a
  *     `Location` it chose. Anthropic's own redirects pass as they are.
  *   - Only this machine: it binds 127.0.0.1, refuses a foreign `Host` and any `Origin`
@@ -83,18 +91,53 @@ import { dirname } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { atomicWrite } from "../setup/write";
 import {
+  BREAKER_HEARTBEAT_WAIT_MS,
+  BREAKER_MAX_HELD,
+  BREAKER_POLL_MS,
+  BREAKER_RELEASED_RETRY_AFTER_SEC,
+  BREAKER_REMINDER_MS,
+  BREAKER_SHUTDOWN_RETRY_AFTER_SEC,
+  type BreakerFailure,
+  breakerAnswer,
+  capRetryAfter,
+  clientRetryAfter,
+  describeFailures,
+  earliestRestSeconds,
+  formatDuration,
+  isCapacityFailure,
+  slotShortName,
+} from "./breaker";
+import {
+  BREAKER_HOLD_NON_STREAMING_MS,
+  breakerHoldMs,
+  breakerOn,
   fallbackOn,
   type GatewayConfig,
-  judgeTargetTested,
+  judgeTargetUsable,
   messageOf,
   watchConfig,
+  workerJudgeTargets,
 } from "./config";
-import { cleanFallbackResponse } from "./fallback-answer";
-import { directIfLoopback } from "./hosts";
-import { currentLimits, emptyLimitState, formatLimitState, type LimitState } from "./limit-state";
+import {
+  cleanFallbackResponse,
+  holdsRouterMark,
+  thinkingForBackend,
+  withoutRouterThinking,
+} from "./fallback-answer";
+import { type BackendFetchOptions, backendFetch } from "./hosts";
+import {
+  currentBreakers,
+  currentLimits,
+  emptyLimitState,
+  formatClock,
+  formatLimitState,
+  type LimitState,
+  parseLimitState,
+} from "./limit-state";
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
 import type { RouterPaths } from "./paths";
-import { oneLine } from "./plain-text";
+import { maskedLine, oneLine } from "./plain-text";
+import { backendRefusal, isRefusalStatus, REFUSAL_STATUS } from "./refusal";
 import {
   addCheckTokens,
   type CheckSide,
@@ -108,7 +151,18 @@ import {
   type SafetyCheckState,
 } from "./safety-checks";
 import {
+  anthropicServerTool,
+  claudeSearchNotice,
+  claudeUnavailableWords,
+  searchMessageAnswer,
+  searchStreamAnswer,
+} from "./server-tools";
+import {
+  type ClaudeFamily,
+  type ClaudeVersion,
+  capacityFailureStatus,
   claudeFamily,
+  claudeVersion,
   cooldownSeconds,
   FAMILY_SLOTS,
   fallbackKind,
@@ -123,6 +177,7 @@ import {
   resolveRoute,
   type Target,
   targetsInUse,
+  versionAtLeast,
   withoutContextSuffix,
 } from "./targets";
 
@@ -160,10 +215,11 @@ export interface RouterDeps {
   /** Named in the error a request for an unknown slot gets. */
   configPath: string;
   /**
-   * TESTS ONLY, never set in use: the answers another target gives for a Claude model's
-   * request reach Claude Code as that target sent them, thinking blocks and all
-   * (`cleanFallbackResponse` is skipped). It exists for the live proof that the cleaning is
-   * needed (docs/claude-code-contract.md).
+   * TESTS ONLY, never set in use: the answers a backend gives for a Claude model's request
+   * reach Claude Code as that backend sent them, thinking blocks unmarked and all
+   * (`cleanFallbackResponse` is skipped). It exists for the live proof that the marking is
+   * needed (docs/claude-code-contract.md): an unmarked block is never removed on the way to
+   * Claude.
    */
   fallbackAnswersAsIs?: boolean;
   fetch: FetchLike;
@@ -173,6 +229,12 @@ export interface RouterDeps {
    * starts so a restart goes on counting the same days. Absent, or null: none yet.
    */
   loadSafetyChecks?: () => null | string;
+  /**
+   * The limit state file's text (`limit-state.ts`), read once when the router starts, so a
+   * restart (an update, a crash) keeps the plan limits and the fallbacks it saw, and its
+   * next write keeps them too. Absent, or null: none yet.
+   */
+  loadState?: () => null | string;
   log: (line: string) => void;
   /** Milliseconds since the epoch. */
   now: () => number;
@@ -188,6 +250,16 @@ export interface RouterDeps {
    * before an answer; it may throw, and the router logs that once. Absent: no file.
    */
   saveState?: (text: string) => void;
+  /**
+   * Aborted when the router is told to stop (SIGTERM): every request the breaker holds is
+   * answered at once with a short `retry-after`, so the drain stays short. Absent: never.
+   */
+  shutdown?: AbortSignal;
+  /**
+   * Waits `ms` milliseconds: how the breaker's hold passes its seconds. Absent: a timer. A test
+   * passes one that moves its fake clock (`now`) instead of waiting.
+   */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** How often a slot's fallback record's `lastAt` reaches the state file, at most: once a minute. */
@@ -205,6 +277,9 @@ const BAD_SIGNATURE = "Invalid `signature`";
 
 /** Why an upstream call failed when it gave no headers by its deadline. */
 const NO_HEADERS_IN_TIME = "no response headers in time";
+
+/** Why a held stream failed when it gave no real event by its deadline. */
+const NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 
 /** Path of the router's own health check, answered before anything is forwarded. */
 export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
@@ -246,6 +321,33 @@ export function anthropicError(status: number, type: string, message: string): R
   return Response.json({ error: { message, type }, type: "error" }, { status });
 }
 
+/**
+ * What Claude Code gets when the target that answers last is a backend refusing its own key
+ * (401 or 403): an error in Anthropic's shape that names the backend and the check to run,
+ * with `x-should-retry: false`. Never the 401 itself, which Claude Code reads as the person's
+ * own login failing. A 400 is not retried (Claude Code 2.1.300), but since 2.1.304 it is sent
+ * again without its deferred tools, so a model call gets `REFUSAL_STATUS` instead
+ * (`./refusal.ts`); auto mode's safety check (`resendSafe` false) has no deferred tools and
+ * keeps the 400. docs/claude-code-contract.md.
+ */
+export function backendKeyRefused(
+  label: string,
+  backend: string,
+  status: number,
+  resendSafe = true,
+): Response {
+  return Response.json(
+    {
+      error: {
+        message: `cc-smart-dev-kit-router: ${label} refused the key the gateway config holds for ${backend} (HTTP ${status}${status === 403 ? ": the key, or what it may reach, such as a provider connection it is not allowed to use" : ""}). Your Claude login is not the problem. Check it: ${COMMAND} gateway check`,
+        type: "invalid_request_error",
+      },
+      type: "error",
+    },
+    { headers: { "x-should-retry": "false" }, status: resendSafe ? REFUSAL_STATUS : 400 },
+  );
+}
+
 function droppedHeaders(headers: Headers): Set<string> {
   const dropped = new Set(HOP_BY_HOP);
   for (const name of (headers.get("connection") ?? "").split(",")) {
@@ -267,7 +369,12 @@ export function anthropicRequestHeaders(client: Headers): Headers {
   return out;
 }
 
-/** The allow-listed client headers and the backend's own key — nothing else. */
+/**
+ * The allow-listed client headers and the backend's own key — nothing else — and
+ * `accept-encoding: identity`. The router reads a backend's stream until its first real event
+ * (`holdFirstEvent`) and passes the bytes on as they came (`decompress: false`): a gzip stream
+ * would hold no event the scanner can read, and every target but the last would "fail".
+ */
 export function backendRequestHeaders(client: Headers, apiKey: string): Headers {
   const out = new Headers();
   for (const name of BACKEND_HEADER_ALLOW_LIST) {
@@ -275,6 +382,7 @@ export function backendRequestHeaders(client: Headers, apiKey: string): Headers 
     if (value !== null) out.set(name, value);
   }
   if (!out.has("content-type")) out.set("content-type", "application/json");
+  out.set("accept-encoding", "identity");
   out.set("authorization", `Bearer ${apiKey}`);
   return out;
 }
@@ -293,7 +401,11 @@ export function retryAfterSeconds(value: null | string, nowMs: number): null | n
   return Math.max(0, Math.ceil((at - nowMs) / 1000));
 }
 
-/** Response headers for the client; an affordable backend's `retry-after` made whole seconds. */
+/**
+ * Response headers for the client; an affordable backend's `retry-after` made whole seconds
+ * and capped at what Claude Code waits for (`capRetryAfter`): above 60 it ends the request at
+ * once instead of retrying, even with the breaker off.
+ */
 function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number): Headers {
   const dropped = droppedHeaders(upstream);
   const out = new Headers();
@@ -301,7 +413,7 @@ function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number
     if (dropped.has(name) || name.startsWith("proxy-")) return;
     if (name === "retry-after" && normalizeRetryAfterAt !== null) {
       const seconds = retryAfterSeconds(value, normalizeRetryAfterAt);
-      if (seconds !== null) out.set(name, String(seconds));
+      if (seconds !== null) out.set(name, String(capRetryAfter(seconds)));
       return;
     }
     out.append(name, value);
@@ -316,14 +428,21 @@ function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number
  * lines (`: …`) as heartbeats, and reports a failure in-band as `event: error`. So
  * for an affordable backend "before the first byte" means "before the first real event":
  * comments are skipped; `ping` carries no content and decides nothing either.
+ * `decidedData` is the data of the event that decided (its `data:` lines, joined): an error
+ * event's reason, for the log.
  */
-export function sseScanner(): { push(text: string): "error" | "event" | null } {
+export function sseScanner(): {
+  decidedData(): string;
+  push(text: string): "error" | "event" | null;
+} {
   let buffer = "";
   let event: null | string = null;
   let data: string[] = [];
   let fields = false;
+  let decided = "";
   const decide = (): "error" | "event" | null => {
     const name = event ?? "message";
+    decided = data.join("\n");
     if (name === "error") return "error";
     if (name === "ping") return null;
     try {
@@ -342,6 +461,7 @@ export function sseScanner(): { push(text: string): "error" | "event" | null } {
     return "event";
   };
   return {
+    decidedData: () => decided,
     push(text) {
       buffer += text;
       for (;;) {
@@ -372,93 +492,6 @@ export function sseScanner(): { push(text: string): "error" | "event" | null } {
 /** Text safe for one log line: printable ASCII only, bounded length (`oneLine`). */
 function printable(text: string, max = 120): string {
   return oneLine(text, max, { ascii: true });
-}
-
-/** A secret as the log shows it: `****` and, for a long one, its last four characters. */
-function maskedTail(secret: string): string {
-  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
-}
-
-/** A known secret shorter than this is not masked by its text: it would wreck the line. */
-const KNOWN_SECRET_MIN = 4;
-
-/** A UUID (8-4-4-4-12 hex): a request or object id, never a key. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Each known secret as it can stand in an error text: as it is, as a JSON string shows it,
- * and as a JSON string inside a JSON string shows it. Longest first, so a secret that holds
- * another is masked whole.
- */
-function knownSecretForms(known: readonly string[]): { form: string; secret: string }[] {
-  const forms = new Map<string, string>();
-  for (const secret of known) {
-    if (secret.length < KNOWN_SECRET_MIN) continue;
-    const once = JSON.stringify(secret).slice(1, -1);
-    const twice = JSON.stringify(once).slice(1, -1);
-    for (const form of [secret, once, twice]) if (!forms.has(form)) forms.set(form, secret);
-  }
-  return [...forms]
-    .map(([form, secret]) => ({ form, secret }))
-    .sort((a, b) => b.form.length - a.form.length);
-}
-
-/**
- * An upstream's error text with anything that looks like a key masked, before it goes to
- * the log. An upstream may echo a key back ("invalid x-api-key sk-…"). Masked, in order:
- *   - `known`: the exact secrets the router holds (each backend's key, the request's
- *     `x-api-key` and `authorization`), short ones too, and their JSON-escaped forms;
- *   - an email address (an account's, in an error about it);
- *   - the value of a JSON field whose name says key, token, secret, password or
- *     authorization, its quotes escaped or not;
- *   - a `Bearer` / `Basic` credential; an `sk-…` key;
- *   - a value after `key`, `token`, `secret` or `password` and a `:` or `=` (a header, a
- *     query): `x-api-key: abc123`, `api_key=…`. Without the `:` or `=` the words after it
- *     are prose ("the key does not exist"), and stay;
- *   - any unbroken run of 32 or more letters, digits, `_` or `-`, but a run with `__` (an
- *     MCP tool name, `mcp__plugin_x__tool`) or a UUID: those are names, never keys.
- * Every quantifier is bounded, so no input makes a pattern backtrack for long; the caller
- * also cuts the text to 2 KB first (`errorSnippet`). ASCII only, because the log line is
- * (`printable`); so not `maskKey` from settings.ts, whose `••••` the log would turn into
- * `????` (and the router bundle must not import settings.ts: it bakes in the plugin
- * version).
- */
-export function maskSecrets(text: string, known: readonly string[] = []): string {
-  let out = text;
-  for (const { form, secret } of knownSecretForms(known)) {
-    out = out.split(form).join(maskedTail(secret));
-  }
-  return out
-    .replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****")
-    .replace(
-      /(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi,
-      "$1$2$1$3:$4$1****$1",
-    )
-    .replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****")
-    .replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`)
-    .replace(
-      /(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi,
-      (_match, name: string, separator: string, value: string) =>
-        `${name}${separator}${maskedTail(value)}`,
-    )
-    .replace(/[A-Za-z0-9_-]{32,512}/g, (run) =>
-      run.includes("__") || UUID.test(run) ? run : maskedTail(run),
-    );
-}
-
-/**
- * An outside error text as one line to show: anything like a key masked first
- * (`maskSecrets`, with the `known` secrets), then made one line of at most `max`
- * characters with no control character (`oneLine`). The router's log passes `ascii`;
- * `cc-smart-dev-kit search` shows Unicode and marks a cut with `…`.
- */
-export function maskedLine(
-  text: string,
-  known: readonly string[],
-  max: number,
-  options: { ascii?: boolean; mark?: string } = {},
-): string {
-  return oneLine(maskSecrets(text, known), max, options);
 }
 
 /** How long an error snippet in the log may be. */
@@ -598,33 +631,147 @@ export function reasoningOffForBackend(
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
 }
 
+/** What a Claude target refuses with a 400, from one version of its family on. */
+interface ClaudeTargetRules {
+  /** `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`. */
+  budgetToAdaptive: boolean;
+  /**
+   * What `thinking: {type: "disabled"}` becomes: `between_tools` (effort at most `high`),
+   * `left out` (thinking is always on), `capped` (kept, effort at most `high`), or null
+   * (the target takes it as it is).
+   */
+  thinkingOff: "between_tools" | "capped" | "left out" | null;
+  /** A forced `tool_choice` (`any` / `tool`) → `auto`. */
+  forcedToolChoice: boolean;
+  /** A `temperature` other than 1, any `top_p`, any `top_k` → left out. */
+  sampling: boolean;
+}
+
 /**
- * What a slot's `claude-…` target refuses with a 400, by the target's FAMILY (`claudeFamily`),
- * so a newer version of the family needs no change here. Only families whose rules
- * Anthropic's migration guides state are here; a target of another family gets the body as
- * Claude Code built it (only `model` changes). Sources, read 2026-10-15, for the 5.5 models:
- *   - platform.claude.com/docs/en/models/sonnet-5-5/migration-guide
- *   - platform.claude.com/docs/en/models/opus-5-5/migration-guide
- * Both refuse `thinking: {type: "enabled", budget_tokens}`, a forced `tool_choice`
- * (`any` / `tool`, on `count_tokens` too) and a non-default `temperature` / `top_p` /
- * `top_k`. They differ on `thinking: {type: "disabled"}`: Sonnet wants
- * `{type: "between_tools"}` instead (accepted at effort `high` or below, with no other
- * field in `thinking`); Opus always thinks, so the field is left out, and with no effort
- * named the effort becomes `low` (the guide's own before / after for "disabled"). A newer
- * version that changes a rule shows in the WARN line with Anthropic's reason; its row
+ * What a slot's `claude-…` target refuses with a 400, by the target's FAMILY (`claudeFamily`)
+ * and the first VERSION a rule set holds for (`claudeVersion`). A target gets the row of its
+ * family with the highest `since` at or below its own version, so a newer version needs no
+ * change here; a version below every row of its family, an id with no version, and a family
+ * with no row get the body as Claude Code built it (only `model` changes). Only what
+ * Anthropic's docs state is here. Sources, read 2026-10-17:
+ *   - platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting (the per-model
+ *     table: which `thinking.type` each model refuses; `between_tools` on Sonnet 5.5 only;
+ *     `disabled` on Opus 5 and Haiku 5.5 only at effort `high` or below);
+ *   - platform.claude.com/docs/en/build-with-claude/extended-thinking ("Claude 4.7 and later
+ *     models ... reject" a budget; 4.5 and earlier refuse `adaptive`, so a budget stays there);
+ *   - the migration guides of Sonnet 5.5, Opus 5.5 and Haiku 5.5 (the sampling fields; a
+ *     forced `tool_choice` on Sonnet and Opus 5.5) and of Fable 5.1 (a forced `tool_choice`,
+ *     which Fable 5 still takes).
+ * A rule a newer version changes shows in the WARN line with Anthropic's reason; its row
  * changes then.
  */
-const CLAUDE_TARGET_RULES: Partial<
-  Record<
-    NonNullable<ReturnType<typeof claudeFamily>>,
-    { thinkingOff: "between_tools" | "left out" }
-  >
+const CLAUDE_TARGET_RULES: Readonly<
+  Partial<Record<ClaudeFamily, readonly { rules: ClaudeTargetRules; since: ClaudeVersion }[]>>
 > = {
-  opus: { thinkingOff: "left out" },
-  sonnet: { thinkingOff: "between_tools" },
+  fable: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "left out",
+      },
+      since: { major: 5, minor: 0 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: false,
+        thinkingOff: "left out",
+      },
+      since: { major: 5, minor: 1 },
+    },
+  ],
+  haiku: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null,
+      },
+      since: { major: 4, minor: 7 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: true,
+        thinkingOff: "capped",
+      },
+      since: { major: 5, minor: 5 },
+    },
+  ],
+  opus: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null,
+      },
+      since: { major: 4, minor: 7 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: "capped",
+      },
+      since: { major: 5, minor: 0 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out",
+      },
+      since: { major: 5, minor: 5 },
+    },
+  ],
+  sonnet: [
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: false,
+        sampling: false,
+        thinkingOff: null,
+      },
+      since: { major: 4, minor: 7 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "between_tools",
+      },
+      since: { major: 5, minor: 5 },
+    },
+  ],
 };
 
-/** Efforts at which Sonnet 5.5 refuses `between_tools`. */
+/** The rules for one Claude target (`CLAUDE_TARGET_RULES`); null when none apply. */
+function claudeTargetRules(model: string): ClaudeTargetRules | null {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null) return null;
+  let found: ClaudeTargetRules | null = null;
+  for (const row of CLAUDE_TARGET_RULES[family] ?? []) {
+    if (versionAtLeast(version, row.since)) found = row.rules;
+  }
+  return found;
+}
+
+/** Efforts above `high`: refused with thinking off where a model takes it only up to `high`. */
 const ABOVE_HIGH = new Set(["max", "xhigh"]);
 
 /**
@@ -635,14 +782,15 @@ const ABOVE_HIGH = new Set(["max", "xhigh"]);
  * field the Claude target refuses: Claude Sonnet 5.5 answers 400 to
  * `thinking: {type: "disabled"}`, which Claude Code sends to turn reasoning off for short
  * background calls. Without this, a slot that falls back to Claude after its affordable targets
- * fail answers 400 instead. So, for a target in `CLAUDE_TARGET_RULES` only, each refused
- * field gets the nearest value the target accepts:
+ * fail answers 400 instead. So, for a target with rules (`claudeTargetRules`) only, each
+ * refused field gets the nearest value the target accepts:
  *   - `thinking: {type: "disabled"}` → `{type: "between_tools"}` (Sonnet 5.5; at effort
- *     `xhigh` / `max` the effort becomes `high`, the highest it takes with thinking off),
- *     or no `thinking` field (Opus 5.5: thinking is always on), and, with no effort
- *     named, `output_config.effort: "low"`, the nearest to no thinking;
+ *     `xhigh` / `max` the effort becomes `high`, the highest it takes with thinking off);
+ *     or no `thinking` field (Opus 5.5, Fable: thinking is always on), and, with no effort
+ *     named, `output_config.effort: "low"`, the nearest to no thinking; or kept, with an
+ *     effort above `high` made `high` (Opus 5, Haiku 5.5);
  *   - `thinking: {type: "enabled", budget_tokens}` → `{type: "adaptive"}`, its `display`
- *     kept;
+ *     kept (4.7 and later);
  *   - `tool_choice` `any` or `tool` → `{type: "auto"}`, its `disable_parallel_tool_use`
  *     kept;
  *   - a `temperature` other than 1, any `top_p`, any `top_k` → left out (the default).
@@ -655,12 +803,23 @@ export function requestForClaudeFallback(
   body: Record<string, unknown>,
   model: string,
 ): { body: Record<string, unknown>; changes: string[] } {
-  // The target's family decides (`[1m]` is ignored there): its rules are the family's.
-  const family = claudeFamily(model);
-  const rules = family === null ? undefined : CLAUDE_TARGET_RULES[family];
-  if (rules === undefined) return { body, changes: [] };
+  // The target's family and version decide (`[1m]` is ignored there).
+  const rules = claudeTargetRules(model);
+  if (rules === null) return { body, changes: [] };
   const out: Record<string, unknown> = { ...body };
   const changes: string[] = [];
+  /** An effort above `high` made `high`; `why` follows the change's name in the log. */
+  const capEffort = (why: string) => {
+    const outputConfig = body.output_config;
+    if (
+      isJsonObject(outputConfig) &&
+      typeof outputConfig.effort === "string" &&
+      ABOVE_HIGH.has(outputConfig.effort)
+    ) {
+      out.output_config = { ...outputConfig, effort: "high" };
+      changes.push(`effort ${outputConfig.effort} -> high${why}`);
+    }
+  };
   const thinking = body.thinking;
   if (isJsonObject(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
@@ -673,20 +832,14 @@ export function requestForClaudeFallback(
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
       }
-    } else {
+    } else if (rules.thinkingOff === "between_tools") {
       out.thinking = { type: "between_tools" };
       changes.push("thinking disabled -> between_tools");
-      const outputConfig = body.output_config;
-      if (
-        isJsonObject(outputConfig) &&
-        typeof outputConfig.effort === "string" &&
-        ABOVE_HIGH.has(outputConfig.effort)
-      ) {
-        out.output_config = { ...outputConfig, effort: "high" };
-        changes.push(`effort ${outputConfig.effort} -> high`);
-      }
+      capEffort("");
+    } else if (rules.thinkingOff === "capped") {
+      capEffort(" (thinking off)");
     }
-  } else if (isJsonObject(thinking) && thinking.type === "enabled") {
+  } else if (isJsonObject(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking =
       thinking.display === undefined
         ? { type: "adaptive" }
@@ -694,21 +847,27 @@ export function requestForClaudeFallback(
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (isJsonObject(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (
+    rules.forcedToolChoice &&
+    isJsonObject(toolChoice) &&
+    (toolChoice.type === "any" || toolChoice.type === "tool")
+  ) {
     out.tool_choice =
       toolChoice.disable_parallel_tool_use === undefined
         ? { type: "auto" }
         : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
-  if (body.temperature !== undefined && body.temperature !== 1) {
-    delete out.temperature;
-    changes.push("temperature left out");
-  }
-  for (const field of ["top_p", "top_k"]) {
-    if (body[field] !== undefined) {
-      delete out[field];
-      changes.push(`${field} left out`);
+  if (rules.sampling) {
+    if (body.temperature !== undefined && body.temperature !== 1) {
+      delete out.temperature;
+      changes.push("temperature left out");
+    }
+    for (const field of ["top_p", "top_k"]) {
+      if (body[field] !== undefined) {
+        delete out[field];
+        changes.push(`${field} left out`);
+      }
     }
   }
   return changes.length > 0 ? { body: out, changes } : { body, changes };
@@ -765,6 +924,17 @@ function sameModel(a: string, b: string): boolean {
 
 /** How one request ended — the log line and the response. */
 interface Outcome {
+  /**
+   * The breaker's own answer (`breaker(<slot>)` is the target): whether the request waited
+   * in the hold, and how many upstream calls it made as a probe while the breaker was open.
+   */
+  breaker?: { held: boolean; probes: number };
+  /**
+   * Set when the breaker applies and every target in use failed for want of capacity (or
+   * rests, or is being probed by another request): each one's failure. `response` is then the
+   * answer that would go back, and the caller drops it when it holds the request instead.
+   */
+  capacity?: BreakerFailure[];
   fallbacks: number;
   response: Response;
   skipped: number;
@@ -772,6 +942,59 @@ interface Outcome {
 }
 
 type Attempt = { failure: string; status: null | number } | { response: Response };
+
+/** A target's result in one pass over a chain; `capacity` says whether it is a capacity failure. */
+interface AttemptRecord extends BreakerFailure {
+  capacity: boolean;
+}
+
+/**
+ * How a pass over a chain treats the breaker (`chain`'s `hold`); null where the breaker does
+ * not apply (breaker off, the judge, `count_tokens`, an explicit `<backend>:<model>`).
+ */
+interface HoldMode {
+  /**
+   * The slot's breaker is open: a resting backend is not asked even when it is the last
+   * target, and only one request at a time asks each target (the probe).
+   */
+  holding: boolean;
+  /**
+   * How long the last backend of a streaming request may take to give its headers and its
+   * first real event (`BREAKER_HEARTBEAT_WAIT_MS`, less what is left of the hold). Null: no
+   * deadline.
+   */
+  lastWaitMs: null | number;
+  /**
+   * Milliseconds left of the hold, from its start: a probe's wait is capped by it, so a hold
+   * never outlasts its limit. `Infinity` when there is no hold to stay within (`0`).
+   */
+  leftMs: number;
+  /** Upstream calls made as a probe, counted for the request's log line. */
+  probes: { count: number };
+}
+
+/** A slot whose breaker is open now: what the router keeps in memory (`limitState.breakers`). */
+interface OpenBreaker {
+  /** Each target's last failure, from the last pass over the chain. */
+  failures: BreakerFailure[];
+  /** Requests held since it opened. */
+  held: number;
+  /** Requests waiting in the hold now. */
+  heldNow: number;
+  /** Milliseconds: the last reminder line, or when it opened. */
+  reminderAt: number;
+  /** Milliseconds: the last write of its record to the state file. */
+  savedAt: number;
+  /** Milliseconds: when it opened. */
+  since: number;
+}
+
+/** An empty record is dropped from the state, so a file without breakers reads as none. */
+function withoutEmptyBreakers(state: LimitState): void {
+  if (state.breakers !== undefined && Object.keys(state.breakers).length === 0) {
+    delete state.breakers;
+  }
+}
 
 /**
  * How much of a safety check's answer is kept to read its `usage`. The answer to a check
@@ -840,10 +1063,33 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const aliasesLogged = new Set<string>();
   /** Claude-target translations already logged (target and changes): once each. */
   const translationsLogged = new Set<string>();
-  /** What the state file says: plan limits seen, slots answering from a next target. */
-  const limitState: LimitState = emptyLimitState();
+  /**
+   * What the state file says: plan limits seen, slots answering from a next target. It starts
+   * from the file, so a restart keeps them (`loadState`).
+   */
+  const limitState: LimitState = loadedState(deps.loadState, parseLimitState, emptyLimitState, {
+    file: "the limit state file",
+    name: "the limit state",
+    after: "it starts over",
+  });
+  // A breaker record a stopped router left behind is dropped once it is no longer current.
+  for (const slot of Object.keys(limitState.breakers ?? {})) {
+    if (!currentBreakers(limitState, deps.now()).some(([key]) => key === slot)) {
+      delete limitState.breakers?.[slot];
+    }
+  }
+  withoutEmptyBreakers(limitState);
   /** Auto mode's safety checks counted so far, by local day (`safety-checks.ts`). */
-  const safetyChecks: SafetyCheckState = loadedSafetyChecks();
+  const safetyChecks: SafetyCheckState = loadedState(
+    deps.loadSafetyChecks,
+    parseSafetyCheckState,
+    emptySafetyChecks,
+    {
+      file: "the safety-check file",
+      name: "the safety-check counts",
+      after: "counting starts over",
+    },
+  );
   /**
    * Claude model ids another target answered for since the router started. A 400 "Invalid
    * `signature`" for one of them gets a WARN that names the cause, also once its fallback
@@ -854,8 +1100,20 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const untestedLogged = new Set<string>();
   /** What `cleanAnswer` changed, per slot and target: logged once each. */
   const cleanedLogged = new Set<string>();
+  /** Claude models whose request lost the router's marked thinking blocks (`forClaude`): once each. */
+  const markedLogged = new Set<string>();
+  /** Backend targets whose request got the router's thinking blocks' own signatures back. */
+  const restoredLogged = new Set<string>();
   /** The config the fallback records were last checked against (`dropRemovedFallbacks`). */
   let checkedConfig: GatewayConfig | null = null;
+  /** Slots whose breaker is open now. In memory: a restart starts closed, the record stays. */
+  const openBreakers = new Map<string, OpenBreaker>();
+  /** Targets a request is probing now, while a breaker is open: one request at a time asks each. */
+  const probing = new Set<string>();
+  /** Why each resting target rests (its last failure), for the breaker's answer and record. */
+  const restReasons = new Map<string, { reason: string; status: null | number }>();
+  const sleep =
+    deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   /** Write the state file in the background, once for any number of changes in a row. */
   const persist = stateWriter(
@@ -873,26 +1131,30 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   );
 
   /**
-   * The safety-check counts the router starts from: what the file holds (a restart goes on
-   * counting the same days), or none. A file that cannot be read or understood is said so
-   * once, and counting starts from none — an older or a hand-edited file never stops the
-   * router.
+   * A state the router starts from: what its file holds (a restart goes on from there: the
+   * same days counted, the same limits and fallbacks), or none. A file that cannot be read
+   * or understood is said so once, and the state starts from none — an older or a
+   * hand-edited file never stops the router. `words` name it in those lines.
    */
-  function loadedSafetyChecks(): SafetyCheckState {
-    const load = deps.loadSafetyChecks;
-    if (load === undefined) return emptySafetyChecks();
+  function loadedState<T>(
+    load: undefined | (() => null | string),
+    parse: (text: string) => null | T,
+    empty: () => T,
+    words: { after: string; file: string; name: string },
+  ): T {
+    if (load === undefined) return empty();
     let text: null | string;
     try {
       text = load();
     } catch (error) {
-      deps.log(`WARN cannot read the safety-check counts: ${messageOf(error)}`);
-      return emptySafetyChecks();
+      deps.log(`WARN cannot read ${words.name}: ${messageOf(error)}`);
+      return empty();
     }
-    if (text === null) return emptySafetyChecks();
-    const parsed = parseSafetyCheckState(text);
+    if (text === null) return empty();
+    const parsed = parse(text);
     if (parsed === null) {
-      deps.log("WARN the safety-check file is not one this version reads; counting starts over");
-      return emptySafetyChecks();
+      deps.log(`WARN ${words.file} is not one this version reads; ${words.after}`);
+      return empty();
     }
     return parsed;
   }
@@ -1001,20 +1263,29 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       changed = true;
     }
     if (changed) persist();
+    // A breaker for a slot taken out of the config, or switched off, is over.
+    for (const slot of new Set([
+      ...openBreakers.keys(),
+      ...Object.keys(limitState.breakers ?? {}),
+    ])) {
+      if (Object.hasOwn(config.slots, slot) && breakerOn(config, slot)) continue;
+      closeBreaker(slot, "removed from the config or switched off");
+    }
   }
 
   /**
-   * The judge's targets the router may use: its chain, its first target alone while its
-   * fallback switch is off (`targetsInUse`), and of those only the ones `gateway slot judge`
-   * tested (`judgeTargetTested`). An untested one (a hand edit, a config from before 0.5.0)
-   * is ignored, with one WARN per target. None left: Claude judges.
+   * The judge slot's targets the router may use, for a chain the person set: its chain, its
+   * first target alone while its fallback switch is off (`targetsInUse`), and of those only
+   * the ones that may judge (`judgeTargetUsable`: a `claude-…` target as it is, a backend
+   * target once `gateway slot judge` tested it). An untested backend target (a hand edit, a
+   * config from before 0.5.0) is ignored, with one WARN per target. None left: Claude judges.
    */
   function judgeTargetsOf(config: GatewayConfig): Target[] {
     const judge = resolveRoute(JUDGE_SLOT, config);
     if (judge.kind !== "slot") return [];
     return targetsInUse(judge.targets, fallbackOn(config, JUDGE_SLOT)).filter((target) => {
       const text = formatTarget(target);
-      if (judgeTargetTested(config, text)) return true;
+      if (judgeTargetUsable(config, text)) return true;
       if (!untestedLogged.has(text)) {
         untestedLogged.add(text);
         deps.log(
@@ -1156,15 +1427,16 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const controller = new AbortController();
     req.signal.addEventListener("abort", () => controller.abort(req.signal.reason), { once: true });
     const timer = deadlineAt === null ? null : deadline(deadlineAt - deps.now());
-    const pending = deps.fetch(upstream.url, {
+    // `backendFetch` for every upstream: an affordable backend's key never goes through a
+    // proxy to this machine, and no upstream's redirect is followed with a key or the login.
+    const init: Omit<UpstreamInit, keyof BackendFetchOptions> = {
       body: upstream.body,
       decompress: false,
       headers: upstream.headers,
       method: upstream.method,
-      redirect: "manual",
       signal: controller.signal,
-      ...directIfLoopback(upstream.url),
-    });
+    };
+    const pending = backendFetch(upstream.url, init, deps.fetch);
     try {
       const first = await (timer === null ? pending : Promise.race([pending, timer.done]));
       if (first !== "timeout") return { response: first };
@@ -1182,16 +1454,25 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
   /**
    * Hold an affordable backend's stream until its first real event (`sseScanner`). An
-   * error event, the end of the stream, or `deadlineAt` first → a failure, and the
-   * next target is tried; nothing has reached the client yet. Otherwise the client
-   * gets a stream that replays every byte read so far, then pipes the rest as it
-   * arrives — chunk by chunk, nothing buffered beyond the one being handed over.
+   * error event (its reason in the failure, keys masked: `known`), the end of the stream,
+   * or `deadlineAt` first → a failure, and the next target is tried; nothing has reached
+   * the client yet. Otherwise the client gets a stream that replays every byte read so far,
+   * then pipes the rest as it arrives — chunk by chunk, nothing buffered beyond the one
+   * being handed over.
+   *
+   * The `last` target is held only for its deadline (the safety check's judge: a stream of
+   * heartbeats must not hold every action): an error event or an early end there is the
+   * answer, replayed as it came, because no target is left to try.
    *
    * Nothing is sent to the client while holding (no `ping`): any byte would commit
    * this target, and the wait is bounded by `firstByteMs` anyway. The connection
    * stays open meanwhile — the server's idle timeout is off.
    */
-  async function holdFirstEvent(response: Response, deadlineAt: null | number): Promise<Attempt> {
+  async function holdFirstEvent(
+    response: Response,
+    deadlineAt: null | number,
+    options: { known: readonly string[]; last: boolean },
+  ): Promise<Attempt> {
     const body = response.body;
     if (body === null) return { failure: "an event stream with no body", status: response.status };
     const reader = body.getReader();
@@ -1199,12 +1480,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const scanner = sseScanner();
     const held: Uint8Array[] = [];
     /** `status` null on a timeout (the target rests), the 2xx otherwise (it does not). */
-    const fail = async (failure: string, status: null | number): Promise<Attempt> => {
-      try {
-        await reader.cancel();
-      } catch (error) {
+    const fail = (failure: string, status: null | number): Attempt => {
+      // Not awaited: a stalled upstream may never settle its cancel, and the request must go
+      // on to the next target (and the target rest) whatever the upstream does.
+      reader.cancel().catch((error: unknown) => {
         deps.log(`WARN could not cancel a held upstream stream: ${messageOf(error)}`);
-      }
+      });
       return { failure, status };
     };
     for (;;) {
@@ -1220,14 +1501,23 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       } finally {
         timer?.clear();
       }
-      if (step === "timeout") return fail("no event in time (only heartbeats)", null);
-      if (step.done)
+      if (step === "timeout") return fail(NO_EVENT_IN_TIME, null);
+      if (step.done) {
+        if (options.last) break;
         return { failure: "the stream ended before its first event", status: response.status };
+      }
       held.push(step.value);
       const verdict = scanner.push(decoder.decode(step.value, { stream: true }));
-      if (verdict === "error")
-        return fail("an error event before the first real one", response.status);
-      if (verdict === "event") break;
+      if (verdict === "error" && !options.last) {
+        const reason = maskedLine(scanner.decidedData(), options.known, SNIPPET_MAX, {
+          ascii: true,
+        });
+        return fail(
+          `an error event before the first real one${reason === "" ? "" : `: ${reason}`}`,
+          response.status,
+        );
+      }
+      if (verdict !== null) break;
     }
     const replay = new ReadableStream<Uint8Array>({
       cancel: (reason) => reader.cancel(reason),
@@ -1251,6 +1541,42 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /**
+   * Read a backend's whole non-streaming 2xx answer while another target can still answer:
+   * a backend may report a failure in a 200 whose body is Anthropic's error shape
+   * (`{"type":"error", …}`), and passed on, Claude Code would keep it as the answer. Such a
+   * body is a failure (its reason in it, keys masked: `known`), and the next target is tried;
+   * the 2xx status means the target does not rest, as for an error event in a stream. Any
+   * other body comes back as the same bytes. An answer in an encoding the router does not
+   * read (it asks for none: `backendRequestHeaders`) is passed on as it came. Only a
+   * non-streaming answer: it is whole before Claude Code reads any of it anyway.
+   */
+  async function readJsonAnswer(response: Response, known: readonly string[]): Promise<Attempt> {
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    if (encoding !== "" && encoding !== "identity") return { response };
+    let bytes: Uint8Array<ArrayBuffer>;
+    try {
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      return { failure: `the answer broke off: ${messageOf(error)}`, status: null };
+    }
+    const parsed = parseBody(bytes);
+    if (parsed !== null && parsed.type === "error") {
+      const reason = snippetText(bytes, known);
+      return {
+        failure: `an error in its ${response.status} answer: ${reason}`,
+        status: response.status,
+      };
+    }
+    return {
+      response: new Response(bytes, {
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText,
+      }),
+    };
+  }
+
   /** The upstream response, as Claude Code gets it: status, headers, streamed body. */
   function relay(upstream: Response, target: null | Target): Response {
     const headers = responseHeaders(
@@ -1264,6 +1590,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     });
   }
 
+  /**
+   * The call to Anthropic: the one way every request reaches a Claude target (an off slot's
+   * model, a chain's `claude-…` target, a safety check Claude judges). A model call's body
+   * loses the router's own marked thinking blocks on the way (`forClaude`); every other
+   * byte goes as it is.
+   */
   function anthropicUpstream(
     req: Request,
     url: URL,
@@ -1271,11 +1603,41 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     body: null | Uint8Array<ArrayBuffer>,
   ): Upstream {
     return {
-      body,
+      body: forClaude(url, body),
       headers: anthropicRequestHeaders(req.headers),
       method: req.method,
       url: `${deps.anthropicBaseUrl ?? config.anthropicBaseUrl}${url.pathname}${url.search}`,
     };
+  }
+
+  /**
+   * A model call's body for a Claude target, without the thinking blocks a backend wrote
+   * (the owner's D6, 2026-10-17): exactly the blocks whose signature carries the router's
+   * mark (`withoutRouterThinking`), which Anthropic would refuse with a 400. The one change a
+   * request to Claude ever gets beyond the named translations. The same bytes when there is
+   * none: the bytes are searched for the mark first, and parsed only on a hit. Logged once
+   * per model.
+   */
+  function forClaude(
+    url: URL,
+    body: null | Uint8Array<ArrayBuffer>,
+  ): null | Uint8Array<ArrayBuffer> {
+    if (body === null || (url.pathname !== MESSAGES_PATH && url.pathname !== COUNT_TOKENS_PATH)) {
+      return body;
+    }
+    if (!holdsRouterMark(body)) return body;
+    const parsed = parseBody(body);
+    if (parsed === null) return body;
+    const out = withoutRouterThinking(parsed);
+    if (out.removed === 0) return body;
+    const model = typeof parsed.model === "string" ? parsed.model : "-";
+    if (!markedLogged.has(model)) {
+      markedLogged.add(model);
+      deps.log(
+        `removed ${out.removed} of the router's own thinking blocks for ${printable(model)} (a Claude model refuses a signature it did not issue; logged once per model)`,
+      );
+    }
+    return encoder.encode(JSON.stringify(out.body));
   }
 
   /**
@@ -1302,6 +1664,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
+   * A body for a backend, its router-marked thinking blocks given back the signature their
+   * backend wrote (`thinkingForBackend`). Logged once per backend target.
+   */
+  function ownThinkingFor(body: Record<string, unknown>, target: Target): Record<string, unknown> {
+    const out = thinkingForBackend(body);
+    const label = formatTarget(target);
+    if (out.restored + out.bare > 0 && !restoredLogged.has(label)) {
+      restoredLogged.add(label);
+      deps.log(
+        `${printable(label)} got its own signature back on ${out.restored} of the router's thinking blocks, ${out.bare} sent with none (thinkingForBackend; logged once per target)`,
+      );
+    }
+    return out.body;
+  }
+
+  /**
    * The upstream call for one target, or why there is none. `guard`: the safety check.
    * `asked`: the Claude model the request named, and its bytes: a target that is that same
    * model gets the bytes as Claude Code sent them, built for it.
@@ -1319,8 +1697,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       return { upstream: anthropicUpstream(req, url, config, asked.sent) };
     }
     if (target.kind === "anthropic") {
+      // `[1m]` is Claude Code's own mark, which it strips before it sends an id; Anthropic
+      // knows no model by that name.
       const bytes = encoder.encode(
-        JSON.stringify({ ...fitForClaude(body, target.model, guard), model: target.model }),
+        JSON.stringify({
+          ...fitForClaude(body, target.model, guard),
+          model: withoutContextSuffix(target.model),
+        }),
       );
       return { upstream: anthropicUpstream(req, url, config, bytes) };
     }
@@ -1330,7 +1713,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (backend === undefined) return { error: `backend "${target.backend}" is not in the config` };
     // `metadata` carries the Claude account id; an affordable backend never sees it.
     const affordableBody: Record<string, unknown> = {
-      ...reasoningOffForBackend(toolSearchForBackend(body), { absentIsOff: guard }),
+      ...reasoningOffForBackend(toolSearchForBackend(ownThinkingFor(body, target)), {
+        absentIsOff: guard,
+      }),
       model: target.model,
     };
     delete affordableBody.metadata;
@@ -1362,7 +1747,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         ? retryAfterSeconds(result.response.headers.get("retry-after"), deps.now())
         : null;
     const seconds = cooldownSeconds(status, retryAfter);
-    if (seconds !== null) cooling.set(label, deps.now() + seconds * 1000);
+    if (seconds === null) return;
+    cooling.set(label, deps.now() + seconds * 1000);
+    restReasons.set(label, {
+      reason: printable("response" in result ? `HTTP ${status}` : result.failure, 120),
+      status,
+    });
   }
 
   /** The targets resting now, with the seconds left; expired ones are forgotten. */
@@ -1392,6 +1782,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * it is the last. The last target's answer is returned whatever it is; with no
    * answer at all, a 502 in Anthropic's error shape. The caller passes only the targets
    * in use (`targetsInUse`): with the fallback switch off, one.
+   *
+   * With `hold` (the slot's breaker applies), the outcome also says whether every target
+   * failed for want of capacity (`Outcome.capacity`): the caller then holds the request. While
+   * a breaker is open (`hold.holding`), a resting backend is not asked even as the last
+   * target, and one request at a time asks each target. Anthropic's answer is always the
+   * answer, however it failed, so the last target being Anthropic never sets `capacity`.
    */
   async function chain(
     req: Request,
@@ -1403,9 +1799,32 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     guard: boolean,
     /** The Claude model the request named, and its bytes (`targetUpstream`); a size WARN names it. */
     asked: Asked | null = null,
+    hold: HoldMode | null = null,
   ): Promise<Outcome> {
-    const standsInFor = asked?.model ?? null;
+    // A safety check is no conversation: the hint below ("/compact it …") would mislead.
+    const standsInFor = guard ? null : (asked?.model ?? null);
     const failures: string[] = [];
+    /** Each target's result in this pass, for the breaker. */
+    const records: AttemptRecord[] = [];
+    const note = (
+      label: string,
+      status: null | number,
+      reason: string,
+      capacity: boolean,
+      until: number = cooling.get(label) ?? deps.now(),
+    ): void => {
+      records.push({ capacity, reason: printable(reason, 120), status, target: label, until });
+    };
+    /** Every target failed for want of capacity: each one's failure; undefined otherwise. */
+    const capacityOf = (): BreakerFailure[] | undefined =>
+      hold !== null && records.length > 0 && records.every((record) => record.capacity)
+        ? records.map((record) => ({
+            reason: record.reason,
+            status: record.status,
+            target: record.target,
+            until: record.until,
+          }))
+        : undefined;
     let fallbacks = 0;
     let skipped = 0;
     /** The last target gave no headers by its deadline (only a safety check's judge has one). */
@@ -1414,8 +1833,26 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const last = index === targets.length - 1;
       const label = formatTarget(target);
       const restsUntil = cooling.get(label);
-      if (!last && restsUntil !== undefined && restsUntil > deps.now()) {
+      const resting = restsUntil !== undefined && restsUntil > deps.now();
+      // While a breaker is open, a resting backend is not asked even as the last target: the
+      // requests that wait would otherwise ask it all at once. An Anthropic last target is
+      // always asked, and its answer is the answer.
+      if (resting && (!last || (hold?.holding === true && target.kind === "backend"))) {
         failures.push(`${label}: resting after a failure`);
+        const why = restReasons.get(label);
+        note(
+          label,
+          why?.status ?? null,
+          why?.reason ?? "resting after a failure",
+          true,
+          restsUntil,
+        );
+        skipped += 1;
+        continue;
+      }
+      if (hold?.holding === true && probing.has(label)) {
+        failures.push(`${label}: another request is asking it`);
+        note(label, null, "another request is probing it", true);
         skipped += 1;
         continue;
       }
@@ -1426,37 +1863,105 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       // An auto-mode check on a backend (the judge) gets the deadline on every target, the
       // last too, though it does not stream: a judge that hangs would hold every action, the
       // judge after it would never be asked, and a lone judge would never answer at all.
-      const deadlineAt =
+      // With the breaker on, the last backend of a streaming request gets one too, a long one:
+      // a stream of heartbeats only would stall Claude Code for 5 minutes, and a target that
+      // never gives a real event opens the breaker instead.
+      const firstByteWait =
         target.kind === "backend" && (guard || (!last && body.stream === true))
-          ? deps.now() + config.timeouts.firstByteMs
+          ? config.timeouts.firstByteMs
           : null;
+      const lastWaitMs =
+        hold !== null && last && target.kind === "backend" && body.stream === true
+          ? hold.lastWaitMs
+          : null;
+      // While the breaker is open a call is a probe: one request at a time asks each target.
+      // Its wait is capped by what is left of the hold, so a probe cannot outlive the hold (a
+      // hold never exceeds its limit), keep its target blocked for every other request after
+      // it, or rest a target that works because the router's own deadline cut it short. A
+      // probe of a request that does not stream gets a deadline too (`firstByteMs`): with
+      // none, a hung probe would block every other request's probe of that target for ever,
+      // and the breaker could never close. Anthropic keeps its own wait: its answers always
+      // pass unchanged.
+      const budgetMs =
+        last && target.kind === "backend" && body.stream === true && hold !== null
+          ? BREAKER_HEARTBEAT_WAIT_MS
+          : (firstByteWait ?? config.timeouts.firstByteMs);
+      const probeWaitMs =
+        hold?.holding === true && target.kind === "backend"
+          ? Math.min(budgetMs, hold.leftMs)
+          : null;
+      const waitMs = probeWaitMs ?? lastWaitMs ?? firstByteWait;
+      const deadlineAt = waitMs === null ? null : deps.now() + waitMs;
+      /** The hold's end, not the target, set this wait: a timeout then says nothing of it. */
+      const holdCutShort =
+        hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
       const built = targetUpstream(req, url, config, body, target, guard, asked);
-      let result: Attempt =
-        "error" in built
-          ? { failure: built.error, status: null }
-          : await send(req, built.upstream, deadlineAt);
-      if (req.signal.aborted) return closed(result, label);
-      if (target.kind === "anthropic" && "response" in result) {
-        observeClaude(target.model, result.response, url.pathname);
+      // A call made while a breaker is open is a probe: it is the only one for this target.
+      const probe = hold?.holding === true && !("error" in built);
+      if (probe) {
+        probing.add(label);
+        if (hold !== null) hold.probes.count += 1;
       }
-      if (
-        "response" in result &&
-        !last &&
-        target.kind === "backend" &&
-        result.response.ok &&
-        (result.response.headers.get("content-type") ?? "").includes("text/event-stream")
-      ) {
-        result = await holdFirstEvent(result.response, deadlineAt);
-        // A hang-up during the hold breaks the read: the client's doing, not the
-        // target's — it must not rest the target for every other session.
+      let result: Attempt;
+      try {
+        result =
+          "error" in built
+            ? { failure: built.error, status: null }
+            : await send(req, built.upstream, deadlineAt);
         if (req.signal.aborted) return closed(result, label);
+        if (target.kind === "anthropic" && "response" in result) {
+          observeClaude(target.model, result.response, url.pathname);
+        }
+        // A backend's stream is held until its first real event while another target can
+        // still answer, and for a safety check on every target, the last too: its deadline
+        // holds after the headers as well (a stream of heartbeats would hold every action).
+        if (
+          "response" in result &&
+          (!last || guard || lastWaitMs !== null) &&
+          target.kind === "backend" &&
+          result.response.ok &&
+          (result.response.headers.get("content-type") ?? "").includes("text/event-stream")
+        ) {
+          result = await holdFirstEvent(result.response, deadlineAt, {
+            known: knownSecrets(req, config),
+            last,
+          });
+          // A hang-up during the hold breaks the read: the client's doing, not the
+          // target's — it must not rest the target for every other session.
+          if (req.signal.aborted) return closed(result, label);
+        } else if (
+          "response" in result &&
+          !last &&
+          target.kind === "backend" &&
+          result.response.ok &&
+          (result.response.headers.get("content-type") ?? "").includes("application/json")
+        ) {
+          result = await readJsonAnswer(result.response, knownSecrets(req, config));
+          if (req.signal.aborted) return closed(result, label);
+        }
+      } finally {
+        if (probe) probing.delete(label);
       }
       // Only a model's answer says whether a target can answer: a `count_tokens` answer
       // neither starts nor ends a rest (its 200 during a plan limit says nothing of it).
-      if (url.pathname === MESSAGES_PATH) noteCooldown(label, result);
+      // A probe whose wait the hold's end cut short timed out on the router's deadline, not
+      // the target's: it must not rest a target that works for every other session.
+      const timeoutCutShort =
+        holdCutShort &&
+        "failure" in result &&
+        (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
+      if (url.pathname === MESSAGES_PATH && !timeoutCutShort) noteCooldown(label, result);
       if ("failure" in result) {
-        lastTimedOut = last && result.failure === NO_HEADERS_IN_TIME;
+        lastTimedOut =
+          last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
         failures.push(`${label}: ${result.failure}`);
+        // A target missing from the config is the person's to fix, never a want of capacity.
+        note(
+          label,
+          result.status,
+          result.failure,
+          !("error" in built) && isCapacityFailure(result.status),
+        );
         if (!last) {
           fallbacks += 1;
           deps.log(`WARN ${label} failed (${result.failure}); trying the next target`);
@@ -1484,18 +1989,35 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
             target: label,
           };
         }
+        if (target.kind === "backend" && (status === 401 || status === 403)) {
+          // A backend refusing its own key. Passed on, Claude Code would read it as its own
+          // login failing ("Please run /login"), which cannot fix a backend key. A 5xx would
+          // be retried up to 10 times, each one refused again. A 424 is neither retried nor
+          // sent again (`./refusal.ts`), and `x-should-retry: false` says so to its API
+          // client too; a safety check, which carries no deferred tools, keeps the 400.
+          const refused = backendKeyRefused(label, target.backend, status, !guard);
+          logErrorAnswer(
+            result.response,
+            knownSecrets(req, config),
+            `WARN ${label} answered ${status}; returned as a ${refused.status} (the backend refused its key)`,
+          );
+          return {
+            fallbacks,
+            response: refused,
+            skipped,
+            target: label,
+          };
+        }
         if (status >= 400) {
           // Any target, Anthropic too: its reason is the only trace of why the slot
           // failed. Read from a copy: Claude Code still gets the whole answer, at once.
-          logErrorAnswer(
-            result.response.clone(),
-            knownSecrets(req, config),
-            `WARN ${label} answered ${status}; returned as it is`,
+          const known = knownSecrets(req, config);
+          const follow =
             target.kind === "anthropic"
               ? signatureWarn(target.model, status)
               : standsInFor === null || (status !== 400 && status !== 413)
                 ? undefined
-                : (snippet) => {
+                : (snippet: string) => {
                     const kind = TOO_LONG.test(snippet)
                       ? "too long"
                       : UNSUPPORTED.test(snippet)
@@ -1505,10 +2027,46 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
                     deps.log(
                       `WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than ${label} takes: /compact it, start a new one, or put a target that takes it first in ${name}`,
                     );
-                  },
+                  };
+          if (
+            target.kind === "backend" &&
+            !guard &&
+            url.pathname === MESSAGES_PATH &&
+            isRefusalStatus(status)
+          ) {
+            // Claude Code sends a 400 or 422 it does not know again without its deferred
+            // tools, and the chain is walked twice: relay the refusal in a form it does not
+            // send again (`./refusal.ts`). The reason is read here, so the answer waits for it
+            // (one chunk, at most a second).
+            const snippet = await errorSnippet(result.response, known);
+            const refused = backendRefusal(label, status, snippet);
+            deps.log(
+              `WARN ${label} answered ${status}; returned as a ${refused.status} (Claude Code would send a ${status} again without its deferred tools) — ${snippet}`,
+            );
+            follow?.(snippet);
+            return { fallbacks, response: refused, skipped, target: label };
+          }
+          logErrorAnswer(
+            result.response.clone(),
+            known,
+            `WARN ${label} answered ${status}; returned as it is`,
+            follow,
           );
         }
-        return { fallbacks, response: relay(result.response, target), skipped, target: label };
+        const answer: Outcome = {
+          fallbacks,
+          response: relay(result.response, target),
+          skipped,
+          target: label,
+        };
+        // The last backend failed for want of capacity: when every other target did too, the
+        // breaker decides what the request gets (Anthropic's answer is never held).
+        if (last && hold !== null && target.kind === "backend" && isCapacityFailure(status)) {
+          note(label, status, `HTTP ${status}`, true);
+          const capacity = capacityOf();
+          if (capacity !== undefined) answer.capacity = capacity;
+        }
+        return answer;
       }
       // Reading the snippet also cancels the rest of this discarded answer; the next
       // target is asked meanwhile.
@@ -1518,11 +2076,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         `WARN ${label} answered ${status}; trying the next target`,
       );
       failures.push(`${label}: HTTP ${status}`);
+      note(label, status, `HTTP ${status}`, isCapacityFailure(status));
       fallbacks += 1;
     }
     const lastTarget = targets.at(-1);
     const answered = failures.join("; ") || "no targets";
+    const capacity = capacityOf();
     return {
+      ...(capacity === undefined ? {} : { capacity }),
       fallbacks,
       // A judge that never answered: a timeout in Anthropic's shape, so Claude Code fails the
       // check (and asks the person, or tries another model) instead of waiting on it.
@@ -1551,6 +2112,280 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /** How long one request may be held, from its start: 60 s at most when it does not stream. */
+  function holdLimitMs(config: GatewayConfig, body: Record<string, unknown>): number {
+    const limit = breakerHoldMs(config);
+    return body.stream === true ? limit : Math.min(limit, BREAKER_HOLD_NON_STREAMING_MS);
+  }
+
+  /** How a pass over the chain treats the breaker (`HoldMode`). */
+  function holdMode(
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    startMs: number,
+    holding: boolean,
+    probes: { count: number },
+  ): HoldMode {
+    const limit = holdLimitMs(config, body);
+    // The wait counts from the request's start, so it and the hold stay under the ceiling.
+    // With no hold (`0`) there is no limit to stay within: a probe gets its own wait.
+    const left = limit === 0 ? Number.POSITIVE_INFINITY : Math.max(startMs + limit - deps.now(), 0);
+    return {
+      holding,
+      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, Math.max(left, 1)),
+      leftMs: left,
+      probes,
+    };
+  }
+
+  /** Put a slot's open breaker into the limit state and queue the write. */
+  function recordBreaker(slot: string, open: OpenBreaker): void {
+    const now = deps.now();
+    open.savedAt = now;
+    limitState.breakers = {
+      ...limitState.breakers,
+      [slot]: {
+        held: open.held,
+        lastAt: now,
+        since: open.since,
+        targets: open.failures.map((failure) => ({
+          status: failure.status,
+          target: failure.target,
+          until: failure.until,
+        })),
+      },
+    };
+    persist();
+  }
+
+  /**
+   * The slot's breaker, opened if it is not: one WARN and one write of its record when it
+   * opens (a record a restart kept gives its start back), and the targets' failures kept
+   * fresh after that. The record's `lastAt` reaches the file at most once a minute while
+   * requests keep coming, so a router that stopped leaves a record that goes stale
+   * (`currentBreakers`).
+   */
+  function breakerFor(slot: string, failures: BreakerFailure[], holdMs: number): OpenBreaker {
+    const now = deps.now();
+    const existing = openBreakers.get(slot);
+    if (existing !== undefined) {
+      existing.failures = failures;
+      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS) recordBreaker(slot, existing);
+      return existing;
+    }
+    const before = currentBreakers(limitState, now).find(([key]) => key === slot)?.[1];
+    const open: OpenBreaker = {
+      failures,
+      held: before?.held ?? 0,
+      heldNow: 0,
+      reminderAt: now,
+      savedAt: now,
+      since: before?.since ?? now,
+    };
+    openBreakers.set(slot, open);
+    recordBreaker(slot, open);
+    const wait = clientRetryAfter(earliestRestSeconds(failures, now));
+    deps.log(
+      `WARN ${slot}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`,
+    );
+    return open;
+  }
+
+  /**
+   * The breaker is over for this slot: a target answered, or the slot's switch went off or
+   * the slot left the config. Its record leaves the state, with one line. A record a restart
+   * kept, for a breaker this router never opened, goes the same way.
+   */
+  function closeBreaker(slot: string, why: string): void {
+    const open = openBreakers.get(slot);
+    const stored =
+      limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, slot)
+        ? limitState.breakers[slot]
+        : undefined;
+    if (open === undefined && stored === undefined) return;
+    const since = open?.since ?? stored?.since ?? deps.now();
+    const held = open?.held ?? stored?.held ?? 0;
+    openBreakers.delete(slot);
+    delete limitState.breakers?.[slot];
+    withoutEmptyBreakers(limitState);
+    persist();
+    deps.log(`${slot}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
+  }
+
+  /** The breakers open now, for the health page. */
+  function breakersNow(): Record<string, unknown> {
+    return Object.fromEntries(
+      [...openBreakers].map(([slot, open]) => [
+        slot,
+        {
+          held: open.held,
+          heldNow: open.heldNow,
+          since: open.since,
+          targets: open.failures.map((failure) => ({
+            status: failure.status,
+            target: failure.target,
+            until: failure.until,
+          })),
+        },
+      ]),
+    );
+  }
+
+  /**
+   * Waits `ms` (`RouterDeps.sleep`), or less: it ends at once when a signal aborts (the
+   * client hung up, the router is stopping).
+   */
+  function pause(ms: number, ...signals: (AbortSignal | undefined)[]): Promise<void> {
+    return new Promise((resolve) => {
+      const live = signals.filter((signal) => signal !== undefined);
+      const finish = () => {
+        for (const signal of live) signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      if (live.some((signal) => signal.aborted)) return finish();
+      for (const signal of live) signal.addEventListener("abort", finish, { once: true });
+      void sleep(ms).then(finish);
+    });
+  }
+
+  /**
+   * Holds a request whose slot has every target limited or down, up to its hold (from its
+   * start), and answers a 429 Claude Code retries by itself (`breakerAnswer`).
+   *
+   * While it waits, the config is read once a second: a changed chain is served at once, a
+   * slot taken out of the config releases the request (retry-after 1: the retry routes it
+   * the way a new request goes), and a switch turned off serves it the normal way. Each pass
+   * asks only a target that does not rest and that no other request is probing, so the
+   * waiting requests are not a storm: a probe that answers closes the breaker and every
+   * request goes on the normal chain. A hang-up rests nothing (499). At most
+   * `BREAKER_MAX_HELD` requests wait per slot: the next one is answered at once. At SIGTERM
+   * every waiting request is answered with a short `retry-after`.
+   */
+  async function holdRequest(
+    ctx: {
+      asked: Asked | null;
+      body: Record<string, unknown>;
+      probes: { count: number };
+      req: Request;
+      slot: string;
+      startMs: number;
+      url: URL;
+    },
+    config0: GatewayConfig,
+    targets0: Target[],
+    first: Outcome,
+  ): Promise<{ outcome: Outcome; targets: Target[] }> {
+    const { asked, body, probes, req, slot, startMs, url } = ctx;
+    let config = config0;
+    let targets = targets0;
+    let outcome = first;
+    let open = breakerFor(slot, first.capacity ?? [], holdLimitMs(config, body));
+    let counted: OpenBreaker | null = null;
+    /** The router was told to stop (SIGTERM). */
+    const stopping = (): boolean => deps.shutdown?.aborted === true;
+    const answer = (response: Response): { outcome: Outcome; targets: Target[] } => ({
+      outcome: {
+        breaker: { held: counted !== null, probes: probes.count },
+        fallbacks: 0,
+        response,
+        skipped: 0,
+        target: `breaker(${slot})`,
+      },
+      targets,
+    });
+    /** The WARN that the slot is still limited, at most once every `BREAKER_REMINDER_MS`. */
+    const remind = (nowMs: number): void => {
+      if (nowMs - open.reminderAt < BREAKER_REMINDER_MS) return;
+      open.reminderAt = nowMs;
+      deps.log(
+        `WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`,
+      );
+    };
+    try {
+      for (;;) {
+        // The answer a pass would have given is not used: drop its body.
+        void discard(outcome.response);
+        const now = deps.now();
+        const failures = outcome.capacity ?? [];
+        const endsAt = startMs + holdLimitMs(config, body);
+        const reply = (nowMs: number, retryAfterSec?: number, message?: string): Response =>
+          breakerAnswer({
+            failures,
+            nowMs,
+            sinceMs: open.since,
+            slot,
+            ...(retryAfterSec === undefined ? {} : { retryAfterSec }),
+            ...(message === undefined ? {} : { message }),
+          });
+        if (stopping()) {
+          return answer(
+            reply(
+              now,
+              BREAKER_SHUTDOWN_RETRY_AFTER_SEC,
+              `cc-smart-dev-kit-router: the router is restarting; ${slot} had no target answering. Ask again`,
+            ),
+          );
+        }
+        if (now >= endsAt) {
+          remind(now);
+          return answer(reply(now));
+        }
+        if (counted === null) {
+          if (open.heldNow >= BREAKER_MAX_HELD) return answer(reply(now));
+          counted = open;
+          open.heldNow += 1;
+          open.held += 1;
+        }
+        await pause(Math.min(BREAKER_POLL_MS, endsAt - now), req.signal, deps.shutdown);
+        // The client hung up: rest nothing, as for any hang-up.
+        if (req.signal.aborted) {
+          return answer(anthropicError(499, "api_error", "client closed the request"));
+        }
+        if (stopping()) continue;
+        const next = deps.getConfig();
+        const route = resolveRoute(slot, next);
+        if (route.kind !== "slot" || route.targets.length === 0) {
+          return answer(
+            reply(
+              now,
+              BREAKER_RELEASED_RETRY_AFTER_SEC,
+              `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`,
+            ),
+          );
+        }
+        config = next;
+        targets = targetsInUse(route.targets, fallbackOn(next, slot));
+        const holds = breakerOn(next, slot);
+        // What is left of the hold is under a target's first-byte time: a probe now could
+        // only fail on the hold's own deadline, and rest a target that works. Answer the 429
+        // now, as at the hold's end (its reminder included). A switch turned off is served
+        // the normal way instead, below.
+        const probingAt = deps.now();
+        if (holds && startMs + holdLimitMs(next, body) - probingAt < next.timeouts.firstByteMs) {
+          remind(probingAt);
+          return answer(reply(probingAt));
+        }
+        outcome = await chain(
+          req,
+          url,
+          config,
+          body,
+          targets,
+          slot,
+          false,
+          asked,
+          holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+        );
+        if (req.signal.aborted) return { outcome, targets };
+        // A target answered (or the switch went off): the request goes on the normal way.
+        if (outcome.capacity === undefined) return { outcome, targets };
+        open = breakerFor(slot, outcome.capacity, holdLimitMs(config, body));
+      }
+    } finally {
+      if (counted !== null) counted.heldNow -= 1;
+    }
+  }
+
   /**
    * A slot's request, the same way for every slot: its targets in use (`targetsInUse`: the
    * whole chain while its fallback switch is on, the first alone while it is off), in order
@@ -1560,8 +2395,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    *
    * Then, for a slot whose first target is a Claude model at its plan limit, a next target
    * that answered starts its fallback record (`noteFallback`). And an answer for `asked` that
-   * another target gave loses its thinking blocks (`cleanAnswer`): Claude Code keeps it in
-   * that model's conversation.
+   * a backend gave gets its thinking marked as the router's (`cleanAnswer`): Claude Code
+   * keeps it in that model's conversation. Another Claude model's answer is left as it is.
    */
   async function slotRequest(
     req: Request,
@@ -1573,9 +2408,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     guard: boolean,
     asked: Asked | null,
   ): Promise<Outcome> {
-    const targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
-    const first = targets[0];
+    const startMs = deps.now();
+    let targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
     if (url.pathname === COUNT_TOKENS_PATH) {
+      const first = targets[0];
       // Token counting has no fallback: the first target answers, or no one does.
       if (first === undefined || first.kind === "backend") {
         return {
@@ -1591,8 +2427,37 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       return chain(req, url, config, body, [first], slot, guard, asked);
     }
-    const outcome = await chain(req, url, config, body, targets, slot, guard, asked);
-    if (req.signal.aborted || first === undefined) return outcome;
+    // The breaker applies to a model call of a slot whose switch is on, never to a safety
+    // check (it has a deadline on every target and a 504; a held check would freeze every
+    // action). An explicit `<backend>:<model>` does not come through here at all.
+    const breaks = !guard && url.pathname === MESSAGES_PATH && breakerOn(config, slot);
+    const probes = { count: 0 };
+    let outcome = await chain(
+      req,
+      url,
+      config,
+      body,
+      targets,
+      slot,
+      guard,
+      asked,
+      breaks ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+    );
+    if (breaks && outcome.capacity !== undefined && !req.signal.aborted) {
+      const held = await holdRequest(
+        { asked, body, probes, req, slot, startMs, url },
+        config,
+        targets,
+        outcome,
+      );
+      outcome = held.outcome;
+      targets = held.targets;
+    }
+    const first = targets[0];
+    if (breaks && outcome.breaker === undefined && !req.signal.aborted && outcome.response.ok) {
+      closeBreaker(slot, "answers again");
+    }
+    if (req.signal.aborted || first === undefined || outcome.breaker !== undefined) return outcome;
     if (first.kind === "anthropic" && outcome.target !== formatTarget(first)) {
       const limited = withoutContextSuffix(first.model);
       const limit = currentLimits(limitState, deps.now()).find(([model]) => model === limited);
@@ -1600,27 +2465,34 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     if (asked === null || sameModel(outcome.target, asked.model)) return outcome;
     if (outcome.response.ok) fellBack.add(asked.model);
-    return { ...outcome, response: cleanAnswer(slot, asked.model, outcome) };
+    // Another Claude model's answer goes as Anthropic sent it: the API drops a thinking
+    // block the next Claude model cannot read (`fallback-answer.ts`).
+    const answered = targets.find((target) => formatTarget(target) === outcome.target);
+    if (answered?.kind !== "backend") return outcome;
+    return { ...outcome, response: cleanAnswer(slot, outcome) };
   }
 
   /**
-   * An answer another target gave for a Claude model's request, without thinking blocks and
-   * with `tool_use` ids Claude takes (`cleanFallbackResponse`): Claude Code keeps it in the
-   * conversation, and the Claude model, once it answers that conversation again (the slot
-   * turned off, or its Claude target answering), refuses a thinking block it cannot verify.
-   * `fallbackAnswersAsIs` (tests only) skips it.
+   * A backend's answer for a Claude model's request (`cleanFallbackResponse`): its thinking
+   * kept, each block's signature the router's mark, its `redacted_thinking` out, `tool_use`
+   * ids Claude takes. Claude Code keeps it in the conversation; on the way to any Claude
+   * target the marked blocks go again (`forClaude`), since a Claude model refuses a
+   * signature it did not issue. `fallbackAnswersAsIs` (tests only) skips it.
    */
-  function cleanAnswer(slot: string, model: string, outcome: Outcome): Response {
+  function cleanAnswer(slot: string, outcome: Outcome): Response {
     if (deps.fallbackAnswersAsIs === true) return outcome.response;
     const cleaned = cleanFallbackResponse(outcome.response, (changes) => {
       const kinds = [
-        changes.thinking > 0 ? "thinking blocks removed" : "",
+        changes.marked > 0
+          ? "thinking blocks marked as the router's (removed on the way to a Claude model, their own signature given back on the way to a backend)"
+          : "",
+        changes.redacted > 0 ? "redacted_thinking blocks removed" : "",
         changes.ids > 0 ? "tool_use ids made safe" : "",
       ].filter((part) => part !== "");
       const text = `${slot}: ${outcome.target}'s answers: ${kinds.join(", ")}`;
       if (cleanedLogged.has(text)) return;
       cleanedLogged.add(text);
-      deps.log(`${text} (${model} refuses them in its history; logged once per kind)`);
+      deps.log(`${text}; logged once per kind`);
     });
     if (cleaned.note !== null) deps.log(`WARN ${slot}: ${outcome.target}: ${cleaned.note}`);
     return cleaned.response;
@@ -1840,17 +2712,133 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     // Its newer form carries the sonnet slot's name; the log must still tell it apart.
     if (guard) model.name = `${model.name} (safety check)`;
-    // A check goes to the judge slot when it has a tested chain, like any slot's request;
-    // with none, to Claude. Only targets `gateway slot judge` tested; an untested one is
-    // ignored, with one WARN.
+    // An Anthropic server tool runs on Anthropic only (D41), so the request goes there as
+    // Claude Code sent it, whatever slot its model's family has. A name the router owns (a
+    // slot key, `<backend>:<model>`, an alias) keeps its route: Anthropic would refuse it.
+    const serverTool =
+      guard || alias !== null || resolveRoute(body.model, config).kind !== "anthropic"
+        ? null
+        : anthropicServerTool(body);
+    if (serverTool !== null) return serverToolRoute(serverTool);
+    // A check goes to the judge slot when the person gave it a chain, like any slot's
+    // request; only a Claude target, or a target `gateway slot judge` tested (an untested one
+    // is ignored, with one WARN). With none, Claude judges first (D44): then the worker
+    // chain's tested targets while Claude cannot (`claudeFirstJudge`), else Claude alone.
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
     const answered =
       judgeTargets.length > 0
         ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null)
-        : claudeRoute();
+        : ((guard ? claudeFirstJudge() : null) ?? claudeRoute());
     // Auto mode's safety check, counted (`countedCheck`). A check is a `/v1/messages`
     // request: a `count_tokens` for one counts tokens, it judges nothing.
     return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
+
+    /**
+     * A request that carries an Anthropic server tool (D41; `server-tools.ts`). Anthropic
+     * gets it with the bytes Claude Code sent, on the person's own login, and its answer
+     * goes back unchanged. The log line says why this request did not follow its model's slot.
+     *
+     * When Claude cannot answer a `/v1/messages` call (D44: a capacity failure, 429, 5xx or
+     * no answer at all), the router answers instead, in Anthropic's message format with one
+     * plain text block that says it is the router's, names the server tool that failed, and
+     * points to the Tavily MCP server. Claude Code takes such an answer as the tool's result
+     * at once; the failure itself would be retried for minutes. Any other status passes
+     * unchanged. The breaker (BR1) never holds such a request: it is answered or refused at
+     * once.
+     */
+    async function serverToolRoute(tool: string): Promise<Outcome> {
+      const why = `server tool ${tool}`;
+      const named =
+        typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
+      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
+      if (req.signal.aborted) return closed(result, `anthropic (${why})`);
+      const status = "response" in result ? result.response.status : null;
+      if (url.pathname !== MESSAGES_PATH || (status !== null && !capacityFailureStatus(status))) {
+        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+      }
+      let limit: null | PlanLimit = null;
+      if ("response" in result) {
+        const upstream = result.response;
+        limit = planUsageLimit(upstream.status, (name) => upstream.headers.get(name));
+        if (named !== null) observeClaude(named, upstream, url.pathname);
+        logErrorAnswer(
+          upstream,
+          knownSecrets(req, config),
+          `WARN anthropic answered ${upstream.status} to a ${tool} request; the router answered with a note naming Tavily instead`,
+        );
+      } else {
+        const reason = maskedLine(result.failure, knownSecrets(req, config), SNIPPET_MAX);
+        deps.log(
+          `WARN anthropic did not answer a ${tool} request (${reason}); the router answered with a note naming Tavily instead`,
+        );
+      }
+      const text = claudeSearchNotice(tool, claudeUnavailableWords(status, limit));
+      const streamed = body.stream === true;
+      return {
+        fallbacks: 0,
+        response: new Response(
+          streamed ? searchStreamAnswer(body.model, text) : searchMessageAnswer(body.model, text),
+          {
+            headers: {
+              "cache-control": "no-cache",
+              "content-type": streamed ? "text/event-stream" : "application/json",
+            },
+            status: 200,
+          },
+        ),
+        skipped: 0,
+        target: `router (${why}; anthropic ${status ?? "did not answer"})`,
+      };
+    }
+
+    /**
+     * Auto mode's safety check when the person set no judge chain (D44): Claude judges
+     * first, as it always did. While Claude is limited or down, the worker chain's targets
+     * that passed the judge test judge in its place, in that chain's order, through the same
+     * chain every slot uses: its failure kinds, its rests (a Claude that just failed rests,
+     * and the checks after it go to the stand-in until the rest ends), its deadline on every
+     * backend target. Claude's step is the check's own route (`resolveRequestRoute`), the
+     * model the check named with the bytes as sent.
+     *
+     * Null when this does not apply, and the check takes `claudeRoute()` as before: a
+     * `count_tokens`; a judge slot in the config (the person's chain wins, even one with no
+     * usable target); the judge's fallback switch off (`gateway fallback judge off`: Claude
+     * alone); no worker target that passed the test; or a check whose route is no Claude
+     * model (a name with no Claude target behind it, which Anthropic refuses and Claude Code
+     * retries on a real Claude model).
+     */
+    function claudeFirstJudge(): null | Promise<Outcome> {
+      if (
+        url.pathname !== MESSAGES_PATH ||
+        Object.hasOwn(config.slots, JUDGE_SLOT) ||
+        !fallbackOn(config, JUDGE_SLOT)
+      ) {
+        return null;
+      }
+      const standIns = workerJudgeTargets(config);
+      if (standIns.length === 0) return null;
+      const decided = resolveRequestRoute(body, config, true);
+      if (decided.kind === "anthropic" && typeof body.model === "string") {
+        const claude: Target = { kind: "anthropic", model: withoutContextSuffix(body.model) };
+        return chain(req, url, config, body, [claude, ...standIns], JUDGE_SLOT, true, {
+          model: body.model,
+          sent: bytes,
+        });
+      }
+      if (decided.kind === "slot") {
+        return chain(
+          req,
+          url,
+          config,
+          body,
+          [...decided.targets, ...standIns],
+          JUDGE_SLOT,
+          true,
+          null,
+        );
+      }
+      return null;
+    }
 
     /** The request's way by its name: everything but a check the judge takes. */
     // Not `async`: it only hands back a promise, and an extra async step would reorder the
@@ -1919,7 +2907,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const url = new URL(req.url);
     const model = { name: "-" };
     const line = (outcome: Outcome) =>
-      `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`;
+      `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
+        outcome.breaker === undefined
+          ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`
+          : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`
+      }`;
 
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -1930,6 +2922,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
     if (req.method === "GET" && url.pathname === HEALTH_PATH) {
       return Response.json({
+        breakers: breakersNow(),
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
         ok: true,
@@ -1991,29 +2984,35 @@ export async function startRouter(
     mkdirSync(dirname(file), { mode: 0o700, recursive: true });
     atomicWrite(file, text, 0o600);
   };
+  // A state file's text, read when the router starts. A file that is not there yet is the
+  // first run on this machine, not a failure (null); anything else (a mode, a folder that
+  // is not one) throws, and the router says so once itself.
+  const readState = (file: string): null | string => {
+    try {
+      return readFileSync(file, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    }
+  };
+  // Aborted at SIGTERM: the requests the breaker holds are answered at once (retry-after 5),
+  // so the drain below does not wait for their hold.
+  const shutdown = new AbortController();
   const handlerFor = (port: number) =>
     createRouter({
       configPath,
       fetch: (url, init) => fetch(url, init),
       getConfig: () => source.get(),
-      // The safety checks counted before this router started, so a restart (an update, a
-      // crash) goes on counting the same days. A file that is not there yet is the first
-      // run, not a failure; an unreadable one is said so once, by the router itself.
-      loadSafetyChecks: () => {
-        try {
-          return readFileSync(paths.safetyChecksFile, "utf8");
-        } catch (error) {
-          // The first run on this machine: no file yet. Anything else (a mode, a folder
-          // that is not there) is said once, by the router.
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw error;
-        }
-      },
+      // What the router counted and saw before it started, so a restart (an update, a crash)
+      // goes on counting the same days, and keeps the plan limits and fallbacks it saw.
+      loadSafetyChecks: () => readState(paths.safetyChecksFile),
+      loadState: () => readState(statePath),
       log,
       now: () => Date.now(),
       port,
       saveSafetyChecks: (text) => writeState(paths.safetyChecksFile, text),
       saveState: (text) => writeState(statePath, text),
+      shutdown: shutdown.signal,
     });
 
   const fd = inheritedListenFd(env, process.pid);
@@ -2036,6 +3035,7 @@ export async function startRouter(
     // the last connection has closed. The unit's TimeoutStopSec bounds the wait.
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      shutdown.abort();
       exitWhenDone(server.stop(false), log, () => {});
     });
     return;
@@ -2069,6 +3069,7 @@ export async function startRouter(
     log(
       `SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`,
     );
+    shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
     exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);

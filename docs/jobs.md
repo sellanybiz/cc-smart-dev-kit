@@ -115,7 +115,8 @@ there is. The fields:
 
 A heavy command typed by hand runs raw. A project can have it sent through the queue:
 `"jobs": { "route": true }` in its `.claude/cc-smart-dev-kit.json`, and the plugin's `job-route`
-hook (PreToolUse on Bash, in `src/hooks/job-route.ts`) rewrites the call to
+hook (PreToolUse on Bash; on PowerShell it judges launches and polls, and leaves routing to
+Bash, because the rewritten line is a `sh` line; `src/hooks/job-route.ts`) rewrites the call to
 
     "$HOME/.local/bin/cc-smart-dev-kit" job run --kind <kind> -- <command>
 
@@ -127,7 +128,34 @@ anything else (a pipe, `&&`, a glob, an expansion) through the **person's own sh
 it, else `sh` — never `/bin/sh`, which is dash on Debian and Ubuntu, and cannot read bash
 syntax), so the shell reads exactly what was written, the way the person's terminal would
 have. A command already inside `cc-smart-dev-kit job run` is left alone. Off unless the project
-says so, because it changes the call; `ownHooks` silences it like any other plugin hook.
+says so, because it changes the call.
+
+**The hook is the kit's one Bash judge, and it is machine-wide.** It runs outside git, and with
+no `cc-smart-dev-kit.json` or a broken one, because its other part judges what a Bash line does
+besides running — a raw `claude --bg` (an ask, showing the `crew start` line; a denial in
+`claude -p`), `claude -p` (the launch policy every Agent launch meets), a crew session's
+`crew start` (denied), and a polling loop over `crew list|status` or `claude agents --json`
+(denied: the news arrives by itself). `ownHooks` cannot switch it off (`alwaysOn`): a session
+must not be able to switch off the limits on its own launches by editing a file it owns. A
+project file that still lists `"job-route"` keeps parsing and silences nothing; `doctor` says
+the name can go. The whole rule is `docs/design.md` § The Bash judge and the job route.
+
+**In a lead, the hook also moves waits to the background.** In a session recorded as a lead
+(`crew lead`), a CI watch (`gh pr checks --watch`, `gh run watch`), a routed heavy job and the
+project's full check (`bun run check`, `npm run check`, … its package manager's `check` script)
+answer with `run_in_background: true` added to `updatedInput`, so the lead starts the work and
+goes on to what its crew's news unblocks (D22).
+
+**Only a line whose every command is heavy, a `cd` or an assignment is queued**
+(`classifyRoutableLine` in `src/jobs/classify.ts`); any other line runs raw. Claude Code
+matches a person's own Bash rules (`deny`, `ask`) against the words of the command it is
+about to run and does not look inside `bash -c '…'`, so a rewritten `tsc && rm -f x` would
+hide its `rm` from a `Bash(rm:*)` rule: the line would run what the person denied (proved on
+2.1.308, `claude-code-contract.md`). So a line that runs anything besides heavy commands, a
+`cd` and assignments (`echo`, `rm`, a shell keyword with a non-heavy body, a substitution)
+stays as written, and the person's rules see it. A line of heavy commands only — `cd app &&
+bunx tsc --noEmit && bunx vitest run`, `FOO=1 bunx tsc --noEmit` — is still queued, under
+the kind that reserves the most.
 
 **The folder.** The rewritten command runs in the Bash tool's own shell, so it starts in the
 folder that shell is in. A `cd` **inside** the command lives only for that command: it does
@@ -250,7 +278,10 @@ Each budget is a folder of small files:
   two jobs never both take the last free GB. The lock records its holder's pid namespace
   too: a lock from another namespace is judged by its age (30 seconds), never by a pid
   that means another process here.
-- **Every file is written whole** (a temp file, then a rename). Lease and ticket files are
+- **Every file is written whole** (a temp file, then a rename). The temp file sits in the
+  file's own folder, and that folder comes from the platform's own path rules: a Windows
+  path separates with `\`, so the temp file of a lease there is beside the lease and not a
+  name with no folder at all. Lease and ticket files are
   mode 644 and the lock 664, set with chmod, so the umask never narrows them: every user
   of a shared folder can read them. A temp file a crashed writer left is removed by a look
   once it is a minute old.
@@ -375,14 +406,27 @@ Optional. Unknown fields are an error that names the file and the field.
 ## The classifier
 
 `classifyHeavyCommand(bashCommand, kinds)` (`src/jobs/classify.ts`) says which kind a
-Bash command runs, or null: it is what the `job-route` hook routes by (§ The route).
-It reads the line with the shell lexer (`src/shell/command.ts`): a tool inside quotes,
-an `echo`, a here-doc, a comment or a commit message is text, not a run. It finds the
-tool behind `bunx`, `bun x`, `bun run`, `bun <name>`, `npx`, `npm exec`, `npm run`,
-`pnpm`, `yarn`, `node_modules/.bin/` paths, `node <script path>`, and the wrappers `time`,
-`timeout`, `nice`, `env`, `sudo`, `bash -c`. When a line runs several heavy steps, it
-names the one that reserves the most. It reads no file: a `package.json` script is found
-only through a kind's `{ "script": "<name>" }` rule.
+Bash command runs, or null: it is what `cc-smart-dev-kit job run` reserves by, and what the
+hook asks about a line it cannot judge. The route adds one rule on top
+(`classifyRoutableLine`): a line is queued only when every command in it is heavy, a `cd`
+or an assignment (§ The route).
+It reads the line with the one shell reader the guards use too (`src/shell/command.ts`), so
+the queue and the guards see the same commands: a tool inside quotes, an `echo`, a quoted
+here-doc, a comment or a commit message is text, not a run; a substitution (`$( … )`, a
+backtick, the body of an unquoted here-doc) is a run. It finds the tool behind `bunx`,
+`bun x`, `bun run`, `bun <name>`, `npx`, `npm exec`, `npm run`, `pnpm`, `yarn`,
+`node_modules/.bin/` paths and `node <script path>`; behind a shell keyword (`if`, `while`,
+`!`); behind the wrappers `time`, `timeout`, `nice`, `ionice`, `nohup`, `stdbuf`, `env`,
+`sudo`, `doas`, `exec`, `command`, `builtin` and `xargs`, **with their own options**
+(`time -p`, `env -i`, `env -u HOME`, `sudo -u x`, `timeout -s KILL 60`); inside
+`bash -c '…'` (`-c` among other options, `--` too), `env -S '…'`, a here-doc or a pipe fed
+to a shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). A wrapper or a
+keyword is read through, so the heavy command behind it is found and queued (§ The route),
+and a line of heavy commands, `cd`s and assignments together goes through the person's
+shell, since only the first word of argv words is run as the program. When a line runs
+several heavy steps, it names the one that reserves the most. It reads no file: a
+`package.json` script is found only through a kind's `{ "script": "<name>" }` rule. Every
+case is pinned in `src/jobs/shell-parity.test.ts`.
 
 ## Limits
 

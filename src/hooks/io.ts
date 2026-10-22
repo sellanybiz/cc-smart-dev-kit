@@ -30,6 +30,12 @@ export interface HookInput {
   /** SubagentStop. */
   agent_id?: unknown;
   agent_type?: unknown;
+  /**
+   * SubagentStop: the JSONL transcript of the subagent that stops (the subagent's own file,
+   * not the session's `transcript_path`). `subagent-background` reads it to tell the agent's
+   * own background task ids from the session's (`src/hooks/subagent-background.ts`).
+   */
+  agent_transcript_path?: unknown;
   /** PreToolUse, PostToolUse, PostToolUseFailure. */
   tool_name?: unknown;
   tool_input?: unknown;
@@ -38,6 +44,17 @@ export interface HookInput {
   tool_use_id?: unknown;
   /** UserPromptSubmit. */
   prompt?: unknown;
+  /** Stop: true when a Stop hook made this turn go on, so the next stop must not block again. */
+  stop_hook_active?: unknown;
+  /** Stop: the last assistant message before stopping, when Claude Code names it. */
+  last_assistant_message?: unknown;
+  /** Stop: the background work still running or waiting to wake this session (an array). */
+  background_tasks?: unknown;
+  /**
+   * StopFailure: why the turn ended (`rate_limit` for the plan limit and a short rate limit,
+   * `server_error`, …). The crew session's pause reads it (`src/hooks/crew-role.ts`, D42).
+   */
+  error?: unknown;
   /** The session's transcript: every event carries it (StopFailure, PreToolUse, …). */
   transcript_path?: unknown;
 }
@@ -80,9 +97,11 @@ export function toolInput(input: HookInput): Record<string, unknown> {
 
 /**
  * A PreToolUse decision. "deny": the reason goes to Claude. "ask": the person is asked, and
- * the reason is shown to them (Claude Code labels it `[plugin:cc-smart-dev-kit]`).
+ * the reason is shown to them (Claude Code labels it `[plugin:cc-smart-dev-kit]`). "allow":
+ * the call runs with no question — and with no auto-mode classification either, which is why
+ * only the merge guard's exact `gh pr merge <n>` uses it after its whole policy passed (D31).
  */
-export function toolDecision(decision: "ask" | "deny", reason: string): HookResult {
+export function toolDecision(decision: "allow" | "ask" | "deny", reason: string): HookResult {
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
@@ -92,6 +111,27 @@ export function toolDecision(decision: "ask" | "deny", reason: string): HookResu
       },
     }),
   };
+}
+
+/**
+ * The reason of an answer that asks the person, or null when the answer is not an ask.
+ * The frame reads it to record the question (`src/hooks/ask-log.ts`): an answer that is
+ * not our own JSON is not an ask.
+ */
+export function askReason(result: HookResult): string | null {
+  if (result.stdout === undefined) return null;
+  try {
+    const value = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: unknown; permissionDecisionReason?: unknown };
+    };
+    const output = value.hookSpecificOutput;
+    if (output?.permissionDecision !== "ask") return null;
+    return typeof output.permissionDecisionReason === "string"
+      ? output.permissionDecisionReason
+      : "";
+  } catch {
+    return null;
+  }
 }
 
 /** Text added to Claude's context (SessionStart, UserPromptSubmit, PostToolUse, …). */
@@ -110,4 +150,17 @@ export function addContext(event: string, text: string): HookResult {
  */
 export function systemMessage(text: string): HookResult {
   return { stdout: JSON.stringify({ systemMessage: text }) };
+}
+
+/**
+ * Both in one answer: a line for the person (`systemMessage`) and text for Claude's context
+ * (`addContext`). The two fields sit side by side in one JSON object.
+ */
+export function addContextAndMessage(event: string, text: string, message: string): HookResult {
+  return {
+    stdout: JSON.stringify({
+      systemMessage: message,
+      hookSpecificOutput: { hookEventName: event, additionalContext: text },
+    }),
+  };
 }

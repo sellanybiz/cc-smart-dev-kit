@@ -67,7 +67,9 @@ import {
   unitActive,
 } from "../gateway/service";
 import { gatewayEnv } from "../gateway/settings";
+import { ASK_LOG_FILE } from "../hooks/ask-log";
 import { hostPlatform } from "../machine/host";
+import { isInside } from "../path-compare";
 import { isOwnerOnly } from "../setup/file-mode";
 import { findUserInstall, type PluginInstall } from "../setup/installed-plugins";
 import {
@@ -279,8 +281,10 @@ export function makeRenamer(old: MigratePaths, units: MigrateUnits): Renamer {
   return {
     path(file) {
       for (const { from, to } of pairs) {
-        if (file === from) return to;
-        if (file.startsWith(`${from}/`)) return to + file.slice(from.length);
+        // `isInside`, not a `${from}/` prefix: on Windows the records' paths have `\`. A
+        // record holds a real path, written the way `from` is, so the part after it is the
+        // same length in both.
+        if (isInside(file, from)) return to + file.slice(from.length);
       }
       return file;
     },
@@ -411,6 +415,8 @@ function writeProgress(stateDir: string, progress: MigrateProgress): void {
  */
 export const BOOKKEEPING_NAMES: readonly string[] = [
   "agent-launches.jsonl",
+  // The guards' record of what they asked (`src/hooks/ask-log.ts`): a hook writes it.
+  ASK_LOG_FILE,
   "lock",
   "migrate-progress.json",
   "notify.json",
@@ -655,7 +661,12 @@ export function rewriteStateFolder(
 
   const backupsDir = join(stateDir, "backups");
   if (!existsSync(backupsDir)) return { files, backups };
-  for (const folder of readdirSync(backupsDir)) {
+  // Folders only: each holds one file's backups. Anything else in `backups/` (a file a person or
+  // a tool left there) is not a backup folder, and is left as it is.
+  const folders = readdirSync(backupsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  for (const folder of folders) {
     const folderPath = join(backupsDir, folder);
     for (const name of readdirSync(folderPath)) {
       const renamed = renamer.backupName(name);

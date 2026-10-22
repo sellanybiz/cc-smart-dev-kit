@@ -64,6 +64,58 @@ describe("the workflow schema", () => {
       true,
     );
   });
+
+  test("D34: workflow.crew takes the switch, the limits and a tag, and nothing else", () => {
+    const every = {
+      crew: {
+        enabled: true,
+        handoffPercent: 70,
+        idleStopMinutes: 10,
+        max: 4,
+        maxOpus: 2,
+        maxHours: 4,
+        memoryGb: 0.5,
+        quietMinutes: 20,
+        softHours: 1.5,
+        tag: "my-app",
+      },
+    };
+    expect(workflowSchema.parse(every)).toEqual(every);
+    const refused = (crew: Record<string, unknown>) => workflowSchema.safeParse({ crew }).success;
+    expect(refused({ count: 3 })).toBe(false);
+    expect(refused({ enabled: "yes" })).toBe(false);
+    for (const [field, bad] of [
+      ["max", 0],
+      ["max", 1.5],
+      ["maxOpus", 0],
+      ["maxOpus", 2.5],
+      ["idleStopMinutes", 0],
+      ["quietMinutes", -1],
+      ["handoffPercent", 0],
+      ["handoffPercent", 101],
+      ["softHours", 0],
+      ["maxHours", -2],
+      ["memoryGb", 0],
+      ["tag", "My App"],
+      ["tag", "a-very-long-tag"],
+      ["tag", "kit]"],
+      ["tag", ""],
+    ] as const) {
+      expect(`${field}=${bad}: ${refused({ [field]: bad })}`).toBe(`${field}=${bad}: false`);
+    }
+  });
+
+  test("D17: fixesAfterReview takes lines, files and percent, each a whole number 0 or more", () => {
+    expect(workflowSchema.parse({ fixesAfterReview: { files: 0, lines: 0, percent: 0 } })).toEqual({
+      fixesAfterReview: { files: 0, lines: 0, percent: 0 },
+    });
+    expect(workflowSchema.parse({ fixesAfterReview: { percent: 150 } })).toEqual({
+      fixesAfterReview: { percent: 150 },
+    });
+    for (const fixes of [{ lines: -1 }, { files: 2.5 }, { percent: "20" }, { bytes: 1 }]) {
+      expect(workflowSchema.safeParse({ fixesAfterReview: fixes }).success).toBe(false);
+    }
+  });
 });
 
 describe("one value, as a person types it", () => {
@@ -113,6 +165,55 @@ describe("one value, as a person types it", () => {
     expect(parseWorkflowValue("alerts.events", " ")).toEqual({
       ok: false,
       why: "alerts.events is a list of needs-you, question, finished, failed",
+    });
+  });
+
+  test("D34: the crew sessions' numbers, each with its own range", () => {
+    expect(parseWorkflowValue("crew.enabled", "true")).toEqual({ ok: true, value: true });
+    expect(parseWorkflowValue("crew.max", "3")).toEqual({ ok: true, value: 3 });
+    expect(parseWorkflowValue("crew.max", "0")).toEqual({
+      ok: false,
+      why: "crew.max is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("crew.idleStopMinutes", "2.5")).toEqual({
+      ok: false,
+      why: "crew.idleStopMinutes is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("crew.maxOpus", "1")).toEqual({ ok: true, value: 1 });
+    expect(parseWorkflowValue("crew.maxOpus", "0")).toEqual({
+      ok: false,
+      why: "crew.maxOpus is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("crew.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
+    expect(parseWorkflowValue("crew.handoffPercent", "101")).toEqual({
+      ok: false,
+      why: "crew.handoffPercent is a whole number 1-100",
+    });
+    expect(parseWorkflowValue("crew.softHours", "1.5")).toEqual({ ok: true, value: 1.5 });
+    expect(parseWorkflowValue("crew.memoryGb", "0")).toEqual({
+      ok: false,
+      why: "crew.memoryGb is a number above 0",
+    });
+    expect(parseWorkflowValue("crew.maxHours", "four")).toEqual({
+      ok: false,
+      why: "crew.maxHours is a number above 0",
+    });
+  });
+
+  test("D26: the crew sessions' tag is refused unless it is already clean", () => {
+    expect(parseWorkflowValue("crew.tag", "kit")).toEqual({ ok: true, value: "kit" });
+    expect(parseWorkflowValue("crew.tag", "My App")).toEqual({
+      ok: false,
+      why: 'crew.tag is 1-12 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
+    });
+  });
+
+  test("D17: the limits after a review are whole numbers, 0 or more", () => {
+    expect(parseWorkflowValue("fixesAfterReview.lines", "0")).toEqual({ ok: true, value: 0 });
+    expect(parseWorkflowValue("fixesAfterReview.percent", "150")).toEqual({ ok: true, value: 150 });
+    expect(parseWorkflowValue("fixesAfterReview.files", "-1")).toEqual({
+      ok: false,
+      why: "fixesAfterReview.files is a whole number, 0 or more",
     });
   });
 });
@@ -195,6 +296,53 @@ describe("resolveWorkflow: the order", () => {
     );
   });
 
+  test("D34, D35, D37: crew sessions are off by default, with the lead's limits; D17's limits 200/10/20", () => {
+    const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
+    expect(resolved.crew).toEqual({
+      enabled: { value: false, source: "default" },
+      handoffPercent: { value: 70, source: "default" },
+      idleStopMinutes: { value: 10, source: "default" },
+      max: { value: 6, source: "default" },
+      maxOpus: { value: 2, source: "default" },
+      maxHours: { value: 4, source: "default" },
+      memoryGb: { value: 2, source: "default" },
+      quietMinutes: { value: 20, source: "default" },
+      softHours: { value: 2, source: "default" },
+      tag: { value: null, source: "default" },
+    });
+    expect(resolved.fixesAfterReview).toEqual({
+      files: { value: 10, source: "default" },
+      lines: { value: 200, source: "default" },
+      percent: { value: 20, source: "default" },
+    });
+  });
+
+  test("D34: the person's switch is every project's default; a project's value wins, field by field", () => {
+    const env = hookEnv();
+    writePersonal(env, {
+      fixesAfterReview: { lines: 50 },
+      crew: { enabled: true, max: 2, tag: "mine" },
+    });
+    const config = ccSmartDevKitConfigSchema.parse({
+      workflow: { fixesAfterReview: { files: 0 }, crew: { max: 3 } },
+    });
+    const resolved = resolveWorkflow(pathsFor(env), config);
+    expect(resolved.crew.enabled).toEqual({ value: true, source: "personal" });
+    expect(resolved.crew.max).toEqual({ value: 3, source: "project" });
+    expect(resolved.crew.tag).toEqual({ value: "mine", source: "personal" });
+    expect(resolved.crew.quietMinutes).toEqual({ value: 20, source: "default" });
+    expect(resolved.fixesAfterReview).toEqual({
+      files: { value: 0, source: "project" },
+      lines: { value: 50, source: "personal" },
+      percent: { value: 20, source: "default" },
+    });
+    const off = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { enabled: false } } });
+    expect(resolveWorkflow(pathsFor(env), off).crew.enabled).toEqual({
+      value: false,
+      source: "project",
+    });
+  });
+
   test("a personal file that is not JSON throws, naming the file", () => {
     const env = hookEnv();
     const paths = pathsFor(env);
@@ -263,16 +411,12 @@ describe("autoMergeAllowed", () => {
 
   test("off: never, whatever the branches are", () => {
     const resolved = resolvedWith(false);
-    expect(
-      autoMergeAllowed(resolved, project({ base: "dev", prefix: "a-wt-" }), "dev", "main"),
-    ).toBe(false);
+    expect(autoMergeAllowed(resolved, project({ base: "dev" }), "dev", "main")).toBe(false);
   });
 
   test("on, into the integration base, nothing special about it: yes", () => {
     const resolved = resolvedWith(true);
-    expect(
-      autoMergeAllowed(resolved, project({ base: "dev", prefix: "a-wt-" }), "dev", "main"),
-    ).toBe(true);
+    expect(autoMergeAllowed(resolved, project({ base: "dev" }), "dev", "main")).toBe(true);
   });
 
   test("no worktrees, or no base: no integration base to merge into", () => {
@@ -285,20 +429,20 @@ describe("autoMergeAllowed", () => {
 
   test("a pull request into another branch is never merged by itself", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "dev", prefix: "a-wt-" });
+    const config = project({ base: "dev" });
     expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
     expect(autoMergeAllowed(resolved, config, "release/1.0", "main")).toBe(false);
   });
 
   test("the repository's default branch always asks the person", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "main", prefix: "a-wt-" });
+    const config = project({ base: "main" });
     expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
   });
 
   test("a base another family of branches feeds always asks the person", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "dev", prefix: "a-wt-", bases: { "release/": "dev" } });
+    const config = project({ base: "dev", bases: { "release/": "dev" } });
     expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(false);
   });
 
@@ -306,7 +450,6 @@ describe("autoMergeAllowed", () => {
     const resolved = resolvedWith(true);
     const config = project({
       base: "dev",
-      prefix: "a-wt-",
       bases: { "hotfix/": "main", "release/": "main" },
     });
     const withProtection = ccSmartDevKitConfigSchema.parse({

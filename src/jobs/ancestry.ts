@@ -41,21 +41,35 @@ export function parentPidFromStat(stat: string): number | null {
   return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
 }
 
-/** Every ancestor of `pid`, nearest first, up to (not including) pid 0. */
-export function ancestorPids(pid: number, readStat: StatReader): number[] {
+/** One process's parent pid, or null when that process is gone or cannot be read. */
+export type ParentReader = (pid: number) => number | null;
+
+/**
+ * Every ancestor of `pid`, nearest first, up to (not including) pid 0, by `parentOf`: the one
+ * walk, whatever reads the parents (`/proc` here; a process listing where there is none — the
+ * crew launcher finds its Claude session this way, `src/crew/session.ts`). A chain that
+ * comes back to a pid it holds, or runs past `MAX_DEPTH`, ends there.
+ */
+export function ancestorsBy(pid: number, parentOf: ParentReader): number[] {
   const ancestors: number[] = [];
   const seen = new Set<number>([pid]);
   let current = pid;
   while (ancestors.length < MAX_DEPTH) {
-    const stat = readStat(current);
-    if (stat === null) break;
-    const parent = parentPidFromStat(stat);
+    const parent = parentOf(current);
     if (parent === null || parent === 0 || seen.has(parent)) break;
     ancestors.push(parent);
     seen.add(parent);
     current = parent;
   }
   return ancestors;
+}
+
+/** Every ancestor of `pid`, nearest first, up to (not including) pid 0, from `/proc` stat lines. */
+export function ancestorPids(pid: number, readStat: StatReader): number[] {
+  return ancestorsBy(pid, (one) => {
+    const stat = readStat(one);
+    return stat === null ? null : parentPidFromStat(stat);
+  });
 }
 
 export interface NestingFacts {

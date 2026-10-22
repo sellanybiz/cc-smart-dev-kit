@@ -10,7 +10,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSy
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
-import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
 import { baseBranch, DEFAULT_BASE, runWorktrees } from "./command";
 import {
   containersUsing,
@@ -20,7 +20,14 @@ import {
   parsePrograms,
   programsInside,
 } from "./machine-facts";
-import { deleteMergedBranch, fetchBase, removeWorktree, scanWorktrees } from "./scan";
+import {
+  deleteMergedBranch,
+  fetchBase,
+  pullRequestMerged,
+  removeWorktree,
+  replayOntoBase,
+  scanWorktrees,
+} from "./scan";
 import { IDLE_MINUTES, verdict, type WorktreeFacts } from "./verdict";
 
 /** A repo with a bare "origin", one commit on `main`, and one linked worktree. */
@@ -47,9 +54,11 @@ const facts = (over: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
   aheadOfBase: 0,
   base: "main",
   containers: [],
+  gitTooOld: null,
   idleMinutes: IDLE_MINUTES + 1,
   innerWorktree: null,
   locked: false,
+  mergedBy: null,
   programs: [],
   sessionName: null,
   ...over,
@@ -57,48 +66,87 @@ const facts = (over: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
 
 const clean = { localFiles: [], uncommitted: false };
 
+/**
+ * The environment with a fake `gh` first on PATH: it answers the one call the scan makes
+ * (`gh pr list --head <branch> --state merged --json number,headRefOid --limit 1`) with a
+ * merged pull request for `branch` whose head is `head`, and refuses every other call, so
+ * the argv is checked too.
+ */
+function withFakeGh(
+  env: Record<string, string>,
+  branch = "fix/login",
+  head = "0000000000000000000000000000000000000000",
+): Record<string, string> {
+  const dir = tempDir("fake-gh");
+  writeFileSync(
+    join(dir, "gh"),
+    `#!/bin/sh
+echo "$*" >> '${join(dir, "gh.log")}'
+if [ "$1" != "pr" ] || [ "$2" != "list" ]; then echo "fake gh: unknown call: $*" >&2; exit 1; fi
+head=
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--head" ]; then shift; head="$1"; fi
+  shift
+done
+if [ "$head" != '${branch}' ]; then echo "fake gh: no merged pull request for $head" >&2; exit 1; fi
+echo '[{"number":7,"headRefOid":"${head}"}]'
+`,
+    { mode: 0o755 },
+  );
+  return { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
+}
+
 describe("the verdict on one worktree", () => {
   test("everything clean: finished", () => {
-    expect(verdict(facts(), () => clean)).toEqual({ finished: true });
+    expect(verdict(facts(), () => clean)).toEqual({ finished: true, note: null });
   });
 
   test("each reason to keep it, with the words a person reads", () => {
     expect(verdict(facts({ locked: true }), () => clean)).toEqual({
       finished: false,
+      held: false,
       why: "locked with `git worktree lock`",
     });
     expect(verdict(facts({ sessionName: "Fix the login bug" }), () => clean)).toEqual({
       finished: false,
+      held: true,
       why: 'Claude session "Fix the login bug" works in it',
     });
     expect(verdict(facts({ programs: ["bun"] }), () => clean)).toEqual({
       finished: false,
+      held: true,
       why: "a program runs from its files: bun",
     });
     expect(verdict(facts({ containers: ["db"] }), () => clean)).toEqual({
       finished: false,
+      held: true,
       why: 'Docker container "db" uses its files',
     });
     expect(
       verdict(facts({ innerWorktree: "/work/app-wt-x/.claude/worktrees/agent-1" }), () => clean),
     ).toEqual({
       finished: false,
+      held: false,
       why: "another worktree lives inside it: /work/app-wt-x/.claude/worktrees/agent-1",
     });
     expect(verdict(facts({ aheadOfBase: 3 }), () => clean)).toEqual({
       finished: false,
+      held: false,
       why: "3 commits not on main",
     });
     expect(verdict(facts({ aheadOfBase: 1 }), () => clean)).toEqual({
       finished: false,
+      held: false,
       why: "1 commit not on main",
     });
     expect(verdict(facts({ idleMinutes: 5 }), () => clean)).toEqual({
       finished: false,
+      held: true,
       why: "git used it 5 min ago",
     });
     expect(verdict(facts(), () => ({ localFiles: [], uncommitted: true }))).toEqual({
       finished: false,
+      held: false,
       why: "uncommitted changes",
     });
     expect(
@@ -108,6 +156,7 @@ describe("the verdict on one worktree", () => {
       })),
     ).toEqual({
       finished: false,
+      held: false,
       why: "local files git does not keep: .env.local, notes.local.md",
     });
   });
@@ -122,7 +171,10 @@ describe("the verdict on one worktree", () => {
   });
 
   test("`--remove` after a session's own merge: a recent touch keeps nothing (idleLimit 0)", () => {
-    expect(verdict(facts({ idleMinutes: 0 }), () => clean, 0)).toEqual({ finished: true });
+    expect(verdict(facts({ idleMinutes: 0 }), () => clean, 0)).toEqual({
+      finished: true,
+      note: null,
+    });
   });
 
   test("the slow `git status` is asked only when everything else already says yes", () => {
@@ -319,7 +371,7 @@ describe("scanning and removing, against a real repo", () => {
 
   test("a worktree whose every commit is on origin/main is finished, and is removed with its branch", async () => {
     const { main, worktree } = repo();
-    const scanned = scanWorktrees(main, {
+    const scanOptions = {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
       env,
@@ -327,19 +379,280 @@ describe("scanning and removing, against a real repo", () => {
       // git wrote the worktree's admin files just now: the one-hour wait is what `--remove`
       // skips, and this is the same test of the rest of the verdict.
       idleLimit: 0,
-    });
+    };
+    const scanned = scanWorktrees(main, scanOptions);
     const linked = scanned.filter((entry) => entry.state !== "main");
     expect(linked).toHaveLength(1);
-    expect(linked[0]?.state).toEqual({ finished: true });
+    expect(linked[0]?.state).toEqual({ finished: true, note: null });
     expect(linked[0]?.listed.branch).toBe("fix/login");
 
     const listed = linked[0]?.listed;
     if (listed === undefined) throw new Error("the worktree is not listed");
-    const removal = removeWorktree(main, listed, env, "main");
+    const removal = removeWorktree(main, listed, scanOptions);
     expect(removal.status).toBe("removed");
     expect(removal.said).toEqual([`removed ${worktree}`, "deleted branch fix/login"]);
     expect(existsSync(worktree)).toBe(false);
     expect(git(main, "branch", "--list", "fix/login")).toBe("");
+  });
+
+  test("CM-7: a worktree that changed since the scan is judged again at removal", () => {
+    // Between the scan the person read and the removal, the session in that worktree
+    // committed: trusting the scan's verdict would delete work that is on no branch of the
+    // base — nothing brings those commits back.
+    const { main, worktree } = repo();
+    const scanOptions = {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    };
+    const scanned = scanWorktrees(main, scanOptions);
+    const listed = scanned[1]?.listed;
+    if (listed === undefined) throw new Error("the worktree is not listed");
+    expect(scanned[1]?.state).toEqual({ finished: true, note: null });
+
+    writeFileSync(join(worktree, "late.ts"), "export const late = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "late work");
+
+    const removal = removeWorktree(main, listed, scanOptions);
+    expect(removal.status).toBe("kept");
+    expect(removal.said).toEqual([`kept ${worktree}: 1 commit not on main`]);
+    expect(existsSync(worktree)).toBe(true);
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
+  });
+
+  test("CM-8: a squash merge is finished: merging the branch into the base changes nothing", () => {
+    // A squash merge puts ONE commit of its own on the base: the branch's commit is not an
+    // ancestor of it, and `git cherry` sees no equivalent of it (the squashed change carries
+    // the release notes with it). Merging the branch into the base is what says the work is
+    // there: the base already holds it, so the merge gives the base's own tree back.
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "feature.ts"), "export const feature = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the feature");
+    writeFileSync(join(main, "feature.ts"), "export const feature = 1;\n");
+    writeFileSync(join(main, "CHANGELOG.md"), "- the feature (#7)\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "the feature (#7)");
+    git(main, "push", "origin", "main");
+
+    const scanned = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    });
+    expect(scanned[1]?.state).toEqual({
+      finished: true,
+      note: "merging it into main changes nothing",
+    });
+    // The replay itself: merging the branch into the base gives the base's own tree back.
+    const head = git(worktree, "rev-parse", "HEAD").trim();
+    expect(replayOntoBase(main, "origin/main", head, env)).toBe("nothing");
+  });
+
+  test("CM-8: a commit after the squash keeps the worktree: the merge would change the base", () => {
+    // The squash merged the first commit; the session then committed again on the branch.
+    // That last commit is on no branch of the base, so removing the worktree would lose it.
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "feature.ts"), "export const feature = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the feature");
+    writeFileSync(join(main, "feature.ts"), "export const feature = 1;\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "the feature (#7)");
+    git(main, "push", "origin", "main");
+    writeFileSync(join(worktree, "later.ts"), "export const later = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the later work");
+
+    const scanned = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    });
+    expect(scanned[1]?.state).toEqual({
+      finished: false,
+      held: false,
+      why: "2 commits not on main",
+    });
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
+  });
+
+  test("CM-8: a rebase merge is finished too", () => {
+    // The work went through a "rebase and merge": the base holds the same change as a commit
+    // object of its own (its own committer and date), so the worktree's commit is not an
+    // ancestor of it — nothing in it is missing there.
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "feature.ts"), "export const feature = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the feature");
+    git(main, "cherry-pick", git(worktree, "rev-parse", "HEAD").trim());
+    git(main, "commit", "--amend", "--no-edit", "--date", "2020-01-01T00:00:00");
+    git(main, "push", "origin", "main");
+
+    const scanned = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    });
+    expect(scanned[1]?.state).toEqual({
+      finished: true,
+      note: "merging it into main changes nothing",
+    });
+  });
+
+  test("CM-8: a branch and a base that changed the same file differently are kept", () => {
+    // The merge of the branch into the base would need a hand, so nothing here can say the
+    // work is on the base — and it is not: the two changed the same file in their own way.
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "shared.ts"), "export const fromBranch = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the branch's change");
+    writeFileSync(join(main, "shared.ts"), "export const fromBase = 1;\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "the base's change");
+    git(main, "push", "origin", "main");
+
+    const scanned = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    });
+    expect(scanned[1]?.state).toEqual({
+      finished: false,
+      held: false,
+      why: "1 commit not on main",
+    });
+    // The merge of the two would need a hand, so the replay itself cannot say: it is
+    // "unknown", never "the base holds the work".
+    const head = git(worktree, "rev-parse", "HEAD").trim();
+    expect(replayOntoBase(main, "origin/main", head, env)).toBe("unknown");
+  });
+
+  test("a squash-merged worktree with a file of its own is kept", () => {
+    // The work is on the base, but the folder holds a file that is not in git: removing it
+    // would lose that file.
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "feature.ts"), "export const feature = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the feature");
+    writeFileSync(join(main, "feature.ts"), "export const feature = 1;\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "the feature (#7)");
+    git(main, "push", "origin", "main");
+    writeFileSync(join(worktree, "notes.local.md"), "mine\n");
+
+    const scanned = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    });
+    expect(scanned[1]?.state).toEqual({
+      finished: false,
+      held: false,
+      why: "uncommitted changes",
+    });
+  });
+
+  test("a merged pull request counts only when it merged this head", () => {
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "feature.ts"), "export const feature = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the feature");
+    const head = git(worktree, "rev-parse", "HEAD").trim();
+    // The pull request merged this exact commit: its work is on the base.
+    expect(pullRequestMerged(main, "fix/login", head, withFakeGh(env, "fix/login", head))).toBe(
+      true,
+    );
+    // A pull request that merged an older head says nothing about the commits after it.
+    expect(
+      pullRequestMerged(main, "fix/login", head, withFakeGh(env, "fix/login", "0".repeat(40))),
+    ).toBe(false);
+    // No `gh` at all: not known merged, and nothing was asked of the network.
+    expect(pullRequestMerged(main, "fix/login", head, { ...env, PATH: tempDir("no-gh") })).toBe(
+      false,
+    );
+  });
+
+  test("a git too old to replay the branch keeps the worktree, and says which git", () => {
+    // `git merge-tree --write-tree` came with git 2.38. An older git cannot say whether the
+    // work is on the base, so the worktree is kept — and the reason names the git that
+    // cannot answer, so the person knows why the pile does not go.
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "feature.ts"), "export const feature = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the feature");
+    writeFileSync(join(main, "feature.ts"), "export const feature = 1;\n");
+    writeFileSync(join(main, "CHANGELOG.md"), "- the feature (#7)\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "the feature (#7)");
+    git(main, "push", "origin", "main");
+
+    const scanned = scanWorktrees(main, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env: withGitVersion(env, "2.30.0"),
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    });
+    expect(scanned[1]?.state).toEqual({
+      finished: false,
+      held: false,
+      why: "1 commit not on main (git 2.30.0 is too old to replay it onto main: git 2.38.0 or newer is needed)",
+    });
+  });
+
+  test("a worktree holding a submodule says so, with the way out git leaves", () => {
+    // `git worktree move` AND `git worktree remove` refuse a worktree that holds a submodule
+    // ("working trees containing submodules cannot be moved or removed", checked against this
+    // machine's git 2.4x, with the submodule initialized and with one only in the index). So
+    // "a program may still work in it — try again" is wrong advice: nothing about it can
+    // change by waiting.
+    const { main, worktree } = repo();
+    const library = join(dirname(main), "lib");
+    mkdirSync(library);
+    git(library, "init", "--initial-branch=main");
+    writeFileSync(join(library, "lib.ts"), "export const lib = 1;\n");
+    git(library, "add", ".");
+    git(library, "commit", "-m", "the library");
+    git(worktree, "-c", "protocol.file.allow=always", "submodule", "add", library, "lib");
+    git(worktree, "commit", "-m", "add the library");
+    // Its work is on the base: git's own rule about submodules is all that keeps it.
+    git(main, "merge", "--ff-only", "fix/login");
+    git(main, "push", "origin", "main");
+
+    const scanOptions = {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    };
+    const scanned = scanWorktrees(main, scanOptions);
+    const listed = scanned[1]?.listed;
+    if (listed === undefined) throw new Error("the worktree is not listed");
+    expect(scanned[1]?.state).toEqual({ finished: true, note: null });
+
+    const removal = removeWorktree(main, listed, scanOptions);
+    expect(removal.status).toBe("kept");
+    expect(removal.said).toEqual([
+      `kept ${worktree}: it holds a git submodule, and git cannot move or remove such a ` +
+        `worktree. Commit and push the work in it, delete the folder by hand, and run ` +
+        `\`cc-smart-dev-kit worktrees\` again: a worktree whose folder is gone is forgotten.`,
+    ]);
+    expect(existsSync(worktree)).toBe(true);
   });
 
   test("a commit of its own keeps it; so does an uncommitted file", async () => {
@@ -354,7 +667,11 @@ describe("scanning and removing, against a real repo", () => {
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
     });
-    expect(withCommit[1]?.state).toEqual({ finished: false, why: "1 commit not on main" });
+    expect(withCommit[1]?.state).toEqual({
+      finished: false,
+      held: false,
+      why: "1 commit not on main",
+    });
 
     // The commit goes to main; the worktree is clean again, then a file is left in it.
     git(main, "merge", "--ff-only", "fix/login");
@@ -367,10 +684,21 @@ describe("scanning and removing, against a real repo", () => {
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
     });
-    expect(withFile[1]?.state).toEqual({ finished: false, why: "uncommitted changes" });
+    expect(withFile[1]?.state).toEqual({
+      finished: false,
+      held: false,
+      why: "uncommitted changes",
+    });
     const withFileListed = withFile[1]?.listed;
     if (withFileListed === undefined) throw new Error("the worktree is not listed");
-    const removal = removeWorktree(main, withFileListed, env, "main");
+    const removal = removeWorktree(main, withFileListed, {
+      base: "main",
+      claudeConfigDir: tempDir("worktrees-config"),
+      env,
+      // The machine's facts are the test's, as in the scan: never this machine's Docker.
+      facts: { containers: [], programs: [], sessions: [] },
+      idleLimit: 0,
+    });
     expect(removal.status).toBe("kept");
     expect(existsSync(worktree)).toBe(true);
   });
@@ -390,6 +718,7 @@ describe("scanning and removing, against a real repo", () => {
     });
     expect(scanned[1]?.state).toEqual({
       finished: false,
+      held: true,
       why: 'Claude session "Fix the login bug" works in it',
     });
 
@@ -404,7 +733,11 @@ describe("scanning and removing, against a real repo", () => {
       },
       idleLimit: 0,
     });
-    expect(held[1]?.state).toEqual({ finished: false, why: "a program runs from its files: bun" });
+    expect(held[1]?.state).toEqual({
+      finished: false,
+      held: true,
+      why: "a program runs from its files: bun",
+    });
   });
 
   test("a worktree whose folder is gone is named, and pruning forgets it", async () => {
@@ -440,6 +773,7 @@ describe("scanning and removing, against a real repo", () => {
     });
     expect(scanned[1]?.state).toEqual({
       finished: false,
+      held: true,
       why: 'Claude session "Fix the login bug" works in it',
     });
   });
@@ -505,7 +839,7 @@ describe("the base branch a project works against", () => {
     mkdirSync(config, { recursive: true });
     writeFileSync(
       join(config, "cc-smart-dev-kit.json"),
-      JSON.stringify({ worktrees: { base: "trunk", prefix: "app-wt-" } }),
+      JSON.stringify({ worktrees: { base: "trunk" } }),
     );
     const checkout = locateCheckout(main, { env });
     expect(baseBranch(checkout, env, main)).toEqual({ base: "trunk", from: "config" });

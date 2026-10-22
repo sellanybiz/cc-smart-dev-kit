@@ -8,30 +8,59 @@
  * silent there. It is wired with `--missing=ask`: a guard fails closed.
  *
  * **Why.** An Agent call with no `model` runs on whatever model the session has; an Opus or
- * Fable launch spends the person's own plan usage; a subagent at `low` or `medium` does work
- * nobody chose to cheapen; and an affordable gateway slot works well only at effort `max`.
- * The owner's decisions (2026-10-16):
+ * Fable launch spends the person's own plan usage; a subagent at `low` does work nobody chose
+ * to cheapen; and an affordable gateway slot works well only at effort `max`.
  *
- * **Effort.** A subagent never runs at `low` or `medium` (the owner, 2026-10-16), whatever the
- * model: the guard refuses a launch whose `effort` is not `high`, `xhigh` or `max`. That list
- * lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all read it. On
- * top of it, an affordable slot must be `max`, and an `opus`-tier launch asks the person at
- * `OPUS_ASK_EFFORT` (`max`).
+ * **Effort** (the owner's decisions D5 and D13). A subagent never runs at `low`, whatever the
+ * model: the guard refuses a launch whose `effort` is not `medium`, `high`, `xhigh` or `max`.
+ * That list lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all
+ * read it. `medium` is for searches and reads, `high` for building and reviews, `xhigh` for
+ * the hardest judgment, and `max` only when the person asks. On top of it, an affordable slot
+ * must be `max`, and an `opus`-tier launch asks the person at `OPUS_ASK_EFFORT` (`max`).
+ *
+ * **The launch policy** — that list, the model resolution below and the Fable reason words —
+ * has its one home in `src/models/launch-policy.ts`; this file is the hook around it.
  *
  * **The `opus` tier** (the owner's decision D11, 2026-10-17): any launch on it — a review or
  * not, any agent type, any purpose — runs with no question at every allowed level below `max`,
  * and asks the person at `max`. No reason line is needed; an `Opus reason: <word>` line, when a
  * prompt carries one, only names the purpose in the record.
  *
+ * **UI/UX work** (the owner's decision D50, 2026-10-22): design judgment, layout, components,
+ * pages and styling run only on the tiers and at the efforts `UI_POLICY` names — `opus` or
+ * `fable`, at `high` or above, never an affordable model. A launch declares it with
+ * `Opus reason: ui` (or `Fable reason: ui-design`); one that declares it on another tier or
+ * below `high` is denied, before every rule below would allow it. A prompt is never sniffed for
+ * keywords: the declaration is the contract. Checking is not design: `ui-verifier` may run on
+ * `sonnet`, and the design verdict is made on `opus` or `fable`.
+ *
  * | The model behind the launch | The verdict |
  * |---|---|
  * | an affordable slot key / a `<backend>:<model>` target / `haiku` or `sonnet` (or their ids) while the gateway is on and the family's slot chain starts with a backend | allow; with the gateway on, its effort must be `max`, else deny |
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can prove affordable is affordable |
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
- * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
+ * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
- * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both |
- * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
+ * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
+ * | a launch that declares UI/UX work (`Opus reason: ui`, `Fable reason: ui-design`) | allow only on the `opus` or `fable` tier at `high`, `xhigh` or `max` (`UI_POLICY`, D50); anything else — Sonnet, Haiku, an affordable slot, or a tier below `high` — is denied with the rule in words |
+ * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
+ *
+ * A reason word is read with the punctuation around it dropped: `Fable reason: plan.` names
+ * `plan`.
+ *
+ * **What really runs.** Every rule above judges the model and effort the launch REALLY runs
+ * on, after Claude Code's own overrides (`effectiveLaunch`, in the launch policy, read from the
+ * hook's own environment, which a settings file's `env` reaches too):
+ * `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` (its `CLAUDE_CODE_SUBAGENT_MODEL`, else the session's own
+ * model) > `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (a Workflow agent only) > the call's `model`;
+ * `CLAUDE_CODE_EFFORT_LEVEL` > the call's `effort`. Under FORCE or `CLAUDE_CODE_EFFORT_LEVEL`
+ * Claude Code removes `model` or `effort` from the Agent tool, so a call that names neither is
+ * judged on what the variable sets, never refused for it. An ask or a denial names the override.
+ * A level `CLAUDE_CODE_EFFORT_LEVEL` names that no subagent may run at (`low`, a level no rule
+ * knows) is refused, and so is anything but `max` on an affordable slot: only the person can
+ * change the variable, and the message says where. `auto` is the person's own choice, like a
+ * fork's effort (`EFFORT_AUTO`): never refused for itself, never asked on the `opus` tier (no
+ * model's default is `max`). A fork keeps its own rule.
  *
  * **Tiers, not vendors** (the owner, 2026-10-16). `opus` and `fable` mean the TIER: whatever
  * model answers behind them — Claude, a backend through an override or the family's slot, a
@@ -44,7 +73,7 @@
  * **Which model, exactly.** The call's `model` is a name (`haiku|sonnet|opus|fable` — the
  * only four Claude Code's Agent tool accepts, proved live from its own schema; a full id, a
  * slot key and `<backend>:<model>` are read too, for a Workflow script or a future build).
- * It is resolved the way Claude Code and the router resolve it:
+ * It is resolved the way Claude Code and the router resolve it (`resolveLaunchModel`):
  *   1. `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` (all four exist in Claude Code 2.1.301, fable
  *      included), when the person set one, replaces the family's model;
  *   2. with the gateway on (`ANTHROPIC_BASE_URL` in Claude Code's settings), the router sends a
@@ -53,33 +82,80 @@
  *      (`gateway.json`, read through the gateway's own `loadConfigFile`). A slot with no chain
  *      is off: the Claude model itself answers, on the person's own login.
  * So `sonnet` is an affordable slot exactly when the gateway is on and the worker's chain
- * starts with a `<backend>:<model>`; a chain that starts with a `claude-…` model is Claude. A
+ * starts with a `<backend>:<model>`; a chain that starts with a `claude-…` model is Claude.
+ * **A name never runs below the tier of what answers it:** when the override or the slot
+ * answers a family name with a model the guard reads as a stricter premium family (`sonnet`
+ * whose `ANTHROPIC_DEFAULT_SONNET_MODEL` is a Claude Opus id, or whose worker chain starts with
+ * one), the launch is that family and its tier — it spends that tier's usage. A model the guard
+ * cannot read as a family leaves the name's own tier (`asNamed`). A
  * `fork` runs on the session's model and effort — Claude Code ignores a `model` it is given —
  * so it is judged on the session's own: the last Claude model in the hook input's
  * `transcript_path` (`lastClaudeModel`), else `ANTHROPIC_MODEL`; unknowable → the `opus` tier.
  *
- * Every premium launch that is allowed or asked is recorded with why it ran
- * (`agent-launches.ts`), and `cc-smart-dev-kit usage` lists them: the `opus` tier as
- * `opus:<effort>`, with the prompt's reason word after it when there is one (`opus:xhigh`,
- * `opus:max:security`; a fork `opus:session-effort`), and the `fable` tier by its word. Anything
- * the guard cannot work out lets the call through, except a Workflow whose launches it cannot
- * read (`workflowRefusal`).
+ * **Every Workflow run** (G2). A Workflow call's launches run inside the tool and fire no hook of
+ * their own, so the guard reads the script the call runs, however the call names it — an
+ * inline `script`, a `scriptPath`, a saved workflow's `name`, a plugin's `<plugin>:<name>`
+ * (`agent-guard-workflows.ts` finds the file the way Claude Code does) — and every workflow
+ * that script nests with a literal `workflow("<name>")` or `workflow({ scriptPath: "…" })`, one
+ * level deep (`judgeWorkflowCall`). A run whose script the guard cannot read — a built-in
+ * workflow, a missing file, two files that claim one name, a `resumeFromRunId` — asks the
+ * person, and is denied in `claude -p`, saying why. A nested workflow named at run time, or a
+ * script that nests deeper, refuses the whole call.
+ *
+ * Every premium launch is recorded (`agent-launches.ts`) once it is known to run, with its
+ * effort and its reason word as their own fields, and with why it ran as one string for older
+ * readers: the `opus` tier as `opus:<effort>`, with the prompt's reason word after it when there
+ * is one (`opus:xhigh`, `opus:max:security`; a fork `opus:session-effort`), and the `fable` tier
+ * by its word. `cc-smart-dev-kit usage` counts them by effort and by word. An allowed launch is
+ * recorded on PreToolUse, an asked one on PostToolUse — the call ran, so the person said yes
+ * (`RAN_EVENT`); a launch the person refuses is never recorded. A Workflow's launches share one
+ * `tool_use_id`, so each is recorded under its own index, once. Anything the guard cannot work
+ * out lets the call through, except a Workflow whose launches it cannot read
+ * (`workflowRefusal`, `judgeWorkflowCall`).
  */
 
 import type { CliPaths } from "../cli/paths";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
 import { settingsReport } from "../gateway/settings";
 import {
-  CLAUDE_FAMILIES,
-  type ClaudeFamily,
-  claudeFamily,
-  familySlotKey,
-  isSlotKey,
-  MODEL_SLOTS,
-  parseTarget,
-  withoutContextSuffix,
-} from "../gateway/targets";
-import { type AgentLaunch, agentLaunchesFile, appendAgentLaunch } from "./agent-launches";
+  AFFORDABLE_EFFORT,
+  ALLOWED_EFFORTS,
+  EFFORT_AUTO,
+  EFFORT_LEVEL_ENV,
+  type EffectiveLaunch,
+  effectiveLaunch,
+  effortAllowed,
+  FABLE_BUILD_REASON,
+  FABLE_REASONS,
+  type GatewayFacts,
+  isAffordable,
+  type LaunchModel,
+  OPUS_ASK_EFFORT,
+  OPUS_FREE_EFFORTS,
+  resolveLaunchModel,
+  SUBAGENT_MODEL_ENV,
+  SUBAGENT_MODEL_FORCE_ENV,
+  UI_REASON_WORDS,
+  uiEffortAllowed,
+  uiRuleText,
+  uiTierAllowed,
+  WORKFLOW_SUBAGENT_MODEL_ENV,
+} from "../models/launch-policy";
+import {
+  scriptAtPath,
+  scriptByName,
+  skipBlank,
+  stringAt,
+  type WorkflowPlace,
+  wholeLiteralAt,
+} from "./agent-guard-workflows";
+import {
+  type AgentLaunch,
+  agentLaunchesFile,
+  appendAgentLaunches,
+  reasonParts,
+  SESSION_EFFORT,
+} from "./agent-launches";
 import {
   type HookInput,
   type HookResult,
@@ -98,26 +174,8 @@ export const WORKFLOW_TOOLS = ["Workflow"] as const;
 /** The subagent type a fork uses: it runs on the session's model and effort. */
 export const FORK = "fork";
 
-/**
- * The one reason word an agent that can change files may use on Fable: the person asked Fable
- * to build it (the owner, 2026-10-16). Every other word, and no word, is refused there — and it
- * is not one of the read-only words (`FABLE_REASONS`): a read-only agent never builds.
- */
-export const FABLE_BUILD_REASON = "build";
-
 /** The words a builder may name: the one word that means the person asked for it. */
 const BUILDER_WORDS = [FABLE_BUILD_REASON] as const;
-
-/** What `Fable reason:` may name (the owner's list). */
-export const FABLE_REASONS = [
-  "hard",
-  "rewrite",
-  "ui-design",
-  "architecture",
-  "review",
-  "plan",
-  "unsatisfied",
-] as const;
 
 /**
  * The subagent types that count as read-only on Fable: they read and report, never build, so
@@ -128,28 +186,6 @@ export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore"] as const;
 
 /** The environment variable a person may extend that list with (comma-separated). */
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
-
-/**
- * The effort levels a subagent may run at — the one home of that list (owner, 2026-10-16):
- * `low` and `medium` are refused on every model, a Claude model and an affordable gateway slot
- * alike. Two rules name one level each, on top of this one: an affordable slot must be `max`,
- * and an `opus`-tier launch asks the person at `OPUS_ASK_EFFORT`.
- */
-export const ALLOWED_EFFORTS = ["high", "xhigh", "max"] as const;
-
-/**
- * The one effort at which an `opus`-tier launch asks the person (the owner's decision D11):
- * every lower level of `ALLOWED_EFFORTS` runs with no question, for any agent and any purpose.
- */
-export const OPUS_ASK_EFFORT = "max";
-
-/** The levels an `opus`-tier launch runs at with no question: every allowed one below `max`. */
-const OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
-
-/** True when an effort a launch names is one a subagent may run at. */
-function effortAllowed(effort: string): boolean {
-  return (ALLOWED_EFFORTS as readonly string[]).includes(effort.toLowerCase());
-}
 
 /** A subagent type as a list compares it: after any `plugin:`, `-`/`_`/space as one `-`. */
 export function agentKey(type: string): string {
@@ -166,170 +202,6 @@ function agentList(from: readonly string[], env: Env, name: string): Set<string>
     .map((one) => one.trim())
     .filter((one) => one !== "");
   return new Set([...from, ...listed].map(agentKey));
-}
-
-/** The model a launch will really run on, after Claude Code's env and the gateway config. */
-export interface LaunchModel {
-  /** True when the first target that answers is a Claude model (the person's own login). */
-  claude: boolean;
-  /** The family the launch's name stands for: a family name and a Claude id keep their own
-   * through an override or their family's slot, a slot key reads its first target's, and null
-   * is anything the guard cannot read as a family (a backend target, a name no rule knows). */
-  family: ClaudeFamily | null;
-  /** How the launch names it: the resolved id, the slot's first target, or the name as sent. */
-  model: string;
-  /**
-   * The premium tier the launch's NAME stands for (owner, 2026-10-16): `opus` and `fable` mean
-   * the tier, whatever model answers behind them — Claude, a backend through the gateway, a
-   * name no rule knows. Null for everything else (Haiku, Sonnet, an affordable target).
-   */
-  tier: "fable" | "opus" | null;
-}
-
-/**
- * What the guard knows of the gateway: its config (null when there is none, or it cannot be
- * used), and whether Claude Code's settings send the requests to it.
- */
-export interface GatewayFacts {
-  config: GatewayConfig | null;
-  /** True when Claude Code's settings point at the router (`ANTHROPIC_BASE_URL`). */
-  gatewayOn: boolean;
-}
-
-/** The premium tier a family name or a Claude id stands for; null for Haiku and Sonnet. */
-function premiumTier(family: ClaudeFamily | null): "fable" | "opus" | null {
-  return family === "fable" || family === "opus" ? family : null;
-}
-
-/**
- * The tier a Claude reading carries: its family when that is `opus` or `fable`, null for Haiku
- * and Sonnet, and for a family the guard cannot read — a Claude id from the future, a name no
- * rule knows (`best`, `default`, …) — the strict one, `opus`, exactly as the rules treated it
- * before there were tiers.
- */
-function tierOfReading(family: ClaudeFamily | null): "fable" | "opus" | null {
-  return family === null ? "opus" : premiumTier(family);
-}
-
-/** Claude Code's override for a family: `ANTHROPIC_DEFAULT_OPUS_MODEL`, … */
-export function familyEnv(family: ClaudeFamily): string {
-  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
-}
-
-/**
- * The first target of the slot that answers for a Claude family, the way the router picks it
- * (`familySlotKey`, `FAMILY_SLOTS`: haiku → scout, sonnet → worker, opus → opus, fable →
- * fable). Null when the gateway is off (Claude Code sends nothing to the router), when there
- * is no config, and when the slot has no chain: it is off, and the Claude model itself answers.
- */
-function familyFirstTarget(gateway: GatewayFacts, family: ClaudeFamily | null): null | string {
-  if (!gateway.gatewayOn || gateway.config === null || family === null) return null;
-  const slot = familySlotKey(family);
-  if (slot === null || !Object.hasOwn(gateway.config.slots, slot)) return null;
-  return gateway.config.slots[slot]?.[0] ?? null;
-}
-
-/**
- * The tier an id stands for when a person's own override or a premium family's slot answers
- * with it: the session's model may be the backend id an `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` or
- * the opus or fable slot's first target names, and that id is still the family's tier (owner,
- * 2026-10-16).
- */
-export function tierOfMappedId(
-  model: string,
-  gateway: GatewayFacts,
-  env: Env,
-): "fable" | "opus" | null {
-  for (const premium of ["fable", "opus"] as const) {
-    const override = stringField(env[familyEnv(premium)]);
-    if (override !== null && withoutContextSuffix(override.trim()) === model) return premium;
-    if (familyFirstTarget(gateway, premium) === model) return premium;
-  }
-  return null;
-}
-
-/**
- * The model behind a Claude family once the router has had it: its slot's first target while
- * the gateway is on and the slot has a chain, else `claude` (the Claude model answers). The
- * family and the tier stay the ones the NAME stands for (owner, 2026-10-16).
- */
-function throughFamilySlot(
-  claude: string,
-  family: ClaudeFamily | null,
-  gateway: GatewayFacts,
-): LaunchModel {
-  const tier = tierOfReading(family);
-  const first = familyFirstTarget(gateway, family);
-  if (first === null) return { claude: true, family, model: claude, tier };
-  return { ...resolveTarget(first), family, tier };
-}
-
-/** A Claude id, slot key or `<backend>:<model>` as the model behind the launch. */
-function resolveName(text: string, gateway: GatewayFacts): LaunchModel {
-  // A Claude id, also as a cloud provider names it (`us.anthropic.claude-fable-…`).
-  const family = claudeFamily(text);
-  if (family !== null || text.startsWith("claude-")) {
-    return throughFamilySlot(text, family, gateway);
-  }
-  if (isSlotKey(text)) {
-    const first = gateway.config?.slots[text]?.[0];
-    const model =
-      first === undefined
-        ? { claude: false, family: null, model: text, tier: null }
-        : resolveTarget(first);
-    // A model slot (`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`) is its family's tier,
-    // whether or not the config names a target for it.
-    const slotFamily = MODEL_SLOTS[text];
-    return slotFamily === "fable" || slotFamily === "opus"
-      ? { ...model, family: slotFamily, tier: slotFamily }
-      : model;
-  }
-  const parsed = parseTarget(text);
-  if ("target" in parsed && parsed.target.kind === "backend") {
-    return { claude: false, family: null, model: text, tier: null };
-  }
-  // A name no rule knows (`best`, `opusplan`, `default`, `inherit`, anything else): never read
-  // as an affordable slot. Only a slot key and a `<backend>:<model>` target are affordable —
-  // every other name gets the strictest rule, the one for a Claude id with no family to read.
-  return { claude: true, family: null, model: text, tier: "opus" };
-}
-
-/** A slot target as the model behind the launch. */
-function resolveTarget(text: string): LaunchModel {
-  const parsed = parseTarget(text);
-  if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
-    return { claude: false, family: null, model: text, tier: null };
-  }
-  const family = claudeFamily(parsed.target.model);
-  return { claude: true, family, model: parsed.target.model, tier: tierOfReading(family) };
-}
-
-/**
- * The model behind a launch that names `name`: a family name goes through Claude Code's
- * environment, then — with the gateway on — its family's slot; a Claude id through its family's
- * slot; anything else is resolved as itself. **A family name keeps its tier** through the
- * override and the slot: `opus` is the premium tier even when the target that answers it is not
- * a Claude model.
- */
-export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env): LaunchModel {
-  const text = withoutContextSuffix(name.trim());
-  const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
-  if (family === undefined) {
-    // A person's own override may name this id for a family: it is that family's tier then,
-    // unless the id itself proves its family (a reading with no family is only a default).
-    const mapped = tierOfMappedId(text, gateway, env);
-    const resolved = resolveName(text, gateway);
-    if (mapped === null || (resolved.tier !== null && resolved.family !== null)) return resolved;
-    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
-  }
-  const tier = premiumTier(family);
-  const override = stringField(env[familyEnv(family)]);
-  if (override !== null) {
-    // The NAME's family stays the launch's family: `opus` is the `opus` tier even when a backend
-    // answers it, so the record, the free `opus` path and the messages read the same family.
-    return { ...resolveName(withoutContextSuffix(override.trim()), gateway), family, tier };
-  }
-  return throughFamilySlot(text, family, gateway);
 }
 
 /** The `model` (or one of its aliases) behind a launch, as Claude Code will send it. */
@@ -371,13 +243,15 @@ export interface GuardContext extends GatewayFacts {
 /**
  * One `agent(...)` call of a Workflow script, as much of it as its text shows. A workflow
  * runs its agents **inside itself**: live on 2.1.301 the `Workflow` tool call fires
- * PreToolUse (tool_name `Workflow`, its `script` in the input) and the launches inside the
- * script fire **nothing** — no `Agent` call passes the hooks. So the guard reads the script
- * (`readWorkflowScript`) and judges each launch it can see.
+ * PreToolUse (tool_name `Workflow`; its input holds the `script`, or only a `name` or a
+ * `scriptPath`, 2.1.306) and the launches inside the script fire **nothing** — no `Agent` call
+ * passes the hooks. So the guard reads the script (`readWorkflowScript`; found by
+ * `judgeWorkflowCall` when the input holds none) and judges each launch it can see.
  *
  * What it cannot see is refused, never guessed:
- *   - a value held in a variable (`model: chosen`), a prompt built at run time, and a
- *     backtick literal that builds its text (`` `${…}` ``) leave that launch's verdict short
+ *   - a value held in a variable (`model: chosen`), a prompt built at run time, a literal an
+ *     operator changes (`effort: "high" && "max"`, `"a" + b`), and a backtick literal that
+ *     builds its text (`` `${…}` ``) leave that launch's verdict short
  *     of a reason line, so a Fable launch is denied and a launch whose `model` cannot be read
  *     is denied outright (an `opus`-tier launch needs no reason line, so its prompt does not
  *     matter);
@@ -398,50 +272,6 @@ export interface WorkflowLaunch {
   prompt: null | string;
   /** How the message names this launch: its `label`, else the first words of its prompt. */
   where: string;
-}
-
-/** A string literal's value at `from`, and the index after it; null when it is not one. */
-function stringAt(text: string, from: number): null | { end: number; value: string } {
-  const quote = text[from];
-  if (quote !== '"' && quote !== "'" && quote !== "`") return null;
-  let value = "";
-  for (let index = from + 1; index < text.length; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      // A literal escape with a value (`\n`, `\"`) is read as the character it names.
-      const next = text[index + 1] ?? "";
-      value += next === "n" ? "\n" : next;
-      index += 1;
-      continue;
-    }
-    if (char === quote) return { end: index + 1, value };
-    value += char;
-  }
-  return null;
-}
-
-/**
- * True when the literal at `[from, end)` builds its text at run time: a template with an
- * unescaped `${…}`. Its value is not the text between the backticks, so nothing is read from
- * it — `model: \`op${n}us\`` names no model the guard can prove.
- */
-function interpolated(text: string, from: number, end: number): boolean {
-  for (let index = from + 1; index < end - 1; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      index += 1;
-      continue;
-    }
-    if (char === "$" && text[index + 1] === "{") return true;
-  }
-  return false;
-}
-
-/** A **fixed** string literal's value at `from`; null when it is not one, or is built at run time. */
-function literalAt(text: string, from: number): null | { end: number; value: string } {
-  const literal = stringAt(text, from);
-  if (literal === null) return null;
-  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
 }
 
 /** Where a `{…}` object or a `(…)` call ends, skipping string literals; the text's end. */
@@ -469,55 +299,59 @@ function callText(script: string, open: number): string {
   return script.slice(open, endOf(script, open, "(", ")") + 1);
 }
 
-/** The first argument of a call, when it is a fixed string literal; null otherwise. */
+/**
+ * The first argument of a call, when it is a fixed string literal and the whole argument (no
+ * `"a" + b` after it); null otherwise.
+ */
 function firstArgument(call: string): null | string {
-  const args = call.slice(1);
-  const lead = args.length - args.trimStart().length;
-  const literal = literalAt(call, 1 + lead);
-  return literal === null ? null : literal.value;
+  return wholeLiteralAt(call, skipBlank(call, 1), ",)");
 }
 
 /**
- * A fixed string option of a call (`model: "opus"`), or null when absent or not a literal. Only
- * a key of the call's own options object counts — never the same words in the prompt or in a
- * nested object (`schema: { effort: … }`), which would let them stand in for the real option.
+ * A fixed string option of a call (`model: "opus"`), or null when absent or not a literal — and
+ * not when an operator follows it (`effort: "high" && "max"` runs at `max`). Only a key of the
+ * call's own options object counts — never the same words in the prompt or in a nested object
+ * (`schema: { effort: … }`), which would let them stand in for the real option.
  */
 function stringOption(call: string, name: string): null | string {
   const at = readOptions(call).keys.get(name);
   if (at === undefined) return null;
-  const colon = /^\s*:\s*/.exec(call.slice(at));
+  const colon = /^\s*:/.exec(call.slice(at));
   if (colon === null) return null;
-  const literal = literalAt(call, at + colon[0].length);
-  return literal === null ? null : literal.value;
+  return wholeLiteralAt(call, skipBlank(call, at + colon[0].length), ",}");
 }
 
-/** One way a script mentions the `agent` function: its name in code, and whether it is called. */
-interface AgentMention {
+/** The script functions the guard follows: `agent` launches one agent, `workflow` nests one. */
+type ScriptFunction = "agent" | "workflow";
+
+/** One way a script mentions a function: its name in code, and whether it is called. */
+interface Mention {
   /** Where the name starts in the script. */
   at: number;
-  /** True for a direct call (`agent(…)`); false when `agent` is handed around as a value. */
+  /** True for a direct call (`agent(…)`); false when the function is handed around as a value. */
   call: boolean;
+  /** The function's name. */
+  name: ScriptFunction;
 }
 
-/** The position of the `(` of a direct call whose name starts at `at`. */
-function callOpen(at: number, script: string): number {
-  const rest = script.slice(at + 5);
-  return at + 5 + (rest.length - rest.trimStart().length);
+/** The position of the `(` of a direct call (`mention.call`). */
+function callOpen(mention: Mention, script: string): number {
+  return skipBlank(script, mention.at + mention.name.length);
 }
 
 /**
- * Every mention of `agent` in the script's code, and whether it is a direct call. In code
- * only: the word inside a prompt, a string or a comment is not a mention, and neither is a
- * property (`x.agent`) or a longer name (`agentType`, `agents`). A template literal's
- * `${…}` is code again — a launch written there is a launch — so the scan keeps a stack of
- * the contexts it is inside.
+ * Every mention of `name` (`agent`, `workflow`) in the script's code, and whether it is a
+ * direct call. In code only: the word inside a prompt, a string or a comment is not a mention,
+ * and neither is a property (`x.agent`) or a longer name (`agentType`, `agents`). A template
+ * literal's `${…}` is code again — a launch written there is a launch — so the scan keeps a
+ * stack of the contexts it is inside.
  */
-function agentMentions(script: string): AgentMention[] {
+function mentionsOf(script: string, name: ScriptFunction): Mention[] {
   type Frame = {
     braces: number;
     kind: "block" | "code" | "double" | "line" | "single" | "template";
   };
-  const mentions: AgentMention[] = [];
+  const mentions: Mention[] = [];
   const stack: Frame[] = [{ braces: 0, kind: "code" }];
   for (let index = 0; index < script.length; index += 1) {
     const frame = stack.at(-1);
@@ -578,12 +412,13 @@ function agentMentions(script: string): AgentMention[] {
       continue;
     }
     if (
-      script.startsWith("agent", index) &&
+      script.startsWith(name, index) &&
       (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))
     ) {
+      const after = index + name.length;
       // `agentType`, `agents`: a longer name, not a mention of `agent`.
-      if (/[\w$]/.test(script[index + 5] ?? "")) continue;
-      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(index + 5)) });
+      if (/[\w$]/.test(script[after] ?? "")) continue;
+      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(after)), name });
     }
   }
   return mentions;
@@ -699,16 +534,26 @@ function builtAtRuntime(call: string): boolean {
 
 /** Where each direct call's `(` sits, in script order: what `readWorkflowScript` reads. */
 function callsOf(script: string): number[] {
-  return agentMentions(script)
+  return mentionsOf(script, "agent")
     .filter((mention) => mention.call)
-    .map((mention) => callOpen(mention.at, script));
+    .map((mention) => callOpen(mention, script));
 }
 
-/** Said when the script hands `agent` around: nothing it launches can be read. */
-const AGENT_HANDED_AROUND = [
-  "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.",
-  'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call.',
-].join("\n");
+/** Why a function handed around hides what it runs. */
+const THROUGH_A_VARIABLE =
+  "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
+
+/** Said when the script hands `agent` or `workflow` around: nothing it runs can be read. */
+const HANDED_AROUND: Record<ScriptFunction, string> = {
+  agent: [
+    THROUGH_A_VARIABLE,
+    'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call.',
+  ].join("\n"),
+  workflow: [
+    THROUGH_A_VARIABLE,
+    'Write every nested workflow as a direct `workflow("<name>")` call.',
+  ].join("\n"),
+};
 
 /** Said when a call's options are not what they seem: what the guard read can differ. */
 const OPTIONS_BUILT_AT_RUNTIME = [
@@ -720,21 +565,23 @@ const OPTIONS_BUILT_AT_RUNTIME = [
  * The reason this whole Workflow call is refused, or null when every launch in it can be
  * read. Two things hide the rules from the guard, and a hook must refuse what it cannot see
  * rather than let it run unchecked:
- *   - `agent` mentioned without being called at once (`const run = agent; run(…)`,
- *     `agent?.(…)`, `agent` passed around as a value);
- *   - a call whose options are not what they seem (`builtAtRuntime`).
+ *   - `agent` or `workflow` mentioned without being called at once (`const run = agent;
+ *     run(…)`, `agent?.(…)`, either passed around as a value);
+ *   - an `agent(…)` call whose options are not what they seem (`builtAtRuntime`).
+ * A nested `workflow(…)` call whose workflow is named at run time is refused by
+ * `nestedWorkflows`.
  */
 export function workflowRefusal(script: string): null | string {
-  const mentions = agentMentions(script);
-  const handed = mentions.find((mention) => !mention.call);
-  if (handed !== undefined) {
+  for (const name of ["agent", "workflow"] as const) {
+    const handed = mentionsOf(script, name).find((mention) => !mention.call);
+    if (handed === undefined) continue;
     return [
-      `This Workflow uses \`agent\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`agent?.(…)\`), or it is passed as a value.`,
-      AGENT_HANDED_AROUND,
+      `This Workflow uses \`${name}\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`${name}?.(…)\`), or it is passed as a value.`,
+      HANDED_AROUND[name],
     ].join("\n");
   }
-  for (const mention of mentions) {
-    if (!builtAtRuntime(callText(script, callOpen(mention.at, script)))) {
+  for (const mention of mentionsOf(script, "agent")) {
+    if (!builtAtRuntime(callText(script, callOpen(mention, script)))) {
       continue;
     }
     return [
@@ -743,6 +590,40 @@ export function workflowRefusal(script: string): null | string {
     ].join("\n");
   }
   return null;
+}
+
+/** A nested `workflow(…)` call of a script: the workflow it names, and its line. */
+type NestedCall = { line: number } & ({ name: string } | { scriptPath: string });
+
+/**
+ * Every nested `workflow(…)` call of a script, in order — the two shapes Claude Code accepts,
+ * `workflow("<name>")` and `workflow({ scriptPath: "<path>" })`, each with a string literal — or
+ * why the whole call is refused: a call whose workflow is named at run time
+ * (`workflow(name)`, `workflow("a" + b)`) runs a script the guard cannot know.
+ */
+export function nestedWorkflows(script: string): { calls: NestedCall[] } | { refusal: string } {
+  const calls: NestedCall[] = [];
+  for (const mention of mentionsOf(script, "workflow")) {
+    if (!mention.call) continue;
+    const call = callText(script, callOpen(mention, script));
+    const line = lineOf(script, mention.at);
+    const name = firstArgument(call);
+    const path =
+      call[skipBlank(call, 1)] === "{" && !builtAtRuntime(call)
+        ? stringOption(call, "scriptPath")
+        : null;
+    if (name !== null) calls.push({ line, name });
+    else if (path !== null) calls.push({ line, scriptPath: path });
+    else {
+      return {
+        refusal: [
+          `This Workflow's \`workflow(…)\` call at line ${line} names its workflow at run time.`,
+          'Write it as `workflow("<name>")` or `workflow({ scriptPath: "<path>" })`, with a string literal, so the guard can read what it runs.',
+        ].join("\n"),
+      };
+    }
+  }
+  return { calls };
 }
 
 /**
@@ -781,6 +662,8 @@ function asLaunch(one: WorkflowLaunch): Launch {
 
 /** One launch of a Workflow script, judged. */
 export interface WorkflowResult {
+  /** How the messages name the script it is in: null for the call's own inline script. */
+  from: null | string;
   launch: WorkflowLaunch;
   verdict: Verdict;
 }
@@ -795,19 +678,33 @@ const NO_WORKFLOW_MODEL = [
 const PROMPT_UNREADABLE =
   "The launch's prompt is built at run time, so the guard cannot read a `Fable reason:` line in it.";
 
-/** Judges every launch of a Workflow script, in order. */
-export function judgeWorkflow(script: string, ctx: GuardContext, env: Env): WorkflowResult[] {
+/**
+ * Judges every launch of a Workflow script, in order. `from` names the script in the messages
+ * (`judgeWorkflowCall`); null for a call's own inline script.
+ */
+export function judgeWorkflow(
+  script: string,
+  ctx: GuardContext,
+  env: Env,
+  from: null | string = null,
+): WorkflowResult[] {
   return readWorkflowScript(script).map((launch) => {
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
-    // A model the script builds at run time cannot be read by a hook: refused, never guessed.
-    if (launch.model === null) {
-      return { launch, verdict: deny(verdict.real, NO_WORKFLOW_MODEL) };
+    // A model the script builds at run time cannot be read by a hook: refused, never guessed —
+    // unless an override names the model it runs on whatever the script says.
+    if (launch.model === null && verdict.ran.modelFrom === "call") {
+      return {
+        from,
+        launch,
+        verdict: { ...deny(verdict.real, NO_WORKFLOW_MODEL), ran: verdict.ran },
+      };
     }
     // An ask that rests on the launch's own prompt — a reason line — cannot stand with a prompt
     // the guard cannot read: there is nothing to approve, so it is refused instead. An ask that
     // rests on the effort (the `opus` tier at `max`) needs no prompt and stays an ask.
     if (launch.prompt === null && (verdict.decision === "deny" || verdict.restsOnPrompt === true)) {
       return {
+        from,
         launch,
         verdict: {
           ...verdict,
@@ -816,20 +713,156 @@ export function judgeWorkflow(script: string, ctx: GuardContext, env: Env): Work
         },
       };
     }
-    return { launch, verdict };
+    return { from, launch, verdict };
   });
 }
 
-/** The Workflow answer's words: which launch it is about, and the rule. */
+/** The Workflow answer's words: which workflow and which launch it is about, and the rule. */
 export function workflowReason(result: WorkflowResult): string {
   const named =
     result.launch.where === "(unreadable)" ? "one launch" : `the launch "${result.launch.where}"`;
-  return `In this workflow, ${named}: ${result.verdict.reason}`;
+  const workflow = result.from === null ? "this workflow" : `the workflow \`${result.from}\``;
+  return `In ${workflow}, ${named}: ${result.verdict.reason}`;
+}
+
+/** A script a Workflow call runs: its own, or one its script nests. */
+interface RunScript {
+  /** How the messages name it: null for the call's own inline script. */
+  from: null | string;
+  script: string;
+}
+
+/** A Workflow call, judged: every launch of every script it runs, and what the guard cannot see. */
+export interface WorkflowCall {
+  /** Why the whole call is refused — a launch or a nested workflow the guard cannot follow. */
+  refusal: null | string;
+  /** Every launch of the call's scripts, judged: its own script's first, then each nested one's. */
+  results: WorkflowResult[];
+  /** Why the guard cannot see what (part of) the call runs; each asks, or is refused in `claude -p`. */
+  unreadable: string[];
+}
+
+/** Said when a call resumes a run: what runs again comes from a script the guard does not see. */
+function resumeUnreadable(runId: string): string {
+  return `This Workflow call resumes run \`${runId}\`: the run goes on from a script the guard does not see, and it runs again every launch whose prompt or options changed.`;
+}
+
+/** Said when a call names none of the three ways to give a script. */
+const NO_SCRIPT = "This Workflow call names no `script`, `name` or `scriptPath`.";
+
+/**
+ * The script a Workflow call runs, or why the guard cannot read it. In Claude Code's own order
+ * (2.1.306): an inline `script` runs whatever else the call names; else `scriptPath`; else
+ * `name`. A `resumeFromRunId` goes on from a run the guard cannot see, whatever it names.
+ */
+function callScript(fields: Record<string, unknown>, place: WorkflowPlace): ScriptRun {
+  const resume = stringField(fields.resumeFromRunId);
+  if (resume !== null) return { unreadable: resumeUnreadable(resume) };
+  const name = stringField(fields.name);
+  const script = stringField(fields.script);
+  if (script !== null) return { from: name, script };
+  const path = stringField(fields.scriptPath);
+  const found =
+    path !== null
+      ? scriptAtPath(path, place.cwd)
+      : name !== null
+        ? scriptByName(name, place)
+        : null;
+  if (found === null) return { unreadable: NO_SCRIPT };
+  if ("unreadable" in found) return found;
+  return { from: path === null ? name : found.file, script: found.script };
+}
+
+/** A script to judge, or why there is none the guard can read. */
+type ScriptRun = RunScript | { unreadable: string };
+
+/**
+ * Judges a whole Workflow call: the script it runs (`callScript`), and every workflow that
+ * script nests with `workflow(…)` — one level, as Claude Code runs them; a nested script that
+ * nests again is refused. A launch or a nested call the guard cannot follow refuses the whole
+ * call; a script it cannot find is `unreadable`, and asks.
+ */
+export function judgeWorkflowCall(
+  fields: Record<string, unknown>,
+  ctx: GuardContext,
+  env: Env,
+  place: WorkflowPlace,
+): WorkflowCall {
+  const refused = (refusal: string): WorkflowCall => ({ refusal, results: [], unreadable: [] });
+  const top = callScript(fields, place);
+  if ("unreadable" in top) return { refusal: null, results: [], unreadable: [top.unreadable] };
+  const inTop = (reason: string) =>
+    top.from === null ? reason : `In the workflow \`${top.from}\`: ${reason}`;
+  const topRefusal = workflowRefusal(top.script);
+  if (topRefusal !== null) return refused(inTop(topRefusal));
+  const nested = nestedWorkflows(top.script);
+  if ("refusal" in nested) return refused(inTop(nested.refusal));
+  const scripts: RunScript[] = [top];
+  const unreadable: string[] = [];
+  for (const call of nested.calls) {
+    const found =
+      "name" in call ? scriptByName(call.name, place) : scriptAtPath(call.scriptPath, place.cwd);
+    if ("unreadable" in found) {
+      unreadable.push(found.unreadable);
+      continue;
+    }
+    const from = "name" in call ? call.name : found.file;
+    const deeper = mentionsOf(found.script, "workflow")[0];
+    if (deeper !== undefined) {
+      return refused(
+        `The workflow \`${from}\` this one runs nests a workflow of its own (line ${lineOf(found.script, deeper.at)}): Claude Code runs workflows one level deep, and the guard reads no deeper.`,
+      );
+    }
+    const childRefusal = workflowRefusal(found.script);
+    if (childRefusal !== null) {
+      return refused(`In the workflow \`${from}\` this one runs: ${childRefusal}`);
+    }
+    scripts.push({ from, script: found.script });
+  }
+  return {
+    refusal: null,
+    results: scripts.flatMap((one) => judgeWorkflow(one.script, ctx, env, one.from)),
+    unreadable,
+  };
+}
+
+/** The question asked after each reason a run cannot be read. */
+const UNREADABLE_ASK =
+  "The guard cannot see the model and effort its launches run on: approve only if you know what this workflow runs.";
+
+/** Said in `claude -p` after the reasons a run cannot be read. */
+const UNREADABLE_UNATTENDED =
+  "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
+
+/**
+ * The one answer for a whole Workflow call: a refusal or any denied launch denies it; a script
+ * it cannot read asks (denied in `claude -p`, where nobody can answer); else the ask names each
+ * launch that asks; else it is allowed.
+ */
+function workflowAnswer(
+  call: WorkflowCall,
+  env: Env,
+): { decision: "allow" | "ask" | "deny"; reason: string } {
+  if (call.refusal !== null) return { decision: "deny", reason: call.refusal };
+  const denied = call.results.find((one) => one.verdict.decision === "deny");
+  if (denied !== undefined) return { decision: "deny", reason: workflowReason(denied) };
+  if (call.unreadable.length > 0 && nobodyWatches(env)) {
+    return { decision: "deny", reason: [...call.unreadable, UNREADABLE_UNATTENDED].join("\n") };
+  }
+  const asks = [
+    ...call.unreadable.map((reason) => `${reason}\n${UNREADABLE_ASK}`),
+    ...call.results.filter((one) => one.verdict.decision === "ask").map(workflowReason),
+  ];
+  return asks.length > 0
+    ? { decision: "ask", reason: asks.join("\n") }
+    : { decision: "allow", reason: "" };
 }
 
 /** The guard's answer: what to do, in words for the person or Claude, and what it read. */
 export interface Verdict {
   decision: "allow" | "ask" | "deny";
+  /** The model and effort the launch really runs on, after Claude Code's overrides. */
+  ran: EffectiveLaunch;
   /** The launch's real model; null when the call named none and is not a fork. */
   real: LaunchModel | null;
   /** One short paragraph: the ask shown to the person, or the denial shown to Claude. */
@@ -841,11 +874,14 @@ export interface Verdict {
   why: string;
 }
 
-function allow(real: LaunchModel | null, why = ""): Verdict {
+/** A verdict before `judgeLaunch` adds what the launch really runs on. */
+type Judged = Omit<Verdict, "ran">;
+
+function allow(real: LaunchModel | null, why = ""): Judged {
   return { decision: "allow", real, reason: "", why };
 }
 
-function deny(real: LaunchModel | null, reason: string, why = ""): Verdict {
+function deny(real: LaunchModel | null, reason: string, why = ""): Judged {
   return { decision: "deny", real, reason, why };
 }
 
@@ -859,9 +895,12 @@ export function reasonLine(prompt: string, label: string): null | string {
   return null;
 }
 
-/** The first word of a reason line, lower case; null when it names a word not in `allowed`. */
+/**
+ * The first word of a reason line, as `firstWord` reads it (lower case, without the punctuation
+ * around it); null when it names a word not in `allowed`.
+ */
 function reasonWord(text: null | string, allowed: readonly string[]): null | string {
-  const word = text?.split(/\s+/)[0]?.toLowerCase() ?? "";
+  const word = firstWord(text) ?? "";
   return allowed.includes(word) ? word : null;
 }
 
@@ -871,11 +910,28 @@ const REASON_WORD_MAX = 40;
 /**
  * The first word of an `Opus reason:` line, lower case and without the punctuation around it
  * (`security.` and `` `security` `` both read `security`); null when the line has no word.
- * Nothing decides on it: it only names the purpose in the record.
+ * Mostly it only names the purpose in the record; the UI rule (`uiDeclaration`) decides on it.
  */
 function firstWord(text: null | string): null | string {
   const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
   return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
+}
+
+/**
+ * The UI/UX declaration a launch's prompt carries, or null (D50): the first word of an
+ * `Opus reason:` or a `Fable reason:` line, when it is one of `UI_REASON_WORDS`. Only a
+ * declared launch is held to the UI rule — a prompt that merely talks about a page or a
+ * layout is never sniffed for keywords, because a false positive would block real work.
+ */
+function uiDeclaration(prompt: string): null | string {
+  for (const label of ["Opus reason", "Fable reason"]) {
+    const said = reasonLine(prompt, label);
+    const word = firstWord(said);
+    if (word !== null && (UI_REASON_WORDS as readonly string[]).includes(word)) {
+      return `${label}: ${said}`;
+    }
+  }
+  return null;
 }
 
 const NO_MODEL = [
@@ -883,26 +939,43 @@ const NO_MODEL = [
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch.",
 ].join("\n");
 
-/** The levels of `ALLOWED_EFFORTS` as the guard's messages name them: `` `high`, `xhigh`, `max` ``. */
-const EFFORTS = ALLOWED_EFFORTS.map((one) => `\`${one}\``).join(", ");
-
 /** Levels as the guard's messages name them: `` `high` or `xhigh` ``. */
 function levelsText(levels: readonly string[]): string {
   const named = levels.map((one) => `\`${one}\``);
   return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
 }
 
+/** The levels of `ALLOWED_EFFORTS` as the guard's messages name them: `` `medium`, `high`, `xhigh` or `max` ``. */
+const EFFORTS = levelsText(ALLOWED_EFFORTS);
+
+/** What each allowed level is for (the owner's decision D13), as every effort message says it. */
+const EFFORT_USE =
+  "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` only when the person asks for it (an affordable gateway slot always runs at `max`).";
+
 const NO_EFFORT = [
   "This Agent launch names no `effort`.",
-  `An agent given none runs at the session's effort: pass \`effort\` on every launch — ${EFFORTS} only, never \`low\` or \`medium\` (\`max\` for the hardest problem, always on an affordable gateway slot).`,
+  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  EFFORT_USE,
 ].join("\n");
 
-/** Said when a launch names an effort a subagent never runs at: `low`, `medium`, or a level no rule knows. */
+/** Said when a launch names an effort a subagent never runs at: `low`, or a level no rule knows. */
 function effortDenial(effort: string): string {
   return [
-    `This launch asks for effort \`${effort}\`, which no subagent may run at (the owner's rule, 2026-10-16).`,
-    `A subagent runs at ${EFFORTS} only — \`low\` and \`medium\` are refused on every model, a Claude model and an affordable gateway slot alike.`,
-    "`high` is for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for the hardest problem only (always on an affordable gateway slot).",
+    `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
+    `A subagent runs at ${EFFORTS} — never \`low\`, on any model.`,
+    EFFORT_USE,
+  ].join("\n");
+}
+
+/**
+ * Said when a launch declares UI/UX work (D50) and would run on a tier or an effort UI/UX work
+ * never runs at. The line names the allowed models and efforts, built from `UI_POLICY`.
+ */
+function uiDenial(real: LaunchModel, effort: null | string, declared: string): string {
+  return [
+    `This launch declares UI/UX work (\`${declared}\`) and would run on \`${real.model}\` ${atEffort(effort)}.`,
+    `Use ${uiRuleText()} for UI/UX work (D50).`,
+    "Checking is not design: `cc-smart-dev-kit:ui-verifier` may run on an affordable model, and you judge its measured facts and screenshots on one of those tiers.",
   ].join("\n");
 }
 
@@ -931,7 +1004,7 @@ function atEffort(effort: null | string): string {
  * effort. A fork names no effort: it runs at the session's own.
  */
 function opusWhy(effort: null | string, word: null | string): string {
-  const level = effort ?? "session-effort";
+  const level = effort ?? SESSION_EFFORT;
   return word === null ? `opus:${level}` : `opus:${level}:${word}`;
 }
 
@@ -961,30 +1034,144 @@ function fableBuildDenial(real: LaunchModel, type: string): string {
   ].join("\n");
 }
 
-/** Judges one launch against the owner's rules; pure, so a test can drive every branch. */
+/**
+ * Where a person changes one of Claude Code's own variables: Claude cannot, since the call no
+ * longer carries the field the variable replaces.
+ */
+const WHERE_SET =
+  "where it is set — the environment Claude Code was started with, or the `env` of a Claude Code settings file (the user's, the project's, or the project's local one)";
+
+/** Said when `CLAUDE_CODE_EFFORT_LEVEL` names a level no subagent may run at. */
+function effortLevelDenial(level: string): string {
+  return [
+    `\`${EFFORT_LEVEL_ENV}\` is \`${level}\`, and Claude Code runs every subagent at it: no subagent may run at \`${level}\` (the plugin's rule).`,
+    `A subagent runs at ${EFFORTS} — never \`low\`, on any model.`,
+    `Only the person can change the variable: ask them to set it to one of those levels, or to remove it, ${WHERE_SET}.`,
+  ].join("\n");
+}
+
+/** Said when an override puts the launch on a model other than the one it names. */
+function modelNote(ran: EffectiveLaunch): null | string {
+  const ignored = "Claude Code ignores the launch's own `model`.";
+  if (ran.modelFrom === "force") {
+    return `This launch runs on \`${ran.model}\` because \`${SUBAGENT_MODEL_FORCE_ENV}\` is set, with \`${SUBAGENT_MODEL_ENV}=${ran.model}\`: ${ignored}`;
+  }
+  if (ran.modelFrom === "force-session") {
+    const which = ran.model === null ? "" : `, \`${ran.model}\`,`;
+    const unknown =
+      ran.model === null
+        ? " The guard cannot read the session's model, so it judges the launch as the opus tier."
+        : "";
+    return `This launch runs on the session's own model${which} because \`${SUBAGENT_MODEL_FORCE_ENV}\` is set without \`${SUBAGENT_MODEL_ENV}\`: ${ignored}${unknown}`;
+  }
+  if (ran.modelFrom === "workflow") {
+    return `This launch runs on \`${ran.model}\` because \`${WORKFLOW_SUBAGENT_MODEL_ENV}\` is set: Claude Code ignores the script's own \`model\`.`;
+  }
+  return null;
+}
+
+/** Said when `CLAUDE_CODE_EFFORT_LEVEL` sets the effort the launch runs at. */
+function effortNote(ran: EffectiveLaunch): null | string {
+  if (ran.effortFrom === null) return null;
+  return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
+}
+
+/**
+ * Judges one launch against the owner's rules; pure, so a test can drive every branch. It
+ * judges what the launch REALLY runs on (`effectiveLaunch`: Claude Code's FORCE, Workflow and
+ * effort overrides, read from `env`), and an ask or a denial names the override that applied.
+ */
 export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdict {
-  const named = launch.model;
+  const ran = effectiveLaunch(
+    {
+      effort: launch.effort,
+      fork: launch.fork,
+      model: launch.model,
+      workflow: launch.tool === "Workflow",
+    },
+    env,
+    ctx.sessionModel,
+  );
+  const { verdict, namesEffortLevel } = judgeRan(launch, ran, ctx, env);
+  if (verdict.decision === "allow") return { ...verdict, ran };
+  const notes = [modelNote(ran), namesEffortLevel ? null : effortNote(ran)].filter(
+    (one): one is string => one !== null,
+  );
+  return { ...verdict, ran, reason: [...notes, verdict.reason].join("\n") };
+}
+
+/** The verdict on what a launch really runs on; `namesEffortLevel` when its words already do. */
+function judgeRan(
+  launch: Launch,
+  ran: EffectiveLaunch,
+  ctx: GuardContext,
+  env: Env,
+): { namesEffortLevel: boolean; verdict: Judged } {
+  const judged = (verdict: Judged) => ({ namesEffortLevel: false, verdict });
   if (!launch.fork) {
-    if (named === null) return deny(null, NO_MODEL);
-    if (launch.effort === null) return deny(null, NO_EFFORT);
+    // A call that names no model, with no override to name it, would inherit the session's.
+    if (ran.modelFrom === "call" && ran.model === null) return judged(deny(null, NO_MODEL));
+    if (ran.effort === null) return judged(deny(null, NO_EFFORT));
   }
   // A fork always runs on the session's own model and effort: Claude Code ignores a `model` a
   // fork is given (`docs/claude-code-contract.md`), so judging the name it carries would judge a
-  // model it never runs on.
-  const real = launch.fork
-    ? forkModel(ctx.sessionModel, ctx, env)
-    : resolveLaunchModel(named ?? "", ctx, env);
-  // The owner's rule, before every model rule: a subagent never runs at `low` or `medium` — on
-  // a Claude model and an affordable slot alike. A level no rule knows is refused, not guessed.
-  if (launch.effort !== null && !effortAllowed(launch.effort)) {
-    return deny(real, effortDenial(launch.effort));
+  // model it never runs on. FORCE without a model of its own does the same for every launch.
+  const real =
+    ran.modelFrom === "fork" || ran.modelFrom === "force-session"
+      ? sessionLaunchModel(ran.model, ctx, env)
+      : resolveLaunchModel(ran.model ?? "", ctx, env);
+  // The effort rule, before every model rule: a subagent never runs at `low` — on a Claude model
+  // and an affordable slot alike. A level no rule knows is refused, not guessed.
+  // `CLAUDE_CODE_EFFORT_LEVEL=auto` is the person's own choice (`EFFORT_AUTO`): the model picks
+  // its default, which is never `max`, so it passes the effort rule and the opus tier's ask.
+  const auto = ran.effortFrom !== null && ran.effort === EFFORT_AUTO;
+  if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
+    return ran.effortFrom === null
+      ? judged(deny(real, effortDenial(ran.effort)))
+      : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
   }
+  // The affordable slot's own effort, when the variable sets it to another level: only the
+  // person can change that.
+  if (
+    ran.effortFrom !== null &&
+    isAffordable(real) &&
+    ctx.gatewayOn &&
+    ran.effort !== AFFORDABLE_EFFORT
+  ) {
+    return {
+      namesEffortLevel: true,
+      verdict: deny(
+        real,
+        [
+          `This launch runs on ${real.model}, an affordable gateway slot.`,
+          `An affordable slot runs at effort \`${AFFORDABLE_EFFORT}\` (its reasoning costs cents), and \`${ran.effortFrom}\` runs every subagent at \`${ran.effort}\`: only the person can change the variable — ask them to set it to \`${AFFORDABLE_EFFORT}\`, or to remove it, ${WHERE_SET}.`,
+        ].join("\n"),
+      ),
+    };
+  }
+  return judged(judgeModel({ ...launch, effort: ran.effort }, real, ctx, env));
+}
+
+/** The model rules, on the launch's real model and the effort it really runs at. */
+function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: Env): Judged {
   const type = launch.subagentType ?? "";
   const readOnly =
     ctx.readOnlyAgents === undefined
       ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV)
       : new Set(ctx.readOnlyAgents.map(agentKey));
   const builder = !readOnly.has(agentKey(type));
+
+  // UI/UX work (D50) comes before every tier rule: a launch that declares it runs only on the
+  // tiers and at the efforts `UI_POLICY` names, so a declared UI launch on Sonnet, Haiku or an
+  // affordable slot — or on an allowed tier below `high` — is refused here rather than allowed
+  // by the rule below. A fork names no effort: it runs at the session's own, which the person
+  // chose, so only its tier is judged.
+  const declared = uiDeclaration(launch.prompt);
+  if (declared !== null) {
+    const effort = launch.effort?.toLowerCase() ?? null;
+    const tooLow = effort !== null && !uiEffortAllowed(effort);
+    if (!uiTierAllowed(real) || tooLow) return deny(real, uiDenial(real, effort, declared));
+  }
 
   // The premium tiers come FIRST, before the affordable rule: `opus` and `fable` are the tier
   // whatever model answers behind them (owner, 2026-10-16), so an override or a family slot that
@@ -1078,13 +1265,14 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
     };
   }
 
-  if (!real.claude) {
-    if (ctx.gatewayOn && launch.effort?.toLowerCase() !== "max") {
+  // Both tiers answered above, so what is left is Claude Sonnet or Haiku, or an affordable model.
+  if (isAffordable(real)) {
+    if (ctx.gatewayOn && launch.effort?.toLowerCase() !== AFFORDABLE_EFFORT) {
       return deny(
         real,
         [
           `This launch runs on ${real.model}, an affordable gateway slot.`,
-          'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
+          `An affordable slot runs at effort \`${AFFORDABLE_EFFORT}\` (its reasoning costs cents): pass \`effort: "${AFFORDABLE_EFFORT}"\`.`,
         ].join("\n"),
       );
     }
@@ -1100,8 +1288,15 @@ function nobodyWatches(env: Env): boolean {
   return (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
 }
 
-/** The model behind a fork: the session's own, unknowable → Claude Opus. */
-function forkModel(sessionModel: null | string, gateway: GatewayFacts, env: Env): LaunchModel {
+/**
+ * The model behind a launch on the session's own model (a fork, or FORCE with no model of its
+ * own): unknowable → Claude Opus.
+ */
+function sessionLaunchModel(
+  sessionModel: null | string,
+  gateway: GatewayFacts,
+  env: Env,
+): LaunchModel {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
   return resolveLaunchModel(sessionModel, gateway, env);
@@ -1163,21 +1358,35 @@ export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): G
  * (`CC_SMART_DEV_KIT_HOOK_LOG`) runs this.
  */
 export function guardFacts(input: HookInput, context: HookEnvContext): Record<string, unknown> {
+  // After the call the guard answers nothing: a verdict there would read as a second question.
+  if (afterTheCall(input)) return { event: RAN_EVENT };
   const guard = readGuardContext(context.paths, input, context.env);
   const tool = stringField(input.tool_name);
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
-    const script = stringField(toolInput(input).script);
-    if (script === null) return {};
-    const refusal = workflowRefusal(script);
-    if (refusal !== null)
-      return { decision: "deny", launches: 0, tool: "Workflow", why: "unreadable" };
-    const results = judgeWorkflow(script, guard, context.env);
-    const decided = results.find((one) => one.verdict.decision !== "allow");
+    const call = judgeWorkflowCall(
+      toolInput(input),
+      guard,
+      context.env,
+      workflowPlace(context.paths, context.env, stringField(input.cwd) ?? ""),
+    );
+    const { decision } = workflowAnswer(call, context.env);
+    // What decided it: a script or a call the guard cannot read, else the first launch that
+    // gave the call its answer.
+    const decided = call.results.find((one) => one.verdict.decision === decision);
+    const why =
+      decision === "allow"
+        ? null
+        : call.refusal !== null ||
+            (call.unreadable.length > 0 && decided?.verdict.decision !== "deny")
+          ? "unreadable"
+          : decided === undefined
+            ? decision
+            : decided.verdict.why || decided.verdict.decision;
     return {
-      decision: decided?.verdict.decision ?? "allow",
-      launches: results.length,
+      decision,
+      launches: call.results.length,
       tool: "Workflow",
-      ...(decided === undefined ? {} : { why: decided.verdict.why || decided.verdict.decision }),
+      ...(why === null ? {} : { why }),
     };
   }
   const launch = readLaunch(input);
@@ -1193,36 +1402,115 @@ export function guardFacts(input: HookInput, context: HookEnvContext): Record<st
     tier: result.real?.tier ?? null,
     tool: launch.tool,
     ...(result.why === "" ? {} : { why: result.why }),
+    ...overrideFacts(result.ran),
   };
 }
 
-/** One line in the record, and one in the hook log, for an Opus or Fable launch. */
+/** The variable that set the model a launch runs on, for the log; null when none did. */
+function modelOverride(ran: EffectiveLaunch): null | string {
+  if (ran.modelFrom === "force" || ran.modelFrom === "force-session") {
+    return SUBAGENT_MODEL_FORCE_ENV;
+  }
+  return ran.modelFrom === "workflow" ? WORKFLOW_SUBAGENT_MODEL_ENV : null;
+}
+
+/** The overrides that applied, and what the launch ran on because of them: only when one did. */
+function overrideFacts(ran: EffectiveLaunch): Record<string, unknown> {
+  const model = modelOverride(ran);
+  return {
+    ...(model === null ? {} : { model_override: model, ran_model: ran.model }),
+    ...(ran.effortFrom === null ? {} : { effort_override: ran.effortFrom, ran_effort: ran.effort }),
+  };
+}
+
+/**
+ * Where a Workflow's scripts are found from this hook (`WorkflowPlace`): the input's `cwd`, the
+ * person's folders, and this plugin's own folder (`CLAUDE_PLUGIN_ROOT`, which Claude Code sets
+ * for a plugin's hook).
+ */
+function workflowPlace(paths: CliPaths, env: Env, cwd: string): WorkflowPlace {
+  return {
+    claudeConfigDir: paths.claudeConfigDir,
+    cwd,
+    home: paths.home,
+    installedPluginsFile: paths.installedPluginsFile,
+    pluginRoot: stringField(env.CLAUDE_PLUGIN_ROOT),
+  };
+}
+
+/**
+ * The model Claude Code resolved for a launch it started: `PostToolUse`'s
+ * `tool_response.resolvedModel` (`docs/claude-code-contract.md` § Hooks). PostToolUse on the
+ * Agent tool fires **at the launch**, not when the agent finishes, so this is the model the
+ * agent runs on (proved live on 2.1.306: `claude-opus-5-5` for a launch that named `opus`).
+ * Null on PreToolUse, and for a call whose answer carries none (a Workflow).
+ */
+export function resolvedModelOf(input: HookInput): null | string {
+  const response = input.tool_response;
+  if (typeof response !== "object" || response === null || Array.isArray(response)) return null;
+  return stringField((response as Record<string, unknown>).resolvedModel);
+}
+
+/**
+ * One line in the record for an Opus or Fable launch; null for any other. `index` is the
+ * launch's place in its tool call (a Workflow's launches share one `tool_use_id`).
+ */
 function recorded(
   result: Verdict,
   launch: Launch,
   input: HookInput,
   cwd: string,
   nowMs: number,
+  index: number,
 ): AgentLaunch | null {
   // The tier, not the vendor: a premium launch whose model is a backend is recorded too.
   const family = result.real?.tier;
   if (family !== "opus" && family !== "fable") return null;
+  const reason = result.why === "" ? result.decision : result.why;
   return {
     at: nowMs,
+    // What it really ran at, after Claude Code's overrides; a fork at the session's own.
+    effort: result.ran.effort?.toLowerCase() ?? SESSION_EFFORT,
     family,
-    model: result.real?.model ?? "",
+    launchIndex: index,
+    // What Claude Code says the launch runs on, when it says (PostToolUse, the record of an
+    // asked launch); else what the guard resolved from the model name.
+    model: resolvedModelOf(input) ?? result.real?.model ?? "",
     project: cwd,
-    reason: result.why === "" ? result.decision : result.why,
+    reason,
     session: stringField(input.session_id) ?? "",
     subagentType: launch.subagentType ?? "",
     toolUseId: stringField(input.tool_use_id) ?? "",
+    word: reasonParts(reason).word,
   };
 }
 
 /**
+ * The event that says a call RAN. A PreToolUse hook cannot know the person's answer to an ask,
+ * so an asked launch is recorded here instead: Claude Code runs PostToolUse only for a call
+ * that ran, and an asked call runs only on the person's yes. The guard says nothing there.
+ */
+export const RAN_EVENT = "PostToolUse";
+
+/** True when the input is the guard's run after the call (`RAN_EVENT`), not its question. */
+function afterTheCall(input: HookInput): boolean {
+  return stringField(input.hook_event_name) === RAN_EVENT;
+}
+
+/**
  * The hook's answer: judge the launch (or every launch a Workflow script makes), record an
- * Opus or Fable one, and answer with the PreToolUse decision. Anything it cannot read lets
- * the call through.
+ * Opus or Fable one once it is known to run, and answer with the PreToolUse decision.
+ *
+ * The record: on PreToolUse, a call the guard allows outright (it runs with no question); on
+ * PostToolUse (`RAN_EVENT`), a call the guard asked about (it ran, so the person said yes). So
+ * a launch the person refuses is never recorded, and none is recorded twice. A Workflow is one
+ * call: when any of its launches asks, the person may refuse them all, so all wait for the run.
+ * Each of a Workflow's launches is recorded under its own index, as its own line.
+ *
+ * A Workflow run is judged however it names its script — inline, `scriptPath`, a saved or a
+ * plugin's `name` — with the workflows it nests (`judgeWorkflowCall`). One the guard cannot read
+ * (a built-in, a missing file, a resume) asks, and is refused in `claude -p`. Anything else it
+ * cannot work out lets the call through.
  */
 export function agentGuard(
   input: HookInput,
@@ -1234,32 +1522,31 @@ export function agentGuard(
   const tool = stringField(input.tool_name);
   const context = readGuardContext(paths, input, env);
   const file = agentLaunchesFile(paths.stateDir);
+  const ran = afterTheCall(input);
+  const record = (judged: ReadonlyArray<{ launch: Launch; verdict: Verdict }>) => {
+    const lines = judged
+      .map((one, index) => recorded(one.verdict, one.launch, input, cwd, nowMs, index))
+      .filter((line): line is AgentLaunch => line !== null);
+    if (lines.length > 0) appendAgentLaunches(file, lines);
+  };
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
-    const script = stringField(toolInput(input).script);
-    if (script === null) return SILENT;
-    // A launch the guard cannot follow — `agent` handed around, options built at run time —
-    // refuses the whole call: the rules would not hold for it.
-    const refusal = workflowRefusal(script);
-    if (refusal !== null) return toolDecision("deny", refusal);
-    const results = judgeWorkflow(script, context, env);
-    // The strictest verdict of the script's launches answers for the whole call: a deny refuses
-    // it, so nothing in it ran and none of its launches is recorded; otherwise every asking and
-    // allowed launch is, and the ask names each launch that asks.
-    const decided = results.find((one) => one.verdict.decision === "deny");
-    if (decided !== undefined) return toolDecision("deny", workflowReason(decided));
-    for (const one of results) {
-      const record = recorded(one.verdict, asLaunch(one.launch), input, cwd, nowMs);
-      if (record !== null) appendAgentLaunch(file, record);
+    const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
+    // One answer for the whole call: a deny refuses it, so nothing in it runs and none of its
+    // launches is recorded; an ask names each launch that asks and each script it cannot read.
+    const answer = workflowAnswer(call, env);
+    if (answer.decision === "deny") return ran ? SILENT : toolDecision("deny", answer.reason);
+    const asked = answer.decision === "ask";
+    // Recorded when the whole call is known to run: at once when nothing in it asks, else after
+    // it ran.
+    if (ran === asked) {
+      record(call.results.map((one) => ({ launch: asLaunch(one.launch), verdict: one.verdict })));
     }
-    const asks = results.filter((one) => one.verdict.decision === "ask");
-    return asks.length === 0
-      ? SILENT
-      : toolDecision("ask", asks.map((one) => workflowReason(one)).join("\n"));
+    if (ran || !asked) return SILENT;
+    return toolDecision("ask", answer.reason);
   }
   const launch = readLaunch(input);
   if (launch === null) return SILENT;
   const result = judgeLaunch(launch, context, env);
-  const launchRecord = recorded(result, launch, input, cwd, nowMs);
-  if (launchRecord !== null && result.decision !== "deny") appendAgentLaunch(file, launchRecord);
-  return result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
+  if (result.decision === (ran ? "ask" : "allow")) record([{ launch, verdict: result }]);
+  return ran || result.decision === "allow" ? SILENT : toolDecision(result.decision, result.reason);
 }

@@ -1,0 +1,38 @@
+schema_version: "1.1"
+name: crew-reports-to-the-lead
+description: >-
+  D47: a crew session's hand-back is `crew report` to its lead, never a message to a peer. The
+  session is the crew session of a finished phase, and another crew session works beside it: it
+  reports `done` and sends no `SendMessage`. A session that tells the peer "done" instead of
+  reporting fails. In the eval sandbox the report command cannot record anything (no lead, no
+  crew store), so the case grades the attempt.
+tags: [watch, workflow, needs-shell]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 15
+  allowed_tools: [Read, Glob, Grep, Skill, Bash, SendMessage]
+  prompt: |
+    You are the crew session C my-app B1 lookup, and your phase is finished: the tests pass, the
+    review is done and its fixes are committed.
+
+    Your lead is LEAD my-app master-plan. The crew session C my-app B2 api builds the endpoint
+    beside you and has just asked how your part is going.
+
+    Hand back.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: fires-crew
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?crew"'
+  - name: reports-to-the-lead
+    type: tool_used
+    tool: 'Bash'
+    input_match: '\bcrew\s+report\b'
+  - name: no-message-to-a-peer
+    type: tool_used
+    tool: 'SendMessage'
+    min: 0
+    max: 0
+    arm: 'both'

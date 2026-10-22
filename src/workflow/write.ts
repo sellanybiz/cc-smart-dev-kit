@@ -20,14 +20,14 @@
  */
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { z } from "zod";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
 import { STATUSLINE_KEY, statuslineSetting } from "../cli/setup";
-import { CcSmartDevKitConfigError, ccSmartDevKitConfigSchema } from "../project/config";
+import { checkCcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
 import { atomicWrite, backupFile, realTarget } from "../setup/write";
 import { heldSince, hold, resume, updateFiles } from "../update/state";
+import { describeIssues } from "../zod-issues";
 import { personalWorkflowFile, WorkflowConfigError } from "./resolve";
 import {
   isSwitchKey,
@@ -49,18 +49,6 @@ function unknownKey(key: string): Error {
 function requireKey(key: string): WorkflowKey {
   if (!WORKFLOW_KEYS.includes(key as WorkflowKey)) throw unknownKey(key);
   return key as WorkflowKey;
-}
-
-/** The issue list of a failed parse, in the shape the other config files report one. */
-function describeIssues(issues: readonly z.core.$ZodIssue[]): string {
-  return issues
-    .map((issue) => {
-      const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-      return issue.code === "unrecognized_keys"
-        ? `${(issue.keys ?? []).join(", ")}: unknown field`
-        : `${field}: ${issue.message}`;
-    })
-    .join("; ");
 }
 
 /** `data` with `path` set to `value`; the objects along the way are made when missing. */
@@ -184,10 +172,9 @@ function writeProjectFile(
   const before = structuredClone(data);
   if (value === undefined) removeLeaf(data, path);
   else setLeaf(data, path, value);
-  const checked = ccSmartDevKitConfigSchema.safeParse(data);
-  if (!checked.success) {
-    throw new CcSmartDevKitConfigError(`Invalid ${file}: ${describeIssues(checked.error.issues)}`);
-  }
+  // The same checks every reader of the file runs (`requires`, the retired engine fields, the
+  // strict parse), so this never writes a file the hooks would then refuse.
+  checkCcSmartDevKitConfig(data, file);
   if (Bun.deepEquals(before, data, true)) return shownNothing(file, key, value);
   // A backup first, in the state folder: `restore` does not undo a project's file (it is the
   // project's, committed to git), so the backup is only there to look at.

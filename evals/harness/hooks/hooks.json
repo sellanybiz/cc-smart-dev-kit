@@ -1,0 +1,35 @@
+{
+  "description": "Puts the kit's general instructions into each eval session. One hook per part: Claude Code caps one hook's output at 10,000 characters, so the loader splits the text and each hook prints one part.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/load-instructions.ts", "1"],
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/load-instructions.ts", "2"],
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/load-instructions.ts", "3"],
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bun",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/load-instructions.ts", "4"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

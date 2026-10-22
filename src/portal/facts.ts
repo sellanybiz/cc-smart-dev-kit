@@ -45,6 +45,7 @@ import {
   type LimitRecord,
   parseLimitState,
 } from "../gateway/limit-state";
+import { maskedLine } from "../gateway/plain-text";
 import { UNIT_NAME } from "../gateway/service";
 import { settingsReport, shownBackendUrl } from "../gateway/settings";
 import { FAMILY_SLOTS, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
@@ -52,8 +53,11 @@ import { companionChecks, companionState, companions } from "../machine/companio
 import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
-import type { CcSmartDevKitConfig } from "../project/config";
-import { resolveProject } from "../project/resolve";
+import { type CcSmartDevKitConfig, CcSmartDevKitRetiredFieldError } from "../project/config";
+import { locateCheckout, resolveProject } from "../project/resolve";
+import { redactUrlsIn } from "../setup/marketplace-access";
+// Pure, and about the resolved values alone: no seam of its own (`workflow-adapter.ts`).
+import { type Clash, clashesOf } from "../workflow/clashes";
 import type { PortalContext } from "./context";
 import { type SettingsRow, settingsRows } from "./settings";
 import type {
@@ -62,6 +66,7 @@ import type {
   ProjectInitDefaults,
   ProjectInitPlan,
   ResolvedWorkflow,
+  SettingsFilePlan,
   WorkflowAdapter,
 } from "./workflow-adapter";
 
@@ -443,6 +448,18 @@ export interface BackendRow {
   why: null | string;
 }
 
+/** How long a backend's own error text on a page may be (the router's log keeps as much). */
+const DETAIL_MAX = 300;
+
+/**
+ * A backend's own error text, as a page may hold it: one line, every URL without its
+ * credentials, and the backend's key (and anything else that looks like one) masked. A backend
+ * can echo the key it was sent, and a parser's message quotes what it could not read.
+ */
+export function shownDetail(text: string, keys: readonly string[]): string {
+  return maskedLine(redactUrlsIn(text), keys, DETAIL_MAX);
+}
+
 /** Each backend's model list, timed, with its key masked and never sent to a page. */
 export async function backendRows(
   ctx: PortalContext,
@@ -457,7 +474,14 @@ export async function backendRows(
     const ms = ctx.now() - started;
     const url = shownBackendUrl(backend.baseUrl, backend.apiKey);
     if ("error" in listed) {
-      rows.push({ models: [], ms: null, name, state: "failed", url, why: listed.error });
+      rows.push({
+        models: [],
+        ms: null,
+        name,
+        state: "failed",
+        url,
+        why: shownDetail(listed.error, [backend.apiKey]),
+      });
       continue;
     }
     if (listed.status !== 200) {
@@ -711,8 +735,14 @@ export interface ProjectRead {
   config: CcSmartDevKitConfig | null;
   /** The file it came from; null when there is none. */
   configFile: null | string;
-  /** The repo root: `<root>/.claude/` holds the two files the Project card writes. */
+  /** The repo root: `<root>/.claude/` holds the files the Project card writes. */
   root: null | string;
+  /**
+   * True: the project's file is there but still holds a retired worktree engine field
+   * (`CcSmartDevKitRetiredFieldError`), so `config` is null and `why` says which. The root is
+   * kept: the Project card's write takes the field out.
+   */
+  retired: boolean;
   /** Why there is no usable project, in words; null when there is one, or none is needed. */
   why: null | string;
 }
@@ -724,6 +754,7 @@ export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
       return {
         config: null,
         configFile: null,
+        retired: false,
         root: null,
         why: "this folder is not inside a git project",
       };
@@ -731,18 +762,37 @@ export function readProject(ctx: PortalContext, cwd: string): ProjectRead {
     return {
       config: project.config,
       configFile: project.configFile,
+      retired: false,
       root: project.root,
       why: project.config === null ? "this project has no .claude/cc-smart-dev-kit.json yet" : null,
     };
   } catch (error) {
+    // A file that fails only on a retired worktree engine field keeps its root: the Project
+    // card's write is the fix (the same plan as `project init`, which takes the field out).
+    if (error instanceof CcSmartDevKitRetiredFieldError) {
+      const root = rootOf(cwd, ctx.env);
+      if (root !== null) {
+        return { config: null, configFile: null, retired: true, root, why: messageOf(error) };
+      }
+    }
     // Git older than 2.31, a main checkout that moved, or a cc-smart-dev-kit.json that is
     // broken or needs a newer plugin: doctor's to report, and a line here.
     return {
       config: null,
       configFile: null,
+      retired: false,
       root: null,
       why: messageOf(error),
     };
+  }
+}
+
+/** The checkout's root, or null when it cannot be found (the file's own error is the line). */
+function rootOf(cwd: string, env: Env): null | string {
+  try {
+    return locateCheckout(cwd, { env })?.root ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -761,52 +811,67 @@ function readTextFile(file: string): null | string {
   }
 }
 
-/** Where the two files of a project live: `<root>/.claude/`. */
-export function projectFiles(root: string): { config: string; settings: string } {
+/** Where a project's files live: `<root>/.claude/`. */
+export function projectFiles(root: string): {
+  config: string;
+  localSettings: string;
+  settings: string;
+} {
   return {
     config: join(root, ".claude", "cc-smart-dev-kit.json"),
+    localSettings: join(root, ".claude", "settings.local.json"),
     settings: join(root, ".claude", "settings.json"),
   };
 }
 
-/** Both files as they are now: what a plan is made against, read at the moment it is made. */
-export function projectFileTexts(root: string): {
+/** The project's files as they are now: what a plan is made against, read at the moment it is made. */
+export interface ProjectFileTexts {
   existing: null | string;
+  existingLocalSettings: null | string;
   existingSettings: null | string;
-} {
+}
+
+/** The project's files as they are now: what a plan is made against, read at the moment it is made. */
+export function projectFileTexts(root: string): ProjectFileTexts {
   const files = projectFiles(root);
   return {
     existing: readTextFile(files.config),
+    existingLocalSettings: readTextFile(files.localSettings),
     existingSettings: readTextFile(files.settings),
   };
 }
 
 /**
- * The line under the Project card's settings preview: what the plan does to the settings file.
- * One home — the page draws it and the preview's answer carries it (`project.preview`), so
- * the sentence can never describe a different plan than the boxes beside it. The plan adds
- * Claude Code's `worktree.baseRef: "head"` when the base branch is not the repo's default
- * branch, and never takes a key out.
+ * The line under the Project card's settings preview: what the plan does to
+ * `.claude/settings.json`. One home — the page draws it and the preview's answer carries it
+ * (`project.preview`), so the sentence can never describe a different plan than the boxes
+ * beside it. The plan adds Claude Code's `worktree.baseRef: "head"` when the base branch is
+ * not the repo's default branch, and takes out only the retired worktree engine's hook lines.
  */
-export function settingsLineNote(added: number): string {
-  return added > 0
-    ? `${added} line${added === 1 ? "" : "s"}, added inside the existing file. Nothing else there changes.`
-    : "No line is added to .claude/settings.json.";
+export function settingsLineNote(settings: SettingsFilePlan): string {
+  const added = settings.adds.length;
+  const removed = settings.removes.length;
+  if (added === 0 && removed === 0) return "No line is added to .claude/settings.json.";
+  const lines = (count: number) => `${count} line${count === 1 ? "" : "s"}`;
+  if (removed === 0) {
+    return `${lines(added)}, added inside the existing file. Nothing else there changes.`;
+  }
+  const taken = `${lines(removed)} of the retired worktree engine taken out`;
+  return `${added === 0 ? "" : `${lines(added)} added, `}${taken}. Nothing else there changes.`;
 }
 
 /**
- * A short hash of the two files a plan was made against. The preview sends it, the write sends
- * it back, and the server matches the two: a plan made before someone else changed the file
+ * A short hash of the files a plan was made against. The preview sends it, the write sends
+ * it back, and the server matches the two: a plan made before someone else changed a file
  * is refused instead of quietly overwriting them.
  */
-export function projectFilesHash(texts: {
-  existing: null | string;
-  existingSettings: null | string;
-}): string {
+export function projectFilesHash(texts: ProjectFileTexts): string {
   return createHash("sha256")
     .update(texts.existing ?? "\u0000")
     .update("\u0000")
     .update(texts.existingSettings ?? "\u0000")
+    .update("\u0000")
+    .update(texts.existingLocalSettings ?? "\u0000")
     .digest("hex")
     .slice(0, 32);
 }
@@ -824,11 +889,11 @@ export interface ProjectCardData {
   /** Why the preview cannot be built; null when it can. */
   planError: null | string;
   /**
-   * `projectFilesHash` of the two files the plan was made against; null when there is no plan.
+   * `projectFilesHash` of the files the plan was made against; null when there is no plan.
    * It travels to the page and comes back with the write.
    */
   filesHash: null | string;
-  /** The repo root the two files go in; null when the folder is not in a git project. */
+  /** The repo root the files go in; null when the folder is not in a git project. */
   root: null | string;
   /** True: `.claude/cc-smart-dev-kit.json` is there. */
   set: boolean;
@@ -871,7 +936,9 @@ export function projectCardData(
     ...base,
     name: projectName(project.root),
     root: project.root,
-    set: project.config !== null,
+    // A file that still holds a retired engine field is there, but does not load: the card
+    // shows its form, and the plan takes the field out.
+    set: project.config !== null || project.retired,
   };
   try {
     // The defaults are the CLI's own detection over the project's file; the plan is then made
@@ -887,8 +954,13 @@ export function projectCardData(
         answers: defaults.answers,
         defaultBranch: defaults.defaultBranch,
         existing: texts.existing,
+        existingLocalSettings: texts.existingLocalSettings,
         existingSettings: texts.existingSettings,
         root: project.root,
+        // D16's clash warning judges the policy the guards will see: the person's own file
+        // is half of it. A file that cannot be read is `{}` (`personalWorkflowOrDefault`), so
+        // the plan still shows.
+        personalWorkflow: workflow.personalWorkflowOrDefault(ctx.paths),
       }),
     };
   } catch (error) {
@@ -909,6 +981,11 @@ export interface SettingsData {
   /** What to know about the project, when its own file cannot be read; null otherwise. */
   projectNote: null | string;
   rows: SettingsRow[];
+  /**
+   * The settings that cannot work together (D16, `src/workflow/clashes.ts`), each shown under
+   * its own row: the same words `workflow show` prints.
+   */
+  clashes: Clash[];
 }
 
 /**
@@ -923,6 +1000,7 @@ export function settingsData(
 ): SettingsData {
   const empty = (why: string | null): SettingsData => ({
     autoMerge: null,
+    clashes: [],
     error: why,
     projectNote: null,
     rows: [],
@@ -953,7 +1031,13 @@ export function settingsData(
         base,
       }
     : null;
-  return { autoMerge, error: null, projectNote, rows };
+  return {
+    autoMerge,
+    clashes: clashesOf(resolved, base),
+    error: null,
+    projectNote,
+    rows,
+  };
 }
 
 export async function omnirouteRow(

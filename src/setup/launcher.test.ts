@@ -1,9 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { findUserInstall } from "./installed-plugins";
 import { bakedBunPath, installLauncher, launcherScript } from "./launcher";
+
+// This file starts the launcher as a real process (it starts bun, and a stand-in CLI):
+// its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 describe("bakedBunPath", () => {
   test.each([

@@ -141,11 +141,52 @@ describe("the hooks' bun shim", () => {
     expect(result.exitCode).toBe(0);
   });
 
+  test("the command shim runs through this shim, with --missing=fail: a command must not report success", () => {
+    // `plugin/bin/cc-smart-dev-kit` (the CLI, on the Bash tool's PATH) used to call a bare
+    // `bun`, which does not start at all when Claude Code's PATH has none. It now runs through
+    // this shim: the same bun lookup, the same two flags, and a command that cannot run says
+    // why and exits 1.
+    const command = readFileSync(join(PLUGIN, "bin", "cc-smart-dev-kit"), "utf8");
+    expect(command).toContain("cc-smart-dev-kit-bun.sh");
+    expect(command).toContain("--missing=fail");
+    expect(command).toContain("dist/cli.js");
+    // And it runs where PATH has no bun: the only bun is in ~/.bun/bin, which a bare `bun`
+    // never looks in and the shim does.
+    const home = tempDir("shim");
+    fakeBun(join(home, ".bun", "bin", "bun"), "cli-bun");
+    const result = Bun.spawnSync([join(PLUGIN, "bin", "cc-smart-dev-kit"), "--help"], {
+      env: { HOME: home, PATH: NO_BUN_PATH },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.stdout.toString()).toBe(
+      `cli-bun ${FLAGS} ${join(PLUGIN, "bin")}/../dist/cli.js --help\n`,
+    );
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("the command shim with no bun anywhere: one line on stderr, exit 1", () => {
+    const home = tempDir("shim");
+    const result = Bun.spawnSync([join(PLUGIN, "bin", "cc-smart-dev-kit"), "--help"], {
+      env: { HOME: home, PATH: NO_BUN_PATH },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe(
+      "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, $BUN_INSTALL/bin, ~/.bun/bin or PATH), so the command did not run. Install bun, then run: cc-smart-dev-kit setup\n",
+    );
+  });
+
   test("hooks.json runs every hook through the shim, in shell form, each with its missing-bun mode", () => {
     // The form itself — shell form, quoting, the `.sh` first token — is `src/hooks/entries.test.ts`;
     // this checks the shim's own part: every hook names THIS file, with a mode and a bundle.
     const hooks = JSON.parse(readFileSync(join(PLUGIN, "hooks", "hooks.json"), "utf8")) as {
-      hooks: Record<string, { hooks: { args?: string[]; command: string; type: string }[] }[]>;
+      hooks: Record<
+        string,
+        { hooks: { args?: string[]; command: string; onFailure?: string; type: string }[] }[]
+      >;
     };
     // What the shell does with the variable: Claude Code exports the plugin folder, and the
     // shell expands `${CLAUDE_PLUGIN_ROOT}` inside the command.
@@ -161,11 +202,15 @@ describe("the hooks' bun shim", () => {
       expect(hook.args).toBeUndefined();
       const command = expand(hook.command);
       expect(command).toStartWith(`"${SHIM}" `);
-      // A guard fails closed: with no bun it asks. Every other hook is quiet — the notifier
-      // is wired on PreToolUse too, and is not a guard.
+      // A guard fails closed: with no bun it asks, and its entry says `onFailure: "block"`,
+      // so a hook that cannot start blocks the tool call. Every other hook is quiet — the
+      // notifier is wired on PreToolUse too, and is not a guard.
       const bundle = (command.match(/\/dist\/([a-z-]+)\.js"$/) ?? [])[1] ?? "";
       expect(command).toBe(
         `"${SHIM}" ${event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "--missing=ask" : "--missing=quiet"} "${join(PLUGIN, "dist", `${bundle}.js`)}"`,
+      );
+      expect(hook.onFailure).toBe(
+        event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "block" : undefined,
       );
     }
     // Every event the plugin wires, and only those.
@@ -179,6 +224,7 @@ describe("the hooks' bun shim", () => {
         "SessionStart",
         "Stop",
         "StopFailure",
+        "SubagentStart",
         "SubagentStop",
         "UserPromptSubmit",
       ]),

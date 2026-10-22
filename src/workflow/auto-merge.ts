@@ -20,17 +20,24 @@
  * done — and after `resolved.autoMerge` is on. Nothing here runs a command; it is a decision,
  * so it is a pure function with its own tests.
  */
+
 import type { CcSmartDevKitConfig } from "../project/config";
-import type { ResolvedWorkflow } from "./resolve";
+import { CONFIG_PATH } from "../project/resolve";
+import { type ResolvedWorkflow, sourceLabel } from "./resolve";
 
 /**
  * The first condition on its own: the policy is off. The merge guard asks with this before
  * it reads anything with `gh`, so a machine without `gh` still hears the real reason.
+ *
+ * `base` is the branch whose committed file the value was read from (`resolveGate`), or null
+ * when none was. The way to turn it on is the way the guard reads it: in the project's file,
+ * committed to that branch and pushed — never a `workflow set` a session cannot run, nor a
+ * change in a checkout the guard does not read.
  */
-export function autoMergeOff(resolved: ResolvedWorkflow): string | null {
-  return resolved.autoMerge.value
-    ? null
-    : `autoMerge is off (${resolved.autoMerge.source}): turn it on with \`cc-smart-dev-kit workflow set autoMerge true --project\``;
+export function autoMergeOff(resolved: ResolvedWorkflow, base: string | null): string | null {
+  if (resolved.autoMerge.value) return null;
+  const where = base ?? "the integration base (worktrees.base)";
+  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
 }
 
 /**
@@ -46,7 +53,8 @@ export function autoMergeRefusal(
   prBase: string,
   defaultBranch: string,
 ): string | null {
-  const off = autoMergeOff(resolved);
+  // The guard reads the policy committed on the pull request's own base (`resolveGate`).
+  const off = autoMergeOff(resolved, prBase);
   if (off !== null) return off;
   const integration = projectConfig?.worktrees?.base;
   if (integration === undefined) {

@@ -4,7 +4,7 @@
  * (docs/claude-code-contract.md). The entry runs as a subprocess with a fake `notify-send`
  * first on PATH and a fake launcher that runs this CLI's source; its stdout must stay empty.
  */
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
@@ -12,9 +12,12 @@ import type { GatewayConfig } from "../gateway/config";
 import type { LimitState } from "../gateway/limit-state";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import {
   type Alert,
   type AlertContext,
+  BREAKER_ALERT_FILE,
+  breakerAlert,
   limitAlertDesktop,
   parseAlert,
   planAlert,
@@ -25,6 +28,9 @@ import {
   usesAlertWorker,
 } from "./stop-failure";
 import { decodedToastText } from "./windows-toast";
+
+// This file starts the CLI (through the fake launcher) as a real process: its own speed limit.
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
 const RESET = NOW / 1000 + 3 * 3600;
@@ -85,6 +91,40 @@ function state(model: string, seenAgoMs: number): LimitState {
   };
 }
 
+const BREAKER_SLOT = "cc-smart-dev-kit-worker";
+/** When the breaker opened: 09:40, twenty minutes before NOW. */
+const BREAKER_SINCE = NOW - 20 * 60_000;
+
+/** The hook input on the router's breaker 429, as a subscription shows it (research § 6). */
+const BREAKER = {
+  ...AT_LIMIT,
+  last_assistant_message: `API Error: Server is temporarily limiting requests (not your usage limit) · cc-smart-dev-kit-router: every target of ${BREAKER_SLOT} is limited or down since 09:40 (omniroute:ollama-cloud/glm-5.3-flash: HTTP 429, until 10:07); change it: cc-smart-dev-kit gateway slot worker <targets>`,
+};
+
+/** The state file with the worker's breaker open; `lastAt` fresh unless a test says otherwise. */
+function breaker(extra: { lastAt?: number; since?: number } = {}): LimitState {
+  return {
+    breakers: {
+      [BREAKER_SLOT]: {
+        held: 3,
+        lastAt: extra.lastAt ?? NOW - 5_000,
+        since: extra.since ?? BREAKER_SINCE,
+        targets: [
+          { status: 429, target: "omniroute:ollama-cloud/glm-5.3-flash", until: NOW + 7 * 60_000 },
+          {
+            status: 503,
+            target: "omniroute:ollama-cloud/deepseek-v4.1-flash",
+            until: NOW + 9 * 60_000,
+          },
+        ],
+      },
+    },
+    fallbacks: {},
+    limits: {},
+    version: 1,
+  };
+}
+
 /** The alerts settings at their defaults: every moment alerts, and no sound (`workflow`). */
 function alerts(extra: Partial<AlertContext["alerts"]> = {}): AlertContext["alerts"] {
   return {
@@ -99,6 +139,7 @@ function ctx(extra: Partial<AlertContext> = {}): AlertContext {
   return {
     alerts: alerts(),
     alertsProblem: null,
+    breakerAlerted: {},
     config: config(),
     gatewayOn: true,
     gatewaySetUp: true,
@@ -106,6 +147,7 @@ function ctx(extra: Partial<AlertContext> = {}): AlertContext {
     sessionModel: null,
     state: state("claude-opus-5-5", 5_000),
     timeZone: "UTC",
+    watchdogOn: false,
     ...extra,
   };
 }
@@ -372,12 +414,14 @@ describe("which stops get an alert", () => {
     expect(read).toEqual({
       alerts: alerts(),
       alertsProblem: null,
+      breakerAlerted: {},
       config: null,
       gatewayOn: false,
       gatewaySetUp: true,
       nowMs: NOW,
       sessionModel: "claude-fable-5-1",
       state: null,
+      watchdogOn: false,
     });
   });
 
@@ -443,6 +487,136 @@ describe("which stops get an alert", () => {
         env: { CLAUDE_JOB_DIR: join(home, "job"), DISPLAY: ":0" },
       }),
     ).toBe(false);
+  });
+});
+
+describe("the breaker's 429", () => {
+  const HEAD =
+    "cc-smart-dev-kit-worker: every target limited or down since 09:40 (omniroute:ollama-cloud/glm-5.3-flash HTTP 429 until 10:07; omniroute:ollama-cloud/deepseek-v4.1-flash HTTP 503 until 10:09).";
+
+  it("one alert per opening: the slot, since when, each target's reason, and the command", () => {
+    expect(breakerAlert(BREAKER, ctx({ state: breaker() }))).toEqual({
+      alert: {
+        action: {
+          commands: [["gateway", "slot", "worker", "omniroute:ollama-cloud/deepseek-v4.1-flash"]],
+          label: "Use deepseek-v4.1-flash",
+        },
+        body: `${HEAD} To use another model: cc-smart-dev-kit gateway slot worker omniroute:ollama-cloud/deepseek-v4.1-flash. Then send a message to go on.`,
+        title: "Gateway slot limited",
+      },
+      since: BREAKER_SINCE,
+      slot: BREAKER_SLOT,
+    });
+    // The mark says the person already heard about this opening: no second alert.
+    expect(
+      breakerAlert(
+        BREAKER,
+        ctx({ breakerAlerted: { [BREAKER_SLOT]: BREAKER_SINCE }, state: breaker() }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a new opening alerts again, with its own since", () => {
+    const next = breakerAlert(
+      BREAKER,
+      ctx({
+        breakerAlerted: { [BREAKER_SLOT]: BREAKER_SINCE },
+        state: breaker({ since: BREAKER_SINCE + 60_000 }),
+      }),
+    );
+    expect(next?.alert.body).toStartWith(
+      "cc-smart-dev-kit-worker: every target limited or down since 09:41 (",
+    );
+  });
+
+  it("a stale record, another error, no gateway, or another stop: no alert", () => {
+    // A stopped router leaves its record behind; 15 minutes without it being touched is stale.
+    expect(
+      breakerAlert(BREAKER, ctx({ state: breaker({ lastAt: NOW - 16 * 60_000 }) })),
+    ).toBeNull();
+    expect(
+      breakerAlert({ ...BREAKER, error: "server_error" }, ctx({ state: breaker() })),
+    ).toBeNull();
+    expect(breakerAlert(BREAKER, ctx({ gatewaySetUp: false, state: breaker() }))).toBeNull();
+    expect(breakerAlert(SHORT, ctx())).toBeNull();
+    expect(breakerAlert(BREAKER, ctx({ state: null }))).toBeNull();
+    // The breaker's 429 is no plan limit: the plan alert never takes it.
+    expect(planAlert(BREAKER, ctx({ state: breaker() }))).toBeNull();
+  });
+
+  it("the watchdog on: Claude Code goes on by itself; off: then send a message to go on", () => {
+    const off = breakerAlert(BREAKER, ctx({ state: breaker() }));
+    expect(off?.alert.body).toEndWith("Then send a message to go on.");
+    const on = breakerAlert(BREAKER, ctx({ state: breaker(), watchdogOn: true }));
+    expect(on?.alert.body).toEndWith("Claude Code goes on by itself.");
+    expect(on?.alert.action).toEqual(off?.alert.action ?? null);
+  });
+
+  it("an API key's 429: the router's message is found after `Request rejected (429)`", () => {
+    const apiKey = {
+      ...BREAKER,
+      last_assistant_message: `API Error: Request rejected (429) · cc-smart-dev-kit-router: every target of ${BREAKER_SLOT} is limited or down since 09:40 (omniroute:ollama-cloud/glm-5.3-flash: HTTP 429, until 10:07)`,
+    };
+    expect(breakerAlert(apiKey, ctx({ state: breaker() }))?.alert.title).toBe(
+      "Gateway slot limited",
+    );
+  });
+
+  it("no backend target in the person's own chains: no action, and it points at `gateway models`", () => {
+    const claudeOnly = config({ slots: { [BREAKER_SLOT]: ["claude-sonnet-5-5"] } });
+    expect(breakerAlert(BREAKER, ctx({ config: claudeOnly, state: breaker() }))?.alert).toEqual({
+      action: null,
+      body: `${HEAD} To use another model, pick one: cc-smart-dev-kit gateway models lists them. Then send a message to go on.`,
+      title: "Gateway slot limited",
+    });
+  });
+
+  it("a gateway.json that cannot be read: the plain alert, no action", () => {
+    expect(breakerAlert(BREAKER, ctx({ config: null, state: breaker() }))?.alert).toEqual({
+      action: null,
+      body: `${HEAD} The gateway config cannot be read, so no other target is offered: cc-smart-dev-kit doctor says why. Then send a message to go on.`,
+      title: "Gateway slot limited",
+    });
+  });
+
+  it("the gateway turned off: the commands in words, no action", () => {
+    expect(
+      breakerAlert(BREAKER, ctx({ gatewayOn: false, state: breaker() }))?.alert.body,
+    ).toContain(
+      "To use another model, turn the gateway on first (cc-smart-dev-kit gateway on), then: cc-smart-dev-kit gateway slot worker omniroute:ollama-cloud/deepseek-v4.1-flash.",
+    );
+  });
+
+  it("a `failed` moment left out of alerts.events: no breaker alert", () => {
+    expect(
+      breakerAlert(
+        BREAKER,
+        ctx({
+          alerts: alerts({ events: { source: "project", value: ["finished"] } }),
+          state: breaker(),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("the mark is read back, so a second hook run knows the opening", () => {
+    const home = tempDir("breaker-mark");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    mkdirSync(paths.stateDir, { recursive: true });
+    writeFileSync(
+      join(paths.stateDir, BREAKER_ALERT_FILE),
+      JSON.stringify({ [BREAKER_SLOT]: BREAKER_SINCE }),
+    );
+    const read = readAlertContext(paths, NOW, BREAKER);
+    expect(read.breakerAlerted).toEqual({ [BREAKER_SLOT]: BREAKER_SINCE });
+    // Another slot's mark, or one that is not a number, does not spoil it.
+    writeFileSync(
+      join(paths.stateDir, BREAKER_ALERT_FILE),
+      JSON.stringify({ [BREAKER_SLOT]: "old", "cc-smart-dev-kit-scout": 5 }),
+    );
+    expect(readAlertContext(paths, NOW, BREAKER).breakerAlerted).toEqual({
+      "cc-smart-dev-kit-scout": 5,
+    });
   });
 });
 
@@ -620,13 +794,15 @@ describe("the worker shows it", () => {
 describe("the hook as Claude Code runs it", () => {
   /**
    * A temp HOME with a gateway config (or none, or one that is not JSON), the router's
-   * state, a fake notify-send, and (unless `launcher` is false) a fake launcher in
-   * `~/.local/bin` that runs this CLI's source, as the real one runs the installed version.
+   * state (a plan limit, or an open breaker), a fake notify-send, and (unless `launcher` is
+   * false) a fake launcher in `~/.local/bin` that runs this CLI's source, as the real one
+   * runs the installed version.
    */
   function machine(
     gateway: "broken" | "none" | "ok",
     launcher = true,
     extraEnv: Record<string, string> = {},
+    routerState: "breaker" | "limit" = "limit",
   ) {
     const home = tempDir("stop-failure");
     const claudeDir = join(home, ".claude");
@@ -647,17 +823,39 @@ describe("the hook as Claude Code runs it", () => {
     const seen = Date.now() - 5_000;
     writeFileSync(
       join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-      JSON.stringify({
-        fallbacks: {},
-        limits: {
-          "claude-opus-5-5": {
-            claim: "five_hour",
-            resetsAt: Math.floor(seen / 1000) + 3600,
-            seenAt: seen,
-          },
-        },
-        version: 1,
-      }),
+      JSON.stringify(
+        routerState === "breaker"
+          ? {
+              breakers: {
+                [BREAKER_SLOT]: {
+                  held: 2,
+                  lastAt: seen,
+                  since: seen - 20 * 60_000,
+                  targets: [
+                    {
+                      status: 429,
+                      target: "omniroute:ollama-cloud/glm-5.3-flash",
+                      until: seen + 7 * 60_000,
+                    },
+                  ],
+                },
+              },
+              fallbacks: {},
+              limits: {},
+              version: 1,
+            }
+          : {
+              fallbacks: {},
+              limits: {
+                "claude-opus-5-5": {
+                  claim: "five_hour",
+                  resetsAt: Math.floor(seen / 1000) + 3600,
+                  seenAt: seen,
+                },
+              },
+              version: 1,
+            },
+      ),
     );
     const bin = join(home, "bin");
     mkdirSync(bin);
@@ -808,6 +1006,39 @@ describe("the hook as Claude Code runs it", () => {
     const result = m.run(AT_LIMIT);
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe("");
+    expect(result.stderr.toString()).toBe("");
+    await Bun.sleep(300);
+    expect(existsSync(m.log)).toBe(false);
+  });
+
+  it("the breaker's 429: one alert, and the same opening never twice", async () => {
+    const m = machine("ok", true, {}, "breaker");
+    const result = m.run(BREAKER);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe("");
+    const lines = (await waitFor(m.log)).split("\n");
+    expect(lines.slice(0, 4)).toEqual([
+      "--app-name=cc-smart-dev-kit",
+      "--action=use=Use deepseek-v4.1-flash",
+      "--action=wait=Wait",
+      "Gateway slot limited",
+    ]);
+    // The reset times are the machine's clock: only the start and the end are fixed.
+    expect(lines[4]).toStartWith("cc-smart-dev-kit-worker: every target limited or down since ");
+    expect(lines[4]).toEndWith(
+      "To use another model: cc-smart-dev-kit gateway slot worker omniroute:ollama-cloud/deepseek-v4.1-flash. Then send a message to go on.",
+    );
+    // The mark was written: the same opening in a second run shows nothing.
+    const shown = readFileSync(m.log, "utf8");
+    expect(m.run(BREAKER).exitCode).toBe(0);
+    await Bun.sleep(300);
+    expect(readFileSync(m.log, "utf8")).toBe(shown);
+  });
+
+  it("a breaker stop in a background session: no alert", async () => {
+    const m = machine("ok", true, { CLAUDE_JOB_DIR: join(tempDir("job"), "abc") }, "breaker");
+    const result = m.run(BREAKER);
+    expect(result.exitCode).toBe(0);
     expect(result.stderr.toString()).toBe("");
     await Bun.sleep(300);
     expect(existsSync(m.log)).toBe(false);
