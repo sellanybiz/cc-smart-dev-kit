@@ -167,7 +167,9 @@ their detectors — `crewGitAnswer` (`git-guard.ts`), `crewPrAnswer` (`merge-gua
 before `cc-smart-dev-kit.json` is read. So the refusal holds in a project that never opted
 in, in one whose file is broken or too new, and in one whose `ownHooks` lists its own copy
 of the guard. Without `CC_SMART_DEV_KIT_CREW` the part is silent: an ordinary session pays
-nothing, and the guard's other answers are exactly as they were.
+nothing, and the guard's other answers are exactly as they were. One ask can still reach a
+crew session: a guard's own crash, or input that is not JSON (`onCrash`), asks as it does
+for any session. That is a bug path, and the ask is what shows it.
 
 This is the same reason `alwaysOn` exists for `job-route` and `session-escape-guard`: a
 limit on what the session itself may do cannot live behind a switch the session can reach.
@@ -337,8 +339,11 @@ the message (which names the update command, the file and field) reaches someone
 
 For a plugin hook's project part `ownHooks` still comes first: a project that lists its own
 copy there keeps it running. A guard's crew part has already run before both (§ A crew
-session's own limits), so a broken or too new file never lets a crew session push, open a
-pull request or send an untagged peer message.
+session's own limits), so a broken or too new file never lets a crew session push, run a
+work-destroying git command, open a pull request or send an untagged peer message. For
+`git-guard` the file cannot change a crew session's answer at all — the crew rule reads no
+project value — so its `onConfigProblem` stays silent for a crew session instead of asking a
+person who is not there.
 
 ## Quiet output
 

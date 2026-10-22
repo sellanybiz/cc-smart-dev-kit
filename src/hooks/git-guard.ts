@@ -134,7 +134,8 @@ export const CREW_STEPS = {
     "`git restore`: nobody is at the machine to answer the guard's question, and the changes " +
     "are lost for good. Commit the work in progress first. To undo a deliberate break, copy " +
     "the file before you break it (`cp path path.bak`), copy it back after " +
-    "(`cp path.bak path`), then check it with `git diff --quiet -- path`.",
+    "(`cp path.bak path`), delete the copy (`rm path.bak`), then check it with " +
+    "`git diff --quiet -- path`.",
   /** `git worktree remove --force`. */
   worktreeRemove:
     "A crew session never runs `git worktree remove --force`: it deletes a worktree even when " +
@@ -145,26 +146,25 @@ export const CREW_STEPS = {
   branchDelete:
     "A crew session never deletes a branch with `git branch -D`: it can drop commits that " +
     "were never merged, and nobody is at the machine to answer the guard's question. `git log " +
-    "--oneline HEAD..<branch>` shows what would be lost; merge the branch first, then `git " +
-    "branch -d`, which refuses an unmerged branch.",
+    "--oneline HEAD..<branch>` shows what would be lost: when it lists nothing, `git branch -d " +
+    "<branch>` deletes it; when it lists commits, leave the branch and name it in your report.",
   /** `git reset --hard`. */
   resetHard:
     "A crew session never runs `git reset --hard`: it throws away every uncommitted change in " +
     "this folder, and nobody is at the machine to answer the guard's question. Commit the " +
     "work in progress first; `git reset --soft <commit>` moves the branch and keeps the " +
-    "changes in the folder. To undo a deliberate break, copy the file back and check it with " +
-    "`git diff --quiet -- path`.",
+    "changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak " +
+    "path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
   /** `git clean -f`. */
   clean:
     "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody " +
     "is at the machine to answer the guard's question. Run `git clean -n` and read the list " +
-    "first; commit anything worth keeping (`git add -A` includes untracked files), then delete " +
-    "the rest with `rm`.",
+    "first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
   /** `git stash clear`. */
   stashClear:
     "A crew session never runs `git stash clear`: it throws away every stash for good, and " +
-    "nobody is at the machine to answer the guard's question. `git stash list` shows what they " +
-    "hold; `git stash apply stash@{n}` restores one, so apply what you need first.",
+    "nobody is at the machine to answer the guard's question. `git stash list` shows them " +
+    "all; drop only your own by name (`git stash drop stash@{n}`) and leave the rest.",
   /** `git stash drop` with no stash named. */
   stashDrop:
     "A crew session never runs `git stash drop` without a name: it drops the newest stash, " +
@@ -172,7 +172,7 @@ export const CREW_STEPS = {
     "list` shows them; `git stash drop stash@{n}` names the one you mean.",
   /** A bare `git stash` / `git stash pop`, which takes or restores a shared stash. */
   stashShared:
-    "A crew session never runs a bare `git stash` or `git stash pop`: the stash is shared by " +
+    "A crew session never runs a bare `git stash`, or `git stash pop`: the stash is shared by " +
     "every worktree of the repo, and nobody is at the machine to answer the guard's question. " +
     "Use the tagged form: `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
 } as const;
@@ -910,7 +910,10 @@ export function guardQuestions(command: string, cwd: string, options: GuardOptio
 
 /** What the guard says about a command line: what it denies, and what it asks the person. */
 export interface GuardVerdict {
-  /** Denied, each reason once: the session reads it and stops (a crew session's push). */
+  /**
+   * Denied, each reason once: the session reads it and does the step (a crew session's push,
+   * or a work-destroying command whose step the refusal names).
+   */
   refuse: string[];
   /** Asked, each question once; empty when `refuse` is not (a denied call asks nothing). */
   ask: string[];

@@ -144,7 +144,12 @@ function commandOf(input: HookInput | null): string {
 export const gitGuardHook: HookSpec = {
   name: "git-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
+  onConfigProblem: (message, input, _event, _checkout, context) => {
+    // A crew session is never asked: nobody is at the machine, and its answer does not depend
+    // on the project's file — with the crew rule on, no project value is read. The crew part
+    // has already denied what the file could never allow, and everything else goes through,
+    // so a broken file cannot stall the session at its checkpoint commit.
+    if (crewIdOf(context.env) !== null) return SILENT;
     const command = stringField(toolInput(input).command);
     return command !== null && runsGit(command)
       ? toolDecision("ask", cannotCheck("this git command", message))
@@ -179,7 +184,8 @@ export const gitGuardHook: HookSpec = {
       sharedStash: config.worktrees !== undefined,
       env,
     });
-    // A crew session's push is denied (D24); everything else is a question.
+    // A crew session's push, and every command that would destroy work, is denied (D24);
+    // everything else is a question.
     if (verdict.refuse.length > 0) return toolDecision("deny", verdict.refuse.join("\n"));
     return verdict.ask.length === 0 ? SILENT : toolDecision("ask", verdict.ask.join("\n"));
   },

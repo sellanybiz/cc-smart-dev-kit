@@ -1196,7 +1196,7 @@ const WORK_COMMANDS = [
   [
     "git checkout -- src/a.ts",
     "`git checkout` here overwrites files in this folder with another version, and any uncommitted change in them is lost for good. Approve only if you want them gone; a WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.",
-    "A crew session never discards uncommitted changes with `git checkout`, `git switch -f` or `git restore`: nobody is at the machine to answer the guard's question, and the changes are lost for good. Commit the work in progress first. To undo a deliberate break, copy the file before you break it (`cp path path.bak`), copy it back after (`cp path.bak path`), then check it with `git diff --quiet -- path`.",
+    "A crew session never discards uncommitted changes with `git checkout`, `git switch -f` or `git restore`: nobody is at the machine to answer the guard's question, and the changes are lost for good. Commit the work in progress first. To undo a deliberate break, copy the file before you break it (`cp path path.bak`), copy it back after (`cp path.bak path`), delete the copy (`rm path.bak`), then check it with `git diff --quiet -- path`.",
   ],
   [
     "git restore src/a.ts",
@@ -1216,22 +1216,22 @@ const WORK_COMMANDS = [
   [
     "git branch -D fix/x",
     "`git branch -D` deletes a branch even if it was never merged: its commits are then only in the reflog. `git branch -d` deletes a merged branch, and does not ask.",
-    "A crew session never deletes a branch with `git branch -D`: it can drop commits that were never merged, and nobody is at the machine to answer the guard's question. `git log --oneline HEAD..<branch>` shows what would be lost; merge the branch first, then `git branch -d`, which refuses an unmerged branch.",
+    "A crew session never deletes a branch with `git branch -D`: it can drop commits that were never merged, and nobody is at the machine to answer the guard's question. `git log --oneline HEAD..<branch>` shows what would be lost: when it lists nothing, `git branch -d <branch>` deletes it; when it lists commits, leave the branch and name it in your report.",
   ],
   [
     "git reset --hard",
     "`git reset --hard` throws away every uncommitted change in this folder, for good. Approve only if you want them gone; a WIP commit keeps the work first.",
-    "A crew session never runs `git reset --hard`: it throws away every uncommitted change in this folder, and nobody is at the machine to answer the guard's question. Commit the work in progress first; `git reset --soft <commit>` moves the branch and keeps the changes in the folder. To undo a deliberate break, copy the file back and check it with `git diff --quiet -- path`.",
+    "A crew session never runs `git reset --hard`: it throws away every uncommitted change in this folder, and nobody is at the machine to answer the guard's question. Commit the work in progress first; `git reset --soft <commit>` moves the branch and keeps the changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
   ],
   [
     "git clean -f",
     "`git clean -f` deletes untracked files for good: git cannot bring them back. `git clean -n` shows what it would delete, without deleting.",
-    "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody is at the machine to answer the guard's question. Run `git clean -n` and read the list first; commit anything worth keeping (`git add -A` includes untracked files), then delete the rest with `rm`.",
+    "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody is at the machine to answer the guard's question. Run `git clean -n` and read the list first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
   ],
   [
     "git stash clear",
     "`git stash clear` throws away every stash for good: git cannot bring them back. `git stash list` shows what they hold, `git stash show -p` one of them.",
-    "A crew session never runs `git stash clear`: it throws away every stash for good, and nobody is at the machine to answer the guard's question. `git stash list` shows what they hold; `git stash apply stash@{n}` restores one, so apply what you need first.",
+    "A crew session never runs `git stash clear`: it throws away every stash for good, and nobody is at the machine to answer the guard's question. `git stash list` shows them all; drop only your own by name (`git stash drop stash@{n}`) and leave the rest.",
   ],
   [
     "git stash drop",
@@ -1241,7 +1241,7 @@ const WORK_COMMANDS = [
   [
     "git stash",
     "The git stash is shared by every worktree of this repo, so a bare `git stash` or `git stash pop` can take or restore another session's work. A WIP commit is safer; or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
-    "A crew session never runs a bare `git stash` or `git stash pop`: the stash is shared by every worktree of the repo, and nobody is at the machine to answer the guard's question. Use the tagged form: `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
+    "A crew session never runs a bare `git stash`, or `git stash pop`: the stash is shared by every worktree of the repo, and nobody is at the machine to answer the guard's question. Use the tagged form: `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
   ],
   [
     "git stash pop",
@@ -1297,6 +1297,21 @@ describe("CC6: a crew session is denied, never asked, before a command that dest
     ]) {
       expect([command, await pushAnswer(crew, repo, command)]).toEqual([command, null]);
     }
+  });
+
+  it("CC6: a broken or too-new project file does not stall a crew session", async () => {
+    const { env, repo } = policyRepo({ requires: ">=99" });
+    // A person's session is asked: the guard fails closed when it cannot do what the
+    // project's file asked.
+    expect((await pushAnswer(env, repo, "git commit -m x"))?.decision).toBe("ask");
+    // A crew session's answer does not depend on the project's file (the crew rule reads no
+    // project value), so nothing is asked and the checkpoint commit goes through.
+    expect(await pushAnswer({ ...env, ...CREW }, repo, "git commit -m x")).toBeNull();
+    // A command that destroys work is denied by the crew part, before the file is read.
+    expect(await pushAnswer({ ...env, ...CREW }, repo, "git reset --hard")).toEqual({
+      decision: "deny",
+      reason: CREW_STEPS.resetHard,
+    });
   });
 
   it("CC6: a project whose ownHooks lists git-guard still gets the crew deny", async () => {
