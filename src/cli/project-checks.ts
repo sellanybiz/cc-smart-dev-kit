@@ -260,6 +260,15 @@ function onEvent(event: string, subjects: Array<string | null>): string {
 }
 
 /**
+ * A plugin hook that only answers when the project sets one of its fields: while that field
+ * is unset the hook is silent, so a project hook on its event is no second copy of it.
+ * `verify-gate` answers only with `checks.fast`.
+ */
+const OPT_IN_HOOKS: Record<string, (config: CcSmartDevKitConfig) => boolean> = {
+  "verify-gate": (config) => config.checks !== undefined,
+};
+
+/**
  * The project's own copies of plugin hooks: one · line for each hook `ownHooks` lists, a
  * warning for a listed hook nothing in the project's settings replaces, and a warning for
  * each project hook that runs next to an unlisted plugin hook on the same event and tool.
@@ -340,6 +349,10 @@ function ownCopyLines(
     // answers about the machine, not this project: a project hook on its event is the person's
     // own business, not a second copy of a plugin piece, so nothing warns about it.
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
+    // A project that did not set the hook's own field gets no advice about a copy: the plugin
+    // hook stays silent there, so nothing runs twice (D48's `worktrees`, `checks.fast` here).
+    const optIn = OPT_IN_HOOKS[hook.name];
+    if (optIn !== undefined && !optIn(config)) continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
         // A retired engine line (`cc-smart-dev-kit hook subagent-stop`) is never a copy of this

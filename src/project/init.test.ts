@@ -509,12 +509,53 @@ describe("requiresFloor", () => {
     });
   });
 
+  test("`checks` came with 1.1.0, and it wins over the older fields' floors", () => {
+    expect(requiresFloor({ checks: { fast: "bun run check" } })).toEqual({
+      floor: ">=1.1",
+      version: "1.1.0",
+    });
+    expect(
+      requiresFloor({
+        checks: { fast: "bun run check" },
+        workflow: { crew: { enabled: true } },
+        worktrees: { base: "main", autoClean: true },
+      }),
+    ).toEqual({ floor: ">=1.1", version: "1.1.0" });
+  });
+
   test("the plan asks for what its own fields need", () => {
     const root = tempDir("project-init");
     const plan = planProjectInit(
       input({ root, answers: { ...ANSWERS, workflow: { crew: { enabled: true } } } }),
     );
     expect(plan.text).toContain('"requires": ">=1.0"');
+  });
+
+  test("the plan writes the fast check, under checks.fast, and asks for >=1.1", () => {
+    const root = tempDir("project-init");
+    const plan = planProjectInit(
+      input({ root, answers: { ...ANSWERS, checks: { fast: "bun run typecheck && bun test" } } }),
+    );
+    expect(plan.text).toContain('"checks": {');
+    expect(plan.text).toContain('"fast": "bun run typecheck && bun test"');
+    expect(plan.text).toContain('"requires": ">=1.1"');
+    expect(plan.diff).toContain('+ checks.fast: "bun run typecheck && bun test"');
+    // The file the plugin that brought the field reads: valid, and not one word of it lost.
+    expect(() => parseCcSmartDevKitConfig(plan.text, plan.file, "1.1.0")).not.toThrow();
+  });
+
+  test("the fast check: `null` takes the field out; no answer at all leaves the file's own", () => {
+    const root = tempDir("project-init");
+    const existing = `${JSON.stringify({ checks: { fast: "bun run check" }, worktrees: { base: "dev" } })}\n`;
+    // The portal's form does not show the field: `undefined` must not remove what a person wrote.
+    const kept = planProjectInit(input({ root, existing, answers: ANSWERS }));
+    expect(kept.text).toContain('"fast": "bun run check"');
+    expect(kept.text).toContain('"requires": ">=1.1"');
+    const removed = planProjectInit(
+      input({ root, existing, answers: { ...ANSWERS, checks: null } }),
+    );
+    expect(removed.text).not.toContain('"checks"');
+    expect(removed.diff).toContain('- checks.fast: "bun run check"');
   });
 });
 
@@ -616,5 +657,46 @@ describe("applyProjectInit", () => {
     );
     const writes = applyProjectInit(plan, { stateDir });
     expect(writes.map((write) => write.created)).toEqual([false]);
+  });
+});
+
+describe("the checks field's schema and messages", () => {
+  const file = ".claude/cc-smart-dev-kit.json";
+
+  test("a fast check is one command, and a file that sets it reads", () => {
+    expect(
+      parseCcSmartDevKitConfig(
+        JSON.stringify({ checks: { fast: "bun run typecheck && bun test src/changed" } }),
+        file,
+        "1.1.0",
+      ).checks,
+    ).toEqual({ fast: "bun run typecheck && bun test src/changed" });
+  });
+
+  test("`checks` is an object with `fast` in it: an empty one, a blank command and an unknown key are refused", () => {
+    const refused = (checks: unknown): string => {
+      try {
+        parseCcSmartDevKitConfig(JSON.stringify({ checks }), file, "1.1.0");
+        return "";
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    };
+    expect(refused({})).toContain("checks.fast:");
+    expect(refused({ fast: "   " })).toContain("checks.fast:");
+    expect(refused({ fast: "bun run check", full: "bun run check" })).toContain(
+      "checks.full: unknown field (a newer cc-smart-dev-kit may be needed)",
+    );
+    expect(refused("bun run check")).toContain("checks:");
+  });
+
+  test("an older plugin hears update the plugin, not unknown field", () => {
+    expect(() =>
+      parseCcSmartDevKitConfig(
+        JSON.stringify({ requires: ">=1.1", checks: { fast: "bun run check" } }),
+        file,
+        "1.0.1",
+      ),
+    ).toThrow("this project needs cc-smart-dev-kit >=1.1; you have 1.0.1");
   });
 });

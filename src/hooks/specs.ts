@@ -17,6 +17,7 @@
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
+ * | verify-gate | Stop | one block when the session changed files and the project's fast check did not run after the last change |
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
@@ -89,6 +90,7 @@ import type { HookSpec } from "./run";
 import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
 import { subagentBackground } from "./subagent-background";
+import { verifyGate } from "./verify-gate";
 import { worktreeLeftovers } from "./worktree-leftovers";
 
 /** Said to the person when a guard cannot read the project's cc-smart-dev-kit.json. */
@@ -319,6 +321,22 @@ export const subagentBackgroundHook: HookSpec = {
 };
 
 /**
+ * The verification gate (`verify-gate.ts`): Stop, one **block** when this session changed
+ * files and no Bash call ran the project's fast check (`checks.fast`) after the last change.
+ * It names the command, and it is silent on the stop its own block caused
+ * (`stop_hook_active`), in a crew session (its report gate is `crew-role`), on a turn that
+ * still waits on background work, with no `checks.fast`, and when it cannot read the
+ * transcript. Project-scoped: with no cc-smart-dev-kit.json it stays silent. A broken or too
+ * new file is one stderr line — an informational hook never stops a person's work.
+ */
+export const verifyGateHook: HookSpec = {
+  name: "verify-gate",
+  events: ["Stop"],
+  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit verify-gate: ${message}` }),
+  run: verifyGate,
+};
+
+/**
  * Each subagent's usage (`agent-usage.ts`): on its stop, one line in `agent-usage.jsonl` — the
  * time, the session, the agent and its type, and per model the replies, the four token counts
  * and the estimated USD — what `usage` shows and a portal can read. **Machine-wide**: the
@@ -545,6 +563,7 @@ export const HOOKS: readonly HookSpec[] = [
   afterMergeHook,
   reviewRecordHook,
   subagentBackgroundHook,
+  verifyGateHook,
   agentUsageHook,
   worktreeLeftoversHook,
   sessionNameHook,

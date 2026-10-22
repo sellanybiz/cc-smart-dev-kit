@@ -304,6 +304,8 @@ export interface ProjectInitAnswers {
   base: string;
   bases: Record<string, string>;
   protectedBranches: string[];
+  /** The project's own fast check, when its file has one; the form does not show it. */
+  checks?: { fast: string } | null;
   guards: { guardMainFolder: boolean; sessionNames: boolean; jobRoute: boolean };
   workflow: unknown;
 }

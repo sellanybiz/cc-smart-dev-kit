@@ -17,6 +17,7 @@ paths:
   - "src/entries/stop-failure.ts"
   - "src/entries/subagent-background.ts"
   - "src/entries/update-check.ts"
+  - "src/entries/verify-gate.ts"
   - "src/entries/worktree-leftovers.ts"
   - "plugin/hooks/**"
   - "plugin/bin/**"
@@ -438,6 +439,14 @@ a command must never report success when it did not run.
   guard on an input that is not JSON and expects an ask, so a guard without one fails a test.
   An `onCrash` that throws is one stderr line, exit 0: never worse than the line.
 - No informational plugin hook exits 1 (`crashExitCode`): a bug never stops a person's work.
+- **A Stop hook blocks at most once per change, and never gives context.** A turn a block caused
+  carries `stop_hook_active: true`, and the hook is silent there; a Stop answer's
+  `additionalContext` keeps the turn going. The two Stop hooks that block are `crew-role` (a
+  crew session's turn ended on a step with no report) and `verify-gate` (the project's
+  `checks.fast` did not run after the last change); `verify-gate` is silent in a crew session,
+  which has its own report gate. Its block's own feedback line in the transcript is its mark,
+  so no change is reminded about twice, a change made after a reminder earns the next one, and a
+  check that fails never traps a turn.
 - **`subagent-background` never blocks on a failure.** A broken input, a broken or too new
   `cc-smart-dev-kit.json`, and a transcript it cannot read are no block (one stderr line where
   the frame says one, exit 0): it can only block when it has read the agent's own transcript

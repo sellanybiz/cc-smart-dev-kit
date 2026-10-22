@@ -79,7 +79,7 @@
  * only for the `terminalSequence` field here; every error is one short stderr line and exit
  * 0 — a notifier must never stop a session.
  */
-import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { CliPaths } from "../cli/paths";
@@ -104,6 +104,7 @@ import { AGENT_VIEW_TYPES, NOTIFY_TYPES } from "./notify-types";
 import type { Env } from "./run";
 import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
+import { verifyGateWouldBlockAt } from "./verify-gate";
 
 /**
  * The types and the two matchers live in `notify-types.ts`, which imports nothing: this
@@ -240,6 +241,15 @@ function markWaiting(file: string): void {
     writeFileSync(file, `${Date.now()}\n`);
   } catch {
     // A mark that cannot be written only means a later alert may come twice.
+  }
+}
+
+/** Records that this turn's "finished" alert went out. */
+function markFinished(file: string): void {
+  try {
+    writeFileSync(file, `${Date.now()}\n`);
+  } catch {
+    // A mark that cannot be written only means a later stop of the turn may alert twice.
   }
 }
 
@@ -381,9 +391,13 @@ export interface AlertContext {
   mark: string;
   /** The file that remembers the last error this session alerted about. */
   failed: string;
+  /** The file that marks the "finished" alert already shown for this turn. */
+  finished: string;
   /** The session's name for the title. */
   label: null | string;
   nowMs: number;
+  /** True when `verify-gate` will block this stop: the turn goes on, so this is no end. */
+  stopWouldBlock: boolean;
   /** The session's transcript, when the input names one. */
   transcript: null | string;
   /**
@@ -460,8 +474,14 @@ export function alertFor(
     case "Stop": {
       forget(ctx.mark);
       forget(ctx.failed);
-      // A Stop hook that made Claude continue fires Stop again: alert once.
-      if (input.stop_hook_active === true) return null;
+      // The stop `verify-gate` is about to block is not the end of the turn: this alert waits
+      // for the stop that really ends it — the one carrying `stop_hook_active`, where the
+      // check has run (or the reminder's own feedback said it was already given).
+      if (ctx.stopWouldBlock) return null;
+      // A stop a hook continued is the end of the turn only when no alert went out at the
+      // turn's first stop: one alert per turn. A stop that is no continuation is an end.
+      if (input.stop_hook_active === true && existsSync(ctx.finished)) return null;
+      markFinished(ctx.finished);
       // A turn another session started (a merge broadcast, a heads-up) ends silently.
       if (ctx.transcript !== null && startedByPeer(ctx.transcript)) return null;
       const answer = ctx.transcript === null ? null : waitThenLastAnswer(ctx.transcript);
@@ -816,10 +836,13 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
   const dir = runtimeDir(deps.env);
   const mark = join(dir, `cc-smart-dev-kit-notify-asked-${session}`);
   const failed = join(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if ((WAIT_END_EVENTS as readonly string[]).includes(event)) {
     // The wait that had a question or a plan at its centre is over: its mark goes, so the
-    // next one starts clean. Nothing is shown for these events.
+    // next one starts clean. A new prompt is a new turn, so the finished mark goes too.
+    // Nothing is shown for these events.
     forget(mark);
+    forget(finished);
     return SILENT;
   }
 
@@ -838,12 +861,17 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
           which: deps.which,
         })
       : false;
+  // Asked only when this stop could be the one `verify-gate` blocks: the finished alert
+  // must land at the real end of the turn, not where a sibling hook continues it.
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) : false;
   const alert = alertFor(input, event, {
     failed,
+    finished,
     label,
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
+    stopWouldBlock,
     transcript,
   });
   if (alert === null) return SILENT;

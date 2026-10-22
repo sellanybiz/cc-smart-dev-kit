@@ -22,6 +22,7 @@ export const PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "verify-gate",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
@@ -78,6 +79,13 @@ export const WORKFLOW_CREW_SINCE = "1.0.0";
  * plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
  */
 export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
+
+/**
+ * The release that brought `checks` (MD-3): a project names the fast check a session runs
+ * before it stops. A project file that sets it needs that plugin version or newer, for the
+ * same reason as `WORKFLOW_CREW_SINCE`.
+ */
+export const CHECKS_SINCE = "1.1.0";
 
 /**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
@@ -137,6 +145,15 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    * (["main", "release"]). When left out: ["main"].
    */
   protectedBranches: z.array(z.string().min(1)).min(1).optional(),
+  /**
+   * The project's check commands. `fast` is the one a session runs before it stops: the
+   * `verify-gate` hook blocks a stop **once** when this session changed files and no Bash call
+   * ran `fast` after the last change. Write it as you would type it
+   * (`"bun run typecheck && bun test src/changed"`); `project init` offers one read from
+   * `package.json`'s scripts. Optional, and inside it `fast` is required: `{}` is refused.
+   * A field of 1.1.0: a project that sets it raises `requires` to `>=1.1`.
+   */
+  checks: z.strictObject({ fast: z.string().trim().min(1) }).optional(),
   /** Each session names itself after its task: a note at its start, the title at the next prompt. */
   sessionNames: z.boolean().optional(),
   /** Turn on the opt-in instructions for this project. */

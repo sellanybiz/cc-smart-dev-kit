@@ -36,6 +36,7 @@ import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import { clashNote, workflowClashes } from "../workflow/clashes";
 import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
+  CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
@@ -53,6 +54,12 @@ export interface ProjectInitAnswers {
   bases: Record<string, string>;
   /** The branches the git guard asks about before a push. */
   protectedBranches: string[];
+  /**
+   * The project's fast check, as `checks.fast` (`{ "fast": "bun run typecheck" }`); `null` for
+   * none; left out (`undefined`) to leave the file's own value exactly as it is — the portal's
+   * form does not show the field yet.
+   */
+  checks?: { fast: string } | null;
   guards: {
     /** Refuse an edit in the main checkout itself. */
     guardMainFolder: boolean;
@@ -126,6 +133,7 @@ const FILE_ORDER = [
   "requires",
   "worktrees",
   "protectedBranches",
+  "checks",
   "sessionNames",
   "instructions",
   "autoMode",
@@ -194,16 +202,21 @@ export function raisedRequires(existing: unknown, floor: string, floorVersion: s
  * The oldest plugin that reads every field the file holds: the range and the version it
  * names, for `raisedRequires`.
  *
- * A file without `worktrees.prefix` needs the plugin that made that field optional
- * (0.5.2): every older plugin refuses the whole file. A file with `workflow.crew` or
- * `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the release that brought
- * them: an older plugin reads the file strictly, does not know that field, and refuses the
- * file — so every guard in that project fails closed until the plugin is updated.
+ * The newest release first: a file that sets several fields needs the newest among them. A
+ * file with `checks` needs the plugin that brought it (1.1.0). A file without `worktrees.prefix`
+ * needs the plugin that made that field optional (0.5.2): every older plugin refuses the whole
+ * file. A file with `workflow.crew` or `workflow.fixesAfterReview`, or with
+ * `worktrees.autoClean`, needs the release that brought them (1.0.0): an older plugin reads the
+ * file strictly, does not know that field, and refuses the file — so every guard in that
+ * project fails closed until the plugin is updated.
  */
 export function requiresFloor(file: Record<string, unknown>): {
   floor: string;
   version: string;
 } {
+  if (Object.hasOwn(file, "checks")) {
+    return { floor: requiresFor(CHECKS_SINCE), version: CHECKS_SINCE };
+  }
   const workflow = isObject(file.workflow) ? file.workflow : {};
   const worktrees = isObject(file.worktrees) ? file.worktrees : {};
   if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
@@ -366,6 +379,12 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
   if (answers.protectedBranches.length > 0) next.protectedBranches = answers.protectedBranches;
   else delete next.protectedBranches;
+  // `undefined` is a caller that does not know the field (the portal's form): the file's own
+  // `checks` stays exactly as it is. `null` is the `none` answer: the field goes.
+  if (answers.checks !== undefined) {
+    if (answers.checks === null) delete next.checks;
+    else next.checks = { fast: answers.checks.fast };
+  }
   if (answers.guards.sessionNames) next.sessionNames = true;
   else delete next.sessionNames;
   const jobs: Record<string, unknown> = { ...beforeJobs };
