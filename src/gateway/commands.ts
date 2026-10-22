@@ -80,6 +80,7 @@ import {
 } from "./service";
 import { scheduledTaskService } from "./service-windows";
 import {
+  gatewayEnv,
   maskKey,
   retireOldModelKeys,
   settingsReport,
@@ -1195,17 +1196,16 @@ async function testWorkerTargets(
 }
 
 /**
- * The trade-off lines after the worker chain or the judge's default changed: where the worker's
- * tested targets stand in for Claude, `JUDGE_WARNING` is said (D44: said wherever it is set).
+ * Whether the worker's tested targets stand in for Claude as the judge, after the worker chain
+ * or the judge's default changed: then the caller says `JUDGE_WARNING` (D44: said wherever it
+ * is set).
  */
-function sayStandInTradeOff(out: Out, config: GatewayConfig): void {
-  if (
+function standInTradeOff(config: GatewayConfig): boolean {
+  return (
     !Object.hasOwn(config.slots, JUDGE_SLOT) &&
     fallbackOn(config, JUDGE_SLOT) &&
     workerJudgeTargets(config).length > 0
-  ) {
-    out.line("warn", JUDGE_WARNING);
-  }
+  );
 }
 
 /**
@@ -1352,7 +1352,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     if (plan.key === WORKER_SLOT && !Object.hasOwn(plan.config.slots, JUDGE_SLOT)) {
       out.say(`Auto mode's checks: ${judgeDefaultWords(plan.config)}`, 2);
     }
-    sayStandInTradeOff(out, plan.config);
+    if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   }
   out.verdict("ok", ROUTER_TAKES_IT);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
@@ -1396,9 +1396,8 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
       change,
       `  ${claudeWords(plan.config, plan.key)}`,
       `  ${keptWords(plan.key, kept)}`,
-      "  The switch is used with the chain, once the slot is Custom again.",
     ]);
-    out.verdict("ok", ROUTER_TAKES_IT);
+    out.verdict("ok", "Saved with the chain: the switch is used once the slot is Custom again.");
     return 0;
   }
   const targets = plan.config.slots[plan.key] ?? [];
@@ -1412,7 +1411,7 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
         ? "  The worker's tested targets answer when Claude is limited or down."
         : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
     ]);
-    sayStandInTradeOff(out, plan.config);
+    if (standInTradeOff(plan.config)) out.line("warn", JUDGE_WARNING);
   } else {
     printSlotChange(out, [
       change,
@@ -1491,7 +1490,10 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
   // Without a good config the router runs on the default port.
   const port = config?.port ?? DEFAULT_PORT;
   const health = await routerHealth(port, ctx.probe.fetch);
-  if ("error" in health) {
+  if ("error" in health && !setUp) {
+    // Nothing installed it yet: the verdict names setup, the one step.
+    out.line("info", `router: DOWN on 127.0.0.1:${port} (${health.error})`);
+  } else if ("error" in health) {
     out.line("fail", `router: DOWN on 127.0.0.1:${port} (${health.error})`, {
       detail: [`${COMMAND} gateway setup`],
       fix: "setup starts it again",
@@ -1535,6 +1537,18 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     "info",
     `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON → ${report.baseUrl}`}`,
   );
+  // A base URL that is not this router's (a port moved, a value set by hand) fails every
+  // session that uses it, while the router itself answers.
+  const routerUrl = gatewayEnv(port).ANTHROPIC_BASE_URL;
+  const pointsElsewhere =
+    config !== null && report.baseUrl !== null && report.baseUrl !== routerUrl;
+  if (pointsElsewhere) {
+    out.line("warn", `that is not this router's address (${routerUrl})`, {
+      detail: [`${COMMAND} gateway on`],
+      fix: "point Claude Code at this router",
+      indent: 2,
+    });
+  }
   printOverrides(report, out);
   out.line(
     "info",
@@ -1550,8 +1564,11 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     out.next([{ command: `${COMMAND} gateway setup`, text: "Set it up:" }]);
   } else if (config === null) out.verdict("fail", "The gateway's config cannot be read.");
   else if ("error" in health) out.verdict("fail", "The router does not answer.");
-  else if (!backendsAnswer) out.verdict("warn", "The router answers, and a backend does not.");
-  else if (report.baseUrl === null) {
+  else if (pointsElsewhere) {
+    out.verdict("warn", "Claude Code points at another address than this router.");
+  } else if (!backendsAnswer) {
+    out.verdict("warn", "The router answers, and a backend does not.");
+  } else if (report.baseUrl === null) {
     out.verdict("info", "The router answers, and Claude Code does not use it.");
     out.next([
       {
@@ -2200,7 +2217,8 @@ async function proveWorkerTargets(ctx: GatewayContext): Promise<void> {
       },
       { waitMs: 10_000 },
     );
-    sayStandInTradeOff(gatewayOut(ctx), saved);
+    // Setup's own report is plain lines with their marks written in.
+    if (standInTradeOff(saved)) ctx.print(`! ${JUDGE_WARNING}`);
   } catch (error) {
     ctx.print(
       `! the judge test of the worker's targets could not finish (${messageOf(error)}). Run ${COMMAND} gateway setup again to retry it.`,
@@ -2357,15 +2375,21 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
   );
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
+  // ENABLE_TOOL_SEARCH routes nothing, and many people set it themselves: theirs to keep.
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH");
   for (const key of foreign) {
+    if (!routing.includes(key)) {
+      out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it routes nothing`);
+      continue;
+    }
     out.line("warn", `env.${key} stays: ${COMMAND} did not set it`, {
       fix: "remove it by hand to turn the gateway off",
     });
   }
-  if (foreign.length > 0) {
+  if (routing.length > 0) {
     out.verdict(
       "warn",
-      `The gateway is not all off: ${plural(foreign.length, "key stays", "keys stay")} that ${COMMAND} did not set.`,
+      `The gateway is not all off: ${plural(routing.length, "key stays", "keys stay")} that ${COMMAND} did not set.`,
     );
   } else if (result.changes.length === 0) {
     out.verdict(

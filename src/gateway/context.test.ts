@@ -12,8 +12,20 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { currentTerminal } from "../cli/ui/terminal";
 import { tempDir } from "../testing/temp";
 import { gatewayContext } from "./context";
+
+describe("the gateway context: how its lines are drawn", () => {
+  test("its own stdout gets this process's terminal; a caller's collector gets none: plain text", () => {
+    // Whatever the test's own stdout is, the CLI's context reads that very one.
+    expect(gatewayContext(options({ isTTY: false })).term).toEqual(
+      currentTerminal(process.env, "linux"),
+    );
+    const collected = gatewayContext({ ...options({ isTTY: false }), print: () => undefined });
+    expect(collected.term).toBeUndefined();
+  });
+});
 
 /** A terminal whose echo can be switched off, answering with `lines` (as `readSecretLine` reads). */
 function fakeTty(lines: string[]): {

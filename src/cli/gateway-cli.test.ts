@@ -1812,6 +1812,19 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
   });
 
+  test("off: a person's own ENABLE_TOOL_SEARCH stays, and the gateway is off all the same", async () => {
+    const m = machine();
+    writeFileSync(m.paths.settings, JSON.stringify({ env: { ENABLE_TOOL_SEARCH: "true" } }));
+    const off = await m.runHere(["gateway", "off"]);
+    expect(off.stdout).toBe(
+      [
+        "· env.ENABLE_TOOL_SEARCH stays: cc-smart-dev-kit did not set it, and it routes nothing",
+        "✓ Nothing to remove: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("a gateway key someone else set stops on: ForeignKeyError, nothing written", async () => {
     const m = machine();
     const server = fakeServer();
@@ -3280,6 +3293,53 @@ describe("the gateway commands' output, as plain text", () => {
     expect(lines.slice(-2)).toEqual(["✗ The router does not answer.", ""]);
   });
 
+  test("status: all well once Claude Code points at the router", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stdout).toContain(
+      `· Claude Code (~/.claude/settings.json): gateway ON → http://127.0.0.1:${server.port}\n`,
+    );
+    expect(status.stdout).toEndWith("✓ The gateway is on, and its router and backends answer.\n");
+  });
+
+  test("status: Claude Code pointing at another address is no ✓, and gateway on is the fix", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(
+      m.paths.settings,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" } }),
+    );
+    const lines = (await m.run(["gateway", "status"])).stdout.split("\n");
+    const at = lines.indexOf(
+      "· Claude Code (~/.claude/settings.json): gateway ON → http://127.0.0.1:19999",
+    );
+    expect(at).toBeGreaterThan(0);
+    expect(lines.slice(at + 1, at + 4)).toEqual([
+      `  ! that is not this router's address (http://127.0.0.1:${server.port})`,
+      "    Fix: point Claude Code at this router",
+      "    cc-smart-dev-kit gateway on",
+    ]);
+    expect(lines.slice(-2)).toEqual([
+      "! Claude Code points at another address than this router.",
+      "",
+    ]);
+  });
+
+  test("status: a backend that does not answer is marked, and the verdict says so", async () => {
+    const m = machine();
+    const server = fakeServer({ modelsStatus: 503 });
+    m.writeConfig(server.port);
+    const lines = (await m.run(["gateway", "status"])).stdout.split("\n");
+    expect(lines[1]).toBe(
+      `✗ backend omniroute: http://127.0.0.1:${server.port} key ••••cdef → HTTP 503`,
+    );
+    expect(lines.slice(-2)).toEqual(["! The router answers, and a backend does not.", ""]);
+  });
+
   test("status: a config that cannot be read", async () => {
     const m = machine();
     mkdirSync(dirname(m.paths.config), { recursive: true });
@@ -3296,6 +3356,9 @@ describe("the gateway commands' output, as plain text", () => {
     expect(status.stderr).toBe("");
     const lines = status.stdout.split("\n");
     expect(lines[0]).toBe("· config: none yet (no ~/.config/cc-smart-dev-kit/gateway.json)");
+    // A router nobody installed is no failure, and setup is said once: the next step.
+    expect(status.stdout).not.toContain("✗");
+    expect(status.stdout).not.toContain("Fix:");
     expect(lines.slice(-5)).toEqual([
       "· The gateway is not set up.",
       "Next steps:",
@@ -3344,6 +3407,14 @@ describe("the gateway commands' output, as plain text", () => {
         "✓ The router uses it from its next request.",
         "",
       ].join("\n"),
+    );
+    // A slot that answers as Claude: the switch waits with its saved chain, and says so.
+    expect((await m.run(["gateway", "slot", "fable", "omniroute:m1"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "slot", "fable", "claude"])).exitCode).toBe(0);
+    const waiting = await m.run(["gateway", "fallback", "fable", "on"]);
+    expect(waiting.stdout).toStartWith("~ cc-smart-dev-kit-fable: fallback off → on\n");
+    expect(waiting.stdout).toEndWith(
+      "✓ Saved with the chain: the switch is used once the slot is Custom again.\n",
     );
     const breaker = await m.run(["gateway", "breaker", "opus", "off"]);
     expect(breaker.stdout).toStartWith("~ cc-smart-dev-kit-opus: breaker on → off\n");
