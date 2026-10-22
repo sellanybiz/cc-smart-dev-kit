@@ -1585,17 +1585,21 @@ atomic write), asks first, and **never commits**: commit them with the project.
 from Claude Code's own session records (the folders under `~/.claude/projects/`), each
 worktree folded into the repository it belongs to; a folder that is gone or not in git is
 left out. Each row shows when you last used it, its worktrees, whether it is set up, and
-**not committed yet** when its project files differ from what is committed (the merge gate
-reads the committed file, so a change counts once it is committed). A project that is not
+**not committed yet** when its project files differ from what is committed on the branch it
+is on (the merge gate reads the file merged into the base and pushed, so commit the files and
+merge them). A project that is not
 set up has **Set up**: its page previews the two files with `project init`'s own plan, asks
 first, and writes them, exactly as the Project card does. **Add a folder** adds a repository
 no session has used yet: it must be a full path inside a git checkout, and its main checkout
 is kept in `portal-projects.json` in cc-smart-dev-kit's state folder. A project's page also
-shows its open pull requests and its crew branches, each with the merge guard's own verdict
-(`workflow merge-check`): `allowed`, the reason it would ask, or "not read yet" when `gh` is
-missing or the time ran out (about 8 seconds per page). The verdicts are kept for a minute.
-The page names a project by an id from this list, never by a path, so a request cannot point
-the write at another folder.
+shows its open pull requests and its crew branches that still wait for a merge, each with the
+merge guard's own verdict (`workflow merge-check`): `allowed`, the reason it would ask, "ran
+late" when the time for the branches ran out (about 8 seconds per page), or "not read" when a
+fact could not be read. Without `gh` the page shows the crew branches and a line that says the
+pull requests could not be read. The verdicts are kept for a minute, and a read the time cut
+short is read again at the next look. The page names a project by an id from this list, never
+by a path: a write reaches only a folder on the list, and **Add a folder** is how any git
+checkout on this machine gets onto it.
 
 **Without a gateway config** (never set up, or one that cannot be read): Overview, Slots and
 Health show "The gateway is not set up", with the command that sets it up and a button to
