@@ -59,6 +59,7 @@ import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
+import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { runWorker } from "../workers/command";
 import { realWorkerContext } from "../workers/context";
@@ -228,6 +229,8 @@ async function main(argv: string[]): Promise<number> {
         "--no-instructions",
         "--instructions",
         "--statusline",
+        RETRY_WATCHDOG_FLAG,
+        NO_RETRY_WATCHDOG_FLAG,
         "--tavily-key-stdin",
       ];
       let project = process.cwd();
@@ -254,6 +257,14 @@ async function main(argv: string[]): Promise<number> {
       const on = rest.includes("--instructions");
       if (off && on) {
         console.error(usageError("Use --no-instructions or --instructions, not both.", "setup"));
+        return 2;
+      }
+      const watchdogOn = rest.includes(RETRY_WATCHDOG_FLAG);
+      const watchdogOff = rest.includes(NO_RETRY_WATCHDOG_FLAG);
+      if (watchdogOn && watchdogOff) {
+        console.error(
+          usageError(`Use ${RETRY_WATCHDOG_FLAG} or ${NO_RETRY_WATCHDOG_FLAG}, not both.`, "setup"),
+        );
         return 2;
       }
       if (rest.includes("--warp") && rest.includes("--remove-warp")) {
@@ -292,6 +303,7 @@ async function main(argv: string[]): Promise<number> {
         instructions: off ? false : on ? true : null,
         instructionsSource: instructionsFolder(import.meta.dir),
         statusline: rest.includes("--statusline"),
+        retryWatchdog: watchdogOn ? true : watchdogOff ? false : null,
       });
     }
     case "statusline":

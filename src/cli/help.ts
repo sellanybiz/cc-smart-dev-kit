@@ -25,6 +25,11 @@ import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
+import {
+  NO_RETRY_WATCHDOG_FLAG,
+  RETRY_WATCHDOG_ENV,
+  RETRY_WATCHDOG_FLAG,
+} from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKER_USAGE } from "../workers/command";
 import { BOARD_COMMANDS } from "../workers/usage";
@@ -80,7 +85,8 @@ ${COMMAND} setup wires it in your user settings for agent view, which runs no pl
 not a project hook: it needs no settings from a project, and it works in every folder.`;
 
 const SETUP_HELP = `Usage: ${COMMAND} setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
-       [--no-instructions | --instructions] [--statusline] [--tavily-key-stdin]
+       [--no-instructions | --instructions] [--statusline] [${RETRY_WATCHDOG_FLAG} | ${NO_RETRY_WATCHDOG_FLAG}]
+       [--tavily-key-stdin]
 
 Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-update off (the
 kit's background update is the one updater, so a major version waits for you), installs the
@@ -103,6 +109,10 @@ with --yes.
   --instructions       bring them back (restore forgets the choice)
   --statusline         also set Claude Code's status line to "${COMMAND} statusline"
                        (asked when run in a terminal)
+  ${RETRY_WATCHDOG_FLAG}     make every Claude Code session wait and retry at a limit instead
+                       of failing, with no time limit (${RETRY_WATCHDOG_ENV} in your
+                       settings; asked once when run in a terminal, default no)
+  ${NO_RETRY_WATCHDOG_FLAG}  take it out again, and do not ask again
   --dry-run            print what would change, and write, run and check nothing`;
 
 const DOCTOR_HELP = `Usage: ${COMMAND} doctor [--live]

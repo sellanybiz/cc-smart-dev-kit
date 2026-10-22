@@ -82,6 +82,13 @@ import {
   readJsonObject,
   samePath,
 } from "../setup/managed-json";
+import {
+  RETRY_WATCHDOG_FLAG,
+  RETRY_WATCHDOG_QUESTION,
+  RETRY_WATCHDOG_SETTINGS,
+  retryWatchdogDeclinedFile,
+  retryWatchdogKeysPresent,
+} from "../setup/retry-watchdog";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
 import { readUserJson } from "../setup/user-json";
 import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
@@ -114,6 +121,13 @@ export interface SetupOptions {
   instructionsSource: string;
   /** `--statusline`: set the status line without asking. */
   statusline: boolean;
+  /**
+   * Claude Code's retry watchdog for the person's own sessions (`src/setup/retry-watchdog.ts`).
+   * `true`: `--retry-watchdog` — write its two keys without asking. `false`:
+   * `--no-retry-watchdog` — take ours out, and remember a "no". `null`: neither — ask once on a
+   * terminal (default no), never again after a "no".
+   */
+  retryWatchdog: boolean | null;
   /** The environment: the Tavily key may come from it (`TAVILY_API_KEY`). */
   env: Record<string, string | undefined>;
   /**
@@ -184,6 +198,11 @@ interface Managed {
   instructions: { where: InstructionsPaths; choice: boolean | null };
   /** Set the status line (`--statusline`, or a "yes" to the question). */
   statusline: boolean;
+  /**
+   * The retry watchdog's keys: `on` (`--retry-watchdog`, or a "yes" to the question) writes
+   * them, `off` (`--no-retry-watchdog`) takes ours out, `null` leaves them as they are.
+   */
+  retryWatchdog: "off" | "on" | null;
   /**
    * What the settings' own `env.TAVILY_API_KEY` gets — the ONE decision, from where the key
    * was found (`readTavilyKey`):
@@ -265,6 +284,7 @@ function applySetup(
   // why it is `false` and not a removed key, in `src/setup/auto-update.ts`.
   const set: (readonly [KeyPath, unknown])[] = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
+  if (managed.retryWatchdog === "on") set.push(...RETRY_WATCHDOG_SETTINGS);
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
@@ -282,6 +302,15 @@ function applySetup(
     ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some(
       (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     );
+  // `--no-retry-watchdog`: only the keys that are ours, so a person's own is not even named.
+  const watchdogOwned =
+    managed.retryWatchdog === "off"
+      ? RETRY_WATCHDOG_SETTINGS.map(([path]) => path).filter((path) =>
+          ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some(
+            (owned) => formatKeyPath(owned) === formatKeyPath(path),
+          ),
+        )
+      : [];
   const settings = applyManagedJson({
     file: paths.settingsFile,
     stateDir: paths.stateDir,
@@ -289,7 +318,7 @@ function applySetup(
     // and the settings file is left at mode 600.
     secret: (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH),
     set,
-    ...(tavilyOwned ? { remove: [TAVILY_KEY_PATH] } : {}),
+    remove: [...(tavilyOwned ? [TAVILY_KEY_PATH] : []), ...watchdogOwned],
     // An `env` setup created goes with its last key; one the person had stays.
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun,
@@ -552,6 +581,44 @@ function askStatusline(paths: CliPaths, machine: Machine, managed: Managed): boo
 }
 
 /**
+ * Claude Code's retry watchdog is offered, never taken: asked once, in a terminal, with the
+ * trade-offs in the question; the default is no. Not asked when `--retry-watchdog` or
+ * `--no-retry-watchdog` already decided, when one of its keys is in the settings' `env`
+ * (the person chose; a value that is theirs stays, as ForeignKeyError rules), or after a "no"
+ * (`retryWatchdogDeclinedFile`). True when the answer was "no" (to remember); a "yes" sets
+ * `managed.retryWatchdog`.
+ */
+function askRetryWatchdog(paths: CliPaths, machine: Machine, managed: Managed): boolean {
+  if (machine.confirm === null || !retryWatchdogUndecided(paths, managed)) return false;
+  const yes = machine.confirm(RETRY_WATCHDOG_QUESTION);
+  if (yes) managed.retryWatchdog = "on";
+  return !yes;
+}
+
+/** True while nothing has decided the watchdog: no flag, no "no" on file, no key of its in the settings. */
+function retryWatchdogUndecided(paths: CliPaths, managed: Managed): boolean {
+  if (managed.retryWatchdog !== null) return false;
+  if (existsSync(retryWatchdogDeclinedFile(paths.stateDir))) return false;
+  try {
+    return !retryWatchdogKeysPresent(paths.settingsFile);
+  } catch {
+    // An unreadable file: setup's own pass reports it.
+    return false;
+  }
+}
+
+/**
+ * What a dry run says about the watchdog: it asks nothing, so it names what a real run would
+ * do. Nothing when the choice is made already (a flag, a key in the settings, a "no").
+ */
+function retryWatchdogDryNote(paths: CliPaths, machine: Machine, managed: Managed): string | null {
+  if (!retryWatchdogUndecided(paths, managed)) return null;
+  return machine.confirm === null
+    ? `  retry watchdog: not offered, there is no terminal (nothing changes); ${RETRY_WATCHDOG_FLAG} turns it on`
+    : `  retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); ${RETRY_WATCHDOG_FLAG} turns it on without asking`;
+}
+
+/**
  * Said before claude-mem's work state goes off (D23): its to-do lists stop showing in a
  * session, and the person may want to read one last time, or turn it back on (`setup`
  * leaves a value they set alone, also `"true"`).
@@ -757,6 +824,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       choice: options.instructions,
     },
     statusline: options.statusline,
+    retryWatchdog: options.retryWatchdog === null ? null : options.retryWatchdog ? "on" : "off",
     tavilyKeyPlan:
       tavily.source === "file"
         ? { kind: "write", value: tavily.value }
@@ -844,6 +912,8 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       const asking = autoModeAsking(machine, autoMode);
       if (!asking.ask && asking.note !== null) report.notes.push(asking.note);
     }
+    const watchdogNote = retryWatchdogDryNote(paths, machine, managed);
+    if (watchdogNote !== null) report.info.push(watchdogNote);
     printReport(
       {
         changes,
@@ -860,6 +930,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // only what depends on it goes (Warp's plugin and shortcuts go with Warp's commands).
   if (autoMode !== null) managed.autoMode = askAutoMode(paths, options, autoMode, report.notes);
   const declined = askStatusline(paths, machine, managed);
+  // `--no-retry-watchdog` is a "no" as well: remembered, so a later plain setup does not ask.
+  const watchdogDeclined =
+    askRetryWatchdog(paths, machine, managed) || options.retryWatchdog === false;
   let warpYes = true;
   if (warp.commands.length > 0) {
     const what = options.removeWarp
@@ -925,6 +998,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       recordApplied(paths.stateDir, mcp, now);
       // cc-smart-dev-kit's own state, like the lock: not a user file, so no backup.
       if (declined) atomicWrite(statuslineDeclinedFile(paths.stateDir), "no\n", 0o600);
+      if (watchdogDeclined) {
+        atomicWrite(retryWatchdogDeclinedFile(paths.stateDir), "no\n", 0o600);
+      }
       return {
         mcp,
         changes: [...shortcuts, ...files.changes],

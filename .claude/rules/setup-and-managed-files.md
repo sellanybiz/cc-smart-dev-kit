@@ -266,6 +266,11 @@ valid across updates.
   terminal they are left out whatever the flags, and setup says so. A project setup
   cannot read (invalid or too-new `cc-smart-dev-kit.json`, old git, a missing main checkout)
   leaves only these entries out, with a `!` note.
+- **An offered setting is asked once, and the default is no** (the status line, the retry
+  watchdog: `src/setup/retry-watchdog.ts`). Only on a terminal; a "no" is a file in the state
+  folder (`statusline-declined`, `retry-watchdog-declined`) that stops the question; a flag turns
+  it on without asking (and `--no-retry-watchdog` turns it off and remembers the "no"); with no
+  terminal nothing is asked or changed, and `--dry-run` says so. Its keys are owned keys.
 - **Every question comes first.** All questions are asked before anything runs or is
   written. A "no" to one drops only what depends on it.
 - **`claude plugin …` steps run only when a person runs `cc-smart-dev-kit setup`**; nothing in

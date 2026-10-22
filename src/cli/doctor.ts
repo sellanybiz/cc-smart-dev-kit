@@ -62,6 +62,7 @@ import {
   marketplaceSource,
   redactUrl,
 } from "../setup/marketplace-access";
+import { retryWatchdogLine, retryWatchdogState } from "../setup/retry-watchdog";
 import {
   TMUX_LINE,
   TMUX_MIN_VERSION,
@@ -411,6 +412,27 @@ function checkAutoUpdate(paths: CliPaths): Check {
         ok: false,
         text: `Claude Code's own plugin auto-update is on (its own record, ${tildify(paths.knownMarketplacesFile, paths.home)}, says so): ${risk}. Run: ${COMMAND} setup`,
       };
+  }
+}
+
+/**
+ * Claude Code's retry watchdog (D42, `src/setup/retry-watchdog.ts`) is a choice, never a
+ * failure: one `·` line says whether a session waits and retries at a limit, and how to turn it on.
+ */
+function checkRetryWatchdog(paths: CliPaths): Check {
+  try {
+    const state = retryWatchdogState(paths);
+    return {
+      ok: true,
+      info: true,
+      text: retryWatchdogLine(state, tildify(paths.settingsFile, paths.home)),
+    };
+  } catch (error) {
+    return {
+      ok: true,
+      info: true,
+      text: `retry watchdog: not checked, ${tildify(paths.settingsFile, paths.home)} cannot be read: ${messageOf(error)}`,
+    };
   }
 }
 
@@ -1086,6 +1108,7 @@ export async function doctorChecks(
     checkProjectImports(paths, local.cwd),
     await checkMarketplaceAccess(paths, env),
     checkAutoUpdate(paths),
+    checkRetryWatchdog(paths),
     checkUpdatesNotOff(settings, env, paths),
     ...checkSelfUpdate(paths),
     checkNameClash(settings),

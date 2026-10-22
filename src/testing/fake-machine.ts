@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { runSetup, type SetupOptions, statuslineDeclinedFile } from "../cli/setup";
 import type { Machine } from "../machine/machine";
+import { retryWatchdogDeclinedFile } from "../setup/retry-watchdog";
 import { tempDir } from "./temp";
 
 export const UBUNTU = 'NAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n';
@@ -82,6 +83,8 @@ export interface WorldOptions {
    * again. Default: true, so a test about other questions sees only those; false asks it.
    */
   statuslineAnswered?: boolean;
+  /** The same for the retry watchdog question (`src/setup/retry-watchdog.ts`). Default: true. */
+  retryWatchdogAnswered?: boolean;
 }
 
 export function world(options: WorldOptions = {}) {
@@ -164,6 +167,10 @@ export function world(options: WorldOptions = {}) {
     mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
     writeFileSync(statuslineDeclinedFile(paths.stateDir), "no\n", { mode: 0o600 });
   }
+  if (options.retryWatchdogAnswered !== false) {
+    mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
+    writeFileSync(retryWatchdogDeclinedFile(paths.stateDir), "no\n", { mode: 0o600 });
+  }
   const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: home };
   const questions: string[] = [];
   /** Every `spawnDetached` call, as one line: what a real run would have started. */
@@ -216,6 +223,7 @@ export function world(options: WorldOptions = {}) {
       instructions: null,
       instructionsSource: PLUGIN_INSTRUCTIONS,
       statusline: false,
+      retryWatchdog: null,
       // No environment of its own: a test that wants a key sets one through `extra`.
       env: {},
       tavilyKeyStdin: null,
