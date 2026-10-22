@@ -28,9 +28,10 @@ So structure comes from markdown.
 
 A reply that would run past about 40 terminal lines — a plan, a review, a research summary,
 an explanation, an audit, a report — is read once and lost in scrollback. Put it where it
-can be read on purpose: a page, if the session has a tool that publishes one, or the plan
-file, the pull request or a doc. Keep a three-to-five-line summary in the terminal: what the
-page holds, and what decision it needs.
+can be read on purpose: a page, if the session has a tool that publishes one, or a file the
+work already has — the plan file, the pull request body, the doc the change updates. Never
+make a new file only to hold a reply. Keep a three-to-five-line summary in the terminal: what
+the page holds, and what decision it needs.
 
 Not for a routine short answer, or for advice the person will act on at once in the
 terminal.

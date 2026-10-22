@@ -1,10 +1,16 @@
 ---
 name: ui-verifier
 description: Drives the running app through the Playwright MCP server to verify a frontend change - navigates, reads the accessibility tree, runs measured checks, walks the edge-case matrix across breakpoints and colour schemes, and saves the named key screenshots the caller judges the design from. Facts only, no design verdict. One at a time within a session (its agents share that session's browser connection). Needs the Playwright MCP server, which `cc-smart-dev-kit setup` registers.
+skills:
+  - cc-smart-dev-kit:impact-analysis
 tools:
   - Read
   - Grep
   - Glob
+  - LSP
+  - mcp__plugin_claude-mem_mcp-search__smart_search
+  - mcp__plugin_claude-mem_mcp-search__smart_outline
+  - mcp__plugin_claude-mem_mcp-search__smart_unfold
   - mcp__playwright__browser_navigate
   - mcp__playwright__browser_navigate_back
   - mcp__playwright__browser_snapshot
@@ -72,13 +78,16 @@ or the person tests it."
    Snapshot and sample computed styles after each.
 9. **Screenshots** only after a measured check passed. Save the 2–6 named key states the
    caller's design verdict turns on.
+10. **A failure in the code:** find the `file:line` it comes from as the
+    `cc-smart-dev-kit:impact-analysis` skill's § Before the change finds a symbol (this agent's
+    `skills:` field loads it at start). You read the code; its steps for editing are not yours.
 
 ## The matrix
 
 The one home for the edge cases a browser can prove; the wider axes (data, timing, access,
-money, environment) are in the `cc-smart-dev-kit:review` skill. Drive the brief's listed risks
-**first**, and for each say whether you reproduced it. A case you could not reproduce is a
-result: report what you tried. Then run what applies, and name what you skipped.
+money, environment) are in the review skill's `references/axes.md`. Drive the brief's listed
+risks **first**, and for each say whether you reproduced it. A case you could not reproduce is
+a result: report what you tried. Then run what applies, and name what you skipped.
 
 - **Empty:** no data, zero results, the empty call to action.
 - **Loading:** a skeleton shows; no flash on a fast answer.
@@ -108,7 +117,8 @@ result: report what you tried. Then run what applies, and name what you skipped.
 - **The browser's login:** never sign out, switch accounts or clear its profile. Where the
   project shares one browser between sessions (its add-on says so), that login is everyone's.
 - Delete only files you created yourself; never clean a shared folder.
-- One case in the brief → try ten around it.
+- Around each case in the brief, drive its neighbours in the matrix — the empty and the
+  long input beside a form case, the double-click beside a submit — not a fixed count.
 
 ## Report
 

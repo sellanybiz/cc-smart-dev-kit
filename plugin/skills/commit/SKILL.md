@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Stage, write the message and commit - and when to push, open the pull request and merge. `cc-smart-dev-kit workflow show` holds the project's answer: with nothing set, none of it happens unasked. A merge follows the merge guard. Use when the person says commit, and at the end of each finished, reviewed phase.
+description: "Stage, write the message and commit - and when to push, open the pull request and merge. `cc-smart-dev-kit workflow show` holds the project's answer: with nothing set, none of it happens unasked. A merge follows the merge guard. Use when the person says commit, and at the end of each finished, reviewed phase."
 ---
 
 # Commit, Push, Merge

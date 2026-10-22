@@ -1520,7 +1520,7 @@ names such a missing import.
 | Skill | Use it for |
 |---|---|
 | `review` | Your own review before a commit, and the one second opinion per change set. |
-| `plan-task` | Planning non-trivial work: research, questions, the plan file, phases and owners. |
+| `plan-task` | Planning work whose design is open, in plan mode: research, questions, the plan file, approval, phases and owners. |
 | `commit` | When to commit, push, open the pull request and ask for the merge. |
 | `pull-request` | What every pull request body carries. |
 | `verify-change` | The affordable loop after edits; the checks the push will run; testing with the person. |
@@ -1539,12 +1539,15 @@ names such a missing import.
 | `crew` | Inside a crew session: build the phase end to end, mark each step, ask the lead, hand back the report. |
 
 **3 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
-none is pinned in their files). `reviewer` and `rules-maintainer` load the skill they work by
-(`review`, `self-evolve`) at start, through their `skills:` field:
+none is pinned in their files). Each loads the `impact-analysis` skill at start, through its
+`skills:` field, and `rules-maintainer` also loads `self-evolve`. Each can use claude-mem's
+`smart_outline`, `smart_search` and `smart_unfold`, and Claude Code's `LSP` tool where a
+language server runs; without them, Grep and Read do the job (why each agent has the tools it
+has: `docs/design.md` § Instructions, skills and agents):
 
 | Agent | Job | Needs |
 |---|---|---|
-| `reviewer` | The read-only second opinion on a change set. | — (uses claude-mem's `smart_outline`, `smart_search` and `smart_unfold` when they are there and answer; else Grep and Read) |
+| `reviewer` | The read-only second opinion on a change set. | — |
 | `rules-maintainer` | Edits to instruction files, with a duplicate and conflict check. | — |
 | `ui-verifier` | Drives the running app in a browser and measures; the design verdict stays with you, on `opus` or `fable`. | the **Playwright** MCP server |
 

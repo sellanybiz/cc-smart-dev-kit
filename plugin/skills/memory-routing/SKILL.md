@@ -1,6 +1,6 @@
 ---
 name: memory-routing
-description: Use when the person states a project fact, a correction, a preference or a workflow rule. Routes it to its one right home - a rule, a skill, a doc, memory, the session's to-do list or the live system - by who needs it and how fast it goes stale. Trigger phrases - "remember that", "always do", "never do", "from now on", "save this", "I prefer".
+description: Use when the person states a fact, a decision or a preference to keep, or asks you to remember or track something. Routes it to its one right home - memory, a doc, the to-do list, the plan file, the live system - by who needs it and how fast it goes stale; an instruction for next time goes on to self-evolve. Trigger phrases - "remember that", "save this", "note that", "keep track of", "I prefer", "for the record".
 ---
 
 # Where Knowledge Goes

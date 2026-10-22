@@ -1,6 +1,6 @@
 ---
 name: self-evolve
-description: Use when the person gives a correction, sets a new convention, or a mistake repeats. Decides whether it becomes a rule, a skill, a hook, a doc or a memory, keeps the instruction set small, and holds the size budgets. Trigger phrases - "always", "never again", "make this a rule", "from now on", "stop doing".
+description: Use when the person gives a correction, sets a new convention, or a mistake repeats - an instruction for next time. Decides whether it becomes a rule, a skill, a hook, a doc or a memory, keeps the instruction set small, and holds the size budgets. A fact or a preference to keep is memory-routing's. Trigger phrases - "always", "never again", "make this a rule", "from now on", "stop doing".
 ---
 
 # Keep The Instructions Sharp And Small
@@ -44,6 +44,10 @@ Lines, not words.
 | All rules with no `paths:`, together | 200 | 200 | Same cost as `CLAUDE.md`. |
 | A rule with `paths:` | 120 | 200 | Loads only on a matching file. |
 | A skill's `SKILL.md` body | 300 | 500 | Loads in full when the skill runs. |
+
+On top of these, every session also loads the person's own `CLAUDE.md` and the plugin's
+general instructions it imports, which the plugin holds to a line budget of its own. Count
+them when you weigh what one more always-on line costs.
 
 Not budgeted: agent files (their own context), a skill's `references/` files (read on
 demand) and docs. That is where detail goes. Before an edit, `wc -l` the file. Over the

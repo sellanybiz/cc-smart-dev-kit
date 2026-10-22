@@ -1168,15 +1168,46 @@ other words; that stays a review job.
 
 **Agents pin no model and no effort.** The caller passes both on each launch, so an agent
 never runs on a model nobody chose. Plugin agents and skills are named `cc-smart-dev-kit:<name>`.
-An agent that works by a skill loads it with `skills:` in its frontmatter (`reviewer`:
-`cc-smart-dev-kit:review`; `rules-maintainer`: `cc-smart-dev-kit:self-evolve`): the skill's text is in its
-context from the start, and it needs no path to the plugin's version folder (proved live:
-`claude-code-contract.md` § Instructions).
-Agents that need an MCP server name its tools as `mcp__playwright__*`: the servers are
-registered for the user (§ MCP servers at user scope), so the names stay. The reviewer also
-lists claude-mem's `smart_search`, `smart_outline` and `smart_unfold` (the companion plugin's
-own tool names), for a big file's shape; when they are not there or do not answer (on Windows
-they can fail without an error, claude-mem #1247), it uses Grep and Read.
+An agent that works by a skill loads it with `skills:` in its frontmatter: the skill's text is
+in its context from the start (proved live: `claude-code-contract.md` § Instructions). All
+three load `cc-smart-dev-kit:impact-analysis`, the one home for finding a symbol's callers and a
+file's shape; `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`. The `reviewer` does not
+load the review skill: half of it is the author's (commit, fix, start the reviewer), which
+contradicts a read-only agent. It reads the review dimensions, edge-case axes and severity
+scale from `skills/review/references/axes.md` instead, found from the base directory Claude
+Code prints above each loaded skill (the plugin's folder has the version in its name, so no
+fixed path reaches it). No agent has `memory:` (only the main session saves memories) or
+`Agent` (an agent starts no agents).
+
+**The tools each agent lists**, and why (research for the 1.1.0 plan, § R7):
+
+| Agent | Tools | Why |
+|---|---|---|
+| `reviewer` | Read, Grep, Glob, Bash, LSP, WebSearch, WebFetch, claude-mem's `smart_*` | Bash for `git diff` and the unit tests; no edit tools |
+| `rules-maintainer` | Read, Edit, Write, Grep, Glob, Bash, LSP, `smart_*` | Bash for `wc -l` and `git status` |
+| `ui-verifier` | Read, Grep, Glob, LSP, `smart_*`, the `mcp__playwright__*` tools | no Bash: it runs no command, only the browser |
+
+`smart_search`, `smart_outline` and `smart_unfold` are the companion plugin's own tool names,
+for a file's shape without reading all of it; when they are not there or do not answer (on
+Windows they can fail without an error, claude-mem #1247), the agent uses Grep and Read.
+`LSP` answers only where a code intelligence plugin runs a language server for the file; with
+none, each call returns an error and the agent searches as text. The Playwright tools keep
+their usual names (`mcp__playwright__*`): the server is registered for the user (§ MCP servers
+at user scope).
+
+**The Grep and Glob trade-off (for the owner).** On macOS, Linux and WSL, Claude Code leaves
+the Grep and Glob tools out of a session, and out of an agent that also lists `Bash`; it gives
+them back to an agent that lists them without `Bash` (code.claude.com/docs/en/tools-reference
+§ Glob tool behavior, read 2026-10-22). So `reviewer` and `rules-maintainer` search with
+`grep` and `find` through Bash there — Claude Code's shell runs fast built-in versions of both
+— and only `ui-verifier` gets the real tools. The cost: each search is a Bash call, so it
+reaches the Bash hooks (claude-mem's file-context hook, the plugin's guards) and the Bash
+permission rules, and its output is plain text rather than the tools' structured results.
+Dropping `Bash` would bring the tools back, but the reviewer could no longer read `git diff`
+or run a test, and the rules maintainer could no longer count lines or check `git status`.
+Both keep `Bash`; Grep and Glob stay listed, because on Windows they are in the default set
+and the agents use them. The `cc-smart-dev-kit:impact-analysis` skill says what to use when they
+are missing.
 
 **The output style** ships but is never switched on: a person picks it with `/output-style`.
 ## The hooks
