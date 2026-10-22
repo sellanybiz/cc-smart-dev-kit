@@ -12,6 +12,7 @@ import {
   emptyConfig,
   fallbackOn,
   judgeTargetUsable,
+  keptChain,
   loadConfigFile,
   messageOf,
   workerJudgeTargets,
@@ -187,16 +188,26 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: first target ${first} (${fallback})`,
+      text: `slot ${slot}: Custom, first target ${first} (${fallback})`,
     });
   }
+  /** A chain saved for a slot that answers as Claude, in words; empty when there is none. */
+  const saved = (slot: string): string => {
+    const kept = keptChain(config, slot);
+    return kept === null ? "" : `; saved, not in use: ${kept.targets.join(" → ")}`;
+  };
   for (const slot of Object.keys(FAMILY_SLOTS)) {
     if (Object.hasOwn(config.slots, slot)) continue;
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: off, ${FAMILY_SLOTS[slot]} goes to Anthropic as Claude Code sent it`,
+      text: `slot ${slot}: Claude (${FAMILY_SLOTS[slot]} goes to Anthropic as Claude Code sent it)${saved(slot)}`,
     });
+  }
+  for (const slot of Object.keys(config.kept ?? {}).sort()) {
+    if (Object.hasOwn(config.slots, slot) || Object.hasOwn(FAMILY_SLOTS, slot)) continue;
+    if (slot === JUDGE_SLOT) continue;
+    checks.push({ ok: true, info: true, text: `slot ${slot}: Claude${saved(slot)}` });
   }
   // A scout or worker chain that names Claude Opus or Fable spends the person's own plan usage
   // on routine work without saying so (the Agent guard asks the person about every launch on
@@ -224,7 +235,7 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${JUDGE_SLOT}: ${judgeDefaultWords(config)}`,
+      text: `slot ${JUDGE_SLOT}: ${judgeDefaultWords(config)}${saved(JUDGE_SLOT)}`,
     });
     if (fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0) {
       checks.push({ ok: true, warn: true, text: `slot ${JUDGE_SLOT}: ${JUDGE_WARNING}` });

@@ -69,6 +69,17 @@ export function isSlotKey(name: string): boolean {
   return SLOT_KEY.test(name);
 }
 
+/**
+ * A Claude model id as the router records one it saw (`seenClaude`): `claude-`, then up to 80
+ * letters, digits, `.`, `_`, `@` or `-`, without `[1m]`. Anything else a client sends as a
+ * model name is not kept: the record feeds a list a person picks a target from.
+ */
+const CLAUDE_MODEL_ID = /^claude-[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$/;
+
+export function isClaudeModelId(name: string): boolean {
+  return CLAUDE_MODEL_ID.test(name);
+}
+
 /** A model name without the `[1m]` context suffix. */
 export function withoutContextSuffix(name: string): string {
   return name.replace(CONTEXT_SUFFIX, "");

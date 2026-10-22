@@ -28,8 +28,11 @@ import {
   planBreakerChange,
   planFallbackChange,
   planSlotChange,
+  portalChains,
   upgradeConfig,
+  withoutPortalSlots,
   withoutRetiredDefaultClaude,
+  withPortalChains,
 } from "./commands";
 import { type GatewayConfig, loadConfigFile, saveConfig } from "./config";
 import type { HealthProbe } from "./health";
@@ -461,7 +464,7 @@ describe("setup, slot and models helpers", () => {
     });
     // `judge off`: the way back to Claude. config() has no judge slot yet.
     expect(planSlotChange(cfg, "judge", "off", models)).toEqual({
-      error: "cc-smart-dev-kit-judge is already off",
+      error: "cc-smart-dev-kit-judge is already Claude",
     });
     const judged = planSlotChange(cfg, "judge", "omniroute:deepseek-v4.1-flash", models);
     if (!("config" in judged)) throw new Error(judged.error);
@@ -1422,7 +1425,7 @@ describe("slot opus / fable, and the fallback switch", () => {
     expect(Object.keys(off.config.slots)).not.toContain("cc-smart-dev-kit-opus");
     expect(off.config).not.toHaveProperty("modelSlots");
     expect(planSlotChange(config(), "fable", "off", models)).toEqual({
-      error: "cc-smart-dev-kit-fable is already off",
+      error: "cc-smart-dev-kit-fable is already Claude",
     });
   });
 
@@ -1473,11 +1476,241 @@ describe("slot opus / fable, and the fallback switch", () => {
     });
   });
 
-  it("a slot turned off loses its fallback setting with its chain", () => {
+  it("a slot turned off keeps its fallback setting with its saved chain, not beside slots", () => {
     const cfg: GatewayConfig = { ...config(), fallback: { "cc-smart-dev-kit-worker": false } };
     const off = planSlotChange(cfg, "worker", "off", models);
     if (!("config" in off)) throw new Error(off.error);
     expect(off.config).not.toHaveProperty("fallback");
+    expect(off.config.kept).toEqual({
+      "cc-smart-dev-kit-worker": { fallback: false, targets: ["claude-sonnet-5-5"] },
+    });
+  });
+});
+
+describe("slot modes: one home for every chain (B0)", () => {
+  const WORKER = "cc-smart-dev-kit-worker";
+  const JUDGE = "cc-smart-dev-kit-judge";
+  const models = { omniroute: ["glm-5.3-flash", "deepseek-v4.1-flash"] };
+  /** The planned change, or the test fails with the planner's error. */
+  function planned(change: ReturnType<typeof planSlotChange>) {
+    if (!("config" in change)) throw new Error(change.error);
+    return change;
+  }
+
+  it("claude moves the chain and its fallback switch to kept; custom moves both back", () => {
+    const cfg: GatewayConfig = { ...config(), fallback: { [WORKER]: false } };
+    const saved = planned(planSlotChange(cfg, "worker", "claude", models));
+    expect(saved.kind).toBe("claude");
+    expect(saved.old).toEqual(["claude-sonnet-5-5"]);
+    expect(saved.next).toEqual([]);
+    expect(saved.config.slots).not.toHaveProperty(WORKER);
+    // One home: the switch moved with the chain, so `fallback` names no slot without one.
+    expect(saved.config).not.toHaveProperty("fallback");
+    expect(saved.config.kept).toEqual({
+      [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] },
+    });
+
+    const back = planned(planSlotChange(saved.config, "worker", "custom", models));
+    expect(back.kind).toBe("custom");
+    expect(back.old).toEqual([]);
+    expect(back.next).toEqual(["claude-sonnet-5-5"]);
+    expect(back.config.slots[WORKER]).toEqual(["claude-sonnet-5-5"]);
+    expect(back.config).not.toHaveProperty("kept");
+    expect(back.config.fallback).toEqual({ [WORKER]: false });
+  });
+
+  it("off is the old word for claude; asking for claude twice says the chain is saved", () => {
+    const cfg = config();
+    expect(planned(planSlotChange(cfg, "worker", "off", models)).config).toEqual(
+      planned(planSlotChange(cfg, "worker", "claude", models)).config,
+    );
+    const saved = planned(planSlotChange(cfg, "worker", "off", models));
+    expect(planSlotChange(saved.config, "worker", "claude", models)).toEqual({
+      error: `${WORKER} is already Claude; its chain is saved, not in use: claude-sonnet-5-5 (to use it: cc-smart-dev-kit gateway slot worker custom)`,
+    });
+    // And a slot that never had one says so plainly.
+    expect(planSlotChange(config(), "fable", "off", models)).toEqual({
+      error: "cc-smart-dev-kit-fable is already Claude",
+    });
+  });
+
+  it("custom with nothing saved, or a saved chain that no longer checks out, is refused", () => {
+    expect(planSlotChange(config(), "fable", "custom", models)).toEqual({
+      error:
+        "cc-smart-dev-kit-fable has no saved chain, so it stays Claude. Give it one: cc-smart-dev-kit gateway slot fable <targets>",
+    });
+    const stale: GatewayConfig = {
+      ...config(),
+      kept: { "cc-smart-dev-kit-opus": { targets: ["omniroute:kimi-k3"] } },
+    };
+    expect(planSlotChange(stale, "opus", "custom", models)).toEqual({
+      error:
+        'cc-smart-dev-kit-opus\'s saved chain cannot be used: "omniroute:kimi-k3": "omniroute" has no model "kimi-k3" (see cc-smart-dev-kit gateway models)',
+    });
+  });
+
+  it("clear deletes the chain in use or saved, with its switch; nothing to clear is refused", () => {
+    const cfg: GatewayConfig = { ...config(), fallback: { [WORKER]: false } };
+    const inUse = planned(planSlotChange(cfg, "worker", "clear", models));
+    expect(inUse.kind).toBe("clear");
+    expect(inUse.config.slots).not.toHaveProperty(WORKER);
+    expect(inUse.config).not.toHaveProperty("kept");
+    expect(inUse.config).not.toHaveProperty("fallback");
+
+    const saved = planned(planSlotChange(cfg, "worker", "claude", models));
+    const clearedSaved = planned(planSlotChange(saved.config, "worker", "clear", models));
+    expect(clearedSaved.config).not.toHaveProperty("kept");
+    expect(planSlotChange(clearedSaved.config, "worker", "clear", models)).toEqual({
+      error: `${WORKER} has no chain to clear`,
+    });
+  });
+
+  it("the judge's fallback switch is not part of its chain: it stays, both ways", () => {
+    const cfg: GatewayConfig = {
+      ...config(),
+      fallback: { [JUDGE]: false },
+      slots: { ...config().slots, [JUDGE]: ["omniroute:glm-5.3-flash"] },
+    };
+    const saved = planned(planSlotChange(cfg, "judge", "claude", models));
+    expect(saved.config.kept).toEqual({ [JUDGE]: { targets: ["omniroute:glm-5.3-flash"] } });
+    expect(saved.config.fallback).toEqual({ [JUDGE]: false });
+    const back = planned(planSlotChange(saved.config, "judge", "custom", models));
+    expect(back.config.slots[JUDGE]).toEqual(["omniroute:glm-5.3-flash"]);
+    expect(back.config.fallback).toEqual({ [JUDGE]: false });
+  });
+
+  it("a new chain replaces a saved one and keeps the switch saved with it", () => {
+    const cfg: GatewayConfig = {
+      ...config(),
+      kept: { [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] } },
+    };
+    const set = planned(planSlotChange(cfg, "worker", "omniroute:glm-5.3-flash", models));
+    expect(set.config.slots[WORKER]).toEqual(["omniroute:glm-5.3-flash"]);
+    expect(set.config).not.toHaveProperty("kept");
+    expect(set.config.fallback).toEqual({ [WORKER]: false });
+  });
+
+  it("the fallback switch of a slot that answers as Claude waits in kept, and says so", () => {
+    const { [WORKER]: _chain, ...slots } = config().slots;
+    const cfg: GatewayConfig = {
+      ...config(),
+      kept: { [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] } },
+      slots,
+    };
+    const on = planFallbackChange(cfg, "worker", "on");
+    if (!("config" in on)) throw new Error(on.error);
+    expect(on).toMatchObject({ key: WORKER, now: true, was: false });
+    expect(on.config.kept).toEqual({ [WORKER]: { targets: ["claude-sonnet-5-5"] } });
+    expect(on.config).not.toHaveProperty("fallback");
+    // Back to the default: no entry in kept.
+    const off = planFallbackChange(on.config, WORKER, "off");
+    if (!("config" in off)) throw new Error(off.error);
+    expect(off.config.kept).toEqual({
+      [WORKER]: { fallback: false, targets: ["claude-sonnet-5-5"] },
+    });
+  });
+
+  it("the migration: portal.json chains move into kept, and gateway.json wins a clash", () => {
+    const memory = JSON.stringify({
+      fallback: {
+        "cc-smart-dev-kit-fable": ["omniroute:deepseek-v4.1-flash"],
+        "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"],
+      },
+      judge: ["omniroute:deepseek-v4.1-flash"],
+      switches: { "cc-smart-dev-kit-fable": false, "cc-smart-dev-kit-opus": true },
+      version: 1,
+    });
+    expect(portalChains(memory)).toEqual({
+      "cc-smart-dev-kit-fable": { targets: ["omniroute:deepseek-v4.1-flash"] },
+      "cc-smart-dev-kit-judge": { targets: ["omniroute:deepseek-v4.1-flash"] },
+      "cc-smart-dev-kit-opus": { fallback: true, targets: ["omniroute:glm-5.3-flash"] },
+    });
+    // A file that is not one the portal wrote reads as no chain to move.
+    expect(portalChains("{not json")).toEqual({});
+    expect(portalChains(JSON.stringify({ version: 2 }))).toEqual({});
+
+    const cfg = config();
+    const moved = withPortalChains(cfg, portalChains(memory));
+    expect(moved.moved).toEqual([
+      "cc-smart-dev-kit-fable",
+      "cc-smart-dev-kit-judge",
+      "cc-smart-dev-kit-opus",
+    ]);
+    expect(moved.config.kept).toEqual({
+      "cc-smart-dev-kit-fable": { targets: ["omniroute:deepseek-v4.1-flash"] },
+      "cc-smart-dev-kit-judge": { targets: ["omniroute:deepseek-v4.1-flash"] },
+      "cc-smart-dev-kit-opus": { fallback: true, targets: ["omniroute:glm-5.3-flash"] },
+    });
+    // The worker has a chain in `gateway.json`: it wins over anything the portal remembered.
+    const clash: GatewayConfig = {
+      ...cfg,
+      kept: { [WORKER]: { targets: ["claude-sonnet-5-5"] } },
+    };
+    const withClash = withPortalChains(clash, {
+      [WORKER]: { targets: ["omniroute:glm-5.3-flash"] },
+      "cc-smart-dev-kit-opus": { targets: ["omniroute:glm-5.3-flash"] },
+    });
+    expect(withClash.moved).toEqual(["cc-smart-dev-kit-opus"]);
+    expect(withClash.config.kept?.[WORKER]).toEqual({ targets: ["claude-sonnet-5-5"] });
+    // Run twice: the second run moves nothing.
+    expect(withPortalChains(moved.config, portalChains(memory)).moved).toEqual([]);
+  });
+
+  it("upgradeConfig moves the chains, backs both files up, and the second run changes nothing", () => {
+    const dir = tempDir();
+    const configPath = join(dir, "gateway.json");
+    saveConfig(configPath, config());
+    const portalStateFile = join(dir, "portal.json");
+    writeFileSync(
+      portalStateFile,
+      JSON.stringify({
+        fallback: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+        futureField: "kept",
+        judge: [],
+        switches: {},
+        version: 1,
+      }),
+    );
+    const stateDir = join(dir, "state");
+    const lines = upgradeConfig(configPath, { portalStateFile, stateDir });
+    expect(lines).toEqual([
+      "~ cc-smart-dev-kit-opus: the chain the portal remembered (omniroute:glm-5.3-flash) is saved in the gateway config, not in use; to use it: cc-smart-dev-kit gateway slot opus custom",
+    ]);
+    expect(loadConfigFile(configPath).kept).toEqual({
+      "cc-smart-dev-kit-opus": { targets: ["omniroute:glm-5.3-flash"] },
+    });
+    // The portal's old file loses its slot parts, and keeps everything this version does not
+    // know; nothing has a second home to disagree with.
+    expect(JSON.parse(readFileSync(portalStateFile, "utf8"))).toEqual({
+      futureField: "kept",
+      version: 1,
+    });
+    // A backup of each file as it was, from the one backup helper.
+    expect(listBackups(stateDir, configPath).length).toBe(1);
+    expect(listBackups(stateDir, portalStateFile).length).toBe(1);
+    // A dry run after the move: nothing to move, nothing written.
+    expect(upgradeConfig(configPath, { dryRun: true, portalStateFile, stateDir })).toEqual([]);
+    expect(listBackups(stateDir, configPath).length).toBe(1);
+    expect(listBackups(stateDir, portalStateFile).length).toBe(1);
+  });
+
+  it("withoutPortalSlots: only a JSON object with slot parts changes, and only those parts go", () => {
+    expect(withoutPortalSlots("{not json")).toBeNull();
+    expect(withoutPortalSlots("[]")).toBeNull();
+    expect(withoutPortalSlots(JSON.stringify({ futureField: 1, version: 1 }))).toBeNull();
+    expect(
+      JSON.parse(
+        withoutPortalSlots(
+          JSON.stringify({
+            fallback: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+            futureField: "kept",
+            judge: ["omniroute:glm-5.3-flash"],
+            switches: { "cc-smart-dev-kit-opus": true },
+            version: 1,
+          }),
+        ) ?? "",
+      ),
+    ).toEqual({ futureField: "kept", version: 1 });
   });
 });
 

@@ -69,8 +69,16 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
 - **A request reaches a slot by its model's FAMILY** (`familySlotFor`), read from the id
   Claude Code sends: never by an exact id, so a newer version needs no change. Or by the
   slot's own name. Never the safety check (it has the judge), never a name an alias changed.
-- **No chain = off = plain Claude**: the request goes to Anthropic byte for byte, the id it
-  carried included. A slot-named request for an off slot gets a 400 that says what to do;
+- **Every slot has two modes, Claude or Custom, and `slots[key]` alone says which**: in
+  `slots` is Custom, its chain in use; absent is Claude, and its family's requests go to
+  Anthropic as sent (the judge: Claude first, the worker's tested targets while Claude
+  cannot). A chain a slot is not using lives in `kept[key]` — saved, never used — and the top
+  level stays a loose object, so a 0.5.x router or CLI reads a new config right and writes
+  `kept` back untouched. `slot <slot> claude` (or the old `off`) moves the chain and its
+  fallback switch to `kept`; `custom` moves both back; `clear` deletes them. A rollback can
+  never turn a switched-off model back on.
+- **No chain = Claude = plain Claude**: the request goes to Anthropic byte for byte, the id it
+  carried included. A slot-named request for a Claude slot gets a 400 that says what to do;
   the router never picks a Claude model for it.
 - **A chain is the person's**: any targets, any order, any one first. The router never adds
   a target, Claude included: not at the end of a chain, not when every target fails, not
@@ -91,8 +99,10 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   is set the same way, and is on by default for every slot but the judge (below). How long a
   hold may last is `timeouts.breakerHoldMs`, which a person can only shorten (0: none): never
   above `BREAKER_HOLD_CEILING_MS`, because Claude Code gives up on a request held too long.
-  A slot's switch goes when the slot is turned off (`slot <slot> off`), the judge's excepted
-  (below), and stays when its chain is only changed. The contract, with the state file's `breakers`: `docs/gateway.md` § The
+  A slot's **breaker** switch goes when the slot moves to Claude (`slot <slot> claude`), the
+  judge's excepted (below), and stays when its chain is only changed; its **fallback** switch
+  travels with the saved chain (`kept`) and comes back with `custom`, while the breaker comes
+  back at its default. The contract, with the state file's `breakers`: `docs/gateway.md` § The
   breaker switch and its hold.
 - **The breaker's rules** (`docs/gateway.md` § The breaker):
   - **Never fake Anthropic's quota headers.** Its 429 carries `x-should-retry: true` and a
@@ -122,6 +132,13 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
 - `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a
   `/v1/messages` answer starts or ends a target's rest, or notes or ends a plan limit
   (`observeClaude`).
+- **The health answer is metadata only**: the counts, the targets resting, the chain in use
+  per slot, the last `RECENT_MAX` routed requests (`RecentRequest`: time, slot, target,
+  status, milliseconds, whether the next target answered) and the Claude ids Claude Code sent
+  (`seenClaude`, in the state file too, written only when an id is new and merged into the
+  file's own `seenClaude`, never a whole-state overwrite). Never a prompt, an answer, a key or
+  a header value; `recent` is in memory, so a restart forgets it. A new field there is
+  metadata too, or it does not go in.
 
 ## The judge: Claude first, a tested stand-in, never an untested one (D44)
 

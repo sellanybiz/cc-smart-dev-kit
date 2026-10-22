@@ -8027,6 +8027,10 @@ function isBackendName(name) {
 function isSlotKey(name) {
   return SLOT_KEY.test(name);
 }
+var CLAUDE_MODEL_ID = /^claude-[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$/;
+function isClaudeModelId(name) {
+  return CLAUDE_MODEL_ID.test(name);
+}
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
 }
@@ -8237,11 +8241,16 @@ var backendSchema = looseObject({
   apiKey: string2().min(1),
   baseUrl
 });
+var keptChainSchema = looseObject({
+  fallback: boolean2().optional(),
+  targets: array(string2().min(1)).min(1)
+});
 var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
+  kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
@@ -8368,6 +8377,12 @@ function aliasError(name, to, config) {
     return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
   }
   return null;
+}
+function keptChain(config, slot) {
+  const kept = config.kept;
+  if (kept === undefined || !Object.hasOwn(kept, slot))
+    return null;
+  return kept[slot] ?? null;
 }
 var JUDGE_TEST_VERSION = 3;
 function judgeTestProof(target, backendUrl) {
@@ -8999,8 +9014,16 @@ var stateSchema = object({
   breakers: record(string2(), breakerSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
   version: literal(1)
 });
+var SEEN_CLAUDE_MAX = 50;
+function mergeSeenClaude(a, b) {
+  const merged = new Map(Object.entries(a));
+  for (const [id, at] of Object.entries(b))
+    merged.set(id, Math.max(merged.get(id) ?? at, at));
+  return Object.fromEntries([...merged].sort(([idA, atA], [idB, atB]) => atB - atA || (idA < idB ? -1 : 1)).slice(0, SEEN_CLAUDE_MAX));
+}
 function emptyLimitState() {
   return { fallbacks: {}, limits: {}, version: 1 };
 }
@@ -9912,6 +9935,7 @@ var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
+var RECENT_MAX = 200;
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 var HOP_BY_HOP = new Set([
@@ -10400,6 +10424,28 @@ function createRouter(deps) {
   const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
   const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
+  const loadState = deps.loadState;
+  const saveState = deps.saveState;
+  const persistSeen = stateWriter(deps, "the seen Claude ids", loadState === undefined || saveState === undefined ? undefined : () => {
+    const text = loadState();
+    const there = text === null ? null : parseLimitState(text);
+    const base = there ?? limitState;
+    saveState(formatLimitState({
+      ...base,
+      seenClaude: mergeSeenClaude(there?.seenClaude ?? {}, limitState.seenClaude ?? {})
+    }));
+  });
+  const recent = [];
+  function noteSeenClaude(model) {
+    const id = withoutContextSuffix(model);
+    if (!isClaudeModelId(id))
+      return;
+    const seen = limitState.seenClaude ?? {};
+    const isNew = !Object.hasOwn(seen, id);
+    limitState.seenClaude = mergeSeenClaude(seen, { [id]: deps.now() });
+    if (isNew)
+      persistSeen();
+  }
   function loadedState(load, parse, empty, words) {
     if (load === undefined)
       return empty();
@@ -11352,8 +11398,10 @@ function createRouter(deps) {
         target: "none"
       };
     }
-    if (typeof parsed.model === "string")
+    if (typeof parsed.model === "string") {
       model.name = parsed.model;
+      noteSeenClaude(parsed.model);
+    }
     const guard = isAutoModeGuard(parsed, config.aliases);
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
@@ -11373,6 +11421,8 @@ function createRouter(deps) {
     if (serverTool !== null)
       return serverToolRoute(serverTool);
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
+    if (judgeTargets.length > 0)
+      model.slot = JUDGE_SLOT;
     const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : (guard ? claudeFirstJudge() : null) ?? claudeRoute();
     return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
     async function serverToolRoute(tool) {
@@ -11435,6 +11485,7 @@ function createRouter(deps) {
       const found = guard || alias !== null ? null : familySlotFor(body.model);
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);
       if (found !== null && familyRoute?.kind === "slot" && familyRoute.targets.length > 0) {
+        model.slot = found.slot;
         return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, {
           model: found.model,
           sent
@@ -11459,6 +11510,7 @@ function createRouter(deps) {
         });
       }
       if (decided.kind === "slot") {
+        model.slot = decided.slot;
         return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null);
       }
       const target = decided.target;
@@ -11476,7 +11528,7 @@ function createRouter(deps) {
   return async function handle(req) {
     const startMs = deps.now();
     const url = new URL(req.url);
-    const model = { name: "-" };
+    const model = { name: "-", slot: null };
     const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -11491,7 +11543,9 @@ function createRouter(deps) {
         fallbacks: stats.fallbacks,
         ok: true,
         port: deps.port,
+        recent,
         requests: stats.requests,
+        seenClaude: limitState.seenClaude ?? {},
         slots: deps.getConfig().slots,
         uptimeSec: Math.floor((deps.now() - startedAt) / 1000)
       });
@@ -11511,6 +11565,16 @@ function createRouter(deps) {
     }
     stats.fallbacks += outcome.fallbacks;
     deps.log(line(outcome));
+    recent.push({
+      at: startMs,
+      ms: deps.now() - startMs,
+      nextTarget: outcome.fallbacks > 0,
+      slot: model.slot,
+      status: outcome.response.status,
+      target: printable(outcome.target)
+    });
+    if (recent.length > RECENT_MAX)
+      recent.shift();
     return outcome.response;
   };
 }
@@ -12652,11 +12716,11 @@ Commands:
                          be made), 3 the backend could not be judged, 4 the key is refused.
   status                 Router health, backends, slots, and the Claude Code settings.
   models                 Every model each backend offers, and the slots.
-  slot <slot> <targets>  Set a slot's chain: any targets, in order, each <backend>:<model>
-                         (see "models") or claude-<model>. <slot>: scout (Haiku's work),
-                         worker (Sonnet's), opus, fable, or judge. The first target
-                         answers; the next only while the slot's fallback is on. A worker
-                         target is also given the judge test (see below); it is set
+  slot <slot> <targets>  Custom: set a slot's chain and use it. Any targets, in order, each
+                         <backend>:<model> (see "models") or claude-<model>. <slot>: scout
+                         (Haiku's work), worker (Sonnet's), opus, fable, or judge. The
+                         first target answers; the next only while the slot's fallback is on.
+                         A worker target is also given the judge test (see below); it is set
                          either way.
   slot judge <targets>   Your own judge for auto mode's safety checks, in the order you
                          give: a claude-<model> target as it is, any other target only after
@@ -12665,8 +12729,12 @@ Commands:
                          worker targets that passed the same test judge in its place. A
                          weaker judge can block good work or let a risky command through,
                          and it reads the conversation.
-  slot <slot> off        No chain: that model is plain Claude again (the judge: Claude
-                         first, and the worker's tested targets while Claude is limited).
+  slot <slot> claude     Claude: that model is plain Claude again (the judge: Claude first,
+                         and the worker's tested targets while Claude is limited). The chain
+                         is saved, not in use. "off" says the same.
+  slot <slot> custom     Use the saved chain again, with its fallback switch. A judge target
+                         without a current test proof is tested first.
+  slot <slot> clear      Delete the slot's chain, in use or saved.
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
                          On by default for scout, worker and judge; off for opus, fable.
@@ -12812,6 +12880,23 @@ function setSwitch(current, field, isOn, slot, now) {
   const unset = withSwitch(current, field, slot, null);
   return parseConfig(isOn(unset, slot) === now ? unset : withSwitch(unset, field, slot, now));
 }
+function withKept(config, slot, value) {
+  const { kept, ...rest } = config;
+  const entries = Object.entries(kept ?? {}).filter(([named]) => named !== slot);
+  if (value !== null)
+    entries.push([slot, value]);
+  return entries.length > 0 ? { ...rest, kept: Object.fromEntries(entries) } : rest;
+}
+function withoutSlot(config, slot) {
+  return {
+    ...config,
+    slots: Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== slot))
+  };
+}
+function setFallback(config, slot) {
+  const set = config.fallback;
+  return set !== undefined && Object.hasOwn(set, slot) ? set[slot] : undefined;
+}
 var RETIRED_DEFAULT_CHAIN = [
   "omniroute:ollama-cloud/deepseek-v4.1-flash",
   "omniroute:ollama-cloud/glm-5.3-flash",
@@ -12833,77 +12918,223 @@ function withoutRetiredDefaultClaude(config) {
     slots[slot] = RETIRED_DEFAULT_CHAIN.slice(0, -1);
   return { config: { ...config, slots }, dropped };
 }
+var portalMemorySchema = looseObject({
+  fallback: record(string2(), array(string2())).optional(),
+  judge: array(string2()).optional(),
+  switches: record(string2(), boolean2()).optional(),
+  version: literal(1)
+});
+function portalChains(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  const parsed = portalMemorySchema.safeParse(raw);
+  if (!parsed.success)
+    return {};
+  const memory = parsed.data;
+  const found = {};
+  for (const [name, targets] of Object.entries(memory.fallback ?? {})) {
+    const key = slotKeyFromArg(name);
+    if (key !== null && isModelSlot(key))
+      found[key] = targets;
+  }
+  if (memory.judge !== undefined)
+    found[JUDGE_SLOT] = memory.judge;
+  const chains = {};
+  for (const [key, targets] of Object.entries(found)) {
+    const usable = targets.length > 0 && targets.every((text) => {
+      const target = parseTarget(text);
+      return "target" in target;
+    });
+    if (!usable)
+      continue;
+    const switches = memory.switches ?? {};
+    const on = Object.hasOwn(switches, key) ? switches[key] : undefined;
+    chains[key] = {
+      targets: [...targets],
+      ...on === undefined || on === fallbackOn({}, key) ? {} : { fallback: on }
+    };
+  }
+  return chains;
+}
+function withPortalChains(config, remembered) {
+  let next = config;
+  const moved = [];
+  for (const [key, chain] of Object.entries(remembered).sort(([a], [b]) => a < b ? -1 : 1)) {
+    if (Object.hasOwn(next.slots, key) || keptChain(next, key) !== null)
+      continue;
+    next = withKept(next, key, chain);
+    moved.push(key);
+  }
+  return { config: next, moved };
+}
+function portalMemoryText(path) {
+  if (path === undefined || !existsSync11(path))
+    return null;
+  return readFileSync14(path, "utf8");
+}
+var PORTAL_SLOT_FIELDS = ["fallback", "judge", "switches"];
+function withoutPortalSlots(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return null;
+  const body = raw;
+  if (!PORTAL_SLOT_FIELDS.some((field) => Object.hasOwn(body, field)))
+    return null;
+  const rest = Object.fromEntries(Object.entries(body).filter(([key]) => !PORTAL_SLOT_FIELDS.includes(key)));
+  return `${JSON.stringify(rest, null, 2)}
+`;
+}
 function upgradeConfig(configPath, options = {}) {
   if (!existsSync11(configPath))
     return [];
-  const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
-  if (dropped.length > 0 && options.dryRun !== true)
-    saveConfig(configPath, config);
-  return dropped.map((slot) => `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`);
+  const { config: trimmed, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
+  const memory = portalMemoryText(options.portalStateFile);
+  const { config, moved } = withPortalChains(trimmed, memory === null ? {} : portalChains(memory));
+  const stripped = memory === null ? null : withoutPortalSlots(memory);
+  if (options.dryRun !== true) {
+    if (dropped.length + moved.length > 0) {
+      if (options.stateDir !== undefined)
+        backupFile(options.stateDir, configPath);
+      saveConfig(configPath, config);
+    }
+    if (stripped !== null && options.portalStateFile !== undefined) {
+      if (options.stateDir !== undefined) {
+        backupFile(options.stateDir, options.portalStateFile);
+      }
+      atomicWrite(options.portalStateFile, stripped, 384);
+    }
+  }
+  return [
+    ...dropped.map((slot) => `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`),
+    ...moved.map((slot) => `~ ${slot}: the chain the portal remembered (${keptChain(config, slot)?.targets.join(" \u2192 ")}) is saved in the gateway config, not in use; to use it: ${COMMAND} gateway slot ${slotName(slot)} custom`)
+  ];
 }
-function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
-  const key = slotKeyFromArg(slotArg);
-  if (key === null) {
-    return {
-      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`
-    };
-  }
-  const old = current.slots[key] ?? [];
-  const base = withoutModelSlot(current, key);
-  if (targetsText.trim() === "off") {
-    if (!Object.hasOwn(current.slots, key))
-      return { error: `${key} is already off` };
-    const slots = Object.fromEntries(Object.entries(current.slots).filter(([name]) => name !== key));
-    const checked = parseConfig(key === JUDGE_SLOT ? { ...base, slots } : withoutSwitches({ ...base, slots }, key));
-    if ("error" in checked)
-      return { error: checked.error };
-    return { config: checked.config, key, next: [], old };
-  }
-  const next = targetsText.split(",").map((text) => text.trim()).filter((text) => text !== "");
-  if (next.length === 0)
-    return { error: "give at least one target" };
-  for (const text of next) {
+var SLOT_WORDS = {
+  claude: ["claude", "off"],
+  clear: ["clear"],
+  custom: ["custom"]
+};
+function notSlotName(slotArg) {
+  return `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`;
+}
+function chainProblem(config, targets, modelsByBackend) {
+  for (const text of targets) {
     const parsed = parseTarget(text);
     if ("error" in parsed)
-      return { error: parsed.error };
+      return parsed.error;
     const target = parsed.target;
     if (target.kind === "anthropic")
       continue;
-    if (!Object.hasOwn(current.backends, target.backend)) {
-      return { error: `"${text}": backend "${target.backend}" is not in the config` };
+    if (!Object.hasOwn(config.backends, target.backend)) {
+      return `"${text}": backend "${target.backend}" is not in the config`;
     }
     const models = Object.hasOwn(modelsByBackend, target.backend) ? modelsByBackend[target.backend] : undefined;
     if (models === undefined || models === null) {
-      return {
-        error: `"${text}": could not list the models of "${target.backend}", so it cannot be checked`
-      };
+      return `"${text}": could not list the models of "${target.backend}", so it cannot be checked`;
     }
     if (!models.includes(target.model)) {
-      return {
-        error: `"${text}": "${target.backend}" has no model "${target.model}" (see ${COMMAND} gateway models)`
-      };
+      return `"${text}": "${target.backend}" has no model "${target.model}" (see ${COMMAND} gateway models)`;
     }
   }
-  const checked = parseConfig({ ...base, slots: { ...base.slots, [key]: next } });
-  if ("error" in checked)
-    return { error: checked.error };
-  return { config: checked.config, key, next, old };
+  return null;
+}
+function checkedPlan(plan, config) {
+  const checked = parseConfig(config);
+  return "error" in checked ? { error: checked.error } : { ...plan, config: checked.config };
+}
+function chainToCheck(config, slotArg, text) {
+  const word = text.trim();
+  if (SLOT_WORDS.custom.includes(word)) {
+    const key = slotKeyFromArg(slotArg);
+    return key === null ? [] : keptChain(config, key)?.targets ?? [];
+  }
+  if (SLOT_WORDS.claude.includes(word) || SLOT_WORDS.clear.includes(word)) {
+    return [];
+  }
+  return word.split(",").map((target) => target.trim()).filter((target) => target !== "");
+}
+function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
+  const key = slotKeyFromArg(slotArg);
+  if (key === null)
+    return { error: notSlotName(slotArg) };
+  const word = targetsText.trim();
+  const old = current.slots[key] ?? [];
+  const kept = keptChain(current, key);
+  const name = slotName(key);
+  const base = withoutModelSlot(current, key);
+  if (SLOT_WORDS.claude.includes(word)) {
+    if (old.length === 0) {
+      return {
+        error: kept === null ? `${key} is already Claude` : `${key} is already Claude; its chain is saved, not in use: ${kept.targets.join(" \u2192 ")} (to use it: ${COMMAND} gateway slot ${name} custom)`
+      };
+    }
+    if (key === JUDGE_SLOT) {
+      return checkedPlan({ key, kind: "claude", next: [], old }, withKept(withoutSlot(base, key), key, { targets: old }));
+    }
+    const fallback = setFallback(current, key);
+    const saved = { targets: old, ...fallback === undefined ? {} : { fallback } };
+    return checkedPlan({ key, kind: "claude", next: [], old }, withKept(withoutSwitches(withoutSlot(base, key), key), key, saved));
+  }
+  if (SLOT_WORDS.custom.includes(word)) {
+    if (old.length > 0)
+      return { error: `${key} is already Custom: ${old.join(" \u2192 ")}` };
+    if (kept === null) {
+      return {
+        error: `${key} has no saved chain, so it stays Claude. Give it one: ${COMMAND} gateway slot ${name} <targets>`
+      };
+    }
+    const problem = chainProblem(current, kept.targets, modelsByBackend);
+    if (problem !== null) {
+      return { error: `${key}'s saved chain cannot be used: ${problem}` };
+    }
+    const back = withKept({ ...base, slots: { ...base.slots, [key]: [...kept.targets] } }, key, null);
+    return checkedPlan({ key, kind: "custom", next: [...kept.targets], old }, key === JUDGE_SLOT || kept.fallback === undefined ? back : withSwitch(back, "fallback", key, kept.fallback));
+  }
+  if (SLOT_WORDS.clear.includes(word)) {
+    if (old.length === 0 && kept === null)
+      return { error: `${key} has no chain to clear` };
+    const cleared = withKept(key === JUDGE_SLOT ? withoutSlot(base, key) : withoutSwitches(withoutSlot(base, key), key), key, null);
+    return checkedPlan({ key, kind: "clear", next: [], old }, cleared);
+  }
+  const next = chainToCheck(current, slotArg, word);
+  if (next.length === 0)
+    return { error: "give at least one target" };
+  const problem = chainProblem(current, next, modelsByBackend);
+  if (problem !== null)
+    return { error: problem };
+  const replaced = withKept(base, key, null);
+  const withSavedSwitch = kept?.fallback !== undefined && setFallback(replaced, key) === undefined ? withSwitch(replaced, "fallback", key, kept.fallback) : replaced;
+  return checkedPlan({ key, kind: "chain", next, old }, { ...withSavedSwitch, slots: { ...withSavedSwitch.slots, [key]: next } });
 }
 function planFallbackChange(current, slotArg, value) {
   const key = slotKeyFromArg(slotArg);
-  if (key === null) {
-    return {
-      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`
-    };
-  }
+  if (key === null)
+    return { error: notSlotName(slotArg) };
   if (value !== "on" && value !== "off")
     return { error: `say on or off, not "${value}"` };
-  if (key !== JUDGE_SLOT && !Object.hasOwn(current.slots, key)) {
-    return {
-      error: `${key} has no chain, so it has nothing to fall back to. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`
-    };
-  }
   const now = value === "on";
+  if (key !== JUDGE_SLOT && !Object.hasOwn(current.slots, key)) {
+    const kept = keptChain(current, key);
+    if (kept === null) {
+      return {
+        error: `${key} has no chain, so it has nothing to fall back to. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`
+      };
+    }
+    const { fallback: _was, ...targets } = kept;
+    const checked = parseConfig(withKept(current, key, now === fallbackOn({}, key) ? targets : { ...targets, fallback: now }));
+    if ("error" in checked)
+      return { error: checked.error };
+    return { config: checked.config, key, now, was: kept.fallback ?? fallbackOn({}, key) };
+  }
   const was = fallbackOn(current, key);
   const checked = setSwitch(current, "fallback", fallbackOn, key, now);
   if ("error" in checked)
@@ -12936,11 +13167,15 @@ function planBreakerChange(current, slotArg, value) {
 function slotName(key) {
   return key.startsWith(SLOT_PREFIX) ? key.slice(SLOT_PREFIX.length) : key;
 }
-function offWords(config, key) {
+function claudeWords(config, key) {
   if (key === JUDGE_SLOT)
-    return `default: ${judgeDefaultWords(config)}`;
+    return `Claude: ${judgeDefaultWords(config)}`;
   const family = Object.hasOwn(FAMILY_SLOTS, key) ? FAMILY_SLOTS[key] : undefined;
-  return family === undefined ? "off" : `off: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
+  return family === undefined ? "Claude: no chain in use" : `Claude: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
+}
+function keptWords(key, kept) {
+  const fallback = kept.fallback ?? fallbackOn({}, key);
+  return `saved, not in use: ${kept.targets.join(" \u2192 ")}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
 var JUDGE_WARNING = "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
 function untestedWorkerTargets(config) {
@@ -12967,16 +13202,19 @@ function fallbackWords(config, key) {
 }
 function printSlots(config, print) {
   print(`
-Slots (the first target answers; the next one only while fallback is on):`);
+Slots (Claude: plain Claude; Custom: the first target answers, the next one only while fallback is on):`);
   const known = [...Object.keys(FAMILY_SLOTS), JUDGE_SLOT];
   const keys = [
     ...known,
-    ...Object.keys(config.slots).filter((key) => !known.includes(key)).sort()
+    ...[...new Set([...Object.keys(config.slots), ...Object.keys(config.kept ?? {})])].filter((key) => !known.includes(key)).sort()
   ];
   for (const key of keys) {
     const targets = config.slots[key];
     if (targets === undefined) {
-      print(`  ${key.padEnd(16)} ${offWords(config, key)}`);
+      print(`  ${key.padEnd(16)} ${claudeWords(config, key)}`);
+      const saved = keptChain(config, key);
+      if (saved !== null)
+        print(`    ${keptWords(key, saved)}`);
       if (key === JUDGE_SLOT && fallbackOn(config, key) && workerJudgeTargets(config).length > 0) {
         print(`    WARN ${JUDGE_WARNING}`);
       }
@@ -12990,7 +13228,7 @@ Slots (the first target answers; the next one only while fallback is on):`);
       const untested = targets.filter((target) => !judgeTargetUsable(config, target));
       notes.push(untested.length > 0 ? `NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>` : "your own judge: it judges the checks in this order");
     }
-    print(`  ${key.padEnd(16)} ${targets.join(" \u2192 ")}  (${notes.join("; ")})`);
+    print(`  ${key.padEnd(16)} Custom: ${targets.join(" \u2192 ")}  (${notes.join("; ")})`);
     if (key === JUDGE_SLOT)
       print(`    WARN ${JUDGE_WARNING}`);
   }
@@ -13078,6 +13316,17 @@ function dropFallbackRecord(statePath, slot) {
   delete state.fallbacks[slot];
   atomicWrite(statePath, formatLimitState(state), 384);
 }
+function slotChangeLines(plan) {
+  const before = plan.old.length > 0 ? plan.old.join(" \u2192 ") : plan.kind === "chain" ? "(new)" : "Claude";
+  const now = plan.next.length > 0 ? `${plan.next.join(" \u2192 ")}  (${fallbackWords(plan.config, plan.key)})` : claudeWords(plan.config, plan.key);
+  const lines = [`${plan.key}: ${before}`, `  now: ${now}`];
+  const savedChain = keptChain(plan.config, plan.key);
+  if (savedChain !== null)
+    lines.push(`  ${keptWords(plan.key, savedChain)}`);
+  if (plan.kind === "clear")
+    lines.push("  No chain is saved for it now.");
+  return lines;
+}
 async function commandSlot(ctx, args) {
   const [slotArg, targets, ...extra] = args;
   if (slotArg === undefined || targets === undefined || extra.length > 0) {
@@ -13087,7 +13336,7 @@ async function commandSlot(ctx, args) {
   const configPath = ctx.paths.gatewayConfigFile;
   const config = loadConfigFile(configPath);
   const modelsByBackend = {};
-  for (const text of targets.split(",")) {
+  for (const text of chainToCheck(config, slotArg, targets)) {
     const parsed = parseTarget(text);
     if (!("target" in parsed) || parsed.target.kind !== "backend")
       continue;
@@ -13104,6 +13353,8 @@ async function commandSlot(ctx, args) {
   const passed = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     for (const text of first.next) {
+      if (first.kind === "custom" && judgeTargetTested(config, text))
+        continue;
       const parsed = parseTarget(text);
       if (!("target" in parsed))
         continue;
@@ -13133,14 +13384,17 @@ async function commandSlot(ctx, args) {
     if ("error" in again)
       throw new Error(again.error);
     const saved = again.key === JUDGE_SLOT || again.key === WORKER_SLOT ? withJudgeProofs(again.config, passed) : again.config;
+    const untested = again.key === JUDGE_SLOT ? again.next.filter((target) => !judgeTargetUsable(saved, target)) : [];
+    if (untested.length > 0) {
+      throw new Error(`the judge chain changed while it was tested (${untested.join(", ")} has no test proof). Nothing was saved; run the command again.`);
+    }
     saveConfig(configPath, saved);
     if (again.next.length === 0)
       dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
     return { ...again, config: saved };
   }, { waitMs: 1e4 });
-  const now = plan.next.length > 0 ? `${plan.next.join(" \u2192 ")}  (${fallbackWords(plan.config, plan.key)})` : offWords(plan.config, plan.key);
-  ctx.print(`${plan.key}: ${plan.old.join(" \u2192 ") || "(new)"}
-  now: ${now}`);
+  for (const line of slotChangeLines(plan))
+    ctx.print(line);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     ctx.print(`  To let the next target answer when ${plan.next[0]} fails or rests: ${COMMAND} gateway fallback ${slotName(plan.key)} on`);
   }
@@ -13171,8 +13425,17 @@ async function commandFallback(ctx, args) {
       dropFallbackRecord(ctx.paths.gatewayStateFile, planned.key);
     return planned;
   }, { waitMs: 1e4 });
-  const targets = plan.config.slots[plan.key] ?? [];
   const change = `${plan.key}: fallback ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`;
+  const kept = plan.key === JUDGE_SLOT ? null : keptChain(plan.config, plan.key);
+  if (kept !== null && !Object.hasOwn(plan.config.slots, plan.key)) {
+    ctx.print(`${change}
+  ${claudeWords(plan.config, plan.key)}
+  ${keptWords(plan.key, kept)}`);
+    ctx.print("  The switch is used with the chain, once the slot is Custom again.");
+    ctx.print("The router uses it from its next request.");
+    return 0;
+  }
+  const targets = plan.config.slots[plan.key] ?? [];
   if (plan.key === JUDGE_SLOT && targets.length === 0) {
     ctx.print(`${change}
   ${judgeDefaultWords(plan.config)}`);
@@ -13360,7 +13623,7 @@ async function commandSetup(ctx, args) {
     allowNone: options.noKey || password !== null,
     dryRun: true
   });
-  upgradeConfig(configPath, { dryRun: true });
+  upgradeConfig(configPath, { dryRun: true, portalStateFile: paths.portalStateFile });
   retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   if (await installRouter(install({ dryRun: true })) === "declined")
     return 1;
@@ -13436,12 +13699,22 @@ async function commandSetup(ctx, args) {
         stateDir: paths.stateDir
       });
       ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
-      for (const line of upgradeConfig(configPath))
+      const keyBackedUp = key !== null && existsSync11(backups) && readdirSync7(backups).length > backupsBefore;
+      const upgraded = upgradeConfig(configPath, {
+        portalStateFile: paths.portalStateFile,
+        stateDir: paths.stateDir
+      });
+      for (const line of upgraded)
         ctx.print(line);
-      if (existsSync11(configPath) && Object.keys(loadConfigFile(configPath).slots).length === 0) {
-        ctx.print(`Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`);
+      if (upgraded.length > 0) {
+        ctx.print(`  the config as it was before these changes is in ${tildify(backups, paths.home)}`);
       }
-      if (key !== null && existsSync11(backups) && readdirSync7(backups).length > backupsBefore) {
+      const now = existsSync11(configPath) ? loadConfigFile(configPath) : null;
+      if (now !== null && Object.keys(now.slots).length === 0) {
+        const saved = Object.keys(now.kept ?? {}).length;
+        ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`);
+      }
+      if (keyBackedUp) {
         ctx.print(`  the file as it was before the change is in ${tildify(backups, paths.home)}: copy it back to put the key that was there in place`);
       }
       if (unchecked !== "") {
@@ -13720,17 +13993,28 @@ async function gatewayChecks(options) {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: first target ${first} (${fallback})`
+      text: `slot ${slot}: Custom, first target ${first} (${fallback})`
     });
   }
+  const saved = (slot) => {
+    const kept = keptChain(config, slot);
+    return kept === null ? "" : `; saved, not in use: ${kept.targets.join(" \u2192 ")}`;
+  };
   for (const slot of Object.keys(FAMILY_SLOTS)) {
     if (Object.hasOwn(config.slots, slot))
       continue;
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: off, ${FAMILY_SLOTS[slot]} goes to Anthropic as Claude Code sent it`
+      text: `slot ${slot}: Claude (${FAMILY_SLOTS[slot]} goes to Anthropic as Claude Code sent it)${saved(slot)}`
     });
+  }
+  for (const slot of Object.keys(config.kept ?? {}).sort()) {
+    if (Object.hasOwn(config.slots, slot) || Object.hasOwn(FAMILY_SLOTS, slot))
+      continue;
+    if (slot === JUDGE_SLOT)
+      continue;
+    checks.push({ ok: true, info: true, text: `slot ${slot}: Claude${saved(slot)}` });
   }
   for (const [slot, targets] of Object.entries(config.slots).sort(([a], [b]) => a < b ? -1 : 1)) {
     if (isModelSlot(slot))
@@ -13751,7 +14035,7 @@ async function gatewayChecks(options) {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${JUDGE_SLOT}: ${judgeDefaultWords(config)}`
+      text: `slot ${JUDGE_SLOT}: ${judgeDefaultWords(config)}${saved(JUDGE_SLOT)}`
     });
     if (fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0) {
       checks.push({ ok: true, warn: true, text: `slot ${JUDGE_SLOT}: ${JUDGE_WARNING}` });

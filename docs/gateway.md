@@ -18,10 +18,14 @@ The rules for changing it: `.claude/rules/gateway.md`.
   Haiku → `cc-smart-dev-kit-scout`, Sonnet → `cc-smart-dev-kit-worker`, Opus →
   `cc-smart-dev-kit-opus`, Fable → `cc-smart-dev-kit-fable`. A newer version of a family
   (`claude-opus-6-0`) reaches the same slot with no change to the plugin.
-- **A slot with no chain is off**: that model is plain Claude, and its request goes to
+- **Every slot has two modes, Claude or Custom** (§ Slot modes: Claude or Custom): a slot
+  with a chain (`slots` in the config) is **Custom**, and its first target answers. A slot
+  with no chain there is **Claude**: that model is plain Claude, and its request goes to
   Anthropic **byte for byte**, the id Claude Code sent included (the one exception: a
-  thinking block a backend wrote, marked by the router, leaves it; § Model slots). A fresh setup gives no slot
-  a chain; the person picks every target from the live model list (§ Slots and defaults).
+  thinking block a backend wrote, marked by the router, leaves it; § Model slots). A fresh
+  setup gives no slot a chain; the person picks every target from the live model list
+  (§ Slots and defaults). Switching a slot to Claude **saves its chain** in the config's
+  `kept` field, so nothing is forgotten and nothing is used.
 - **A slot with a chain** sends the request to its first target. Its next target answers
   only while the slot's **fallback switch** is on (§ The fallback switch). A target is any
   `<backend>:<model>` or `claude-<model>`, in any order, in any slot. **The router never
@@ -130,10 +134,10 @@ affordable backend can run it, and one that answered it would return text a mode
 
 | Slot | Takes | Chain after `gateway setup` | Fallback switch, by default |
 |---|---|---|---|
-| `cc-smart-dev-kit-scout` | every Haiku request: background calls (titles, summaries), `haiku` agents | **none** (off: Haiku answers) | on |
-| `cc-smart-dev-kit-worker` | every Sonnet request: `sonnet` agents, a main session on Sonnet | **none** (off: Sonnet answers) | on |
-| `cc-smart-dev-kit-opus` | every Opus request: the main session on Opus, `opus` agents | **none** (off: Opus answers) | off |
-| `cc-smart-dev-kit-fable` | every Fable request | **none** (off: Fable answers) | off |
+| `cc-smart-dev-kit-scout` | every Haiku request: background calls (titles, summaries), `haiku` agents | **none** (Claude: Haiku answers) | on |
+| `cc-smart-dev-kit-worker` | every Sonnet request: `sonnet` agents, a main session on Sonnet | **none** (Claude: Sonnet answers) | on |
+| `cc-smart-dev-kit-opus` | every Opus request: the main session on Opus, `opus` agents | **none** (Claude: Opus answers) | off |
+| `cc-smart-dev-kit-fable` | every Fable request | **none** (Claude: Fable answers) | off |
 | `cc-smart-dev-kit-judge` | auto mode's safety checks | **none** (Claude judges first; the worker's tested targets while Claude cannot) | on |
 
 No model id is written by the plugin as a default, a target or a fallback (owner,
@@ -143,6 +147,49 @@ each target from the live model list, `cc-smart-dev-kit gateway models` (each ba
 <targets>`. A config saved by 0.4.3 or earlier keeps every chain it holds: `claude-sonnet-5-5`
 at the end of a scout or worker chain from an older setup is now the person's own target,
 used like any other.
+
+## Slot modes: Claude or Custom
+
+Every slot, the judge included, has the same two modes (owner D2). **`slots[key]` is the
+chain in use**, and a slot that is not in `slots` answers as Claude. That is the whole
+contract, and every router and CLI version reads it the same way:
+
+- **Custom**: the slot is in `slots`, and its chain answers.
+- **Claude**: the slot is not in `slots`, so its family's requests go to Anthropic as Claude
+  Code sent them (the judge: Claude judges first, and the worker's tested targets while
+  Claude cannot, § The judge slot).
+- **`kept[key]` is the chain saved, not in use**: `{"targets": ["…"], "fallback": false}`
+  (the fallback switch only when the person set one). It is a loose object at the top level
+  of `gateway.json`, so a router or CLI of 0.5.x — which still runs until `gateway setup`
+  installs the new router copy — keeps an unknown `kept` and writes it back untouched. So a
+  rollback to 0.5.x can never turn a switched-off model back on, and a chain is never lost.
+
+The words, each one command (`gateway slot <slot> …`):
+
+| Word | What it does |
+|---|---|
+| `<targets>` | Custom: save a new chain, in use. It replaces a saved one and keeps its fallback switch. |
+| `claude` | Claude: move the chain to `kept`, with the fallback switch the person set. `off` is the same word, from 0.5.x and before. |
+| `custom` | Custom again: the saved chain moves back, with its switch, after the same checks a new chain gets. Refused, with the reason, when nothing is saved or a target no longer checks out. A saved judge chain keeps the test proofs that still match, and `gateway slot judge` tests only the rest. |
+| `clear` | Delete the chain, in use or saved, and its switches. |
+
+- **The judge's fallback switch is not part of its chain**: it stays in `fallback` in both
+  modes, because with no judge chain it still says whether the worker's tested targets stand
+  in (D44).
+- **The breaker switch goes when a slot moves to Claude**, as it did when a slot was turned
+  off (§ The breaker switch and its hold): the schema refuses an entry for a slot that is not
+  in `slots`. Custom brings the chain back with the breaker at its default, on.
+- `gateway status` and `doctor` show each slot as Claude or Custom, and the portal's Overview
+  shows a saved chain as "saved, not in use". Each names the command that uses it again.
+- **`gateway setup` moves what the old portal remembered.** Before 0.6.0 the portal kept the
+  opus and fable chains, the judge chain and their switches in its own `portal.json`. `gateway
+  setup` (which already holds the lock, backs `gateway.json` up first, and installs and
+  restarts the router, so the new router and the moved chains arrive together) saves each of
+  those chains as `kept` for a slot that has none in `slots` or `kept`; `gateway.json` wins a
+  clash. A second run moves nothing. The portal keeps no slot state now: its old file loses
+  its slot parts (a backup is made first), and it stays on disk one release so a rollback to
+  0.5.x still finds it. That is the bug B0 fixes at its root — two homes that disagreed, and a
+  slot change that sometimes did not save.
 
 ## The fallback switch
 
@@ -158,8 +205,11 @@ judge slot).
 - **Off**: only the first target ever answers. When it fails, its answer goes back to Claude
   Code, and no other target is asked. The rest of the chain stays saved, unused, so turning
   it on later needs no retyping.
-- A slot with no chain has none to set (the judge is the one exception, above);
-  `slot <slot> off` drops the slot's switch with its chain, the judge's excepted.
+- A slot with no chain in use has none to set, except the judge (§ Slot modes: Claude or
+  Custom): the judge keeps its switch in both modes. For every other slot, `slot <slot>
+  claude` moves the switch into `kept` with the chain, and `slot <slot> custom` brings it
+  back; `slot <slot> clear` drops it. `gateway fallback <slot> on|off` works on a saved chain
+  too, and says the switch waits with it.
 - **A 0.4.x opus or fable chain starts with its switch off**, the model slots' default. 0.4.x
   moved on only at the plan's usage limit; on, the switch moves on at any 408, 429, 5xx, 529
   or network error (and Opus rests after it), which is more than such a chain was set up
@@ -192,8 +242,9 @@ was (`config.ts`, tested in `config.test.ts`).
   false for it, and `gateway breaker judge …` says the same. The judge keeps its 504 on a miss
   (§ The judge slot).
 - **A slot with no chain has no switch to set**, as with the fallback: the schema refuses an
-  entry for a slot that is not in `slots`, and `gateway slot <slot> off` drops the slot's
-  `breaker` and `fallback` entries with its chain. Changing a slot's chain keeps its switch.
+  entry for a slot that is not in `slots`, and `gateway slot <slot> claude` drops the slot's
+  `breaker` entry with its chain (the fallback switch moves to `kept`; § Slot modes: Claude or
+  Custom). Changing a slot's chain keeps its switch.
 - **`"timeouts": {"breakerHoldMs": <ms>}`** is how long a request that streams is held, in whole
   milliseconds. `0` holds none. Absent, it is the ceiling, **240000** (240 s,
   `BREAKER_HOLD_CEILING_MS`); a bigger value is refused with a message that names the ceiling
@@ -347,7 +398,7 @@ may give the judge slot a chain of their own, and that wins.
 cc-smart-dev-kit gateway slot judge <backend>:<model>[,<backend>:<model>]   # your own judge
 cc-smart-dev-kit gateway slot judge claude-<model>,<backend>:<model>        # Claude first, then a tested target
 cc-smart-dev-kit gateway fallback judge off     # Claude judges alone, with no stand-in
-cc-smart-dev-kit gateway slot judge off         # back to the default
+cc-smart-dev-kit gateway slot judge claude      # back to the default (its chain is saved)
 ```
 
 1. **No chain (the default):** a check goes to Claude (then the stand-ins above when it cannot): a `claude-…` check
@@ -450,7 +501,7 @@ cc-smart-dev-kit gateway models                                   # the live mod
 cc-smart-dev-kit gateway slot opus omniroute:<model>              # that model answers every Opus request
 cc-smart-dev-kit gateway slot opus claude-<opus id>,omniroute:<model>
 cc-smart-dev-kit gateway fallback opus on                         # Opus first, the other when it cannot answer
-cc-smart-dev-kit gateway slot opus off                            # Opus answers itself again
+cc-smart-dev-kit gateway slot opus claude                        # Opus answers itself again (its chain is saved)
 ```
 
 - **Off by default.** With no chain, an Opus request goes to Anthropic byte for byte, the
@@ -589,9 +640,14 @@ cc-smart-dev-kit gateway slot opus off                            # Opus answers
 the router in the background (never before an answer goes out; at most once a minute for
 a running fallback): the Claude models it last saw at the plan's limit (the window and its
 reset), the slots whose first target, a Claude model, is at that limit while a next
-target answers (§ Model slots), and the slots whose every target is limited or down while
-their breaker holds requests (§ The breaker switch and its hold). Never a key, a header
-value or a word of a request. `limit-state.ts` reads it. The router reads it once when it
+target answers (§ Model slots), the slots whose every target is limited or down while
+their breaker holds requests (§ The breaker switch and its hold), and the Claude model ids
+Claude Code itself sent through it (`seenClaude`, with the last time each was seen; the
+portal's "Claude login" list, § The portal in `docs/design.md`). Never a key, a
+header value or a word of a request. **`seenClaude` is written only when an id is new**: the
+router reads the file again first and changes only that field, so a change another program
+made to the rest (the CLI's `dropFallbackRecord`, say) is never written over. `limit-state.ts`
+reads it. The router reads it once when it
 starts (`loadState`), so a restart (an update, a crash) keeps the limits, the fallbacks and
 the breakers it saw, and its next write keeps them too; a file it cannot read or understand
 is said once in a WARN, and it starts from none. A judge record a 0.4.3 router wrote is not
@@ -963,8 +1019,8 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | The service | Linux: the systemd user unit `~/.config/systemd/user/cc-smart-dev-kit-router.service`. Windows: the per-user Scheduled Task `cc-smart-dev-kit-router`, from its definition `~/.local/share/cc-smart-dev-kit/router-task.xml` (`docs/windows-gateway.md`) |
 | The socket that holds the port | `~/.config/systemd/user/cc-smart-dev-kit-router.socket` (`ListenStream=127.0.0.1:<port>`) |
 | The router's inner socket | `$XDG_RUNTIME_DIR/cc-smart-dev-kit-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
-| Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets (a Claude model at its plan limit among them), slots; never a key |
-| The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback. Read by `cc-smart-dev-kit statusline` and the StopFailure hook |
+| Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets (a Claude model at its plan limit among them), slots (the chain in use — a slot absent from it answers as Claude), the last 200 routed requests (`recent`: time, slot, target, status, ms, whether a next target answered — metadata only, never a prompt or an answer), and the Claude model ids seen (`seenClaude`); never a key |
+| The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback, the breakers open, the Claude ids Claude Code sent. Read by `cc-smart-dev-kit statusline`, the StopFailure hook and the portal |
 | The safety-check counts | `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written by the router: auto mode's checks by local day, who answered each (Anthropic or the judge), and the tokens their answers reported. Read by `cc-smart-dev-kit usage`; the newest 30 days are kept (§ The safety-check counts) |
 
 With no good config the router still starts with every slot off: each Claude model's request
@@ -1070,6 +1126,9 @@ open), the router binds the config's port itself, as before.
    chain that still equals 0.4.x's exact default (`omniroute:ollama-cloud/deepseek-v4.1-flash`
    → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5`) loses its last target,
    with one line saying so (`upgradeConfig`). A chain the person changed stays as it is;
+   and it moves what a 0.5.x `portal.json` remembered into `kept`, then takes the slot parts
+   out of that file (§ Slot modes: Claude or Custom). Both files are backed up first, under
+   the state lock, and the moved chains arrive with the new router copy that reads them;
 5. writes the **restart-pending marker**, then the copy and the two units, all through
    `src/setup/` (backup, record for `restore`, atomic write);
 6. runs `systemctl --user daemon-reload` and `enable cc-smart-dev-kit-router.socket
@@ -1339,9 +1398,9 @@ Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 | `doctor`: the router copy is not this version's | the plugin was updated | `cc-smart-dev-kit gateway setup` (it asks before the restart) |
 | `gateway setup`: `port N is used by another program` | `ss -ltnp` shows who holds it; often an older router | stop that program, or set another `port` in `gateway.json` |
 | `doctor`: `a gateway setup did not finish` | the router did not answer after setup's restart: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` again |
-| Auto mode blocks good work | the log's `(safety check) → <judge target>` lines | with your own judge chain: `gateway slot judge off`. With the default: `gateway fallback judge off` keeps Claude alone, even while it is limited |
+| Auto mode blocks good work | the log's `(safety check) → <judge target>` lines | with your own judge chain: `gateway slot judge claude` (its chain is saved, not used). With the default: `gateway fallback judge off` keeps Claude alone, even while it is limited |
 | `slot judge` says a target "did not block the test check" | the target let a force push to main run, or did not answer in the `<block>` format | pick another model; there is no way to skip the test |
-| Opus answers from another model | `gateway status`: the opus chain; the `WARN cc-smart-dev-kit-opus: … is at its plan usage limit` line when Opus is first | `gateway slot opus off` (Opus answers itself), or wait for the reset when Opus is first (asked again every 10 minutes at most) |
+| Opus answers from another model | `gateway status`: the opus chain; the `WARN cc-smart-dev-kit-opus: … is at its plan usage limit` line when Opus is first | `gateway slot opus claude` (Opus answers itself; its chain is saved), or wait for the reset when Opus is first (asked again every 10 minutes at most) |
 | Opus answers 400 "Invalid `signature` in `thinking` block" after another model answered for it | the `WARN claude-opus-5-5 refused a thinking block's signature` line | `/rewind` in Claude Code to the message before the other model answered, or a new session |
 | A target answers 400 for a long or rich Opus conversation | the `WARN cc-smart-dev-kit-opus: … refused this … conversation` line | `/compact`, a new session, or put a target with a larger window first |
 | A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails. After an update to 0.5.0 every judge set before it is: the test version moved with the judge's new role | `cc-smart-dev-kit gateway slot judge <targets>` tests and sets it |

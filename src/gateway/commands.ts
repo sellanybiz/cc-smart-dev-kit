@@ -18,6 +18,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { z } from "zod";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { withLock } from "../setup/lock";
@@ -38,6 +39,8 @@ import {
   judgeTargetTested,
   judgeTargetUsable,
   judgeTestProof,
+  type KeptChain,
+  keptChain,
   loadConfigFile,
   messageOf,
   parseConfig,
@@ -69,6 +72,7 @@ import {
 import {
   FAMILY_SLOTS,
   formatTarget,
+  isModelSlot,
   JUDGE_SLOT,
   parseTarget,
   SLOT_PREFIX,
@@ -85,11 +89,11 @@ Commands:
                          be made), 3 the backend could not be judged, 4 the key is refused.
   status                 Router health, backends, slots, and the Claude Code settings.
   models                 Every model each backend offers, and the slots.
-  slot <slot> <targets>  Set a slot's chain: any targets, in order, each <backend>:<model>
-                         (see "models") or claude-<model>. <slot>: scout (Haiku's work),
-                         worker (Sonnet's), opus, fable, or judge. The first target
-                         answers; the next only while the slot's fallback is on. A worker
-                         target is also given the judge test (see below); it is set
+  slot <slot> <targets>  Custom: set a slot's chain and use it. Any targets, in order, each
+                         <backend>:<model> (see "models") or claude-<model>. <slot>: scout
+                         (Haiku's work), worker (Sonnet's), opus, fable, or judge. The
+                         first target answers; the next only while the slot's fallback is on.
+                         A worker target is also given the judge test (see below); it is set
                          either way.
   slot judge <targets>   Your own judge for auto mode's safety checks, in the order you
                          give: a claude-<model> target as it is, any other target only after
@@ -98,8 +102,12 @@ Commands:
                          worker targets that passed the same test judge in its place. A
                          weaker judge can block good work or let a risky command through,
                          and it reads the conversation.
-  slot <slot> off        No chain: that model is plain Claude again (the judge: Claude
-                         first, and the worker's tested targets while Claude is limited).
+  slot <slot> claude     Claude: that model is plain Claude again (the judge: Claude first,
+                         and the worker's tested targets while Claude is limited). The chain
+                         is saved, not in use. "off" says the same.
+  slot <slot> custom     Use the saved chain again, with its fallback switch. A judge target
+                         without a current test proof is tested first.
+  slot <slot> clear      Delete the slot's chain, in use or saved.
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
                          On by default for scout, worker and judge; off for opus, fable.
@@ -409,6 +417,28 @@ function setSwitch(
   return parseConfig(isOn(unset, slot) === now ? unset : withSwitch(unset, field, slot, now));
 }
 
+/** The config with `slot`'s saved chain set (`value`), or with none (null); no empty field. */
+function withKept(config: GatewayConfig, slot: string, value: KeptChain | null): GatewayConfig {
+  const { kept, ...rest } = config;
+  const entries = Object.entries(kept ?? {}).filter(([named]) => named !== slot);
+  if (value !== null) entries.push([slot, value]);
+  return entries.length > 0 ? { ...rest, kept: Object.fromEntries(entries) } : rest;
+}
+
+/** The config without `slot` in `slots`: nothing in use there, so it answers as Claude. */
+function withoutSlot(config: GatewayConfig, slot: string): GatewayConfig {
+  return {
+    ...config,
+    slots: Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== slot)),
+  };
+}
+
+/** The fallback switch the person set for `slot`; undefined when it is at its default. */
+function setFallback(config: GatewayConfig, slot: string): boolean | undefined {
+  const set = config.fallback;
+  return set !== undefined && Object.hasOwn(set, slot) ? set[slot] : undefined;
+}
+
 /**
  * The chain 0.4.x's `defaultConfig` wrote for the scout and the worker, exactly, in every
  * version that had one (read from the git history; 0.2.x's had the same targets under its old
@@ -451,102 +481,380 @@ export function withoutRetiredDefaultClaude(config: GatewayConfig): {
 }
 
 /**
- * `gateway setup`'s step for a config an older version wrote: 0.4.x's hidden Claude step
- * goes (`withoutRetiredDefaultClaude`), saved only when something changed. One line per
- * slot it changed, for the person; none when nothing did.
+ * What the portal of 0.5.x and before remembered in its own file (`portal.json`): the opus
+ * and fable chains (`fallback`, by slot key; a version stored them by family name), the judge
+ * chain, and the fallback switch each had. Read only by `gateway setup`, once per machine, to
+ * move those chains into the config (`withPortalChains`); the portal keeps no slot state now.
+ * The file stays on disk one release, so a rollback to 0.5.x still finds it.
  */
-export function upgradeConfig(configPath: string, options: { dryRun?: boolean } = {}): string[] {
-  if (!existsSync(configPath)) return [];
-  const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
-  if (dropped.length > 0 && options.dryRun !== true) saveConfig(configPath, config);
-  return dropped.map(
-    (slot) =>
-      `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`,
-  );
+const portalMemorySchema = z.looseObject({
+  fallback: z.record(z.string(), z.array(z.string())).optional(),
+  judge: z.array(z.string()).optional(),
+  switches: z.record(z.string(), z.boolean()).optional(),
+  version: z.literal(1),
+});
+
+/**
+ * The chains a 0.5.x `portal.json` remembered, by slot key, each with the fallback switch it
+ * had when that differs from the slot's default. A chain is left out when it is empty or a
+ * target does not parse. A file that is not one the portal wrote reads as none: nothing to
+ * move.
+ */
+export function portalChains(text: string): Record<string, KeptChain> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    // Not JSON: not a file the portal wrote, so there is nothing in it to move.
+    return {};
+  }
+  const parsed = portalMemorySchema.safeParse(raw);
+  if (!parsed.success) return {};
+  const memory = parsed.data;
+  const found: Record<string, string[]> = {};
+  for (const [name, targets] of Object.entries(memory.fallback ?? {})) {
+    const key = slotKeyFromArg(name);
+    if (key !== null && isModelSlot(key)) found[key] = targets;
+  }
+  if (memory.judge !== undefined) found[JUDGE_SLOT] = memory.judge;
+  const chains: Record<string, KeptChain> = {};
+  for (const [key, targets] of Object.entries(found)) {
+    // A `claude-…` target is fine anywhere now, the judge included (D44: a judge chain may
+    // hold one, used as it is). Only a target that does not parse is left out.
+    const usable =
+      targets.length > 0 &&
+      targets.every((text) => {
+        const target = parseTarget(text);
+        return "target" in target;
+      });
+    if (!usable) continue;
+    const switches = memory.switches ?? {};
+    const on = Object.hasOwn(switches, key) ? switches[key] : undefined;
+    chains[key] = {
+      targets: [...targets],
+      ...(on === undefined || on === fallbackOn({}, key) ? {} : { fallback: on }),
+    };
+  }
+  return chains;
 }
 
 /**
- * The config with one slot changed, after checking every target: it parses, its backend
- * exists, and its model is in that backend's list. `claude-…` targets are taken as they
- * are: Anthropic's list is not reachable without the person's login. Every slot takes any
- * chain, in any order, and `<slot> off` removes it (no chain: that model is plain Claude;
- * the judge: Claude judges). The judge takes no `claude-…` target (the config refuses it):
- * a check's body is built for the model it names, and Claude Sonnet 5.5 refused the older
- * form's `thinking: disabled` with a 400.
+ * The config with each chain the portal remembered saved as `kept`, for a slot that has no
+ * chain in `slots` and none in `kept`: the config wins on a clash. `moved` names each slot it
+ * filled; a second run moves nothing.
+ */
+export function withPortalChains(
+  config: GatewayConfig,
+  remembered: Readonly<Record<string, KeptChain>>,
+): { config: GatewayConfig; moved: string[] } {
+  let next = config;
+  const moved: string[] = [];
+  for (const [key, chain] of Object.entries(remembered).sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (Object.hasOwn(next.slots, key) || keptChain(next, key) !== null) continue;
+    next = withKept(next, key, chain);
+    moved.push(key);
+  }
+  return { config: next, moved };
+}
+
+/** The text of the portal's old memory file, or null when there is none to read. */
+function portalMemoryText(path: string | undefined): null | string {
+  if (path === undefined || !existsSync(path)) return null;
+  return readFileSync(path, "utf8");
+}
+
+/** The fields of the portal's old memory that held slot state: its one home before B0. */
+const PORTAL_SLOT_FIELDS = ["fallback", "judge", "switches"] as const;
+
+/**
+ * The portal's old memory with its slot parts gone: `{"version": 1}`, and any field this
+ * version does not know (kept, as everywhere). Null when the text is not a JSON object, or
+ * already holds no slot part. After the migration no file holds a chain but `gateway.json`
+ * (`slots` in use, `kept` saved), which is the bug this fixes at its root: two homes that
+ * disagreed, and a slot change that sometimes did not save.
+ */
+export function withoutPortalSlots(text: string): null | string {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const body = raw as Record<string, unknown>;
+  if (!PORTAL_SLOT_FIELDS.some((field) => Object.hasOwn(body, field))) return null;
+  const rest = Object.fromEntries(
+    Object.entries(body).filter(
+      ([key]) => !(PORTAL_SLOT_FIELDS as readonly string[]).includes(key),
+    ),
+  );
+  return `${JSON.stringify(rest, null, 2)}\n`;
+}
+
+/**
+ * `gateway setup`'s step for a config an older version wrote, saved only when something
+ * changed, one line per slot it changed (none when nothing did):
+ *   - 0.4.x's hidden Claude step goes (`withoutRetiredDefaultClaude`);
+ *   - each chain 0.5.x's portal remembered in its own file (`portalStateFile`) is saved in
+ *     the config as a chain not in use (`withPortalChains`), so `gateway slot <slot> custom`
+ *     and the portal find it in the one place every command reads;
+ *   - the portal's old file then loses its slot parts (`withoutPortalSlots`), so no chain has
+ *     a second home to disagree with. The file itself stays one release, for a rollback.
+ * With `stateDir`, a file this step changes is backed up first (`backupFile`).
+ */
+export function upgradeConfig(
+  configPath: string,
+  options: { dryRun?: boolean; portalStateFile?: string; stateDir?: string } = {},
+): string[] {
+  if (!existsSync(configPath)) return [];
+  const { config: trimmed, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
+  const memory = portalMemoryText(options.portalStateFile);
+  const { config, moved } = withPortalChains(trimmed, memory === null ? {} : portalChains(memory));
+  const stripped = memory === null ? null : withoutPortalSlots(memory);
+  if (options.dryRun !== true) {
+    if (dropped.length + moved.length > 0) {
+      if (options.stateDir !== undefined) backupFile(options.stateDir, configPath);
+      saveConfig(configPath, config);
+    }
+    if (stripped !== null && options.portalStateFile !== undefined) {
+      // Backed up too: a rollback can put the old file back by hand.
+      if (options.stateDir !== undefined) {
+        backupFile(options.stateDir, options.portalStateFile);
+      }
+      atomicWrite(options.portalStateFile, stripped, 0o600);
+    }
+  }
+  return [
+    ...dropped.map(
+      (slot) =>
+        `~ ${slot}: took out ${RETIRED_DEFAULT_CHAIN.at(-1)}, the Claude model 0.4.x put at the end of its default chain; no Claude model answers there unless you put one in (${COMMAND} gateway slot ${slotName(slot)} <targets>)`,
+    ),
+    ...moved.map(
+      (slot) =>
+        `~ ${slot}: the chain the portal remembered (${keptChain(config, slot)?.targets.join(" → ")}) is saved in the gateway config, not in use; to use it: ${COMMAND} gateway slot ${slotName(slot)} custom`,
+    ),
+  ];
+}
+
+/**
+ * The words `gateway slot <slot> …` takes in place of a chain. None of them can be a target:
+ * a target is `claude-<id>` or `<backend>:<model>`.
+ */
+export const SLOT_WORDS: Readonly<Record<"claude" | "clear" | "custom", readonly string[]>> = {
+  /** No chain in use: the chain moves to `kept`. `off` is the word of 0.5.x and before. */
+  claude: ["claude", "off"],
+  /** Delete the chain, in use or saved. */
+  clear: ["clear"],
+  /** The saved chain in use again. */
+  custom: ["custom"],
+};
+
+/** One slot change, planned: what it is, the config after it, and the chains before and after. */
+export interface SlotPlan {
+  /** `chain`: a new chain in use; `claude`, `custom`, `clear`: the words of `SLOT_WORDS`. */
+  kind: "chain" | "claude" | "clear" | "custom";
+  config: GatewayConfig;
+  key: string;
+  /** The chain in use before. */
+  old: string[];
+  /** The chain in use after; none when the slot answers as Claude. */
+  next: string[];
+}
+
+/** Why a slot name cannot be used, in the words every slot command says it. */
+function notSlotName(slotArg: string): string {
+  return `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`;
+}
+
+/**
+ * Why a chain cannot be used, or null when it can: each target parses, its backend exists,
+ * and its model is in that backend's list. `claude-…` targets are taken as they are:
+ * Anthropic's list is not reachable without the person's login.
+ */
+function chainProblem(
+  config: GatewayConfig,
+  targets: readonly string[],
+  modelsByBackend: Readonly<Record<string, null | string[]>>,
+): null | string {
+  for (const text of targets) {
+    const parsed = parseTarget(text);
+    if ("error" in parsed) return parsed.error;
+    const target: Target = parsed.target;
+    if (target.kind === "anthropic") continue;
+    if (!Object.hasOwn(config.backends, target.backend)) {
+      return `"${text}": backend "${target.backend}" is not in the config`;
+    }
+    const models = Object.hasOwn(modelsByBackend, target.backend)
+      ? modelsByBackend[target.backend]
+      : undefined;
+    if (models === undefined || models === null) {
+      return `"${text}": could not list the models of "${target.backend}", so it cannot be checked`;
+    }
+    if (!models.includes(target.model)) {
+      return `"${text}": "${target.backend}" has no model "${target.model}" (see ${COMMAND} gateway models)`;
+    }
+  }
+  return null;
+}
+
+/** The planned config, checked as a whole (an alias that still points at the slot, say). */
+function checkedPlan(
+  plan: Omit<SlotPlan, "config">,
+  config: GatewayConfig,
+): SlotPlan | { error: string } {
+  const checked = parseConfig(config);
+  return "error" in checked ? { error: checked.error } : { ...plan, config: checked.config };
+}
+
+/**
+ * The chain a slot change uses, for the checks before it: the targets given, or for `custom`,
+ * the chain saved for the slot. None for the other words.
+ */
+export function chainToCheck(config: GatewayConfig, slotArg: string, text: string): string[] {
+  const word = text.trim();
+  if (SLOT_WORDS.custom.includes(word)) {
+    const key = slotKeyFromArg(slotArg);
+    return key === null ? [] : (keptChain(config, key)?.targets ?? []);
+  }
+  if (SLOT_WORDS.claude.includes(word) || SLOT_WORDS.clear.includes(word)) {
+    return [];
+  }
+  return word
+    .split(",")
+    .map((target) => target.trim())
+    .filter((target) => target !== "");
+}
+
+/**
+ * The config with one slot changed. Every slot works the same way, with two modes
+ * (`slotMode`): Custom, its chain in `slots`, in use; Claude, no chain in use (that model is
+ * plain Claude; for the judge, Claude first, and the worker's tested targets while Claude is
+ * limited or down). A switch to Claude never forgets the chain.
  *
- * The slot's fallback switch stays as it was (`fallbackOn`); a 0.4.x `modelSlots` entry for
- * the slot goes (it changes nothing any more). The judge's own switch stays even when its
- * chain goes: with no chain it means Claude alone (`gateway fallback judge off`). The judge
- * test proofs (`judgeTested`) are not touched here: new targets get theirs only from the
- * test, and those of a target no judge or worker chain holds any more go, in `commandSlot`
- * (`withJudgeProofs`).
+ *   - `<targets>`: a new chain in use, after `chainProblem`'s checks. It replaces a saved one;
+ *     the fallback switch saved with that one stays the slot's.
+ *   - `claude` (or `off`): the chain moves to `kept`, with the fallback switch the person set.
+ *     The judge's fallback switch stays where it is: with no judge chain it still says whether
+ *     the worker's tested targets stand in while Claude is limited or down (D44). The breaker
+ *     switch goes, as it did when a slot was turned off (the config refuses one for a slot with
+ *     no chain).
+ *   - `custom`: the saved chain moves back, with its switch, after the same checks a new chain
+ *     gets; refused, with the reason, when nothing is saved.
+ *   - `clear`: the chain is deleted, in use or saved, and its switch with it (the judge's
+ *     fallback stays: it is not part of the chain).
+ *
+ * The judge takes no `claude-…` target (the config refuses it): a check's body is built for
+ * the model it names, and Claude Sonnet 5.5 refused the older form's `thinking: disabled` with
+ * a 400. The judge test proofs (`judgeTested`) are not touched here: new targets get theirs
+ * only from the test, in `commandSlot` (`withJudgeProofs`), and a proof for a target no judge
+ * or worker chain holds any more goes there too. `claude` and `custom` keep them: a saved
+ * judge chain is used again only with a matching proof, which `commandSlot` makes by testing
+ * each target that has none.
+ *
+ * A 0.4.x `modelSlots` entry for the slot goes on every change (it changes nothing any more,
+ * and the config refuses one for a slot not in `slots`).
  */
 export function planSlotChange(
   current: GatewayConfig,
   slotArg: string,
   targetsText: string,
   modelsByBackend: Record<string, null | string[]>,
-): { config: GatewayConfig; key: string; old: string[]; next: string[] } | { error: string } {
+): SlotPlan | { error: string } {
   const key = slotKeyFromArg(slotArg);
-  if (key === null) {
-    return {
-      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`,
-    };
-  }
+  if (key === null) return { error: notSlotName(slotArg) };
+  const word = targetsText.trim();
   const old = current.slots[key] ?? [];
+  const kept = keptChain(current, key);
+  const name = slotName(key);
   const base = withoutModelSlot(current, key);
-  if (targetsText.trim() === "off") {
-    if (!Object.hasOwn(current.slots, key)) return { error: `${key} is already off` };
-    const slots = Object.fromEntries(
-      Object.entries(current.slots).filter(([name]) => name !== key),
+
+  if (SLOT_WORDS.claude.includes(word)) {
+    if (old.length === 0) {
+      return {
+        error:
+          kept === null
+            ? `${key} is already Claude`
+            : `${key} is already Claude; its chain is saved, not in use: ${kept.targets.join(" → ")} (to use it: ${COMMAND} gateway slot ${name} custom)`,
+      };
+    }
+    // The judge's fallback switch stays: with no judge chain it still says whether the
+    // worker's tested targets stand in while Claude is limited or down (D44). Every other
+    // slot's switch travels with the chain, into `kept`.
+    if (key === JUDGE_SLOT) {
+      return checkedPlan(
+        { key, kind: "claude", next: [], old },
+        withKept(withoutSlot(base, key), key, { targets: old }),
+      );
+    }
+    const fallback = setFallback(current, key);
+    const saved: KeptChain = { targets: old, ...(fallback === undefined ? {} : { fallback }) };
+    return checkedPlan(
+      { key, kind: "claude", next: [], old },
+      withKept(withoutSwitches(withoutSlot(base, key), key), key, saved),
     );
-    // An alias may still point at the slot: the check says so. A slot's switches go with its
-    // chain (an entry for a slot that is not in `slots` is a config error), except the judge's
-    // fallback: it still says whether the worker's targets stand in.
-    const checked = parseConfig(
-      key === JUDGE_SLOT ? { ...base, slots } : withoutSwitches({ ...base, slots }, key),
-    );
-    if ("error" in checked) return { error: checked.error };
-    return { config: checked.config, key, next: [], old };
   }
-  const next = targetsText
-    .split(",")
-    .map((text) => text.trim())
-    .filter((text) => text !== "");
+
+  if (SLOT_WORDS.custom.includes(word)) {
+    if (old.length > 0) return { error: `${key} is already Custom: ${old.join(" → ")}` };
+    if (kept === null) {
+      return {
+        error: `${key} has no saved chain, so it stays Claude. Give it one: ${COMMAND} gateway slot ${name} <targets>`,
+      };
+    }
+    const problem = chainProblem(current, kept.targets, modelsByBackend);
+    if (problem !== null) {
+      return { error: `${key}'s saved chain cannot be used: ${problem}` };
+    }
+    const back = withKept(
+      { ...base, slots: { ...base.slots, [key]: [...kept.targets] } },
+      key,
+      null,
+    );
+    return checkedPlan(
+      { key, kind: "custom", next: [...kept.targets], old },
+      key === JUDGE_SLOT || kept.fallback === undefined
+        ? back
+        : withSwitch(back, "fallback", key, kept.fallback),
+    );
+  }
+
+  if (SLOT_WORDS.clear.includes(word)) {
+    if (old.length === 0 && kept === null) return { error: `${key} has no chain to clear` };
+    // The judge's fallback switch is not part of its chain: it still says whether the
+    // worker's tested targets stand in (D44). Every other slot's switches go with the chain.
+    // A proof for a target no chain holds any more goes in `commandSlot` (`withJudgeProofs`).
+    const cleared = withKept(
+      key === JUDGE_SLOT ? withoutSlot(base, key) : withoutSwitches(withoutSlot(base, key), key),
+      key,
+      null,
+    );
+    return checkedPlan({ key, kind: "clear", next: [], old }, cleared);
+  }
+
+  const next = chainToCheck(current, slotArg, word);
   if (next.length === 0) return { error: "give at least one target" };
-  for (const text of next) {
-    const parsed = parseTarget(text);
-    if ("error" in parsed) return { error: parsed.error };
-    const target: Target = parsed.target;
-    if (target.kind === "anthropic") continue;
-    if (!Object.hasOwn(current.backends, target.backend)) {
-      return { error: `"${text}": backend "${target.backend}" is not in the config` };
-    }
-    const models = Object.hasOwn(modelsByBackend, target.backend)
-      ? modelsByBackend[target.backend]
-      : undefined;
-    if (models === undefined || models === null) {
-      return {
-        error: `"${text}": could not list the models of "${target.backend}", so it cannot be checked`,
-      };
-    }
-    if (!models.includes(target.model)) {
-      return {
-        error: `"${text}": "${target.backend}" has no model "${target.model}" (see ${COMMAND} gateway models)`,
-      };
-    }
-  }
-  const checked = parseConfig({ ...base, slots: { ...base.slots, [key]: next } });
-  if ("error" in checked) return { error: checked.error };
-  return { config: checked.config, key, next, old };
+  const problem = chainProblem(current, next, modelsByBackend);
+  if (problem !== null) return { error: problem };
+  const replaced = withKept(base, key, null);
+  // The switch saved with the chain this one replaces is the slot's own, set by the person.
+  const withSavedSwitch =
+    kept?.fallback !== undefined && setFallback(replaced, key) === undefined
+      ? withSwitch(replaced, "fallback", key, kept.fallback)
+      : replaced;
+  return checkedPlan(
+    { key, kind: "chain", next, old },
+    { ...withSavedSwitch, slots: { ...withSavedSwitch.slots, [key]: next } },
+  );
 }
 
 /**
  * The config with one slot's fallback switch set: on, its next target answers when the one
- * before it fails or rests; off, only its first. A slot with no chain has none to set, except
- * the judge: with no chain of the person's own, its switch says whether the worker's tested
- * targets stand in while Claude is limited or down, and off keeps Claude alone (D44). A value
- * equal to the slot's default is written as no entry (`fallbackOn`).
+ * before it fails or rests; off, only its first. A slot that answers as Claude with a chain
+ * saved (`kept`) keeps the switch with that chain, for when it is used again. A slot with no
+ * chain at all has none to set, except the judge: with no chain of the person's own, its
+ * switch says whether the worker's tested targets stand in while Claude is limited or down,
+ * and off keeps Claude alone (D44). A value equal to the slot's default is written as no
+ * entry (`fallbackOn`).
  */
 export function planFallbackChange(
   current: GatewayConfig,
@@ -554,18 +862,23 @@ export function planFallbackChange(
   value: string,
 ): { config: GatewayConfig; key: string; now: boolean; was: boolean } | { error: string } {
   const key = slotKeyFromArg(slotArg);
-  if (key === null) {
-    return {
-      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`,
-    };
-  }
+  if (key === null) return { error: notSlotName(slotArg) };
   if (value !== "on" && value !== "off") return { error: `say on or off, not "${value}"` };
-  if (key !== JUDGE_SLOT && !Object.hasOwn(current.slots, key)) {
-    return {
-      error: `${key} has no chain, so it has nothing to fall back to. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`,
-    };
-  }
   const now = value === "on";
+  if (key !== JUDGE_SLOT && !Object.hasOwn(current.slots, key)) {
+    const kept = keptChain(current, key);
+    if (kept === null) {
+      return {
+        error: `${key} has no chain, so it has nothing to fall back to. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`,
+      };
+    }
+    const { fallback: _was, ...targets } = kept;
+    const checked = parseConfig(
+      withKept(current, key, now === fallbackOn({}, key) ? targets : { ...targets, fallback: now }),
+    );
+    if ("error" in checked) return { error: checked.error };
+    return { config: checked.config, key, now, was: kept.fallback ?? fallbackOn({}, key) };
+  }
   const was = fallbackOn(current, key);
   const checked = setSwitch(current, "fallback", fallbackOn, key, now);
   if ("error" in checked) return { error: checked.error };
@@ -609,13 +922,19 @@ function slotName(key: string): string {
   return key.startsWith(SLOT_PREFIX) ? key.slice(SLOT_PREFIX.length) : key;
 }
 
-/** What a slot with no chain means, in words. */
-function offWords(config: GatewayConfig, key: string): string {
-  if (key === JUDGE_SLOT) return `default: ${judgeDefaultWords(config)}`;
+/** What a slot with no chain in use means, in words. */
+function claudeWords(config: GatewayConfig, key: string): string {
+  if (key === JUDGE_SLOT) return `Claude: ${judgeDefaultWords(config)}`;
   const family = Object.hasOwn(FAMILY_SLOTS, key) ? FAMILY_SLOTS[key] : undefined;
   return family === undefined
-    ? "off"
-    : `off: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
+    ? "Claude: no chain in use"
+    : `Claude: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
+}
+
+/** A chain saved, not in use, in words, with the command that uses it again. */
+function keptWords(key: string, kept: KeptChain): string {
+  const fallback = kept.fallback ?? fallbackOn({}, key);
+  return `saved, not in use: ${kept.targets.join(" → ")}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
 
 /** The trade-off of a judge other than Claude, said wherever one is set or shown. */
@@ -661,18 +980,22 @@ function fallbackWords(config: GatewayConfig, key: string): string {
 }
 
 function printSlots(config: GatewayConfig, print: (line: string) => void): void {
-  print("\nSlots (the first target answers; the next one only while fallback is on):");
+  print(
+    "\nSlots (Claude: plain Claude; Custom: the first target answers, the next one only while fallback is on):",
+  );
   const known = [...Object.keys(FAMILY_SLOTS), JUDGE_SLOT];
   const keys = [
     ...known,
-    ...Object.keys(config.slots)
+    ...[...new Set([...Object.keys(config.slots), ...Object.keys(config.kept ?? {})])]
       .filter((key) => !known.includes(key))
       .sort(),
   ];
   for (const key of keys) {
     const targets = config.slots[key];
     if (targets === undefined) {
-      print(`  ${key.padEnd(16)} ${offWords(config, key)}`);
+      print(`  ${key.padEnd(16)} ${claudeWords(config, key)}`);
+      const saved = keptChain(config, key);
+      if (saved !== null) print(`    ${keptWords(key, saved)}`);
       // The worker's tested targets are judges while Claude cannot: the trade-off is shown.
       if (key === JUDGE_SLOT && fallbackOn(config, key) && workerJudgeTargets(config).length > 0) {
         print(`    WARN ${JUDGE_WARNING}`);
@@ -690,7 +1013,7 @@ function printSlots(config: GatewayConfig, print: (line: string) => void): void 
           : "your own judge: it judges the checks in this order",
       );
     }
-    print(`  ${key.padEnd(16)} ${targets.join(" → ")}  (${notes.join("; ")})`);
+    print(`  ${key.padEnd(16)} Custom: ${targets.join(" → ")}  (${notes.join("; ")})`);
     if (key === JUDGE_SLOT) print(`    WARN ${JUDGE_WARNING}`);
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => (a < b ? -1 : 1));
@@ -731,7 +1054,9 @@ async function commandModels(ctx: GatewayContext): Promise<number> {
  * that passed, on the backend URL it passed on (a target whose backend moved since then
  * gets none), and the ones it already held for a target the judge chain or the worker chain
  * still has. A proof for any other target goes, so a target nothing uses must be tested
- * again when it comes back (D44: the worker chain's targets use `judgeTested` too).
+ * again when it comes back (D44: the worker chain's targets use `judgeTested` too). A saved
+ * judge chain used again (`gateway slot judge custom`) keeps the proofs that still match,
+ * because its targets are in `slots` again; only the rest are tested.
  */
 export function withJudgeProofs(
   config: GatewayConfig,
@@ -826,6 +1151,21 @@ function dropFallbackRecord(statePath: string, slot: string): void {
   atomicWrite(statePath, formatLimitState(state), 0o600);
 }
 
+/** What a saved slot change did, in the lines `gateway slot` prints first. */
+function slotChangeLines(plan: SlotPlan): string[] {
+  const before =
+    plan.old.length > 0 ? plan.old.join(" → ") : plan.kind === "chain" ? "(new)" : "Claude";
+  const now =
+    plan.next.length > 0
+      ? `${plan.next.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`
+      : claudeWords(plan.config, plan.key);
+  const lines = [`${plan.key}: ${before}`, `  now: ${now}`];
+  const savedChain = keptChain(plan.config, plan.key);
+  if (savedChain !== null) lines.push(`  ${keptWords(plan.key, savedChain)}`);
+  if (plan.kind === "clear") lines.push("  No chain is saved for it now.");
+  return lines;
+}
+
 async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number> {
   const [slotArg, targets, ...extra] = args;
   if (slotArg === undefined || targets === undefined || extra.length > 0) {
@@ -836,7 +1176,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   const config = loadConfigFile(configPath);
   // The model lists come from the network, so they are read before the lock.
   const modelsByBackend: Record<string, null | string[]> = {};
-  for (const text of targets.split(",")) {
+  for (const text of chainToCheck(config, slotArg, targets)) {
     const parsed = parseTarget(text);
     if (!("target" in parsed) || parsed.target.kind !== "backend") continue;
     const name = parsed.target.backend;
@@ -852,8 +1192,10 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   const passed: Record<string, string> = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     // A judge is never set untested, and there is no way to skip the test. A Claude target
-    // needs none: Claude is the judge the test is measured against.
+    // needs none: Claude is the judge the test is measured against. A saved chain used again
+    // keeps the proofs that still match; only a target without one is tested.
     for (const text of first.next) {
+      if (first.kind === "custom" && judgeTargetTested(config, text)) continue;
       const parsed = parseTarget(text);
       if (!("target" in parsed)) continue;
       if (parsed.target.kind === "anthropic") {
@@ -895,17 +1237,25 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
         again.key === JUDGE_SLOT || again.key === WORKER_SLOT
           ? withJudgeProofs(again.config, passed)
           : again.config;
+      // The chain tested above is the chain saved: one changed by another command meanwhile
+      // (a saved judge chain, say) has targets no test here vouched for. A Claude target
+      // needs none: Claude is the judge the test is measured against.
+      const untested =
+        again.key === JUDGE_SLOT
+          ? again.next.filter((target) => !judgeTargetUsable(saved, target))
+          : [];
+      if (untested.length > 0) {
+        throw new Error(
+          `the judge chain changed while it was tested (${untested.join(", ")} has no test proof). Nothing was saved; run the command again.`,
+        );
+      }
       saveConfig(configPath, saved);
       if (again.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
       return { ...again, config: saved };
     },
     { waitMs: 10_000 },
   );
-  const now =
-    plan.next.length > 0
-      ? `${plan.next.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`
-      : offWords(plan.config, plan.key);
-  ctx.print(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
+  for (const line of slotChangeLines(plan)) ctx.print(line);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     ctx.print(
       `  To let the next target answer when ${plan.next[0]} fails or rests: ${COMMAND} gateway fallback ${slotName(plan.key)} on`,
@@ -942,8 +1292,18 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
     },
     { waitMs: 10_000 },
   );
-  const targets = plan.config.slots[plan.key] ?? [];
   const change = `${plan.key}: fallback ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}`;
+  // The judge's switch is in use with no chain (it says whether the worker's tested targets
+  // stand in), so only every other slot's switch waits in `kept`.
+  const kept = plan.key === JUDGE_SLOT ? null : keptChain(plan.config, plan.key);
+  if (kept !== null && !Object.hasOwn(plan.config.slots, plan.key)) {
+    // A slot that answers as Claude: the switch waits with its saved chain.
+    ctx.print(`${change}\n  ${claudeWords(plan.config, plan.key)}\n  ${keptWords(plan.key, kept)}`);
+    ctx.print("  The switch is used with the chain, once the slot is Custom again.");
+    ctx.print("The router uses it from its next request.");
+    return 0;
+  }
+  const targets = plan.config.slots[plan.key] ?? [];
   if (plan.key === JUDGE_SLOT && targets.length === 0) {
     // No judge chain of the person's: the switch says whether the worker's tested targets
     // stand in while Claude is limited or down (D44).
@@ -1179,7 +1539,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   });
   // The two steps for a machine an older version set up, read-only first: a config or a
   // settings file that cannot be read stops the setup here, before anything is written.
-  upgradeConfig(configPath, { dryRun: true });
+  upgradeConfig(configPath, { dryRun: true, portalStateFile: paths.portalStateFile });
   retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   // The port question comes before the backend is called at all: a port another program holds
   // refuses the setup, and no key is made or checked for nothing.
@@ -1284,13 +1644,30 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
           stateDir: paths.stateDir,
         });
         ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
-        for (const line of upgradeConfig(configPath)) ctx.print(line);
-        if (existsSync(configPath) && Object.keys(loadConfigFile(configPath).slots).length === 0) {
+        const keyBackedUp =
+          key !== null && existsSync(backups) && readdirSync(backups).length > backupsBefore;
+        // Under the lock, with the backup: the chains the old portal remembered move into the
+        // config here, together with the router copy that reads them (a second run moves none).
+        const upgraded = upgradeConfig(configPath, {
+          portalStateFile: paths.portalStateFile,
+          stateDir: paths.stateDir,
+        });
+        for (const line of upgraded) ctx.print(line);
+        if (upgraded.length > 0) {
           ctx.print(
-            `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`,
+            `  the config as it was before these changes is in ${tildify(backups, paths.home)}`,
           );
         }
-        if (key !== null && existsSync(backups) && readdirSync(backups).length > backupsBefore) {
+        const now = existsSync(configPath) ? loadConfigFile(configPath) : null;
+        if (now !== null && Object.keys(now.slots).length === 0) {
+          const saved = Object.keys(now.kept ?? {}).length;
+          ctx.print(
+            saved > 0
+              ? `Every slot is Claude, so every Claude model stays plain Claude. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.`
+              : `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`,
+          );
+        }
+        if (keyBackedUp) {
           ctx.print(
             `  the file as it was before the change is in ${tildify(backups, paths.home)}: copy it back to put the key that was there in place`,
           );

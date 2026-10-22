@@ -5980,8 +5980,16 @@ var stateSchema = object({
   breakers: record(string2(), breakerSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
   version: literal(1)
 });
+var SEEN_CLAUDE_MAX = 50;
+function mergeSeenClaude(a, b) {
+  const merged = new Map(Object.entries(a));
+  for (const [id, at] of Object.entries(b))
+    merged.set(id, Math.max(merged.get(id) ?? at, at));
+  return Object.fromEntries([...merged].sort(([idA, atA], [idB, atB]) => atB - atA || (idA < idB ? -1 : 1)).slice(0, SEEN_CLAUDE_MAX));
+}
 function emptyLimitState() {
   return { fallbacks: {}, limits: {}, version: 1 };
 }
@@ -6044,6 +6052,10 @@ function isBackendName(name) {
 }
 function isSlotKey(name) {
   return SLOT_KEY.test(name);
+}
+var CLAUDE_MODEL_ID = /^claude-[A-Za-z0-9][A-Za-z0-9._@-]{0,79}$/;
+function isClaudeModelId(name) {
+  return CLAUDE_MODEL_ID.test(name);
 }
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
@@ -6309,11 +6321,16 @@ var backendSchema = looseObject({
   apiKey: string2().min(1),
   baseUrl
 });
+var keptChainSchema = looseObject({
+  fallback: boolean2().optional(),
+  targets: array(string2().min(1)).min(1)
+});
 var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
+  kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
@@ -7426,6 +7443,7 @@ var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
+var RECENT_MAX = 200;
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 var HOP_BY_HOP = new Set([
@@ -7914,6 +7932,28 @@ function createRouter(deps) {
   const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
   const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
+  const loadState = deps.loadState;
+  const saveState = deps.saveState;
+  const persistSeen = stateWriter(deps, "the seen Claude ids", loadState === undefined || saveState === undefined ? undefined : () => {
+    const text = loadState();
+    const there = text === null ? null : parseLimitState(text);
+    const base = there ?? limitState;
+    saveState(formatLimitState({
+      ...base,
+      seenClaude: mergeSeenClaude(there?.seenClaude ?? {}, limitState.seenClaude ?? {})
+    }));
+  });
+  const recent = [];
+  function noteSeenClaude(model) {
+    const id = withoutContextSuffix(model);
+    if (!isClaudeModelId(id))
+      return;
+    const seen = limitState.seenClaude ?? {};
+    const isNew = !Object.hasOwn(seen, id);
+    limitState.seenClaude = mergeSeenClaude(seen, { [id]: deps.now() });
+    if (isNew)
+      persistSeen();
+  }
   function loadedState(load, parse, empty, words) {
     if (load === undefined)
       return empty();
@@ -8866,8 +8906,10 @@ function createRouter(deps) {
         target: "none"
       };
     }
-    if (typeof parsed.model === "string")
+    if (typeof parsed.model === "string") {
       model.name = parsed.model;
+      noteSeenClaude(parsed.model);
+    }
     const guard = isAutoModeGuard(parsed, config.aliases);
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
@@ -8887,6 +8929,8 @@ function createRouter(deps) {
     if (serverTool !== null)
       return serverToolRoute(serverTool);
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
+    if (judgeTargets.length > 0)
+      model.slot = JUDGE_SLOT;
     const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : (guard ? claudeFirstJudge() : null) ?? claudeRoute();
     return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
     async function serverToolRoute(tool) {
@@ -8949,6 +8993,7 @@ function createRouter(deps) {
       const found = guard || alias !== null ? null : familySlotFor(body.model);
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);
       if (found !== null && familyRoute?.kind === "slot" && familyRoute.targets.length > 0) {
+        model.slot = found.slot;
         return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, {
           model: found.model,
           sent
@@ -8973,6 +9018,7 @@ function createRouter(deps) {
         });
       }
       if (decided.kind === "slot") {
+        model.slot = decided.slot;
         return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null);
       }
       const target = decided.target;
@@ -8990,7 +9036,7 @@ function createRouter(deps) {
   return async function handle(req) {
     const startMs = deps.now();
     const url = new URL(req.url);
-    const model = { name: "-" };
+    const model = { name: "-", slot: null };
     const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -9005,7 +9051,9 @@ function createRouter(deps) {
         fallbacks: stats.fallbacks,
         ok: true,
         port: deps.port,
+        recent,
         requests: stats.requests,
+        seenClaude: limitState.seenClaude ?? {},
         slots: deps.getConfig().slots,
         uptimeSec: Math.floor((deps.now() - startedAt) / 1000)
       });
@@ -9025,6 +9073,16 @@ function createRouter(deps) {
     }
     stats.fallbacks += outcome.fallbacks;
     deps.log(line(outcome));
+    recent.push({
+      at: startMs,
+      ms: deps.now() - startMs,
+      nextTarget: outcome.fallbacks > 0,
+      slot: model.slot,
+      status: outcome.response.status,
+      target: printable(outcome.target)
+    });
+    if (recent.length > RECENT_MAX)
+      recent.shift();
     return outcome.response;
   };
 }

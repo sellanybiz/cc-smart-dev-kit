@@ -84,6 +84,14 @@ in this turn.
   `runOmniroute`; `update`, `doctor`, the heavy-job queue and the companions call the modules
   the CLI calls. So a page can never do something the CLI would refuse, and the two can never
   agree differently about a machine.
+- **The portal keeps no slot state of its own.** Every chain lives in `gateway.json` — in use
+  in `slots`, saved in `kept` while the slot answers as Claude (`.claude/rules/gateway.md`) —
+  and every slot has the same switch: one `slot.mode` action runs `gateway slot <slot>
+  claude|custom`. The old `portal.json` (the opus, fable and judge chains) is read once by
+  `gateway setup` into `kept`, loses its slot parts there, and stays on disk one release for a
+  rollback; nothing reads or writes it after that.
+  "Claude login" in the model list is what the router saw (`seenClaude` in the state file),
+  never a list the portal made up.
 - `GatewayContext`, `runUpdate` and `doctorChecks` take their output from the caller
   (`print` / `error` sinks) for exactly this. A new command the portal shows must do the same,
   not write to `console` and be scraped.

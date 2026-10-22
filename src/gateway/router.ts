@@ -71,6 +71,11 @@
  *     `requestForClaudeFallback`, changes only those; never `system` or a message. Never
  *     for auto mode's safety check, on any route: it reaches Claude with only `model`
  *     changed.
+ *   - Its health page (`HEALTH_PATH`) answers what it holds, never a word of a request: the
+ *     counts, the targets resting, the slots, the last `RECENT_MAX` requests it routed
+ *     (`RecentRequest`: time, slot, target, status, milliseconds, whether a next target
+ *     answered), and each Claude model id Claude Code sent (`seenClaude`, also in the state
+ *     file, written only when an id is new).
  *   - One log line per request; never a header value, key or body. A WARN line when any
  *     target, Anthropic included, answers 4xx / 5xx to a model call carries the start of
  *     its error answer (its reason, never the request): 300 characters at most, keys and
@@ -132,6 +137,7 @@ import {
   formatClock,
   formatLimitState,
   type LimitState,
+  mergeSeenClaude,
   parseLimitState,
 } from "./limit-state";
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
@@ -169,6 +175,7 @@ import {
   familySlotFor,
   formatTarget,
   isAutoModeGuard,
+  isClaudeModelId,
   JUDGE_SLOT,
   type PlanLimit,
   planUsageLimit,
@@ -230,9 +237,10 @@ export interface RouterDeps {
    */
   loadSafetyChecks?: () => null | string;
   /**
-   * The limit state file's text (`limit-state.ts`), read once when the router starts, so a
+   * The limit state file's text (`limit-state.ts`), read when the router starts, so a
    * restart (an update, a crash) keeps the plan limits and the fallbacks it saw, and its
-   * next write keeps them too. Absent, or null: none yet.
+   * next write keeps them too. Read again before a new Claude id is written (`seenClaude`),
+   * which changes that one field of what the file holds. Absent, or null: none yet.
    */
   loadState?: () => null | string;
   log: (line: string) => void;
@@ -283,6 +291,28 @@ const NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 
 /** Path of the router's own health check, answered before anything is forwarded. */
 export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
+
+/** How many routed requests the health answer lists (`recent`), the last ones first in. */
+export const RECENT_MAX = 200;
+
+/**
+ * One request the router routed, as its health answer lists it (the portal's activity feed).
+ * Metadata only: never a prompt, an answer, a key or a header.
+ */
+export interface RecentRequest {
+  /** When it came in: milliseconds since the epoch. */
+  at: number;
+  /** How long until its answer started: milliseconds. */
+  ms: number;
+  /** A next target of the slot answered, or tried to: the first one did not. */
+  nextTarget: boolean;
+  /** The slot that answered it; null for a request no slot took (Anthropic as sent). */
+  slot: null | string;
+  /** The status Claude Code got. */
+  status: number;
+  /** Who answered, as the log names it: a target, `anthropic`, `none`, `refused`. */
+  target: string;
+}
 
 const MESSAGES_PATH = "/v1/messages";
 const COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
@@ -1124,6 +1154,47 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       ? undefined
       : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)),
   );
+  const loadState = deps.loadState;
+  const saveState = deps.saveState;
+  /**
+   * A new Claude id reaches the state file in the background: the file is read first, and
+   * only its `seenClaude` changes (merged with what the router saw). Its limits and
+   * fallbacks stay as the file holds them, so a change another program made there (the
+   * CLI's `dropFallbackRecord`) is never written over by this. With no readable state in
+   * the file, the router's own is what there is to write.
+   */
+  const persistSeen = stateWriter(
+    deps,
+    "the seen Claude ids",
+    loadState === undefined || saveState === undefined
+      ? undefined
+      : () => {
+          const text = loadState();
+          const there = text === null ? null : parseLimitState(text);
+          const base = there ?? limitState;
+          saveState(
+            formatLimitState({
+              ...base,
+              seenClaude: mergeSeenClaude(there?.seenClaude ?? {}, limitState.seenClaude ?? {}),
+            }),
+          );
+        },
+  );
+  /** The last requests routed, oldest first (`RecentRequest`). In memory: a restart forgets. */
+  const recent: RecentRequest[] = [];
+
+  /**
+   * A Claude model id Claude Code sent: its last-seen time, for the health answer, and the
+   * state file when the id is new (`persistSeen`). A name that is not a Claude id is not kept.
+   */
+  function noteSeenClaude(model: string): void {
+    const id = withoutContextSuffix(model);
+    if (!isClaudeModelId(id)) return;
+    const seen = limitState.seenClaude ?? {};
+    const isNew = !Object.hasOwn(seen, id);
+    limitState.seenClaude = mergeSeenClaude(seen, { [id]: deps.now() });
+    if (isNew) persistSeen();
+  }
 
   /**
    * A state the router starts from: what its file holds (a restart goes on from there: the
@@ -2571,7 +2642,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     });
   }
 
-  async function route(req: Request, url: URL, model: { name: string }): Promise<Outcome> {
+  async function route(
+    req: Request,
+    url: URL,
+    model: { name: string; slot: null | string },
+  ): Promise<Outcome> {
     const config = deps.getConfig();
     dropRemovedFallbacks(config);
     const isMessages =
@@ -2640,7 +2715,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         target: "none",
       };
     }
-    if (typeof parsed.model === "string") model.name = parsed.model;
+    if (typeof parsed.model === "string") {
+      model.name = parsed.model;
+      // The id as Claude Code sent it, before any alias: what the person's login can name.
+      noteSeenClaude(parsed.model);
+    }
     // The safety check is recognised on the request as it came, an old name included: an
     // alias may point at an affordable backend, and with the judge off the check stays on Claude.
     const guard = isAutoModeGuard(parsed, config.aliases);
@@ -2678,6 +2757,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     // is ignored, with one WARN). With none, Claude judges first (D44): then the worker
     // chain's tested targets while Claude cannot (`claudeFirstJudge`), else Claude alone.
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
+    if (judgeTargets.length > 0) model.slot = JUDGE_SLOT;
     const answered =
       judgeTargets.length > 0
         ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null)
@@ -2802,6 +2882,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const found = guard || alias !== null ? null : familySlotFor(body.model);
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);
       if (found !== null && familyRoute?.kind === "slot" && familyRoute.targets.length > 0) {
+        model.slot = found.slot;
         return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, {
           model: found.model,
           sent,
@@ -2834,6 +2915,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         });
       }
       if (decided.kind === "slot") {
+        model.slot = decided.slot;
         return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null);
       }
       // An explicit `<backend>:<model>`: that backend alone.
@@ -2857,7 +2939,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   return async function handle(req: Request): Promise<Response> {
     const startMs = deps.now();
     const url = new URL(req.url);
-    const model = { name: "-" };
+    const model: { name: string; slot: null | string } = { name: "-", slot: null };
     const line = (outcome: Outcome) =>
       `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
         outcome.breaker === undefined
@@ -2879,7 +2961,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         fallbacks: stats.fallbacks,
         ok: true,
         port: deps.port,
+        recent,
         requests: stats.requests,
+        seenClaude: limitState.seenClaude ?? {},
         slots: deps.getConfig().slots,
         uptimeSec: Math.floor((deps.now() - startedAt) / 1000),
       });
@@ -2904,6 +2988,16 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     stats.fallbacks += outcome.fallbacks;
     deps.log(line(outcome));
+    recent.push({
+      at: startMs,
+      ms: deps.now() - startMs,
+      nextTarget: outcome.fallbacks > 0,
+      slot: model.slot,
+      status: outcome.response.status,
+      // As the log line names it, and as short: a target in the config, or a word of ours.
+      target: printable(outcome.target),
+    });
+    if (recent.length > RECENT_MAX) recent.shift();
     return outcome.response;
   };
 }

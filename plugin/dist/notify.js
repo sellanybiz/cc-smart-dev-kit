@@ -6800,11 +6800,16 @@ var backendSchema = looseObject({
   apiKey: string2().min(1),
   baseUrl
 });
+var keptChainSchema = looseObject({
+  fallback: boolean2().optional(),
+  targets: array(string2().min(1)).min(1)
+});
 var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
+  kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
@@ -7419,6 +7424,7 @@ var stateSchema = object({
   breakers: record(string2(), breakerSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
   version: literal(1)
 });
 function parseLimitState(text) {

@@ -27,9 +27,7 @@ import {
   autoModeChange,
   type DoctorSource,
   jobLines,
-  type PortalMemory,
   portalOmnirouteContext,
-  readMemory,
   runAction,
   runDoctorPass,
   updateState,
@@ -51,6 +49,7 @@ import {
   readConfig,
   routerFacts,
   routerLog,
+  seenClaudeModels,
   settingsData,
   shellFacts,
   slotRows,
@@ -129,7 +128,6 @@ interface ServerState {
   /** The last doctor pass: the Machine page shows it instead of running one per load. */
   doctor: { at: number; checks: Check[] } | null;
   doctorRun: null | Promise<void>;
-  memory: PortalMemory;
 }
 
 function respond(body: string, headers: Record<string, string>, status: number): Response {
@@ -199,7 +197,6 @@ export async function startPortal(
     csrf: createCsrf(random),
     doctor: null,
     doctorRun: null,
-    memory: readMemory(ctx.paths),
   };
   const server = Bun.serve({
     fetch: (request) => handle(request),
@@ -239,7 +236,6 @@ export async function startPortal(
   function actionContext(): ActionContext {
     return {
       cwd: options.cwd,
-      memory: state.memory,
       omniroute: portalOmnirouteContext(ctx),
       portal: ctx,
       projectDefaults,
@@ -350,7 +346,7 @@ export async function startPortal(
       const backends = await backendRows(ctx, config);
       const models: ModelRow[] = [
         ...backends.flatMap((backend) => backend.models),
-        ...claudeModels(config).map((id) => ({
+        ...claudeModels(config, seenClaudeModels(ctx)).map((id) => ({
           backend: "Claude login",
           context: "the plan's",
           id,

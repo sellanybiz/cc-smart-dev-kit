@@ -28,11 +28,13 @@ import {
 } from "../browser/setup";
 import { VERSION } from "../build-info";
 import { listModels } from "../gateway/backends";
+import { judgeDefaultWords } from "../gateway/commands";
 import {
   DEFAULT_PORT,
   fallbackOn,
   type GatewayConfig,
   judgeTargetTested,
+  keptChain,
   loadConfigFile,
   messageOf,
 } from "../gateway/config";
@@ -48,7 +50,13 @@ import {
 import { maskedLine } from "../gateway/plain-text";
 import { UNIT_NAME } from "../gateway/service";
 import { settingsReport, shownBackendUrl } from "../gateway/settings";
-import { FAMILY_SLOTS, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
+import {
+  FAMILY_SLOTS,
+  isClaudeModelId,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+} from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
 import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
@@ -355,7 +363,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     ...["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)].map(
       (name) => `cc-smart-dev-kit-${slotName(name)}`,
     ),
-    ...Object.keys(config.slots).filter(
+    ...[...new Set([...Object.keys(config.slots), ...Object.keys(config.kept ?? {})])].filter(
       (key) => !SLOT_ORDER.some((name) => key === `cc-smart-dev-kit-${slotName(name)}`),
     ),
   ];
@@ -371,7 +379,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
       key,
       kind: on ? meta.kind : "off",
       name,
-      note: slotNote(config, key, on),
+      note: slotNote(config, key),
       targets: (targets ?? []).map((target) => {
         const parsed = parseTarget(target);
         const known = "target" in parsed ? parsed.target : null;
@@ -388,19 +396,26 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
 }
 
 /** The CLI's own note for a slot, in the same words (`printSlots`). */
-function slotNote(config: GatewayConfig, key: string, on: boolean): string {
-  if (!on) {
-    if (key === JUDGE_SLOT) return "off: Claude judges auto mode's safety checks";
+function slotNote(config: GatewayConfig, key: string): string {
+  // A chain saved while the slot answers as Claude: never in use, and never forgotten.
+  const saved = keptChain(config, key);
+  const savedWords =
+    saved === null
+      ? ""
+      : `; saved, not in use: ${saved.targets.join(" → ")} (fallback ${
+          (saved.fallback ?? fallbackOn({}, key)) ? "on" : "off"
+        })`;
+  const targets = config.slots[key];
+  if (targets === undefined) {
+    if (key === JUDGE_SLOT) return `${judgeDefaultWords(config)}${savedWords}`;
     const family = Object.hasOwn(FAMILY_SLOTS, key) ? FAMILY_SLOTS[key] : undefined;
     return family === undefined
-      ? "off"
-      : `off: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
+      ? `Claude: no chain in use${savedWords}`
+      : `Claude: ${family} goes to Anthropic as Claude Code sent it, on your own login${savedWords}`;
   }
   const fallback = fallbackOn(config, key) ? "fallback on" : "fallback off";
   if (key === JUDGE_SLOT) {
-    const untested = (config.slots[key] ?? []).filter(
-      (target) => !judgeTargetTested(config, target),
-    );
+    const untested = targets.filter((target) => !judgeTargetTested(config, target));
     return untested.length > 0
       ? `${fallback}; NOT TESTED, so ignored: ${untested.join(", ")}`
       : `${fallback}; judges every safety check in Claude's place`;
@@ -425,8 +440,13 @@ export function contextText(length: null | number): string {
   return length >= 1000 ? `${Math.round(length / 1000)}K` : String(length);
 }
 
-/** Every `claude-…` name the config mentions: a 0.4.x `modelSlots` key, and every target. */
-export function claudeModels(config: GatewayConfig): string[] {
+/**
+ * Every `claude-…` name the config mentions (a 0.4.x `modelSlots` key, and every target),
+ * then each id the router saw Claude Code send (`seen`, from its state file). The person picks
+ * a target from this list, so an id their own login really answers is there before any chain
+ * names it (D3, the portal's "Claude login" group).
+ */
+export function claudeModels(config: GatewayConfig, seen: readonly string[] = []): string[] {
   const found = new Set<string>(Object.keys(config.modelSlots ?? {}));
   for (const targets of Object.values(config.slots)) {
     for (const target of targets) {
@@ -434,7 +454,29 @@ export function claudeModels(config: GatewayConfig): string[] {
       if ("target" in parsed && parsed.target.kind === "anthropic") found.add(parsed.target.model);
     }
   }
+  for (const id of seen) found.add(id);
   return [...found].sort();
+}
+
+/**
+ * The Claude model ids the router recorded seeing (`seenClaude` in its state file): what
+ * Claude Code itself asked for through it. Only a name shaped like a Claude id is returned,
+ * the same rule the router writes by (`isClaudeModelId`): a hand-edited file cannot put an
+ * arbitrary word in the list a person picks a target from. Empty when there is no state file
+ * or it cannot be read — a machine whose router never ran has none, and a page says nothing
+ * rather than inventing an id.
+ */
+export function seenClaudeModels(ctx: PortalContext): string[] {
+  let text: string;
+  try {
+    text = readFileSync(ctx.paths.gatewayStateFile, "utf8");
+  } catch {
+    return [];
+  }
+  const state = parseLimitState(text);
+  return Object.keys(state?.seenClaude ?? {})
+    .filter((id) => isClaudeModelId(id))
+    .sort();
 }
 
 export interface BackendRow {

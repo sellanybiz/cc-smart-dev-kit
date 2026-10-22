@@ -15,7 +15,8 @@ import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome"
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
-import { saveConfig } from "../gateway/config";
+import { upgradeConfig } from "../gateway/commands";
+import { loadConfigFile, saveConfig } from "../gateway/config";
 import type { Machine } from "../machine/machine";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
@@ -1033,6 +1034,33 @@ describe("every answer", () => {
     }
   });
 
+  test("the Claude login group also lists the ids the router saw Claude Code send", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      // The state file the router writes: an id Claude Code sent, and a hand-edited key that
+      // is not a Claude id (a page must not offer it).
+      mkdirSync(dirname(world.paths.gatewayStateFile), { recursive: true });
+      writeFileSync(
+        world.paths.gatewayStateFile,
+        JSON.stringify({
+          fallbacks: {},
+          limits: {},
+          seenClaude: { "claude-opus-6-0": 1, "ignore-me-not-a-claude-id": 2 },
+          version: 1,
+        }),
+        { mode: 0o600 },
+      );
+      const slots = await world.call("/slots");
+      expect(slots.body).toContain("Claude login");
+      expect(slots.body).toContain("claude-opus-6-0");
+      expect(slots.body).not.toContain("ignore-me-not-a-claude-id");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
   test("every hook the browser script requires is in the markup", async () => {
     // The page's script reaches for these without a guard (they are what the page is), so a
     // missing one is a `TypeError` in the browser and a dead page. Found live, once.
@@ -1327,9 +1355,7 @@ describe("the actions", () => {
       expect(refused.status).toBe(400);
       const answer = JSON.parse(refused.body) as { lines: string[]; ok: boolean };
       expect(answer.ok).toBe(false);
-      expect(answer.lines[0]).toBe(
-        "No tested judge chain is saved, so the switch cannot turn one on.",
-      );
+      expect(answer.lines[0]).toBe("No judge chain is saved, so the switch cannot turn one on.");
       expect(answer.lines[1]).toContain("Go to Slots, pick judge");
       // Nothing was written to the config.
       const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
@@ -1682,7 +1708,162 @@ describe("the actions", () => {
         "omniroute:deepseek-v4.1-flash",
       ]);
       expect(read().fallback).toEqual({ "cc-smart-dev-kit-opus": true });
-      expect(answer.lines).toContain("cc-smart-dev-kit-opus: fallback off → on");
+      // The switch moves the slot back to Custom, with the fallback it was saved with.
+      expect(answer.lines).toContain(
+        "  now: omniroute:glm-5.3-flash → omniroute:deepseek-v4.1-flash  (fallback on)",
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  // The owner's bug, 2026-10-22: a slot change made here sometimes did not save. A chain had
+  // two homes — `portal.json`'s remembered chains and switches, and `gateway.json` — and the
+  // two could disagree. These four tests would have caught it, and hold the one home in place.
+  test("owner bug: a slot saved through the portal is in gateway.json, and a fresh read shows it", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const csrf = await world.csrfOf();
+      const saved = await world.post(
+        "slot.save",
+        {
+          slot: "worker",
+          targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"],
+        },
+        csrf,
+      );
+      expect(JSON.parse(saved.body).ok).toBe(true);
+      const off = await world.post("slot.fallback", { on: false, slot: "worker" }, csrf);
+      expect(JSON.parse(off.body).ok).toBe(true);
+      // The one home: the config, read fresh by the same reader every command uses
+      // (`gateway status`, `doctor`, the router).
+      const config = loadConfigFile(world.paths.gatewayConfigFile);
+      expect(config.slots["cc-smart-dev-kit-worker"]).toEqual([
+        "omniroute:glm-5.3-flash",
+        "omniroute:deepseek-v4.1-flash",
+      ]);
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+      // The portal keeps no copy of its own: no `portal.json` was made.
+      expect(existsSync(world.paths.portalStateFile)).toBe(false);
+      // And the page shows that chain next.
+      const slots = await world.call("/slots");
+      expect(slots.body).toContain(
+        "&quot;worker&quot;:[&quot;omniroute:glm-5.3-flash&quot;,&quot;omniroute:deepseek-v4.1-flash&quot;]",
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("owner bug: Claude and back to Custom from the portal returns the exact chain", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const csrf = await world.csrfOf();
+      await world.post(
+        "slot.save",
+        { slot: "worker", targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"] },
+        csrf,
+      );
+      await world.post("slot.fallback", { on: false, slot: "worker" }, csrf);
+      // To Claude: the chain and its switch move to `kept`.
+      const toClaude = await world.post("slot.mode", { mode: "claude", slot: "worker" }, csrf);
+      expect(JSON.parse(toClaude.body).ok).toBe(true);
+      const off = loadConfigFile(world.paths.gatewayConfigFile);
+      expect(off.slots).not.toHaveProperty("cc-smart-dev-kit-worker");
+      expect(off.kept).toEqual({
+        "cc-smart-dev-kit-worker": {
+          fallback: false,
+          targets: ["omniroute:glm-5.3-flash", "omniroute:deepseek-v4.1-flash"],
+        },
+      });
+      expect(off).not.toHaveProperty("fallback");
+      // Back to Custom: the very same chain, with the switch it was saved with.
+      const toCustom = await world.post("slot.mode", { mode: "custom", slot: "worker" }, csrf);
+      expect(JSON.parse(toCustom.body).ok).toBe(true);
+      const back = loadConfigFile(world.paths.gatewayConfigFile);
+      expect(back.slots["cc-smart-dev-kit-worker"]).toEqual([
+        "omniroute:glm-5.3-flash",
+        "omniroute:deepseek-v4.1-flash",
+      ]);
+      expect(back.fallback).toEqual({ "cc-smart-dev-kit-worker": false });
+      expect(back).not.toHaveProperty("kept");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("owner bug: a chain set from a terminal while the portal is open is what the portal shows", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      // The old portal's memory, with a stale chain for the worker: it must change nothing.
+      mkdirSync(dirname(world.paths.portalStateFile), { recursive: true });
+      writeFileSync(
+        world.paths.portalStateFile,
+        JSON.stringify({
+          fallback: { "cc-smart-dev-kit-worker": ["omniroute:stale-model"] },
+          judge: [],
+          switches: {},
+          version: 1,
+        }),
+      );
+      // A terminal ran `gateway slot worker …`: the CLI's own save path, outside the portal.
+      const config = loadConfigFile(world.paths.gatewayConfigFile);
+      config.slots["cc-smart-dev-kit-worker"] = ["omniroute:glm-5.3-flash"];
+      saveConfig(world.paths.gatewayConfigFile, config);
+      const csrf = await world.csrfOf();
+      // The page shows the config's chain, never the old memory's.
+      const slots = await world.call("/slots");
+      expect(slots.body).toContain("&quot;worker&quot;:[&quot;omniroute:glm-5.3-flash&quot;]");
+      expect(slots.body).not.toContain("omniroute:stale-model");
+      // An action on another slot leaves it alone, and never writes the old memory.
+      const before = readFileSync(world.paths.portalStateFile, "utf8");
+      const switched = await world.post("switch", { name: "models", on: false }, csrf);
+      expect(JSON.parse(switched.body).ok).toBe(true);
+      expect(
+        loadConfigFile(world.paths.gatewayConfigFile).slots["cc-smart-dev-kit-worker"],
+      ).toEqual(["omniroute:glm-5.3-flash"]);
+      expect(readFileSync(world.paths.portalStateFile, "utf8")).toBe(before);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("owner bug: after the migration, portal.json holds no slot parts and nothing reads them", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      // The 0.5.x portal memory, and `gateway setup`'s migration step on these paths.
+      mkdirSync(dirname(world.paths.portalStateFile), { recursive: true });
+      writeFileSync(
+        world.paths.portalStateFile,
+        JSON.stringify({
+          fallback: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+          judge: [],
+          switches: { "cc-smart-dev-kit-opus": true },
+          version: 1,
+        }),
+      );
+      const lines = upgradeConfig(world.paths.gatewayConfigFile, {
+        portalStateFile: world.paths.portalStateFile,
+        stateDir: world.paths.stateDir,
+      });
+      expect(lines).toHaveLength(1);
+      // The file stays, with no slot part in it.
+      expect(JSON.parse(readFileSync(world.paths.portalStateFile, "utf8"))).toEqual({ version: 1 });
+      // The chain is in gateway.json, saved and not in use.
+      expect(loadConfigFile(world.paths.gatewayConfigFile).kept).toEqual({
+        "cc-smart-dev-kit-opus": { fallback: true, targets: ["omniroute:glm-5.3-flash"] },
+      });
+      // Nothing reads the old file: the Overview shows the chain from the config, saved.
+      const overview = await world.call("/");
+      expect(overview.body).toContain("saved, not in use: omniroute:glm-5.3-flash");
     } finally {
       world.portal.stop();
       backend.stop();

@@ -306,15 +306,23 @@ An optional local router between Claude Code and the model providers
   note that names the Tavily MCP server's search tool (D41, D44; `docs/gateway.md` § Anthropic's
   server tools).
 - Every Claude model reaches the slot of its family (haiku → scout, sonnet → worker, opus,
-  fable), read from the id Claude Code sends. A slot with no chain is off: that model stays
-  byte for byte on Anthropic. A chain is the person's, any targets in any order, and each
-  slot's fallback switch decides whether its next target may answer; the router never adds
-  a target, Claude included. A backend's thinking stays, marked as the router's with its
-  own signature inside: removed on a request to Claude, which refuses a signature it did not
-  issue, and given back its own signature on a request to a backend (D6); the router
-  writes the plan limits it saw to a small state file that the status line and the
-  StopFailure alert read. The alert's worker runs through the launcher, never from the
-  plugin's version folder.
+  fable), read from the id Claude Code sends. **Every slot has two modes, Claude or Custom
+  (D2): `slots[key]` is the chain in use; a slot absent from it is Claude and stays byte for
+  byte on Anthropic.** A chain a slot is not using is saved in `kept[key]`, so switching to
+  Claude never forgets it, and a 0.5.x router or CLI (a loose top-level object) reads the same
+  file right and writes `kept` back untouched — a rollback turns nothing back on. `gateway
+  setup` moves the chains a 0.5.x portal kept in `portal.json` into `kept` and takes the slot
+  parts out of that file, so no chain has a second home to disagree with. A chain is the
+  person's, any targets in any order, and each slot's fallback switch decides whether its next
+  target may answer (it travels with a saved chain; the breaker switch goes with the slot's
+  chain, as it always did); the router never adds a target, Claude included. A backend's
+  thinking stays, marked as the router's with its own signature inside: removed on a request
+  to Claude, which refuses a signature it did not issue, and given back its own signature on a
+  request to a backend (D6); the router writes the plan limits it saw, its open breakers and
+  the Claude ids Claude Code sent (`seenClaude`) to a small state file that the status line,
+  the StopFailure alert and the portal read. The alert's worker runs through the launcher,
+  never from the plugin's version folder. The health answer also lists the last 200 routed
+  requests (`recent`: metadata only), which the portal's activity feed reads (B6b).
 - **A used-up chain is bridged, not handed back dead (D42, the breaker).** When every target of
   a slot failed for want of capacity and the last one is a backend, the router holds the
   request (up to 240 s from its start, 60 s if it does not stream; the config is read once a
@@ -1396,7 +1404,7 @@ run on:
    (`ANTHROPIC_BASE_URL` in Claude Code's settings) — the family's slot, the way the router
    picks it (`FAMILY_SLOTS`: haiku → scout, sonnet → worker, opus → opus, fable → fable): its
    chain's first target answers, read from `gateway.json` through the gateway's own
-   `loadConfigFile`. A slot with no chain is off, and the Claude model answers. So `sonnet` is
+   `loadConfigFile`. A slot with no chain answers as Claude, and the Claude model answers. So `sonnet` is
    an affordable slot (effort `max`) exactly when the gateway is on and the worker's chain
    starts with a `<backend>:<model>`;
 2. a full Claude id goes through its family's slot the same way; a slot key or
