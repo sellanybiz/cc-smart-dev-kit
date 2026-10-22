@@ -26,9 +26,15 @@
  * (`alerts.usagePercent`, 85 by default): the entry reads it once, at the folder the session
  * is in, with the same reader the alert hooks use (`alertsAt`), so the number lives in one
  * place (`src/workflow/schema.ts`).
+ *
+ * **It also records the 5-hour window it read** (`recordUsageWindow`, D54): this command is
+ * the only one Claude Code tells the number to, and the crew's opus guard reads it from the
+ * state file (`src/cli/usage-window.ts`). A recording failure never fails the line: it prints
+ * one stderr line and the status line goes on.
  */
 
 import { readFileSync } from "node:fs";
+import { COMMAND } from "../build-info/names";
 import { slotShortName } from "../gateway/breaker";
 import {
   currentBreakers,
@@ -43,24 +49,10 @@ import type { AlertsHere } from "../workflow/alerts";
 import { defaultAlerts } from "../workflow/resolve";
 import { workflowDefaults } from "../workflow/schema";
 import type { CliPaths } from "./paths";
+import { FIVE_HOUR_WINDOW, recordUsageWindow, windowOf } from "./usage-window";
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** One window's numbers from the status line input; null when Claude Code gave none. */
-function window(
-  input: Record<string, unknown>,
-  name: string,
-): null | { percent: number; resetsAt: null | number } {
-  const limits = input.rate_limits;
-  if (!isJsonObject(limits)) return null;
-  const entry = limits[name];
-  if (!isJsonObject(entry) || typeof entry.used_percentage !== "number") return null;
-  return {
-    percent: entry.used_percentage,
-    resetsAt: typeof entry.resets_at === "number" ? entry.resets_at : null,
-  };
 }
 
 /** The status line for this input and state, at `nowMs`. */
@@ -99,10 +91,10 @@ export function statuslineText(
   }
 
   for (const [name, label] of [
-    ["five_hour", "5h"],
+    [FIVE_HOUR_WINDOW, "5h"],
     ["seven_day", "7d"],
   ] as const) {
-    const numbers = window(data, name);
+    const numbers = windowOf(data, name);
     if (numbers === null) continue;
     const percent = Math.round(numbers.percent);
     parts.push(
@@ -132,6 +124,14 @@ export async function runStatusline(
   } catch {
     // Run by hand, or a newer Claude Code: show what the state file knows.
     input = null;
+  }
+  try {
+    recordUsageWindow(paths, input, nowMs);
+  } catch (error) {
+    // The line still prints; without the reading the crew's opus guard simply does not hold.
+    console.error(
+      `${COMMAND}: the 5-hour usage window was not recorded (${error instanceof Error ? error.message : String(error)})`,
+    );
   }
   let state: LimitState | null = null;
   try {

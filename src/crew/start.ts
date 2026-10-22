@@ -1,8 +1,9 @@
 /**
  * `cc-smart-dev-kit crew start <phase> --slug <s> --kind <kind> --brief <file|-> …`: starts one
  * crew session, a background Claude Code session in its own worktree, and **returns at once** (D25):
- * one line, `started …`, `queued …` or `failed …`. Nothing here waits on the crew session, polls, or
- * retries.
+ * one line, `started …`, `queued …` or `failed …`, and — for an opus-tier session that starts
+ * while no 5-hour window reading is stored — one note line after it (D54). Nothing here waits on
+ * the crew session, polls, or retries.
  *
  * In order:
  *   1. the shared checks (`readCaller`: not a crew session, crew sessions on, a Claude session, no bypass),
@@ -14,8 +15,9 @@
  *      session themselves;
  *   3. `claude` found, the base a commit, the branch name valid;
  *   4. under the machine-wide places lock: the name not in use (the store, the branch, the
- *      folder), then start now or queued (`placeFor`: its phases, the cap, the memory), and the
- *      record (`starting` or `queued`, one `created` event);
+ *      folder), then start now or queued (`placeFor`: its phases, its lead's caps, the
+ *      machine's ceiling and the 5-hour window, the memory), and the record (`starting` or
+ *      `queued`, one `created` event);
  *   5. its files: the brief with its frame (`brief.md`) and the settings file that names the
  *      crew session to its own session and turns Claude Code's retry watchdog on, with no wait
  *      limit (`settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":<id>,
@@ -77,7 +79,15 @@ import {
 import type { CrewContext, Env } from "./context";
 import { lastLine, modelText } from "./display";
 import { CREW_REF, crewName } from "./names";
-import { OPUS_TIER, onOpusTier, placeFor, runningCrew, unmetWaits, withPlacesLock } from "./places";
+import {
+  OPUS_TIER,
+  onOpusTier,
+  placeFor,
+  runningCrew,
+  runningForLead,
+  unmetWaits,
+  withPlacesLock,
+} from "./places";
 import { CREW_ENV } from "./session";
 import {
   type CrewChange,
@@ -96,6 +106,7 @@ import {
   updateCrew,
   writeStoreFile,
 } from "./store";
+import { usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** What `crew start` was asked, already checked to be well formed (`command.ts`). */
 export interface StartArgs {
@@ -754,6 +765,9 @@ async function stopContinued(planned: Plan, args: StartArgs, ctx: CrewContext): 
 async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const { caller, chosen, lead } = planned;
   const crew = caller.resolved.crew;
+  // The 5-hour window and the opus slot's fallback: read outside the lock, as they change
+  // nothing about who takes which place.
+  const usage = usageFacts(ctx.paths, ctx.now());
   let decided: { record: CrewRecord; why: null | string };
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
@@ -765,15 +779,23 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         all.filter((one) => one.repo === caller.repo),
       );
       const running = runningCrew(all);
+      const mine = runningForLead(all, lead.sessionId);
       const input = {
         freeGb: null,
+        leadRunning: mine.length,
+        leadRunningOpus: onOpusTier(mine).length,
         max: crew.max.value,
         maxOpus: crew.maxOpus.value,
         needGb: crew.memoryGb.value,
         opus: chosen.real.tier === OPUS_TIER,
+        opusFallback: usage.opusFallback,
+        perLead: crew.perLead.value,
+        perLeadOpus: crew.perLeadOpus.value,
         running: running.length,
         runningOpus: onOpusTier(running).length,
         unmet,
+        usageHoldPercent: crew.usagePercent.value,
+        usagePercent: usage.percent,
       };
       // The memory is read only when nothing else holds the crew session back.
       const first = placeFor(input);
@@ -864,7 +886,19 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
     ctx.print(`queued ${record.name}: ${why}`);
     return 0;
   }
-  return await launch(specOf(planned), record, ctx);
+  const code = await launch(specOf(planned), record, ctx);
+  // D54: an opus crew session started with no window to read; one line, once, and no
+  // invented number. A session that starts anyway must know the guard was not watching — and
+  // says nothing when the opus slot's fallback chain is on, because then it never watches.
+  if (
+    code === 0 &&
+    chosen.real.tier === OPUS_TIER &&
+    usage.percent === null &&
+    !usage.opusFallback
+  ) {
+    ctx.print(usageUnreadLine());
+  }
+  return code;
 }
 
 /** The launch's own facts, out of the plan. */
@@ -901,19 +935,28 @@ export async function startQueued(
 ): Promise<void> {
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
+  const usage = usageFacts(ctx.paths, ctx.now());
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
     const running = runningCrew(all);
+    const mine = runningForLead(all, record.leadSessionId);
     const input = {
       freeGb: null,
+      leadRunning: mine.length,
+      leadRunningOpus: onOpusTier(mine).length,
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
       opus: record.model.tier === OPUS_TIER,
+      opusFallback: usage.opusFallback,
+      perLead: crew.perLead.value,
+      perLeadOpus: crew.perLeadOpus.value,
       running: running.length,
       runningOpus: onOpusTier(running).length,
       unmet: unmetWaits(record.waitsFor, here),
+      usageHoldPercent: crew.usagePercent.value,
+      usagePercent: usage.percent,
     };
     const first = placeFor(input);
     const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;

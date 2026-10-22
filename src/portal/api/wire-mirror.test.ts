@@ -9,8 +9,8 @@
  *   - the app's list of actions is the server's own list, in the same order.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { ACTION_NAMES as APP_ACTIONS } from "../../../portal/src/api/wire";
 import { ACTION_NAMES } from "../actions";
 import { MIRRORED, SERVER_ONLY } from "./wire-mirror";
@@ -18,6 +18,19 @@ import { MIRRORED, SERVER_ONLY } from "./wire-mirror";
 const ROOT = join(import.meta.dir, "..", "..", "..");
 const SERVER_TYPES = join(import.meta.dir, "types.ts");
 const WIRE = join(ROOT, "portal", "src", "api", "wire.ts");
+
+/**
+ * The project's `tsc`: in `node_modules/.bin` of this folder, or of the nearest folder above it
+ * that has one. A session works in a git worktree under `.claude/worktrees/`, which has no
+ * `node_modules` of its own; bun's own `run` finds the checkout's, and this does the same.
+ */
+function tscBinary(): string {
+  for (let dir = ROOT; ; dir = dirname(dir)) {
+    const candidate = join(dir, "node_modules", ".bin", "tsc");
+    if (existsSync(candidate)) return candidate;
+    if (dirname(dir) === dir) return join(ROOT, "node_modules", ".bin", "tsc");
+  }
+}
 
 /** The type names a file exports: its own declarations and its `export type { … }` lists. */
 function exportedTypes(text: string): string[] {
@@ -52,7 +65,7 @@ describe("the portal app's API types mirror the server's", () => {
     // type error on that name's line. The repo's `tsc` (the version `bun run typecheck` runs).
     const run = Bun.spawnSync(
       [
-        join(ROOT, "node_modules", ".bin", "tsc"),
+        tscBinary(),
         "--noEmit",
         "--ignoreConfig",
         "--strict",

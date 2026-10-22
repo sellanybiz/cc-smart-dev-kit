@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { COMMAND } from "../build-info/names";
+import { recordUsageWindow, usageWindowFile } from "../cli/usage-window";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { boardWorld, MINUTE, NOW } from "../testing/board-world";
 import { LEAD_SESSION } from "../testing/crew-world";
@@ -15,6 +16,10 @@ import { repoKey } from "../workflow/reviews";
 import { runCrew } from "./command";
 import { addCrewQuestion, appendCrewEvent, crewEventsFile, crewFile, updateCrew } from "./store";
 
+/** The one line the board says when the opus usage guard has no window to read (D54), by hand. */
+const UNREAD =
+  "note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: cc-smart-dev-kit setup --statusline records it, and no current reading is stored";
+
 const SLOT_MODEL = {
   named: "sonnet",
   resolved: "omniroute:glm-5.1",
@@ -22,6 +27,14 @@ const SLOT_MODEL = {
   tier: null,
 };
 const OPUS_MODEL = { named: "opus", resolved: "opus", slot: null, tier: "opus" };
+
+/** A gateway config whose opus slot has a chain in use with its fallback on. */
+const OPUS_CHAIN = {
+  backends: { omniroute: { apiKey: "test-key", baseUrl: "http://127.0.0.1:20199" } },
+  fallback: { "cc-smart-dev-kit-opus": true },
+  slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+  version: 1,
+};
 
 describe("crew list", () => {
   test("newest first; the state is since its last change, not since the last write to the record", async () => {
@@ -137,7 +150,7 @@ describe("crew list", () => {
       "C my-app B2 api — queued, 5 min ago",
       "  B2 · build · sonnet · high",
       "  crew/B2-api · memory - · lead LEAD my-app master-plan",
-      "  held: 1 of 1 running; it starts when one finishes",
+      "  held: 1 of 1 crew sessions running on this machine; it starts when one finishes",
       "",
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
@@ -145,10 +158,17 @@ describe("crew list", () => {
     ]);
   });
 
-  test("the opus cap holds an opus crew session back while a sonnet crew session would start", async () => {
+  test("D54: a lead's opus cap holds an opus crew session back while its sonnet one would start", async () => {
     const world = await boardWorld();
-    world.writeConfig({ maxOpus: 1 });
     await world.addCrew({ effort: "xhigh", kind: "security", model: OPUS_MODEL });
+    await world.addCrew({
+      atMs: NOW - 3 * MINUTE,
+      effort: "xhigh",
+      kind: "architecture",
+      model: OPUS_MODEL,
+      phase: "B4",
+      slug: "design",
+    });
     await world.addCrew({
       atMs: NOW - 5 * MINUTE,
       effort: "xhigh",
@@ -160,10 +180,88 @@ describe("crew list", () => {
       state: "queued",
       worktree: false,
     });
+    await world.addCrew({
+      atMs: NOW - 7 * MINUTE,
+      phase: "B3",
+      shortId: null,
+      slug: "docs",
+      state: "queued",
+      worktree: false,
+    });
     expect(await runCrew(["list"], world.ctx())).toBe(0);
     expect(world.out).toContain(
-      "  held: 1 of 1 opus crew sessions running; it starts when one of them finishes",
+      "  held: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     );
+    expect(world.out).toContain("  held: a place is free; its lead's watch starts it");
+  });
+
+  test("D54: a lead's cap holds its next crew session; another lead's crew sessions do not count", async () => {
+    const world = await boardWorld();
+    world.writeConfig({ perLead: 1 });
+    await world.addCrew();
+    await world.addCrew({
+      atMs: NOW - 5 * MINUTE,
+      leadSessionId: "another-lead",
+      phase: "B2",
+      slug: "api",
+    });
+    await world.addCrew({
+      atMs: NOW - 6 * MINUTE,
+      phase: "B3",
+      shortId: null,
+      slug: "more",
+      state: "queued",
+      worktree: false,
+    });
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).toContain(
+      "  held: its lead has 1 of 1 crew sessions running; it starts when one of them finishes",
+    );
+  });
+
+  test("D54: the board says once that the opus usage guard cannot read the window", async () => {
+    const world = await boardWorld();
+    await world.addCrew({
+      effort: "xhigh",
+      kind: "ui",
+      model: OPUS_MODEL,
+      shortId: null,
+      state: "queued",
+      worktree: false,
+    });
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "C my-app B1 help — queued, 12 min ago",
+      "  B1 · ui · opus · xhigh",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  held: a place is free; its lead's watch starts it",
+      UNREAD,
+    ]);
+    // Told once, and never with a number it does not have.
+    expect(world.out.filter((line) => line === UNREAD)).toHaveLength(1);
+    // With a reading stored, the board says nothing about it.
+    recordUsageWindow(
+      world.paths,
+      { rate_limits: { five_hour: { resets_at: NOW / 1000 + 3600, used_percentage: 90 } } },
+      NOW,
+    );
+    world.out.length = 0;
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).not.toContain(UNREAD);
+    // The opus slot's chain with its fallback on lifts the guard by design: no note either,
+    // even with no reading stored at all.
+    rmSync(usageWindowFile(world.paths));
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(OPUS_CHAIN)}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
+    );
+    world.out.length = 0;
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).not.toContain(UNREAD);
   });
 
   test("with a place free it is the memory that holds it, or only its lead's watch", async () => {

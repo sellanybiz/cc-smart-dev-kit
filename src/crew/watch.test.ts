@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { recordUsageWindow } from "../cli/usage-window";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
@@ -822,6 +823,67 @@ describe("crew watch", () => {
       (one) => one.id === QUEUED_ID,
     );
     expect(queued?.state).toBe("queued");
+  });
+
+  test("D54: a queued opus crew session waits past 85% of the 5-hour window, and starts under it", async () => {
+    const world = await leadWorld();
+    recordUsageWindow(
+      world.paths,
+      { rate_limits: { five_hour: { resets_at: T0 / 1000 + 3600, used_percentage: 90 } } },
+      T0,
+    );
+    await queuedCrew(world, {
+      model: { named: "opus", resolved: "opus", slot: null, tier: "opus" },
+    });
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(world.out).toEqual([]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
+    expect(
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)?.state,
+    ).toBe("queued");
+    // The share drops under the setting: the next pass starts the same crew session.
+    recordUsageWindow(
+      world.paths,
+      { rate_limits: { five_hour: { resets_at: T0 / 1000 + 3600, used_percentage: 80 } } },
+      T0 + 1000,
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(world.out).toEqual([`${NAME}: starting — started from the queue`]);
+    expect(
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)?.state,
+    ).toBe("starting");
+  });
+
+  test("D54: the watch keeps a queued crew session back at its lead's cap", async () => {
+    const world = await leadWorld();
+    world.writeConfig({ perLead: 1 });
+    await addCrew(world, "working", {
+      branch: "crew/B6a-x",
+      id: "B6a-x-111111",
+      name: "C my-app B6a x",
+      phase: "B6a",
+      shortId: "bbbb2222",
+      sessionId: "bbbb2222-2222-3333-4444-555555555555",
+      slug: "x",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6a-x"),
+    });
+    await queuedCrew(world);
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx(
+        {},
+        {
+          FAKE_AGENTS_JSON: agentsJson([
+            agentRowOf({ id: "bbbb2222", sessionId: "bbbb2222-2222-3333-4444-555555555555" }),
+          ]),
+        },
+      ),
+    );
+    expect(world.out).toEqual([]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
+    expect(
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)?.state,
+    ).toBe("queued");
   });
 
   test("D25: a queued crew session waits for the merge of its phase, not for its report", async () => {

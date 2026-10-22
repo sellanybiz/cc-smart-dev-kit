@@ -3,8 +3,10 @@
  *
  * `list` shows the crew of this repository (of every repository with `--all`), newest first:
  * one block each — what it is, where it is, and the last thing it said. A queued crew session says
- * what holds it: the phases it waits for, a cap, the memory, or only its lead's watch. `--json`
- * prints the records themselves, newest first, for a script or a page.
+ * what holds it: the phases it waits for, its lead's caps, the machine's ceiling, the memory,
+ * the 5-hour window, or only its lead's watch (D54). With a queued opus crew session that only
+ * its lead's watch waits for, and no window to read, one line says the opus guard does not hold.
+ * `--json` prints the records themselves, newest first, for a script or a page.
  *
  * `status` shows one crew session in full: the record, the brief it reads and the report it wrote, the
  * question it waits on (D36), and its last few events.
@@ -27,7 +29,7 @@ import { resolveWorkflow } from "../workflow/resolve";
 import type { CrewContext } from "./context";
 import { agoText, memoryText, modelText } from "./display";
 import { withoutListRef } from "./names";
-import { placeFor, runningCrew, unmetWaits } from "./places";
+import { OPUS_TIER, PLACE_FREE, placeFor, runningCrew, runningForLead, unmetWaits } from "./places";
 import {
   type CrewEvent,
   type CrewRecord,
@@ -37,6 +39,7 @@ import {
   listCrew,
   readCrewEvents,
 } from "./store";
+import { usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** How many events `crew status` shows. */
 export const STATUS_EVENTS = 6;
@@ -193,8 +196,14 @@ export function modelLine(record: CrewRecord): string {
 export interface Caps {
   freeGb: null | number;
   max: number;
-  maxOpus: number;
+  maxOpus: null | number;
   needGb: number;
+  opusFallback: boolean;
+  perLead: number;
+  perLeadOpus: number;
+  usageHoldPercent: number;
+  /** The 5-hour window now, in percent; null when it cannot be read (D54). */
+  usagePercent: null | number;
 }
 
 /** The caps of this project: `workflow.crew`, over the person's own and the defaults. */
@@ -202,11 +211,17 @@ export async function capsOf(ctx: CrewContext, checkout: Checkout | null): Promi
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
+    const usage = usageFacts(ctx.paths, ctx.now());
     return {
       freeGb: await ctx.freeMemoryGb(),
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
+      opusFallback: usage.opusFallback,
+      perLead: crew.perLead.value,
+      perLeadOpus: crew.perLeadOpus.value,
+      usageHoldPercent: crew.usagePercent.value,
+      usagePercent: usage.percent,
     };
   } catch {
     // A project file or a workflow.json that cannot be read: `crew start` says so. The board
@@ -227,20 +242,28 @@ export function heldBy(
     machine.filter((one) => one.repo === record.repo),
   );
   const running = runningCrew(machine);
+  const mine = runningForLead(machine, record.leadSessionId);
   const input = {
     freeGb: null,
+    leadRunning: mine.length,
+    leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,
     max: caps.max,
     maxOpus: caps.maxOpus,
     needGb: caps.needGb,
-    opus: record.model.tier === "opus",
+    opus: record.model.tier === OPUS_TIER,
+    opusFallback: caps.opusFallback,
+    perLead: caps.perLead,
+    perLeadOpus: caps.perLeadOpus,
     running: running.length,
-    runningOpus: running.filter((one) => one.model.tier === "opus").length,
+    runningOpus: running.filter((one) => one.model.tier === OPUS_TIER).length,
     unmet,
+    usageHoldPercent: caps.usageHoldPercent,
+    usagePercent: caps.usagePercent,
   };
   const first = placeFor(input);
   if (!first.start) return first.why;
   const withMemory = placeFor({ ...input, freeGb: caps.freeGb });
-  return withMemory.start ? "a place is free; its lead's watch starts it" : withMemory.why;
+  return withMemory.start ? PLACE_FREE : withMemory.why;
 }
 
 /**
@@ -350,9 +373,15 @@ export async function runCrewList(
     ? await capsOf(ctx, read.checkout)
     : null;
   const eventsAbout = eventsOf(ctx, read.records);
+  const held = new Map(
+    read.records.map((record) => [
+      record.id,
+      caps === null ? null : heldBy(record, read.machine(), caps),
+    ]),
+  );
   const blocks = read.records.map((record) =>
     boardLines(record, eventsAbout(record), {
-      held: caps === null ? null : heldBy(record, read.machine(), caps),
+      held: held.get(record.id) ?? null,
       home: ctx.paths.home,
       now: ctx.now(),
       showRepo: args.all,
@@ -362,6 +391,18 @@ export async function runCrewList(
     if (index > 0) ctx.print("");
     for (const line of block) ctx.print(line);
   }
+  // D54: an opus crew session waiting only for its lead's watch, with no window to read: the
+  // guard is not watching, and the board says so once. Never on a crew session another reason
+  // holds: there the window changes nothing.
+  const unguarded =
+    caps !== null &&
+    caps.usagePercent === null &&
+    !caps.opusFallback &&
+    read.records.some(
+      (one) =>
+        one.state === "queued" && one.model.tier === OPUS_TIER && held.get(one.id) === PLACE_FREE,
+    );
+  if (unguarded) ctx.print(usageUnreadLine());
   return 0;
 }
 

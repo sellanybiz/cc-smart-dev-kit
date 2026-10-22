@@ -52,10 +52,11 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   wave, each later one with `--waits-for` the phases it builds on. You never keep a list of what
   is ready: the queue and the watch start each phase when what it waits for is merged and a
   place is free. Each call returns at once with one line: `started`, `queued` or `failed`, with
-  the reason. Your reply names each crew session with the model and effort its line shows (the
-  core instructions' "say it when you launch").
-- **`queued` is not an error.** A cap, the free memory or `--waits-for` holds it, and it starts
-  by itself when its place frees. Never start it a second time.
+  the reason (an opus start with no usage-window reading adds one note line). Your reply names
+  each crew session with the model and effort its line shows (the core instructions' "say it
+  when you launch").
+- **`queued` is not an error.** A cap, the free memory, the 5-hour usage window or `--waits-for`
+  holds it, and it starts by itself when its place frees. Never start it a second time.
 - **`--waits-for <phase,...>`** holds a phase until each of those is merged. The
   watch marks a merged branch and starts the waiting session by itself, cut from your branch
   with the merge in it. A phase the plan adds later is started the moment it is written.
@@ -170,10 +171,17 @@ Once you merged its branch, the watch marks it `merged` and ends its session;
 
 ## 7. Caps and the queue
 
-`workflow show` prints the caps: `crew.max` (every crew session on the machine, across leads) and
-`crew.maxOpus` (those on the opus tier). Routine phases on the worker slot run wide; the opus
-phases — the kinds that run on opus — queue, so put those that unblock the most first. Your own
-Opus subagents share the same usage window: at most 3 at once.
+`workflow show` prints the caps. **Yours:** `crew.perLead` crew sessions at once (4 by default)
+and `crew.perLeadOpus` of them on the opus tier (2), counted in every repository of this machine.
+**The machine's guards:** `crew.max` is a safety ceiling (24) no lead reaches alone, `crew.maxOpus`
+an optional machine-wide opus count (unset by default), and a new **opus-tier** phase waits while
+the plan's 5-hour usage window is past `crew.usagePercent` (85) — unless the gateway's opus slot
+has a fallback chain on, which answers past it. The window comes from Claude Code's status line,
+and with no reading the guard does not hold (`crew start` and `crew list` say so once).
+
+Routine phases on the worker slot run wide; the opus phases — the kinds that run on opus — queue,
+so put those that unblock the most first. A queued crew session says what holds it on `crew list`.
+Your own Opus subagents share the same usage window: at most 3 at once.
 
 ## 8. Hand-offs
 

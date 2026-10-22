@@ -60,6 +60,9 @@ const NUMBER_RULES = {
   "crew.max": AT_LEAST_ONE,
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
+  "crew.perLead": AT_LEAST_ONE,
+  "crew.perLeadOpus": AT_LEAST_ONE,
+  "crew.usagePercent": PERCENT,
   "crew.quietMinutes": AT_LEAST_ONE,
   "crew.handoffPercent": PERCENT,
   "crew.softHours": ABOVE_ZERO,
@@ -135,10 +138,11 @@ export const workflowSchema = z.strictObject({
     })
     .optional(),
   /**
-   * Lead and crew sessions (decisions D34, D35, D37): the switch, the limits a lead keeps its
-   * crew sessions to, and the tag in their names. In the person's file it is every project's default;
-   * a project's file wins field by field. `crew lead` and `crew start` read `enabled`, `max`,
-   * `maxOpus`, `memoryGb` and `tag` (`src/crew/`); the rest is for the parts after them.
+   * Lead and crew sessions (decisions D34, D35, D54): the switch, one lead's caps, the machine's
+   * guards a start waits at, and the tag in their names. In the person's file it is every
+   * project's default; a project's file wins field by field. `crew lead` and `crew start` read
+   * `enabled`, `perLead`, `perLeadOpus`, `max`, `maxOpus`, `memoryGb`, `usagePercent` and `tag`
+   * (`src/crew/`); the rest is for the parts after them.
    */
   crew: z
     .strictObject({
@@ -146,12 +150,26 @@ export const workflowSchema = z.strictObject({
       enabled: z.boolean().optional(),
       /** Minutes a blocked crew session waits before its session is stopped; an answer brings it back. Default: 10. */
       idleStopMinutes: numberField("crew.idleStopMinutes"),
-      /** At most this many crew sessions run on this machine at once, across leads (D37). Default: 6. */
+      /** The machine's safety ceiling: at most this many crew sessions run here at once, across leads (D54). Default: 24. */
       max: numberField("crew.max"),
-      /** At most this many of them on the opus tier, inside `max` (D37). Default: 2. */
+      /**
+       * An optional machine-wide opus ceiling inside `max` (D37). Unset: no machine-wide
+       * count, and each lead's `perLeadOpus` alone bounds the opus tier. Default: unset.
+       */
       maxOpus: numberField("crew.maxOpus"),
       /** The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. Default: 2. */
       memoryGb: numberField("crew.memoryGb"),
+      /** At most this many crew sessions run for one lead at once, in every repository (D54). Default: 4. */
+      perLead: numberField("crew.perLead"),
+      /** At most this many of one lead's crew sessions on the opus tier (D54). Default: 2. */
+      perLeadOpus: numberField("crew.perLeadOpus"),
+      /**
+       * Past this share of the 5-hour usage window, a new opus-tier crew session waits,
+       * unless the gateway's opus slot has a chain with its fallback on (D54). The window
+       * is the one the status line reads; with no reading, the guard does not hold.
+       * Default: 85.
+       */
+      usagePercent: numberField("crew.usagePercent"),
       /** Minutes a working crew session's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
       quietMinutes: numberField("crew.quietMinutes"),
       /** The share of its context, in percent, at which a crew session hands off to a next one. Default: 70. */
@@ -190,14 +208,18 @@ export const workflowDefaults = {
     sound: false,
     usagePercent: 85,
   },
-  // Off by default (D34). The cap, the memory and the times are the plan's starting values,
-  // approved with it; the first long crew session run (P14) tunes them.
+  // Off by default (D34). The caps are D54's: each lead keeps its own four crew sessions, two
+  // on the opus tier, and the machine's ceiling is a safety net no lead reaches alone.
   crew: {
     enabled: false,
     idleStopMinutes: 10,
-    max: 6,
-    maxOpus: 2,
+    max: 24,
+    /** Null: no machine-wide opus count; one set is the person's own ceiling. */
+    maxOpus: null,
     memoryGb: 2,
+    perLead: 4,
+    perLeadOpus: 2,
+    usagePercent: 85,
     quietMinutes: 20,
     handoffPercent: 70,
     softHours: 2,
@@ -209,6 +231,9 @@ export const workflowDefaults = {
 
 /** What `workflow show` prints for `crew.tag` while nobody sets it. */
 export const CREW_TAG_UNSET = "the main checkout's folder name";
+
+/** What `workflow show` prints for `crew.maxOpus` while nobody sets it (D54: no machine count). */
+export const CREW_MAX_OPUS_UNSET = "no machine-wide opus count";
 
 /**
  * The switches, and where each one really lives: read and written through the setting that
@@ -239,6 +264,9 @@ export type WorkflowKey =
   | "crew.max"
   | "crew.maxOpus"
   | "crew.memoryGb"
+  | "crew.perLead"
+  | "crew.perLeadOpus"
+  | "crew.usagePercent"
   | "crew.quietMinutes"
   | "crew.handoffPercent"
   | "crew.softHours"
@@ -268,6 +296,9 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.max",
   "crew.maxOpus",
   "crew.memoryGb",
+  "crew.perLead",
+  "crew.perLeadOpus",
+  "crew.usagePercent",
   "crew.quietMinutes",
   "crew.handoffPercent",
   "crew.softHours",
@@ -429,6 +460,7 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
  */
 export function showValue(key: WorkflowKey, value: unknown): string {
   if (key === "crew.tag" && value === null) return `(${CREW_TAG_UNSET})`;
+  if (key === "crew.maxOpus" && value === null) return `(${CREW_MAX_OPUS_UNSET})`;
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
 }
