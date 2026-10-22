@@ -1,7 +1,7 @@
 # The crew: how a lead and its sessions work and talk (research)
 
 Date: 2026-10-22
-Status: in study: the web-app sessions study and the owner's decision are still to come
+Status: decided by the owner (D47), archived; the build is in the master plan (C1)
 
 ## 1. Claude Code today and prior art (a sonnet researcher; sources inline)
 
