@@ -29,7 +29,8 @@ branch, how you report and ask).
 Each step's procedure is its skill; the brief's done-check decides when the phase is ready.
 
 1. **Read and research:** the code you change, the patterns the brief names, and every library
-   or API it needs (`/cc-smart-dev-kit:research-first`).
+   or API it needs (`/cc-smart-dev-kit:research-first`). Reading beyond the few files the phase
+   edits goes to a scout subagent in the background; you keep its conclusion (`core.md` § Subagents).
 2. **A failing test first** for each behaviour or bug, failing for the right reason. Step
    `tests-red`.
 3. **The code**, until the targeted tests pass. Step `tests-green`. Commit.

@@ -2981,15 +2981,26 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    the two watchdog keys are CC1's (`src/setup/retry-watchdog.ts`), and there is **no wait
    limit** on purpose (D42: keep waiting), so no `…_MAX_WAIT_MS` and no
    `…_MAX_USAGE_LIMIT_WAIT_MS`. A crew session is unattended, which is what the watchdog is for.
+   **The same file makes the session lean**: `enabledPlugins` turns off every plugin the machine
+   enabled except this one and what `workflow.crew.keep` names, `disableClaudeAiConnectors: true`
+   stops the claude.ai connectors, and `mcp.json` beside it is the `--mcp-config` file — the kit's
+   own registrations for Tavily (every kind) and the browser (`ui`), with no key in it (`Bearer
+   ${TAVILY_API_KEY}` is Claude Code's placeholder). A `claude plugin list --json` read decides
+   what to turn off; one that fails turns nothing off, because a lean start never fails a start.
+   Entries merge key by key across settings sources, so a plugin the file does not name keeps its
+   own state (`docs/claude-code-contract.md`).
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
    a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
    (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
    checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <phase> <slug>" --model <m> --effort
-   <e> --permission-mode auto --autocompact auto --settings <settings.json> "<first line>"`. The
+   <e> --permission-mode auto --autocompact auto --strict-mcp-config --mcp-config <mcp.json>
+   --settings <settings.json> "<first line>"`. The
    first line names the crew session, its lead and the brief's path; it holds no `"` or `%`, which a
    `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: the kit knows no model's window
-   (`gateway.json` holds none for a backend), so Claude Code's own stands. The settings are a
+   (`gateway.json` holds none for a backend), so Claude Code's own stands. `--mcp-config` comes
+   **before** `--settings`, never last: it takes any number of files, so the prompt after it would
+   read as another config (proved live on 2.1.309). The settings are a
    **file** on every platform. On Windows a `claude.cmd` runs through `cmd /d /s /v:off /c` with
    one quoted line (`windowsRun`, the hooks' own quoting); a `claude.exe` runs as it is.
 6. **The session id, and never the folder**: the short id is read from `backgrounded · <id> ·

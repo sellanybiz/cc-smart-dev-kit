@@ -246,6 +246,29 @@ what that leans on; each row says whether it was PROVED (and how) or is still ow
 | Installing from a private GitHub repo works over the user's SSH key. | 2.1.300 | live: Phase 0 spike; unit (`doctor`'s access check): `src/cli/cli.test.ts` › "all green after setup, through the launcher; git reads the marketplace over SSH" |
 | `claude plugin validate plugin --strict` and `claude plugin validate . --strict` pass. | 2.1.300 | CI: the "Validate the plugin" and "Validate the marketplace" steps, on `.claude-code-version` and weekly on the newest |
 
+## A lean crew session
+
+A crew session is launched with `--strict-mcp-config --mcp-config <file>` and a `--settings`
+file that turns other plugins off. Proved live on 2026-10-23 on **2.1.309** (the installed CLI;
+`.claude-code-version` pins 2.1.308), with `claude -p` against a small fake Anthropic on a free
+port that logged each request: no request reached Anthropic. Docs read the same day:
+code.claude.com/docs/en/settings, /settings-reference, /plugins/loading, /mcp and /cli-reference.
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| **`--strict-mcp-config` with `--mcp-config <file>` loads only the servers in that file.** The user's four servers (`playwright`, `sequential-thinking`, `shadcn`, `supabase`) and Tavily were registered; the file named Tavily alone, and the first request's deferred-tool list held only `mcp__tavily-websearch__*`. The same run without the two flags listed all five servers' tools. | 2.1.309 | live: two `claude -p "Say ok"` runs with the same settings file, one with the flags; `requests.jsonl` from the fake held each request's `tools` and tool-name list |
+| **`--mcp-config` takes any number of files**, so the prompt right after it is read as one: `claude -p "Say ok" --mcp-config <file>` ended `Error: Invalid MCP configuration: MCP config file not found: …/Say ok`. A flag after it ends the list. | 2.1.309 | live: that exact run; the crew launch puts `--settings <file>` after `--mcp-config` (`src/crew/claude.ts` › `launchArgs`, tested) |
+| **`enabledPlugins: {"<id>": false}` in a `--settings` file turns that plugin off for the session, and entries merge key by key**: the user's `claude-mem`, `stripe` and `frontend-design` were on, the file set those three `false`, and the session lost claude-mem's SessionStart context, the plugins' skills and the Stripe line — while this plugin (not named) stayed loaded with its skills. | 2.1.309 | live: the lean run above; its session-start block was 26,192 characters (Claude Code's own environment, agents and built-in skills) where the run without it had 48,848 (the memory context, the Stripe line and five servers' tool lists included), and the skills list kept `cc-smart-dev-kit`'s. The merge rule is documented at /plugins/loading › "Find where a plugin is enabled" (six sources, "merge key by key") |
+| **`disableClaudeAiConnectors: true` in a `--settings` file is accepted** (scope "Any file" in /settings-reference): the same file's `env.ANTHROPIC_BASE_URL` took effect, so the file was read, not skipped. **Its effect on a signed-in machine is documented, not proved here** — a `claude -p` with `ANTHROPIC_API_KEY` never loads connectors anyway. | 2.1.309 | live (accepted): the lean run; the session warned "claude.ai connectors are disabled because ANTHROPIC_API_KEY … is set", never a settings error. Docs: /settings-reference › `disableClaudeAiConnectors`, and /mcp › "Servers passed explicitly via `--mcp-config` are unaffected" |
+| **`claude plugin list --json` prints one row per install record**, with `id` (`name@marketplace`), `version`, `scope`, `enabled`, `installPath`, `installedAt`, `lastUpdated` and `projectEnabled`. The same id can appear more than once (one row per scope/version record). A lean start reads `id` and `enabled` only. | 2.1.309 | live: run in this repository; `src/crew/claude.test.ts` › "claude plugin list --json: the rows a lean start reads" (the reader's own test) |
+
+To repeat it by hand: put a JSON file with `{"mcpServers":{}}` and a settings file turning one
+enabled plugin off under a temp folder, then run `claude -p "Say ok" --settings <file>
+--strict-mcp-config --mcp-config <mcp-file>` with `ANTHROPIC_BASE_URL` pointed at a fake
+endpoint (never at Anthropic) and compare what the session says it loaded. A `--bg` launch
+reads the same options; a crew session never starts another, so its own first start is that
+live run.
+
 ## Instructions, skills and agents
 
 | Behaviour | Last proved on | How it is proved |
