@@ -168,7 +168,10 @@ describe("D25: crew start returns at once", () => {
       slug: "portal-live",
       // When its session started: the crew session's own time caps count from here.
       startedAt: "2026-10-21T10:00:00.000Z",
-      state: "working",
+      // `starting` until its own SessionStart hook says it is in its worktree: `claude agents
+      // --json` reports the launch folder until a `-w` session has entered it (2.1.308), so the
+      // launcher cannot judge the folder.
+      state: "starting",
       updatedAt: "2026-10-21T10:00:00.000Z",
       version: 1,
       waitsFor: [],
@@ -180,10 +183,7 @@ describe("D25: crew start returns at once", () => {
         one.state,
         one.text,
       ]),
-    ).toEqual([
-      ["created", "starting", null],
-      ["state", "working", `started (${SHORT_ID})`],
-    ]);
+    ).toEqual([["created", "starting", null]]);
     // The worktree is the launcher's own, on its branch, at the lead's HEAD.
     expect(git(worktree, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("crew/B6b-portal-live");
     expect(git(worktree, "rev-parse", "HEAD").trim()).toBe(head);
@@ -642,7 +642,7 @@ describe("a name already in use", () => {
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(1);
     expect(world.err).toEqual([
-      "crew start: C my-app B6b portal-live is recorded already, working, on crew/B6b-portal-live",
+      "crew start: C my-app B6b portal-live is recorded already, starting, on crew/B6b-portal-live",
       'Fix: remove it first (cc-smart-dev-kit crew rm "C my-app B6b portal-live"), or pick another --slug',
     ]);
     expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(1);
@@ -691,7 +691,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
       listCrew(world.paths.stateDir, world.repo).records.map((one) => [one.id, one.state]),
     ).toEqual([
       ["B6b-portal-live-1a2b3c", "failed"],
-      ["B6b-portal-live-2b3c4d", "working"],
+      ["B6b-portal-live-2b3c4d", "starting"],
     ]);
   });
 
@@ -724,17 +724,28 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     expect(existsSync(onlyCrew(world.paths.stateDir, world.repo).worktree)).toBe(true);
   });
 
-  test("agents --json shows another folder: failed, and that session stopped at once", async () => {
+  test("H101: agents --json shows the launch folder at once: it starts, starting, and is never stopped", async () => {
     const world = await ledWorld();
-    expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_AGENTS: "other" }))).toBe(1);
+    const head = git(world.repo, "rev-parse", "HEAD").trim();
+    // `FAKE_AGENTS=other` is agent view saying the session works in the main checkout — what an
+    // immediate read reported for every `--bg -w` launch in the first live use (2.1.308). It is
+    // not the session's real folder yet, so the launcher must not judge it.
+    expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_AGENTS: "other" }))).toBe(0);
+    expect(world.err).toEqual([]);
     expect(world.out).toEqual([
-      `failed C my-app B6b portal-live: session ${SHORT_ID} works in ${world.repo}, not in its worktree: it was stopped`,
+      `started C my-app B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head.slice(0, 7)}`,
     ]);
-    expect(world.claudeCalls().at(-1)).toEqual(["stop", SHORT_ID]);
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toEqual([]);
     expect(onlyCrew(world.paths.stateDir, world.repo)).toMatchObject({
+      sessionId: `${SHORT_ID}-0000-1111-2222-333333333333`,
       shortId: SHORT_ID,
-      state: "failed",
+      startedAt: "2026-10-21T10:00:00.000Z",
+      state: "starting",
     });
+    // Its own SessionStart hook judges the folder (src/hooks/crew-role.ts), never this read.
+    expect(
+      readCrewEvents(world.paths.stateDir, world.repo).events.map((one) => [one.type, one.state]),
+    ).toEqual([["created", "starting"]]);
   });
 
   test("agents --json without its row, or not JSON: failed, never a retry", async () => {

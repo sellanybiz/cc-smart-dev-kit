@@ -37,6 +37,7 @@ import {
   readLead,
   readReport,
   updateCrew,
+  updateCrewIfState,
   writeLead,
   writeReport,
   writeStoreFile,
@@ -283,6 +284,75 @@ describe("the crew record", () => {
     const state = tempDir("state");
     await createCrew(state, { ...queued(), waitsFor: ["B6a", "B7"] }, T0);
     expect(readCrew(state, REPO, "crew-K-contracts")?.waitsFor).toEqual(["B6a", "B7"]);
+  });
+
+  test("H101: a conditional change is written while the state is the one judged, with its event", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "starting" }, T0);
+    const result = await updateCrewIfState(
+      state,
+      REPO,
+      "crew-K-contracts",
+      ["starting"],
+      { state: "working" },
+      T1,
+      "started in its worktree",
+    );
+    expect(result.changed).toBe(true);
+    expect(result.record.state).toBe("working");
+    expect(readCrew(state, REPO, "crew-K-contracts")?.state).toBe("working");
+    expect(
+      readCrewEvents(state, REPO).events.map((one) => [one.type, one.state, one.text]),
+    ).toEqual([
+      ["created", "starting", null],
+      ["state", "working", "started in its worktree"],
+    ]);
+  });
+
+  test("H101: the launcher's failed is not overwritten by a working a hook judged earlier", async () => {
+    // The hook read `starting`; the launcher recorded `failed` before the hook's write. The write
+    // reads the state again under the lock and does nothing.
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "starting" }, T0);
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "failed" }, T1, "it failed");
+    const before = readCrew(state, REPO, "crew-K-contracts");
+    const result = await updateCrewIfState(
+      state,
+      REPO,
+      "crew-K-contracts",
+      ["starting"],
+      { state: "working" },
+      T1 + 1000,
+      "started in its worktree",
+    );
+    expect(result.changed).toBe(false);
+    expect(result.record).toEqual(before as NonNullable<typeof before>);
+    expect(readCrew(state, REPO, "crew-K-contracts")?.state).toBe("failed");
+    expect(
+      readCrewEvents(state, REPO).events.filter((one) => one.state === "working"),
+    ).toHaveLength(0);
+  });
+
+  test("H101: the watch's merged is not overwritten by a failed a hook judged earlier", async () => {
+    // The hook read an open record; the watch recorded `merged` before the hook's write. A phase
+    // that waits for this one reads `merged`, so the write must not land.
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "merged" }, T1, "merged");
+    const result = await updateCrewIfState(
+      state,
+      REPO,
+      "crew-K-contracts",
+      ["starting", "working", "blocked", "paused", "quiet"],
+      { state: "failed" },
+      T1 + 1000,
+      "its session is in /home/user/my-app, not in its worktree",
+    );
+    expect(result.changed).toBe(false);
+    expect(readCrew(state, REPO, "crew-K-contracts")?.state).toBe("merged");
+    expect(readCrewEvents(state, REPO).events.filter((one) => one.state === "failed")).toHaveLength(
+      0,
+    );
   });
 });
 

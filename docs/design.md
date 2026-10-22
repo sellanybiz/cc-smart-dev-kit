@@ -1351,7 +1351,7 @@ that, so the plugin ships no worktree hook at all.
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
-| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
+| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; **its own `cwd` checked against the record's worktree** — inside it a `starting` record is written `working`, outside it an open record is written `failed` with where it started, and its card says to stop (the lead's watch ends the session) — each write reads the state again under the store's lock (`updateCrewIfState`); the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
 | `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the seven machine-wide
@@ -2642,16 +2642,27 @@ polls or retries. In order:
    (`gateway.json` holds none for a backend), so Claude Code's own stands. The settings are a
    **file** on every platform. On Windows a `claude.cmd` runs through `cmd /d /s /v:off /c` with
    one quoted line (`windowsRun`, the hooks' own quoting); a `claude.exe` runs as it is.
-6. **The one check**: the short id is read from `backgrounded · <id> · <name>` (`--session-id` is
-   ignored with `--bg`), then `claude agents --json --all` is read once: the session's row must
-   name the worktree as its `cwd`. The crew session is then `working`, with its session id. Otherwise it
-   is `failed`, with the reason: a session in another folder is stopped at once (`claude stop`:
-   the store records it, and a crew session outside its worktree would edit another checkout); a row
-   that is missing, or a list that does not read, is failed with no retry. When nothing started —
-   `claude` refused (`Workspace not trusted`: open the repo once with `claude` and accept the trust
-   prompt), or `claude --bg` failed — the worktree and its branch are taken back (the branch only
-   while it still points at its base), so a second try finds the name free. When a session may
-   have started — no `backgrounded` line, or no answer in time — the worktree stays.
+6. **The session id, and never the folder**: the short id is read from `backgrounded · <id> ·
+   <name>` (`--session-id` is ignored with `--bg`), then `claude agents --json --all` is read once
+   for the session's id. The crew session is recorded with it and `startedAt`, and stays
+   **`starting`**; a row that is missing, or a list that does not read, is failed with no retry.
+   **Its `cwd` is not judged there**: agent view reports the launch folder until a `--bg -w`
+   session has entered its worktree (proved live on 2.1.308, `docs/claude-code-contract.md`), so the one
+   immediate read raced the move and failed and stopped every crew session of the first live use
+   (H101). **The session judges its own folder** at its `SessionStart` (`crew-role`): its input's
+   `cwd` against the record's worktree. Inside it, the role card, and a `starting` record becomes
+   `working` (one state event, "started in its worktree"). Outside it, an open record is `failed`
+   with where it started (a phase that already ended keeps its state: `merged` is what a
+   dependent phase waits for), and the card tells it to do nothing and end its turn — so the
+   lead's watch stops the session (D35). **The hook does not stop it itself**: a SessionStart
+   answer's `{"continue": false}` is not acted on in 2.1.308 (`docs/claude-code-contract.md`).
+   A `starting` crew session whose session died before its `SessionStart`
+   is the watch's own store-truth rule: agent view says `failed` or `stopped`, and the record says
+   so too. When nothing started — `claude` refused (`Workspace not trusted`: open the repo once
+   with `claude` and accept the trust prompt), or `claude --bg` failed — the worktree and its
+   branch are taken back (the branch only while it still points at its base), so a second try
+   finds the name free. When a session may have started — no `backgrounded` line, or no answer in
+   time — the worktree stays.
 
 ### The board and the end of a crew session
 
@@ -2781,10 +2792,13 @@ nothing else**, from two readers:
   goes on is **per lead** (`<store>/watch/<lead session id>.json`), so two leads watch their own
   crew sessions and neither loses the other's lines; the mark is written when the lead records itself
   (`crew lead`), so the lines before it are history the lead already saw.
-- **agent view** (`claude agents --json --all`), read on every pass. It raises three alerts, each
+- **agent view** (`claude agents --json --all`), read on every pass. It raises four alerts, each
   said once while it lasts and none of them an action: a crew session that **needs the person** (a
   permission prompt or an input), one whose transcript has not moved for
-  `workflow.crew.quietMinutes` (**quiet**), and one whose turn **ended with no report**. It
+  `workflow.crew.quietMinutes` (**quiet**), one whose turn **ended with no report**, and one that
+  **never confirmed its worktree** — its session is listed and alive, but its own start hook has
+  not turned the `starting` record `working` within `WORKTREE_CONFIRM_MS` (3 minutes: the hook
+  may have crashed, been silenced by `ownHooks`, or run outside git). It
   also keeps the store true, because the caps count the crew that hold a place
   (`RUNNING_STATES`): a session that **failed** is recorded `failed`, and one the person
   **stopped by hand** is recorded `stopped`; neither then holds a place and keeps a queued crew session
@@ -2809,8 +2823,9 @@ the store records — a session the kit does not know is the person's own:
   current (§ Waiting out a limit);
 - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
   the conversation stays; a session that crashed has nothing to stop), and a `blocked` one that
-  has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A stop that fails
-  is said once, not on every pass;
+  has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A `done` record
+  becomes `stopped`; a `failed` one **stays `failed`** (the board must show why it ended), and its
+  one line says so. A stop that fails is said once, not on every pass;
 - it **marks a crew session `merged`** when the lead merged its branch, and the line says `crew rm`
   removes it. The branch must hold a commit of its own (its tip is not the base it was cut from —
   a crew session that failed before it committed is an ancestor of the lead's branch for that reason
@@ -2997,7 +3012,11 @@ each is silent unless its own session is the one it is about, and neither reads
   (`C <tag> <phase> <slug>`), the phase and plan, the files the phase owns, the brief's path, the
   report line, the `crew tell` line, and the git rule (commit on its branch, never push). A
   resumed or compacted crew session gets it again, because its first prompt is gone from its
-  context. At **PreToolUse** on `AskUserQuestion` and `ExitPlanMode` it **denies** the call with the
+  context. **The input's `cwd` is checked against the record's worktree** (H101): inside it, a
+  `starting` record becomes `working`; outside it, an open record is `failed` with where it
+  started (the lead's watch stops the session) and the card tells it to do nothing and end its
+  turn.
+  At **PreToolUse** on `AskUserQuestion` and `ExitPlanMode` it **denies** the call with the
   `crew report --question …` step (D36): a crew session never asks the person. The deny reads no
   store and no project file, so it is the same with no `cc-smart-dev-kit.json`, a broken or too new
   one, and outside git. At **Stop** it records the session's last line on its record (`lastLine`,

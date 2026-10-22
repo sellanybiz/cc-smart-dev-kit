@@ -257,7 +257,7 @@ describe("crew start --continue", () => {
     );
     expect(code).toBe(1);
     expect(world.err[0]).toBe(
-      "crew start: C my-app B6b portal-live has its next crew session already: C my-app B6b portal-live 2, working",
+      "crew start: C my-app B6b portal-live has its next crew session already: C my-app B6b portal-live 2, starting",
     );
     expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(2);
   });

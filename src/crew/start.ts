@@ -25,17 +25,20 @@
  *      .claude/worktrees/crew-<phase>-<slug> <base>` in the main checkout (fast; anything slow is
  *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …`
  *      from the main checkout, the short id read from its `backgrounded` line, and ONE read of
- *      `claude agents --json --all` to see that the session works in its worktree. A session in
- *      another folder is stopped at once (it is ours: the store records it), and the crew session is
- *      `failed`. When nothing started (`claude` refused, `Workspace not trusted`), the worktree
- *      and its branch are taken back, so a second try finds the name free.
+ *      `claude agents --json --all` to record the session id and see that agent view lists it.
+ *      **The folder is not judged here**: `claude agents --json` reports the launch folder until a
+ *      `-w` session has entered its worktree (2.1.308), so an immediate read races it. The crew
+ *      session stays `starting`; its own SessionStart hook (`crew-role`) judges its `cwd` against
+ *      the record's worktree — the role card inside it, and `failed` with the reason outside it
+ *      (`src/hooks/crew-role.ts`). When nothing started (`claude` refused, `Workspace not
+ *      trusted`), the worktree and its branch are taken back, so a second try finds the name free.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
 import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
-import { runGit, samePath } from "../hooks/git";
+import { runGit } from "../hooks/git";
 import {
   AFFORDABLE_EFFORT,
   answeringSlot,
@@ -600,7 +603,7 @@ async function failed(
   return 1;
 }
 
-/** Step 6: the worktree, the session, the one check of where it works. */
+/** Step 6: the worktree, the session, and the session id it records. */
 async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): Promise<number> {
   const { worktree } = spec;
   const added = runGit(
@@ -680,28 +683,22 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
     );
   }
   const sessionId = row.sessionId;
-  if (row.cwd === null || !samePath(row.cwd, worktree)) {
-    // It is ours (the store records it): a crew session outside its worktree would edit another checkout.
-    const stop = callClaude(deps, spec.claude, ["stop", shortId], spec.repo);
-    const stopped = stop.ok && stop.run.exitCode === 0;
-    return await failed(
-      record,
-      `session ${shortId} works in ${row.cwd ?? "an unknown folder"}, not in its worktree: ${stopped ? "it was stopped" : `stop it: claude stop ${shortId}`}`,
-      ctx,
-      { sessionId, shortId },
-    );
-  }
+  // Where the session works is **not** judged from this read: `claude agents --json` reports the
+  // folder a `--bg -w` session was launched in until it has entered its worktree (2.1.308,
+  // `docs/claude-code-contract.md`), so one immediate read races the move — five crew sessions
+  // were failed and stopped this way in the first live use. The crew session stays `starting`.
+  // Its own SessionStart hook judges its real `cwd` (`src/hooks/crew-role.ts`), and the watch
+  // fails a `starting` record whose session died (`src/crew/watch.ts`).
   let recorded = true;
   try {
     await updateCrew(
       ctx.paths.stateDir,
       spec.repo,
       record.id,
-      // The time its work starts, not the time it was recorded: a crew session that waited in the
-      // queue has not run for the hours it waited.
-      { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString(), state: "working" },
+      // The time its session started, not the time it was recorded: a crew session that waited in
+      // the queue has not run for the hours it waited.
+      { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString() },
       ctx.now(),
-      `started (${shortId})`,
     );
   } catch (error) {
     // The session runs; only its record is behind. The watch reads agent view and catches up.

@@ -66,7 +66,9 @@ export const STORE_LOCK_WAIT_MS = 3_000;
  * The states a crew session is in, in the order a crew session usually goes through them:
  *
  * - `queued` — recorded, waiting for a free place (the cap, free memory) or for its phases;
- * - `starting` — its worktree and session are being made;
+ * - `starting` — its worktree and session are being made, until its own SessionStart hook says it
+ *   is in its worktree (`src/hooks/crew-role.ts`); the launcher never judges the folder, because
+ *   `claude agents --json` reports the launch folder until a `-w` session has entered it;
  * - `working` — its session is running a turn;
  * - `blocked` — it waits on the lead or the person (a question, a permission);
  * - `paused` — it waits for a usage limit to reset, or for its gateway slot to answer again
@@ -664,11 +666,38 @@ export async function updateCrew(
   text: null | string = null,
   memoryMb: null | number = null,
 ): Promise<CrewRecord> {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
+  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change,
     event: (after) =>
       after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb),
   }));
+  return record;
+}
+
+/**
+ * Changes crew session `id` **only while it is still in one of `states`**, read under the store's
+ * own lock in the same hold as the write. A writer that judged a record from an earlier read (the
+ * crew session's own hook, judging its folder) never overwrites what another writer set in
+ * between: `working` over a launcher's `failed`, or `failed` over a `merged` the watch recorded.
+ * Returns the record as it is now — changed or not. `text` is the state event's line, as
+ * `updateCrew`'s.
+ */
+export async function updateCrewIfState(
+  stateDir: string,
+  repo: string,
+  id: string,
+  states: readonly string[],
+  change: CrewChange,
+  atMs: number,
+  text: null | string = null,
+): Promise<{ changed: boolean; record: CrewRecord }> {
+  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    if (!(states as readonly string[]).includes(before.state)) return null;
+    return {
+      change,
+      event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
+    };
+  });
 }
 
 /**
@@ -684,12 +713,13 @@ export async function addCrewQuestion(
   asked: NewCrewQuestion,
   atMs: number,
 ): Promise<CrewRecord> {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
+  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
       questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }],
     },
     event: (after) => eventOf(after, at, "question", asked.question),
   }));
+  return record;
 }
 
 /**
@@ -711,7 +741,7 @@ export async function answerCrewQuestion(
   atMs: number,
   resumes: null | CrewState = null,
 ): Promise<CrewRecord> {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
     if (asked === undefined) throw new CrewStoreError(`crew "${id}" has no question ${index}`);
     if (asked.answer !== null) {
@@ -728,6 +758,7 @@ export async function answerCrewQuestion(
         state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
     };
   });
+  return record;
 }
 
 /** One line of the events log about `crew`, of `type`, with `text` as its line. */
@@ -760,8 +791,9 @@ interface PlannedChange {
 
 /**
  * The one read-modify-write of a crew record, under the store's lock: `plan` reads the record
- * as it is now and says what changes. Every field this kit does not know is kept, and so is a
- * higher schema version; who the crew session is never moves. Nothing is written when the result breaks
+ * as it is now and says what changes, or null to write nothing (the record moved since the
+ * caller read it). Every field this kit does not know is kept, and so is a
+ * higher schema version; who the crew session never moves. Nothing is written when the result breaks
  * the schema, or `plan` throws.
  */
 async function changeCrew(
@@ -769,8 +801,8 @@ async function changeCrew(
   repo: string,
   id: string,
   atMs: number,
-  plan: (before: CrewRecord, at: string) => PlannedChange,
-): Promise<CrewRecord> {
+  plan: (before: CrewRecord, at: string) => null | PlannedChange,
+): Promise<{ changed: boolean; record: CrewRecord }> {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
     const before = readRecord(crewRecordSchema, file);
@@ -778,7 +810,9 @@ async function changeCrew(
       throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
     }
     const at = iso(atMs);
-    const { change, event } = plan(before, at);
+    const planned = plan(before, at);
+    if (planned === null) return { changed: false, record: before };
+    const { change, event } = planned;
     const merged = {
       ...before,
       ...change,
@@ -804,7 +838,7 @@ async function changeCrew(
     writeRecord(file, after);
     const line = event(after);
     if (line !== null) appendEvent(stateDir, repo, line);
-    return after;
+    return { changed: true, record: after };
   });
 }
 

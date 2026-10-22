@@ -19,7 +19,7 @@
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
+ * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card and the folder check at a start, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
  * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once (`lead-notes.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
@@ -322,7 +322,10 @@ export const sessionNameHook: HookSpec = {
 };
 
 /**
- * The crew session's own hook (`crew-role.ts`): the role card at a start, a resume or a compaction;
+ * The crew session's own hook (`crew-role.ts`): the role card at a start, a resume or a compaction,
+ * with the session's own `cwd` checked against its worktree — a `starting` record becomes `working`
+ * inside it, and an open one is `failed` with the reason outside it (H101; `updateCrewIfState`
+ * reads the state again under the store's lock);
  * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); the last line recorded at
  * a stop, and one block when the turn ended on a step with no report; the crew session marked
  * `paused` when a model limit ended its turn (D42). **Machine-wide**: it is silent
