@@ -21,7 +21,10 @@ export const CHECKED_FOLDERS = [
   "plugin/skills",
   "plugin/agents",
   "plugin/output-styles",
+  "plugin/workflows",
 ];
+/** The one folder whose `.js` scripts are read: their prompts carry rules the agents follow. */
+export const SCRIPT_FOLDER = "plugin/workflows";
 export const ALLOW_FILE = "scripts/check-duplicates.allow.json";
 export const MIN_WORDS = 12;
 
@@ -134,19 +137,65 @@ export function findDuplicates(files: SourceFile[], allow: AllowEntry[]): Duplic
   };
 }
 
-/** Every `.md` file under the checked folders, with paths relative to `root`. */
+/**
+ * The strings a workflow script writes, one per line: its `agent()` prompts, its logs and its
+ * labels. They are read as text because a rule said in a prompt is a rule an agent follows —
+ * and one said in a prompt and in a skill is said twice. The code between the strings is not
+ * read: a duplicate in code is not a rule.
+ */
+export function scriptStrings(text: string): string {
+  const found: string[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index] ?? "";
+    if (char === "/" && text[index + 1] === "/") {
+      const end = text.indexOf("\n", index);
+      index = end === -1 ? text.length : end;
+      continue;
+    }
+    if (char === "/" && text[index + 1] === "*") {
+      const end = text.indexOf("*/", index + 2);
+      index = end === -1 ? text.length : end + 1;
+      continue;
+    }
+    if (char !== "'" && char !== '"' && char !== "`") continue;
+    let value = "";
+    for (index += 1; index < text.length; index += 1) {
+      const inner = text[index] ?? "";
+      if (inner === "\\") {
+        value += text[index + 1] ?? "";
+        index += 1;
+        continue;
+      }
+      if (inner === char) break;
+      value += inner;
+    }
+    found.push(value);
+  }
+  return found.join("\n\n");
+}
+
+/** Every `.md` file under the checked folders, and each workflow script's strings. */
 export function readSourceFiles(root: string): SourceFile[] {
   return CHECKED_FOLDERS.filter((folder) => existsSync(join(root, folder)))
     .flatMap((folder) =>
       readdirSync(join(root, folder), { recursive: true, withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .filter(
+          (entry) =>
+            entry.isFile() &&
+            (entry.name.endsWith(".md") ||
+              (folder === SCRIPT_FOLDER && entry.name.endsWith(".js"))),
+        )
         .map((entry) => join(entry.parentPath, entry.name)),
     )
     .sort()
-    .map((file) => ({
-      path: relative(root, file).split(sep).join("/"),
-      text: readFileSync(file, "utf8"),
-    }));
+    .map((file) => {
+      const path = relative(root, file).split(sep).join("/");
+      const text = readFileSync(file, "utf8");
+      return {
+        path,
+        text: path.startsWith(`${SCRIPT_FOLDER}/`) ? scriptStrings(text) : text,
+      };
+    });
 }
 
 /** The allow-list; every entry needs a sentence and a reason. */

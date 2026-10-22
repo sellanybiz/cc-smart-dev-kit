@@ -1646,7 +1646,7 @@ describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", (
       subagent_type: "Explore",
     });
     expect(unsaid.reason).toContain(
-      "Use a read-only agent type (Plan, Reviewer, Explore) and put a line in the prompt saying why:",
+      "Use a read-only agent type (Plan, Reviewer, Explore, auditor) and put a line in the prompt saying why:",
     );
     // The same line on a read-only type still asks the person.
     expect(verdict({ ...launch, subagent_type: "Explore" }).decision).toBe("ask");

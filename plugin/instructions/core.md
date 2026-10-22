@@ -98,7 +98,7 @@ declare it `Opus reason: ui` (`Fable reason: ui-design`).** Opus builds architec
 no approval; `max` needs the person's yes** — a session nobody watches refuses it (`claude -p`), and a fork runs at
 the session's own effort. All other building runs on `sonnet`; checking is not design (`ui-verifier` measures on
 `sonnet`, the verdict is Opus or Fable). **Fable advises; it builds only when the person asks.**
-Read-only agents (Plan, Reviewer, Explore) take `Fable reason:
+Read-only agents (Plan, Reviewer, Explore, auditor) take `Fable reason:
 <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`; a builder, or a fork, needs `Fable reason:
 build - <what the person asked>` — each word's use is in `/cc-smart-dev-kit:subagent-decision` § Choosing Fable. A
 session may run on Fable as its main model: the person's choice — **never comment on the session's own model or on a
@@ -115,7 +115,7 @@ the session cuts its own line mid-change — give the person the command instead
 
 **Effort:** `high` for searches, reads and building (UI/UX too, unless a reason takes it to `xhigh`), `xhigh` for
 the hardest judgment (architecture, a risky review), `max` for the hardest problem only (on Opus, with the person's
-yes, above). An affordable gateway slot always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
+yes, above). An affordable gateway slot always runs at `max`. A subagent never runs at `low`; the session's own effort is the person's choice.
 
 **Say it when you launch.** The reply that starts an agent names its slot, the model behind it
 and its effort — "a reviewer (`sonnet` → Claude Sonnet, effort high)" — so the person sees which

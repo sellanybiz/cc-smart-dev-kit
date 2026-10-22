@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review your own finished change before you commit it, then get one second opinion per change set. Walks the review dimensions and the edge-case axes that apply to this diff, proves each finding, and fixes it. Trigger phrases - "ready to commit", "review this", "audit this", "I'm done", "does this look right".
+description: Review your own finished change before you commit it, then get one second opinion per change set. Walks the review dimensions and the edge-case axes that apply to this diff, proves each finding, and fixes it. Trigger phrases - "ready to commit", "review this", "I'm done", "does this look right".
 ---
 
 # Review — You Are The Reviewer
@@ -17,7 +17,9 @@ name on it.
   change when there are no phases — when your next action is the commit. The test: "if this
   comes back clean, do I commit right now?" No: you are still building; come back later.
 - **The second opinion:** once per change set (§ Second opinion).
-- **On request:** "review this", "audit that feature".
+- **On request:** "review this".
+- **A sweep of an area, not a diff:** `/cc-smart-dev-kit:audit` — one class of defect across
+  code nobody is changing, with its own Workflow.
 
 **The project's workflow says how strictly this holds.** `cc-smart-dev-kit workflow show` prints
 `reviewBeforePush`, and with it on — the default — the second opinion is due before the first

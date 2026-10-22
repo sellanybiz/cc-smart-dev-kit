@@ -182,7 +182,7 @@ const BUILDER_WORDS = [FABLE_BUILD_REASON] as const;
  * any word of `FABLE_REASONS` is enough. Every other type — a fork included — can change
  * files and needs the one word `build` (`FABLE_BUILD_REASON`).
  */
-export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore"] as const;
+export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "auditor"] as const;
 
 /** The environment variable a person may extend that list with (comma-separated). */
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";

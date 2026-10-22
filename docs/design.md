@@ -1172,8 +1172,9 @@ its own repo.
 
 ## Instructions, skills and agents
 
-The plugin carries general working instructions for Claude, 18 skills and 3 agents, all
-written for any project (`README.md` § Instructions, skills and agents lists them).
+The plugin carries general working instructions for Claude, 19 skills, 5 agents and one
+Workflow, all written for any project (`README.md` § Instructions, skills and agents lists
+them).
 
 **The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot
 add text to every session by itself, but Claude Code loads `<config dir>/CLAUDE.md` in every
@@ -1232,22 +1233,33 @@ precedence is stated once, at the top of `core.md`: where the project's own `CLA
 rules or `.claude/cc-smart-dev-kit/<skill>.md` differ, the project's text wins.
 `bun run check:duplicates` (`scripts/check-duplicates.ts`, in `bun run check` and CI) fails
 when the same sentence of 12 or more words appears in two files of the plugin's
-instructions, skills, agents or output styles. A deliberate repeat goes in
+instructions, skills, agents, output styles or workflow scripts — a script's strings are read
+because a rule written into a prompt is a rule an agent follows. A deliberate repeat goes in
 `scripts/check-duplicates.allow.json` with its reason. It cannot see the same rule said in
 other words; that stays a review job.
+
+**The one shipped Workflow** (`plugin/workflows/audit-run.js`) is the run the `audit` skill
+starts: one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at
+`xhigh` to refute every finding (the judgment, D46), one `builder` on `sonnet` at `max` to write the findings file. Claude Code loads a
+plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every
+`agent(...)` launch in the script before the run starts (§ The agent guard); so every launch
+names a literal `model`, `effort` and `agentType`, and `src/workflows/scripts.test.ts` runs each
+shipped script against fakes and checks the guard the plugin ships allows every launch. Biome
+skips `plugin/workflows`: a script body has a top-level `return`, which the linter's parser
+refuses.
 
 **Agents pin no model and no effort.** The caller passes both on each launch, so an agent
 never runs on a model nobody chose. Plugin agents and skills are named `cc-smart-dev-kit:<name>`.
 An agent that works by a skill loads it with `skills:` in its frontmatter: the skill's text is
 in its context from the start (proved live: `claude-code-contract.md` § Instructions). All
-three load `cc-smart-dev-kit:impact-analysis`, the one home for finding a symbol's callers and a
+five load `cc-smart-dev-kit:impact-analysis`, the one home for finding a symbol's callers and a
 file's shape; `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`. The `reviewer` does not
 load the review skill: half of it is the author's (commit, fix, start the reviewer), which
 contradicts a read-only agent. It reads the review dimensions, edge-case axes and severity
 scale from `skills/review/references/axes.md` instead, found from the base directory Claude
 Code prints above each loaded skill (the plugin's folder has the version in its name, so no
-fixed path reaches it). No agent has `memory:` (only the main session saves memories) or
-`Agent` (an agent starts no agents).
+fixed path reaches it). `auditor` reads the same axes file the same way. No agent has `memory:`
+(only the main session saves memories) or `Agent` (an agent starts no agents).
 
 **The tools each agent lists**, and why (research for the 1.1.0 plan, § R7):
 
@@ -1256,6 +1268,8 @@ fixed path reaches it). No agent has `memory:` (only the main session saves memo
 | `reviewer` | Read, Grep, Glob, Bash, LSP, WebSearch, WebFetch, claude-mem's `smart_*` | Bash for `git diff` and the unit tests; no edit tools |
 | `rules-maintainer` | Read, Edit, Write, Grep, Glob, Bash, LSP, `smart_*` | Bash for `wc -l` and `git status` |
 | `ui-verifier` | Read, Grep, Glob, LSP, `smart_*`, the `mcp__playwright__*` tools | no Bash: it runs no command, only the browser |
+| `auditor` | Read, Grep, Glob, Bash, LSP, WebSearch, WebFetch, `smart_*` | a read-only sweep: Bash for `git log` and the tests, no edit tools |
+| `builder` | Read, Edit, Write, Grep, Glob, Bash, LSP, `smart_*` | builds code: edit tools, and Bash for its done-check |
 
 `smart_search`, `smart_outline` and `smart_unfold` are the companion plugin's own tool names,
 for a file's shape without reading all of it; when they are not there or do not answer (on
@@ -1673,7 +1687,7 @@ openai:gpt-5.5) ``.
 
 The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
-- **A read-only agent** (Plan, Reviewer, Explore) takes any word of
+- **A read-only agent** (Plan, Reviewer, Explore, auditor) takes any word of
   `FABLE_REASONS` — `hard`, `rewrite`, `ui-design`, `architecture`, `review`, `plan`,
   `unsatisfied` — where `unsatisfied` is a fresh attempt after the person did not like the main
   session's answer (`subagent-decision` § Choosing Fable has the brief it gets) and `review` is

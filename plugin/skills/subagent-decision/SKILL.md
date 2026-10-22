@@ -1,6 +1,6 @@
 ---
 name: subagent-decision
-description: Use when about to read more than three files, run multi-step research, search or audit the codebase, verify UI, or split work for agents. Picks the agent for each job - Explore, Plan, general-purpose, the cc-smart-dev-kit reviewer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially an affordable model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
+description: Use when about to read more than three files, run multi-step research, search or audit the codebase, verify UI, or split work for agents. Picks the agent for each job - Explore, Plan, general-purpose, the cc-smart-dev-kit builder, auditor, reviewer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially an affordable model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
 ---
 
 # Which Agent, And How To Brief It
@@ -23,7 +23,9 @@ work), and which model and effort each agent gets too (§ Subagents).
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
 | A whole phase of a plan, where the project has crew sessions on | a crew session, not a subagent — `/cc-smart-dev-kit:lead` |
-| A phase of a plan with crew sessions off, a piece of one; any job that both explores and edits | `general-purpose` |
+| A phase the plan already briefed — its files, the pattern to copy and a done-check written down — with crew sessions off | `cc-smart-dev-kit:builder` |
+| A piece of a phase, or a job whose scope is still open that both explores and edits | `general-purpose` |
+| An area swept for one class of defect, not a diff — "audit the hooks", "find every place where X" | the `audit` skill's run: an `auditor` per track, a second one to refute each finding, one `builder` for the report — `/cc-smart-dev-kit:audit` |
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
 | Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify`: the facts on `sonnet`, the design verdict on `opus` or `fable` |
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
@@ -93,7 +95,7 @@ work, hard architecture, a rewrite or a complex UI/UX design, a strong second-op
 refining a plan — and a fresh attempt when the person is not satisfied with your answer. The
 guard asks the person about every Fable launch.
 
-- **Read-only agents** (Plan, Reviewer, Explore) take an advisory word:
+- **Read-only agents** (Plan, Reviewer, Explore, auditor) take an advisory word:
   `Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`.
   `unsatisfied` is the fresh attempt: something you answered did not land.
 - **An agent that can change files** — a builder, or a fork — needs the one word `build`, which

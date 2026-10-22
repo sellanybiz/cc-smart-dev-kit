@@ -2,10 +2,10 @@ schema_version: "1.1"
 name: lead-starts-the-whole-plan
 description: >-
   D47: a lead turn that ends with a ready phase not started is a fault. An approved plan with two
-  phases in wave 1 and one in wave 2 that builds on S1: at plan approval the lead starts all
-  three in that turn, S3 with `--waits-for S1`, so the watch starts it once S1 is merged. A lead
-  that starts only wave 1, or only S1, fails. In the eval sandbox the command cannot start a real
-  session, so the case grades the attempt.
+  phases in wave 1 and one in wave 2 that builds on S1, each naming a crew session as its owner:
+  at plan approval the lead starts all three in that turn, S3 with `--waits-for S1`, so the watch
+  starts it once S1 is merged. A lead that starts only wave 1, or only S1, fails. In the eval
+  sandbox the command cannot start a real session, so the case grades the attempt.
 tags: [watch, workflow, needs-shell]
 plugins: ["../../.under-test/plugin", "../../harness"]
 execution:
@@ -35,6 +35,13 @@ graders:
   - name: no-inline-build
     type: tool_used
     tool: 'Edit'
+    input_match: '"file_path"\s*:\s*"[^"]*/src/'
+    min: 0
+    max: 0
+    arm: 'both'
+  - name: no-inline-build-write
+    type: tool_used
+    tool: 'Write'
     input_match: '"file_path"\s*:\s*"[^"]*/src/'
     min: 0
     max: 0
