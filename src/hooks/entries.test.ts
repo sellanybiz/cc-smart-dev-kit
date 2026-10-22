@@ -315,7 +315,7 @@ describe("the entries, run as Claude Code runs them", () => {
     "agent-guard": "the model this launch runs on",
     "crew-role": "whether this crew session asks the person itself",
     "git-guard": "this git command",
-    "job-route": "whether this project routes heavy commands through its job queue",
+    "job-route": "whether this launch or heavy command may run",
     "main-folder-guard": "whether this edit belongs in a worktree",
     "merge-guard": "whether this merge may happen by itself",
     "message-guard": "whether this message may go to that session",

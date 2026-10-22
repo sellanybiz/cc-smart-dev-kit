@@ -154,8 +154,10 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 ## A machine-wide hook
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on), `fable-session` (the model the session itself runs on), `crew-role` (a crew session's own
-card, ask and report), `lead-notes` (a lead's missed crew news) and `notify` (the alerts).
+on), `job-route` (the Bash judge: a raw `--bg` launch, a `-p` run's model and effort, a crew
+session's `crew start`, a polling loop), `fable-session` (the model the session itself runs on),
+`crew-role` (a crew session's own card, ask and report), `lead-notes` (a lead's missed crew
+news) and `notify` (the alerts).
 `playwright-output` is machine-wide too — it puts a file the
 CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),
@@ -218,16 +220,23 @@ own, before the file.
 
 `session-escape-guard` is machine-wide in the same way, and **`alwaysOn`** (`HookSpec.alwaysOn`):
 the frame skips its `ownHooks` step and `PLUGIN_HOOK_NAMES` leaves its name out, because the
-project's file is one of the things it guards (a session could list the guard there first). A
-guard that guards the project's own settings is `alwaysOn`; any other machine-wide guard may be
-silenced by a project that runs its own copy. `matrix.test.ts` checks both halves.
+project's file is one of the things it guards (a session could list the guard there first).
+**`job-route` is `alwaysOn` too**, for the same reason one step out: it limits what the session
+itself may launch and run, and a session could otherwise switch the judge off by listing it in
+the project's file. A guard whose answer limits what the session itself may do is `alwaysOn`;
+any other machine-wide guard may be silenced by a project that runs its own copy. A name a
+project file may already list for an `alwaysOn` hook that used to be switchable
+(`UNSWITCHABLE_HOOK_NAMES`, today `job-route`) still parses, it silences nothing, and `doctor`
+says it can go. `matrix.test.ts` checks both halves.
 
 ```json
 { "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": { "command": "…" } } }
 ```
 
 `updatedInput` (PreToolUse only, proved live on 2.1.301) replaces the tool's input for that
-call: `job-route` uses it to send a heavy command through `cc-smart-dev-kit job run`. The rewritten
+call: `job-route` uses it to send a heavy command through `cc-smart-dev-kit job run`, and — in a
+lead — to add `run_in_background: true` to a CI watch, a queued job or the full check (proved
+honoured on 2.1.308, and in L1a.1 on 2.1.306). The rewritten
 command runs in the Bash tool's own shell, so it keeps the folder that shell is in (proved
 live: after a `cd`, the rewritten command ran in the new folder, not in the hook's `cwd`).
 
@@ -259,9 +268,12 @@ Where both exist, **the project says which plugin hooks to keep quiet**: `ownHoo
   `src/project/config.ts`; a test keeps them equal to `HOOKS`): a typo fails the strict parse.
 - **A retired plugin hook keeps its name** (`RETIRED_HOOK_NAMES` in the same file; today
   `serena-root`, 0.6.0): a project file that lists it still parses, the name silences
-  nothing, and `doctor` prints one `·` line that it can go. Dropping the name from the schema
+  nothing, and `doctor` prints one `·` line that it can go. **A hook a project can no longer
+  switch off keeps its name the same way** (`UNSWITCHABLE_HOOK_NAMES`; today `job-route`, which
+  became `alwaysOn` in 1.0.0): the file still parses, the name silences nothing, and `doctor`
+  says it can go. Dropping a name from the schema
   would fail the strict parse, and every guard would then ask on every call. A hook you
-  retire goes there.
+  retire, or make `alwaysOn`, goes there.
 - `cc-smart-dev-kit doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
   when a listed hook's event has no project hook left to answer, and warns when a project
   hook runs next to a plugin hook the list does not name (both may answer).

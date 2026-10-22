@@ -6407,7 +6407,6 @@ var PLUGIN_HOOK_NAMES = [
   "message-guard",
   "agent-guard",
   "fable-session",
-  "job-route",
   "after-merge",
   "review-record",
   "worktree-leftovers",
@@ -6416,6 +6415,7 @@ var PLUGIN_HOOK_NAMES = [
   "lead-notes"
 ];
 var RETIRED_HOOK_NAMES = ["serena-root"];
+var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
@@ -6437,7 +6437,7 @@ var ccSmartDevKitConfigSchema = strictObject({
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
   workflow: workflowSchema.optional(),
-  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional()
+  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
 
 class CcSmartDevKitConfigError extends Error {
@@ -8268,281 +8268,6 @@ function programsIn(command, dialect) {
   return found;
 }
 
-// src/jobs/classify.ts
-var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
-var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
-var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
-var NODE_VALUED = [
-  "--conditions",
-  "--eval",
-  "--import",
-  "--input-type",
-  "--loader",
-  "--print",
-  "--require",
-  "-C",
-  "-e",
-  "-p",
-  "-r"
-];
-var TOOL_VALUED = {
-  docker: [
-    "--config",
-    "--context",
-    "--host",
-    "--log-level",
-    "--tlscacert",
-    "--tlscert",
-    "--tlskey",
-    "-c",
-    "-H",
-    "-l",
-    "--builder",
-    "--ansi",
-    "--env-file",
-    "--file",
-    "--parallel",
-    "--profile",
-    "--progress",
-    "--project-directory",
-    "--project-name",
-    "-f",
-    "-p"
-  ],
-  "docker-compose": [
-    "--ansi",
-    "--env-file",
-    "--file",
-    "--parallel",
-    "--profile",
-    "--progress",
-    "--project-directory",
-    "--project-name",
-    "-f",
-    "-p"
-  ],
-  podman: ["--connection", "--url", "--root", "--runroot", "--log-level"]
-};
-var BUN_COMMANDS = new Set([
-  "add",
-  "build",
-  "create",
-  "exec",
-  "i",
-  "init",
-  "install",
-  "link",
-  "outdated",
-  "patch",
-  "pm",
-  "publish",
-  "remove",
-  "repl",
-  "rm",
-  "test",
-  "unlink",
-  "update",
-  "upgrade"
-]);
-function firstWord(args, from, valued) {
-  let index = from;
-  while (index < args.length && (args[index] ?? "").startsWith("-")) {
-    index += valued.includes(args[index] ?? "") ? 2 : 1;
-  }
-  return Math.min(index, args.length);
-}
-function toolName(word) {
-  const isPath = /[\\/]/.test(word) && !/^@[^\\/]+\/[^\\/]+$/.test(word);
-  const base = (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(cmd|exe|ps1|bat)$/, "");
-  return (isPath ? base.replace(/\.(mjs|cjs|js)$/, "") : base).replace(/(?<=.)@.*$/, "");
-}
-function scriptOrTool(word, args) {
-  return /[\\/]/.test(word) ? { name: toolName(word), args } : { name: toolName(word), args, script: word };
-}
-function toolOf(program, args, depth = 0) {
-  if (depth > 4)
-    return;
-  const at = (valued, from = 0) => firstWord(args, from, valued);
-  switch (program) {
-    case "bunx":
-    case "npx": {
-      const index = at(program === "npx" ? NPX_VALUED : NPX_VALUED.slice(0, 2));
-      const name = args[index];
-      return name === undefined ? undefined : { name: toolName(name), args: args.slice(index + 1) };
-    }
-    case "bun": {
-      const index = at(BUN_VALUED);
-      const sub = args[index];
-      if (sub === undefined)
-        return;
-      if (sub === "x")
-        return toolOf("bunx", args.slice(index + 1), depth + 1);
-      if (sub === "run") {
-        const nameAt = firstWord(args, index + 1, BUN_VALUED);
-        const name = args[nameAt];
-        return name === undefined ? undefined : scriptOrTool(name, args.slice(nameAt + 1));
-      }
-      if (BUN_COMMANDS.has(sub))
-        return;
-      return scriptOrTool(sub, args.slice(index + 1));
-    }
-    case "npm": {
-      const index = at([]);
-      const sub = args[index];
-      const rest = args.slice(index + 1);
-      if (sub === "exec" || sub === "x")
-        return toolOf("npx", rest, depth + 1);
-      if (sub === "test" || sub === "t")
-        return { name: "", args: rest, script: "test" };
-      if (sub === "run" || sub === "run-script") {
-        const nameAt = firstWord(rest, 0, []);
-        const name = rest[nameAt];
-        if (name === undefined)
-          return;
-        return { name: "", args: rest.slice(nameAt + 1), script: name };
-      }
-      return;
-    }
-    case "pnpm":
-    case "yarn": {
-      const index = at(PNPM_VALUED);
-      const sub = args[index];
-      if (sub === undefined)
-        return;
-      const rest = args.slice(index + 1);
-      if (sub === "exec" || sub === "dlx")
-        return toolOf("npx", rest, depth + 1);
-      if (sub === "test" || sub === "t")
-        return { name: "", args: rest, script: "test" };
-      if (sub === "run" || sub === "run-script") {
-        const nameAt = firstWord(rest, 0, []);
-        const name = rest[nameAt];
-        return name === undefined ? undefined : scriptOrTool(name, rest.slice(nameAt + 1));
-      }
-      return scriptOrTool(sub, rest);
-    }
-    case "node": {
-      const index = at(NODE_VALUED);
-      const script = args[index];
-      if (script !== undefined && /[\\/]/.test(script)) {
-        return { name: toolName(script), args: args.slice(index + 1) };
-      }
-      return;
-    }
-    default:
-      return { name: program, args };
-  }
-}
-function hasFlag(args, flag) {
-  return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
-}
-function startsWithSub(args, sub, valued) {
-  let from = 0;
-  for (const word of sub) {
-    const index = firstWord(args, from, valued);
-    if (args[index] !== word)
-      return false;
-    from = index + 1;
-  }
-  return true;
-}
-function printsOnly(kind, args) {
-  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
-  return printOnly.size > 0 && args.length > 0 && args.every((arg) => printOnly.has(arg.toLowerCase()));
-}
-function ruleMatches(rule, call) {
-  if ("script" in rule)
-    return call.script === rule.script;
-  if (call.name !== rule.tool)
-    return false;
-  const valued = [...TOOL_VALUED[rule.tool] ?? [], ...rule.valued ?? []];
-  if (rule.sub !== undefined && !startsWithSub(call.args, rule.sub, valued))
-    return false;
-  if (rule.flags !== undefined && !rule.flags.every((flag) => hasFlag(call.args, flag))) {
-    return false;
-  }
-  const text = rule.argIncludes?.toLowerCase();
-  return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
-}
-function kindOfCall(call, kinds) {
-  let best = null;
-  for (const [name, kind] of Object.entries(kinds)) {
-    const heavy = (kind.match ?? []).some((rule) => ruleMatches(rule, call) && (("script" in rule) || !printsOnly(kind, call.args)));
-    if (heavy && (best === null || kind.gb > best.gb))
-      best = { name, gb: kind.gb };
-  }
-  return best;
-}
-function inspect(command, kinds, dialect, depth) {
-  const found = [];
-  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
-  for (const step of steps) {
-    const invocation = invocationOf(wordsOf(step.text, dialect));
-    if (invocation === undefined)
-      continue;
-    const { program, args } = invocation;
-    const call = toolOf(program, withoutRedirections(args));
-    const kind = call === undefined ? null : kindOfCall(call, kinds);
-    if (kind !== null)
-      found.push(kind);
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING) {
-      found.push(...inspect(inner, kinds, nestedDialect(program), depth + 1));
-    }
-  }
-  return found;
-}
-function classifyHeavyCommand(bashCommand, kinds) {
-  let best = null;
-  for (const kind of inspect(bashCommand, kinds, "bash", 0)) {
-    if (best === null || kind.gb > best.gb)
-      best = kind;
-  }
-  return best?.name ?? null;
-}
-function routableKinds(command, kinds, dialect, depth) {
-  const found = [];
-  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
-  for (const step of steps) {
-    const words = wordsOf(step.text, dialect);
-    if (words.length === 0 || isAssignmentOnly(words))
-      continue;
-    const invocation = invocationOf(words);
-    if (invocation === undefined)
-      return null;
-    const { program, args } = invocation;
-    if (CHANGE_DIR.has(program))
-      continue;
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined) {
-      if (depth >= MAX_NESTING)
-        return null;
-      const nested = routableKinds(inner, kinds, nestedDialect(program), depth + 1);
-      if (nested === null)
-        return null;
-      found.push(...nested);
-      continue;
-    }
-    const call = toolOf(program, withoutRedirections(args));
-    const kind = call === undefined ? null : kindOfCall(call, kinds);
-    if (kind === null)
-      return null;
-    found.push(kind);
-  }
-  return found;
-}
-function classifyRoutableLine(bashCommand, kinds) {
-  const found = routableKinds(bashCommand, kinds, "bash", 0);
-  if (found === null)
-    return null;
-  let best = null;
-  for (const kind of found) {
-    if (best === null || kind.gb > best.gb)
-      best = kind;
-  }
-  return best?.name ?? null;
-}
-
 // src/workflow/reviews.ts
 import { createHash } from "crypto";
 import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
@@ -9266,7 +8991,7 @@ function callQuestions(call, folder, run) {
   }
   return [];
 }
-function inspect2(command, cwd, reading, run, depth = 0) {
+function inspect(command, cwd, reading, run, depth = 0) {
   const found = [];
   let folder = cwd;
   const { dialect, joinLines } = reading;
@@ -9283,7 +9008,7 @@ function inspect2(command, cwd, reading, run, depth = 0) {
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
       for (const nested of readingsOf(inner, nestedDialect(program))) {
-        found.push(...inspect2(inner, folder, nested, run, depth + 1));
+        found.push(...inspect(inner, folder, nested, run, depth + 1));
       }
     }
   }
@@ -9296,7 +9021,7 @@ function guardVerdict(command, cwd, options) {
     branches: new Map,
     pushConfigs: new Map
   };
-  const found = readingsOf(command, options.dialect).flatMap((reading) => inspect2(command, cwd, reading, run));
+  const found = readingsOf(command, options.dialect).flatMap((reading) => inspect(command, cwd, reading, run));
   const refuse = [...run.refusals];
   return { refuse, ask: refuse.length > 0 ? [] : [...new Set(found)] };
 }
@@ -11683,18 +11408,18 @@ function reasonLine(prompt, label) {
   return null;
 }
 function reasonWord(text, allowed) {
-  const word = firstWord2(text) ?? "";
+  const word = firstWord(text) ?? "";
   return allowed.includes(word) ? word : null;
 }
 var REASON_WORD_MAX = 40;
-function firstWord2(text) {
+function firstWord(text) {
   const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
   return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
 }
 function uiDeclaration(prompt) {
   for (const label of ["Opus reason", "Fable reason"]) {
     const said = reasonLine(prompt, label);
-    const word = firstWord2(said);
+    const word = firstWord(said);
     if (word !== null && UI_REASON_WORDS.includes(word)) {
       return `${label}: ${said}`;
     }
@@ -11892,7 +11617,7 @@ function judgeModel(launch, real, ctx, env) {
         why: "opus:unreadable"
       };
     }
-    const why = opusWhy(effort, firstWord2(said));
+    const why = opusWhy(effort, firstWord(said));
     if (effort !== OPUS_ASK_EFFORT)
       return allow(real, why);
     if (nobodyWatches(env)) {
@@ -12084,6 +11809,13 @@ var LEAD_SKILL = `${PLUGIN}:lead`;
 
 // src/crew/brief.ts
 var REPORT_COMMAND = `${COMMAND} crew report`;
+var CREW_NEVER_DOES = {
+  answer: "answers its lead's questions",
+  lead: "leads",
+  resume: "stops, removes or resumes crew sessions",
+  start: "starts crew sessions",
+  watch: "watches its lead's crew sessions"
+};
 
 // src/jobs/config.ts
 import { isAbsolute as isAbsolute3, join as join17 } from "path";
@@ -13040,6 +12772,550 @@ function fableSession(input, env, paths) {
   return systemMessage(fableSessionMessage(fableSessionModelName(real)));
 }
 
+// src/jobs/classify.ts
+var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
+var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
+var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
+var NODE_VALUED = [
+  "--conditions",
+  "--eval",
+  "--import",
+  "--input-type",
+  "--loader",
+  "--print",
+  "--require",
+  "-C",
+  "-e",
+  "-p",
+  "-r"
+];
+var TOOL_VALUED = {
+  docker: [
+    "--config",
+    "--context",
+    "--host",
+    "--log-level",
+    "--tlscacert",
+    "--tlscert",
+    "--tlskey",
+    "-c",
+    "-H",
+    "-l",
+    "--builder",
+    "--ansi",
+    "--env-file",
+    "--file",
+    "--parallel",
+    "--profile",
+    "--progress",
+    "--project-directory",
+    "--project-name",
+    "-f",
+    "-p"
+  ],
+  "docker-compose": [
+    "--ansi",
+    "--env-file",
+    "--file",
+    "--parallel",
+    "--profile",
+    "--progress",
+    "--project-directory",
+    "--project-name",
+    "-f",
+    "-p"
+  ],
+  podman: ["--connection", "--url", "--root", "--runroot", "--log-level"]
+};
+var BUN_COMMANDS = new Set([
+  "add",
+  "build",
+  "create",
+  "exec",
+  "i",
+  "init",
+  "install",
+  "link",
+  "outdated",
+  "patch",
+  "pm",
+  "publish",
+  "remove",
+  "repl",
+  "rm",
+  "test",
+  "unlink",
+  "update",
+  "upgrade"
+]);
+function firstWord2(args, from, valued) {
+  let index = from;
+  while (index < args.length && (args[index] ?? "").startsWith("-")) {
+    index += valued.includes(args[index] ?? "") ? 2 : 1;
+  }
+  return Math.min(index, args.length);
+}
+function toolName(word) {
+  const isPath = /[\\/]/.test(word) && !/^@[^\\/]+\/[^\\/]+$/.test(word);
+  const base = (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(cmd|exe|ps1|bat)$/, "");
+  return (isPath ? base.replace(/\.(mjs|cjs|js)$/, "") : base).replace(/(?<=.)@.*$/, "");
+}
+function scriptOrTool(word, args) {
+  return /[\\/]/.test(word) ? { name: toolName(word), args } : { name: toolName(word), args, script: word };
+}
+function toolOf(program, args, depth = 0) {
+  if (depth > 4)
+    return;
+  const at = (valued, from = 0) => firstWord2(args, from, valued);
+  switch (program) {
+    case "bunx":
+    case "npx": {
+      const index = at(program === "npx" ? NPX_VALUED : NPX_VALUED.slice(0, 2));
+      const name = args[index];
+      return name === undefined ? undefined : { name: toolName(name), args: args.slice(index + 1) };
+    }
+    case "bun": {
+      const index = at(BUN_VALUED);
+      const sub = args[index];
+      if (sub === undefined)
+        return;
+      if (sub === "x")
+        return toolOf("bunx", args.slice(index + 1), depth + 1);
+      if (sub === "run") {
+        const nameAt = firstWord2(args, index + 1, BUN_VALUED);
+        const name = args[nameAt];
+        return name === undefined ? undefined : scriptOrTool(name, args.slice(nameAt + 1));
+      }
+      if (BUN_COMMANDS.has(sub))
+        return;
+      return scriptOrTool(sub, args.slice(index + 1));
+    }
+    case "npm": {
+      const index = at([]);
+      const sub = args[index];
+      const rest = args.slice(index + 1);
+      if (sub === "exec" || sub === "x")
+        return toolOf("npx", rest, depth + 1);
+      if (sub === "test" || sub === "t")
+        return { name: "", args: rest, script: "test" };
+      if (sub === "run" || sub === "run-script") {
+        const nameAt = firstWord2(rest, 0, []);
+        const name = rest[nameAt];
+        if (name === undefined)
+          return;
+        return { name: "", args: rest.slice(nameAt + 1), script: name };
+      }
+      return;
+    }
+    case "pnpm":
+    case "yarn": {
+      const index = at(PNPM_VALUED);
+      const sub = args[index];
+      if (sub === undefined)
+        return;
+      const rest = args.slice(index + 1);
+      if (sub === "exec" || sub === "dlx")
+        return toolOf("npx", rest, depth + 1);
+      if (sub === "test" || sub === "t")
+        return { name: "", args: rest, script: "test" };
+      if (sub === "run" || sub === "run-script") {
+        const nameAt = firstWord2(rest, 0, []);
+        const name = rest[nameAt];
+        return name === undefined ? undefined : scriptOrTool(name, rest.slice(nameAt + 1));
+      }
+      return scriptOrTool(sub, rest);
+    }
+    case "node": {
+      const index = at(NODE_VALUED);
+      const script = args[index];
+      if (script !== undefined && /[\\/]/.test(script)) {
+        return { name: toolName(script), args: args.slice(index + 1) };
+      }
+      return;
+    }
+    default:
+      return { name: program, args };
+  }
+}
+function hasFlag(args, flag) {
+  return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+function startsWithSub(args, sub, valued) {
+  let from = 0;
+  for (const word of sub) {
+    const index = firstWord2(args, from, valued);
+    if (args[index] !== word)
+      return false;
+    from = index + 1;
+  }
+  return true;
+}
+function printsOnly(kind, args) {
+  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
+  return printOnly.size > 0 && args.length > 0 && args.every((arg) => printOnly.has(arg.toLowerCase()));
+}
+function ruleMatches(rule, call) {
+  if ("script" in rule)
+    return call.script === rule.script;
+  if (call.name !== rule.tool)
+    return false;
+  const valued = [...TOOL_VALUED[rule.tool] ?? [], ...rule.valued ?? []];
+  if (rule.sub !== undefined && !startsWithSub(call.args, rule.sub, valued))
+    return false;
+  if (rule.flags !== undefined && !rule.flags.every((flag) => hasFlag(call.args, flag))) {
+    return false;
+  }
+  const text = rule.argIncludes?.toLowerCase();
+  return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
+}
+function kindOfCall(call, kinds) {
+  let best = null;
+  for (const [name, kind] of Object.entries(kinds)) {
+    const heavy = (kind.match ?? []).some((rule) => ruleMatches(rule, call) && (("script" in rule) || !printsOnly(kind, call.args)));
+    if (heavy && (best === null || kind.gb > best.gb))
+      best = { name, gb: kind.gb };
+  }
+  return best;
+}
+function inspect2(command, kinds, dialect, depth) {
+  const found = [];
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  for (const step of steps) {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
+    if (invocation === undefined)
+      continue;
+    const { program, args } = invocation;
+    const call = toolOf(program, withoutRedirections(args));
+    const kind = call === undefined ? null : kindOfCall(call, kinds);
+    if (kind !== null)
+      found.push(kind);
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING) {
+      found.push(...inspect2(inner, kinds, nestedDialect(program), depth + 1));
+    }
+  }
+  return found;
+}
+function classifyHeavyCommand(bashCommand, kinds) {
+  let best = null;
+  for (const kind of inspect2(bashCommand, kinds, "bash", 0)) {
+    if (best === null || kind.gb > best.gb)
+      best = kind;
+  }
+  return best?.name ?? null;
+}
+function routableKinds(command, kinds, dialect, depth) {
+  const found = [];
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  for (const step of steps) {
+    const words = wordsOf(step.text, dialect);
+    if (words.length === 0 || isAssignmentOnly(words))
+      continue;
+    const invocation = invocationOf(words);
+    if (invocation === undefined)
+      return null;
+    const { program, args } = invocation;
+    if (CHANGE_DIR.has(program))
+      continue;
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined) {
+      if (depth >= MAX_NESTING)
+        return null;
+      const nested = routableKinds(inner, kinds, nestedDialect(program), depth + 1);
+      if (nested === null)
+        return null;
+      found.push(...nested);
+      continue;
+    }
+    const call = toolOf(program, withoutRedirections(args));
+    const kind = call === undefined ? null : kindOfCall(call, kinds);
+    if (kind === null)
+      return null;
+    found.push(kind);
+  }
+  return found;
+}
+function classifyRoutableLine(bashCommand, kinds) {
+  const found = routableKinds(bashCommand, kinds, "bash", 0);
+  if (found === null)
+    return null;
+  let best = null;
+  for (const kind of found) {
+    if (best === null || kind.gb > best.gb)
+      best = kind;
+  }
+  return best?.name ?? null;
+}
+
+// src/hooks/bash-judge.ts
+var CLAUDE_VALUED = [
+  "--add-dir",
+  "--agent",
+  "--agents",
+  "--allowedTools",
+  "--allowed-tools",
+  "--append-system-prompt",
+  "--autocompact",
+  "--betas",
+  "--debug-file",
+  "--disallowedTools",
+  "--disallowed-tools",
+  "--effort",
+  "--environment",
+  "--fallback-model",
+  "--file",
+  "--input-format",
+  "--json-schema",
+  "--max-budget-usd",
+  "--mcp-config",
+  "--model",
+  "--output-format",
+  "--permission-mode",
+  "--permission-prompts",
+  "--plugin-dir",
+  "--plugin-url",
+  "--remote-control-session-name-prefix",
+  "--session-id",
+  "--setting-sources",
+  "--settings",
+  "--system-prompt",
+  "--tools",
+  "-n",
+  "--name"
+];
+var LOOP_KEYWORDS = new Set(["for", "until", "while"]);
+var WATCH_VALUED = ["-n", "--interval"];
+var GH_VALUED = ["-R", "--repo", "--hostname"];
+function hasFlag2(args, ...names) {
+  return args.some((arg) => names.includes(arg) || arg.startsWith("--") && names.some((name) => arg.startsWith(`${name}=`)));
+}
+function optionValue(args, name) {
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === name)
+      return args[index + 1] ?? null;
+    if (arg.startsWith(`${name}=`))
+      return arg.slice(name.length + 1);
+  }
+  return null;
+}
+function positionalsOf(args, valued) {
+  const found = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      found.push(...args.slice(index + 1));
+      break;
+    }
+    if (arg.startsWith("-")) {
+      if (!arg.includes("=") && valued.includes(arg))
+        index++;
+      continue;
+    }
+    found.push(arg);
+  }
+  return found;
+}
+function claudeLaunch(step) {
+  if (step.program !== "claude")
+    return null;
+  const bg = hasFlag2(step.args, "--bg", "--background");
+  const print = hasFlag2(step.args, "-p", "--print");
+  if (!bg && !print)
+    return null;
+  return {
+    effort: optionValue(step.args, "--effort"),
+    form: bg ? "bg" : "print",
+    model: optionValue(step.args, "--model"),
+    prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" ")
+  };
+}
+function isCrewStart(program, args) {
+  return program === COMMAND && args[0] === "crew" && args[1] === "start";
+}
+function isStatusRead(program, args) {
+  if (program === COMMAND && args[0] === "crew") {
+    return args[1] === "list" || args[1] === "status";
+  }
+  return program === "claude" && args[0] === "agents" && hasFlag2(args.slice(1), "--json");
+}
+function isJobRun(program, args) {
+  return program === COMMAND && args[0] === "job" && args[1] === "run";
+}
+function isCiWatch(program, args) {
+  if (program !== "gh")
+    return false;
+  const words = positionalsOf(args, GH_VALUED);
+  if (words[0] === "run" && words[1] === "watch")
+    return true;
+  return words[0] === "pr" && words[1] === "checks" && hasFlag2(args, "--watch");
+}
+function isFullCheck(step) {
+  return toolOf(step.program, step.args)?.script === "check";
+}
+function watchTarget(args) {
+  let index = 0;
+  while (index < args.length && (args[index] ?? "").startsWith("-")) {
+    index += WATCH_VALUED.includes(args[index] ?? "") ? 2 : 1;
+  }
+  const target = args.slice(index);
+  if (target.length === 0)
+    return null;
+  return target.length === 1 ? wordsOf(target[0] ?? "") : target;
+}
+function startsLoop(words) {
+  return LOOP_KEYWORDS.has(words[0] ?? "");
+}
+function isShellStep(step) {
+  return isAssignmentOnly(step.words) || CHANGE_DIR.has(step.program);
+}
+function walk(line, dialect, depth, top, all) {
+  for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
+    const words = wordsOf(step.text, dialect);
+    if (words.length === 0)
+      continue;
+    const invocation = invocationOf(words);
+    if (invocation === undefined)
+      continue;
+    const read = { args: invocation.args, program: invocation.program, words };
+    if (depth === 0)
+      top.push(read);
+    all.push(read);
+    const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING) {
+      walk(inner, nestedDialect(invocation.program), depth + 1, top, all);
+    }
+  }
+}
+function readBash(command) {
+  const top = [];
+  const steps = [];
+  walk(command, "bash", 0, top, steps);
+  let crewStarts = 0;
+  let statusReads = 0;
+  let waits = false;
+  const launches = [];
+  for (const step of steps) {
+    if (isCrewStart(step.program, step.args))
+      crewStarts++;
+    if (isStatusRead(step.program, step.args))
+      statusReads++;
+    if (startsLoop(step.words) || step.program === "sleep")
+      waits = true;
+    const target = step.program === "watch" ? watchTarget(step.args) : null;
+    if (target !== null) {
+      const watched = invocationOf(target);
+      if (watched !== undefined && isStatusRead(watched.program, watched.args)) {
+        statusReads++;
+        waits = true;
+      }
+    }
+    const launch = claudeLaunch(step);
+    if (launch !== null)
+      launches.push(launch);
+  }
+  return { crewStarts, launches, statusReads, steps, top, waits };
+}
+function backgroundFor(top) {
+  if (top.length === 0)
+    return null;
+  const everyStep = (one) => top.every((step) => isShellStep(step) || one(step)) && top.some(one);
+  if (everyStep((step) => isCiWatch(step.program, step.args)))
+    return "ci-watch";
+  if (everyStep((step) => isJobRun(step.program, step.args)))
+    return "job";
+  if (everyStep(isFullCheck))
+    return "check";
+  return null;
+}
+function backgroundLaunchReason() {
+  return [
+    "This starts a raw background session (`claude --bg`): the kit does not record it, its lead never hears it, it runs outside a crew worktree, and it reports to nobody.",
+    "Start the phase as a crew session instead:",
+    `  ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file|->`,
+    `In a session that leads nothing yet, record the lead first: ${COMMAND} crew lead --plan <slug>.`,
+    "The crew session starts on its kind's model and effort; for any other one, start the session yourself."
+  ].join(`
+`);
+}
+function crewStartsNothing(crewId) {
+  return [
+    `This session is the crew session \`${crewId}\`, and a crew session never ${CREW_NEVER_DOES.start}.`,
+    `Hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`
+  ].join(`
+`);
+}
+function pollReason() {
+  return [
+    "This command polls for crew news, and a crew session's news arrives by itself: the lead's watch prints each change, and a monitor wakes the session.",
+    `Read the crew with \`${COMMAND} crew watch\` \u2014 never a loop over \`crew list\`, \`crew status\` or \`claude agents --json\`, and never with \`sleep\` between reads.`
+  ].join(`
+`);
+}
+var PRINT_FORM = "This Bash command starts a Claude Code session in print mode (`claude -p`), and the launch policy judges its model and effort like any Agent launch: name them as `--model <model> --effort <effort>`.";
+function judgeClaudeLaunch(launch, context) {
+  const crew = crewIdOf(context.env);
+  if (launch.form === "bg") {
+    if (crew !== null)
+      return { decision: "deny", reason: crewStartsNothing(crew), why: "bg" };
+    if (!isAttended(context.env)) {
+      return {
+        decision: "deny",
+        reason: `${backgroundLaunchReason()}
+Nobody answers a question in \`claude -p\`, so the raw launch is refused.`,
+        why: "bg"
+      };
+    }
+    return { decision: "ask", reason: backgroundLaunchReason(), why: "bg" };
+  }
+  const guard = readGuardContext(context.paths, context.input, context.env);
+  const verdict = judgeLaunch({
+    effort: launch.effort,
+    fork: false,
+    model: launch.model,
+    prompt: launch.prompt,
+    subagentType: "general-purpose",
+    tool: "Agent"
+  }, guard, context.env);
+  if (verdict.decision === "allow")
+    return null;
+  return { decision: verdict.decision, reason: `${PRINT_FORM}
+${verdict.reason}`, why: "print" };
+}
+function judgeBash(reading, context) {
+  const crew = crewIdOf(context.env);
+  if (crew !== null && reading.crewStarts > 0) {
+    return { decision: "deny", reason: crewStartsNothing(crew), why: "crew-start" };
+  }
+  let ask = null;
+  for (const launch of reading.launches) {
+    const verdict = judgeClaudeLaunch(launch, context);
+    if (verdict === null)
+      continue;
+    if (verdict.decision === "deny")
+      return verdict;
+    ask ??= verdict;
+  }
+  if (ask !== null)
+    return ask;
+  if (reading.statusReads > 0 && reading.waits) {
+    return { decision: "deny", reason: pollReason(), why: "poll" };
+  }
+  return null;
+}
+function judgeAnswer(verdict) {
+  return toolDecision(verdict.decision, verdict.reason);
+}
+function commandOf(input) {
+  const fields = input.tool_input;
+  if (typeof fields !== "object" || fields === null || Array.isArray(fields))
+    return null;
+  return stringField(fields.command);
+}
+function judgedDomain(reading) {
+  return reading.crewStarts > 0 || reading.launches.length > 0 || reading.statusReads > 0 && reading.waits;
+}
+
 // src/hooks/job-route.ts
 var PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 var SHELL_MEANING = /[$`*?[\]{}~<>|&;\n\\]/;
@@ -13083,10 +13359,6 @@ function runsJobRun(command) {
     return deeper !== undefined && isJobRun(deeper.program, deeper.args);
   });
 }
-function isJobRun(program, args) {
-  const base = (program.split(/[\\/]/).pop() ?? program).replace(/\.(cmd|exe|ps1|bat)$/, "");
-  return base === COMMAND && args[0] === "job" && args[1] === "run";
-}
 function routeHeavyCommand(command, kinds, shell) {
   if (runsJobRun(command))
     return null;
@@ -13094,12 +13366,12 @@ function routeHeavyCommand(command, kinds, shell) {
   return kind === null ? null : { command: jobRunCommand(kind, command, shell), kind };
 }
 var REWRITE_SUPPORTED = true;
-function rewriteAnswer(fields, routed) {
+function rewriteAnswer(fields, command, background = false) {
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        updatedInput: { ...fields, command: routed.command }
+        updatedInput: { ...fields, command, ...background ? { run_in_background: true } : {} }
       }
     })
   };
@@ -13112,23 +13384,94 @@ function routeDenial(routed) {
   ].join(`
 `));
 }
+function routesHeavyCommands(config) {
+  return config?.jobs?.route === true;
+}
+function isLead(context) {
+  const sessionId = stringField(context.input.session_id);
+  if (sessionId === null)
+    return false;
+  try {
+    const repo = context.project.mainCheckout ?? context.project.root;
+    return readLead(context.paths.stateDir, repo, sessionId) !== null;
+  } catch {
+    return false;
+  }
+}
+function judgeCommandAnswer(input, context) {
+  const command = commandOf(input);
+  if (command === null)
+    return null;
+  const verdict = judgeBash(readBash(command), {
+    env: context.env,
+    input,
+    paths: context.paths
+  });
+  return verdict === null ? null : judgeAnswer(verdict);
+}
 function jobRoute(context) {
-  if (context.project.config?.jobs?.route !== true)
-    return SILENT;
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null)
     return SILENT;
-  const routed = routeHeavyCommand(command, mergeKinds(context.project.config.jobs?.kinds), routedShell(context.env));
-  if (routed === null)
-    return SILENT;
-  return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed) : routeDenial(routed);
+  const reading = readBash(command);
+  const verdict = judgeBash(reading, {
+    env: context.env,
+    input: context.input,
+    paths: context.paths
+  });
+  if (verdict !== null)
+    return judgeAnswer(verdict);
+  const background = backgroundFor(reading.top);
+  const routed = routesHeavyCommands(context.project.config) ? routeHeavyCommand(command, mergeKinds(context.project.config?.jobs?.kinds), routedShell(context.env)) : null;
+  const lead = routed !== null || background !== null ? isLead(context) : false;
+  if (routed !== null) {
+    return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed.command, lead) : routeDenial(routed);
+  }
+  if (lead && background !== null && fields.run_in_background !== true) {
+    return rewriteAnswer(fields, command, true);
+  }
+  return SILENT;
 }
-function routeFacts(input) {
-  const command = stringField(toolInput(input).command);
+function jobRouteConfigAnswer(message, input, context) {
+  const judged = judgeCommandAnswer(input, context);
+  if (judged !== null)
+    return judged;
+  const command = commandOf(input);
+  if (command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null) {
+    return SILENT;
+  }
+  return toolDecision("ask", `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`);
+}
+function jobRouteOutsideGit(input, context) {
+  return judgeCommandAnswer(input, context) ?? SILENT;
+}
+function jobRouteDomain(input) {
+  const command = commandOf(input);
+  if (command === null)
+    return false;
+  return judgedDomain(readBash(command)) || classifyHeavyCommand(command, mergeKinds(undefined)) !== null;
+}
+function routeFacts(input, context) {
+  const command = commandOf(input);
   if (command === null)
     return {};
-  return { job_run: runsJobRun(command) };
+  const reading = readBash(command);
+  const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
+  const facts = { job_run: runsJobRun(command) };
+  if (reading.launches.length > 0)
+    facts.launches = reading.launches.map((one) => one.form);
+  if (reading.crewStarts > 0)
+    facts.crew_starts = reading.crewStarts;
+  if (reading.statusReads > 0) {
+    facts.status_reads = reading.statusReads;
+    facts.waits = reading.waits;
+  }
+  if (verdict !== null) {
+    facts.decision = verdict.decision;
+    facts.why = verdict.why;
+  }
+  return facts;
 }
 
 // src/hooks/local-files.ts
@@ -14595,11 +14938,11 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
 var LOOPBACK = String.raw`(?:[\w-]+\.)?localhost|127(?:\.\d{1,3}){0,3}|0\.0\.0\.0|0x7f[\da-f.x]*|2130706433|\[?::1?\]?|\[?::ffff:[\d.]+\]?`;
 var PORTAL_ADDRESS = new RegExp(String.raw`(?<![\w.:-])(?:${LOOPBACK})[\s:/,'")\]]{1,8}${DEFAULT_PORTAL_PORT}(?!\d)`, "i");
 var PORTAL_QUESTION = `This command reaches the portal's port (${DEFAULT_PORTAL_PORT}) on this machine. The portal has no sign-in of its own: its pages change the gateway, the safety judge, updates and the workflow settings, the review gate included. It is for you, in your own browser. Allow this only if you asked for it.`;
-function commandOf(input) {
+function commandOf2(input) {
   return stringField(toolInput(input).command) ?? "";
 }
 function judgeShell(input, paths) {
-  const command = commandOf(input);
+  const command = commandOf2(input);
   if (command === "")
     return SILENT;
   const found = { denials: new Set, asks: new Set };
@@ -14663,7 +15006,7 @@ function inEscapeDomain(input) {
   const tool = stringField(input.tool_name) ?? "";
   if (ESCAPE_EDIT_TOOLS.includes(tool))
     return true;
-  return ESCAPE_SHELL_TOOLS.includes(tool) && DOMAIN_TEXT.test(commandOf(input));
+  return ESCAPE_SHELL_TOOLS.includes(tool) && DOMAIN_TEXT.test(commandOf2(input));
 }
 
 // src/hooks/specs.ts
@@ -14689,7 +15032,7 @@ function judgesCall(inDomain, input) {
 function toolOf2(input) {
   return input === null ? "" : stringField(input.tool_name) ?? "";
 }
-function commandOf2(input) {
+function commandOf3(input) {
   return input === null ? "" : stringField(toolInput(input).command) ?? "";
 }
 var gitGuardHook = {
@@ -14700,7 +15043,7 @@ var gitGuardHook = {
     return command !== null && runsGit(command) ? toolDecision("ask", cannotCheck("this git command", message)) : SILENT;
   },
   onCrash: guardCrash("this git command", (input) => {
-    const command = commandOf2(input);
+    const command = commandOf3(input);
     return command !== "" && runsGit(command);
   }),
   logFacts: (input) => {
@@ -14740,7 +15083,7 @@ var mergeGuardHook = {
     return command === null ? {} : { programs: programsOf(command) };
   },
   onCrash: guardCrash("whether this merge may happen by itself", (input) => {
-    const command = commandOf2(input);
+    const command = commandOf3(input);
     return command !== "" && requestsPullRequestChange(command);
   }),
   run: mergeGuard
@@ -14846,12 +15189,11 @@ var fableSessionHook = {
 var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
-    const command = stringField(toolInput(input).command);
-    return command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null ? SILENT : toolDecision("ask", cannotCheck("whether this project routes heavy commands through its job queue", message));
-  },
+  alwaysOn: true,
+  onConfigProblem: (message, input, _event, _checkout, context) => jobRouteConfigAnswer(message, input, context),
+  outsideGit: (input, _event, _why, context) => jobRouteOutsideGit(input, context),
   logFacts: routeFacts,
-  onCrash: guardCrash("whether this project routes heavy commands through its job queue", (input) => classifyHeavyCommand(commandOf2(input), mergeKinds(undefined)) !== null),
+  onCrash: guardCrash("whether this launch or heavy command may run", jobRouteDomain),
   run: jobRoute
 };
 function cwdOf(input) {

@@ -17,7 +17,7 @@ import type { SessionRecord } from "../hooks/sessions";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
-import { REPORT_COMMAND } from "./brief";
+import { CREW_NEVER_DOES, type LeadCommand, REPORT_COMMAND } from "./brief";
 import { bypassReason, settingsFilesOf } from "./bypass";
 import type { CrewContext } from "./context";
 import { runningCrew } from "./places";
@@ -43,18 +43,11 @@ export function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The commands a lead runs, and what a crew session never does with each. */
-export const LEAD_COMMANDS = ["lead", "start", "answer", "watch", "resume"] as const;
-export type LeadCommand = (typeof LEAD_COMMANDS)[number];
-
-/** What a crew session never does, per command, in the words the refusal uses. */
-const NEVER_DOES: Record<LeadCommand, string> = {
-  answer: "answers its lead's questions",
-  lead: "leads",
-  resume: "stops, removes or resumes crew sessions",
-  start: "starts crew sessions",
-  watch: "watches its lead's crew sessions",
-};
+/**
+ * The commands a lead runs, and what a crew session never does with each: one home in
+ * `./brief.ts`, with the Bash judge, which denies the same commands.
+ */
+const NEVER_DOES = CREW_NEVER_DOES;
 
 /** How the command reads the session that runs it. */
 export interface CallerOptions {

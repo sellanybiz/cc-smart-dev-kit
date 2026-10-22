@@ -259,7 +259,7 @@ describe("a project that used the old anymodel name", () => {
       engineLine(".claude/settings.json", ["worktree-create", "worktree-remove", "subagent-stop"]),
       "! project: the plugin's git-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list \"git-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's merge-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of merge-guard, list \"merge-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
-      "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of job-route, list \"job-route\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
+      "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. The plugin's job-route cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer",
     ]);
   });
 
@@ -290,6 +290,9 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
   };
   const both = (plugin: string, command: string, on: string) =>
     `! project: the plugin's ${plugin} and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. If that is the project's own copy of ${plugin}, list "${plugin}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
+  /** `job-route` is `alwaysOn` since 1.0.0: no project can switch it off, so the warning says so. */
+  const bothJobRoute = (command: string, on: string) =>
+    `! project: the plugin's job-route and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. The plugin's job-route cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer`;
 
   test("a project hook next to a plugin hook it does not list: one ! warning each, not a failure", () => {
     const repo = makeRepo();
@@ -298,7 +301,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     expect(check(repo)).toEqual([
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
-      both("job-route", "./guard.sh", "PreToolUse (Bash)"),
+      bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "bun p.ts", "UserPromptSubmit"),
@@ -315,7 +318,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       "· project: the plugin's git-guard is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
-      both("job-route", "./guard.sh", "PreToolUse (Bash)"),
+      bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
     ]);
   });
@@ -364,6 +367,25 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     ]);
     const env = hookEnv();
     expect(projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS).every((l) => l.ok)).toBe(true);
+  });
+
+  test("a hook no project can switch off any more (job-route): one · line that it silences nothing, and a copy still warns", () => {
+    // A project file written before 1.0.0 may list it: the strict parse still accepts the name,
+    // and the plugin's copy answers all the same (the frame skips the ownHooks step), so a
+    // project's own copy beside it is still two answers.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["job-route"] });
+    writeClaudeFile(repo, "settings.json", {
+      hooks: {
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh" }] }],
+      },
+    });
+    expect(check(repo)).toEqual([
+      '· project: .claude/cc-smart-dev-kit.json lists job-route in ownHooks, a plugin hook no project can switch off any more: it silences nothing. Take "job-route" out of ownHooks',
+      both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
+      bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
+    ]);
   });
 
   test("a project hook for every tool runs next to each plugin hook on that event, for all its tools", () => {

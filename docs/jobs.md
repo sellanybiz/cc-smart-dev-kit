@@ -127,7 +127,23 @@ anything else (a pipe, `&&`, a glob, an expansion) through the **person's own sh
 it, else `sh` — never `/bin/sh`, which is dash on Debian and Ubuntu, and cannot read bash
 syntax), so the shell reads exactly what was written, the way the person's terminal would
 have. A command already inside `cc-smart-dev-kit job run` is left alone. Off unless the project
-says so, because it changes the call; `ownHooks` silences it like any other plugin hook.
+says so, because it changes the call.
+
+**The hook is the kit's one Bash judge, and it is machine-wide.** It runs outside git, and with
+no `cc-smart-dev-kit.json` or a broken one, because its other part judges what a Bash line does
+besides running — a raw `claude --bg` (an ask, showing the `crew start` line; a denial in
+`claude -p`), `claude -p` (the launch policy every Agent launch meets), a crew session's
+`crew start` (denied), and a polling loop over `crew list|status` or `claude agents --json`
+(denied: the news arrives by itself). `ownHooks` cannot switch it off (`alwaysOn`): a session
+must not be able to switch off the limits on its own launches by editing a file it owns. A
+project file that still lists `"job-route"` keeps parsing and silences nothing; `doctor` says
+the name can go. The whole rule is `docs/design.md` § The Bash judge and the job route.
+
+**In a lead, the hook also moves waits to the background.** In a session recorded as a lead
+(`crew lead`), a CI watch (`gh pr checks --watch`, `gh run watch`), a routed heavy job and the
+project's full check (`bun run check`, `npm run check`, … its package manager's `check` script)
+answer with `run_in_background: true` added to `updatedInput`, so the lead starts the work and
+goes on to what its crew's news unblocks (D22).
 
 **Only a line whose every command is heavy, a `cd` or an assignment is queued**
 (`classifyRoutableLine` in `src/jobs/classify.ts`); any other line runs raw. Claude Code

@@ -17,7 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
 import { crewEventsFile, leadFile, notesStateFile, writeStoreFile } from "../crew/store";
-import { PLUGIN_HOOK_NAMES } from "../project/config";
+import { PLUGIN_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
 import {
   hookEnv,
   makeClone,
@@ -256,17 +256,26 @@ const CASES: Case[] = [
   {
     spec: jobRouteHook,
     own: { event: "PreToolUse", matcher: "Bash" },
+    machineWide: true,
+    alwaysOn: true,
     setup: (config) => ({
       input: {
         hook_event_name: "PreToolUse",
         session_id: SESSION,
         cwd: project(config),
         tool_name: "Bash",
-        tool_input: { command: "bunx tsc --noEmit" },
+        tool_input: { command: "claude --bg 'do the phase'" },
       },
       env: hookEnv(),
     }),
-    failsClosed: askLine,
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("ask");
+      expect(output.permissionDecisionReason).toContain(
+        "crew start <phase> --slug <slug> --kind <kind> --brief <file|->",
+      );
+    },
   },
   {
     spec: mainFolderGuardHook,
@@ -463,10 +472,15 @@ test("ownHooks accepts exactly the plugin's hooks that a project can switch off"
   const listed: string[] = [...PLUGIN_HOOK_NAMES];
   const switchable = HOOKS.filter((spec) => spec.alwaysOn !== true).map((spec) => spec.name);
   expect(listed.sort()).toEqual(switchable.sort());
-  // An `alwaysOn` hook is wired and in the table, and its name is refused by the strict parse.
+  // An `alwaysOn` hook is wired and in the table, and `ownHooks` cannot switch it off. A name
+  // a project file may already list for one (`UNSWITCHABLE_HOOK_NAMES`) still parses and
+  // silences nothing.
   expect(HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name)).toEqual([
     "session-escape-guard",
+    "job-route",
   ]);
+  const alwaysOn = HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name);
+  expect([...UNSWITCHABLE_HOOK_NAMES].every((name) => alwaysOn.includes(name))).toBe(true);
 });
 
 /** The full config, with `ownHooks` listing this hook. */
