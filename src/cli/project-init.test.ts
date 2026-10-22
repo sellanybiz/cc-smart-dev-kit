@@ -13,6 +13,7 @@ import {
   askedAnswers,
   defaultAnswers,
   defaultBranchOf,
+  defaultFastCheck,
   detectFacts,
   type ProjectInitContext,
   type ProjectInitRunner,
@@ -107,6 +108,8 @@ describe("the flags", () => {
       "hotfix/=main,release/=main",
       "--protected",
       "main,dev",
+      "--check",
+      "bun run typecheck",
       "--guard-main-folder",
       "--session-names",
       "--job-route",
@@ -120,12 +123,23 @@ describe("the flags", () => {
         base: "dev",
         bases: { "hotfix/": "main", "release/": "main" },
         protectedBranches: ["main", "dev"],
+        check: "bun run typecheck",
         guardMainFolder: true,
         sessionNames: true,
         jobRoute: true,
         workflow: ["openPr=draft", "autoCommit=true"],
       },
     });
+  });
+
+  test("the fast check has both answers: a command, and --no-check (the last one wins)", () => {
+    expect(parseFlags(["--no-check"])).toEqual({
+      flags: { dryRun: false, yes: false, check: "" },
+    });
+    expect(parseFlags(["--check", "bun run check", "--no-check"])).toEqual({
+      flags: { dryRun: false, yes: false, check: "" },
+    });
+    expect(parseFlags(["--check"])).toEqual({ error: "--check needs a value" });
   });
 
   test.each(["--prefix", "--setup", "--no-setup", "--engine"])(
@@ -261,8 +275,62 @@ describe("the defaults from the repo", () => {
     ).toEqual([]);
   });
 
+  test("the fast check comes from package.json's scripts, with the lockfile's package manager", () => {
+    const root = tempDir("project-init");
+    expect(defaultFastCheck(root)).toBe(null);
+    writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: { build: "tsc" } })}\n`);
+    // A script that does not check anything is no default.
+    expect(defaultFastCheck(root)).toBe(null);
+    writeFileSync(
+      join(root, "package.json"),
+      `${JSON.stringify({ scripts: { test: "bun test", typecheck: "tsc --noEmit" } })}\n`,
+    );
+    // No lockfile: npm is the one that is there with any Node.
+    expect(defaultFastCheck(root)).toBe("npm run typecheck");
+    writeFileSync(join(root, "bun.lock"), "");
+    expect(defaultFastCheck(root)).toBe("bun run typecheck");
+    writeFileSync(
+      join(root, "package.json"),
+      `${JSON.stringify({ scripts: { check: "bun run typecheck && bun test" } })}\n`,
+    );
+    // A script named `check` is the project's own word for it: it wins over the others.
+    expect(defaultFastCheck(root)).toBe("bun run check");
+  });
+
+  test("a broken package.json, or a scripts list that is not one: no default", () => {
+    const root = tempDir("project-init");
+    writeFileSync(join(root, "package.json"), "{ not json");
+    expect(defaultFastCheck(root)).toBe(null);
+    writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: ["check"] })}\n`);
+    expect(defaultFastCheck(root)).toBe(null);
+  });
+
+  test("the fast check: the flag wins, then the project's file, then the repo", () => {
+    const facts = {
+      defaultBranch: "main",
+      protectedFromGithub: [],
+      fastCheck: "bun run typecheck",
+    };
+    const flags = { dryRun: false, yes: false };
+    expect(defaultAnswers(null, facts, flags).checks).toEqual({ fast: "bun run typecheck" });
+    // The file's own answer wins over what the repo suggests.
+    expect(defaultAnswers({ checks: { fast: "bun run check" } }, facts, flags).checks).toEqual({
+      fast: "bun run check",
+    });
+    // A flag wins over both, and --no-check is a real answer: none, even over the file.
+    expect(
+      defaultAnswers({ checks: { fast: "bun run check" } }, facts, { ...flags, check: "bun test" })
+        .checks,
+    ).toEqual({ fast: "bun test" });
+    expect(
+      defaultAnswers({ checks: { fast: "bun run check" } }, facts, { ...flags, check: "" }).checks,
+    ).toBe(null);
+    // The repo suggests nothing: no check, unless the file says one.
+    expect(defaultAnswers(null, { ...facts, fastCheck: null }, flags).checks).toBe(null);
+  });
+
   test("a flag wins, then the project's own file, then the repo", () => {
-    const facts = { defaultBranch: "main", protectedFromGithub: ["release"] };
+    const facts = { defaultBranch: "main", protectedFromGithub: ["release"], fastCheck: null };
     const flags = { dryRun: false, yes: false };
     const fromRepo = defaultAnswers(null, facts, flags);
     expect(fromRepo.base).toBe("main");
@@ -316,7 +384,7 @@ describe("the defaults from the repo", () => {
   });
 
   test("--workflow merges into the file's policy: a key changes only its own field (F5-3)", () => {
-    const facts = { defaultBranch: "main", protectedFromGithub: [] };
+    const facts = { defaultBranch: "main", protectedFromGithub: [], fastCheck: null };
     const existing = {
       worktrees: { base: "main" },
       workflow: {
@@ -350,7 +418,7 @@ describe("the defaults from the repo", () => {
 describe("the questions on a terminal", () => {
   const DEFAULTS = defaultAnswers(
     null,
-    { defaultBranch: "main", protectedFromGithub: [] },
+    { defaultBranch: "main", protectedFromGithub: [], fastCheck: null },
     { dryRun: false, yes: false },
   );
 
@@ -358,33 +426,51 @@ describe("the questions on a terminal", () => {
     const { prompts, shown } = scripted([]);
     expect(askedAnswers(prompts, DEFAULTS)).toEqual(DEFAULTS);
     expect(shown).toEqual([
-      "[1/7] Base branch: the branch a new worktree starts from [main] ",
-      '[2/7] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
-      '[3/7] Protected branches: the git guard asks before a push to these, comma separated ("none" for none) [main] ',
-      '[4/7] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.events=finished failed ("none" for none) ',
-      "[5/7] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
-      "[6/7] Name each session after its task? [Y/n] ",
-      "[7/7] Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns? [y/N] ",
+      "[1/8] Base branch: the branch a new worktree starts from [main] ",
+      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '[3/8] Protected branches: the git guard asks before a push to these, comma separated ("none" for none) [main] ',
+      '[4/8] The fast check a session runs before it stops: one command ("none" for none) [none] ',
+      '[5/8] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.events=finished failed ("none" for none) ',
+      "[6/8] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
+      "[7/8] Name each session after its task? [Y/n] ",
+      "[8/8] Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns? [y/N] ",
     ]);
   });
 
   test('the answers replace the defaults, and "none" empties a list', () => {
-    const { prompts } = scripted(["dev", "release/=main", "none", null, null, "no", "yes"]);
+    const { prompts } = scripted([
+      "dev",
+      "release/=main",
+      "none",
+      "bun test src/changed",
+      null,
+      null,
+      "no",
+      "yes",
+    ]);
     const after = askedAnswers(prompts, DEFAULTS);
     expect(after.base).toBe("dev");
     expect(after.bases).toEqual({ "release/": "main" });
     expect(after.protectedBranches).toEqual([]);
+    expect(after.checks).toEqual({ fast: "bun test src/changed" });
     expect(after.guards).toEqual({ guardMainFolder: true, sessionNames: false, jobRoute: true });
     expect(after.workflow).toEqual({});
+  });
+
+  test('"none" on the fast check writes none: the field goes', () => {
+    const { prompts } = scripted(["main", null, null, "none"]);
+    expect(askedAnswers(prompts, { ...DEFAULTS, checks: { fast: "bun run check" } }).checks).toBe(
+      null,
+    );
   });
 
   test("an answer that is not understood is asked again once, with the reason", () => {
     const { prompts, shown } = scripted([null, "release=dev", "release/=dev"]);
     expect(askedAnswers(prompts, DEFAULTS).bases).toEqual({ "release/": "dev" });
     expect(shown.slice(1, 4)).toEqual([
-      '[2/7] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
       '! Not understood: "release=dev" is not prefix=base (the prefix ends with "/").\n',
-      '[2/7] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
     ]);
   });
 });
@@ -687,11 +773,21 @@ describe("the run", () => {
 
   test("the questions, answered on a terminal, are what gets written", () => {
     const repo = makeRepo();
-    // The base, Enter on the six others, then a yes to the write.
-    const { prompts, shown } = scripted(["integration", null, null, null, null, null, null, "y"]);
+    // The base, Enter on the seven others, then a yes to the write.
+    const { prompts, shown } = scripted([
+      "integration",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "y",
+    ]);
     const run = context(repo, { prompts });
     expect(runProjectInit([], run.context, runner({}))).toBe(0);
-    expect(run.lines[2]).toBe("7 questions. Enter keeps the answer in [brackets].");
+    expect(run.lines[2]).toBe("8 questions. Enter keeps the answer in [brackets].");
     expect(
       (
         JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")) as {

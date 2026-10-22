@@ -55,6 +55,7 @@ import {
   sessionEscapeGuardHook,
   sessionNameHook,
   subagentBackgroundHook,
+  verifyGateHook,
   worktreeLeftoversHook,
 } from "./specs";
 
@@ -453,6 +454,53 @@ const CASES: Case[] = [
       expect(result.exitCode ?? 0).toBe(0);
       expect(result.stdout).toBeUndefined();
       expect(result.stderr).toStartWith("cc-smart-dev-kit subagent-background: ");
+    },
+  },
+  {
+    spec: verifyGateHook,
+    own: { event: "Stop" },
+    setup: (config) => {
+      // The hook speaks only when the project names its fast check, so every config the shared
+      // rows write gets one — except "no file", which must stay no file.
+      const withCheck =
+        typeof config === "object" && config !== null && !Array.isArray(config)
+          ? { ...(config as Record<string, unknown>), checks: { fast: "bun run typecheck" } }
+          : config;
+      const repo = project(withCheck);
+      // This session's transcript: one edit, and no Bash call that ran the check.
+      const transcript = join(tempDir("verify-gate-transcript"), "session.jsonl");
+      writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_edit",
+                name: "Edit",
+                input: { file_path: "src/a.ts" },
+              },
+            ],
+          },
+        })}\n`,
+      );
+      return {
+        input: {
+          hook_event_name: "Stop",
+          session_id: SESSION,
+          cwd: repo,
+          stop_hook_active: false,
+          transcript_path: transcript,
+        },
+        env: hookEnv(),
+      };
+    },
+    // One stderr line, exit 0: a reminder never stops a person's work.
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      expect(result.stdout).toBeUndefined();
+      expect(result.stderr).toStartWith("cc-smart-dev-kit verify-gate: ");
     },
   },
   {

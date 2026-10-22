@@ -197,6 +197,41 @@ export interface DetectedFacts {
   defaultBranch: string;
   /** The branches GitHub protects; empty when unknown. */
   protectedFromGithub: string[];
+  /** The fast check `package.json`'s scripts suggest; null when none is obvious. */
+  fastCheck: string | null;
+}
+
+/** The script names that make an obvious fast check, the cheapest first. */
+const FAST_CHECK_SCRIPTS = ["check", "typecheck", "lint", "test"] as const;
+
+/** The prefix a `package.json` script runs with, read from the lockfile beside it. */
+function runnerOf(root: string): string {
+  if (existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb"))) return "bun run";
+  if (existsSync(join(root, "pnpm-lock.yaml"))) return "pnpm run";
+  if (existsSync(join(root, "yarn.lock"))) return "yarn";
+  return "npm run";
+}
+
+/**
+ * The fast check `project init` offers, read from the repo: a `package.json` script that says
+ * the project checks itself (`check` first, then `typecheck`, `lint`, `test`), run with the
+ * package manager the lockfile names. Null when the repo has no `package.json`, no such
+ * script, or one this cannot read: then the question's default is `none`.
+ */
+export function defaultFastCheck(root: string): string | null {
+  const file = join(root, "package.json");
+  if (!existsSync(file)) return null;
+  let scripts: unknown;
+  try {
+    // The one reader of a person-edited JSON file, so a byte order mark is no failure here.
+    const parsed: unknown = parseUserJson(readFileSync(file, "utf8"));
+    scripts = isObject(parsed) ? parsed.scripts : undefined;
+  } catch {
+    return null;
+  }
+  if (!isObject(scripts)) return null;
+  const name = FAST_CHECK_SCRIPTS.find((script) => typeof scripts[script] === "string");
+  return name === undefined ? null : `${runnerOf(root)} ${name}`;
 }
 
 /** Reads the repo's own facts. A failed git call answers as an empty repo does. */
@@ -204,6 +239,7 @@ export function detectFacts(runner: ProjectInitRunner, root: string): DetectedFa
   return {
     defaultBranch: defaultBranchOf(runner, root),
     protectedFromGithub: protectedFromGithub(runner, root),
+    fastCheck: defaultFastCheck(root),
   };
 }
 
@@ -214,6 +250,8 @@ export interface ProjectInitFlags {
   base?: string;
   bases?: Record<string, string>;
   protectedBranches?: string[];
+  /** The fast check, as one command; "" is `--no-check`. */
+  check?: string;
   guardMainFolder?: boolean;
   sessionNames?: boolean;
   jobRoute?: boolean;
@@ -269,6 +307,14 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
             .split(",")
             .filter((word) => word !== "");
           index += 1;
+          break;
+        // The fast check has both answers too: a command, and "none" (or --no-check).
+        case "--check":
+          flags.check = words(arg, argv[index + 1]);
+          index += 1;
+          break;
+        case "--no-check":
+          flags.check = "";
           break;
         // Each yes/no question has both flags, so a run with no terminal can answer either way.
         case "--guard-main-folder":
@@ -385,10 +431,19 @@ export function defaultAnswers(
       : [...new Set([facts.defaultBranch, base, ...facts.protectedFromGithub])].filter(
           (name) => name !== "",
         ));
+  // A file that is already there wins over the detected default, as every answer does.
+  const existingChecks =
+    existing !== null && isObject(existing.checks) && typeof existing.checks.fast === "string"
+      ? { fast: existing.checks.fast }
+      : null;
   return {
     base,
     bases,
     protectedBranches,
+    checks:
+      flags.check !== undefined
+        ? checkAnswer(listAnswer(flags.check))
+        : (existingChecks ?? (facts.fastCheck === null ? null : { fast: facts.fastCheck })),
     guards: {
       guardMainFolder:
         flags.guardMainFolder ??
@@ -439,6 +494,12 @@ function listAnswer(text: string): string {
   return text.trim().toLowerCase() === NONE ? "" : text;
 }
 
+/** A single-command answer: the `none` answer (empty) is no check; anything else is the command. */
+function checkAnswer(text: string): { fast: string } | null {
+  const command = text.trim();
+  return command === "" ? null : { fast: command };
+}
+
 /** Why `check` refused an answer: its error's words, or null when it took it. */
 function refusal(check: () => unknown): string | null {
   try {
@@ -460,6 +521,7 @@ const QUESTIONS = [
     "protectedBranches",
     `Protected branches: the git guard asks before a push to these, comma separated ("${NONE}" for none)`,
   ],
+  ["checks", `The fast check a session runs before it stops: one command ("${NONE}" for none)`],
   [
     "workflow",
     `Workflow policy: what happens by itself after a step, as ${POLICY_EXAMPLE} ("${NONE}" for none)`,
@@ -503,6 +565,9 @@ export function askedAnswers(prompts: Prompts, answers: ProjectInitAnswers): Pro
       default: answers.protectedBranches.join(", "),
     }),
   );
+  const checksText = listAnswer(
+    prompts.ask(numbered("checks"), { default: answers.checks?.fast ?? NONE }),
+  );
   const workflowText = listAnswer(
     prompts.ask(numbered("workflow"), {
       default: shownWorkflow(answers.workflow),
@@ -518,6 +583,7 @@ export function askedAnswers(prompts: Prompts, answers: ProjectInitAnswers): Pro
     base: base === "" ? answers.base : base,
     bases: parseBases(basesText),
     protectedBranches: listOf(protectedText),
+    checks: checkAnswer(checksText),
     guards,
     workflow: workflowFromFlags(listOf(workflowText)),
   };
@@ -654,6 +720,10 @@ the project.
   --bases <p=b,p=b>      bases for other branch prefixes (default: hotfix/, release/)
   --protected <a,b>      the branches the git guard asks about (default: the default
                          branch, the base, and GitHub's protected branches)
+  --check <command>      the fast check a session runs before it stops (default: a script in
+                         package.json — check, typecheck, lint or test — with its package
+                         manager; "none" for no check)
+  --no-check             no fast check
   --[no-]guard-main-folder
                          refuse edits in the main checkout itself (or not)
   --[no-]session-names   each session names itself after its task (or not)

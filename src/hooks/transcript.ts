@@ -21,17 +21,21 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The transcript's last `TRANSCRIPT_TAIL_BYTES` bytes, one line per entry. The first line
- * may be cut by the tail and the last one may be half written; the readers skip those.
- * Null when the file cannot be read.
+ * The transcript's last `bytes` bytes (default `TRANSCRIPT_TAIL_BYTES`), one line per entry.
+ * The first line may be cut by the tail and the last one may be half written; the readers
+ * skip those. `bytes` is for a reader that needs more of the session than a model or a title
+ * does (`verify-gate`: one turn's edits and its check runs). Null when the file cannot be read.
  */
-function tailLines(transcriptPath: string): null | string[] {
+export function tailLines(
+  transcriptPath: string,
+  bytes: number = TRANSCRIPT_TAIL_BYTES,
+): null | string[] {
   let text: string;
   try {
     const fd = openSync(transcriptPath, "r");
     try {
       const size = fstatSync(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
       readSync(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
