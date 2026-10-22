@@ -285,8 +285,11 @@ switches `--fallback-model` (a 529 does after three).
    at most every 10 minutes.
 
 **What a person sees.** `gateway status` (the router's health page, `breakers`): `cc-smart-dev-kit-worker:
-all targets limited, holding requests since 21:05 (omniroute:a 429 until 21:07; …)`. The way
-out is in the answer: `cc-smart-dev-kit gateway slot worker <targets>` (a changed chain is served
+all targets limited, holding requests since 21:05 (omniroute:a 429 until 21:07; …)`. The status line
+shows `<slot> slot: every target limited since 21:05 → gateway slot <slot> <targets>` while the
+record is fresh, and a turn that still stops gives the StopFailure alert once per opening
+(§ The limit state, the status line, the alert). The way out is in the answer:
+`cc-smart-dev-kit gateway slot worker <targets>` (a changed chain is served
 within a second), or `gateway breaker worker off` for the old behaviour.
 
 **Without Claude Code's retry watchdog**, the bridge is 11 requests × (240 s hold + a wait of at
@@ -602,7 +605,9 @@ never again after a "no", which it keeps in `~/.claude/cc-smart-dev-kit/statusli
 `--statusline` still sets it. A status line the person changed after setup set it is
 theirs: setup keeps it, and `restore` leaves it). Its parts: the model, a slot on its
 fallback (`⚠ claude-opus-5-5 at its limit → <target> until 13:00`), a limit with no
-fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), and the plan usage
+fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), a slot whose breaker is open
+(`worker slot: every target limited since 21:05 → gateway slot worker <targets>`, from
+`currentBreakers`, so only while the router keeps the record fresh), and the plan usage
 `5h 23% · 7d 41%`, which warns from 85 %. The usage numbers come from the status line's
 own input, `rate_limits.five_hour` / `.seven_day` (`used_percentage`, `resets_at`), which
 Claude Code fills from the `anthropic-ratelimit-unified-*` headers the router passes on
@@ -652,6 +657,23 @@ at once; with no launcher, a plain notification with no action.
   then says what to do (with the gateway off: `gateway on`, then the commands).
 - In `claude -p`, Claude Code may exit before the hook finishes, and the hook is cut off
   (seen live, 2.1.300); in the interactive `claude` it runs to the end.
+
+**The breaker's 429 is the same hook's other alert** (`breakerAlert`, BR2). Claude Code puts
+its own words around the router's message for either login type (`Request rejected (429) ·
+<message>` under an API key, "Server is temporarily limiting requests (not your usage limit)"
+under a subscription), so the slot is read wherever they sit. With a fresh breaker record for
+that slot (`currentBreakers`) the hook alerts **once per opening**: the record's `since` is
+kept in `~/.claude/cc-smart-dev-kit/breaker-alerted.json`, so a second stop of the same
+opening hears nothing, a new opening alerts again, and a record the router stopped touching
+15 minutes ago alerts nothing. The alert names the slot, when the breaker opened, and each
+target with why it rests. On Linux its action runs
+`gateway slot <slot> <the backend targets of the person's other chains>` (`standInChains`;
+never a model the plugin picked); with none it offers no action and points at
+`gateway models`. The last words say "Then send a message to go on", or "Claude Code goes on
+by itself" when the retry watchdog's key is in the settings (`src/setup/retry-watchdog.ts`).
+While the opening is marked, the notifier stays out of a breaker stop too: the StopFailure
+hook owns every one of them (`stopFailureWillAlert`), so a marked stop never becomes the
+notifier's "the turn stopped" line.
 
 **`cc-smart-dev-kit usage`** is not part of the router: it reads Claude Code's transcripts
 (`<config>/projects/*/<session>.jsonl`, `…/<session>/subagents/*.jsonl` and `.meta.json`)

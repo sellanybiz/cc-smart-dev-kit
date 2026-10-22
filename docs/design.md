@@ -323,7 +323,9 @@ An optional local router between Claude Code and the model providers
   unchanged, and the router never fakes its quota headers. The same change caps every
   `retry-after` it relays at 60 (Claude Code fails the request at once above it) and relays a
   backend's refusal as a 424 (Claude Code sends an unknown 400 or 422 again without its deferred
-  tools): `gateway.md` § The breaker.
+  tools): `gateway.md` § The breaker. What the person hears comes from BR2: the status line
+  names an open breaker, and the StopFailure alert says so once per opening, with the person's
+  own other backend targets as the way out (`src/hooks/stop-failure.ts`, `breakerAlert`).
 - A config `aliases` map lets a machine's old model names reach the new slots while it
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through

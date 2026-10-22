@@ -95,6 +95,40 @@ describe("statusline", () => {
     );
   });
 
+  it("a slot whose breaker is open: the part from `currentBreakers`, only while it is open", () => {
+    const state: LimitState = {
+      breakers: {
+        "cc-smart-dev-kit-worker": {
+          held: 2,
+          lastAt: NOW - 60_000,
+          since: NOW - 5 * 60_000,
+          targets: [
+            { status: 429, target: "omniroute:ollama-cloud/glm-5.3-flash", until: NOW + 60_000 },
+          ],
+        },
+      },
+      fallbacks: {},
+      limits: {},
+      version: 1,
+    };
+    expect(statuslineText(input(null, null), state, NOW, "UTC")).toBe(
+      "Opus 5.5 · worker slot: every target limited since 09:55 → gateway slot worker <targets>",
+    );
+    // A record the router stopped touching 15 minutes ago is stale: it goes with the breaker.
+    const stale: LimitState = {
+      ...state,
+      breakers: {
+        "cc-smart-dev-kit-worker": {
+          held: 2,
+          lastAt: NOW - 16 * 60_000,
+          since: NOW - 5 * 60_000,
+          targets: [],
+        },
+      },
+    };
+    expect(statuslineText(input(null, null), stale, NOW, "UTC")).toBe("Opus 5.5");
+  });
+
   it("the warning share is a setting (`alerts.usagePercent`), not a fixed 85", () => {
     // With nothing set the built-in 85 holds (`src/workflow/schema.ts`)...
     expect(statuslineText(input(70, 41.2), EMPTY, NOW, "UTC")).toBe("Opus 5.5 · 5h 70% · 7d 41%");

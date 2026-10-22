@@ -1,6 +1,6 @@
 ---
 name: gateway
-description: Use when the person wants more affordable models behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute, Ollama Cloud or an affordable model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback switch, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, and what never to do. Trigger phrases - "use GLM for subagents", "more affordable subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "use GLM until it resets", "how much is on Opus".
+description: Use when the person wants more affordable models behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute, Ollama Cloud or an affordable model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback and breaker switches, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, and what never to do. Trigger phrases - "use GLM for subagents", "more affordable subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "every target is limited", "use GLM until it resets", "how much is on Opus".
 ---
 
 # The AI Gateway
@@ -88,6 +88,26 @@ Before a new model goes in a slot: compare its context window in `gateway models
 provider's own page, check that it accepts images if the work looks at screenshots, and
 check its cached-input price (subagent tokens are mostly cached re-reads).
 
+## When every target is limited or down (the breaker)
+
+A slot whose every target fails for want of capacity (a 429, a 5xx, a timeout) need not fail
+the request at once. The router holds it, watches the config, and asks one target at a time.
+It then answers a 429 that Claude Code retries by itself, and fakes no usage headers.
+Anthropic's own answers always pass unchanged, and a refused key is never held.
+
+- The hold lasts up to `timeouts.breakerHoldMs` (240000 ms; 60000 for a request that does not
+  stream; `0` holds none). The default is the ceiling; a bigger value is refused.
+- On by default for every slot but the judge: a held safety check would freeze auto mode, so
+  the judge never holds and has no switch.
+- `cc-smart-dev-kit gateway breaker <slot> off` gives the old behaviour: the last answer goes
+  back at once. `gateway breaker <slot> on` turns it back on. The change is live; no restart.
+- What you see: `gateway status` names an open breaker and when each target may answer again.
+  The status line shows `<slot> slot: every target limited since <time> → gateway slot <slot>
+  <targets>`. If a turn still stops, the StopFailure alert says so once per opening.
+- The way out is a new chain: `cc-smart-dev-kit gateway slot <slot> <targets>`, served within
+  a second. Take every target from `gateway models`; never pick one from memory.
+- The whole contract: `docs/gateway.md` § The breaker.
+
 ## Opus and Fable ("use GLM until it resets", "try this model as Opus")
 
 The opus and fable slots work exactly like scout and worker. Any model can answer every
@@ -162,12 +182,16 @@ up).
 
 ## Check health
 
-- `cc-smart-dev-kit gateway status`: router health (requests, fallbacks, resting targets), each
-  backend, the slots, whether Claude Code points at the gateway. Keys are masked.
+- `cc-smart-dev-kit gateway status`: router health (requests, fallbacks, resting targets, open
+  breakers), each backend, the slots, whether Claude Code points at the gateway. Keys are
+  masked.
 - `cc-smart-dev-kit doctor`: the service, the router copy, the health page, each backend.
 - The log: `journalctl --user -u cc-smart-dev-kit-router -f`. One line per request; never a key.
   A target that answers 4xx / 5xx (Anthropic too) gets a `WARN` line with the start of
   its error reason, keys masked: read it first when a slot fails.
+- A backend that refuses a request comes back as a 424, so Claude Code does not send it again
+  without its deferred tools. A refusal about the conversation's length starts "prompt is too
+  long" instead, which starts Claude Code's compaction. Anthropic's own 400 passes unchanged.
 - Every Claude Code request hangs or fails: the router is down. `cc-smart-dev-kit doctor` says
   which: its socket is open but no router answers (requests wait), or the router failed
   to start again and again, so systemd closed its socket (requests are refused at once).

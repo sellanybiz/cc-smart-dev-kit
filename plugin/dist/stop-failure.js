@@ -1,7 +1,7 @@
 // @bun
 // src/entries/stop-failure.ts
-import { existsSync as existsSync6 } from "fs";
-import { join as join6 } from "path";
+import { existsSync as existsSync8 } from "fs";
+import { join as join9 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -189,16 +189,14 @@ function startDetached(platform, argv, options) {
 }
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync5, readFileSync as readFileSync5 } from "fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync2 } from "fs";
+import { join as join8 } from "path";
 
 // src/build-info/names.ts
 var MARKETPLACE = "cc-smart-dev-kit";
 var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
 var COMMAND = "cc-smart-dev-kit";
-
-// src/gateway/config.ts
-import { mkdirSync, readFileSync, statSync } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6040,9 +6038,80 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/setup/file-mode.ts
-function isOwnerOnly(mode, platform = hostPlatform()) {
-  return platform === "win32" || (mode & 63) === 0;
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  version: literal(1)
+});
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
 }
 
 // src/gateway/targets.ts
@@ -6116,6 +6185,64 @@ function familySlotFor(model) {
 }
 var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+// src/gateway/breaker.ts
+var BREAKER_REMINDER_MS = 10 * 60000;
+function slotShortName(slot) {
+  return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
+}
+
+// src/gateway/config.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
+
+// src/setup/file-mode.ts
+function isOwnerOnly(mode, platform = hostPlatform()) {
+  return platform === "win32" || (mode & 63) === 0;
+}
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join4, resolve } from "path";
+var MAX_LINKS = 40;
+function realTarget(file) {
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join4(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync(path));
+  }
+  throw new Error(`${file}: too many symlinks (a loop?)`);
+}
 
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;
@@ -6258,7 +6385,7 @@ function parseConfig(raw) {
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
-    mode = statSync(path).mode;
+    mode = statSync2(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -6267,7 +6394,7 @@ function loadConfigFile(path, platform = hostPlatform()) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(readFileSync2(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -6278,81 +6405,8 @@ ${parsed.error}`);
   return parsed.config;
 }
 
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var breakerTargetSchema = object({
-  status: int().nullable(),
-  target: string2(),
-  until: number2()
-});
-var breakerSchema = object({
-  held: int().min(0),
-  lastAt: number2(),
-  since: number2(),
-  targets: array(breakerTargetSchema)
-});
-var stateSchema = object({
-  breakers: record(string2(), breakerSchema).optional(),
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  version: literal(1)
-});
-function parseLimitState(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = stateSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
-function formatClock(epochSec, nowMs, timeZone) {
-  const at = new Date(epochSec * 1000);
-  const day = (date) => new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone,
-    year: "numeric"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    timeZone
-  }).format(at);
-  if (day(at) === day(new Date(nowMs)))
-    return time;
-  const date = new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    timeZone
-  }).format(at);
-  return `${date} ${time}`;
-}
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
-}
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-
 // src/gateway/settings.ts
-import { existsSync, readFileSync as readFileSync2 } from "fs";
+import { existsSync as existsSync3, readFileSync as readFileSync4 } from "fs";
 
 // src/build-info/index.ts
 var info = {
@@ -6377,6 +6431,109 @@ var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURC
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
+// src/setup/managed-json.ts
+import { createHash } from "crypto";
+import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
+import { join as join5 } from "path";
+
+// src/setup/user-json.ts
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+
+// src/setup/managed-json.ts
+var OWNED_FILE = "owned.json";
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function samePath(a, b) {
+  return a.length === b.length && a.every((segment, index) => segment === b[index]);
+}
+function detectIndent(text) {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
+function readJsonObject(file) {
+  if (!existsSync2(file))
+    return { data: {}, indent: "  ", text: null };
+  const text = readFileSync3(file, "utf8");
+  if (text.trim() === "")
+    return { data: {}, indent: "  ", text };
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
+  }
+  if (!isObject2(parsed))
+    throw new Error(`${file} must hold a JSON object.`);
+  return { data: parsed, indent: detectIndent(text), text };
+}
+function toRecord(entry, file) {
+  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
+    return { path: [...entry] };
+  }
+  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
+    const record = { path: [...entry.path] };
+    if (Object.hasOwn(entry, "value"))
+      record.value = entry.value;
+    if (typeof entry.sha256 === "string")
+      record.sha256 = entry.sha256;
+    return record;
+  }
+  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
+}
+function readOwned(stateDir) {
+  const file = join5(stateDir, OWNED_FILE);
+  if (!existsSync2(file))
+    return {};
+  const parsed = JSON.parse(readFileSync3(file, "utf8"));
+  if (!isObject2(parsed))
+    throw new Error(`Invalid ${file}: expected an object`);
+  const owned = {};
+  for (const [target, entries] of Object.entries(parsed)) {
+    if (!Array.isArray(entries))
+      throw new Error(`Invalid ${file}: expected a list per file`);
+    owned[target] = entries.map((entry) => toRecord(entry, file));
+  }
+  return owned;
+}
+function ownedRecords(stateDir, file) {
+  return readOwned(stateDir)[file] ?? [];
+}
+function hashOf(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function ownership(records, path, current, unchosen) {
+  const record = records.find((entry) => samePath(entry.path, path));
+  if (record === undefined)
+    return "none";
+  if (!current.found)
+    return "changed";
+  if (record.sha256 !== undefined) {
+    if (hashOf(current.value) === record.sha256)
+      return "ours";
+  } else if (!Object.hasOwn(record, "value")) {
+    return "ours";
+  } else if (Bun.deepEquals(current.value, record.value, true)) {
+    return "ours";
+  }
+  return unchosen?.(path, current.value) ? "ours" : "changed";
+}
+function getKey(data, path) {
+  let node = data;
+  for (const segment of path) {
+    if (!isObject2(node) || !Object.hasOwn(node, segment))
+      return { found: false, value: undefined };
+    node = node[segment];
+  }
+  return { found: true, value: node };
+}
+
 // src/gateway/settings.ts
 function gatewayEnv(port) {
   return {
@@ -6400,11 +6557,11 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync(path))
+  if (!existsSync3(path))
     return {};
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync2(path, "utf8"));
+    parsed = JSON.parse(readFileSync4(path, "utf8"));
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -6435,8 +6592,33 @@ function settingsReport(settingsPath) {
   return { baseUrl, loginOverrides, subagentOverrides };
 }
 
+// src/setup/retry-watchdog.ts
+var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
+var RETRY_WATCHDOG_VALUE = "1";
+var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+var RETRY_WATCHDOG_RECHECK_MS = 300000;
+var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
+var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
+var RETRY_WATCHDOG_SETTINGS = [
+  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
+  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)]
+];
+var RETRY_WATCHDOG_QUESTION = "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " + 'Every Claude session on this machine then waits ("Retrying in \u2026"; Esc cancels) with no time limit, ' + "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
+function turnsOn(value) {
+  return ["1", "on", "true", "yes"].includes(String(value).trim().toLowerCase());
+}
+function retryWatchdogState(paths) {
+  const current = getKey(readJsonObject(paths.settingsFile).data, RETRY_WATCHDOG_KEY);
+  if (!current.found)
+    return "off";
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  if (ownership(records, RETRY_WATCHDOG_KEY, current) === "ours")
+    return "ours";
+  return turnsOn(current.value) ? "yours" : "disabled";
+}
+
 // src/project/config.ts
-import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync5 } from "fs";
 
 // src/jobs/kinds.ts
 var matchRuleSchema = union([
@@ -6738,9 +6920,9 @@ function checkRetiredFields(where, raw) {
   throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
 }
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
-  if (!existsSync2(file))
+  if (!existsSync4(file))
     return null;
-  return parseCcSmartDevKitConfig(readFileSync3(file, "utf8"), file, pluginVersion);
+  return parseCcSmartDevKitConfig(readFileSync5(file, "utf8"), file, pluginVersion);
 }
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
@@ -6764,8 +6946,8 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
 }
 
 // src/project/resolve.ts
-import { existsSync as existsSync3, realpathSync, statSync as statSync2 } from "fs";
-import { join as join4 } from "path";
+import { existsSync as existsSync5, realpathSync as realpathSync2, statSync as statSync3 } from "fs";
+import { join as join6 } from "path";
 
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
@@ -6837,13 +7019,13 @@ function findMainCheckout(git, cwd) {
   if (!pathLine)
     return null;
   const path = pathLine.slice("worktree ".length);
-  if (!existsSync3(path) || lines.some((line) => line.startsWith("prunable"))) {
+  if (!existsSync5(path) || lines.some((line) => line.startsWith("prunable"))) {
     throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
-  return realpathSync(path);
+  return realpathSync2(path);
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync3(cwd) || !statSync2(cwd).isDirectory()) {
+  if (!existsSync5(cwd) || !statSync3(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env));
@@ -6865,19 +7047,19 @@ function locateCheckout(cwd, options = {}) {
   }
   if (!top || !gitDir || !common)
     return null;
-  const root = realpathSync(top);
-  const commonDir = realpathSync(common);
-  const isWorktree = realpathSync(gitDir) !== commonDir;
+  const root = realpathSync2(top);
+  const commonDir = realpathSync2(common);
+  const isWorktree = realpathSync2(gitDir) !== commonDir;
   const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
   return { root, commonDir, isWorktree, mainCheckout };
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join4(root, ".claude", "cc-smart-dev-kit.json");
+  const own = join6(root, ".claude", "cc-smart-dev-kit.json");
   let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join4(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    const main = join6(mainCheckout, ".claude", "cc-smart-dev-kit.json");
     config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
@@ -6885,7 +7067,7 @@ function loadProjectConfig(checkout, pluginVersion) {
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -6963,19 +7145,6 @@ var FIND_INSTALL_JS2 = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
-// src/setup/retry-watchdog.ts
-var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
-var RETRY_WATCHDOG_VALUE = "1";
-var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
-var RETRY_WATCHDOG_RECHECK_MS = 300000;
-var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
-var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
-var RETRY_WATCHDOG_SETTINGS = [
-  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
-  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)]
-];
-var RETRY_WATCHDOG_QUESTION = "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " + 'Every Claude session on this machine then waits ("Retrying in \u2026"; Esc cancels) with no time limit, ' + "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
-
 // src/hooks/notify-types.ts
 var PLUGIN_NOTIFY_TYPES = [
   "permission_prompt",
@@ -7028,11 +7197,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync4(file))
+  if (!existsSync6(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync4(file, "utf8"));
+    raw = JSON.parse(readFileSync6(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -7183,15 +7352,15 @@ function windowsToastArgvFor(title, body, critical = false) {
 }
 
 // src/update/major.ts
-import { join as join5 } from "path";
-var MAJOR_NOTES_PATH = join5("src", "update", "major-notes.json");
+import { join as join7 } from "path";
+var MAJOR_NOTES_PATH = join7("src", "update", "major-notes.json");
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart)`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 
 // src/hooks/transcript.ts
-import { closeSync, fstatSync, openSync, readSync } from "fs";
+import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -7199,7 +7368,7 @@ function isJsonObject2(value) {
 function tailLines(transcriptPath) {
   let text;
   try {
-    const fd = openSync(transcriptPath, "r");
+    const fd = openSync2(transcriptPath, "r");
     try {
       const size = fstatSync(fd).size;
       const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
@@ -7207,7 +7376,7 @@ function tailLines(transcriptPath) {
       readSync(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
     } finally {
-      closeSync(fd);
+      closeSync2(fd);
     }
   } catch {
     return null;
@@ -7249,6 +7418,8 @@ function lastClaudeModel(transcriptPath) {
 // src/hooks/stop-failure.ts
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
+var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+) is limited or down since `);
+var BREAKER_ALERT_FILE = "breaker-alerted.json";
 var STATE_FRESH_MS = 2 * 60000;
 var ALERT_WORKER_COMMAND = "alert-worker";
 function isJsonObject3(value) {
@@ -7266,12 +7437,17 @@ function standInChains(config, own) {
   const keys = [...new Set([...first, ...Object.keys(config.slots)])];
   return keys.filter((key) => key !== own && key !== JUDGE_SLOT && Object.hasOwn(config.slots, key)).map((key) => config.slots[key] ?? []);
 }
+function backendTargets(chains) {
+  return [
+    ...new Set(chains.filter((text) => {
+      const parsed = parseTarget(text);
+      return "target" in parsed && parsed.target.kind === "backend";
+    }))
+  ];
+}
 function suggestedTargets(config, first, slot, claim) {
   const chains = standInChains(config, slot.key).flat();
-  const backends = chains.filter((text) => {
-    const parsed = parseTarget(text);
-    return "target" in parsed && parsed.target.kind === "backend";
-  });
+  const backends = backendTargets(chains);
   if (backends.length === 0)
     return null;
   const modelOnly = claim?.endsWith(`_${slot.family}`) === true;
@@ -7326,12 +7502,103 @@ function offerFor(config, slot, model, claim) {
     targets
   };
 }
+function breakerOpening(input, ctx) {
+  if (!isJsonObject3(input) || input.error !== "rate_limit")
+    return null;
+  if (!ctx.gatewaySetUp || ctx.state === null)
+    return null;
+  const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
+  const slot = BREAKER_TEXT.exec(text)?.[1] ?? null;
+  if (slot === null)
+    return null;
+  const found = currentBreakers(ctx.state, ctx.nowMs).find(([name]) => name === slot);
+  return found === undefined ? null : { record: found[1], slot };
+}
+function failedTargets(record, nowMs, timeZone) {
+  return record.targets.map((target) => {
+    const why = target.status === null ? "no answer" : `HTTP ${target.status}`;
+    return `${target.target} ${why} until ${formatClock(Math.ceil(target.until / 1000), nowMs, timeZone)}`;
+  }).join("; ");
+}
+function breakerAlert(input, ctx) {
+  if (!ctx.alerts.events.value.includes("failed"))
+    return null;
+  const opening = breakerOpening(input, ctx);
+  if (opening === null)
+    return null;
+  if (ctx.breakerAlerted[opening.slot] === opening.record.since)
+    return null;
+  const { record, slot } = opening;
+  const short = slotShortName(slot);
+  const since = formatClock(Math.floor(record.since / 1000), ctx.nowMs, ctx.timeZone);
+  const failures = failedTargets(record, ctx.nowMs, ctx.timeZone);
+  const head = `${slot}: every target limited or down since ${since}${failures === "" ? "" : ` (${failures})`}.`;
+  const goOn = ctx.watchdogOn ? "Claude Code goes on by itself." : "Then send a message to go on.";
+  const title = "Gateway slot limited";
+  if (ctx.config === null) {
+    return {
+      alert: {
+        action: null,
+        body: `${head} The gateway config cannot be read, so no other target is offered: ${COMMAND} doctor says why. ${goOn}`,
+        title
+      },
+      since: record.since,
+      slot
+    };
+  }
+  const targets = backendTargets(standInChains(ctx.config, slot).flat());
+  if (targets.length === 0) {
+    return {
+      alert: {
+        action: null,
+        body: `${head} To use another model, pick one: ${COMMAND} gateway models lists them. ${goOn}`,
+        title
+      },
+      since: record.since,
+      slot
+    };
+  }
+  const chain = targets.join(",");
+  const shown = typed([["gateway", "slot", short, chain]]);
+  if (!ctx.gatewayOn) {
+    return {
+      alert: {
+        action: null,
+        body: `${head} To use another model, turn the gateway on first (${COMMAND} gateway on), then: ${shown}. ${goOn}`,
+        title
+      },
+      since: record.since,
+      slot
+    };
+  }
+  return {
+    alert: {
+      action: {
+        commands: [["gateway", "slot", short, chain]],
+        label: `Use ${shortName(targets[0] ?? "")}`
+      },
+      body: `${head} To use another model: ${shown}. ${goOn}`,
+      title
+    },
+    since: record.since,
+    slot
+  };
+}
+function rememberBreakerAlert(paths, alerted, opening) {
+  try {
+    mkdirSync3(paths.stateDir, { recursive: true, mode: 448 });
+    writeFileSync2(join8(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.slot]: opening.since }, null, 2)}
+`, { mode: 384 });
+  } catch {}
+}
 function planAlert(input, ctx) {
   if (!ctx.alerts.events.value.includes("failed"))
     return null;
   if (!isJsonObject3(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
+  if (BREAKER_TEXT.test(text))
+    return null;
   if (NOT_LIMIT_TEXT.test(text))
     return null;
   const limits = ctx.state === null ? [] : currentLimits(ctx.state, ctx.nowMs);
@@ -7386,7 +7653,7 @@ function planAlert(input, ctx) {
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject3(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
-  const gatewaySetUp = existsSync5(paths.gatewayConfigFile);
+  const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
   let config = null;
   if (gatewaySetUp) {
     try {
@@ -7397,7 +7664,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync5(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -7407,18 +7674,37 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   } catch {
     gatewayOn = false;
   }
+  let watchdogOn = false;
+  try {
+    const watchdog = retryWatchdogState(paths);
+    watchdogOn = watchdog === "ours" || watchdog === "yours";
+  } catch {
+    watchdogOn = false;
+  }
   const transcript = isJsonObject3(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
   return {
     alerts: here.alerts,
     alertsProblem: here.problem,
+    breakerAlerted: readBreakerAlerted(paths.stateDir),
     config,
     gatewayOn,
     gatewaySetUp,
     nowMs,
     sessionModel,
-    state
+    state,
+    watchdogOn
   };
+}
+function readBreakerAlerted(stateDir) {
+  try {
+    const raw = JSON.parse(readFileSync7(join8(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    if (!isJsonObject3(raw))
+      return {};
+    return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
+  } catch {
+    return {};
+  }
 }
 var ACTION_WAIT_MS = 30 * 60000;
 function appleString(text) {
@@ -7469,18 +7755,21 @@ async function hook() {
     return;
   const paths = cliPaths();
   const ctx = readAlertContext(paths, Date.now(), input, process.env);
-  const alert = planAlert(input, ctx);
+  const breaker = breakerAlert(input, ctx);
+  const alert = breaker?.alert ?? planAlert(input, ctx);
   if (alert === null)
     return;
   if (ctx.alertsProblem !== null)
     console.error(ctx.alertsProblem);
+  if (breaker !== null)
+    rememberBreakerAlert(paths, ctx.breakerAlerted, breaker);
   if (ctx.alerts.sound.value) {
     const argv = soundArgv("dialog-warning", process.platform, (command) => Bun.which(command, { PATH: process.env.PATH ?? "" }));
     if (argv !== null)
       detached(argv);
   }
-  const launcher = join6(paths.binDir, LAUNCHER_NAME);
-  if (usesAlertWorker(process.platform, existsSync6(launcher))) {
+  const launcher = join9(paths.binDir, LAUNCHER_NAME);
+  if (usesAlertWorker(process.platform, existsSync8(launcher))) {
     detached([launcher, ALERT_WORKER_COMMAND, JSON.stringify(alert)]);
     return;
   }
