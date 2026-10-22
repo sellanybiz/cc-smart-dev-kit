@@ -154,8 +154,9 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 ## A machine-wide hook
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on), `job-route` (the Bash judge: a raw `--bg` launch, a `-p` run's model and effort, a crew
-session's `crew start`, a polling loop), `fable-session` (the model the session itself runs on),
+on), `job-route` (the shell judge, on Bash and PowerShell: a raw `--bg` launch, a `-p` run's
+model and effort, a crew session's `crew start`, a polling loop), `fable-session` (the model the
+session itself runs on),
 `crew-role` (a crew session's own card, ask and report), `lead-notes` (a lead's missed crew
 news) and `notify` (the alerts).
 `playwright-output` is machine-wide too — it puts a file the

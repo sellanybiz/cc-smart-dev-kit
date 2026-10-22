@@ -2236,7 +2236,8 @@ function capturingRunner(env, home) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: CLAUDE_TIMEOUT_MS
+        timeout: CLAUDE_TIMEOUT_MS,
+        windowsHide: true
       });
       return {
         exitCode: result.exitCode ?? 1,

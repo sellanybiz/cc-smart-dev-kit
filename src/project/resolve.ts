@@ -59,6 +59,8 @@ function gitIn(
         stdout: "pipe",
         stderr: "pipe",
         timeout: timeoutMs,
+        // A hook or a crew command may run with no console of its own on Windows.
+        windowsHide: true,
       });
       return {
         ok: result.exitCode === 0,

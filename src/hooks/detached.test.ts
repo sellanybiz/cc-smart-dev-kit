@@ -5,10 +5,13 @@
  * starts, and that a program which will not start is one line, never a throw.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { cmdArgument, detachedArgv, startDetached, windowsRun, windowsStart } from "./detached";
+
+/** True on native Windows, where the POSIX modes and `sh` scripts are not what the tests assume. */
+const NO_POSIX_MODES = process.platform === "win32";
 
 /** Waits for `check` to say yes, up to `timeoutMs`; false when it never does. */
 async function until(check: () => boolean, timeoutMs = 5_000): Promise<boolean> {
@@ -99,40 +102,70 @@ describe("detachedArgv", () => {
 });
 
 describe("startDetached", () => {
-  test("Linux: the program runs, and starting it reports nothing", async () => {
-    const dir = tempDir("detached");
-    const marker = join(dir, "ran");
-    const errors: string[] = [];
-    startDetached(
-      "linux",
-      [process.execPath, "-e", `await Bun.write(${JSON.stringify(marker)}, "ran")`],
-      { onError: (message) => errors.push(message) },
-    );
-    expect(await until(() => existsSync(marker))).toBe(true);
-    expect(readFileSync(marker, "utf8")).toBe("ran");
-    expect(errors).toEqual([]);
-  });
+  test.skipIf(NO_POSIX_MODES)(
+    "Linux: the program runs, and starting it reports nothing",
+    async () => {
+      const dir = tempDir("detached");
+      const marker = join(dir, "ran");
+      const errors: string[] = [];
+      startDetached(
+        "linux",
+        [process.execPath, "-e", `await Bun.write(${JSON.stringify(marker)}, "ran")`],
+        { onError: (message) => errors.push(message) },
+      );
+      expect(await until(() => existsSync(marker))).toBe(true);
+      expect(readFileSync(marker, "utf8")).toBe("ran");
+      expect(errors).toEqual([]);
+    },
+  );
 
-  test("Linux: a program that is not there is one line, never a throw", async () => {
-    const errors: string[] = [];
-    startDetached("linux", ["/no/such/program/here"], {
-      onError: (message) => errors.push(message),
-    });
-    expect(await until(() => errors.length > 0)).toBe(true);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("/no/such/program/here");
-  });
+  test.skipIf(!NO_POSIX_MODES)(
+    "Windows: the trampoline starts a program that outlives this call",
+    async () => {
+      // The real path the notifier, the usage alert and the background clean take: `cmd /c
+      // start "" /b`, which breaks the child out of Bun's kill-on-close job object. On Linux
+      // this case is the `Linux:` one above; here it runs on the platform it exists for.
+      const dir = tempDir("detached-windows");
+      const script = join(dir, "marker.js");
+      const marker = join(dir, "ran");
+      writeFileSync(script, `await Bun.write(${JSON.stringify(marker)}, "ran");\n`);
+      const errors: string[] = [];
+      startDetached("win32", [process.execPath, script], {
+        onError: (message) => errors.push(message),
+      });
+      expect(await until(() => existsSync(marker), 10_000)).toBe(true);
+      expect(readFileSync(marker, "utf8")).toBe("ran");
+      expect(errors).toEqual([]);
+    },
+  );
 
-  test("Windows: a program that will not start is one line, never a throw", () => {
-    const errors: string[] = [];
-    // The trampoline's `cmd` is not here (this test is not on Windows), so the start fails
-    // the way a missing program fails there: one line through `onError`.
-    startDetached("win32", ["definitely-not-a-program"], {
-      onError: (message) => errors.push(message),
-    });
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("cmd");
-  });
+  test.skipIf(NO_POSIX_MODES)(
+    "Linux: a program that is not there is one line, never a throw",
+    async () => {
+      const errors: string[] = [];
+      startDetached("linux", ["/no/such/program/here"], {
+        onError: (message) => errors.push(message),
+      });
+      expect(await until(() => errors.length > 0)).toBe(true);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("/no/such/program/here");
+    },
+  );
+
+  test.skipIf(NO_POSIX_MODES)(
+    "Windows: a program that will not start is one line, never a throw",
+    () => {
+      const errors: string[] = [];
+      // `cmd` is not here (this test runs where the POSIX modes do), so the trampoline cannot
+      // start: one line through `onError`. On Windows the `Windows:` case above proves the
+      // start itself.
+      startDetached("win32", ["definitely-not-a-program"], {
+        onError: (message) => errors.push(message),
+      });
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("cmd");
+    },
+  );
 
   test("Windows: an argument cmd.exe cannot carry is one line, and nothing runs", () => {
     const errors: string[] = [];

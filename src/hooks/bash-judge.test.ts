@@ -24,13 +24,13 @@ const SESSION = "11111111-2222-3333-4444-555555555555";
 const CREW_ID = "W4-judge-1a2b3c";
 const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
 
-/** The `hooks.json` input for one Bash call in `cwd`. */
-function call(cwd: string, command: string): Record<string, unknown> {
+/** The `hooks.json` input for one shell call in `cwd`, run by `tool`. */
+function call(cwd: string, command: string, tool = "Bash"): Record<string, unknown> {
   return {
     hook_event_name: "PreToolUse",
     session_id: SESSION,
     cwd,
-    tool_name: "Bash",
+    tool_name: tool,
     tool_input: { command },
   };
 }
@@ -52,8 +52,9 @@ async function judge(
   repo: string,
   command: string,
   env: Record<string, string>,
+  tool = "Bash",
 ): Promise<{ decision: string | undefined; reason: string }> {
-  const answer = output(await runHook(jobRouteHook, call(repo, command), env));
+  const answer = output(await runHook(jobRouteHook, call(repo, command, tool), env));
   return {
     decision: answer.permissionDecision as string | undefined,
     reason: (answer.permissionDecisionReason as string | undefined) ?? "",
@@ -265,6 +266,72 @@ describe("the judge ignores the project's switches", () => {
     // A plain folder, no .git: the frame's outsideGit step.
     const folder = tempDir("outside-git");
     expect((await judge(folder, "claude --bg 'x'", env)).decision).toBe("ask");
+  });
+});
+
+describe("the judge reads the PowerShell tool too (native Windows)", () => {
+  test("a raw `claude --bg` in PowerShell asks, as it does in Bash", async () => {
+    const { env, repo } = project({});
+    const answer = await judge(repo, "claude --bg --name probe 'do the phase'", env, "PowerShell");
+    expect(answer.decision).toBe("ask");
+    expect(answer.reason).toContain("cc-smart-dev-kit crew start <phase>");
+  });
+
+  test("claude as Windows names it: claude.cmd, and a full path invoked with `&`", async () => {
+    const { env, repo } = project({});
+    for (const command of [
+      "claude.cmd --bg --name probe 'do the phase'",
+      String.raw`& "C:\Users\me\.local\bin\claude.exe" --bg --name probe 'do the phase'`,
+    ]) {
+      expect((await judge(repo, command, env, "PowerShell")).decision).toBe("ask");
+    }
+  });
+
+  test("a `claude -p` run is judged by the launch policy in PowerShell too", async () => {
+    const { env, repo } = project({});
+    const answer = await judge(repo, "claude -p 'do it'", env, "PowerShell");
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toContain("name them as `--model <model> --effort <effort>`");
+  });
+
+  test("a crew session's `crew start` in PowerShell is denied", async () => {
+    const { env, repo } = project({});
+    const answer = await judge(
+      repo,
+      "cc-smart-dev-kit crew start K --slug x",
+      {
+        ...env,
+        CC_SMART_DEV_KIT_CREW: CREW_ID,
+      },
+      "PowerShell",
+    );
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toContain("a crew session never starts crew sessions");
+  });
+
+  test("a PowerShell polling loop is denied; a single read passes", async () => {
+    const { env, repo } = project({});
+    for (const command of [
+      "while ($true) { cc-smart-dev-kit crew list }",
+      "while ($true) { cc-smart-dev-kit crew list; Start-Sleep 5 }",
+      "foreach ($i in 1..3) { cc-smart-dev-kit crew status app }",
+    ]) {
+      const answer = await judge(repo, command, env, "PowerShell");
+      expect(answer.decision).toBe("deny");
+      expect(answer.reason).toContain("polls for crew news");
+    }
+    expect(await judge(repo, "cc-smart-dev-kit crew list", env, "PowerShell")).toEqual({
+      decision: undefined,
+      reason: "",
+    });
+  });
+
+  test("the queue route stays Bash-only: a PowerShell heavy line is left as it is", async () => {
+    const { env, repo } = project({ jobs: { route: true } });
+    // The rewritten line is a `sh` line (`routedShell`), which the PowerShell tool cannot run.
+    expect(
+      output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit", "PowerShell"), env)),
+    ).toEqual({});
   });
 });
 

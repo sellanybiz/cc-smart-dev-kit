@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The proof the Windows CI job runs, on a real Windows machine, that the plugin's hooks work
-# there (docs/windows-hooks.md says why each piece is shaped the way it is). Three cases:
+# there (docs/windows-hooks.md says why each piece is shaped the way it is). Five cases:
 #
 #   1. a hook bundle runs through the shim, through Git Bash — the shell Claude Code gives a
 #      shell-form hook on Windows — and the git guard answers;
@@ -8,7 +8,12 @@
 #   3. the line `cc-smart-dev-kit setup` writes into the person's own settings runs: the shell
 #      expands `$HOME`, and Git Bash runs the extensionless `#!/bin/sh` launcher under it
 #      (Windows has no execute bit, so what runs it is Git Bash's own rule for a file
-#      starting with `#!`).
+#      starting with `#!`);
+#   4. `--missing=fail`, the mode the plugin's command runs: no bun is one line on stderr and
+#      exit 1, because a command must never report success when it did not run;
+#   5. every command in `plugin/monitors/monitors.json` runs the launcher through `$HOME`, the
+#      same line shape as the user hook (whether Claude Code starts a monitor through Git Bash
+#      on Windows is a live check, docs/windows-setup.md).
 #
 # The same shell and the same checks run on Linux and macOS, so this is not Windows-only code
 # that nothing else exercises: `bash scripts/windows-hook-smoke.sh`.
@@ -98,4 +103,35 @@ esac
 ran="$(HOME="$home" "$bash_bin" -c "$line")"
 [ "$ran" = "launcher ran: hook notify" ] || fail "the user-wired line did not run the launcher: $ran"
 
-echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, and the user-wired line ran"
+# 4. With no bun anywhere, `--missing=fail` — the mode `plugin/bin/cc-smart-dev-kit` runs the
+#    command through — writes one line on stderr and exits 1. A command that did not run must
+#    never report success.
+set +e
+refusal="$(printf '%s' "$input" | BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=fail "$guard" 2>&1 >/dev/null)"
+code=$?
+set -e
+[ "$code" = 1 ] || fail "--missing=fail exited $code, not 1: $refusal"
+case "$refusal" in
+  *"the command did not run"*) ;;
+  *) fail "--missing=fail did not say the command did not run: $refusal" ;;
+esac
+
+# 5. The plugin's monitors, from the file itself: each command is one shell line naming the
+#    launcher through `$HOME`. Git Bash expands `$HOME` and runs the extensionless launcher
+#    under it (the same rule case 3 proves). The launcher is the same stand-in: what is proved
+#    here is the line, not the command behind it.
+monitors="$(cd "$root" && bun -e 'const { readFileSync } = await import("node:fs"); const all = JSON.parse(readFileSync("plugin/monitors/monitors.json", "utf8")); for (const one of all) console.log(one.command);')"
+[ -n "$monitors" ] || fail "plugin/monitors/monitors.json holds no monitor"
+# Written to a file and read back: a `$HOME` written into a here-doc would be expanded by
+# THIS shell, and the line must reach the inner bash as the file holds it.
+printf '%s\n' "$monitors" >"$home/monitors.txt"
+while IFS= read -r command; do
+  [ -n "$command" ] || continue
+  ran="$(HOME="$home" "$bash_bin" -c "$command")"
+  case "$ran" in
+    "launcher ran: "*) ;;
+    *) fail "a monitor line did not run the launcher: $command -> $ran" ;;
+  esac
+done <"$home/monitors.txt"
+
+echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, the user-wired line and every monitor line ran the launcher, and --missing=fail exited 1"

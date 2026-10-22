@@ -49,6 +49,9 @@ const SHA = "a".repeat(40);
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const T1 = Date.parse("2026-10-21T10:05:00.000Z");
 
+/** True on native Windows, where a file's mode says nothing: the profile's ACL protects it. */
+const NO_POSIX_MODES = process.platform === "win32";
+
 /** The repo key, worked out here the way the review record names it. */
 function key(repo: string): string {
   return createHash("sha256").update(repo).digest("hex").slice(0, 16);
@@ -143,15 +146,23 @@ describe("where the store lives", () => {
     );
   });
 
-  test("a crew session's own file: 0600 in a 0700 folder, written whole", () => {
+  test("a crew session's own file is written whole", () => {
     const state = tempDir("state");
     const file = crewBriefFile(state, REPO, "crew-K-contracts");
     writeStoreFile(file, "the brief\n");
     writeStoreFile(file, "the brief, again\n");
     expect(readFileSync(file, "utf8")).toBe("the brief, again\n");
+    expect(() => crewFilesDir(state, REPO, "../x")).toThrow(CrewStoreError);
+  });
+
+  test.skipIf(NO_POSIX_MODES)("a crew session's own file is 0600 in a 0700 folder", () => {
+    // On Windows a mode is not protection: the profile's ACL is (docs/windows-setup.md). The
+    // write itself is checked above, on every platform.
+    const state = tempDir("state");
+    const file = crewBriefFile(state, REPO, "crew-K-contracts");
+    writeStoreFile(file, "the brief\n");
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
-    expect(() => crewFilesDir(state, REPO, "../x")).toThrow(CrewStoreError);
   });
 
   test("an id that is not a plain file name never becomes a path", () => {
@@ -164,7 +175,7 @@ describe("where the store lives", () => {
 });
 
 describe("the crew record", () => {
-  test("a new crew session: the record, 0600 in a 0700 folder, and a created event", async () => {
+  test("a new crew session: the record and a created event", async () => {
     const state = tempDir("state");
     const made = await createCrew(state, queued(), T0);
     const file = crewFile(state, REPO, "crew-K-contracts");
@@ -175,9 +186,6 @@ describe("the crew record", () => {
       version: 1,
     });
     expect(made).toEqual(JSON.parse(readFileSync(file, "utf8")));
-    expect(statSync(file).mode & 0o777).toBe(0o600);
-    expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
-    expect(statSync(crewStoreDir(state, REPO)).mode & 0o777).toBe(0o700);
     expect(readCrewEvents(state, REPO).events).toEqual([
       {
         at: "2026-10-21T10:00:00.000Z",
@@ -190,6 +198,16 @@ describe("the crew record", () => {
         crew: "crew-K-contracts",
       },
     ]);
+  });
+
+  test.skipIf(NO_POSIX_MODES)("a new crew session's record is 0600 in a 0700 folder", async () => {
+    // On Windows the profile's ACL protects the file, not its mode (docs/windows-setup.md).
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const file = crewFile(state, REPO, "crew-K-contracts");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
+    expect(statSync(crewStoreDir(state, REPO)).mode & 0o777).toBe(0o700);
   });
 
   test("an id already recorded is refused, and the first record stays", async () => {

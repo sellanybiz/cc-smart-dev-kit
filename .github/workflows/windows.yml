@@ -5,7 +5,9 @@ name: Windows
 # shaped for it: docs/windows-hooks.md says how, and docs/claude-code-contract.md says which
 # of it is proved here and which still needs one run on a person's Windows PC.
 #
-# This job is deliberately small: the tests that are cross-platform today — the hooks', and the
+# This job is deliberately small: the tests that are cross-platform today — the hooks', the crew
+# store and names, the guards' Windows paths (a `C:\…` path, the PowerShell dialect), the
+# background clean's Windows argv and the detached start's trampoline, the shell reader, and the
 # readers whose rule is "is this file the owner's alone?" (`isOwnerOnly`: on Windows the mode
 # says nothing and the profile's ACL is the protection) — and the smoke test that runs a real
 # hook bundle through the real shim in Git Bash. Everything else in the suite is Linux-only for
@@ -65,6 +67,33 @@ jobs:
           src/mcp/mcp.test.ts
           src/gateway/gateway.test.ts
 
+      - name: The 1.0.0 parts on Windows — the crew, the guards' Windows paths, the clean
+        # What this step proves, file by file:
+        # - the crew store and names, and the launch's `claude.exe`/`claude.cmd` argv: a `.cmd`
+        #   runs through `cmd.exe`, and the session names hold on every platform;
+        # - the two monitors' shape, and the self-watch's transcript reading;
+        # - the always-on guards' Windows paths: a `C:\…` state path asks, and the Bash judge
+        #   reads the PowerShell tool's dialect (the PowerShell cases run here natively);
+        # - the background clean's argv behind the `cmd /c start` trampoline, and the detached
+        #   start itself (a program that outlives the call, on the platform the trampoline is
+        #   for) — the POSIX-only assertions beside them are `skipIf(NO_POSIX_MODES)`;
+        # - the one shell reader the guards share, its PowerShell dialect included.
+        # No `shell: bash`: the plugin's own tests, from the shell a person has on Windows.
+        run: >
+          bun test
+          src/crew/names.test.ts
+          src/crew/store.test.ts
+          src/crew/claude.test.ts
+          src/crew/monitors.test.ts
+          src/crew/self-watch.test.ts
+          src/hooks/session-escape-guard.test.ts
+          src/hooks/agent-guard.test.ts
+          src/hooks/bash-judge.test.ts
+          src/hooks/job-route.test.ts
+          src/hooks/detached.test.ts
+          src/shell/command.test.ts
+          src/worktrees/auto-clean.test.ts
+
       - name: install.ps1 in a fake world (pwsh)
         # The one-command installer, on the shell a Windows person runs it with: the test
         # starts install.ps1 as its own process, with a temp HOME and fakes for `claude`,
@@ -81,7 +110,8 @@ jobs:
       - name: A hook bundle runs through the shim in Git Bash
         # The whole hook path on Windows, with no person: Git Bash runs the shim, the shim
         # finds bun.exe, the bundle answers the hook input, and — with bun taken away — the
-        # guard still fails closed. The last case runs the exact line `cc-smart-dev-kit hook`
-        # prints for a project.
+        # guard still fails closed. It also proves `--missing=fail` (the command's mode: one
+        # line and exit 1), the exact line `cc-smart-dev-kit hook` writes, and every monitor
+        # command from `plugin/monitors/monitors.json`, all through `$HOME` and Git Bash.
         shell: bash
         run: bash scripts/windows-hook-smoke.sh

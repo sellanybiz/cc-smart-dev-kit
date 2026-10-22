@@ -1,6 +1,7 @@
 /**
- * The `job-route` hook: PreToolUse on Bash, the kit's one Bash judge. It keeps its public name
- * (`ownHooks` values, project files and `hooks.json` stay valid) and does two jobs.
+ * The `job-route` hook: PreToolUse on Bash and PowerShell, the kit's one shell judge. It keeps
+ * its public name (`ownHooks` values, project files and `hooks.json` stay valid) and does two
+ * jobs.
  *
  * **The launch judge** (`bash-judge.ts`, the rules; this file, the answer). It is
  * **machine-wide** (`HookSpec.alwaysOn`): a raw `claude --bg` asks the person (and is refused in
@@ -10,6 +11,13 @@
  * the project's file**: a session cannot switch the limits on its own launches off by editing
  * `cc-smart-dev-kit.json`, so the frame skips the `ownHooks` step for this hook. It runs
  * outside git too, and with a broken or too new `cc-smart-dev-kit.json`.
+ *
+ * **Both shells.** The hook is wired on Bash and PowerShell, and it reads a line in the
+ * dialect of the tool that runs it (`dialectOfTool`): on native Windows the PowerShell tool is
+ * one command away, and a judge that read only Bash would let a launch or a poll through
+ * there. The queue route below stays Bash-only: the rewritten line names the launcher and,
+ * for anything but one plain command, a `sh -c` line, which the PowerShell tool cannot run; a
+ * wrong rewrite is worse than none, so a PowerShell line is judged and left as it is.
  *
  * **The job route** (the project's opt-in, `"jobs": { "route": true }`, the same value as
  * `switches.jobRoute` in `src/workflow/resolve.ts`). A heavy command — one of the project's
@@ -43,7 +51,14 @@ import { readLead } from "../crew/store";
 import { classifyHeavyCommand, classifyRoutableLine } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
 import { LAUNCHER_IN_SHELL, shellQuote } from "../setup/launcher";
-import { invocationOf, nestedCommand, shellSegments, wordsOf } from "../shell/command";
+import {
+  type Dialect,
+  dialectOfTool,
+  invocationOf,
+  nestedCommand,
+  shellSegments,
+  wordsOf,
+} from "../shell/command";
 import {
   type BashReading,
   type BashVerdict,
@@ -228,7 +243,7 @@ export function isLead(context: HookContext): boolean {
 export function judgeCommandAnswer(input: HookInput, context: HookEnvContext): null | HookResult {
   const command = commandOf(input);
   if (command === null) return null;
-  const verdict = judgeBash(readBash(command), {
+  const verdict = judgeBash(readBash(command, inputDialect(input)), {
     env: context.env,
     input,
     paths: context.paths,
@@ -237,22 +252,36 @@ export function judgeCommandAnswer(input: HookInput, context: HookEnvContext): n
 }
 
 /**
+ * The dialect of the shell tool that runs this input. The matcher wires Bash and PowerShell
+ * only; an input that names neither is read as Bash, the tool the hook was born on.
+ */
+function inputDialect(input: HookInput): Dialect {
+  return dialectOfTool(input.tool_name) ?? "bash";
+}
+
+/**
  * The hook: the judge first, then the route and the lead's background move.
  *
  * A judged line answers the judge and goes no further: an ask or a denial is never combined
  * with a rewrite. A line already asking for the background keeps its own input.
+ *
+ * **The route and the background move are Bash only.** Their rewritten line is a `sh` command
+ * (`routedShell`), and the PowerShell tool cannot run one; a PowerShell line is judged and
+ * otherwise left exactly as the model wrote it.
  */
 export function jobRoute(context: HookContext): HookResult {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null) return SILENT;
-  const reading: BashReading = readBash(command);
+  const dialect = inputDialect(context.input);
+  const reading: BashReading = readBash(command, dialect);
   const verdict: BashVerdict | null = judgeBash(reading, {
     env: context.env,
     input: context.input,
     paths: context.paths,
   });
   if (verdict !== null) return judgeAnswer(verdict);
+  if (dialect !== "bash") return SILENT;
   const background = backgroundFor(reading.top);
   const routed = routesHeavyCommands(context.project.config)
     ? routeHeavyCommand(
@@ -287,7 +316,12 @@ export function jobRouteConfigAnswer(
   const judged = judgeCommandAnswer(input, context);
   if (judged !== null) return judged;
   const command = commandOf(input);
-  if (command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null) {
+  // The queue route is Bash only (above): a PowerShell line is never rewritten, so it never asks.
+  if (
+    command === null ||
+    inputDialect(input) !== "bash" ||
+    classifyHeavyCommand(command, mergeKinds(undefined)) === null
+  ) {
     return SILENT;
   }
   return toolDecision(
@@ -305,9 +339,10 @@ export function jobRouteOutsideGit(input: HookInput, context: HookEnvContext): H
 export function jobRouteDomain(input: HookInput): boolean {
   const command = commandOf(input);
   if (command === null) return false;
-  return (
-    judgedDomain(readBash(command)) || classifyHeavyCommand(command, mergeKinds(undefined)) !== null
-  );
+  const dialect = inputDialect(input);
+  if (judgedDomain(readBash(command, dialect))) return true;
+  // The queue route is Bash only; a PowerShell line is never rewritten, so it never asks here.
+  return dialect === "bash" && classifyHeavyCommand(command, mergeKinds(undefined)) !== null;
 }
 
 /**
@@ -317,7 +352,7 @@ export function jobRouteDomain(input: HookInput): boolean {
 export function routeFacts(input: HookInput, context: HookEnvContext): Record<string, unknown> {
   const command = commandOf(input);
   if (command === null) return {};
-  const reading = readBash(command);
+  const reading = readBash(command, inputDialect(input));
   const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
   const facts: Record<string, unknown> = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);

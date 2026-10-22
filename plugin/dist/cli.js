@@ -19249,7 +19249,8 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs
+        timeout: timeoutMs,
+        windowsHide: true
       });
       return {
         ok: result.exitCode === 0,
@@ -19557,7 +19558,8 @@ function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      windowsHide: true
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
@@ -19953,7 +19955,8 @@ function docker(args) {
     const run = Bun.spawnSync(["docker", ...args], {
       stderr: "pipe",
       stdout: "pipe",
-      timeout: DOCKER_TIMEOUT_MS
+      timeout: DOCKER_TIMEOUT_MS,
+      windowsHide: true
     });
     return {
       err: run.stderr.toString().trim(),
@@ -19998,7 +20001,12 @@ function procPids() {
 function runningPrograms(on = platform()) {
   if (on === "win32") {
     try {
-      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], { stderr: "pipe", stdout: "pipe", timeout: PROGRAMS_TIMEOUT_MS });
+      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
+        stderr: "pipe",
+        stdout: "pipe",
+        timeout: PROGRAMS_TIMEOUT_MS,
+        windowsHide: true
+      });
       return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
     } catch {
       return "unknown";
@@ -26800,7 +26808,8 @@ var CLAUDE_VALUED = [
   "-n",
   "--name"
 ];
-var LOOP_KEYWORDS = new Set(["for", "until", "while"]);
+var LOOP_KEYWORDS = new Set(["do", "for", "foreach", "until", "while"]);
+var WAIT_PROGRAMS = new Set(["sleep", "start-sleep"]);
 var WATCH_VALUED = ["-n", "--interval"];
 var GH_VALUED = ["-R", "--repo", "--hostname"];
 function hasFlag2(args, ...names) {
@@ -26881,16 +26890,18 @@ function watchTarget(args) {
   return target.length === 1 ? wordsOf(target[0] ?? "") : target;
 }
 function startsLoop(words) {
-  return LOOP_KEYWORDS.has(words[0] ?? "");
+  return LOOP_KEYWORDS.has((words[0] ?? "").toLowerCase());
 }
 function isShellStep(step) {
   return isAssignmentOnly(step.words) || CHANGE_DIR.has(step.program);
 }
-function walk(line, dialect, depth, top, all) {
+function walk(line, dialect, depth, top, all, state) {
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
     const words = wordsOf(step.text, dialect);
     if (words.length === 0)
       continue;
+    if (startsLoop(words))
+      state.loops = true;
     const invocation = invocationOf(words);
     if (invocation === undefined)
       continue;
@@ -26900,24 +26911,25 @@ function walk(line, dialect, depth, top, all) {
     all.push(read);
     const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
-      walk(inner, nestedDialect(invocation.program), depth + 1, top, all);
+      walk(inner, nestedDialect(invocation.program), depth + 1, top, all, state);
     }
   }
 }
-function readBash(command) {
+function readBash(command, dialect = "bash") {
   const top = [];
   const steps = [];
-  walk(command, "bash", 0, top, steps);
+  const state = { loops: false };
+  walk(command, dialect, 0, top, steps, state);
   let crewStarts = 0;
   let statusReads = 0;
-  let waits = false;
+  let waits = state.loops;
   const launches = [];
   for (const step of steps) {
     if (isCrewStart(step.program, step.args))
       crewStarts++;
     if (isStatusRead(step.program, step.args))
       statusReads++;
-    if (startsLoop(step.words) || step.program === "sleep")
+    if (WAIT_PROGRAMS.has(step.program))
       waits = true;
     const target = step.program === "watch" ? watchTarget(step.args) : null;
     if (target !== null) {
@@ -27119,19 +27131,23 @@ function judgeCommandAnswer(input, context) {
   const command = commandOf(input);
   if (command === null)
     return null;
-  const verdict = judgeBash(readBash(command), {
+  const verdict = judgeBash(readBash(command, inputDialect(input)), {
     env: context.env,
     input,
     paths: context.paths
   });
   return verdict === null ? null : judgeAnswer(verdict);
 }
+function inputDialect(input) {
+  return dialectOfTool(input.tool_name) ?? "bash";
+}
 function jobRoute(context) {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null)
     return SILENT;
-  const reading = readBash(command);
+  const dialect = inputDialect(context.input);
+  const reading = readBash(command, dialect);
   const verdict = judgeBash(reading, {
     env: context.env,
     input: context.input,
@@ -27139,6 +27155,8 @@ function jobRoute(context) {
   });
   if (verdict !== null)
     return judgeAnswer(verdict);
+  if (dialect !== "bash")
+    return SILENT;
   const background = backgroundFor(reading.top);
   const routed = routesHeavyCommands(context.project.config) ? routeHeavyCommand(command, mergeKinds(context.project.config?.jobs?.kinds), routedShell(context.env)) : null;
   const lead = routed !== null || background !== null ? isLead(context) : false;
@@ -27155,7 +27173,7 @@ function jobRouteConfigAnswer(message, input, context) {
   if (judged !== null)
     return judged;
   const command = commandOf(input);
-  if (command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null) {
+  if (command === null || inputDialect(input) !== "bash" || classifyHeavyCommand(command, mergeKinds(undefined)) === null) {
     return SILENT;
   }
   return toolDecision("ask", `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`);
@@ -27167,13 +27185,16 @@ function jobRouteDomain(input) {
   const command = commandOf(input);
   if (command === null)
     return false;
-  return judgedDomain(readBash(command)) || classifyHeavyCommand(command, mergeKinds(undefined)) !== null;
+  const dialect = inputDialect(input);
+  if (judgedDomain(readBash(command, dialect)))
+    return true;
+  return dialect === "bash" && classifyHeavyCommand(command, mergeKinds(undefined)) !== null;
 }
 function routeFacts(input, context) {
   const command = commandOf(input);
   if (command === null)
     return {};
-  const reading = readBash(command);
+  const reading = readBash(command, inputDialect(input));
   const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
   const facts = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0)
@@ -29791,7 +29812,8 @@ function copyWorktreeInclude(source, target, env) {
     stdin: Buffer.from(`${candidates.join("\x00")}\x00`),
     stdout: "pipe",
     stderr: "pipe",
-    timeout: INCLUDE_TIMEOUT_MS
+    timeout: INCLUDE_TIMEOUT_MS,
+    windowsHide: true
   });
   const copied = [];
   for (const path of ignored.stdout.toString().split("\x00")) {

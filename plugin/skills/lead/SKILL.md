@@ -102,7 +102,10 @@ phase whose waits are met runs or is queued.
 **Where monitors do not run** (telemetry off: `DISABLE_TELEMETRY` in the environment or in a
 settings file's `env`), run `cc-smart-dev-kit crew watch --once` with
 `run_in_background: true`. It ends on the next change, and its end starts your next turn. Act
-on the line, then start the next `--once` in the same turn.
+on the line, then start the next `--once` in the same turn. **On native Windows** the plugin's
+monitors need Git Bash, and whether Claude Code starts one through it there is not yet proved:
+until it is, treat `--once` as the way you hear, and the `lead-notes` hook as the safety net
+(`docs/windows-setup.md`).
 
 **A line the monitor could not deliver reaches you at your next turn**: the `lead-notes` hook
 adds the newest news since your last turn, plus how many more there were. It never repeats one,

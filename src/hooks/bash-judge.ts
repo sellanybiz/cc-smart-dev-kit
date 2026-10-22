@@ -1,11 +1,14 @@
 /**
- * The Bash judge: what a Bash line does that the launch policy judges, besides running.
+ * The Bash judge: what a shell line does that the launch policy judges, besides running. On
+ * native Windows Claude Code has a PowerShell tool beside Bash, so the judge reads both
+ * dialects (`readBash`'s `dialect`): a limit a session can step around by choosing the other
+ * shell tool is not a limit.
  *
- * `job-route` is the one hook that answers it (PreToolUse on Bash, `job-route.ts`), and it is
- * **machine-wide** (`HookSpec.alwaysOn`): routing a heavy command through the queue is a
- * project's opt-in, but the judge below runs everywhere, whatever the project's file says. A
- * session must not be able to switch off the limits on its own launches by editing a file it
- * owns (the same reason `session-escape-guard` is always on).
+ * `job-route` is the one hook that answers it (PreToolUse on Bash and PowerShell,
+ * `job-route.ts`), and it is **machine-wide** (`HookSpec.alwaysOn`): routing a heavy command
+ * through the queue is a project's opt-in, but the judge below runs everywhere, whatever the
+ * project's file says. A session must not be able to switch off the limits on its own launches
+ * by editing a file it owns (the same reason `session-escape-guard` is always on).
  *
  * Four things a line does are judged, and nothing else:
  *   - **a raw background session** — `claude --bg` / `--background` — asks the person in an
@@ -41,6 +44,7 @@ import { crewIdOf } from "../crew/session";
 import { toolOf } from "../jobs/classify";
 import {
   CHANGE_DIR,
+  type Dialect,
   invocationOf,
   isAssignmentOnly,
   MAX_NESTING,
@@ -129,8 +133,11 @@ const CLAUDE_VALUED = [
   "--name",
 ];
 
-/** A loop keyword: its first word starts a loop over its body. */
-const LOOP_KEYWORDS: ReadonlySet<string> = new Set(["for", "until", "while"]);
+/** A loop keyword: its first word starts a loop over its body. `foreach` is PowerShell's. */
+const LOOP_KEYWORDS: ReadonlySet<string> = new Set(["do", "for", "foreach", "until", "while"]);
+
+/** A program that waits: bash's `sleep`, and PowerShell's `Start-Sleep` (`sleep` is its alias). */
+const WAIT_PROGRAMS: ReadonlySet<string> = new Set(["sleep", "start-sleep"]);
 
 /** `watch`'s options that take a value, so the command watched starts after them. */
 const WATCH_VALUED = ["-n", "--interval"];
@@ -239,9 +246,9 @@ function watchTarget(args: readonly string[]): string[] | null {
   return target.length === 1 ? wordsOf(target[0] ?? "") : target;
 }
 
-/** True when the step's first word starts a loop (`while true; do …`). */
+/** True when the step's first word starts a loop (`while true; do …`, `foreach ($x in …)`). */
 function startsLoop(words: readonly string[]): boolean {
-  return LOOP_KEYWORDS.has(words[0] ?? "");
+  return LOOP_KEYWORDS.has((words[0] ?? "").toLowerCase());
 }
 
 /** A `cd`, an assignment, or nothing: the shell's own step, never the work a line does. */
@@ -252,6 +259,8 @@ function isShellStep(step: Step): boolean {
 /**
  * One line's commands, in order, its shells' inner text read too (`bash -c '…'`), three
  * levels deep — the same walk the classifier and `programsOf` make, over the one reader.
+ * `loops` records a loop keyword even where it starts no command of its own: in PowerShell
+ * `while ($true) { … }` splits at the parentheses, so `while` is a step with no program.
  */
 function walk(
   line: string,
@@ -259,10 +268,12 @@ function walk(
   depth: number,
   top: Step[],
   all: Step[],
+  state: { loops: boolean },
 ): void {
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
     const words = wordsOf(step.text, dialect);
     if (words.length === 0) continue;
+    if (startsLoop(words)) state.loops = true;
     const invocation = invocationOf(words);
     if (invocation === undefined) continue;
     const read = { args: invocation.args, program: invocation.program, words };
@@ -270,24 +281,25 @@ function walk(
     all.push(read);
     const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
-      walk(inner, nestedDialect(invocation.program), depth + 1, top, all);
+      walk(inner, nestedDialect(invocation.program), depth + 1, top, all, state);
     }
   }
 }
 
-/** What the line does, as the judge reads it. Pure. */
-export function readBash(command: string): BashReading {
+/** What the line does, as the judge reads it. Pure. `dialect` is the tool that runs it. */
+export function readBash(command: string, dialect: Dialect = "bash"): BashReading {
   const top: Step[] = [];
   const steps: Step[] = [];
-  walk(command, "bash", 0, top, steps);
+  const state = { loops: false };
+  walk(command, dialect, 0, top, steps, state);
   let crewStarts = 0;
   let statusReads = 0;
-  let waits = false;
+  let waits = state.loops;
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
     if (isCrewStart(step.program, step.args)) crewStarts++;
     if (isStatusRead(step.program, step.args)) statusReads++;
-    if (startsLoop(step.words) || step.program === "sleep") waits = true;
+    if (WAIT_PROGRAMS.has(step.program)) waits = true;
     const target = step.program === "watch" ? watchTarget(step.args) : null;
     if (target !== null) {
       const watched = invocationOf(target);

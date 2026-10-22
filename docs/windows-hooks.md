@@ -63,7 +63,20 @@ On Windows it runs under Git Bash, where
   Windows, the live tests.)
 
 A hook still never needs bun: with none found, `--missing=ask` prints the PreToolUse ask and
-`--missing=quiet` writes one line, both exit 0.
+`--missing=quiet` writes one line, both exit 0. The command (`plugin/bin/cc-smart-dev-kit`)
+passes `--missing=fail` instead: one line on stderr and **exit 1**, because a command must
+never report success when it did not run. The Windows CI job runs that mode too.
+
+## The PowerShell tool is judged too
+
+Claude Code has a PowerShell tool beside Bash on native Windows (`docs/claude-code-contract.md`
+§ Windows). The plugin's shell judge, `job-route`, is therefore wired on `Bash|PowerShell`, and
+it reads each line in the dialect of the tool that runs it — the one shell reader every guard
+uses (`src/shell/command.ts`). A raw `claude --bg`, a crew session's `crew start` and a polling
+loop are judged the same in PowerShell; only the queue rewrite stays Bash-only, because the
+rewritten line is a `sh` line the PowerShell tool cannot run. `src/hooks/entries.test.ts` pins
+the matcher, and `src/hooks/bash-judge.test.ts` has the PowerShell cases, both run by the
+Windows CI job.
 
 ## The user's own hook line
 

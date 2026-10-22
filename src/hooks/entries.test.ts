@@ -228,6 +228,13 @@ esac
     expect(matcher).toBe("Edit|Write|NotebookEdit");
   });
 
+  test("the job-route matcher is exactly the shell tools its judge reads", () => {
+    const matcher = wired.find(({ handler }) => bundleOf(handler) === "job-route")?.matcher;
+    // Both of Claude Code's shell tools, so a raw `claude --bg` or a polling loop is judged in
+    // PowerShell too — a limit a session steps around by changing tools is not a limit.
+    expect(matcher).toBe("Bash|PowerShell");
+  });
+
   test("the crew-role matcher is exactly the tools a crew session never calls", () => {
     const matcher = wired.find(
       ({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role",

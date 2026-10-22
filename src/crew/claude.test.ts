@@ -15,6 +15,9 @@ import {
   refusedUntrusted,
 } from "./claude";
 
+/** True on native Windows, where a `#!/bin/sh` fake is no program and a `.cmd` is. */
+const NO_POSIX_MODES = process.platform === "win32";
+
 describe("which claude", () => {
   test("the one on PATH first", () => {
     const home = tempDir("home");
@@ -183,29 +186,61 @@ describe("what claude prints", () => {
 });
 
 describe("running claude", () => {
-  test("a fake claude: its exit code and both outputs, in the folder asked", () => {
-    const bin = tempDir("bin");
-    const work = tempDir("work");
-    const fake = join(bin, "claude");
-    writeFileSync(fake, '#!/bin/sh\npwd\necho "err: $1" >&2\nexit 3\n');
-    chmodSync(fake, 0o755);
-    const call = callClaude(
-      { env: {}, home: bin, platform: "linux", runProgram: realRunProgram, which: () => fake },
-      fake,
-      ["agents"],
-      work,
-    );
-    expect(call).toEqual({
-      ok: true,
-      run: {
-        error: null,
-        exitCode: 3,
-        stderr: "err: agents\n",
-        stdout: `${work}\n`,
-        timedOut: false,
-      },
-    });
-  });
+  test.skipIf(NO_POSIX_MODES)(
+    "a fake claude: its exit code and both outputs, in the folder asked",
+    () => {
+      const bin = tempDir("bin");
+      const work = tempDir("work");
+      const fake = join(bin, "claude");
+      writeFileSync(fake, '#!/bin/sh\npwd\necho "err: $1" >&2\nexit 3\n');
+      chmodSync(fake, 0o755);
+      const call = callClaude(
+        { env: {}, home: bin, platform: "linux", runProgram: realRunProgram, which: () => fake },
+        fake,
+        ["agents"],
+        work,
+      );
+      expect(call).toEqual({
+        ok: true,
+        run: {
+          error: null,
+          exitCode: 3,
+          stderr: "err: agents\n",
+          stdout: `${work}\n`,
+          timedOut: false,
+        },
+      });
+    },
+  );
+
+  test.skipIf(!NO_POSIX_MODES)(
+    "a fake claude.cmd runs through cmd.exe: its exit code and both outputs, in the folder asked",
+    () => {
+      // npm installs `claude.cmd`, which Windows cannot spawn as a program: `claudeArgv`
+      // wraps it in `cmd /d /s /v:off /c` with one quoted line (`windowsRun`). This is that
+      // path on the platform it exists for.
+      const bin = tempDir("bin");
+      const work = tempDir("work");
+      const fake = join(bin, "claude.cmd");
+      writeFileSync(fake, "@echo off\r\ncd\r\necho err: %1 1>&2\r\nexit /b 3\r\n");
+      const call = callClaude(
+        {
+          env: process.env,
+          home: bin,
+          platform: "win32",
+          runProgram: realRunProgram,
+          which: () => fake,
+        },
+        fake,
+        ["agents"],
+        work,
+      );
+      expect(call.ok).toBe(true);
+      expect(call.ok ? call.run.exitCode : null).toBe(3);
+      expect(call.ok ? call.run.stderr : "").toContain("err: agents");
+      expect(call.ok ? call.run.stdout.trim() : "").toBe(work);
+    },
+  );
 
   test("a binary that does not start is said with the spawner's words", () => {
     const call = callClaude(

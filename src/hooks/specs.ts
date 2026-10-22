@@ -13,7 +13,7 @@
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
  * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
- * | job-route | PreToolUse (Bash) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` (`bash-judge.ts`, `job-route.ts`) |
+ * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
