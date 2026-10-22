@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { cliPaths } from "../cli/paths";
+import { OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { readCrewEvents, writeLead } from "../crew/store";
 import {
   clearWorktreeNote,
   exactMergeOf,
@@ -479,10 +482,14 @@ describe("the hook", () => {
     expect(tellSessionsNote(pr, "main")).toBe(
       [
         "That merged #7 into main.",
-        "Tell the other sessions of this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo (not this session, not a subagent, not another project) with exactly this text:",
+        "Tell the other leads of this repo and the person's own sessions, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
         "\"main now has #7 (Fix 'login'). At your next stop, once your current work is committed: git fetch origin main, then git merge origin/main, and fix any conflict. Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. No reply needed.\"",
+        "No other lead is recorded in this repo: every other session there is one of the person's own. Never send it to a crew session (a session named `C …`): a crew session follows its own lead's branch, and merging main into it would be wrong.",
         "Merged several pull requests this turn? Send each session one message, naming every merged number.",
       ].join("\n"),
+    );
+    expect(tellSessionsNote(pr, "main", {}, ["LEAD my-app alpha", "LEAD my-app beta"])).toContain(
+      "The other leads here: LEAD my-app alpha, LEAD my-app beta. Every other session in this repo is one of the person's own.",
     );
     expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
       [
@@ -665,5 +672,77 @@ describe("the hook", () => {
       ),
     );
     expect(await runHook(afterMergeHook, ran(repo, "ls"), fakeGh(merged))).toEqual({});
+  });
+
+  /** The merging session's id, as `ran` gives every input. */
+  const MERGING_SESSION = "11111111-2222-3333-4444-555555555555";
+
+  /** A lead recorded in the store the hook's env points at. */
+  async function recordLead(
+    env: Record<string, string>,
+    repo: string,
+    name: string,
+    plan: string,
+    sessionId: string,
+  ): Promise<void> {
+    await writeLead(
+      cliPaths(env).stateDir,
+      { cwd: repo, name, plan, repo, sessionId, tag: "my-app" },
+      Date.now(),
+    );
+  }
+
+  test("D55: the merge note names the other leads and the person's sessions, never a crew session", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app docs-plan.");
+    // The lead that merged did it itself: it is not told to message itself.
+    expect(note).not.toContain("LEAD my-app master-plan");
+    expect(note).toContain(
+      "Never send it to a crew session (a session named `C …`): a crew session follows its own lead's branch, and merging main into it would be wrong.",
+    );
+    expect(note).not.toContain("Tell the other sessions");
+  });
+
+  test("D55: one merge event per other lead, so its watch says the line without a message", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    const paths = cliPaths(env);
+    await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
+    await noteAfterMerge(join(worktree, "src"), env);
+    expect(readCrewEvents(paths.stateDir, repo).events.filter((one) => one.type === "merge")).toEqual(
+      [
+        expect.objectContaining({
+          crew: MERGING_SESSION,
+          lead: OTHER_SESSION,
+          name: "LEAD my-app master-plan",
+          state: "working",
+          text: "LEAD my-app master-plan merged #7 (Fix 'login') into main — at your next stop, merge origin/main into your branch",
+          type: "merge",
+        }),
+      ],
+    );
+  });
+
+  test("D55: a merge by a session that is no lead reaches every lead, named as a session", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    const paths = cliPaths(env);
+    await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
+    const note = await noteAfterMerge(join(worktree, "src"), env);
+    expect(note).toContain("The other leads here: LEAD my-app docs-plan.");
+    expect(readCrewEvents(paths.stateDir, repo).events.filter((one) => one.type === "merge")).toEqual(
+      [
+        expect.objectContaining({
+          crew: MERGING_SESSION,
+          lead: OTHER_SESSION,
+          text: "a session merged #7 (Fix 'login') into main — at your next stop, merge origin/main into your branch",
+        }),
+      ],
+    );
   });
 });
