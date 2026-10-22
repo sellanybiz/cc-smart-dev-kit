@@ -6,13 +6,14 @@
  * Every expectation is written by hand. A fixture never touches the real home: `hookEnv()`
  * gives a temp HOME and Claude config folder.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { hookEnv, makeClone, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import type { HookInput, HookResult } from "./io";
 import { handleHook } from "./run";
 import { inEscapeDomain, sessionEscapeGuard, shellTargetPath } from "./session-escape-guard";
@@ -20,6 +21,9 @@ import { sessionEscapeGuardHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const KIT = "cc-smart-dev-kit";
+
+// This file builds real clones and worktrees: its own speed limit (`src/testing/timeouts.ts`).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 /** True on native Windows, where Claude Code's Bash tool is Git Bash. */
 const ON_WINDOWS = process.platform === "win32";
@@ -33,9 +37,11 @@ function bashPath(path: string): string {
   return ON_WINDOWS ? path.replaceAll("\\", "/") : path;
 }
 
-/** A native Windows path as Git Bash's own POSIX form: `C:\Users\me` is `/c/Users/me`. */
+/** A native Windows path as Git Bash's own POSIX form: `C:\Users\me\x` is `/c/Users/me/x`. */
 function msysPath(path: string): string {
-  return path.replace(/^([A-Za-z]):[\\/]/, (_whole, drive: string) => `/${drive.toLowerCase()}/`);
+  return path
+    .replace(/^([A-Za-z]):[\\/]/, (_whole, drive: string) => `/${drive.toLowerCase()}/`)
+    .replaceAll("\\", "/");
 }
 
 /** The decision a result carries, or null for silence. */
@@ -972,22 +978,29 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     });
   });
 
-  describe("Git Bash paths on Windows", () => {
-    test.skipIf(!ON_WINDOWS)("Git Bash's /c/… path, and a quoted Win32 path, ask", async () => {
+  describe.skipIf(!ON_WINDOWS)("Git Bash paths on Windows", () => {
+    test.each([
+      ["the project file", () => projectFile],
+      ["workflow.json", () => paths.workflowConfigFile],
+      ["the state folder", () => stateFile],
+    ])("Git Bash's /c/… path into %s asks", async (_what, fileOf) => {
       // Claude Code's Bash tool is Git Bash on Windows: a line may name a native file as
-      // MSYS2's own `/c/Users/…`, or quote a Win32 path (`"C:\Users\…"`, where Bash keeps
-      // the backslashes). Both write the file, so both must ask.
-      for (const file of [projectFile, paths.workflowConfigFile, stateFile]) {
-        const answer = await ask(`echo x > ${msysPath(file)}`);
-        expect(answer?.decision).toBe("ask");
-        expect(answer?.reason).toContain(file);
-      }
+      // MSYS2's own `/c/Users/…` (every backslash gone — Bash would remove it otherwise).
+      const file = fileOf();
+      const answer = await ask(`echo x > ${msysPath(file)}`);
+      expect(answer?.decision).toBe("ask");
+      expect(answer?.reason).toContain(file);
+    });
+
+    test("a `cd` into /c/… and a quoted Win32 path ask", async () => {
+      // `cd /c/…` moves the line there, as a native `cd` would.
       const cd = await ask(
         `cd ${msysPath(settingsDir)} && echo '{}' > gateway.json`,
         "Bash",
         "/tmp",
       );
       expect(cd?.reason).toContain(paths.gatewayConfigFile);
+      // A quoted Win32 path keeps its backslashes through Bash, and is the same file.
       const quoted = await ask(`echo x > "${projectFile}"`);
       expect(quoted?.decision).toBe("ask");
       expect(quoted?.reason).toContain(projectFile);
@@ -1094,6 +1107,35 @@ describe("shellTargetPath: a path a Bash line names", () => {
     );
     expect(ps?.reason).toContain("\\c\\Users\\me\\app\\.claude\\cc-smart-dev-kit.json");
   });
+
+  test("a protected path in other letters asks on Windows (a case-blind disk)", () => {
+    // Windows compares paths without case, so `C:/USERS/ME/.../.CONFIG/...` is the same file
+    // as `C:/Users/Me/.../.config/...`. Proved here through win32 path rules on Linux; the
+    // Windows CI job runs it natively too.
+    const home = "C:/Users/Me/AppData/Local/Temp/cc-smart-dev-kit-hook-home-ABC";
+    const paths = {
+      ...cliPaths(hookEnv()),
+      home,
+      workflowConfigFile: `${home}/.config/cc-smart-dev-kit/workflow.json`,
+      gatewayConfigFile: `${home}/.config/cc-smart-dev-kit/gateway.json`,
+      stateDir: `${home}/.claude/cc-smart-dev-kit`,
+    };
+    const ask = (command: string) =>
+      decisionOf(sessionEscapeGuard(shellInput(command, home), paths, "win32"));
+    // The project file's name decides, whatever the letters of its folder.
+    expect(ask("echo x > /c/users/me/app/.CLAUDE/CC-SMART-DEV-KIT.JSON")?.decision).toBe("ask");
+    // The settings folder and the state folder: the whole path is compared without case.
+    expect(
+      ask(
+        "echo x > /c/USERS/ME/APPDATA/LOCAL/TEMP/CC-SMART-DEV-KIT-HOOK-HOME-ABC/.CONFIG/CC-SMART-DEV-KIT/WORKFLOW.JSON",
+      )?.reason,
+    ).toContain("the kit's own settings folder");
+    expect(
+      ask(
+        "echo x > /c/users/me/appdata/local/temp/cc-smart-dev-kit-hook-home-abc/.CLAUDE/CC-SMART-DEV-KIT/reviews/APP-1.JSON",
+      )?.reason,
+    ).toContain("the kit's own state folder");
+  });
 });
 
 describe("machine-wide: the project does not change the answer", () => {
@@ -1122,13 +1164,14 @@ describe("machine-wide: the project does not change the answer", () => {
   });
 
   test("a project file that is broken, or needs a newer plugin", async () => {
+    // One clone for the three files: a clone costs seconds on Windows, and the guard reads
+    // the file again on every call, so rewriting it proves the same thing.
+    const { repo } = makeClone();
     for (const config of [{ worktree: {} }, { requires: ">=99" }]) {
-      const { repo } = makeClone();
       writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
       expect((await run(shellInput(DENIED, repo)))?.decision).toBe("deny");
     }
-    const { repo } = makeClone();
-    mkdirSync(join(repo, ".claude"));
+    // The file that is not JSON, in the same clone.
     writeFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
     expect((await run(shellInput(DENIED, repo)))?.decision).toBe("deny");
   });

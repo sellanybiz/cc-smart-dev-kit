@@ -5,13 +5,14 @@
  * it are tested beside them (`worktree-leftovers.test.ts`, `after-merge.test.ts`); the told
  * line is checked here end to end, through the session-start hook.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { detachedArgv } from "../hooks/detached";
 import { worktreeLeftoversHook } from "../hooks/specs";
+import { samePath } from "../path-compare";
 import { locateCheckout } from "../project/resolve";
 import {
   hookEnv,
@@ -23,6 +24,7 @@ import {
 } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir, withGitVersion } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { appendLogLine, LOG_MAX_BYTES } from "../update/state";
 import { type AutoCleanDeps, runAutoClean } from "./auto-clean";
 import { autoCleanArgv, autoCleanEntry } from "./auto-start";
@@ -44,6 +46,10 @@ import {
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+
+// This file runs real git in real repositories, many times per test: its own speed limit
+// (`src/testing/timeouts.ts`). A Windows CI run had two tests at 4.3-4.9 s of Bun's 5 s.
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 /** True on native Windows, where a `#!/bin/sh` fake program is no program at all. */
 const NO_POSIX_MODES = process.platform === "win32";
@@ -169,14 +175,16 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     expect(record.repo).toBe(repo);
     expect(record.seq).toBe(1);
     expect(toldMark(env, repo)).toBe(0);
-    expect(record.removed).toEqual([
-      {
-        branch: "feature",
-        name: "app-wt-feature",
-        path: done,
-        why: "merging it into main changes nothing",
-      },
-    ]);
+    // git lists a worktree's path in its own spelling (on Windows, forward slashes), so the
+    // place is compared as the kit compares paths (`samePath`); everything else is exact.
+    expect(record.removed).toHaveLength(1);
+    const removed = record.removed[0];
+    expect({ branch: removed?.branch, name: removed?.name, why: removed?.why }).toEqual({
+      branch: "feature",
+      name: "app-wt-feature",
+      why: "merging it into main changes nothing",
+    });
+    expect(samePath(removed?.path ?? "", done)).toBe(true);
     // One log line for the run.
     const lines = logLines(env);
     expect(lines).toHaveLength(1);
@@ -251,9 +259,14 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     expect(git(repo, "branch", "--list", "ahead")).toContain("ahead");
     const record = recorded(env, repo);
     expect(record.removed).toEqual([]);
-    expect(record.kept).toEqual([
-      { name: "app-wt-ahead", path: ahead, why: "1 commit not on main" },
-    ]);
+    // As above: the folder is the worktree's, whatever spelling git listed it in.
+    expect(record.kept).toHaveLength(1);
+    const kept = record.kept[0];
+    expect({ name: kept?.name, why: kept?.why }).toEqual({
+      name: "app-wt-ahead",
+      why: "1 commit not on main",
+    });
+    expect(samePath(kept?.path ?? "", ahead)).toBe(true);
     expect(logLines(env)[0]).toEndWith("removed 0; kept 1");
   });
 
