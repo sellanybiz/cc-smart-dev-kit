@@ -71,6 +71,7 @@ function cliPaths(env = process.env) {
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -6596,6 +6597,10 @@ function gitEnv(base) {
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitNotFound(error) {
+  const why = error instanceof Error ? error.message : String(error);
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
 function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
   return (args) => {
     try {
@@ -6614,13 +6619,35 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stderr: result.stderr.toString()
       };
     } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+      throw gitNotFound(error);
     }
   };
 }
-function requireGitVersion(git) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
+function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+  return async (args) => {
+    try {
+      const child = Bun.spawn(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: timeoutMs,
+        windowsHide: true
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited
+      ]);
+      return { ok: code === 0, stdout, stderr };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+function requireGitVersionText(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
   if (!match)
     return;
   const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
@@ -6628,8 +6655,10 @@ function requireGitVersion(git) {
     throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
   }
 }
-function findMainCheckout(git, cwd) {
-  const list = git(["worktree", "list", "--porcelain"]);
+function requireGitVersion(git) {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+function mainCheckoutFrom(list, cwd) {
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -6648,6 +6677,23 @@ function findMainCheckout(git, cwd) {
   }
   return realpathSync(path);
 }
+function findMainCheckout(git, cwd) {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+function revParseParts(revParse) {
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--"))
+    return "not-understood";
+  if (!top || !gitDir || !common)
+    return "outside";
+  return { common, gitDir, top };
+}
+function checkoutRoots(parts) {
+  const root = realpathSync(parts.top);
+  const commonDir = realpathSync(parts.common);
+  return { commonDir, isWorktree: realpathSync(parts.gitDir) !== commonDir, root };
+}
 function locateCheckout(cwd, options = {}) {
   if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
@@ -6660,22 +6706,21 @@ function locateCheckout(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--")) {
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
     requireGitVersion(git);
     if (revParse.ok) {
       throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
     }
     return null;
   }
-  if (!top || !gitDir || !common)
+  if (parts === "outside")
     return null;
-  const root = realpathSync(top);
-  const commonDir = realpathSync(common);
-  const isWorktree = realpathSync(gitDir) !== commonDir;
-  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
-  return { root, commonDir, isWorktree, mainCheckout };
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
 }
 function ownHooksOf(checkout) {
   const { root, mainCheckout } = checkout;
@@ -6699,29 +6744,60 @@ function loadProjectConfig(checkout, pluginVersion) {
   return { ...checkout, config, configFile };
 }
 var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function readCommittedConfig(checkout, branch, options = {}) {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
-  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) {
-    return {
-      found: false,
-      where,
-      why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
-    };
-  }
-  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
-  if (!blob.ok)
-    return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
-  const text = git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok)
-    return { found: false, where, why: `git could not read ${where}` };
+function refNotKnown(where, ref) {
+  return {
+    found: false,
+    where,
+    why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
+  };
+}
+function noCommittedFile(where, ref) {
+  return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
+}
+function unreadableCommitted(where) {
+  return { found: false, where, why: `git could not read ${where}` };
+}
+function committedOf(text, where, options) {
   return {
     found: true,
     where,
     config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
   };
+}
+function readCommittedConfig(checkout, branch, options = {}) {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok)
+    return refNotKnown(where, ref);
+  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
+  if (!blob.ok)
+    return noCommittedFile(where, ref);
+  const text = git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok)
+    return unreadableCommitted(where);
+  return committedOf(text, where, options);
+}
+async function readCommittedConfigAsync(checkout, branch, options = {}) {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok)
+    return refNotKnown(where, ref);
+  const blob = await git([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `${commit.stdout.trim()}:${CONFIG_PATH}`
+  ]);
+  if (!blob.ok)
+    return noCommittedFile(where, ref);
+  const text = await git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok)
+    return unreadableCommitted(where);
+  return committedOf(text, where, options);
 }
 
 // src/hooks/ask-log.ts
@@ -7369,6 +7445,34 @@ function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
     return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
+  }
+}
+async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
+  try {
+    const child = Bun.spawn(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    const signaled = child.signalCode !== null && child.signalCode !== undefined;
+    return {
+      ok: code === 0,
+      out: stdout.trim(),
+      err: signaled ? "timed out" : stderr.trim(),
+      code: signaled ? null : code
+    };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };
@@ -14702,7 +14806,7 @@ class Uncovered extends Error {
 function alternateEntry(folder) {
   return `"${folder.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
 }
-function readCover(checkout, target, records, limits, git) {
+async function readCover(checkout, target, records, limits, git) {
   const { head, branch } = target;
   if (records.some((record) => record.sha === head)) {
     return { covered: true, review: head, delta: null, reviewed: null };
@@ -14728,7 +14832,7 @@ function readCover(checkout, target, records, limits, git) {
   let objects = null;
   try {
     objects = mkdtempSync(join26(tmpdir3(), `${COMMAND}-cover-`));
-    return measure(checkout, target, candidates, limits, git, objects);
+    return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
       return { covered: false, review: error.review, why: error.message };
@@ -14743,57 +14847,66 @@ function readCover(checkout, target, records, limits, git) {
       rmSync2(objects, { recursive: true, force: true });
   }
 }
-function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
+async function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join26(checkout.commonDir, "objects"))
   };
-  const run = (args) => {
+  const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0)
       throw new Uncovered("the time to measure the change after the review ran out");
-    const result = runGit(checkout.root, args, git.env, left, own);
+    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, own);
     if (result.code === null && result.err === "timed out") {
       throw new Uncovered("the time to measure the change after the review ran out");
     }
     return result;
   };
-  const commit = (rev) => {
-    const found = run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
+  const commit = async (rev) => {
+    const found = await run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
     return found.ok && COMMIT_SHA.test(found.out) ? found.out : null;
   };
-  const asked = run(["--version"]);
+  const asked = await run(["--version"]);
   if (!asked.ok)
     throw new Uncovered(`git cannot be run here (${asked.err})`);
   const version = parseGitVersion(asked.out);
   if (version !== null && tooOldToCover(version))
     throw new Uncovered(oldGit(version, head));
-  if (!COMMIT_SHA.test(head) || commit(head) === null) {
+  if (!COMMIT_SHA.test(head) || await commit(head) === null) {
     throw new Uncovered(`${short(head)} is not in this checkout: fetch it (git fetch origin)`);
   }
-  if (commit(baseRef) === null) {
+  if (await commit(baseRef) === null) {
     throw new Uncovered(`origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`);
   }
-  const mergeBase = (a, b) => {
-    const found = run(["merge-base", a, b]);
+  const mergeBase = async (a, b) => {
+    const found = await run(["merge-base", a, b]);
     if (!found.ok) {
       throw new Uncovered(`${short(a)} and origin/${base} share no history`, a === head ? null : a);
     }
     return found.out;
   };
-  const numstat = (from, to, review) => {
-    const diff = run(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]);
+  const numstat = async (from, to, review) => {
+    const diff = await run([
+      "diff",
+      "--no-textconv",
+      "--no-ext-diff",
+      "--numstat",
+      "-z",
+      "-M",
+      from,
+      to
+    ]);
     if (!diff.ok) {
       throw new Uncovered(`the change after the review of ${short(review)} cannot be read (${diff.err})`, review);
     }
     return parseNumstat(diff.out);
   };
-  const generatedOf = (paths) => {
+  const generatedOf = async (paths) => {
     const generated = new Set;
     for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
       const some = paths.slice(at, at + PATHS_PER_CALL);
-      const attrs = run([
+      const attrs = await run([
         "check-attr",
         `--source=${baseRef}`,
         "-z",
@@ -14828,29 +14941,31 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
     }
     return count;
   };
-  const onBase = mergeBase(head, baseRef);
+  const onBase = await mergeBase(head, baseRef);
   const measured = [];
   const unread = [];
   for (const review of candidates) {
     try {
-      if (commit(review) === null) {
+      if (await commit(review) === null) {
         throw new Uncovered(`the reviewed commit ${short(review)} is not in this checkout: fetch it (git fetch origin)`, review);
       }
-      const replay = run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
+      const replay = await run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
       const tree = replay.out.split(`
 `)[0] ?? "";
       if (replay.code !== 0 && replay.code !== 1 || !COMMIT_SHA.test(tree)) {
         throw new Uncovered(`the review of ${short(review)} cannot be replayed on origin/${base} (${replay.err})`, review);
       }
-      const same = run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
+      const same = await run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
       if (same.code === 0)
         continue;
       if (same.code !== 1) {
         throw new Uncovered(`the review of ${short(review)} cannot be compared (${same.err})`, review);
       }
-      const after = numstat(tree, head, review);
-      const before = numstat(mergeBase(review, baseRef), review, review);
-      const generated = generatedOf([...new Set([...after, ...before].map((one) => one.path))]);
+      const after = await numstat(tree, head, review);
+      const before = await numstat(await mergeBase(review, baseRef), review, review);
+      const generated = await generatedOf([
+        ...new Set([...after, ...before].map((one) => one.path))
+      ]);
       const delta = tally(after, generated);
       const reviewed = tally(before, generated);
       measured.push({
@@ -14992,6 +15107,21 @@ function resolveGate(paths, checkout, branch, options = {}) {
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+  return gateOfCommitted(paths, branch, committed);
+}
+async function resolveGateAsync(paths, checkout, branch, options = {}) {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed;
+  try {
+    committed = await readCommittedConfigAsync(checkout, branch, options);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  return gateOfCommitted(paths, branch, committed);
+}
+function gateOfCommitted(paths, branch, committed) {
   if (!committed.found)
     return { ok: false, why: committed.why };
   const resolved = resolveWorkflow(paths, committed.config);
@@ -15258,6 +15388,27 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 
 // src/workflow/merge-check.ts
 var GH_TIMEOUT_MS2 = 1e4;
+var spawnGh = async (args, { folder, env, timeoutMs }) => {
+  try {
+    const child = Bun.spawn(["gh", ...args], {
+      cwd: folder,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const [out] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    return out.trim() === "" ? null : out;
+  } catch {
+    return null;
+  }
+};
 var PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
 function parsePullRequestFacts(json) {
   try {
@@ -15319,10 +15470,10 @@ function reviewGateOf(paths, checkout, resolved) {
     file: reviewsFile(paths.stateDir, repository)
   };
 }
-function coverOf(world, review, target) {
+async function coverOf(world, review, target) {
   if (!review.reviewBeforePush)
     return null;
-  return readCover(world.checkout, target, trustedReviews(review.file, review.agents), review.limits, {
+  return await readCover(world.checkout, target, trustedReviews(review.file, review.agents), review.limits, {
     env: world.env,
     timeFor: world.timeFor
   });
@@ -15398,35 +15549,22 @@ function ghMissing(env) {
     return false;
   }
 }
-function ghStdout(args, folder, env, timeoutMs) {
-  try {
-    const run = Bun.spawnSync(["gh", ...args], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs
-    });
-    const out = run.stdout.toString();
-    return out.trim() === "" ? null : out;
-  } catch {
-    return null;
-  }
+async function ghStdout(args, folder, env, timeoutMs, run) {
+  return await run(args, { env, folder, timeoutMs });
 }
-function viewPullRequest2(target, folder, env, timeoutMs = GH_TIMEOUT_MS2) {
-  const out = ghStdout([
+async function viewPullRequest2(target, folder, env, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
+  const out = await ghStdout([
     "pr",
     "view",
     ...target.ref === null ? [] : [target.ref],
     ...target.repo === null ? [] : ["--repo", target.repo],
     "--json",
     PULL_REQUEST_FACTS
-  ], folder, env, timeoutMs);
+  ], folder, env, timeoutMs, run);
   return out === null ? null : parsePullRequestFacts(out);
 }
-function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS2) {
-  const out = ghStdout([
+async function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
+  const out = await ghStdout([
     "pr",
     "checks",
     String(number),
@@ -15434,36 +15572,36 @@ function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS2) {
     ...repo === null ? [] : ["--repo", repo],
     "--json",
     "name,bucket"
-  ], folder, env, timeoutMs);
+  ], folder, env, timeoutMs, run);
   return out === null ? null : parseRequiredChecks(out);
 }
-function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS2) {
-  const out = ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs);
+async function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS2, run = spawnGh) {
+  const out = await ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs, run);
   return out === null ? null : parseDefaultBranch(out);
 }
-function gateFor(world, branch) {
+async function gateFor(world, branch) {
   if (world.gateOf !== undefined)
-    return world.gateOf(branch);
+    return await world.gateOf(branch);
   const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
   if (left <= 0)
     return "late";
-  return resolveGate(world.paths, world.checkout, branch, {
+  return await resolveGateAsync(world.paths, world.checkout, branch, {
     env: world.env,
     timeoutMs: left
   });
 }
-function checkPullRequest(world, target, defaultBranches = new Map) {
+async function checkPullRequest(world, target, defaultBranches = new Map) {
   const viewLeft = world.timeFor(GH_TIMEOUT_MS2);
   if (viewLeft <= 0) {
     return { kind: "late", number: null, what: "the pull request this command names" };
   }
-  const view = viewPullRequest2(target, world.folder, world.env, viewLeft);
+  const view = await viewPullRequest2(target, world.folder, world.env, viewLeft, world.gh ?? spawnGh);
   if (view === null) {
     return { kind: "unread", number: null, what: "the pull request this command names" };
   }
   let read;
   try {
-    read = gateFor(world, view.base);
+    read = await gateFor(world, view.base);
   } catch (error) {
     return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
   }
@@ -15487,7 +15625,7 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     if (branchLeft <= 0) {
       return { kind: "late", number: view.number, what: "this repository's default branch" };
     }
-    defaultBranches.set(where, defaultBranchOf(world.folder, world.env, target.repo, branchLeft));
+    defaultBranches.set(where, await defaultBranchOf(world.folder, world.env, target.repo, branchLeft, world.gh ?? spawnGh));
   }
   const defaultBranch = defaultBranches.get(where) ?? null;
   if (defaultBranch === null) {
@@ -15500,7 +15638,7 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     if (checksLeft <= 0) {
       return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };
     }
-    checks = requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft);
+    checks = await requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft, world.gh ?? spawnGh);
     if (checks === null) {
       return {
         kind: "unread",
@@ -15514,7 +15652,7 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     return { detail: null, kind: "refused", number: view.number, reason: before };
   }
   const review = reviewGateOf(world.paths, world.checkout, resolved);
-  const cover = coverOf(world, review, {
+  const cover = await coverOf(world, review, {
     head: view.headOid,
     branch: view.headRef,
     base: view.base
@@ -15623,7 +15761,7 @@ function askFor(verdict, env) {
     return notChecked(verdict.what, env);
   return notInTime(verdict.what);
 }
-function mergeGuard(context) {
+async function mergeGuard(context) {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   const dialect = dialectOfTool(input.tool_name);
@@ -15669,14 +15807,14 @@ function mergeGuard(context) {
     return branchHere;
   };
   const openingDefaults = new Map;
-  const defaultBranchHere = (repo) => {
+  const defaultBranchHere = async (repo) => {
     const key = repo ?? "";
     if (openingDefaults.has(key))
       return openingDefaults.get(key) ?? null;
     const left = timeFor(GH_TIMEOUT_MS2);
     if (left <= 0)
       return "late";
-    let branch = defaultBranchOf(cwd, env, repo, left);
+    let branch = await defaultBranchOf(cwd, env, repo, left);
     if (branch === null) {
       const gitLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
       if (gitLeft <= 0)
@@ -15690,14 +15828,14 @@ function mergeGuard(context) {
     openingDefaults.set(key, branch);
     return branch;
   };
-  const opensOutsideBase = (opening, worktrees) => {
+  const opensOutsideBase = async (opening, worktrees) => {
     if (opening.opens !== "create" || opening.cli !== true || worktrees === undefined)
       return null;
     const head = headBranchOf(opening.head ?? null) ?? currentBranch();
     if (head === null)
       return null;
     const expected = baseForBranch(worktrees, head);
-    const into = opening.base ?? defaultBranchHere(opening.target?.repo ?? null);
+    const into = opening.base ?? await defaultBranchHere(opening.target?.repo ?? null);
     if (into === "late" || into === "unread")
       return into;
     if (into === null)
@@ -15772,7 +15910,7 @@ function mergeGuard(context) {
         return toolDecision("ask", notByItself(foreign.reason, number));
       }
     }
-    const verdict = checkPullRequest(world, target, defaultBranches);
+    const verdict = await checkPullRequest(world, target, defaultBranches);
     if (verdict.kind === "silent")
       return SILENT;
     if (verdict.kind !== "allowed")
@@ -15813,7 +15951,7 @@ function mergeGuard(context) {
     });
     if (why !== null)
       return toolDecision("ask", notOpenedByItself(opening, why));
-    const outside = opensOutsideBase(opening, read.gate.config?.worktrees);
+    const outside = await opensOutsideBase(opening, read.gate.config?.worktrees);
     if (outside === "late") {
       return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
     }

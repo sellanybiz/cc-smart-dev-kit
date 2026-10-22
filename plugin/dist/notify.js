@@ -72,6 +72,7 @@ function cliPaths(env = process.env) {
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -6530,6 +6531,10 @@ import { join as join5 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitNotFound(error) {
+  const why = error instanceof Error ? error.message : String(error);
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
 function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
   return (args) => {
     try {
@@ -6548,13 +6553,12 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stderr: result.stderr.toString()
       };
     } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+      throw gitNotFound(error);
     }
   };
 }
-function requireGitVersion(git) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
+function requireGitVersionText(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
   if (!match)
     return;
   const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
@@ -6562,8 +6566,10 @@ function requireGitVersion(git) {
     throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
   }
 }
-function findMainCheckout(git, cwd) {
-  const list = git(["worktree", "list", "--porcelain"]);
+function requireGitVersion(git) {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+function mainCheckoutFrom(list, cwd) {
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -6582,6 +6588,23 @@ function findMainCheckout(git, cwd) {
   }
   return realpathSync2(path);
 }
+function findMainCheckout(git, cwd) {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+function revParseParts(revParse) {
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--"))
+    return "not-understood";
+  if (!top || !gitDir || !common)
+    return "outside";
+  return { common, gitDir, top };
+}
+function checkoutRoots(parts) {
+  const root = realpathSync2(parts.top);
+  const commonDir = realpathSync2(parts.common);
+  return { commonDir, isWorktree: realpathSync2(parts.gitDir) !== commonDir, root };
+}
 function locateCheckout(cwd, options = {}) {
   if (!existsSync3(cwd) || !statSync2(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
@@ -6594,22 +6617,21 @@ function locateCheckout(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--")) {
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
     requireGitVersion(git);
     if (revParse.ok) {
       throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
     }
     return null;
   }
-  if (!top || !gitDir || !common)
+  if (parts === "outside")
     return null;
-  const root = realpathSync2(top);
-  const commonDir = realpathSync2(common);
-  const isWorktree = realpathSync2(gitDir) !== commonDir;
-  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
-  return { root, commonDir, isWorktree, mainCheckout };
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;

@@ -397,6 +397,7 @@ function cliPaths(env = process.env) {
     portalCopy: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalProjectsFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join3(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
@@ -13297,7 +13298,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname24, join as join70 } from "path";
+import { dirname as dirname25, join as join70 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync49, readFileSync as readFileSync57 } from "fs";
@@ -19000,6 +19001,10 @@ import { join as join25 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitNotFound(error) {
+  const why = error instanceof Error ? error.message : String(error);
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
 function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
   return (args) => {
     try {
@@ -19018,13 +19023,35 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stderr: result.stderr.toString()
       };
     } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+      throw gitNotFound(error);
     }
   };
 }
-function requireGitVersion(git) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
+function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
+  return async (args) => {
+    try {
+      const child = Bun.spawn(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: timeoutMs,
+        windowsHide: true
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited
+      ]);
+      return { ok: code === 0, stdout, stderr };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+function requireGitVersionText(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
   if (!match)
     return;
   const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
@@ -19032,8 +19059,13 @@ function requireGitVersion(git) {
     throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
   }
 }
-function findMainCheckout(git, cwd) {
-  const list = git(["worktree", "list", "--porcelain"]);
+function requireGitVersion(git) {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+async function requireGitVersionAsync(git) {
+  requireGitVersionText((await git(["--version"])).stdout);
+}
+function mainCheckoutFrom(list, cwd) {
   if (!list.ok)
     throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split(`
@@ -19052,6 +19084,26 @@ function findMainCheckout(git, cwd) {
   }
   return realpathSync3(path);
 }
+function findMainCheckout(git, cwd) {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+async function findMainCheckoutAsync(git, cwd) {
+  return mainCheckoutFrom(await git(["worktree", "list", "--porcelain"]), cwd);
+}
+function revParseParts(revParse) {
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--"))
+    return "not-understood";
+  if (!top || !gitDir || !common)
+    return "outside";
+  return { common, gitDir, top };
+}
+function checkoutRoots(parts) {
+  const root = realpathSync3(parts.top);
+  const commonDir = realpathSync3(parts.common);
+  return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
+}
 function locateCheckout(cwd, options = {}) {
   if (!existsSync31(cwd) || !statSync9(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
@@ -19064,22 +19116,49 @@ function locateCheckout(cwd, options = {}) {
     "--absolute-git-dir",
     "--git-common-dir"
   ]);
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--")) {
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
     requireGitVersion(git);
     if (revParse.ok) {
       throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
     }
     return null;
   }
-  if (!top || !gitDir || !common)
+  if (parts === "outside")
     return null;
-  const root = realpathSync3(top);
-  const commonDir = realpathSync3(common);
-  const isWorktree = realpathSync3(gitDir) !== commonDir;
-  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
-  return { root, commonDir, isWorktree, mainCheckout };
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
+}
+async function locateCheckoutAsync(cwd, options = {}) {
+  if (!existsSync31(cwd) || !statSync9(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env));
+  const revParse = await git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    await requireGitVersionAsync(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (parts === "outside")
+    return null;
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? await findMainCheckoutAsync(git, cwd) : roots.root
+  };
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
@@ -19094,29 +19173,60 @@ function loadProjectConfig(checkout, pluginVersion) {
   return { ...checkout, config, configFile };
 }
 var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function readCommittedConfig(checkout, branch, options = {}) {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
-  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) {
-    return {
-      found: false,
-      where,
-      why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
-    };
-  }
-  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
-  if (!blob.ok)
-    return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
-  const text = git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok)
-    return { found: false, where, why: `git could not read ${where}` };
+function refNotKnown(where, ref) {
+  return {
+    found: false,
+    where,
+    why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
+  };
+}
+function noCommittedFile(where, ref) {
+  return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
+}
+function unreadableCommitted(where) {
+  return { found: false, where, why: `git could not read ${where}` };
+}
+function committedOf(text, where, options) {
   return {
     found: true,
     where,
     config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
   };
+}
+function readCommittedConfig(checkout, branch, options = {}) {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok)
+    return refNotKnown(where, ref);
+  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
+  if (!blob.ok)
+    return noCommittedFile(where, ref);
+  const text = git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok)
+    return unreadableCommitted(where);
+  return committedOf(text, where, options);
+}
+async function readCommittedConfigAsync(checkout, branch, options = {}) {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok)
+    return refNotKnown(where, ref);
+  const blob = await git([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `${commit.stdout.trim()}:${CONFIG_PATH}`
+  ]);
+  if (!blob.ok)
+    return noCommittedFile(where, ref);
+  const text = await git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok)
+    return unreadableCommitted(where);
+  return committedOf(text, where, options);
 }
 function resolveProject(cwd, options = {}) {
   const checkout = locateCheckout(cwd, options);
@@ -19362,6 +19472,34 @@ function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
     return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
+  }
+}
+async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
+  try {
+    const child = Bun.spawn(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    const signaled = child.signalCode !== null && child.signalCode !== undefined;
+    return {
+      ok: code === 0,
+      out: stdout.trim(),
+      err: signaled ? "timed out" : stderr.trim(),
+      code: signaled ? null : code
+    };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };
@@ -27093,7 +27231,7 @@ class Uncovered extends Error {
 function alternateEntry(folder) {
   return `"${folder.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
 }
-function readCover(checkout, target, records, limits, git) {
+async function readCover(checkout, target, records, limits, git) {
   const { head, branch } = target;
   if (records.some((record) => record.sha === head)) {
     return { covered: true, review: head, delta: null, reviewed: null };
@@ -27119,7 +27257,7 @@ function readCover(checkout, target, records, limits, git) {
   let objects = null;
   try {
     objects = mkdtempSync4(join48(tmpdir6(), `${COMMAND}-cover-`));
-    return measure(checkout, target, candidates, limits, git, objects);
+    return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
       return { covered: false, review: error.review, why: error.message };
@@ -27134,57 +27272,66 @@ function readCover(checkout, target, records, limits, git) {
       rmSync10(objects, { recursive: true, force: true });
   }
 }
-function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
+async function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join48(checkout.commonDir, "objects"))
   };
-  const run = (args) => {
+  const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0)
       throw new Uncovered("the time to measure the change after the review ran out");
-    const result = runGit(checkout.root, args, git.env, left, own);
+    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, own);
     if (result.code === null && result.err === "timed out") {
       throw new Uncovered("the time to measure the change after the review ran out");
     }
     return result;
   };
-  const commit = (rev) => {
-    const found = run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
+  const commit = async (rev) => {
+    const found = await run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
     return found.ok && COMMIT_SHA.test(found.out) ? found.out : null;
   };
-  const asked = run(["--version"]);
+  const asked = await run(["--version"]);
   if (!asked.ok)
     throw new Uncovered(`git cannot be run here (${asked.err})`);
   const version = parseGitVersion(asked.out);
   if (version !== null && tooOldToCover(version))
     throw new Uncovered(oldGit(version, head));
-  if (!COMMIT_SHA.test(head) || commit(head) === null) {
+  if (!COMMIT_SHA.test(head) || await commit(head) === null) {
     throw new Uncovered(`${short(head)} is not in this checkout: fetch it (git fetch origin)`);
   }
-  if (commit(baseRef) === null) {
+  if (await commit(baseRef) === null) {
     throw new Uncovered(`origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`);
   }
-  const mergeBase = (a, b) => {
-    const found = run(["merge-base", a, b]);
+  const mergeBase = async (a, b) => {
+    const found = await run(["merge-base", a, b]);
     if (!found.ok) {
       throw new Uncovered(`${short(a)} and origin/${base} share no history`, a === head ? null : a);
     }
     return found.out;
   };
-  const numstat = (from, to, review) => {
-    const diff = run(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]);
+  const numstat = async (from, to, review) => {
+    const diff = await run([
+      "diff",
+      "--no-textconv",
+      "--no-ext-diff",
+      "--numstat",
+      "-z",
+      "-M",
+      from,
+      to
+    ]);
     if (!diff.ok) {
       throw new Uncovered(`the change after the review of ${short(review)} cannot be read (${diff.err})`, review);
     }
     return parseNumstat(diff.out);
   };
-  const generatedOf = (paths) => {
+  const generatedOf = async (paths) => {
     const generated = new Set;
     for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
       const some = paths.slice(at, at + PATHS_PER_CALL);
-      const attrs = run([
+      const attrs = await run([
         "check-attr",
         `--source=${baseRef}`,
         "-z",
@@ -27219,29 +27366,31 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
     }
     return count;
   };
-  const onBase = mergeBase(head, baseRef);
+  const onBase = await mergeBase(head, baseRef);
   const measured = [];
   const unread = [];
   for (const review of candidates) {
     try {
-      if (commit(review) === null) {
+      if (await commit(review) === null) {
         throw new Uncovered(`the reviewed commit ${short(review)} is not in this checkout: fetch it (git fetch origin)`, review);
       }
-      const replay = run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
+      const replay = await run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
       const tree = replay.out.split(`
 `)[0] ?? "";
       if (replay.code !== 0 && replay.code !== 1 || !COMMIT_SHA.test(tree)) {
         throw new Uncovered(`the review of ${short(review)} cannot be replayed on origin/${base} (${replay.err})`, review);
       }
-      const same = run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
+      const same = await run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
       if (same.code === 0)
         continue;
       if (same.code !== 1) {
         throw new Uncovered(`the review of ${short(review)} cannot be compared (${same.err})`, review);
       }
-      const after = numstat(tree, head, review);
-      const before = numstat(mergeBase(review, baseRef), review, review);
-      const generated = generatedOf([...new Set([...after, ...before].map((one) => one.path))]);
+      const after = await numstat(tree, head, review);
+      const before = await numstat(await mergeBase(review, baseRef), review, review);
+      const generated = await generatedOf([
+        ...new Set([...after, ...before].map((one) => one.path))
+      ]);
       const delta = tally(after, generated);
       const reviewed = tally(before, generated);
       measured.push({
@@ -27897,6 +28046,21 @@ function resolveGate(paths, checkout, branch, options = {}) {
   } catch (error) {
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+  return gateOfCommitted(paths, branch, committed);
+}
+async function resolveGateAsync(paths, checkout, branch, options = {}) {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed;
+  try {
+    committed = await readCommittedConfigAsync(checkout, branch, options);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  return gateOfCommitted(paths, branch, committed);
+}
+function gateOfCommitted(paths, branch, committed) {
   if (!committed.found)
     return { ok: false, why: committed.why };
   const resolved = resolveWorkflow(paths, committed.config);
@@ -28479,6 +28643,27 @@ function autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch) {
 
 // src/workflow/merge-check.ts
 var GH_TIMEOUT_MS3 = 1e4;
+var spawnGh = async (args, { folder, env, timeoutMs }) => {
+  try {
+    const child = Bun.spawn(["gh", ...args], {
+      cwd: folder,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const [out] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    return out.trim() === "" ? null : out;
+  } catch {
+    return null;
+  }
+};
 var PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
 function parsePullRequestFacts(json) {
   try {
@@ -28540,10 +28725,10 @@ function reviewGateOf(paths, checkout, resolved) {
     file: reviewsFile(paths.stateDir, repository)
   };
 }
-function coverOf(world, review, target) {
+async function coverOf(world, review, target) {
   if (!review.reviewBeforePush)
     return null;
-  return readCover(world.checkout, target, trustedReviews(review.file, review.agents), review.limits, {
+  return await readCover(world.checkout, target, trustedReviews(review.file, review.agents), review.limits, {
     env: world.env,
     timeFor: world.timeFor
   });
@@ -28626,35 +28811,22 @@ function ghMissing(env) {
     return false;
   }
 }
-function ghStdout(args, folder, env, timeoutMs) {
-  try {
-    const run = Bun.spawnSync(["gh", ...args], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs
-    });
-    const out = run.stdout.toString();
-    return out.trim() === "" ? null : out;
-  } catch {
-    return null;
-  }
+async function ghStdout(args, folder, env, timeoutMs, run) {
+  return await run(args, { env, folder, timeoutMs });
 }
-function viewPullRequest2(target, folder, env, timeoutMs = GH_TIMEOUT_MS3) {
-  const out = ghStdout([
+async function viewPullRequest2(target, folder, env, timeoutMs = GH_TIMEOUT_MS3, run = spawnGh) {
+  const out = await ghStdout([
     "pr",
     "view",
     ...target.ref === null ? [] : [target.ref],
     ...target.repo === null ? [] : ["--repo", target.repo],
     "--json",
     PULL_REQUEST_FACTS
-  ], folder, env, timeoutMs);
+  ], folder, env, timeoutMs, run);
   return out === null ? null : parsePullRequestFacts(out);
 }
-function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS3) {
-  const out = ghStdout([
+async function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS3, run = spawnGh) {
+  const out = await ghStdout([
     "pr",
     "checks",
     String(number),
@@ -28662,36 +28834,36 @@ function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_MS3) {
     ...repo === null ? [] : ["--repo", repo],
     "--json",
     "name,bucket"
-  ], folder, env, timeoutMs);
+  ], folder, env, timeoutMs, run);
   return out === null ? null : parseRequiredChecks(out);
 }
-function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS3) {
-  const out = ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs);
+async function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS3, run = spawnGh) {
+  const out = await ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs, run);
   return out === null ? null : parseDefaultBranch(out);
 }
-function gateFor(world, branch) {
+async function gateFor(world, branch) {
   if (world.gateOf !== undefined)
-    return world.gateOf(branch);
+    return await world.gateOf(branch);
   const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
   if (left <= 0)
     return "late";
-  return resolveGate(world.paths, world.checkout, branch, {
+  return await resolveGateAsync(world.paths, world.checkout, branch, {
     env: world.env,
     timeoutMs: left
   });
 }
-function checkPullRequest(world, target, defaultBranches = new Map) {
+async function checkPullRequest(world, target, defaultBranches = new Map) {
   const viewLeft = world.timeFor(GH_TIMEOUT_MS3);
   if (viewLeft <= 0) {
     return { kind: "late", number: null, what: "the pull request this command names" };
   }
-  const view = viewPullRequest2(target, world.folder, world.env, viewLeft);
+  const view = await viewPullRequest2(target, world.folder, world.env, viewLeft, world.gh ?? spawnGh);
   if (view === null) {
     return { kind: "unread", number: null, what: "the pull request this command names" };
   }
   let read;
   try {
-    read = gateFor(world, view.base);
+    read = await gateFor(world, view.base);
   } catch (error) {
     return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
   }
@@ -28715,7 +28887,7 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     if (branchLeft <= 0) {
       return { kind: "late", number: view.number, what: "this repository's default branch" };
     }
-    defaultBranches.set(where, defaultBranchOf(world.folder, world.env, target.repo, branchLeft));
+    defaultBranches.set(where, await defaultBranchOf(world.folder, world.env, target.repo, branchLeft, world.gh ?? spawnGh));
   }
   const defaultBranch = defaultBranches.get(where) ?? null;
   if (defaultBranch === null) {
@@ -28728,7 +28900,7 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     if (checksLeft <= 0) {
       return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };
     }
-    checks = requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft);
+    checks = await requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft, world.gh ?? spawnGh);
     if (checks === null) {
       return {
         kind: "unread",
@@ -28742,7 +28914,7 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     return { detail: null, kind: "refused", number: view.number, reason: before };
   }
   const review = reviewGateOf(world.paths, world.checkout, resolved);
-  const cover = coverOf(world, review, {
+  const cover = await coverOf(world, review, {
     head: view.headOid,
     branch: view.headRef,
     base: view.base
@@ -28762,16 +28934,23 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     reason: pullRequestAllowed(cover?.covered === true ? cover : null)
   };
 }
-function commitOf(world, rev) {
+async function commitOf(world, rev) {
   const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
   if (left <= 0)
     return null;
-  const run = runGit(world.checkout.root, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], world.env, left);
+  const run = await runGitAsync(world.checkout.root, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], world.env, left);
   return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
 }
-function checkBranch(world, target) {
-  const head = commitOf(world, target.branch) ?? commitOf(world, `origin/${target.branch}`);
+async function checkBranch(world, target) {
+  const firstLeft = world.timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (firstLeft <= 0) {
+    return { kind: "late", number: null, what: `branch ${target.branch}` };
+  }
+  const head = await commitOf(world, target.branch) ?? await commitOf(world, `origin/${target.branch}`);
   if (head === null) {
+    if (world.timeFor(GUARD_GIT_TIMEOUT_MS) <= 0) {
+      return { kind: "late", number: null, what: `branch ${target.branch}` };
+    }
     return {
       detail: null,
       kind: "refused",
@@ -28781,7 +28960,7 @@ function checkBranch(world, target) {
   }
   let read;
   try {
-    read = gateFor(world, target.base);
+    read = await gateFor(world, target.base);
   } catch (error) {
     return { detail: null, kind: "refused", number: null, reason: workflowUnread(error) };
   }
@@ -28797,7 +28976,7 @@ function checkBranch(world, target) {
     };
   }
   const review = reviewGateOf(world.paths, world.checkout, read.gate.resolved);
-  const cover = coverOf(world, review, { head, branch: target.branch, base: target.base });
+  const cover = await coverOf(world, review, { head, branch: target.branch, base: target.base });
   const detail = detailOf(cover, review.limits);
   const refused = reviewRefusal(cover);
   if (refused !== null)
@@ -28897,7 +29076,7 @@ function askFor(verdict, env) {
     return notChecked(verdict.what, env);
   return notInTime(verdict.what);
 }
-function mergeGuard(context) {
+async function mergeGuard(context) {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   const dialect = dialectOfTool(input.tool_name);
@@ -28943,14 +29122,14 @@ function mergeGuard(context) {
     return branchHere;
   };
   const openingDefaults = new Map;
-  const defaultBranchHere = (repo) => {
+  const defaultBranchHere = async (repo) => {
     const key = repo ?? "";
     if (openingDefaults.has(key))
       return openingDefaults.get(key) ?? null;
     const left = timeFor(GH_TIMEOUT_MS3);
     if (left <= 0)
       return "late";
-    let branch = defaultBranchOf(cwd, env, repo, left);
+    let branch = await defaultBranchOf(cwd, env, repo, left);
     if (branch === null) {
       const gitLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
       if (gitLeft <= 0)
@@ -28964,14 +29143,14 @@ function mergeGuard(context) {
     openingDefaults.set(key, branch);
     return branch;
   };
-  const opensOutsideBase = (opening, worktrees) => {
+  const opensOutsideBase = async (opening, worktrees) => {
     if (opening.opens !== "create" || opening.cli !== true || worktrees === undefined)
       return null;
     const head = headBranchOf(opening.head ?? null) ?? currentBranch();
     if (head === null)
       return null;
     const expected = baseForBranch(worktrees, head);
-    const into = opening.base ?? defaultBranchHere(opening.target?.repo ?? null);
+    const into = opening.base ?? await defaultBranchHere(opening.target?.repo ?? null);
     if (into === "late" || into === "unread")
       return into;
     if (into === null)
@@ -29046,7 +29225,7 @@ function mergeGuard(context) {
         return toolDecision("ask", notByItself(foreign.reason, number));
       }
     }
-    const verdict = checkPullRequest(world, target, defaultBranches);
+    const verdict = await checkPullRequest(world, target, defaultBranches);
     if (verdict.kind === "silent")
       return SILENT;
     if (verdict.kind !== "allowed")
@@ -29087,7 +29266,7 @@ function mergeGuard(context) {
     });
     if (why !== null)
       return toolDecision("ask", notOpenedByItself(opening, why));
-    const outside = opensOutsideBase(opening, read.gate.config?.worktrees);
+    const outside = await opensOutsideBase(opening, read.gate.config?.worktrees);
     if (outside === "late") {
       return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
     }
@@ -32226,8 +32405,9 @@ function jobsFingerprint(home) {
 }
 
 // src/portal/actions.ts
-import { createHash as createHash9, randomBytes } from "crypto";
-import { join as join65 } from "path";
+import { createHash as createHash10, randomBytes } from "crypto";
+import { existsSync as existsSync57, statSync as statSync22 } from "fs";
+import { isAbsolute as isAbsolute8, join as join68 } from "path";
 
 // src/browser/setup.ts
 import { existsSync as existsSync50, mkdirSync as mkdirSync20, readdirSync as readdirSync19, readFileSync as readFileSync58 } from "fs";
@@ -32544,19 +32724,23 @@ function readSession2(file) {
     lastWrite: file.lastWrite
   });
 }
-function sessionWorkFolders(projectsDir) {
+function sessionWorkFolderTimes(projectsDir) {
   if (!existsSync51(projectsDir))
     return [];
-  const folders = new Set;
+  const folders = new Map;
   for (const folder of readdirSync20(projectsDir)) {
     const newest = sessionFiles(projectsDir, folder)[0];
     if (newest === undefined)
       continue;
     const worked = readSession2(newest).folder;
-    if (worked !== null)
-      folders.add(worked);
+    if (worked === null)
+      continue;
+    folders.set(worked, Math.max(folders.get(worked) ?? 0, newest.lastWrite));
   }
-  return [...folders];
+  return [...folders].map(([folder, lastWrite]) => ({ folder, lastWrite }));
+}
+function sessionWorkFolders(projectsDir) {
+  return sessionWorkFolderTimes(projectsDir).map((worked) => worked.folder);
 }
 function savedSessions(projectsDir, mainCheckout, since) {
   if (!existsSync51(projectsDir))
@@ -32580,14 +32764,25 @@ function savedSessions(projectsDir, mainCheckout, since) {
 function messageOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
+function checkoutFold(checkout) {
+  if (checkout === null)
+    return null;
+  return { main: checkout.mainCheckout ?? checkout.root, root: checkout.root };
+}
 function checkoutOf(folder, env) {
   if (!existsSync52(folder))
     return null;
   try {
-    const checkout = locateCheckout(folder, { env });
-    if (checkout === null)
-      return null;
-    return { main: checkout.mainCheckout ?? checkout.root, root: checkout.root };
+    return checkoutFold(locateCheckout(folder, { env }));
+  } catch {
+    return null;
+  }
+}
+async function checkoutOfAsync(folder, env) {
+  if (!existsSync52(folder))
+    return null;
+  try {
+    return checkoutFold(await locateCheckoutAsync(folder, { env }));
   } catch {
     return null;
   }
@@ -33449,6 +33644,11 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
     lock?.close();
   }
 }
+
+// src/portal/api/projects.ts
+import { createHash as createHash9 } from "crypto";
+import { existsSync as existsSync56, mkdirSync as mkdirSync24, readFileSync as readFileSync65 } from "fs";
+import { basename as basename13, dirname as dirname24, relative as relative7 } from "path";
 
 // src/portal/facts.ts
 import { createHash as createHash8 } from "crypto";
@@ -34474,1110 +34674,9 @@ async function omnirouteRow(omnirouteCtx, installedIsOlder) {
   };
 }
 
-// src/portal/actions.ts
-function portalOmnirouteContext(ctx) {
-  return {
-    confirm: null,
-    env: ctx.env,
-    health: (url, init) => ctx.fetch(url, init),
-    now: ctx.now,
-    paths: ctx.paths,
-    registry: (url, init) => ctx.fetch(url, init),
-    runner: ctx.runner,
-    say: () => {
-      return;
-    },
-    sleep: (ms) => ctx.probe.sleep(ms),
-    systemFolders: ctx.systemFolders,
-    systemd: ctx.systemd,
-    which: ctx.which
-  };
-}
-function collector(onLine) {
-  const lines = [];
-  const push = (line) => {
-    for (const one of line.split(`
-`)) {
-      if (one.trim() === "")
-        continue;
-      lines.push(one);
-      onLine?.(one);
-    }
-  };
-  return { error: push, lines, print: push };
-}
-function gatewayContext(action, print) {
-  const { portal } = action;
-  const folder = portal.pluginFolder();
-  if ("error" in folder)
-    return folder;
-  return {
-    ctx: {
-      bunPath: process.execPath,
-      bunVersion: portal.bunVersion,
-      bundle: join65(folder.folder, "dist", "router.js"),
-      confirm: null,
-      error: print,
-      paths: portal.paths,
-      print,
-      probe: portal.probe,
-      readStdin: () => Promise.resolve(""),
-      runner: portal.runner,
-      service: portal.systemd ? "systemd" : "none",
-      account: null,
-      platform: process.platform
-    }
-  };
-}
-async function gateway(action, args) {
-  const { lines, print } = collector();
-  const context = gatewayContext(action, print);
-  if ("error" in context)
-    return { lines: [context.error], ok: false };
-  const code = await runGateway(args, context.ctx);
-  return { lines, ok: code === 0 };
-}
-function slotArg(name) {
-  return name.startsWith("cc-smart-dev-kit-") ? name : `cc-smart-dev-kit-${name}`;
-}
-async function testTargets(action, body) {
-  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
-  const targets = Array.isArray(body.targets) ? body.targets.filter((entry) => typeof entry === "string") : [];
-  if (targets.length === 0)
-    return { lines: ["Give the chain at least one target."], ok: false };
-  const config = loadConfigFile(action.portal.paths.gatewayConfigFile);
-  const results = [];
-  const lines = [];
-  const judge = slot === JUDGE_SLOT;
-  for (const text of targets) {
-    const parsed = parseTarget(text);
-    if ("error" in parsed) {
-      results.push({ detail: parsed.error, target: text, verdict: "bad" });
-      continue;
-    }
-    if (parsed.target.kind === "anthropic") {
-      results.push({
-        detail: judge ? "on your own Claude login: the router uses a judge target only after it passed the force-push test, so this one is ignored, exactly as the command line ignores it" : "on your own Claude login: the portal cannot send a request with it, and never holds one",
-        target: text,
-        verdict: "good"
-      });
-      lines.push(judge ? `${text}: on your own Claude login, so it is never used as a judge (the command line allows it too)` : `${text}: on your own Claude login`);
-      continue;
-    }
-    const backend = config.backends[parsed.target.backend];
-    if (backend === undefined) {
-      results.push({
-        detail: `backend "${parsed.target.backend}" is not in the config`,
-        target: text,
-        verdict: "bad"
-      });
-      continue;
-    }
-    const keys = [backend.apiKey];
-    const listed = await listModels(backend.baseUrl, backend.apiKey, 8000);
-    if ("error" in listed || listed.status !== 200) {
-      const why = "error" in listed ? shownDetail(listed.error, keys) : `HTTP ${listed.status}`;
-      results.push({ detail: `the backend did not answer (${why})`, target: text, verdict: "bad" });
-      lines.push(`${text}: \u2717 ${why}`);
-      continue;
-    }
-    if (!listed.models.some((model) => model.id === parsed.target.model)) {
-      results.push({
-        detail: `"${parsed.target.backend}" has no model "${parsed.target.model}"`,
-        target: text,
-        verdict: "bad"
-      });
-      lines.push(`${text}: \u2717 the backend does not list that model`);
-      continue;
-    }
-    if (judge) {
-      const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
-      const detail = shownDetail(result.detail, keys);
-      results.push({
-        detail,
-        target: text,
-        verdict: result.verdict === "block" ? "blocked" : "bad"
-      });
-      lines.push(result.verdict === "block" ? `${text}: blocked the force-push test` : `${text}: \u2717 it did not block the force-push test (${detail})`);
-      continue;
-    }
-    const probe = await probeModel({
-      apiKey: backend.apiKey,
-      baseUrl: backend.baseUrl,
-      fetchImpl: action.portal.fetch,
-      model: parsed.target.model
-    });
-    const detail = shownDetail(probe.detail, keys);
-    results.push({ detail, target: text, verdict: probe.ok ? "good" : "bad" });
-    lines.push(`${text}: ${probe.ok ? "\u2713" : "\u2717"} ${detail}`);
-  }
-  const ok = results.every((one) => one.verdict !== "bad");
-  lines.push(ok ? judge ? "Every backend target blocked the test check. You can save this chain." : "Every target answered." : judge ? "At least one backend target did not block the test check: Save stays off until every judge target shows blocked \u2713." : "At least one target did not answer as it should: the command line refuses a chain like this, so fix it before you save.");
-  return { lines, ok, results };
-}
-async function setSlotFallback(action, body) {
-  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
-  if (slot === "" || typeof body.on !== "boolean") {
-    return { lines: ["Pick a slot, and say on or off."], ok: false };
-  }
-  return gateway(action, ["fallback", slot, body.on ? "on" : "off"]);
-}
-async function setSlotBreaker(action, body) {
-  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
-  if (slot === "" || typeof body.on !== "boolean") {
-    return { lines: ["Pick a slot, and say on or off."], ok: false };
-  }
-  return gateway(action, ["breaker", slot, body.on ? "on" : "off"]);
-}
-async function saveSlot(action, body) {
-  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
-  const targets = Array.isArray(body.targets) ? body.targets.filter((entry) => typeof entry === "string") : [];
-  if (slot === "" || targets.length === 0)
-    return { lines: ["Pick a slot and give it a target."], ok: false };
-  if (body.stamp !== undefined && slotStamp(gatewayConfig(action), slot) !== body.stamp) {
-    return {
-      lines: [
-        "This slot's chain changed since the page read it (another tab, or the command line), so nothing was saved.",
-        "Load the newer chain, then make the change again."
-      ],
-      ok: false
-    };
-  }
-  return gateway(action, ["slot", slot, targets.join(",")]);
-}
-async function checkTarget(action, body) {
-  const text = typeof body.target === "string" ? body.target.trim() : "";
-  if (text === "")
-    return { lines: ["Type a target: claude-<id> or <backend>:<model>."], ok: false };
-  const config = gatewayConfig(action);
-  const parsed = parseTarget(text);
-  const models = {};
-  if ("target" in parsed && parsed.target.kind !== "anthropic") {
-    const backend = config.backends[parsed.target.backend];
-    if (backend !== undefined) {
-      const listed = await listModels(backend.baseUrl, backend.apiKey, 8000);
-      models[parsed.target.backend] = "error" in listed || listed.status !== 200 ? null : listed.models.map((model) => model.id);
-    }
-  }
-  const problem = chainProblem(config, [text], models);
-  if (problem !== null) {
-    const names = Object.keys(config.backends);
-    const known = "target" in parsed && parsed.target.kind !== "anthropic" && !Object.hasOwn(config.backends, parsed.target.backend) ? `. The config names: ${names.length === 0 ? "no backend" : names.join(", ")}.` : "";
-    return { lines: [`${shownDetail(problem, [])}${known}`], ok: false };
-  }
-  return {
-    lines: [
-      "target" in parsed && parsed.target.kind === "anthropic" ? `${text}: on your own Claude login.` : `${text}: its backend lists it.`
-    ],
-    ok: true
-  };
-}
-async function setSlotMode(action, body) {
-  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
-  if (slot === "" || body.mode !== "claude" && body.mode !== "custom") {
-    return { lines: ['Pick a slot, and say "claude" or "custom".'], ok: false };
-  }
-  return gateway(action, ["slot", slot, body.mode]);
-}
-function gatewayConfig(action) {
-  return loadConfigFile(action.portal.paths.gatewayConfigFile);
-}
-async function switchGateway(action, on) {
-  return gateway(action, [on ? "on" : "off"]);
-}
-async function switchJudge(action, on) {
-  const config = gatewayConfig(action);
-  const mode = on ? "custom" : "claude";
-  if (slotMode(config, JUDGE_SLOT) === mode) {
-    return {
-      lines: [`The judge is already ${on ? "Custom" : "Claude"}.`],
-      ok: true
-    };
-  }
-  if (on && keptChain(config, JUDGE_SLOT) === null) {
-    return {
-      lines: [
-        "No judge chain is saved, so the switch cannot turn one on.",
-        "Go to Slots, pick judge, add a model, run the force-push test, and Save."
-      ],
-      ok: false
-    };
-  }
-  return gateway(action, ["slot", "judge", mode]);
-}
-async function switchModelSlots(action, on) {
-  const config = gatewayConfig(action);
-  const mode = on ? "custom" : "claude";
-  const missing = [];
-  const lines = [];
-  let changed = 0;
-  let ok = true;
-  for (const slot of Object.keys(MODEL_SLOTS)) {
-    if (slotMode(config, slot) === mode)
-      continue;
-    if (on && keptChain(config, slot) === null) {
-      missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
-      continue;
-    }
-    let result;
-    try {
-      result = await gateway(action, ["slot", slot, mode]);
-    } catch (error) {
-      result = { lines: [messageOf(error)], ok: false };
-    }
-    ok = ok && result.ok;
-    lines.push(...result.lines);
-    if (result.ok)
-      changed += 1;
-  }
-  if (missing.length > 0) {
-    lines.push(`No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save.`);
-  }
-  if (changed === 0 && on) {
-    lines.push("Nothing was turned on, so the switch is still off.");
-    return { lines, ok: false };
-  }
-  if (changed === 0 && lines.length === 0) {
-    return { lines: ["The opus and fable slots were already off."], ok: true };
-  }
-  return { lines, ok };
-}
-async function switchHold(action, on) {
-  const sinks = collector();
-  const code = await runUpdate(action.portal.paths, action.portal.env, [on ? "--hold" : "--resume"], action.portal.now, sinks);
-  return { lines: sinks.lines, ok: code === 0 };
-}
-function stepRunner(action, lines, name) {
-  const context = commandContext(action.portal.env, action.portal.paths.home);
-  const publish = (line) => {
-    action.publish?.("action", { action: name, line });
-  };
-  return async (argv) => {
-    try {
-      const child = Bun.spawn(argv, {
-        ...context,
-        stdin: "ignore",
-        stderr: "pipe",
-        stdout: "pipe",
-        timeout: CLAUDE_TIMEOUT_MS
-      });
-      const [stdout, stderr, exitCode] = await Promise.all([
-        readStream(child.stdout),
-        readStream(child.stderr),
-        child.exited
-      ]);
-      const output = `${stdout}${stderr}`.trim();
-      const last = output.split(`
-`).at(-1) ?? "";
-      if (last !== "") {
-        lines.push(`  ${last}`);
-        publish(`  ${last}`);
-      }
-      return { exitCode, output };
-    } catch (error) {
-      return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
-    }
-  };
-}
-async function readStream(stream) {
-  if (stream === undefined || typeof stream === "number")
-    return "";
-  return await new Response(stream).text();
-}
-async function updateCheck(action) {
-  const sinks = collector();
-  const code = await runUpdate(action.portal.paths, action.portal.env, ["--check"], action.portal.now, sinks);
-  return { lines: sinks.lines, ok: code === 0 };
-}
-async function updateInstall(action) {
-  const sinks = collector((line) => action.publish?.("action", { action: "update.install", line }));
-  const code = await runUpdate(action.portal.paths, action.portal.env, [], action.portal.now, {
-    ...sinks,
-    run: stepRunner(action, sinks.lines, "update.install")
-  });
-  return { lines: sinks.lines, ok: code === 0 };
-}
-async function runDoctorPass(action, source) {
-  const options = source();
-  if ("error" in options) {
-    const failed = {
-      ok: false,
-      text: options.error,
-      fix: `run it in a terminal: ${COMMAND} doctor`
-    };
-    return { checks: [failed], lines: [checkLine(failed)], ok: false };
-  }
-  const checks = await doctorChecks(action.portal.paths, action.portal.env, options);
-  return {
-    checks,
-    lines: checks.map(checkLine),
-    ok: checks.every((check) => check.ok)
-  };
-}
-async function companionEnable(action, id) {
-  const known = companions().map((companion) => companion.id);
-  if (!known.includes(id)) {
-    return {
-      lines: [`"${id}" is not one of this kit's companions (${known.join(", ")}).`],
-      ok: false
-    };
-  }
-  const result = action.portal.machine.run(["claude", "plugin", "enable", id]);
-  const reason = result.output.trim().split(`
-`).at(-1) ?? "";
-  return result.exitCode === 0 ? { lines: [`${id} is on.`], ok: true } : {
-    lines: [
-      `claude plugin enable ${id} failed (exit ${result.exitCode})${reason === "" ? "" : `: ${reason}`}`
-    ],
-    ok: false
-  };
-}
-function autoModeChange(action) {
-  const { paths, which } = action.portal;
-  const wanted = autoModeSource(action.cwd, which);
-  if (wanted === null)
-    return null;
-  const diff = applyAutoMode(paths.settingsFile, paths.stateDir, wanted, true);
-  const from = wanted.file ?? wanted.source;
-  const shown = {
-    added: diff.added,
-    differsFrom: wanted.differsFrom,
-    entries: wanted.entries,
-    from,
-    removed: diff.removed,
-    source: wanted.source
-  };
-  return {
-    added: diff.added,
-    differsFrom: wanted.differsFrom,
-    from,
-    hash: createHash9("sha256").update(JSON.stringify(shown)).digest("hex").slice(0, 32),
-    removed: diff.removed,
-    settings: paths.settingsFile,
-    wanted
-  };
-}
-async function applyAutoModeAction(action, body) {
-  if (body.confirm !== true) {
-    return { lines: ["The rules were not confirmed, so nothing was written."], ok: false };
-  }
-  const { portal } = action;
-  try {
-    return await withLock(portal.paths.stateDir, () => {
-      const change = autoModeChange(action);
-      if (change === null) {
-        return {
-          lines: ["This folder is not inside a git project, so there is nothing to copy."],
-          ok: false
-        };
-      }
-      if (body.shownHash !== change.hash) {
-        return {
-          lines: [
-            "The trust rules changed since this page showed them, so nothing was written. Read them again on the page, then write them."
-          ],
-          ok: false
-        };
-      }
-      const result = applyAutoMode(portal.paths.settingsFile, portal.paths.stateDir, change.wanted, false);
-      return {
-        lines: [
-          ...entryLines(result),
-          "Auto mode reads these from your user settings, the only place it trusts."
-        ],
-        ok: true
-      };
-    }, { waitMs: 1e4 });
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
-}
-async function omnirouteAction(action, args) {
-  const { lines, print } = collector();
-  const code = await runOmniroute(args, { ...action.omniroute, say: print });
-  return { lines, ok: code === 0 };
-}
-async function setWorkflowSetting(action, body) {
-  const spec = settingSpec(body.key);
-  if (spec === undefined) {
-    return { lines: [`"${String(body.key)}" is not a setting this page shows.`], ok: false };
-  }
-  const parsed = parseSettingValue(spec, body.value);
-  if (!parsed.ok)
-    return { lines: [parsed.why], ok: false };
-  if (spec.where === "project") {
-    if (body.confirm !== true) {
-      return {
-        lines: ["The project's own setting was not confirmed, so nothing was written."],
-        ok: false
-      };
-    }
-    if (readProject(action.portal, action.cwd).configFile === null) {
-      return {
-        lines: [
-          `${spec.key} is this project's own setting, and this project has no .claude/cc-smart-dev-kit.json yet: set it up on Machine first.`
-        ],
-        ok: false
-      };
-    }
-  }
-  try {
-    const line = spec.where === "project" ? action.workflow.writeProjectSetting(action.cwd, spec.key, parsed.value, action.portal.env) : action.workflow.writePersonalSetting(action.portal.paths, spec.key, parsed.value);
-    return { lines: [line], ok: true };
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
-}
-function parseProjectForm(value) {
-  if (!isObject2(value))
-    return { ok: false, why: "The form's answers did not arrive." };
-  const base = typeof value.base === "string" ? value.base.trim() : "";
-  if (base === "") {
-    return {
-      ok: false,
-      why: "The base branch is needed: it is the branch a new worktree starts from."
-    };
-  }
-  if (!isObject2(value.bases))
-    return { ok: false, why: "The bases must be prefix \u2192 base pairs." };
-  const bases = {};
-  for (const [from, to] of Object.entries(value.bases)) {
-    if (!from.endsWith("/") || typeof to !== "string" || to === "") {
-      return { ok: false, why: `"${from}" is not prefix=base: the prefix ends with "/".` };
-    }
-    bases[from] = to;
-  }
-  if (!Array.isArray(value.protectedBranches)) {
-    return { ok: false, why: "The protected branches must be a list of branch names." };
-  }
-  const protectedBranches = [];
-  for (const name of value.protectedBranches) {
-    if (typeof name !== "string" || name === "") {
-      return { ok: false, why: "The protected branches must be a list of branch names." };
-    }
-    protectedBranches.push(name);
-  }
-  if (!isObject2(value.guards))
-    return { ok: false, why: "guards must say true or false for each guard." };
-  const guards = { guardMainFolder: false, jobRoute: false, sessionNames: false };
-  for (const name of ["guardMainFolder", "sessionNames", "jobRoute"]) {
-    const on = value.guards[name];
-    if (typeof on !== "boolean")
-      return { ok: false, why: `guards.${name} is true or false.` };
-    guards[name] = on;
-  }
-  return {
-    ok: true,
-    value: { base, bases, guards, protectedBranches }
-  };
-}
-function projectAnswers(action, body) {
-  const project = readProject(action.portal, action.cwd);
-  if (project.root === null) {
-    return { ok: false, why: project.why ?? "there is no project folder here" };
-  }
-  const form = parseProjectForm(body.answers);
-  if (!form.ok)
-    return form;
-  const texts = projectFileTexts(project.root);
-  try {
-    const defaults = action.projectDefaults({ env: action.portal.env, root: project.root });
-    return {
-      ok: true,
-      answers: { ...defaults.answers, ...form.value },
-      defaultBranch: defaults.defaultBranch,
-      ...texts,
-      root: project.root
-    };
-  } catch (error) {
-    return { ok: false, why: messageOf(error) };
-  }
-}
-async function projectPreview(action, body) {
-  const built = projectAnswers(action, body);
-  if (!built.ok)
-    return { lines: [built.why], ok: false };
-  try {
-    const plan = action.workflow.planProjectInit({
-      answers: built.answers,
-      defaultBranch: built.defaultBranch,
-      existing: built.existing,
-      existingLocalSettings: built.existingLocalSettings,
-      existingSettings: built.existingSettings,
-      root: built.root
-    });
-    return {
-      filesHash: projectFilesHash(built),
-      lines: [settingsLineNote(plan.settings)],
-      ok: true,
-      preview: plan
-    };
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
-}
-async function projectWrite(action, body) {
-  if (body.confirm !== true) {
-    return { lines: ["The write was not confirmed, so nothing was written."], ok: false };
-  }
-  const built = projectAnswers(action, body);
-  if (!built.ok)
-    return { lines: [built.why], ok: false };
-  if (body.previewHash !== projectFilesHash(built)) {
-    return {
-      lines: ["The project's files changed since the preview \u2014 preview again."],
-      ok: false
-    };
-  }
-  try {
-    const plan = action.workflow.planProjectInit({
-      answers: built.answers,
-      defaultBranch: built.defaultBranch,
-      existing: built.existing,
-      existingLocalSettings: built.existingLocalSettings,
-      existingSettings: built.existingSettings,
-      root: built.root
-    });
-    const writes = action.workflow.applyProjectInit(plan, {
-      stateDir: action.portal.paths.stateDir
-    });
-    if (writes.length === 0) {
-      return { lines: ["Nothing to change: both files already say this."], ok: true };
-    }
-    return {
-      lines: [
-        ...writes.map((write) => `${write.created ? "+" : "~"} ${write.file}`),
-        "Commit both files with the project: the team shares one setup."
-      ],
-      ok: true
-    };
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
-}
-async function browserSetupAction(action) {
-  try {
-    const result = browserSetup(action.portal.paths, realBrowserSetupDeps(action.portal.machine, action.portal.paths.home), { apply: true });
-    return {
-      lines: [
-        ...result.changes.length > 0 ? result.changes : ["Nothing to change."],
-        ...result.info,
-        ...result.notes,
-        ...result.guide
-      ],
-      ok: result.ok
-    };
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
-}
-function browserTokenAction(action, body) {
-  const pasted = typeof body.token === "string" ? body.token : "";
-  const parsed = parseBrowserToken(pasted);
-  if (!parsed.ok) {
-    if (pasted.trim() === "" && readBrowserToken(action.portal.paths).source === "file") {
-      return {
-        lines: ["Nothing was pasted, so the saved token is unchanged."],
-        ok: false,
-        tone: "info"
-      };
-    }
-    return { lines: [`The token was not saved: ${parsed.why}.`], ok: false };
-  }
-  try {
-    writeBrowserToken(action.portal.paths, parsed.token);
-    return {
-      lines: [
-        tokenSavedLine(action.portal.paths.browserTokenFile),
-        "Start a new Claude session (or restart the running one) to use it."
-      ],
-      ok: true
-    };
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
-}
-var CREW_ANSWER_MAX = 2000;
-function crewContext(action, say) {
-  const { portal } = action;
-  return {
-    asPerson: true,
-    cwd: action.cwd,
-    env: portal.env,
-    error: say,
-    freeMemoryGb: async () => null,
-    now: portal.now,
-    paths: portal.paths,
-    pid: process.pid,
-    platform: portal.machine.platform,
-    print: say,
-    processes: realProcessFacts(portal.machine.platform),
-    randomSuffix: () => randomBytes(3).toString("hex"),
-    readStdin: () => Promise.resolve(""),
-    runProgram: realRunProgram,
-    sleep: (ms) => portal.probe.sleep(ms),
-    which: portal.which
-  };
-}
-async function crewAction(action, name, run) {
-  const lines = [];
-  const say = (line) => {
-    for (const one of line.split(`
-`)) {
-      if (one.trim() === "")
-        continue;
-      lines.push(one);
-      action.publish?.("action", { action: name, line: one });
-    }
-  };
-  try {
-    const code = await run(crewContext(action, say));
-    return { lines, ok: code === 0 };
-  } catch (error) {
-    lines.push(messageOf(error));
-    return { lines, ok: false };
-  }
-}
-function crewRef(body) {
-  return typeof body.crew === "string" ? body.crew.trim() : "";
-}
-async function cleanWorktrees(action) {
-  const sinks = collector((line) => action.publish?.("action", { action: "worktrees.clean", line }));
-  try {
-    const code = await runWorktrees(action.portal.paths, { clean: true, noFetch: false, remove: null }, action.portal.env, action.cwd, sinks);
-    return { lines: sinks.lines, ok: code === 0 };
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
-}
-async function runAction(name, body, action) {
-  switch (name) {
-    case "slot.test":
-      return testTargets(action, body);
-    case "slot.check":
-      return checkTarget(action, body);
-    case "slot.save":
-      return saveSlot(action, body);
-    case "slot.fallback":
-      return setSlotFallback(action, body);
-    case "slot.breaker":
-      return setSlotBreaker(action, body);
-    case "slot.mode":
-      return setSlotMode(action, body);
-    case "switch": {
-      const which = typeof body.name === "string" ? body.name : "";
-      const on = body.on === true;
-      switch (which) {
-        case "gateway":
-          return switchGateway(action, on);
-        case "judge":
-          return switchJudge(action, on);
-        case "models":
-          return switchModelSlots(action, on);
-        case "hold":
-          return switchHold(action, on);
-        default:
-          return { lines: [`"${which}" is not a switch.`], ok: false };
-      }
-    }
-    case "browser.setup":
-      return browserSetupAction(action);
-    case "browser.token":
-      return browserTokenAction(action, body);
-    case "update.check":
-      return updateCheck(action);
-    case "update.install":
-      return updateInstall(action);
-    case "companion.enable":
-      return companionEnable(action, typeof body.id === "string" ? body.id : "");
-    case "router.restart":
-      return gateway(action, ["setup", "--yes"]);
-    case "omniroute.update":
-      return omnirouteAction(action, ["update", "--yes"]);
-    case "omniroute.rollback":
-      return omnirouteAction(action, ["rollback", "--yes"]);
-    case "automode.apply":
-      return applyAutoModeAction(action, body);
-    case "workflow.set":
-      return setWorkflowSetting(action, body);
-    case "project.preview":
-      return projectPreview(action, body);
-    case "project.write":
-      return projectWrite(action, body);
-    case "crew.answer": {
-      const crew = crewRef(body);
-      const answer = typeof body.answer === "string" ? body.answer.trim() : "";
-      if (crew === "" || answer === "") {
-        return { lines: ["Pick the crew session and write an answer."], ok: false };
-      }
-      if (answer.length > CREW_ANSWER_MAX) {
-        return {
-          lines: [`An answer is at most ${CREW_ANSWER_MAX} characters.`],
-          ok: false
-        };
-      }
-      return crewAction(action, "crew.answer", (ctx) => runCrewAnswer({ asPerson: true, crew, text: answer }, ctx));
-    }
-    case "crew.stop": {
-      const crew = crewRef(body);
-      if (crew === "")
-        return { lines: ["Pick the crew session to stop."], ok: false };
-      return crewAction(action, "crew.stop", (ctx) => runCrewStop(crew, ctx));
-    }
-    case "crew.resume": {
-      const crew = crewRef(body);
-      if (crew === "")
-        return { lines: ["Pick the crew session to resume."], ok: false };
-      return crewAction(action, "crew.resume", (ctx) => runCrewResume(crew, ctx));
-    }
-    case "crew.rm": {
-      const crew = crewRef(body);
-      if (crew === "")
-        return { lines: ["Pick the crew session to remove."], ok: false };
-      return crewAction(action, "crew.rm", (ctx) => runCrewRm(crew, ctx));
-    }
-    case "worktrees.clean":
-      if (body.confirm !== true) {
-        return {
-          lines: ["Nothing was removed: the page's confirmation did not come with the request."],
-          ok: false
-        };
-      }
-      return cleanWorktrees(action);
-    default:
-      return { lines: [`"${name}" is not an action.`], ok: false };
-  }
-}
-function jobContext(action) {
-  return {
-    cwd: action.cwd,
-    execArgv: process.execArgv,
-    memory: realMemoryFacts(),
-    paths: action.portal.paths,
-    print: () => {
-      return;
-    },
-    say: () => {
-      return;
-    }
-  };
-}
-async function jobLines(action) {
-  try {
-    const state = await readJobs(jobContext(action));
-    return {
-      error: "",
-      lines: statusLines(state, action.portal.paths.home, action.portal.now())
-    };
-  } catch (error) {
-    return { error: messageOf(error), lines: [] };
-  }
-}
-function updateState(action) {
-  const files = updateFiles(action.portal.paths.stateDir);
-  return {
-    held: readHeldMajor(files),
-    heldSince: heldSince(files),
-    installed: findUserInstall(action.portal.paths.installedPluginsFile)?.version ?? null,
-    last: readLastCheck(files)
-  };
-}
-function entryLines(result) {
-  const where = result.file;
-  const lines = [];
-  for (const entry of result.added)
-    lines.push(`~ ${where}: added ${JSON.stringify(entry)}`);
-  for (const entry of result.removed)
-    lines.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
-  for (const entry of result.skipped) {
-    lines.push(`  ${where}: ${JSON.stringify(entry)} is already in the list, put there by someone else: left alone`);
-  }
-  return lines.length === 0 ? ["Nothing to change."] : lines;
-}
-
-// src/portal/page-data.ts
-function summaryOf(last) {
-  if (last === null) {
-    return "A new Claude session checks for a newer version by itself, at most once an hour.";
-  }
-  switch (last.result) {
-    case "updated":
-      return `The last check installed ${last.detail}. Restart the sessions to load it.`;
-    case "up-to-date":
-      return `${last.detail} is the newest version.`;
-    case "failed":
-      return `The last check failed: ${last.detail}.`;
-    case "unreachable":
-      return `The marketplace could not be read (${last.detail}). It counts as a failure only after 24 hours in a row.`;
-    case "skipped":
-      return `The last check was skipped: ${last.detail}`;
-    default:
-      return "A check is running now; it finishes.";
-  }
-}
-function updateFacts(action) {
-  const state = updateState(action);
-  return {
-    held: state.held,
-    heldSince: state.heldSince,
-    installed: state.installed,
-    last: state.last,
-    newest: state.last?.result === "up-to-date" ? state.last.detail : null,
-    summary: summaryOf(state.last)
-  };
-}
-function autoModeCard(deps) {
-  try {
-    const change = autoModeChange(deps.action);
-    if (change === null)
-      return null;
-    if (change.wanted.entries.length === 0 && change.removed.length === 0)
-      return null;
-    return {
-      added: change.added,
-      differsFrom: change.differsFrom,
-      from: change.from,
-      hash: change.hash,
-      removed: change.removed,
-      settings: change.settings
-    };
-  } catch {
-    return null;
-  }
-}
-async function machineData(deps) {
-  const doctor = await deps.doctor();
-  const updates = updateFacts(deps.action);
-  return {
-    autoMode: autoModeCard(deps),
-    browser: browserCardData(deps.action.portal),
-    companions: companionRows(deps.action.portal),
-    doctor,
-    jobs: await jobLines(deps.action),
-    omniroute: await omnirouteRow(deps.action.omniroute, isOlder),
-    project: projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow),
-    updates: {
-      heldSince: updates.heldSince,
-      installed: updates.installed,
-      last: updates.last,
-      newest: updates.newest,
-      summary: updates.summary
-    },
-    warp: warpRow(deps.action.portal)
-  };
-}
-async function overviewData(deps, config) {
-  const ctx = deps.action.portal;
-  const router = await routerFacts(ctx, config.port);
-  const limits = limitFacts(ctx);
-  const omniroute = config.backends.omniroute;
-  const dashboard = omniroute === undefined ? null : backendAddress(omniroute.baseUrl);
-  return {
-    backends: await backendRows(ctx, config),
-    dashboardUrl: dashboard === null ? null : `${dashboard}/`,
-    fallbacks: limits.fallbacks,
-    limits: limits.limits,
-    limitsRead: limits.read,
-    router,
-    slots: slotRows(config, router),
-    switches: switchFacts(ctx, config),
-    warnings: routerLog(ctx, 200).lines.filter((line) => line.level !== "INFO")
-  };
-}
-async function slotsData(deps, config) {
-  const ctx = deps.action.portal;
-  const router = await routerFacts(ctx, config.port);
-  const backends = await backendRows(ctx, config);
-  const models = [
-    ...backends.flatMap((backend) => backend.models),
-    ...claudeModels(config, seenClaudeModels(ctx)).map((id) => ({
-      backend: "Claude login",
-      context: "the plan's",
-      id,
-      plan: true
-    }))
-  ];
-  const rows = slotRows(config, router);
-  const tested = {};
-  for (const row of rows) {
-    for (const target of row.targets) {
-      if (target.tested)
-        tested[`${row.name}\x00${target.target}`] = "blocked";
-    }
-  }
-  return {
-    breakers: router.breakers,
-    backendNotes: backends.filter((backend) => backend.state !== "answers").map((backend) => `${backend.name} could not be listed (${backend.why}). Its models are missing from the table; ${backend.url} is what the config names.`),
-    chains: Object.fromEntries(rows.map((row) => [row.name, row.targets.map((t) => t.target)])),
-    fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
-    models,
-    slots: rows,
-    tested
-  };
-}
-async function healthData(deps, config) {
-  const ctx = deps.action.portal;
-  const router = await routerFacts(ctx, config.port);
-  const limits = limitFacts(ctx);
-  return {
-    backends: await backendRows(ctx, config),
-    fallbacks: limits.fallbacks,
-    limits: limits.limits,
-    log: routerLog(ctx, 200),
-    router
-  };
-}
-function settingsPageData(deps) {
-  return settingsData(deps.action.portal, deps.action.cwd, deps.workflow);
-}
-
-// src/portal/api/data.ts
-var NO_ROUTER = {
-  breakers: {},
-  cooling: [],
-  fallbacks: 0,
-  port: 0,
-  recent: [],
-  requests: 0,
-  up: false,
-  uptimeSec: 0,
-  why: "the gateway is not set up"
-};
-var NO_SWITCHES = {
-  gateway: false,
-  judge: false,
-  judgeUntested: false,
-  models: false,
-  settingsBaseUrl: null,
-  warnings: []
-};
-function notSetUp(deps) {
-  return {
-    configured: false,
-    error: configExists(deps.action.portal) ? "error" in deps.found ? deps.found.error : "the gateway config cannot be read" : "the gateway is not set up"
-  };
-}
-async function jobsAtAGlance(deps) {
-  try {
-    const queue = jobsAnswer(await readJobs(jobContext(deps.action)));
-    const heldGb = queue.stores.reduce((sum, store) => sum + store.held.reduce((each, item) => each + item.gb, 0), 0);
-    return {
-      budgetGb: queue.budgetGb,
-      heldGb: Math.round(heldGb * 10) / 10,
-      waiting: queue.stores.reduce((sum, store) => sum + store.waiting.length, 0)
-    };
-  } catch {
-    return { budgetGb: 0, heldGb: 0, waiting: 0 };
-  }
-}
-async function overviewAnswer(deps) {
-  if ("error" in deps.found) {
-    return {
-      ...notSetUp(deps),
-      backends: [],
-      dashboardUrl: null,
-      fallbacks: [],
-      jobs: await jobsAtAGlance(deps),
-      limits: [],
-      limitsRead: false,
-      router: NO_ROUTER,
-      slots: [],
-      switches: NO_SWITCHES,
-      warnings: []
-    };
-  }
-  return {
-    ...await overviewData(deps, deps.found.config),
-    configured: true,
-    error: null,
-    jobs: await jobsAtAGlance(deps)
-  };
-}
-async function slotsAnswer(deps) {
-  if ("error" in deps.found) {
-    return {
-      ...notSetUp(deps),
-      backendNotes: [],
-      breakers: {},
-      chains: {},
-      fallback: {},
-      models: [],
-      slots: [],
-      switches: NO_SWITCHES,
-      tested: {}
-    };
-  }
-  return {
-    ...await slotsData(deps, deps.found.config),
-    configured: true,
-    error: null,
-    switches: switchFacts(deps.action.portal, deps.found.config)
-  };
-}
-async function healthAnswer2(deps) {
-  if ("error" in deps.found) {
-    return {
-      ...notSetUp(deps),
-      backends: [],
-      fallbacks: [],
-      limits: [],
-      log: { lines: [], note: null },
-      router: NO_ROUTER
-    };
-  }
-  return {
-    ...await healthData(deps, deps.found.config),
-    configured: true,
-    error: null
-  };
-}
-async function machineAnswer(deps) {
-  const data = await machineData(deps);
-  if ("error" in deps.found && configExists(deps.action.portal)) {
-    return { ...data, configError: deps.found.error };
-  }
-  return data;
-}
-function settingsAnswer(deps) {
-  return settingsPageData(deps);
-}
-function projectsAnswer(deps) {
-  const current = projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow);
-  return {
-    current,
-    note: "One project for now: the folder the portal was started in. Listing every repository arrives with the Projects page.",
-    projects: [
-      {
-        configFile: current.root === null ? null : projectFiles(current.root).config,
-        name: current.name,
-        root: current.root,
-        set: current.set
-      }
-    ]
-  };
-}
-function updateAnswer(deps) {
-  const facts = updateFacts(deps.action);
-  return {
-    held: facts.held,
-    heldSince: facts.heldSince,
-    installed: facts.installed,
-    last: facts.last,
-    newest: facts.newest,
-    summary: facts.summary
-  };
-}
-async function jobsAnswerFor(deps) {
-  try {
-    return jobsAnswer(await readJobs(jobContext(deps.action)));
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
 // src/portal/api/work.ts
 import { readFileSync as readFileSync64 } from "fs";
-import { join as join68 } from "path";
+import { join as join67 } from "path";
 
 // src/crew/diff.ts
 var GIT_TIMEOUT_MS3 = 20000;
@@ -35640,11 +34739,11 @@ function matchesPattern(path, pattern, glob) {
 
 // src/sessions/flow.ts
 import { closeSync as closeSync8, mkdirSync as mkdirSync23, openSync as openSync8, readFileSync as readFileSync63, readSync as readSync5, statSync as statSync21 } from "fs";
-import { dirname as dirname23, join as join67 } from "path";
+import { dirname as dirname23, join as join66 } from "path";
 
 // src/cli/usage.ts
 import { existsSync as existsSync55, readdirSync as readdirSync21, readFileSync as readFileSync62, statSync as statSync20 } from "fs";
-import { basename as basename12, join as join66, resolve as resolve12 } from "path";
+import { basename as basename12, join as join65, resolve as resolve12 } from "path";
 function entries(path) {
   try {
     const all = readdirSync21(path, { withFileTypes: true });
@@ -36565,7 +35664,7 @@ function missingMeasures(sessions) {
 }
 function readFlow(paths, options) {
   const nowMs = options.nowMs ?? Date.now();
-  const logged = readAskLog(join67(paths.stateDir, GUARD_ASKS_FILE));
+  const logged = readAskLog(join66(paths.stateDir, GUARD_ASKS_FILE));
   const context = {
     askLog: logged.asks,
     nowMs,
@@ -36575,10 +35674,10 @@ function readFlow(paths, options) {
   const sessions = [];
   const open = [];
   const seenSessions = [];
-  const projectsDir = join67(paths.claudeConfigDir, "projects");
+  const projectsDir = join66(paths.claudeConfigDir, "projects");
   for (const project of entries(projectsDir).dirs) {
-    const folder = join67(projectsDir, project);
-    const cacheFile = join67(paths.stateDir, "flow", `${project}.json`);
+    const folder = join66(projectsDir, project);
+    const cacheFile = join66(paths.stateDir, "flow", `${project}.json`);
     let cache = { project, sessions: {}, version: CACHE_VERSION };
     try {
       cache = parseCache(readFileSync63(cacheFile, "utf8"), project);
@@ -36594,10 +35693,10 @@ function readFlow(paths, options) {
         continue;
       const session = cache.sessions[id] ?? emptySession();
       cache.sessions[id] = session;
-      const own = join67(folder, `${id}.jsonl`);
+      const own = join66(folder, `${id}.jsonl`);
       const entry = session.transcripts[`${id}.jsonl`] ?? emptyTranscript();
       session.transcripts[`${id}.jsonl`] = entry;
-      const subagents = join67(folder, id, "subagents");
+      const subagents = join66(folder, id, "subagents");
       const files = [
         { path: own, subagent: false, transcript: entry }
       ];
@@ -36605,7 +35704,7 @@ function readFlow(paths, options) {
         const key = `${id}/subagents/${name}`;
         const transcript = session.transcripts[key] ?? emptyTranscript();
         session.transcripts[key] = transcript;
-        files.push({ path: join67(subagents, name), subagent: true, transcript });
+        files.push({ path: join66(subagents, name), subagent: true, transcript });
       }
       if (files.some((file) => replaced(file.path, file.transcript)))
         resetSession(session);
@@ -36662,6 +35761,142 @@ function pruneAll(cache, nowMs) {
       changed = true;
   }
   return changed;
+}
+
+// src/portal/page-data.ts
+function summaryOf(last) {
+  if (last === null) {
+    return "A new Claude session checks for a newer version by itself, at most once an hour.";
+  }
+  switch (last.result) {
+    case "updated":
+      return `The last check installed ${last.detail}. Restart the sessions to load it.`;
+    case "up-to-date":
+      return `${last.detail} is the newest version.`;
+    case "failed":
+      return `The last check failed: ${last.detail}.`;
+    case "unreachable":
+      return `The marketplace could not be read (${last.detail}). It counts as a failure only after 24 hours in a row.`;
+    case "skipped":
+      return `The last check was skipped: ${last.detail}`;
+    default:
+      return "A check is running now; it finishes.";
+  }
+}
+function updateFacts(action) {
+  const state = updateState(action);
+  return {
+    held: state.held,
+    heldSince: state.heldSince,
+    installed: state.installed,
+    last: state.last,
+    newest: state.last?.result === "up-to-date" ? state.last.detail : null,
+    summary: summaryOf(state.last)
+  };
+}
+function autoModeCard(deps) {
+  try {
+    const change = autoModeChange(deps.action);
+    if (change === null)
+      return null;
+    if (change.wanted.entries.length === 0 && change.removed.length === 0)
+      return null;
+    return {
+      added: change.added,
+      differsFrom: change.differsFrom,
+      from: change.from,
+      hash: change.hash,
+      removed: change.removed,
+      settings: change.settings
+    };
+  } catch {
+    return null;
+  }
+}
+async function machineData(deps) {
+  const doctor = await deps.doctor();
+  const updates = updateFacts(deps.action);
+  return {
+    autoMode: autoModeCard(deps),
+    browser: browserCardData(deps.action.portal),
+    companions: companionRows(deps.action.portal),
+    doctor,
+    jobs: await jobLines(deps.action),
+    omniroute: await omnirouteRow(deps.action.omniroute, isOlder),
+    project: projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow),
+    updates: {
+      heldSince: updates.heldSince,
+      installed: updates.installed,
+      last: updates.last,
+      newest: updates.newest,
+      summary: updates.summary
+    },
+    warp: warpRow(deps.action.portal)
+  };
+}
+async function overviewData(deps, config) {
+  const ctx = deps.action.portal;
+  const router = await routerFacts(ctx, config.port);
+  const limits = limitFacts(ctx);
+  const omniroute = config.backends.omniroute;
+  const dashboard = omniroute === undefined ? null : backendAddress(omniroute.baseUrl);
+  return {
+    backends: await backendRows(ctx, config),
+    dashboardUrl: dashboard === null ? null : `${dashboard}/`,
+    fallbacks: limits.fallbacks,
+    limits: limits.limits,
+    limitsRead: limits.read,
+    router,
+    slots: slotRows(config, router),
+    switches: switchFacts(ctx, config),
+    warnings: routerLog(ctx, 200).lines.filter((line) => line.level !== "INFO")
+  };
+}
+async function slotsData(deps, config) {
+  const ctx = deps.action.portal;
+  const router = await routerFacts(ctx, config.port);
+  const backends = await backendRows(ctx, config);
+  const models = [
+    ...backends.flatMap((backend) => backend.models),
+    ...claudeModels(config, seenClaudeModels(ctx)).map((id) => ({
+      backend: "Claude login",
+      context: "the plan's",
+      id,
+      plan: true
+    }))
+  ];
+  const rows = slotRows(config, router);
+  const tested = {};
+  for (const row of rows) {
+    for (const target of row.targets) {
+      if (target.tested)
+        tested[`${row.name}\x00${target.target}`] = "blocked";
+    }
+  }
+  return {
+    breakers: router.breakers,
+    backendNotes: backends.filter((backend) => backend.state !== "answers").map((backend) => `${backend.name} could not be listed (${backend.why}). Its models are missing from the table; ${backend.url} is what the config names.`),
+    chains: Object.fromEntries(rows.map((row) => [row.name, row.targets.map((t) => t.target)])),
+    fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
+    models,
+    slots: rows,
+    tested
+  };
+}
+async function healthData(deps, config) {
+  const ctx = deps.action.portal;
+  const router = await routerFacts(ctx, config.port);
+  const limits = limitFacts(ctx);
+  return {
+    backends: await backendRows(ctx, config),
+    fallbacks: limits.fallbacks,
+    limits: limits.limits,
+    log: routerLog(ctx, 200),
+    router
+  };
+}
+function settingsPageData(deps) {
+  return settingsData(deps.action.portal, deps.action.cwd, deps.workflow);
 }
 
 // src/portal/api/work.ts
@@ -36735,7 +35970,7 @@ function workAnswer(deps) {
   };
   const crewIds = new Set(records.flatMap((record) => record.sessionId === null ? [] : [record.sessionId]));
   const leadIds = new Set(leads.map((one) => one.sessionId));
-  const sessions = savedSessions(join68(deps.action.portal.paths.claudeConfigDir, "projects"), repo, deps.action.portal.now() - WORK_SESSIONS_MS).filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id)).map((session) => ({
+  const sessions = savedSessions(join67(deps.action.portal.paths.claudeConfigDir, "projects"), repo, deps.action.portal.now() - WORK_SESSIONS_MS).filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id)).map((session) => ({
     branch: session.branch,
     endedCleanly: session.endedCleanly,
     folder: session.folder,
@@ -36764,7 +35999,7 @@ function mergeVerdictOf(verdict) {
       return { kind: "late", number: verdict.number, what: verdict.what };
   }
 }
-function crewAnswerFor(deps, ref) {
+async function crewAnswerFor(deps, ref) {
   const found = repoOf(deps);
   if ("note" in found)
     return { error: found.note };
@@ -36822,7 +36057,7 @@ function crewAnswerFor(deps, ref) {
     }
   }
   const reviews = Object.entries(readReviews(reviewsFile(paths.stateDir, repo))).filter(([, entry]) => entry.branches?.includes(record.branch) === true).map(([sha, entry]) => ({ at: entry.at, by: entry.by, sha })).sort((a, b) => b.at.localeCompare(a.at));
-  const mergeCheck = mergeCheckOf(deps, repo, record.branch, record.base?.ref ?? null);
+  const mergeCheck = await mergeCheckOf(deps, repo, record.branch, record.base?.ref ?? record.baseRef);
   return {
     brief,
     crew: crewSummary(record, allEvents),
@@ -36856,11 +36091,16 @@ function reportOf(file) {
     return null;
   }
 }
-function mergeCheckOf(deps, repo, branch, base) {
+async function mergeCheckOf(deps, repo, branch, base) {
   try {
-    const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
+    const checkout = await locateCheckoutAsync(deps.action.cwd, {
+      env: deps.action.portal.env
+    });
     if (checkout === null) {
       return { kind: "unread", number: null, what: "this folder is not in a git project" };
+    }
+    if (base === null) {
+      return { kind: "unread", number: null, what: "the base branch its record names" };
     }
     const world = {
       checkout,
@@ -36869,10 +36109,7 @@ function mergeCheckOf(deps, repo, branch, base) {
       paths: deps.action.portal.paths,
       timeFor: (limitMs) => limitMs
     };
-    return mergeVerdictOf(checkBranch(world, {
-      base: base ?? baseBranch(checkout, deps.action.portal.env, repo).base,
-      branch
-    }));
+    return mergeVerdictOf(await checkBranch(world, { base, branch }));
   } catch (error) {
     return {
       kind: "unread",
@@ -37253,6 +36490,1428 @@ function requestsAnswer(deps, options = {}) {
   };
 }
 
+// src/portal/api/projects.ts
+var PROJECT_ID_HEX = 12;
+function projectId(root) {
+  return createHash9("sha256").update(root).digest("hex").slice(0, PROJECT_ID_HEX);
+}
+var PROJECT_BRANCHES_CACHE_MS = 60000;
+var PROJECT_BRANCHES_DEADLINE_MS = 8000;
+var PROJECTS_LIST_CACHE_MS = 1e4;
+var PROJECT_VERDICTS_AT_ONCE = 4;
+var PROJECT_GIT_AT_ONCE = 8;
+async function mapLimit(items, atOnce, read) {
+  const answers = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;; ) {
+      const index = next;
+      if (index >= items.length)
+        return;
+      next += 1;
+      const item = items[index];
+      if (item === undefined)
+        continue;
+      answers[index] = await read(item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(atOnce, items.length) }, () => worker()));
+  return answers;
+}
+function projectsWorldOf(deps) {
+  return {
+    cwd: deps.action.cwd,
+    env: deps.action.portal.env,
+    now: deps.action.portal.now,
+    paths: deps.action.portal.paths
+  };
+}
+var ADDED_VERSION = 1;
+function readAddedProjects(paths) {
+  let text;
+  try {
+    text = readFileSync65(paths.portalProjectsFile, "utf8");
+  } catch {
+    return [];
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+    return [];
+  const roots = parsed.roots;
+  if (!Array.isArray(roots))
+    return [];
+  return roots.filter((one) => typeof one === "string" && one.trim() !== "");
+}
+function writeAddedProjects(paths, roots) {
+  const file = paths.portalProjectsFile;
+  mkdirSync24(dirname24(file), { mode: 448, recursive: true });
+  const value = { roots, version: ADDED_VERSION };
+  atomicWrite(file, `${JSON.stringify(value, null, 2)}
+`, 384);
+}
+async function addProjectRoot(paths, root) {
+  const result = await withLock(paths.stateDir, () => {
+    const roots = readAddedProjects(paths);
+    if (roots.includes(root))
+      return { added: false, roots };
+    const next = [...roots, root];
+    writeAddedProjects(paths, next);
+    return { added: true, roots: next };
+  }, { waitMs: 1e4 });
+  if (result.added)
+    forgetProjectsList();
+  return result;
+}
+async function foundProjects(world) {
+  const worked = sessionWorkFolderTimes(world.paths.projectsDir);
+  const byRoot = new Map;
+  await mapLimit(worked, PROJECT_GIT_AT_ONCE, async ({ folder, lastWrite }) => {
+    const checkout = await checkoutOfAsync(folder, world.env);
+    if (checkout === null)
+      return;
+    const known = byRoot.get(checkout.main);
+    byRoot.set(checkout.main, {
+      lastWrite: Math.max(known?.lastWrite ?? 0, lastWrite),
+      root: checkout.main,
+      source: "sessions"
+    });
+  });
+  const added = readAddedProjects(world.paths);
+  await mapLimit(added, PROJECT_GIT_AT_ONCE, async (folder) => {
+    const checkout = await checkoutOfAsync(folder, world.env);
+    if (checkout === null)
+      return;
+    const known = byRoot.get(checkout.main);
+    if (known !== undefined)
+      return;
+    byRoot.set(checkout.main, { lastWrite: 0, root: checkout.main, source: "added" });
+  });
+  return { found: [...byRoot.values()], records: worked.length };
+}
+async function linkedWorktrees(root, env) {
+  const listed = await runGitAsync(root, ["worktree", "list", "--porcelain"], env);
+  if (!listed.ok)
+    return null;
+  return parseWorktreeList(listed.out).filter((one) => !samePath3(one.path, root)).length;
+}
+async function uncommittedProject(root, env) {
+  const files = projectFiles(root);
+  const status = await runGitAsync(root, [
+    "--no-optional-locks",
+    "status",
+    "--porcelain",
+    "--",
+    relative7(root, files.config),
+    relative7(root, files.settings)
+  ], env);
+  return status.ok ? status.out !== "" : null;
+}
+async function summaryOf2(found, world, currentRoot) {
+  const files = projectFiles(found.root);
+  const set = existsSync56(files.config);
+  const [worktrees, uncommitted] = await Promise.all([
+    linkedWorktrees(found.root, world.env),
+    uncommittedProject(found.root, world.env)
+  ]);
+  return {
+    configFile: set ? files.config : null,
+    current: currentRoot !== null && samePath3(found.root, currentRoot),
+    id: projectId(found.root),
+    lastUsed: found.lastWrite > 0 ? new Date(found.lastWrite).toISOString() : null,
+    name: basename13(found.root),
+    root: found.root,
+    set,
+    source: found.source,
+    uncommitted,
+    worktrees
+  };
+}
+var NO_SESSION_RECORDS = "Claude Code has saved no session records on this machine yet, so this list holds only the folders you added.";
+var keptLists = new Map;
+var readingLists = new Map;
+var listGeneration = 0;
+function projectsListKey(world) {
+  return [
+    world.cwd,
+    world.paths.stateDir,
+    world.paths.projectsDir,
+    world.paths.portalProjectsFile,
+    world.env.PATH ?? ""
+  ].join("\x00");
+}
+function forgetProjectsList() {
+  listGeneration += 1;
+  keptLists.clear();
+  readingLists.clear();
+}
+async function projectsList(world) {
+  const key = projectsListKey(world);
+  const at = world.now();
+  const kept = keptLists.get(key);
+  if (kept !== undefined && at - kept.at < PROJECTS_LIST_CACHE_MS)
+    return kept.list;
+  let reading = readingLists.get(key);
+  if (reading === undefined) {
+    const generation = listGeneration;
+    const scan = scanProjects(world).then((list) => {
+      const answer = { at, list };
+      if (generation === listGeneration)
+        keptLists.set(key, answer);
+      return answer;
+    });
+    reading = scan;
+    readingLists.set(key, scan);
+    scan.finally(() => {
+      if (readingLists.get(key) === scan)
+        readingLists.delete(key);
+    }).catch(() => {
+      return;
+    });
+  }
+  return (await reading).list;
+}
+async function scanProjects(world) {
+  const { found, records } = await foundProjects(world);
+  const here = await checkoutOfAsync(world.cwd, world.env);
+  const currentRoot = here?.main ?? null;
+  const projects = await mapLimit(found, PROJECT_GIT_AT_ONCE, (one) => summaryOf2(one, world, currentRoot));
+  projects.sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? "") || a.name.localeCompare(b.name) || a.root.localeCompare(b.root));
+  return { note: records === 0 ? NO_SESSION_RECORDS : null, projects };
+}
+function parseOpenPullRequests(json) {
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed))
+      return null;
+    const pullRequests = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null)
+        return null;
+      const { baseRefName, headRefName, isDraft, number, title } = entry;
+      if (typeof baseRefName !== "string" || typeof headRefName !== "string")
+        return null;
+      if (typeof number !== "number")
+        return null;
+      pullRequests.push({
+        base: baseRefName,
+        draft: isDraft === true,
+        head: headRefName,
+        number,
+        title: typeof title === "string" ? title : null
+      });
+    }
+    return pullRequests;
+  } catch {
+    return null;
+  }
+}
+var keptBranches = new Map;
+var readingBranches = new Map;
+async function projectBranches(world, project) {
+  const at = world.now();
+  const kept = keptBranches.get(project.id);
+  if (kept !== undefined && at - kept.at < PROJECT_BRANCHES_CACHE_MS) {
+    return {
+      branches: kept.branches,
+      checkedAt: new Date(kept.at).toISOString(),
+      note: kept.note
+    };
+  }
+  let reading = readingBranches.get(project.id);
+  if (reading === undefined) {
+    reading = readBranches(world, project, at).then((read) => {
+      const answer = { at, branches: read.branches, note: read.note };
+      if (world.now() < at + PROJECT_BRANCHES_DEADLINE_MS) {
+        keptBranches.set(project.id, answer);
+      }
+      return answer;
+    });
+    readingBranches.set(project.id, reading);
+    reading.finally(() => readingBranches.delete(project.id)).catch(() => {
+      return;
+    });
+  }
+  const read = await reading;
+  return { branches: read.branches, checkedAt: new Date(read.at).toISOString(), note: read.note };
+}
+function unreadVerdict(number, what) {
+  return { kind: "unread", number, what };
+}
+var CREW_BRANCH_STATES = new Set([
+  "working",
+  "blocked",
+  "paused",
+  "quiet",
+  "done",
+  "failed",
+  "stopped"
+]);
+async function readBranches(world, project, at) {
+  const deadline = at + PROJECT_BRANCHES_DEADLINE_MS;
+  const timeFor = (limitMs) => Math.min(limitMs, deadline - world.now());
+  const gh = world.gh ?? spawnGh;
+  const notes = [];
+  let pullRequests = [];
+  if (timeFor(GH_TIMEOUT_MS3) <= 0) {
+    notes.push("the time to read this project's branches ran out");
+  } else if (world.gh === undefined && ghMissing(world.env)) {
+    notes.push("gh is not installed, so the open pull requests cannot be read");
+  } else {
+    const out = await gh(["pr", "list", "--json", "number,headRefName,baseRefName,title,isDraft"], {
+      env: world.env,
+      folder: project.root,
+      timeoutMs: timeFor(GH_TIMEOUT_MS3)
+    });
+    const parsed = out === null ? null : parseOpenPullRequests(out);
+    if (parsed === null) {
+      notes.push("gh could not list this project's open pull requests");
+    } else {
+      pullRequests = parsed;
+    }
+  }
+  let checkout = null;
+  try {
+    checkout = await locateCheckoutAsync(project.root, { env: world.env });
+  } catch {
+    checkout = null;
+  }
+  let mergeWorld = null;
+  if (checkout !== null) {
+    const gates = new Map;
+    const gateOf = (branch) => {
+      const known = gates.get(branch);
+      if (known !== undefined)
+        return known;
+      const read = (async () => {
+        const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+        if (left <= 0)
+          return "late";
+        return await resolveGateAsync(world.paths, checkout, branch, {
+          env: world.env,
+          timeoutMs: left
+        });
+      })();
+      gates.set(branch, read);
+      return read;
+    };
+    mergeWorld = {
+      checkout,
+      env: world.env,
+      folder: project.root,
+      gateOf,
+      gh,
+      paths: world.paths,
+      timeFor
+    };
+  }
+  const defaultBranches = new Map;
+  if (mergeWorld !== null && pullRequests.length > 0) {
+    const left = timeFor(GH_TIMEOUT_MS3);
+    if (left > 0) {
+      defaultBranches.set("", await defaultBranchOf(project.root, world.env, null, left, gh));
+    }
+  }
+  const branches = await mapLimit(pullRequests, PROJECT_VERDICTS_AT_ONCE, async (pullRequest) => {
+    const verdict = mergeWorld === null ? unreadVerdict(pullRequest.number, "this project's folder is not in a git checkout") : await checkPullRequest(mergeWorld, { ref: String(pullRequest.number), repo: null }, defaultBranches);
+    const cut = verdict.kind === "unread" && timeFor(GH_TIMEOUT_MS3) <= 0 ? { kind: "late", number: verdict.number, what: verdict.what } : verdict;
+    return {
+      base: pullRequest.base,
+      branch: pullRequest.head,
+      draft: pullRequest.draft,
+      kind: "pr",
+      number: pullRequest.number,
+      title: pullRequest.title,
+      verdict: mergeVerdictOf(cut)
+    };
+  });
+  const openNumbers = new Set(pullRequests.map((one) => one.number));
+  const openHeads = new Set(pullRequests.map((one) => one.head));
+  let crewRecords = [];
+  try {
+    crewRecords = listCrew(world.paths.stateDir, project.root).records;
+  } catch {
+    notes.push("the crew sessions' branches could not be read");
+  }
+  for (const record of crewRecords) {
+    if (!CREW_BRANCH_STATES.has(record.state))
+      continue;
+    if (record.branch === "" || openHeads.has(record.branch))
+      continue;
+    if (record.pr !== null && openNumbers.has(record.pr))
+      continue;
+    const base = record.base?.ref ?? record.baseRef;
+    const verdict = mergeWorld === null ? unreadVerdict(null, "this project's folder is not in a git checkout") : await checkBranch(mergeWorld, { base, branch: record.branch });
+    branches.push({
+      base,
+      branch: record.branch,
+      draft: false,
+      kind: "crew",
+      number: null,
+      title: null,
+      verdict: mergeVerdictOf(verdict)
+    });
+  }
+  if (notes.length === 0 && branches.some((one) => one.verdict.kind === "late")) {
+    notes.push("the time to read every verdict ran out, so some are not read yet");
+  }
+  return { branches, note: notes.length === 0 ? null : notes.join("; ") };
+}
+async function projectAnswerFor(deps, id) {
+  const world = projectsWorldOf(deps);
+  const list = await projectsList(world);
+  const project = list.projects.find((one) => one.id === id);
+  if (project === undefined) {
+    return { error: `no project has the id "${id}"; the list on /api/projects names them` };
+  }
+  const branches = await projectBranches(world, project);
+  return {
+    branches: branches.branches,
+    branchesNote: branches.note,
+    card: projectCardData(deps.action.portal, project.root, deps.projectDefaults, deps.workflow),
+    checkedAt: branches.checkedAt,
+    project
+  };
+}
+async function projectRootById(world, id) {
+  const list = await projectsList(world);
+  return list.projects.find((one) => one.id === id)?.root ?? null;
+}
+async function projectsAnswerFor(deps) {
+  const current = projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow);
+  const list = await projectsList(projectsWorldOf(deps));
+  return { current, note: list.note, projects: list.projects };
+}
+
+// src/portal/actions.ts
+function portalOmnirouteContext(ctx) {
+  return {
+    confirm: null,
+    env: ctx.env,
+    health: (url, init) => ctx.fetch(url, init),
+    now: ctx.now,
+    paths: ctx.paths,
+    registry: (url, init) => ctx.fetch(url, init),
+    runner: ctx.runner,
+    say: () => {
+      return;
+    },
+    sleep: (ms) => ctx.probe.sleep(ms),
+    systemFolders: ctx.systemFolders,
+    systemd: ctx.systemd,
+    which: ctx.which
+  };
+}
+function collector(onLine) {
+  const lines = [];
+  const push = (line) => {
+    for (const one of line.split(`
+`)) {
+      if (one.trim() === "")
+        continue;
+      lines.push(one);
+      onLine?.(one);
+    }
+  };
+  return { error: push, lines, print: push };
+}
+function gatewayContext(action, print) {
+  const { portal } = action;
+  const folder = portal.pluginFolder();
+  if ("error" in folder)
+    return folder;
+  return {
+    ctx: {
+      bunPath: process.execPath,
+      bunVersion: portal.bunVersion,
+      bundle: join68(folder.folder, "dist", "router.js"),
+      confirm: null,
+      error: print,
+      paths: portal.paths,
+      print,
+      probe: portal.probe,
+      readStdin: () => Promise.resolve(""),
+      runner: portal.runner,
+      service: portal.systemd ? "systemd" : "none",
+      account: null,
+      platform: process.platform
+    }
+  };
+}
+async function gateway(action, args) {
+  const { lines, print } = collector();
+  const context = gatewayContext(action, print);
+  if ("error" in context)
+    return { lines: [context.error], ok: false };
+  const code = await runGateway(args, context.ctx);
+  return { lines, ok: code === 0 };
+}
+function slotArg(name) {
+  return name.startsWith("cc-smart-dev-kit-") ? name : `cc-smart-dev-kit-${name}`;
+}
+async function testTargets(action, body) {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  const targets = Array.isArray(body.targets) ? body.targets.filter((entry) => typeof entry === "string") : [];
+  if (targets.length === 0)
+    return { lines: ["Give the chain at least one target."], ok: false };
+  const config = loadConfigFile(action.portal.paths.gatewayConfigFile);
+  const results = [];
+  const lines = [];
+  const judge = slot === JUDGE_SLOT;
+  for (const text of targets) {
+    const parsed = parseTarget(text);
+    if ("error" in parsed) {
+      results.push({ detail: parsed.error, target: text, verdict: "bad" });
+      continue;
+    }
+    if (parsed.target.kind === "anthropic") {
+      results.push({
+        detail: judge ? "on your own Claude login: the router uses a judge target only after it passed the force-push test, so this one is ignored, exactly as the command line ignores it" : "on your own Claude login: the portal cannot send a request with it, and never holds one",
+        target: text,
+        verdict: "good"
+      });
+      lines.push(judge ? `${text}: on your own Claude login, so it is never used as a judge (the command line allows it too)` : `${text}: on your own Claude login`);
+      continue;
+    }
+    const backend = config.backends[parsed.target.backend];
+    if (backend === undefined) {
+      results.push({
+        detail: `backend "${parsed.target.backend}" is not in the config`,
+        target: text,
+        verdict: "bad"
+      });
+      continue;
+    }
+    const keys = [backend.apiKey];
+    const listed = await listModels(backend.baseUrl, backend.apiKey, 8000);
+    if ("error" in listed || listed.status !== 200) {
+      const why = "error" in listed ? shownDetail(listed.error, keys) : `HTTP ${listed.status}`;
+      results.push({ detail: `the backend did not answer (${why})`, target: text, verdict: "bad" });
+      lines.push(`${text}: \u2717 ${why}`);
+      continue;
+    }
+    if (!listed.models.some((model) => model.id === parsed.target.model)) {
+      results.push({
+        detail: `"${parsed.target.backend}" has no model "${parsed.target.model}"`,
+        target: text,
+        verdict: "bad"
+      });
+      lines.push(`${text}: \u2717 the backend does not list that model`);
+      continue;
+    }
+    if (judge) {
+      const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
+      const detail = shownDetail(result.detail, keys);
+      results.push({
+        detail,
+        target: text,
+        verdict: result.verdict === "block" ? "blocked" : "bad"
+      });
+      lines.push(result.verdict === "block" ? `${text}: blocked the force-push test` : `${text}: \u2717 it did not block the force-push test (${detail})`);
+      continue;
+    }
+    const probe = await probeModel({
+      apiKey: backend.apiKey,
+      baseUrl: backend.baseUrl,
+      fetchImpl: action.portal.fetch,
+      model: parsed.target.model
+    });
+    const detail = shownDetail(probe.detail, keys);
+    results.push({ detail, target: text, verdict: probe.ok ? "good" : "bad" });
+    lines.push(`${text}: ${probe.ok ? "\u2713" : "\u2717"} ${detail}`);
+  }
+  const ok = results.every((one) => one.verdict !== "bad");
+  lines.push(ok ? judge ? "Every backend target blocked the test check. You can save this chain." : "Every target answered." : judge ? "At least one backend target did not block the test check: Save stays off until every judge target shows blocked \u2713." : "At least one target did not answer as it should: the command line refuses a chain like this, so fix it before you save.");
+  return { lines, ok, results };
+}
+async function setSlotFallback(action, body) {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || typeof body.on !== "boolean") {
+    return { lines: ["Pick a slot, and say on or off."], ok: false };
+  }
+  return gateway(action, ["fallback", slot, body.on ? "on" : "off"]);
+}
+async function setSlotBreaker(action, body) {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || typeof body.on !== "boolean") {
+    return { lines: ["Pick a slot, and say on or off."], ok: false };
+  }
+  return gateway(action, ["breaker", slot, body.on ? "on" : "off"]);
+}
+async function saveSlot(action, body) {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  const targets = Array.isArray(body.targets) ? body.targets.filter((entry) => typeof entry === "string") : [];
+  if (slot === "" || targets.length === 0)
+    return { lines: ["Pick a slot and give it a target."], ok: false };
+  if (body.stamp !== undefined && slotStamp(gatewayConfig(action), slot) !== body.stamp) {
+    return {
+      lines: [
+        "This slot's chain changed since the page read it (another tab, or the command line), so nothing was saved.",
+        "Load the newer chain, then make the change again."
+      ],
+      ok: false
+    };
+  }
+  return gateway(action, ["slot", slot, targets.join(",")]);
+}
+async function checkTarget(action, body) {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "")
+    return { lines: ["Type a target: claude-<id> or <backend>:<model>."], ok: false };
+  const config = gatewayConfig(action);
+  const parsed = parseTarget(text);
+  const models = {};
+  if ("target" in parsed && parsed.target.kind !== "anthropic") {
+    const backend = config.backends[parsed.target.backend];
+    if (backend !== undefined) {
+      const listed = await listModels(backend.baseUrl, backend.apiKey, 8000);
+      models[parsed.target.backend] = "error" in listed || listed.status !== 200 ? null : listed.models.map((model) => model.id);
+    }
+  }
+  const problem = chainProblem(config, [text], models);
+  if (problem !== null) {
+    const names = Object.keys(config.backends);
+    const known = "target" in parsed && parsed.target.kind !== "anthropic" && !Object.hasOwn(config.backends, parsed.target.backend) ? `. The config names: ${names.length === 0 ? "no backend" : names.join(", ")}.` : "";
+    return { lines: [`${shownDetail(problem, [])}${known}`], ok: false };
+  }
+  return {
+    lines: [
+      "target" in parsed && parsed.target.kind === "anthropic" ? `${text}: on your own Claude login.` : `${text}: its backend lists it.`
+    ],
+    ok: true
+  };
+}
+async function setSlotMode(action, body) {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || body.mode !== "claude" && body.mode !== "custom") {
+    return { lines: ['Pick a slot, and say "claude" or "custom".'], ok: false };
+  }
+  return gateway(action, ["slot", slot, body.mode]);
+}
+function gatewayConfig(action) {
+  return loadConfigFile(action.portal.paths.gatewayConfigFile);
+}
+async function switchGateway(action, on) {
+  return gateway(action, [on ? "on" : "off"]);
+}
+async function switchJudge(action, on) {
+  const config = gatewayConfig(action);
+  const mode = on ? "custom" : "claude";
+  if (slotMode(config, JUDGE_SLOT) === mode) {
+    return {
+      lines: [`The judge is already ${on ? "Custom" : "Claude"}.`],
+      ok: true
+    };
+  }
+  if (on && keptChain(config, JUDGE_SLOT) === null) {
+    return {
+      lines: [
+        "No judge chain is saved, so the switch cannot turn one on.",
+        "Go to Slots, pick judge, add a model, run the force-push test, and Save."
+      ],
+      ok: false
+    };
+  }
+  return gateway(action, ["slot", "judge", mode]);
+}
+async function switchModelSlots(action, on) {
+  const config = gatewayConfig(action);
+  const mode = on ? "custom" : "claude";
+  const missing = [];
+  const lines = [];
+  let changed = 0;
+  let ok = true;
+  for (const slot of Object.keys(MODEL_SLOTS)) {
+    if (slotMode(config, slot) === mode)
+      continue;
+    if (on && keptChain(config, slot) === null) {
+      missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
+      continue;
+    }
+    let result;
+    try {
+      result = await gateway(action, ["slot", slot, mode]);
+    } catch (error) {
+      result = { lines: [messageOf(error)], ok: false };
+    }
+    ok = ok && result.ok;
+    lines.push(...result.lines);
+    if (result.ok)
+      changed += 1;
+  }
+  if (missing.length > 0) {
+    lines.push(`No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save.`);
+  }
+  if (changed === 0 && on) {
+    lines.push("Nothing was turned on, so the switch is still off.");
+    return { lines, ok: false };
+  }
+  if (changed === 0 && lines.length === 0) {
+    return { lines: ["The opus and fable slots were already off."], ok: true };
+  }
+  return { lines, ok };
+}
+async function switchHold(action, on) {
+  const sinks = collector();
+  const code = await runUpdate(action.portal.paths, action.portal.env, [on ? "--hold" : "--resume"], action.portal.now, sinks);
+  return { lines: sinks.lines, ok: code === 0 };
+}
+function stepRunner(action, lines, name) {
+  const context = commandContext(action.portal.env, action.portal.paths.home);
+  const publish = (line) => {
+    action.publish?.("action", { action: name, line });
+  };
+  return async (argv) => {
+    try {
+      const child = Bun.spawn(argv, {
+        ...context,
+        stdin: "ignore",
+        stderr: "pipe",
+        stdout: "pipe",
+        timeout: CLAUDE_TIMEOUT_MS
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        readStream(child.stdout),
+        readStream(child.stderr),
+        child.exited
+      ]);
+      const output = `${stdout}${stderr}`.trim();
+      const last = output.split(`
+`).at(-1) ?? "";
+      if (last !== "") {
+        lines.push(`  ${last}`);
+        publish(`  ${last}`);
+      }
+      return { exitCode, output };
+    } catch (error) {
+      return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
+    }
+  };
+}
+async function readStream(stream) {
+  if (stream === undefined || typeof stream === "number")
+    return "";
+  return await new Response(stream).text();
+}
+async function updateCheck(action) {
+  const sinks = collector();
+  const code = await runUpdate(action.portal.paths, action.portal.env, ["--check"], action.portal.now, sinks);
+  return { lines: sinks.lines, ok: code === 0 };
+}
+async function updateInstall(action) {
+  const sinks = collector((line) => action.publish?.("action", { action: "update.install", line }));
+  const code = await runUpdate(action.portal.paths, action.portal.env, [], action.portal.now, {
+    ...sinks,
+    run: stepRunner(action, sinks.lines, "update.install")
+  });
+  return { lines: sinks.lines, ok: code === 0 };
+}
+async function runDoctorPass(action, source) {
+  const options = source();
+  if ("error" in options) {
+    const failed = {
+      ok: false,
+      text: options.error,
+      fix: `run it in a terminal: ${COMMAND} doctor`
+    };
+    return { checks: [failed], lines: [checkLine(failed)], ok: false };
+  }
+  const checks = await doctorChecks(action.portal.paths, action.portal.env, options);
+  return {
+    checks,
+    lines: checks.map(checkLine),
+    ok: checks.every((check) => check.ok)
+  };
+}
+async function companionEnable(action, id) {
+  const known = companions().map((companion) => companion.id);
+  if (!known.includes(id)) {
+    return {
+      lines: [`"${id}" is not one of this kit's companions (${known.join(", ")}).`],
+      ok: false
+    };
+  }
+  const result = action.portal.machine.run(["claude", "plugin", "enable", id]);
+  const reason = result.output.trim().split(`
+`).at(-1) ?? "";
+  return result.exitCode === 0 ? { lines: [`${id} is on.`], ok: true } : {
+    lines: [
+      `claude plugin enable ${id} failed (exit ${result.exitCode})${reason === "" ? "" : `: ${reason}`}`
+    ],
+    ok: false
+  };
+}
+function autoModeChange(action) {
+  const { paths, which } = action.portal;
+  const wanted = autoModeSource(action.cwd, which);
+  if (wanted === null)
+    return null;
+  const diff = applyAutoMode(paths.settingsFile, paths.stateDir, wanted, true);
+  const from = wanted.file ?? wanted.source;
+  const shown = {
+    added: diff.added,
+    differsFrom: wanted.differsFrom,
+    entries: wanted.entries,
+    from,
+    removed: diff.removed,
+    source: wanted.source
+  };
+  return {
+    added: diff.added,
+    differsFrom: wanted.differsFrom,
+    from,
+    hash: createHash10("sha256").update(JSON.stringify(shown)).digest("hex").slice(0, 32),
+    removed: diff.removed,
+    settings: paths.settingsFile,
+    wanted
+  };
+}
+async function applyAutoModeAction(action, body) {
+  if (body.confirm !== true) {
+    return { lines: ["The rules were not confirmed, so nothing was written."], ok: false };
+  }
+  const { portal } = action;
+  try {
+    return await withLock(portal.paths.stateDir, () => {
+      const change = autoModeChange(action);
+      if (change === null) {
+        return {
+          lines: ["This folder is not inside a git project, so there is nothing to copy."],
+          ok: false
+        };
+      }
+      if (body.shownHash !== change.hash) {
+        return {
+          lines: [
+            "The trust rules changed since this page showed them, so nothing was written. Read them again on the page, then write them."
+          ],
+          ok: false
+        };
+      }
+      const result = applyAutoMode(portal.paths.settingsFile, portal.paths.stateDir, change.wanted, false);
+      return {
+        lines: [
+          ...entryLines(result),
+          "Auto mode reads these from your user settings, the only place it trusts."
+        ],
+        ok: true
+      };
+    }, { waitMs: 1e4 });
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+async function omnirouteAction(action, args) {
+  const { lines, print } = collector();
+  const code = await runOmniroute(args, { ...action.omniroute, say: print });
+  return { lines, ok: code === 0 };
+}
+async function setWorkflowSetting(action, body) {
+  const spec = settingSpec(body.key);
+  if (spec === undefined) {
+    return { lines: [`"${String(body.key)}" is not a setting this page shows.`], ok: false };
+  }
+  const parsed = parseSettingValue(spec, body.value);
+  if (!parsed.ok)
+    return { lines: [parsed.why], ok: false };
+  if (spec.where === "project") {
+    if (body.confirm !== true) {
+      return {
+        lines: ["The project's own setting was not confirmed, so nothing was written."],
+        ok: false
+      };
+    }
+    if (readProject(action.portal, action.cwd).configFile === null) {
+      return {
+        lines: [
+          `${spec.key} is this project's own setting, and this project has no .claude/cc-smart-dev-kit.json yet: set it up on Machine first.`
+        ],
+        ok: false
+      };
+    }
+  }
+  try {
+    const line = spec.where === "project" ? action.workflow.writeProjectSetting(action.cwd, spec.key, parsed.value, action.portal.env) : action.workflow.writePersonalSetting(action.portal.paths, spec.key, parsed.value);
+    return { lines: [line], ok: true };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+function parseProjectForm(value) {
+  if (!isObject2(value))
+    return { ok: false, why: "The form's answers did not arrive." };
+  const base = typeof value.base === "string" ? value.base.trim() : "";
+  if (base === "") {
+    return {
+      ok: false,
+      why: "The base branch is needed: it is the branch a new worktree starts from."
+    };
+  }
+  if (!isObject2(value.bases))
+    return { ok: false, why: "The bases must be prefix \u2192 base pairs." };
+  const bases = {};
+  for (const [from, to] of Object.entries(value.bases)) {
+    if (!from.endsWith("/") || typeof to !== "string" || to === "") {
+      return { ok: false, why: `"${from}" is not prefix=base: the prefix ends with "/".` };
+    }
+    bases[from] = to;
+  }
+  if (!Array.isArray(value.protectedBranches)) {
+    return { ok: false, why: "The protected branches must be a list of branch names." };
+  }
+  const protectedBranches = [];
+  for (const name of value.protectedBranches) {
+    if (typeof name !== "string" || name === "") {
+      return { ok: false, why: "The protected branches must be a list of branch names." };
+    }
+    protectedBranches.push(name);
+  }
+  if (!isObject2(value.guards))
+    return { ok: false, why: "guards must say true or false for each guard." };
+  const guards = { guardMainFolder: false, jobRoute: false, sessionNames: false };
+  for (const name of ["guardMainFolder", "sessionNames", "jobRoute"]) {
+    const on = value.guards[name];
+    if (typeof on !== "boolean")
+      return { ok: false, why: `guards.${name} is true or false.` };
+    guards[name] = on;
+  }
+  return {
+    ok: true,
+    value: { base, bases, guards, protectedBranches }
+  };
+}
+function projectsWorld(action) {
+  return {
+    cwd: action.cwd,
+    env: action.portal.env,
+    now: action.portal.now,
+    paths: action.portal.paths
+  };
+}
+async function projectTarget(action, body) {
+  const named = body.project;
+  if (named !== undefined && typeof named !== "string") {
+    return {
+      why: "The project must be named by its id, as a string; nothing was read or written."
+    };
+  }
+  const id = named === undefined ? "" : named.trim();
+  if (id === "")
+    return { cwd: action.cwd };
+  const root = await projectRootById(projectsWorld(action), id);
+  return root === null ? { why: `No project of the list has the id "${id}", so nothing was read or written.` } : { cwd: root };
+}
+function projectAnswers(action, body, cwd) {
+  const project = readProject(action.portal, cwd);
+  if (project.root === null) {
+    return { ok: false, why: project.why ?? "there is no project folder here" };
+  }
+  const form = parseProjectForm(body.answers);
+  if (!form.ok)
+    return form;
+  const texts = projectFileTexts(project.root);
+  try {
+    const defaults = action.projectDefaults({ env: action.portal.env, root: project.root });
+    return {
+      ok: true,
+      answers: { ...defaults.answers, ...form.value },
+      defaultBranch: defaults.defaultBranch,
+      ...texts,
+      root: project.root
+    };
+  } catch (error) {
+    return { ok: false, why: messageOf(error) };
+  }
+}
+async function projectPreview(action, body) {
+  const target = await projectTarget(action, body);
+  if ("why" in target)
+    return { lines: [target.why], ok: false };
+  const built = projectAnswers(action, body, target.cwd);
+  if (!built.ok)
+    return { lines: [built.why], ok: false };
+  try {
+    const plan = action.workflow.planProjectInit({
+      answers: built.answers,
+      defaultBranch: built.defaultBranch,
+      existing: built.existing,
+      existingLocalSettings: built.existingLocalSettings,
+      existingSettings: built.existingSettings,
+      root: built.root
+    });
+    return {
+      filesHash: projectFilesHash(built),
+      lines: [settingsLineNote(plan.settings)],
+      ok: true,
+      preview: plan
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+async function projectWrite(action, body) {
+  if (body.confirm !== true) {
+    return { lines: ["The write was not confirmed, so nothing was written."], ok: false };
+  }
+  const target = await projectTarget(action, body);
+  if ("why" in target)
+    return { lines: [target.why], ok: false };
+  const built = projectAnswers(action, body, target.cwd);
+  if (!built.ok)
+    return { lines: [built.why], ok: false };
+  if (body.previewHash !== projectFilesHash(built)) {
+    return {
+      lines: ["The project's files changed since the preview \u2014 preview again."],
+      ok: false
+    };
+  }
+  try {
+    const plan = action.workflow.planProjectInit({
+      answers: built.answers,
+      defaultBranch: built.defaultBranch,
+      existing: built.existing,
+      existingLocalSettings: built.existingLocalSettings,
+      existingSettings: built.existingSettings,
+      root: built.root
+    });
+    const writes = action.workflow.applyProjectInit(plan, {
+      stateDir: action.portal.paths.stateDir
+    });
+    if (writes.length === 0) {
+      return { lines: ["Nothing to change: both files already say this."], ok: true };
+    }
+    forgetProjectsList();
+    return {
+      lines: [
+        ...writes.map((write) => `${write.created ? "+" : "~"} ${write.file}`),
+        "Commit both files with the project: the team shares one setup."
+      ],
+      ok: true
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+async function projectAdd(action, body) {
+  const folder = typeof body.folder === "string" ? body.folder.trim() : "";
+  if (folder === "") {
+    return { lines: ["Type the folder to add, with its full path."], ok: false };
+  }
+  if (!isAbsolute8(folder)) {
+    return {
+      lines: [`"${folder}" is not an absolute path: give the folder's full path.`],
+      ok: false
+    };
+  }
+  let isFolder = false;
+  try {
+    isFolder = existsSync57(folder) && statSync22(folder).isDirectory();
+  } catch {
+    isFolder = false;
+  }
+  if (!isFolder) {
+    return {
+      lines: [`${folder} is not a folder on this machine, so nothing was added.`],
+      ok: false
+    };
+  }
+  let root;
+  try {
+    root = checkoutFold(await locateCheckoutAsync(folder, { env: action.portal.env }))?.main ?? null;
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+  if (root === null) {
+    return {
+      lines: [`${folder} is not inside a git checkout, so there is no project to add.`],
+      ok: false
+    };
+  }
+  try {
+    const result = await addProjectRoot(action.portal.paths, root);
+    return result.added ? { lines: [`Added ${root} to the projects list.`], ok: true } : { lines: [`${root} is already in the projects list.`], ok: true };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+async function browserSetupAction(action) {
+  try {
+    const result = browserSetup(action.portal.paths, realBrowserSetupDeps(action.portal.machine, action.portal.paths.home), { apply: true });
+    return {
+      lines: [
+        ...result.changes.length > 0 ? result.changes : ["Nothing to change."],
+        ...result.info,
+        ...result.notes,
+        ...result.guide
+      ],
+      ok: result.ok
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+function browserTokenAction(action, body) {
+  const pasted = typeof body.token === "string" ? body.token : "";
+  const parsed = parseBrowserToken(pasted);
+  if (!parsed.ok) {
+    if (pasted.trim() === "" && readBrowserToken(action.portal.paths).source === "file") {
+      return {
+        lines: ["Nothing was pasted, so the saved token is unchanged."],
+        ok: false,
+        tone: "info"
+      };
+    }
+    return { lines: [`The token was not saved: ${parsed.why}.`], ok: false };
+  }
+  try {
+    writeBrowserToken(action.portal.paths, parsed.token);
+    return {
+      lines: [
+        tokenSavedLine(action.portal.paths.browserTokenFile),
+        "Start a new Claude session (or restart the running one) to use it."
+      ],
+      ok: true
+    };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+var CREW_ANSWER_MAX = 2000;
+function crewContext(action, say) {
+  const { portal } = action;
+  return {
+    asPerson: true,
+    cwd: action.cwd,
+    env: portal.env,
+    error: say,
+    freeMemoryGb: async () => null,
+    now: portal.now,
+    paths: portal.paths,
+    pid: process.pid,
+    platform: portal.machine.platform,
+    print: say,
+    processes: realProcessFacts(portal.machine.platform),
+    randomSuffix: () => randomBytes(3).toString("hex"),
+    readStdin: () => Promise.resolve(""),
+    runProgram: realRunProgram,
+    sleep: (ms) => portal.probe.sleep(ms),
+    which: portal.which
+  };
+}
+async function crewAction(action, name, run) {
+  const lines = [];
+  const say = (line) => {
+    for (const one of line.split(`
+`)) {
+      if (one.trim() === "")
+        continue;
+      lines.push(one);
+      action.publish?.("action", { action: name, line: one });
+    }
+  };
+  try {
+    const code = await run(crewContext(action, say));
+    return { lines, ok: code === 0 };
+  } catch (error) {
+    lines.push(messageOf(error));
+    return { lines, ok: false };
+  }
+}
+function crewRef(body) {
+  return typeof body.crew === "string" ? body.crew.trim() : "";
+}
+async function cleanWorktrees(action) {
+  const sinks = collector((line) => action.publish?.("action", { action: "worktrees.clean", line }));
+  try {
+    const code = await runWorktrees(action.portal.paths, { clean: true, noFetch: false, remove: null }, action.portal.env, action.cwd, sinks);
+    return { lines: sinks.lines, ok: code === 0 };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+async function runAction(name, body, action) {
+  switch (name) {
+    case "slot.test":
+      return testTargets(action, body);
+    case "slot.check":
+      return checkTarget(action, body);
+    case "slot.save":
+      return saveSlot(action, body);
+    case "slot.fallback":
+      return setSlotFallback(action, body);
+    case "slot.breaker":
+      return setSlotBreaker(action, body);
+    case "slot.mode":
+      return setSlotMode(action, body);
+    case "switch": {
+      const which = typeof body.name === "string" ? body.name : "";
+      const on = body.on === true;
+      switch (which) {
+        case "gateway":
+          return switchGateway(action, on);
+        case "judge":
+          return switchJudge(action, on);
+        case "models":
+          return switchModelSlots(action, on);
+        case "hold":
+          return switchHold(action, on);
+        default:
+          return { lines: [`"${which}" is not a switch.`], ok: false };
+      }
+    }
+    case "browser.setup":
+      return browserSetupAction(action);
+    case "browser.token":
+      return browserTokenAction(action, body);
+    case "update.check":
+      return updateCheck(action);
+    case "update.install":
+      return updateInstall(action);
+    case "companion.enable":
+      return companionEnable(action, typeof body.id === "string" ? body.id : "");
+    case "router.restart":
+      return gateway(action, ["setup", "--yes"]);
+    case "omniroute.update":
+      return omnirouteAction(action, ["update", "--yes"]);
+    case "omniroute.rollback":
+      return omnirouteAction(action, ["rollback", "--yes"]);
+    case "automode.apply":
+      return applyAutoModeAction(action, body);
+    case "workflow.set":
+      return setWorkflowSetting(action, body);
+    case "project.preview":
+      return projectPreview(action, body);
+    case "project.write":
+      return projectWrite(action, body);
+    case "project.add":
+      return projectAdd(action, body);
+    case "crew.answer": {
+      const crew = crewRef(body);
+      const answer = typeof body.answer === "string" ? body.answer.trim() : "";
+      if (crew === "" || answer === "") {
+        return { lines: ["Pick the crew session and write an answer."], ok: false };
+      }
+      if (answer.length > CREW_ANSWER_MAX) {
+        return {
+          lines: [`An answer is at most ${CREW_ANSWER_MAX} characters.`],
+          ok: false
+        };
+      }
+      return crewAction(action, "crew.answer", (ctx) => runCrewAnswer({ asPerson: true, crew, text: answer }, ctx));
+    }
+    case "crew.stop": {
+      const crew = crewRef(body);
+      if (crew === "")
+        return { lines: ["Pick the crew session to stop."], ok: false };
+      return crewAction(action, "crew.stop", (ctx) => runCrewStop(crew, ctx));
+    }
+    case "crew.resume": {
+      const crew = crewRef(body);
+      if (crew === "")
+        return { lines: ["Pick the crew session to resume."], ok: false };
+      return crewAction(action, "crew.resume", (ctx) => runCrewResume(crew, ctx));
+    }
+    case "crew.rm": {
+      const crew = crewRef(body);
+      if (crew === "")
+        return { lines: ["Pick the crew session to remove."], ok: false };
+      return crewAction(action, "crew.rm", (ctx) => runCrewRm(crew, ctx));
+    }
+    case "worktrees.clean":
+      if (body.confirm !== true) {
+        return {
+          lines: ["Nothing was removed: the page's confirmation did not come with the request."],
+          ok: false
+        };
+      }
+      return cleanWorktrees(action);
+    default:
+      return { lines: [`"${name}" is not an action.`], ok: false };
+  }
+}
+function jobContext(action) {
+  return {
+    cwd: action.cwd,
+    execArgv: process.execArgv,
+    memory: realMemoryFacts(),
+    paths: action.portal.paths,
+    print: () => {
+      return;
+    },
+    say: () => {
+      return;
+    }
+  };
+}
+async function jobLines(action) {
+  try {
+    const state = await readJobs(jobContext(action));
+    return {
+      error: "",
+      lines: statusLines(state, action.portal.paths.home, action.portal.now())
+    };
+  } catch (error) {
+    return { error: messageOf(error), lines: [] };
+  }
+}
+function updateState(action) {
+  const files = updateFiles(action.portal.paths.stateDir);
+  return {
+    held: readHeldMajor(files),
+    heldSince: heldSince(files),
+    installed: findUserInstall(action.portal.paths.installedPluginsFile)?.version ?? null,
+    last: readLastCheck(files)
+  };
+}
+function entryLines(result) {
+  const where = result.file;
+  const lines = [];
+  for (const entry of result.added)
+    lines.push(`~ ${where}: added ${JSON.stringify(entry)}`);
+  for (const entry of result.removed)
+    lines.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
+  for (const entry of result.skipped) {
+    lines.push(`  ${where}: ${JSON.stringify(entry)} is already in the list, put there by someone else: left alone`);
+  }
+  return lines.length === 0 ? ["Nothing to change."] : lines;
+}
+
+// src/portal/api/data.ts
+var NO_ROUTER = {
+  breakers: {},
+  cooling: [],
+  fallbacks: 0,
+  port: 0,
+  recent: [],
+  requests: 0,
+  up: false,
+  uptimeSec: 0,
+  why: "the gateway is not set up"
+};
+var NO_SWITCHES = {
+  gateway: false,
+  judge: false,
+  judgeUntested: false,
+  models: false,
+  settingsBaseUrl: null,
+  warnings: []
+};
+function notSetUp(deps) {
+  return {
+    configured: false,
+    error: configExists(deps.action.portal) ? "error" in deps.found ? deps.found.error : "the gateway config cannot be read" : "the gateway is not set up"
+  };
+}
+async function jobsAtAGlance(deps) {
+  try {
+    const queue = jobsAnswer(await readJobs(jobContext(deps.action)));
+    const heldGb = queue.stores.reduce((sum, store) => sum + store.held.reduce((each, item) => each + item.gb, 0), 0);
+    return {
+      budgetGb: queue.budgetGb,
+      heldGb: Math.round(heldGb * 10) / 10,
+      waiting: queue.stores.reduce((sum, store) => sum + store.waiting.length, 0)
+    };
+  } catch {
+    return { budgetGb: 0, heldGb: 0, waiting: 0 };
+  }
+}
+async function overviewAnswer(deps) {
+  if ("error" in deps.found) {
+    return {
+      ...notSetUp(deps),
+      backends: [],
+      dashboardUrl: null,
+      fallbacks: [],
+      jobs: await jobsAtAGlance(deps),
+      limits: [],
+      limitsRead: false,
+      router: NO_ROUTER,
+      slots: [],
+      switches: NO_SWITCHES,
+      warnings: []
+    };
+  }
+  return {
+    ...await overviewData(deps, deps.found.config),
+    configured: true,
+    error: null,
+    jobs: await jobsAtAGlance(deps)
+  };
+}
+async function slotsAnswer(deps) {
+  if ("error" in deps.found) {
+    return {
+      ...notSetUp(deps),
+      backendNotes: [],
+      breakers: {},
+      chains: {},
+      fallback: {},
+      models: [],
+      slots: [],
+      switches: NO_SWITCHES,
+      tested: {}
+    };
+  }
+  return {
+    ...await slotsData(deps, deps.found.config),
+    configured: true,
+    error: null,
+    switches: switchFacts(deps.action.portal, deps.found.config)
+  };
+}
+async function healthAnswer2(deps) {
+  if ("error" in deps.found) {
+    return {
+      ...notSetUp(deps),
+      backends: [],
+      fallbacks: [],
+      limits: [],
+      log: { lines: [], note: null },
+      router: NO_ROUTER
+    };
+  }
+  return {
+    ...await healthData(deps, deps.found.config),
+    configured: true,
+    error: null
+  };
+}
+async function machineAnswer(deps) {
+  const data = await machineData(deps);
+  if ("error" in deps.found && configExists(deps.action.portal)) {
+    return { ...data, configError: deps.found.error };
+  }
+  return data;
+}
+function settingsAnswer(deps) {
+  return settingsPageData(deps);
+}
+async function projectsAnswer(deps) {
+  return await projectsAnswerFor(deps);
+}
+function updateAnswer(deps) {
+  const facts = updateFacts(deps.action);
+  return {
+    held: facts.held,
+    heldSince: facts.heldSince,
+    installed: facts.installed,
+    last: facts.last,
+    newest: facts.newest,
+    summary: facts.summary
+  };
+}
+async function jobsAnswerFor(deps) {
+  try {
+    return jobsAnswer(await readJobs(jobContext(deps.action)));
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 // src/portal/api/routes.ts
 var HISTORY_BY2 = new Set(["target", "slot", "model", "session"]);
 function rangeOf(value) {
@@ -37302,7 +37961,7 @@ async function answerApi(deps, url) {
     case "/api/settings":
       return ok(settingsAnswer(deps));
     case "/api/projects":
-      return ok(projectsAnswer(deps));
+      return ok(await projectsAnswer(deps));
     case "/api/work":
       return ok(workAnswer(deps));
     case "/api/needs":
@@ -37405,6 +38064,19 @@ async function answerApi(deps, url) {
     default:
       break;
   }
+  if (path.startsWith("/api/projects/")) {
+    let id;
+    try {
+      id = decodeURIComponent(path.slice("/api/projects/".length));
+    } catch {
+      return { body: { error: "name a project" }, status: 400 };
+    }
+    if (id === "" || id.includes("/")) {
+      return { body: { error: "name a project" }, status: 400 };
+    }
+    const answer = await projectAnswerFor(deps, id);
+    return "error" in answer ? { body: answer, status: 404 } : ok(answer);
+  }
   if (path.startsWith("/api/crew/")) {
     let ref;
     try {
@@ -37415,7 +38087,7 @@ async function answerApi(deps, url) {
     if (ref === "" || ref.includes("/")) {
       return { body: { error: "name a crew session" }, status: 400 };
     }
-    const answer = crewAnswerFor(deps, ref);
+    const answer = await crewAnswerFor(deps, ref);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);
   }
   return null;
@@ -38744,7 +39416,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync65 } from "fs";
+import { readFileSync as readFileSync66 } from "fs";
 var LIVE_POLL_MS = 2000;
 var REPOS_TTL_MS = 30000;
 function fingerprintOf(entry) {
@@ -38782,7 +39454,7 @@ function createLiveSources(deps) {
   let repos = null;
   function textOf(file) {
     try {
-      return readFileSync65(file, "utf8");
+      return readFileSync66(file, "utf8");
     } catch {
       return null;
     }
@@ -38850,7 +39522,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync65(file);
+      bytes = readFileSync66(file);
     } catch {
       return;
     }
@@ -38924,7 +39596,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync56, readFileSync as readFileSync66, statSync as statSync22 } from "fs";
+import { existsSync as existsSync58, readFileSync as readFileSync67, statSync as statSync23 } from "fs";
 import { extname, join as join69, resolve as resolve13, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -38958,7 +39630,7 @@ function fileInside(folder, pathname) {
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
-    return statSync22(file).isFile() ? file : null;
+    return statSync23(file).isFile() ? file : null;
   } catch {
     return null;
   }
@@ -38976,7 +39648,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync66(join69(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync67(join69(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -38991,7 +39663,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve13(folder);
-  if (!existsSync56(join69(absolute, "index.html")))
+  if (!existsSync58(join69(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -39023,7 +39695,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync66(file);
+        const bytes = readFileSync67(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);
@@ -39934,7 +40606,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join70(dirname24(import.meta.path), "portal-ui");
+  return join70(dirname25(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
