@@ -1980,6 +1980,7 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo, and it starts the background clean of finished worktrees (once per merge, `worktrees.autoClean`). The message says what to do after the merge too: never commit unfinished work just to take it, run the install your project uses if the merge changed a lock file, and run the tests the merge touched. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. Its own calls (the alias list, the worktree list, `gh pr view`, the origin) share one 25 s budget inside the hook's 30 s, so they cannot add up past it: a note that would not fit is skipped. |
 | `review-record` | when a subagent starts, and when it finishes | When the agent is one `reviewAgents` lists (the plugin's reviewer by default): notes the commit the session's working folder is on at its start, and its branch, and records that start commit on that branch at its end: commits made while it read count as change after the review. It is the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree. |
 | `subagent-background` | when a subagent finishes | A subagent never hands back while background work it started still runs — a Bash command or a subagent it launched. It blocks the stop **once**, with one plain reason ("Your background work is still running: wait for it or stop it, then report."), and the subagent goes on with that reason; the stop the block itself caused is never blocked again, and it gives Claude no context. Only the agent's **own** work counts: the input's list is the session's (a background subagent appears in its own list, and a foreground subagent sees the main session's background commands), so the hook keeps a task whose id appears in a tool result of the subagent's own Bash call (`Command running in background with ID: …`) or Agent call (`agentId: …`) — never an id in its brief or in a file it read, which is not work it started. Nothing is blocked when it cannot read that transcript, and a project without `.claude/cc-smart-dev-kit.json` sees nothing. |
+| `verify-gate` | each answer ends | With `checks.fast`: one **block** when this session changed files after the last Bash call that ran the check, naming the command. Silent on the stop its own block caused (`stop_hook_active`), in a crew session (its report gate answers), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read. The stop that follows a block is never blocked again, so a check that fails gets one reminder and never traps the turn. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`, `worktrees.autoClean`). At an attended start it also adds at most one short line about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. It removes nothing itself. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
 | `crew-role` | a crew session starts, resumes or compacts; before `AskUserQuestion` and `ExitPlanMode`; each answer ends; a turn ends on an error | **Machine-wide**, and silent unless the session is a crew session (`CC_SMART_DEV_KIT_CREW`, set by `crew start`). At a start it adds the **role card**: its name, phase, owned files, its brief's path, the report line, the `crew tell` line and the git rule (commit on its branch, never push). **It also checks the session's own folder against its worktree**: an open crew session anywhere else is marked failed with the reason (the lead's watch then stops it), and its card says to do nothing and end the turn. It **refuses** `AskUserQuestion` and `ExitPlanMode` with the `crew report --question …` step: a crew session asks its lead, never you. At the end of a turn it keeps the session's last line on its record, and blocks **once** with the report line when the turn ended on a step with no report; it gives Claude no context (a Stop hook's context starves hand-backs), and stays out of a turn that waits on background work. When a turn ends on a model limit (`rate_limit`, `overloaded` or `server_error`), it marks the crew session **paused** with what it waits for — its gateway slot's breaker, Claude's plan limit, or nothing the router explains — and the lead's watch resumes it once the gateway answers again. |
@@ -2588,10 +2589,13 @@ It asks first and shows every default, which it reads from the repo: the base br
 `origin/HEAD` — else the repo's only branch when it has one (a repo whose only branch is `dev`
 works from `dev`, never from a `main` it does not have), else `main`, else `master`, else the
 branch HEAD is on — the bases offered for `hotfix/` and `release/` from the default branch,
-and the protected branches from the default branch and the base plus, when `gh` is installed
+the protected branches from the default branch and the base plus, when `gh` is installed
 and answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
-quietly). The questions are counted (`[2/7]`), each shows its default in brackets, and Enter
-keeps it; a list question takes `none` for an empty list, and an answer it cannot read is asked
+quietly), and the fast check from `package.json`'s scripts — `check` first, then `typecheck`,
+`lint`, `test` — run with the package manager its lockfile names. The questions are counted
+(`[2/8]`), each shows its default in brackets, and Enter
+keeps it; a list question takes `none` for an empty list, so does the fast check, and an answer
+it cannot read is asked
 again once, with the reason. Then it prints the plan, one group per file — the changes line by
 line (`+` added, `~` changed, `-` taken out), and the settings files merged with what they have
 — asks `Write these files? [y/N]`, writes them (a backup first, in
@@ -2604,11 +2608,13 @@ Every question has a flag, so it also runs without a terminal:
 
 ```sh
 cc-smart-dev-kit project init --base dev --bases "hotfix/=main,release/=main" \
-  --protected "main,dev" --guard-main-folder --session-names --workflow "openPr=draft"
+  --protected "main,dev" --check "bun run typecheck" --guard-main-folder \
+  --session-names --workflow "openPr=draft"
 ```
 
 `cc-smart-dev-kit project init --help` lists them all; each yes/no question has a `--no-` flag
-too (`--no-guard-main-folder`, `--no-session-names`, `--no-job-route`), so a run with no
+too (`--no-guard-main-folder`, `--no-session-names`, `--no-job-route`, `--no-check`), so a run
+with no
 terminal can answer either way. With no terminal it writes nothing unless
 `--yes` is given: it prints the plan and the line to run instead. `--dry-run` prints the plan
 of the flags and the defaults, asks nothing (on a terminal too), and writes nothing at all. Run it again on a project that has a file: it shows the diff and
@@ -2618,7 +2624,8 @@ every other workflow field the file holds; a dotted key (`crew.enabled=false`) c
 its own field. A `requires` the file already has
 is never lowered (a project needing a newer plugin keeps its range); an older one is raised to
 the oldest plugin that reads the file — 0.5.2, the version that made `worktrees.prefix`
-optional, or 1.0 for a file that sets `workflow.crew` or `workflow.fixesAfterReview` —
+optional, 1.0 for a file that sets `workflow.crew`, `workflow.fixesAfterReview` or
+`worktrees.autoClean`, or 1.1 for a file that sets `checks` —
 never to the version running here, so a teammate on an older plugin is not refused for a
 file that reads fine there. A plan the plugin itself would refuse (a `bases` prefix that does
 not end with `/`, a key no version knows) is an error before anything is written.
@@ -2838,6 +2845,7 @@ every question it holds.
     "bases": { "hotfix/": "main", "release/": "main" }
   },
   "protectedBranches": ["main"],
+  "checks": { "fast": "bun run typecheck && bun test src/changed" },
   "sessionNames": true,
   "ownHooks": ["git-guard"],
   "instructions": true,
@@ -2859,6 +2867,7 @@ every question it holds.
 | `worktrees.bases` | A branch-name prefix (ending in `/`) to the base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch's requests go into `base`. Auto-merge, the merge guard's opening check and the after-merge note read it; to start a task from another base, switch the main checkout to it first with `baseRef: "head"`, or `git worktree add` it as Claude Code's docs say. |
 | `worktrees.engine` | **Retired in 1.0.0, and refused**: it said who made the project's worktrees. Every project uses Claude Code's own; `cc-smart-dev-kit project init` removes the field. |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
+| `checks.fast` | The fast check a session runs before it stops: one command, as you would type it (`"bun run typecheck && bun test src/changed"`). The `verify-gate` hook blocks a stop **once** when the session changed files and no Bash call ran this command after the last change (§ The hooks). A field of 1.1.0: a project that sets it needs `"requires": ">=1.1"`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
 | `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). A retired hook name (`serena-root`, 0.6.0) is still accepted and silences nothing. `session-escape-guard` cannot be listed: no project can switch it off. |
 | `instructions` | Accepted now. Today a project loads the opt-in instructions with its own import line (§ Instructions, skills and agents); the field does not load them yet. |
@@ -2876,6 +2885,7 @@ without `worktrees.prefix` asks for at least `>=0.5.2`, the version that made it
 a teammate on an older plugin is told to update instead of failing the file's parse.
 `worktrees.autoClean` came with 1.0.0 (an optional field: a minor change), so a project that
 sets it asks for `>=1.0`.
+`checks` came with 1.1.0 the same way, so a project that sets it asks for `>=1.1`.
 `worktrees.prefix`, `worktrees.setup` and `worktrees.engine` retired with the plugin's
 worktree engine in 1.0.0: a file that still sets one does not load, and the error names each
 field and the fix, `cc-smart-dev-kit project init`.

@@ -1235,7 +1235,7 @@ and gives its own details, with `.claude/cc-smart-dev-kit.json`:
 }
 ```
 
-The hooks use `worktrees`, `protectedBranches` and `sessionNames` (§ The hooks). The plugin
+The hooks use `worktrees`, `protectedBranches`, `sessionNames` and `checks` (§ The hooks). The plugin
 accepts `instructions` and `autoMode` now: `setup` uses `autoMode` (§ Auto mode reads only
 user settings), and the opt-in instructions load through the project's own import line
 (§ Instructions, skills and agents), so `instructions` does not load them yet. `workflow`
@@ -1245,6 +1245,10 @@ Two fields came with 0.4.0: `worktrees.bases` (a branch-name prefix to the base 
 of such a branch starts from, § Worktrees) and `workflow` (§ The workflow). Both are optional
 and nothing else about the file changed, so a project that writes one raises its `requires`
 to the release that brought it — which is what `project init` writes.
+
+`checks` came with 1.1.0, the same way: `checks.fast` is the project's fast check, one command,
+which `project init` asks for (it offers a `package.json` script with its lockfile's package
+manager, and `none` skips the field). The `verify-gate` Stop hook reads it (§ The hooks).
 
 **The retired engine's fields are refused** (D20, 1.0.0): `worktrees.prefix`,
 `worktrees.setup` and `worktrees.engine` (`RETIRED_WORKTREE_FIELDS` in
@@ -1627,6 +1631,7 @@ that, so the plugin ships no worktree hook at all.
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send the other sessions when it went into `worktrees.base` (it says what to do after the merge: never commit unfinished work for it, run the project's install if a lock file changed, run the tests it touched), and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
+| `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash call that ran the project's fast check, naming the command. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit is a change, a Bash call whose line runs the check is the check, and a sidechain line (a subagent's own conversation) is skipped. Silent on the stop its own block caused (`stop_hook_active`), in a crew session (its report gate is `crew-role`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. A check that fails gets no second reminder, so the turn always ends. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds at most one short line about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
