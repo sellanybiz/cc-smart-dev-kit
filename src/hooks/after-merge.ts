@@ -152,6 +152,16 @@ export interface MergeCall {
   opens?: "create" | "ready";
   /** A `gh pr create --draft`, or a `draft` field the API call sets: it opens as a draft. */
   draft?: boolean;
+  /**
+   * `gh pr create`'s `--base` / `-B`: the branch the pull request opens into, or null when it
+   * names none (gh opens into the repository's default branch). Read only for a `gh pr
+   * create` (`cli`), never for a `gh api` opening, which names its base in its own fields.
+   */
+  base?: string | null;
+  /** `gh pr create`'s `--head` / `-H`: the branch the pull request comes from, or null. */
+  head?: string | null;
+  /** A `gh pr create` / `gh pr new` whose own flags were read (`base`, `head`), not an API call. */
+  cli?: true;
 }
 
 /**
@@ -734,6 +744,8 @@ function openingCall(
   carried: string | null,
 ): MergeCall[] {
   let repo: string | null = carried;
+  let base: string | null = null;
+  let head: string | null = null;
   let draft = false;
   let undo = false;
   for (let index = 0; index < args.length; index++) {
@@ -744,6 +756,8 @@ function openingCall(
       const name = at === -1 ? word : word.slice(0, at);
       const value = at === -1 ? undefined : word.slice(at + 1);
       if (name === "--repo") repo = value ?? args[index + 1] ?? repo;
+      if (name === "--base") base = value ?? args[index + 1] ?? null;
+      if (name === "--head") head = value ?? args[index + 1] ?? null;
       if (name === "--draft") draft = value === undefined || value.toLowerCase() !== "false";
       if (name === "--undo") undo = true;
       if (value === undefined && CREATE_FLAGS_WITH_VALUE.has(name)) index += 1;
@@ -759,6 +773,8 @@ function openingCall(
       if (last !== "" && CREATE_SHORT_WITH_VALUE.includes(last)) {
         const given = wantsNext ? (args[index + 1] ?? null) : word.slice(flags.length + 1);
         if (last === "R") repo = given === "" ? repo : given;
+        if (last === "B") base = given === "" ? null : given;
+        if (last === "H") head = given === "" ? null : given;
         if (wantsNext) index += 1;
       }
     }
@@ -766,7 +782,10 @@ function openingCall(
   if (kind === "ready" && undo) return [];
   return [
     call({
+      base: base === "" ? null : base,
+      cli: true,
       draft: kind === "create" && draft,
+      head: head === "" ? null : head,
       opens: kind,
       refusal: moved === null ? null : say(moved, true),
       target: { ref: null, repo },
@@ -1495,6 +1514,7 @@ export function tellSessionsNote(
   const message =
     `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` +
     `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` +
+    `Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. ` +
     `${caution === null ? "" : `${caution} `}No reply needed.`;
   return [
     `That merged #${pr.number} into ${base}.`,

@@ -480,7 +480,7 @@ describe("the hook", () => {
       [
         "That merged #7 into main.",
         "Tell the other sessions of this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo (not this session, not a subagent, not another project) with exactly this text:",
-        "\"main now has #7 (Fix 'login'). At your next stop, once your current work is committed: git fetch origin main, then git merge origin/main, and fix any conflict. No reply needed.\"",
+        "\"main now has #7 (Fix 'login'). At your next stop, once your current work is committed: git fetch origin main, then git merge origin/main, and fix any conflict. Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. No reply needed.\"",
         "Merged several pull requests this turn? Send each session one message, naming every merged number.",
       ].join("\n"),
     );

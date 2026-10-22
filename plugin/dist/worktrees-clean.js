@@ -89,6 +89,10 @@ function claudeMemDataDir(env, home) {
   return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 
+// src/worktrees/auto-clean.ts
+import { existsSync as existsSync8, readdirSync as readdirSync7 } from "fs";
+import { join as join12 } from "path";
+
 // src/hooks/git.ts
 import { realpathSync } from "fs";
 import { basename, dirname, join as join3, resolve as resolve2 } from "path";
@@ -6256,7 +6260,6 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
-
 class CcSmartDevKitConfigError extends Error {
   name = "CcSmartDevKitConfigError";
 }
@@ -6646,7 +6649,7 @@ var LOCK_PORTS = {
 };
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync6, mkdtempSync, readdirSync as readdirSync6, rmSync as rmSync2, statSync as statSync6 } from "fs";
+import { existsSync as existsSync7, mkdtempSync, readdirSync as readdirSync6, rmSync as rmSync2, statSync as statSync6 } from "fs";
 import { tmpdir } from "os";
 import { join as join11 } from "path";
 
@@ -6704,7 +6707,7 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync7, statSync as statSync5 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync7, statSync as statSync5 } from "fs";
 import { basename as basename3, isAbsolute, join as join10, resolve as resolve4 } from "path";
 function idleMinutes(worktree, now) {
   let admin;
@@ -7241,7 +7244,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    if (listed.prunable || !existsSync6(listed.path)) {
+    if (listed.prunable || !existsSync7(listed.path)) {
       scanned.push({ listed, state: "gone" });
       continue;
     }
@@ -7252,7 +7255,7 @@ function scanWorktrees(repo, options) {
 function removeWorktree(repo, listed, options) {
   const all = listWorktrees(repo, options.env);
   const current = all.find((one) => samePath(one.path, listed.path));
-  if (current === undefined || !existsSync6(current.path)) {
+  if (current === undefined || !existsSync7(current.path)) {
     return {
       said: [`kept ${listed.path}: its folder is gone \u2014 \`${COMMAND} worktrees\` forgets it`],
       status: "kept"
@@ -7410,6 +7413,30 @@ function baseBranch(checkout, env, repo) {
 }
 
 // src/worktrees/auto-clean.ts
+var GIT_LOCKS = ["index.lock", "HEAD.lock", "packed-refs.lock"];
+function refLockUnder(dir, depth = 0) {
+  if (depth > 8)
+    return null;
+  try {
+    for (const entry of readdirSync7(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const found = refLockUnder(join12(dir, entry.name), depth + 1);
+        if (found !== null)
+          return found;
+      } else if (entry.name.endsWith(".lock")) {
+        return entry.name;
+      }
+    }
+  } catch {}
+  return null;
+}
+function gitLockHeld(gitDir) {
+  for (const name of GIT_LOCKS) {
+    if (existsSync8(join12(gitDir, name)))
+      return name;
+  }
+  return refLockUnder(join12(gitDir, "refs"));
+}
 function sessionsToKeep(deps, claudeConfigDir) {
   const running = deps.facts?.sessions ?? liveSessions(claudeConfigDir);
   if (deps.keep === undefined)
@@ -7457,6 +7484,11 @@ async function runAutoClean(repo, trigger, deps) {
     if (!samePath(main, repo)) {
       log(`${repo} (${trigger}): not the main checkout (${main}); nothing done`);
       return "failed";
+    }
+    const held = gitLockHeld(checkout.commonDir);
+    if (held !== null) {
+      log(`${main} (${trigger}): git is writing here (${held}); skipped this round`);
+      return "git-busy";
     }
     const { base } = baseBranch(checkout, env, main);
     lock = await (deps.hold ?? holdCleanLock)();

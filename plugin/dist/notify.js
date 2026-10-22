@@ -6435,7 +6435,6 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
-
 class CcSmartDevKitConfigError extends Error {
   name = "CcSmartDevKitConfigError";
 }

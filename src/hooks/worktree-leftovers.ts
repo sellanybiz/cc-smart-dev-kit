@@ -37,11 +37,19 @@
  *
  * No fetch: a session start must stay quick, so `origin/<base>` is read as it is.
  */
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
-import { hasChanges, isInside, type ListedWorktree, listWorktrees, runGit } from "./git";
+import { isAttended } from "./attended";
+import {
+  GUARD_GIT_TIMEOUT_MS,
+  hasChanges,
+  isInside,
+  type ListedWorktree,
+  listWorktrees,
+  runGit,
+} from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
 import type { Env, HookContext } from "./run";
@@ -148,6 +156,82 @@ export function leftoversNote(
   return parts.length === 0 ? null : parts.join("\n");
 }
 
+/** The operation the main checkout is in the middle of, or null: git's own state files. */
+function operationInProgress(repo: string, env: Env): "merge" | "rebase" | "cherry-pick" | null {
+  // One call for all four: `git rev-parse --git-path` prints each path, relative to the repo
+  // (or absolute), as git itself spells it.
+  const paths = runGit(
+    repo,
+    [
+      "rev-parse",
+      "--git-path",
+      "MERGE_HEAD",
+      "--git-path",
+      "rebase-merge",
+      "--git-path",
+      "rebase-apply",
+      "--git-path",
+      "CHERRY_PICK_HEAD",
+    ],
+    env,
+    GUARD_GIT_TIMEOUT_MS,
+  );
+  if (!paths.ok) return null;
+  const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
+  const held = (path: string | undefined) =>
+    path !== undefined && path !== "" && existsSync(resolve(repo, path));
+  if (held(merge)) return "merge";
+  if (held(rebaseMerge) || held(rebaseApply)) return "rebase";
+  if (held(cherryPick)) return "cherry-pick";
+  return null;
+}
+
+/**
+ * What a starting session should know about the MAIN checkout, one short line each, and
+ * nothing when it is fine: it is on another branch than `base` (a new worktree starts from its
+ * HEAD, so it would start from the wrong branch), it is behind `origin/<base>` as git already
+ * knows it (no fetch), or it is stuck in a merge, a rebase or a cherry-pick.
+ *
+ * Attended sessions only: `claude -p` has nobody to tell (the background session's own rule,
+ * `isAttended`). Read-only: nothing here changes the checkout, and every git call is capped
+ * like a guard's (`GUARD_GIT_TIMEOUT_MS`), so a session start stays quick.
+ */
+export function mainFolderNotes(
+  repo: string,
+  main: ListedWorktree,
+  base: string,
+  env: Env,
+): string[] {
+  if (!isAttended(env)) return [];
+  const notes: string[] = [];
+  if (main.branch !== base) {
+    notes.push(
+      main.branch === null
+        ? `The main checkout is on a detached HEAD, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.`
+        : `The main checkout is on \`${main.branch}\`, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.`,
+    );
+  }
+  const behind = runGit(
+    repo,
+    ["rev-list", "--count", `HEAD..refs/remotes/origin/${base}`],
+    env,
+    GUARD_GIT_TIMEOUT_MS,
+  );
+  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
+  if (count > 0) {
+    notes.push(
+      `The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: merge origin/${base} there before starting a new worktree.`,
+    );
+  }
+  const operation = operationInProgress(repo, env);
+  if (operation !== null) {
+    notes.push(
+      `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`,
+    );
+  }
+  return notes;
+}
+
 export function worktreeLeftovers(context: HookContext): HookResult {
   const { project, env, paths, event } = context;
   const base = project.config?.worktrees?.base;
@@ -156,11 +240,16 @@ export function worktreeLeftovers(context: HookContext): HookResult {
   // What a background clean removed since this repo's last session start (D48): one line to
   // the person, once. It comes first because the clean may have removed every worktree.
   const told = takeToldLine(context, repo);
+  const [main, ...linked] = listWorktrees(repo, env);
+  // The main checkout's own notes, before the finished-worktree ones: they are about the
+  // folder the person starts in. Read without a fetch, and only when someone is there.
+  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env);
   const answer = (note: string | null): HookResult => {
-    if (note === null) return told === null ? SILENT : systemMessage(told);
-    return told === null ? addContext(event, note) : addContextAndMessage(event, note, told);
+    const lines = [...mainNotes, ...(note === null ? [] : [note])];
+    if (lines.length === 0) return told === null ? SILENT : systemMessage(told);
+    const text = lines.join("\n");
+    return told === null ? addContext(event, text) : addContextAndMessage(event, text, told);
   };
-  const [, ...linked] = listWorktrees(repo, env);
   if (linked.length === 0) return answer(null);
   // Finished worktrees clean themselves: the clean starts detached and judges for itself.
   startAutoClean(context, repo, "session");

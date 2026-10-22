@@ -13300,7 +13300,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 import { dirname as dirname24, join as join69 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync48, readFileSync as readFileSync57 } from "fs";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync49, readFileSync as readFileSync57 } from "fs";
 import { dirname as dirname20, join as join56 } from "path";
 
 // src/gateway/doctor.ts
@@ -18560,6 +18560,15 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
+function baseForBranch(worktrees, branch) {
+  let match = null;
+  for (const prefix of Object.keys(worktrees.bases ?? {})) {
+    if (branch.startsWith(prefix) && (match === null || prefix.length > match.length)) {
+      match = prefix;
+    }
+  }
+  return match === null ? worktrees.base : worktrees.bases?.[match] ?? worktrees.base;
+}
 
 class CcSmartDevKitConfigError extends Error {
   name = "CcSmartDevKitConfigError";
@@ -18980,7 +18989,7 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync47, readFileSync as readFileSync56 } from "fs";
+import { existsSync as existsSync48, readFileSync as readFileSync56 } from "fs";
 import { join as join55 } from "path";
 
 // src/hooks/git.ts
@@ -21729,6 +21738,8 @@ var CREATE_FLAGS_WITH_VALUE = new Set([
 var CREATE_SHORT_WITH_VALUE = "aBbFHlmprRTt";
 function openingCall(kind, args, moved, carried) {
   let repo = carried;
+  let base = null;
+  let head = null;
   let draft = false;
   let undo = false;
   for (let index = 0;index < args.length; index++) {
@@ -21741,6 +21752,10 @@ function openingCall(kind, args, moved, carried) {
       const value = at === -1 ? undefined : word.slice(at + 1);
       if (name === "--repo")
         repo = value ?? args[index + 1] ?? repo;
+      if (name === "--base")
+        base = value ?? args[index + 1] ?? null;
+      if (name === "--head")
+        head = value ?? args[index + 1] ?? null;
       if (name === "--draft")
         draft = value === undefined || value.toLowerCase() !== "false";
       if (name === "--undo")
@@ -21759,6 +21774,10 @@ function openingCall(kind, args, moved, carried) {
         const given = wantsNext ? args[index + 1] ?? null : word.slice(flags.length + 1);
         if (last === "R")
           repo = given === "" ? repo : given;
+        if (last === "B")
+          base = given === "" ? null : given;
+        if (last === "H")
+          head = given === "" ? null : given;
         if (wantsNext)
           index += 1;
       }
@@ -21768,7 +21787,10 @@ function openingCall(kind, args, moved, carried) {
     return [];
   return [
     call({
+      base: base === "" ? null : base,
+      cli: true,
       draft: kind === "create" && draft,
+      head: head === "" ? null : head,
       opens: kind,
       refusal: moved === null ? null : say(moved, true),
       target: { ref: null, repo }
@@ -22216,7 +22238,7 @@ function otherBaseCaution(bases, base) {
 }
 function tellSessionsNote(pr, base, bases = {}) {
   const caution = otherBaseCaution(bases, base);
-  const message = `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` + `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` + `${caution === null ? "" : `${caution} `}No reply needed.`;
+  const message = `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` + `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` + `Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. ` + `${caution === null ? "" : `${caution} `}No reply needed.`;
   return [
     `That merged #${pr.number} into ${base}.`,
     "Tell the other sessions of this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo (not this session, not a subagent, not another project) with exactly this text:",
@@ -26356,7 +26378,7 @@ function routeFacts(input, context) {
 }
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync42, mkdtempSync as mkdtempSync5, readdirSync as readdirSync17, rmSync as rmSync11, statSync as statSync16 } from "fs";
+import { existsSync as existsSync43, mkdtempSync as mkdtempSync5, readdirSync as readdirSync17, rmSync as rmSync11, statSync as statSync16 } from "fs";
 import { tmpdir as tmpdir7 } from "os";
 import { join as join49 } from "path";
 
@@ -26414,7 +26436,7 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync52, statSync as statSync15 } from "fs";
+import { existsSync as existsSync42, readFileSync as readFileSync52, statSync as statSync15 } from "fs";
 import { basename as basename8, isAbsolute as isAbsolute5, join as join47, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
@@ -26471,6 +26493,48 @@ function leftoversNote(base, finished, gone, keptBy = new Map) {
   return parts.length === 0 ? null : parts.join(`
 `);
 }
+function operationInProgress(repo, env) {
+  const paths = runGit(repo, [
+    "rev-parse",
+    "--git-path",
+    "MERGE_HEAD",
+    "--git-path",
+    "rebase-merge",
+    "--git-path",
+    "rebase-apply",
+    "--git-path",
+    "CHERRY_PICK_HEAD"
+  ], env, GUARD_GIT_TIMEOUT_MS);
+  if (!paths.ok)
+    return null;
+  const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
+  const held = (path) => path !== undefined && path !== "" && existsSync42(resolve7(repo, path));
+  if (held(merge))
+    return "merge";
+  if (held(rebaseMerge) || held(rebaseApply))
+    return "rebase";
+  if (held(cherryPick))
+    return "cherry-pick";
+  return null;
+}
+function mainFolderNotes(repo, main, base, env) {
+  if (!isAttended(env))
+    return [];
+  const notes = [];
+  if (main.branch !== base) {
+    notes.push(main.branch === null ? `The main checkout is on a detached HEAD, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.` : `The main checkout is on \`${main.branch}\`, not \`${base}\`: a new worktree starts from its HEAD, so switch it to \`${base}\` first.`);
+  }
+  const behind = runGit(repo, ["rev-list", "--count", `HEAD..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
+  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
+  if (count > 0) {
+    notes.push(`The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: merge origin/${base} there before starting a new worktree.`);
+  }
+  const operation = operationInProgress(repo, env);
+  if (operation !== null) {
+    notes.push(`The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
+  }
+  return notes;
+}
 function worktreeLeftovers(context) {
   const { project, env, paths, event } = context;
   const base = project.config?.worktrees?.base;
@@ -26478,12 +26542,16 @@ function worktreeLeftovers(context) {
     return SILENT;
   const repo = project.mainCheckout ?? project.root;
   const told = takeToldLine(context, repo);
+  const [main, ...linked] = listWorktrees(repo, env);
+  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env);
   const answer = (note) => {
-    if (note === null)
+    const lines = [...mainNotes, ...note === null ? [] : [note]];
+    if (lines.length === 0)
       return told === null ? SILENT : systemMessage(told);
-    return told === null ? addContext(event, note) : addContextAndMessage(event, note, told);
+    const text = lines.join(`
+`);
+    return told === null ? addContext(event, text) : addContextAndMessage(event, text, told);
   };
-  const [, ...linked] = listWorktrees(repo, env);
   if (linked.length === 0)
     return answer(null);
   startAutoClean(context, repo, "session");
@@ -27052,7 +27120,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    if (listed.prunable || !existsSync42(listed.path)) {
+    if (listed.prunable || !existsSync43(listed.path)) {
       scanned.push({ listed, state: "gone" });
       continue;
     }
@@ -27063,7 +27131,7 @@ function scanWorktrees(repo, options) {
 function removeWorktree(repo, listed, options) {
   const all = listWorktrees(repo, options.env);
   const current = all.find((one) => samePath3(one.path, listed.path));
-  if (current === undefined || !existsSync42(current.path)) {
+  if (current === undefined || !existsSync43(current.path)) {
     return {
       said: [`kept ${listed.path}: its folder is gone \u2014 \`${COMMAND} worktrees\` forgets it`],
       status: "kept"
@@ -27269,10 +27337,10 @@ function isLiveRow(row) {
 }
 
 // src/crew/answer.ts
-import { existsSync as existsSync44 } from "fs";
+import { existsSync as existsSync45 } from "fs";
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync43, readFileSync as readFileSync53 } from "fs";
+import { existsSync as existsSync44, readFileSync as readFileSync53 } from "fs";
 
 // src/setup/statusline.ts
 import { join as join51 } from "path";
@@ -27289,7 +27357,7 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync43(file))
+  if (!existsSync44(file))
     return {};
   let raw;
   try {
@@ -27669,7 +27737,7 @@ async function resumeSession(ctx, record, text) {
     };
   }
   const deps = claudeDeps(ctx);
-  const folder = existsSync44(record.worktree) ? record.worktree : ctx.cwd;
+  const folder = existsSync45(record.worktree) ? record.worktree : ctx.cwd;
   const called = callClaude(deps, claude, ["--bg", "--resume", record.sessionId, text], folder);
   if (!called.ok)
     return { ok: false, why: called.why };
@@ -28287,6 +28355,17 @@ function notOpenedByItself(opening, reason) {
   const what = opening.opens === "ready" ? "marks a pull request ready for review" : "opens a pull request";
   return `cc-smart-dev-kit asks before this ${what}: ${reason}. Approve it yourself if you meant it.`;
 }
+function opensElsewhere(into, head, expected) {
+  return `the pull request would open into \`${into}\`, but this project sends a \`${head}\` branch into \`${expected}\` (worktrees.base, or worktrees.bases for that branch)`;
+}
+var OPENING_DEFAULT_UNREAD = "gh could not read this repository's default branch, so this guard cannot tell which branch this pull request opens into";
+var OPENING_DEFAULT_LATE = "reading this repository's default branch would have taken longer than the guard's own budget allows";
+function headBranchOf(head) {
+  if (head === null)
+    return null;
+  const branch = head.slice(head.lastIndexOf(":") + 1);
+  return branch === "" ? null : branch;
+}
 function adminRefusal(ref) {
   const which = ref === null ? "the current branch's pull request" : numericRef(ref) === null ? `\`${ref}\`` : `#${ref}`;
   return `the command merges ${which} with \`--admin\`, which uses administrator rights to merge past the repository's branch protection (its required reviews, a code-owner approval among them, its required checks and its merge queue), so you decide each one`;
@@ -28348,6 +28427,55 @@ function mergeGuard(context) {
     const read = resolveGate(paths, project, branch, { env, timeoutMs: left });
     gates.set(branch, read);
     return read;
+  };
+  let branchHere;
+  const currentBranch = () => {
+    if (branchHere !== undefined)
+      return branchHere;
+    const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+    if (left <= 0) {
+      branchHere = null;
+      return null;
+    }
+    const read = runGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], env, left);
+    branchHere = read.ok && read.out !== "" ? read.out : null;
+    return branchHere;
+  };
+  const openingDefaults = new Map;
+  const defaultBranchHere = (repo) => {
+    const key = repo ?? "";
+    if (openingDefaults.has(key))
+      return openingDefaults.get(key) ?? null;
+    const left = timeFor(GH_TIMEOUT_MS3);
+    if (left <= 0)
+      return "late";
+    let branch = defaultBranchOf(cwd, env, repo, left);
+    if (branch === null) {
+      const gitLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
+      if (gitLeft <= 0)
+        return "late";
+      const origin = runGit(cwd, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env, gitLeft);
+      const name = origin.ok ? origin.out.replace(/^origin\//, "") : "";
+      branch = name === "" ? null : name;
+    }
+    if (branch === null)
+      return "unread";
+    openingDefaults.set(key, branch);
+    return branch;
+  };
+  const opensOutsideBase = (opening, worktrees) => {
+    if (opening.opens !== "create" || opening.cli !== true || worktrees === undefined)
+      return null;
+    const head = headBranchOf(opening.head ?? null) ?? currentBranch();
+    if (head === null)
+      return null;
+    const expected = baseForBranch(worktrees, head);
+    const into = opening.base ?? defaultBranchHere(opening.target?.repo ?? null);
+    if (into === "late" || into === "unread")
+      return into;
+    if (into === null)
+      return null;
+    return into === expected ? null : opensElsewhere(into, head, expected);
   };
   const calls = pullRequestCallsWithAliases(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect);
   const merges = calls.filter((one) => isMerge(one) && !one.disarms);
@@ -28458,6 +28586,15 @@ function mergeGuard(context) {
     });
     if (why !== null)
       return toolDecision("ask", notOpenedByItself(opening, why));
+    const outside = opensOutsideBase(opening, read.gate.config?.worktrees);
+    if (outside === "late") {
+      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
+    }
+    if (outside === "unread") {
+      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
+    }
+    if (outside !== null)
+      return toolDecision("ask", notOpenedByItself(opening, outside));
   }
   if (allowed !== null && !crew && exactMergeOf(command, dialect) !== null) {
     return toolDecision("allow", allowed);
@@ -29454,10 +29591,10 @@ var MACHINE_WIDE_HOOKS = [
 ];
 
 // src/cli/project-init.ts
-import { existsSync as existsSync46, readFileSync as readFileSync55 } from "fs";
+import { existsSync as existsSync47, readFileSync as readFileSync55 } from "fs";
 
 // src/project/init.ts
-import { existsSync as existsSync45 } from "fs";
+import { existsSync as existsSync46 } from "fs";
 import { join as join54 } from "path";
 
 // src/workflow/clashes.ts
@@ -29763,7 +29900,7 @@ function applyProjectInit(plan, options) {
       wanted.push([settings.file, settings.text]);
   }
   return wanted.map(([file, text]) => {
-    const created = !existsSync45(file);
+    const created = !existsSync46(file);
     if (options.dryRun === true)
       return { file, created, backup: null };
     const backup = backupFile(options.stateDir, file);
@@ -29953,7 +30090,7 @@ var QUESTIONS = [
 ];
 var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
 function readText2(file) {
-  return existsSync46(file) ? readFileSync55(file, "utf8") : null;
+  return existsSync47(file) ? readFileSync55(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText2(file);
@@ -30010,7 +30147,7 @@ function renamedCommand(command) {
 function oldNameLines(projectDir, sources, home) {
   const lines = [];
   const config = join55(projectDir, ".claude", `${OLD_NAME}.json`);
-  if (existsSync47(config)) {
+  if (existsSync48(config)) {
     lines.push({
       ok: true,
       warn: true,
@@ -30018,7 +30155,7 @@ function oldNameLines(projectDir, sources, home) {
     });
   }
   const addons = join55(projectDir, ".claude", OLD_NAME);
-  if (existsSync47(addons)) {
+  if (existsSync48(addons)) {
     lines.push({
       ok: true,
       warn: true,
@@ -30081,7 +30218,7 @@ function worktreeLines(config, sources, checkout, env) {
 function baseRefOf(sources) {
   let baseRef = null;
   for (const file of sources) {
-    if (!existsSync47(file))
+    if (!existsSync48(file))
       continue;
     try {
       const parsed = JSON.parse(readFileSync56(file, "utf8"));
@@ -30190,7 +30327,7 @@ function projectChecks(cwd, env, paths, pluginHooksFile) {
   }
   let checkout;
   try {
-    checkout = existsSync47(cwd) ? locateCheckout(cwd, { env }) : null;
+    checkout = existsSync48(cwd) ? locateCheckout(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
@@ -30242,7 +30379,7 @@ function coverGitLines(checkout, env) {
 var SETUP_FIX = `${COMMAND} setup`;
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync48(file))
+  if (!existsSync49(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -30270,7 +30407,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync48(install.installPath)) {
+  if (!existsSync49(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}`,
@@ -30298,13 +30435,13 @@ function isExecutable(file) {
   }
 }
 function isUsableBun(bun, platform) {
-  return platform === "win32" ? existsSync48(bun) : isExecutable(bun);
+  return platform === "win32" ? existsSync49(bun) : isExecutable(bun);
 }
 function checkLauncher(paths, platform) {
   const win = platform === "win32";
   const launcher = join56(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync48(launcher))
+  if (!existsSync49(launcher))
     return [{ ok: false, text: `no launcher at ${where}`, fix: SETUP_FIX }];
   if (!win && !isExecutable(launcher)) {
     return [
@@ -30344,7 +30481,7 @@ function checkLauncher(paths, platform) {
 function checkLauncherCmd(paths, shLauncher) {
   const cmd = join56(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
-  if (!existsSync48(cmd)) {
+  if (!existsSync49(cmd)) {
     return {
       ok: false,
       text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run ${COMMAND} (Git Bash runs ${shLauncher})`,
@@ -30392,7 +30529,7 @@ async function checkMarketplaceAccess(paths, env) {
         fix: `remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}), then add it again: ${MARKETPLACE_ADD_COMMAND}`
       };
     case "local":
-      return existsSync48(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
+      return existsSync49(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
         ok: false,
         text: `the marketplace folder is missing: ${source.path}`,
         fix: `put the folder back, or remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}) and add it again: ${MARKETPLACE_ADD_COMMAND}`
@@ -30653,7 +30790,7 @@ function hasEntry(data, field, key) {
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject13(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync48(join56(paths.claudeConfigDir, OLD_NAME2))) {
+  if (!existsSync49(join56(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
     return {
@@ -30667,14 +30804,14 @@ function checkOldPlugin(settings, paths) {
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync48(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync49(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME2) ? `extraKnownMarketplaces.${OLD_NAME2} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME2) ? `the ${OLD_NAME2} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync48(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync49(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -30710,7 +30847,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync48(where.claudeMd) ? readFileSync57(where.claudeMd, "utf8") : "";
+  const text = existsSync49(where.claudeMd) ? readFileSync57(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -30768,7 +30905,7 @@ function checkProjectImports(paths, cwd) {
   for (let dir = cwd;; dir = dirname20(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join56(dir, name);
-      if (from === join56(paths.claudeConfigDir, "CLAUDE.md") || !existsSync48(from))
+      if (from === join56(paths.claudeConfigDir, "CLAUDE.md") || !existsSync49(from))
         continue;
       let text;
       try {
@@ -30786,7 +30923,7 @@ function checkProjectImports(paths, cwd) {
   }
   if (imports.length === 0)
     return null;
-  const missing = imports.filter((entry) => !existsSync48(entry.file));
+  const missing = imports.filter((entry) => !existsSync49(entry.file));
   if (missing.length === 0) {
     const names = imports.map((entry) => entry.path).join(", ");
     return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
@@ -31365,7 +31502,7 @@ import { createHash as createHash9, randomBytes } from "crypto";
 import { join as join64 } from "path";
 
 // src/browser/setup.ts
-import { existsSync as existsSync49, mkdirSync as mkdirSync20, readdirSync as readdirSync19, readFileSync as readFileSync58 } from "fs";
+import { existsSync as existsSync50, mkdirSync as mkdirSync20, readdirSync as readdirSync19, readFileSync as readFileSync58 } from "fs";
 import { join as join58 } from "path";
 var MAC_EXTERNAL_EXTENSIONS = [
   "Library",
@@ -31620,13 +31757,13 @@ function legacyBrowserInfo(paths, deps) {
 }
 
 // src/update/retired-repos.ts
-import { existsSync as existsSync51, readFileSync as readFileSync60 } from "fs";
+import { existsSync as existsSync52, readFileSync as readFileSync60 } from "fs";
 import { join as join60, relative as relative4 } from "path";
 
 // src/sessions/command.ts
 import {
   closeSync as closeSync7,
-  existsSync as existsSync50,
+  existsSync as existsSync51,
   mkdirSync as mkdirSync21,
   openSync as openSync7,
   readdirSync as readdirSync20,
@@ -31680,7 +31817,7 @@ function readSession2(file) {
   });
 }
 function sessionWorkFolders(projectsDir) {
-  if (!existsSync50(projectsDir))
+  if (!existsSync51(projectsDir))
     return [];
   const folders = new Set;
   for (const folder of readdirSync20(projectsDir)) {
@@ -31694,7 +31831,7 @@ function sessionWorkFolders(projectsDir) {
   return [...folders];
 }
 function savedSessions(projectsDir, mainCheckout, since) {
-  if (!existsSync50(projectsDir))
+  if (!existsSync51(projectsDir))
     return [];
   const sessions = [];
   for (const folder of readdirSync20(projectsDir)) {
@@ -31716,7 +31853,7 @@ function messageOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function checkoutOf(folder, env) {
-  if (!existsSync51(folder))
+  if (!existsSync52(folder))
     return null;
   try {
     const checkout = locateCheckout(folder, { env });
@@ -31731,7 +31868,7 @@ function retiredPartsOf(repo, mainCheckout = null) {
   const config = join60(repo, ".claude", "cc-smart-dev-kit.json");
   let fields = [];
   let error = null;
-  if (existsSync51(config)) {
+  if (existsSync52(config)) {
     try {
       fields = retiredFieldsOf(parseUserJson(readFileSync60(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
@@ -31947,7 +32084,7 @@ ${UPDATE_USAGE}`);
 }
 
 // src/crew/end.ts
-import { existsSync as existsSync52 } from "fs";
+import { existsSync as existsSync53 } from "fs";
 
 // src/crew/board.ts
 function isRefusal(value) {
@@ -32153,7 +32290,7 @@ function leadRef(record, ctx) {
   } catch (error) {
     return { why: reasonOf4(error) };
   }
-  if (lead !== null && existsSync52(lead.cwd)) {
+  if (lead !== null && existsSync53(lead.cwd)) {
     const sha = runGit(lead.cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], ctx.env, GIT_TIMEOUT_MS2);
     if (sha.ok) {
       const branch = runGit(lead.cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], ctx.env, GIT_TIMEOUT_MS2);
@@ -32174,7 +32311,7 @@ function commitsNotOn(repo, lead, branch, env) {
 }
 
 // src/crew/remove.ts
-import { existsSync as existsSync53 } from "fs";
+import { existsSync as existsSync54 } from "fs";
 function mergedInto(repo, lead, branch, env) {
   return workOnRef(repo, lead.sha, `refs/heads/${branch}`, env);
 }
@@ -32211,7 +32348,7 @@ async function runCrewRm(ref, ctx) {
       return refuse(failure2(`crew rm: ${record.branch} has ${missing} that ${lead.label} does not have`, `Fix: the lead merges it first (git merge ${record.branch}, in ${lead.folder}), then run crew rm again`), ctx);
     }
   }
-  if (existsSync53(record.worktree) && hasChanges(record.worktree, ctx.env)) {
+  if (existsSync54(record.worktree) && hasChanges(record.worktree, ctx.env)) {
     return refuse(failure2(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, "Fix: commit or discard them there, then run crew rm again; it never forces"), ctx);
   }
   let listed;
@@ -32294,7 +32431,7 @@ async function runCrewRm(ref, ctx) {
       }
     }
   }
-  if (existsSync53(record.worktree)) {
+  if (existsSync54(record.worktree)) {
     return refuse(failure2(`crew rm: ${shown} is still there, and git does not list it as a worktree`, "Fix: remove that folder yourself, then run crew rm again; crew rm never deletes what git does not know"), ctx);
   }
   const branchLeft = () => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS2).ok;
@@ -34768,7 +34905,7 @@ import { closeSync as closeSync8, mkdirSync as mkdirSync23, openSync as openSync
 import { dirname as dirname23, join as join66 } from "path";
 
 // src/cli/usage.ts
-import { existsSync as existsSync54, readdirSync as readdirSync21, readFileSync as readFileSync62, statSync as statSync20 } from "fs";
+import { existsSync as existsSync55, readdirSync as readdirSync21, readFileSync as readFileSync62, statSync as statSync20 } from "fs";
 import { basename as basename12, join as join65, resolve as resolve12 } from "path";
 function entries(path) {
   try {
@@ -37883,7 +38020,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync55, readFileSync as readFileSync66, statSync as statSync22 } from "fs";
+import { existsSync as existsSync56, readFileSync as readFileSync66, statSync as statSync22 } from "fs";
 import { extname, join as join68, resolve as resolve13, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -37950,7 +38087,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve13(folder);
-  if (!existsSync55(join68(absolute, "index.html")))
+  if (!existsSync56(join68(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }

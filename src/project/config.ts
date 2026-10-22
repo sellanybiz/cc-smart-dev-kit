@@ -112,8 +112,8 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
       /**
        * A branch-name prefix (ending in "/") to the base that branch family's pull requests
        * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go
-       * into `base`. The longest prefix that matches wins. Auto-merge and the after-merge
-       * note read it.
+       * into `base`. The longest prefix that matches wins (`baseForBranch`). The merge guard's
+       * opening check, auto-merge and the after-merge note read it.
        */
       bases: z
         .record(z.string(), z.string().min(1))
@@ -168,6 +168,25 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
 });
 
 export type CcSmartDevKitConfig = z.infer<typeof ccSmartDevKitConfigSchema>;
+
+/**
+ * The base a branch's pull request goes into: `worktrees.base`, or the longest
+ * `worktrees.bases` prefix that matches the branch's name. The one home of that rule (the
+ * schema's comment, `.claude/rules/cc-smart-dev-kit-json.md`): the merge guard's opening check
+ * and the after-merge note name the same base.
+ */
+export function baseForBranch(
+  worktrees: NonNullable<CcSmartDevKitConfig["worktrees"]>,
+  branch: string,
+): string {
+  let match: string | null = null;
+  for (const prefix of Object.keys(worktrees.bases ?? {})) {
+    if (branch.startsWith(prefix) && (match === null || prefix.length > match.length)) {
+      match = prefix;
+    }
+  }
+  return match === null ? worktrees.base : (worktrees.bases?.[match] ?? worktrees.base);
+}
 
 /** A cc-smart-dev-kit.json that exists but cannot be used. The message names the file and the field. */
 export class CcSmartDevKitConfigError extends Error {

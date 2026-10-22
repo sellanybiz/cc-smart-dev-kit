@@ -14,15 +14,20 @@
  *
  * WHAT IT DOES
  *   1. Reads the project's `worktrees.autoClean` again (false: stop).
- *   2. Takes the machine-wide lock (`holdCleanLock`). Busy: does nothing at all.
- *   3. A session-start run stops here when the last run was under an hour ago (decided again
+ *   2. Backs off when git's own lock files are held in the repo (`index.lock`, a ref lock — a
+ *      project's after-merge step may hold them): one line in the log, and the next trigger
+ *      runs. No sleep, no retry.
+ *   3. Takes the machine-wide lock (`holdCleanLock`). Busy: does nothing at all.
+ *   4. A session-start run stops here when the last run was under an hour ago (decided again
  *      under the lock, so sessions that start together clean once).
- *   4. Fetches `origin/<base>`, scans, cleans, and records what it removed and kept in the
+ *   5. Fetches `origin/<base>`, scans, cleans, and records what it removed and kept in the
  *      state folder (`auto-state.ts`) for the next attended session start to say once.
- *   5. Appends one line to the log. An error is that line too; the run never throws.
+ *   6. Appends one line to the log. An error is that line too; the run never throws.
  *
  * It runs in `src/entries/worktrees-clean.ts`, started with the repo's main checkout.
  */
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
@@ -66,10 +71,46 @@ export type AutoCleanStatus =
   | "cleaned"
   /** It stopped with an error, which is in the log. */
   | "failed"
+  /** Git is writing in the repo right now (a project's own merge step): skipped this round. */
+  | "git-busy"
   /** The project turned it off: `worktrees.autoClean` is `false`. */
   | "off"
   /** A session-start run within the hour of the last one. */
   | "recent";
+
+/** The files git itself leaves while it writes: index and ref locks. */
+const GIT_LOCKS = ["index.lock", "HEAD.lock", "packed-refs.lock"] as const;
+
+/** A `*.lock` file under `dir` (a ref lock), at any depth, or null. */
+function refLockUnder(dir: string, depth = 0): string | null {
+  if (depth > 8) return null;
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const found = refLockUnder(join(dir, entry.name), depth + 1);
+        if (found !== null) return found;
+      } else if (entry.name.endsWith(".lock")) {
+        return entry.name;
+      }
+    }
+  } catch {
+    // No such folder (a repo with no refs yet), or one this cannot read: no lock seen.
+  }
+  return null;
+}
+
+/**
+ * The git lock a repo holds right now, or null: `index.lock`, `HEAD.lock`,
+ * `packed-refs.lock`, or a ref lock under `refs/`. A project's own after-merge step (a fetch,
+ * a fast-forward, an install) holds these for a moment; the clean must not run git beside it.
+ * Read-only: a file's presence is checked with no git call, so no lock is taken.
+ */
+export function gitLockHeld(gitDir: string): string | null {
+  for (const name of GIT_LOCKS) {
+    if (existsSync(join(gitDir, name))) return name;
+  }
+  return refLockUnder(join(gitDir, "refs"));
+}
 
 /** The running sessions, and the one that started this clean when it has no record yet. */
 function sessionsToKeep(deps: AutoCleanDeps, claudeConfigDir: string): SessionRecord[] {
@@ -142,6 +183,15 @@ export async function runAutoClean(
     if (!samePath(main, repo)) {
       log(`${repo} (${trigger}): not the main checkout (${main}); nothing done`);
       return "failed";
+    }
+    // WA1: a project may run its own after-merge step in the main checkout (a fetch, a
+    // fast-forward, an install), and it holds git's own lock files while it does. Back off:
+    // skip this round with one line, and run at the next trigger — never sleep or retry here.
+    // The hourly mark is not written, so the next session start is free to run.
+    const held = gitLockHeld(checkout.commonDir);
+    if (held !== null) {
+      log(`${main} (${trigger}): git is writing here (${held}); skipped this round`);
+      return "git-busy";
     }
     const { base } = baseBranch(checkout, env, main);
 

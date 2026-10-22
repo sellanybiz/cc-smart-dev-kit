@@ -55,8 +55,13 @@
  * merges (`-R`, aliases, a `gh api` POST to the pulls endpoint, the GraphQL `createPullRequest`
  * and `markPullRequestReadyForReview`): `openPr` off asks before any of them, `draft` asks for
  * one that opens ready (no `--draft`) and for every `gh pr ready`, `ready` is silent. The
- * policy is read as a merge's is (`resolveGate`, below). **And a crew session opens no pull
- * request at all** (D24): `gh pr create` pushes the branch, so it is denied, whatever `openPr`
+ * policy is read as a merge's is (`resolveGate`, below). **A pull request opened outside the
+ * base its head branch belongs to also asks, never denies** (WA1): a `gh pr create` whose
+ * `--base` is not the project's base for that branch — `worktrees.base`, or the
+ * `worktrees.bases` prefix mapping for the head branch — and one with no `--base` when the
+ * repository's default branch is not that base (read with `gh repo view`, then git's
+ * `origin/HEAD`). The question names both branches; the person may mean it. **And a crew
+ * session opens no pull request at all** (D24): `gh pr create` pushes the branch, so it is denied, whatever `openPr`
  * says (`CC_SMART_DEV_KIT_CREW` is set in a crew session's environment). That refusal is the
  * guard's **crew part** (`crewPrAnswer`, `HookSpec.crewLimits`): the frame runs it before
  * `ownHooks` and before the project's file, so no project — one with no file, or one whose
@@ -84,12 +89,14 @@
  */
 
 import { crewIdOf } from "../crew/session";
-import type { CcSmartDevKitConfig } from "../project/config";
+import { baseForBranch, type CcSmartDevKitConfig } from "../project/config";
 import type { Project } from "../project/resolve";
 import { dialectOfTool } from "../shell/command";
 import { autoMergeOff } from "../workflow/auto-merge";
 import {
   checkPullRequest,
+  defaultBranchOf,
+  GH_TIMEOUT_MS,
   type MergeVerdict,
   type MergeWorld,
   notByItself,
@@ -172,6 +179,30 @@ export function notOpenedByItself(opening: MergeCall, reason: string): string {
   const what =
     opening.opens === "ready" ? "marks a pull request ready for review" : "opens a pull request";
   return `cc-smart-dev-kit asks before this ${what}: ${reason}. Approve it yourself if you meant it.`;
+}
+
+/**
+ * Why a `gh pr create` asks when it would open outside the base its head branch belongs to
+ * (WA1): `worktrees.base`, or the `worktrees.bases` mapping for that branch. It names the
+ * branch it would open into, the head branch, and the base the project sends that branch to.
+ */
+export function opensElsewhere(into: string, head: string, expected: string): string {
+  return `the pull request would open into \`${into}\`, but this project sends a \`${head}\` branch into \`${expected}\` (worktrees.base, or worktrees.bases for that branch)`;
+}
+
+/** Why a `gh pr create` with no `--base` cannot be judged: gh could not say the default branch. */
+export const OPENING_DEFAULT_UNREAD =
+  "gh could not read this repository's default branch, so this guard cannot tell which branch this pull request opens into";
+
+/** Why a `gh pr create` with no `--base` cannot be judged: reading the default branch ran late. */
+export const OPENING_DEFAULT_LATE =
+  "reading this repository's default branch would have taken longer than the guard's own budget allows";
+
+/** The branch of a `--head` value: `owner:branch` names a fork's branch, and `branch` itself. */
+function headBranchOf(head: string | null): string | null {
+  if (head === null) return null;
+  const branch = head.slice(head.lastIndexOf(":") + 1);
+  return branch === "" ? null : branch;
 }
 
 /**
@@ -277,6 +308,61 @@ export function mergeGuard(context: HookContext): HookResult {
     const read = resolveGate(paths, project, branch, { env, timeoutMs: left });
     gates.set(branch, read);
     return read;
+  };
+
+  // WA1: a `gh pr create` with no `--head` comes from the branch this folder is on, read once.
+  let branchHere: string | null | undefined;
+  const currentBranch = (): string | null => {
+    if (branchHere !== undefined) return branchHere;
+    const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+    if (left <= 0) {
+      branchHere = null;
+      return null;
+    }
+    const read = runGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], env, left);
+    branchHere = read.ok && read.out !== "" ? read.out : null;
+    return branchHere;
+  };
+
+  // WA1: the repository's default branch for an opening with no `--base`, read once per
+  // repository — `gh repo view` first (the guard's own way to read a repo fact), then the
+  // `origin/HEAD` git already has. Late and unread are their own answers: both ask.
+  const openingDefaults = new Map<string, string | null>();
+  const defaultBranchHere = (repo: string | null): string | null | "late" | "unread" => {
+    const key = repo ?? "";
+    if (openingDefaults.has(key)) return openingDefaults.get(key) ?? null;
+    const left = timeFor(GH_TIMEOUT_MS);
+    if (left <= 0) return "late";
+    let branch = defaultBranchOf(cwd, env, repo, left);
+    if (branch === null) {
+      const gitLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
+      if (gitLeft <= 0) return "late";
+      const origin = runGit(cwd, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env, gitLeft);
+      const name = origin.ok ? origin.out.replace(/^origin\//, "") : "";
+      branch = name === "" ? null : name;
+    }
+    if (branch === null) return "unread";
+    openingDefaults.set(key, branch);
+    return branch;
+  };
+
+  /**
+   * Why a `gh pr create` opens outside the base its head branch belongs to, or null:
+   * `worktrees.base`, or the `worktrees.bases` mapping for that branch. With no `--base` the
+   * pull request opens into the repository's default branch.
+   */
+  const opensOutsideBase = (
+    opening: MergeCall,
+    worktrees: CcSmartDevKitConfig["worktrees"] | undefined,
+  ): string | null | "late" | "unread" => {
+    if (opening.opens !== "create" || opening.cli !== true || worktrees === undefined) return null;
+    const head = headBranchOf(opening.head ?? null) ?? currentBranch();
+    if (head === null) return null;
+    const expected = baseForBranch(worktrees, head);
+    const into = opening.base ?? defaultBranchHere(opening.target?.repo ?? null);
+    if (into === "late" || into === "unread") return into;
+    if (into === null) return null;
+    return into === expected ? null : opensElsewhere(into, head, expected);
   };
 
   // Every merge and every opening the command runs, in order, its aliases read when a `gh
@@ -408,6 +494,16 @@ export function mergeGuard(context: HookContext): HookResult {
       kind: opening.opens ?? "create",
     });
     if (why !== null) return toolDecision("ask", notOpenedByItself(opening, why));
+    // WA1: a `gh pr create` outside the base its head branch belongs to asks, never denies:
+    // the person may mean it.
+    const outside = opensOutsideBase(opening, read.gate.config?.worktrees);
+    if (outside === "late") {
+      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
+    }
+    if (outside === "unread") {
+      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
+    }
+    if (outside !== null) return toolDecision("ask", notOpenedByItself(opening, outside));
   }
   // D31: an exact `gh pr merge <n>` the whole policy allowed skips auto mode's "Merge Without
   // Review" rule for the call. Any other passing line stays silent, as before. A crew session

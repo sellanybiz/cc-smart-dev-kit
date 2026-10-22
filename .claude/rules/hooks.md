@@ -452,7 +452,8 @@ a command must never report success when it did not run.
   command, an alias, an unknown flag, an armed `--auto` merge — stays silent (so auto mode
   still applies), an unknown `gh pr merge` flag asks, and a crew session never gets it.
   The judgment itself is `src/workflow/merge-check.ts`, shared with `workflow merge-check`.
-- A guard asks rather than denies when the person may mean it (a force-push); it denies
+- A guard asks rather than denies when the person may mean it (a force-push, a pull request
+  opening outside the project's base); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
   to another project's session, a crew session's push, pull request or raw message to its
   lead — D24, D47: the lead merges locally and hears its crew through `crew report`).
@@ -473,7 +474,11 @@ a command must never report success when it did not run.
   judges nothing and removes nothing; the clean takes the machine-wide lock, and **its errors
   go to its own log** (`<stateDir>/worktrees-auto-clean.log`), never to the hook's answer. A
   hook test hands in a recorder (`recordingStarter`, `src/testing/hooks.ts`), so no process
-  runs there. `worktrees.autoClean: false` starts neither.
+  runs there. `worktrees.autoClean: false` starts neither. The clean **backs off when git's
+  own lock files are held in the repo** (`index.lock`, `HEAD.lock`, `packed-refs.lock`, a ref
+  lock; a project's own after-merge step may hold them): it skips this round with one line in
+  its log and writes no hourly mark, so the next trigger runs — no sleep, no retry until
+  success (`gitLockHeld`, `src/worktrees/auto-clean.ts`).
 
 ## Session start never changes anything that matters
 
@@ -493,7 +498,11 @@ never runs in `claude -p`, never on a `clear` or a `compact`, and its lines go t
 The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the Fable-session note
 (`fable-session`, machine-wide), the crew session's role card (`crew-role`, machine-wide), the
 lead's notes (`lead-notes`, machine-wide), the portal's start (D10) and the
-background self-update (`src/update/`, the owner's decision of 2026-10-15). `update-check`
+background self-update (`src/update/`, the owner's decision of 2026-10-15). The leftovers note
+also adds at most one short line about the **main checkout** at an attended start — on another
+branch than `worktrees.base`, behind `origin/<base>` as git already knows it, or in the middle
+of a merge, a rebase or a cherry-pick — read-only and with no fetch (`mainFolderNotes`,
+`src/hooks/worktree-leftovers.ts`). `update-check`
 also brings the managed instructions copy up to this version when it is behind
 (`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the
 `CLAUDE.md` block, never a question, one stderr line on failure.
