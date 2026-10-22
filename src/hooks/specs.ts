@@ -20,7 +20,7 @@
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card and the folder check at a start, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
+ * | crew-role | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card and the folder check at a start, the person's own prompt recorded and answered, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
  * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once (`lead-notes.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
@@ -348,7 +348,8 @@ export const sessionNameHook: HookSpec = {
  * with the session's own `cwd` checked against its worktree — a `starting` record becomes `working`
  * inside it, and an open one is `failed` with the reason outside it (H101; `updateCrewIfState`
  * reads the state again under the store's lock);
- * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); the last line recorded at
+ * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); the person's own prompt
+ * recorded as one `person` event with one line of context (D55); the last line recorded at
  * a stop, and one block when the turn ended on a step with no report; the crew session marked
  * `paused` when a model limit ended its turn (D42). **Machine-wide**: it is silent
  * unless `CC_SMART_DEV_KIT_CREW` names a crew session, and its answer never depends on the project's
@@ -361,7 +362,7 @@ export const sessionNameHook: HookSpec = {
  */
 export const crewRoleHook: HookSpec = {
   name: "crew-role",
-  events: ["SessionStart", "PreToolUse", "Stop", "StopFailure"],
+  events: ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "StopFailure"],
   onConfigProblem: (_message, input, event, checkout, context) =>
     crewRoleAnswer(
       input,

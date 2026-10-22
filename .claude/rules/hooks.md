@@ -188,8 +188,8 @@ Some hooks answer about the machine, not a project: `agent-guard` (the model a l
 on), `job-route` (the shell judge, on Bash and PowerShell: a raw `--bg` launch, a `-p` run's
 model and effort, a crew session's `crew start`, a polling loop), `fable-session` (the model the
 session itself runs on),
-`crew-role` (a crew session's own card, ask and report), `lead-notes` (a lead's missed crew
-news) and `notify` (the alerts).
+`crew-role` (a crew session's own card, the person's own prompt, the ask and the report),
+`lead-notes` (a lead's missed crew news) and `notify` (the alerts).
 `playwright-output` is machine-wide too — it puts a file the
 CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),

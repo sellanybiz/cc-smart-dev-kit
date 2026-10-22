@@ -108,9 +108,18 @@ export function isKnownState(state: string): state is CrewState {
 /**
  * What one line of the events log says happened: `question` is a crew session asking its lead
  * (D36); `tell` is a crew session telling other crew sessions a contract change or a contract
- * question (D47), kept so the lead sees it.
+ * question (D47), kept so the lead sees it; `person` is the person typing into a crew session
+ * (D55) — their word wins over the brief, and the lead reads the next report against it.
  */
-export const CREW_EVENT_TYPES = ["created", "state", "step", "report", "question", "tell"] as const;
+export const CREW_EVENT_TYPES = [
+  "created",
+  "state",
+  "step",
+  "report",
+  "question",
+  "tell",
+  "person",
+] as const;
 export type CrewEventType = (typeof CREW_EVENT_TYPES)[number];
 
 /** How a crew session's hand-back ends. */

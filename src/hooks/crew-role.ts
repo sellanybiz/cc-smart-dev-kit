@@ -18,6 +18,17 @@
  *   the person. The answer is a **deny**, not an ask: the fix is mechanical, and asking the person
  *   here would be the very thing the hook prevents. **No store read**, so the answer is the same
  *   when the project's file is broken or too new, and outside git.
+ * - **UserPromptSubmit (D55)**: the person typed into the crew session. Their word wins over the
+ *   brief, so the lead has to hear it: one `person` event (the first line, masked and clipped)
+ *   and one short line of context telling the session whose word it is. Only the person's own
+ *   prompt counts — Claude Code runs this hook for every turn a session gets, and the input says
+ *   nothing about where a prompt came from (proved live on 2.1.309, only `prompt`),
+ *   so the prompt's own shape decides: a `SendMessage` delivery carries
+ *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, and the two
+ *   prompts a lead's own transport gives a crew session bare — `crew answer`'s resume of a
+ *   stopped session and the watch's `resumeText` of a paused one — are recognised from the
+ *   store. A prompt the hook cannot place is recorded as nothing: a false "the person wrote"
+ *   is worse than none. Never a block, never a question: the person's prompt always goes on.
  * - **Stop**: records the session's last line on its record (masked and clipped: a record is read
  *   by a person and by the lead) and **never gives context** — a Stop hook's `additionalContext`
  *   keeps the turn going and starves hand-backs (L1a.1). When the newest `step` or `report` event
@@ -43,6 +54,7 @@ import { REPORT_COMMAND } from "../crew/brief";
 import { RUNNING_STATES } from "../crew/places";
 import { crewIdOf } from "../crew/session";
 import {
+  appendCrewEvent,
   type CrewRecord,
   crewBriefFile,
   readCrew,
@@ -68,7 +80,7 @@ import type { Env } from "./run";
 /** The two tools a crew session never calls: each one asks the person (D36). */
 export const CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
 
-/** The longest piece of the session's last line its record keeps. */
+/** The longest piece of a line a record keeps: the session's last line, the person's first line. */
 export const LAST_LINE_MAX = 120;
 
 /** The reason of a Stop answer that reports nothing, and of the stop's one block. */
@@ -84,6 +96,80 @@ export function questionStep(): string {
 /** The line a crew session tells another crew session a contract change or question (C1). */
 export function tellStep(): string {
   return `${COMMAND} crew tell <name…> --kind contract|question "<text>"`;
+}
+
+/**
+ * The wrappers Claude Code puts around a turn that is not the person's own words. Proved live on
+ * 2.1.309 (`docs/claude-code-contract.md`): the hook input carries no field that says where a
+ * prompt came from, so these first characters are the one signal there is.
+ *
+ * - `<cross-session-message from=… from-name=… from-mode=…>`: another session's message, sent
+ *   with `SendMessage` — a lead's note, `crew answer` to a running crew session, a peer's
+ *   `crew tell`.
+ * - `<task-notification>`: a monitor's line (the `crew-self` monitor), and any background task's
+ *   event.
+ */
+export const NOT_PERSON_PREFIXES = ["<cross-session-message", "<task-notification"] as const;
+
+/**
+ * The frame `resumeText` (`src/crew/wait.ts`) builds the prompt the watch resumes a paused crew
+ * session with. It arrives bare, as a typed prompt would, so it is recognised by that frame and
+ * the phase it names. `crew-role.test.ts` holds it to `resumeText`'s own output, so the two
+ * cannot drift apart.
+ */
+const RESUME_START = "The wait is over: ";
+const RESUME_PHASE = ". Go on with phase ";
+const RESUME_END = ", then hand it back as usual.";
+
+/** How soon after its answer the prompt `crew answer` resumed a stopped crew session with still carries it. */
+export const ANSWER_RESUME_MS = 60_000;
+
+/**
+ * True when `prompt` is the person's own words. Every other turn a crew session gets is its
+ * lead's: a `SendMessage` delivery or a monitor's line (the wrappers), `crew answer`'s resume of
+ * a stopped crew session (the answer the store recorded — or a record still `stopped`, while
+ * the answer is written behind the resume), and the watch's resume of a paused one (the frame
+ * above). A prompt none of those explain is the person's. A prompt the hook cannot place this
+ * way is never recorded: a false "the person wrote" is worse than none.
+ */
+export function isPersonPrompt(record: CrewRecord, prompt: string, nowMs: number): boolean {
+  if (NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix))) return false;
+  // A stopped crew session has no process to type into: this prompt is the answer's resume,
+  // whether the store has written the answer yet or is about to.
+  if (record.state === "stopped") return false;
+  if (isWaitOverResume(record, prompt)) return false;
+  return !isAnswerResume(record, prompt, nowMs);
+}
+
+/** True when `prompt` is the answer `crew answer` resumed this crew session with, just recorded. */
+function isAnswerResume(record: CrewRecord, prompt: string, nowMs: number): boolean {
+  return record.questions.some((asked) => {
+    if (asked.answer !== prompt || asked.answeredAt === null) return false;
+    const at = Date.parse(asked.answeredAt);
+    return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
+  });
+}
+
+/** True when `prompt` is the line the watch resumes a paused crew session with (`resumeText`). */
+function isWaitOverResume(record: CrewRecord, prompt: string): boolean {
+  return (
+    prompt.startsWith(RESUME_START) &&
+    prompt.endsWith(RESUME_END) &&
+    prompt.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`)
+  );
+}
+
+/**
+ * The person's words as the store and the lead's watch keep them: the first line only, masked
+ * and clipped by the same reader as the session's last line.
+ */
+export function personLine(prompt: string): string {
+  return maskedLine(prompt.split("\n", 1)[0] ?? "", [], LAST_LINE_MAX, { mark: "…" });
+}
+
+/** The one line a crew session gets when the person typed to it (D55): whose word it is, and what to do. */
+export function personWroteLine(): string {
+  return "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.";
 }
 
 /** The card a crew session starts (or resumes) with: who it is, and the lines it needs. */
@@ -281,11 +367,52 @@ async function stopAnswer(
 }
 
 /**
+ * UserPromptSubmit: the person typed into the crew session (D55). One `person` event, so the
+ * lead's watch says it and the lead reads the next report against it, and one line of context
+ * telling the session whose word it is. Never a block and never a question: the prompt goes on
+ * whatever the store does. A store that cannot record is one line, and the prompt still reaches
+ * the session — only the lead's line is missing.
+ */
+async function personPromptAnswer(
+  input: HookInput,
+  id: string,
+  repo: string,
+  paths: CliPaths,
+  options: CrewRoleOptions,
+): Promise<HookResult> {
+  const prompt = stringField(input.prompt);
+  if (prompt === null) return SILENT;
+  const found = recordOf(id, repo, paths);
+  if (!found.ok) return found.result;
+  const record = found.record;
+  const nowMs = options.nowMs ?? Date.now();
+  if (!isPersonPrompt(record, prompt, nowMs)) return SILENT;
+  try {
+    await appendCrewEvent(
+      paths.stateDir,
+      repo,
+      {
+        crew: record.id,
+        lead: record.leadSessionId,
+        name: record.name,
+        state: record.state,
+        text: personLine(prompt),
+        type: "person",
+      },
+      nowMs,
+    );
+  } catch (error) {
+    return storeProblem(reasonOf(error));
+  }
+  return addContext("UserPromptSubmit", personWroteLine());
+}
+
+/**
  * Every answer of the hook, for every event it is wired for. `repo` is null outside a git checkout
- * (the PreToolUse answer needs none; a card, a stop and a pause need the store, so they stay
- * silent there). Async because the Stop and StopFailure answers write the record:
- * `onConfigProblem` and `outsideGit` call it too, so a broken or too new project file never
- * changes an answer.
+ * (the PreToolUse answer needs none; a card, a stop, a pause and the person's prompt need the
+ * store, so they stay silent there). Async because the Stop, the StopFailure and the
+ * UserPromptSubmit answers write the store: `onConfigProblem` and `outsideGit` call it too, so a
+ * broken or too new project file never changes an answer.
  */
 export async function crewRoleAnswer(
   input: HookInput,
@@ -305,6 +432,8 @@ export async function crewRoleAnswer(
   }
   if (repo === null) return SILENT;
   if (event === "SessionStart") return await startCard(input, id, repo, paths, options);
+  if (event === "UserPromptSubmit")
+    return await personPromptAnswer(input, id, repo, paths, options);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, options);
   return SILENT;

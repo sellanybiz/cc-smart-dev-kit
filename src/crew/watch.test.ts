@@ -157,6 +157,29 @@ describe("crew watch", () => {
     expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
   });
 
+  test("D55: the person's line says whose word it was, and what the lead does with it", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "stop after the guard, I only need the config change",
+        type: "person",
+      },
+      T0,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: the person wrote · stop after the guard, I only need the config change · read its next report against the brief before the merge",
+    ]);
+  });
+
   test("D25: --once twice prints nothing the second time", async () => {
     const world = await leadWorld();
     await addCrew(world, "working");

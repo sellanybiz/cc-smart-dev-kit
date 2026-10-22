@@ -81,7 +81,9 @@ hook blocks it once with the report line — report, then end the turn.
 **Never ask the person:** no `AskUserQuestion`, no `ExitPlanMode`. The `crew-role` hook refuses
 both with the `crew report --question` line below, so it is not a suggestion. The brief, the plan
 and the code settle most questions, and a technical detail inside your phase is yours to decide —
-decide it, and say so in the report.
+decide it, and say so in the report. **A message the person types into this session is theirs to
+give:** it wins over the brief, and if it changes the phase's scope or files, your report says
+what changed.
 
 A decision you cannot make goes to the lead:
 
