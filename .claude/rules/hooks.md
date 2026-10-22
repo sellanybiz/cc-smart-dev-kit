@@ -343,7 +343,10 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
   its own limit and the time left, and when too little is left for the next call the guard
   asks instead of overrunning — a PreToolUse hook Claude Code has to kill blocks nothing, so
   an overrun would be fail-open. Every git call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s)
-  or less, against the hook's own 10 s. **`after-merge` shares one budget the same way**
+  or less, against the hook's own 10 s. The merge guard's review check adds a few git calls
+  (`merge-tree`, `diff --numstat`, `check-attr`, `rev-parse` in `review-cover.ts`), each with
+  the same limit and from the same budget: when the measurement does not fit, the guard asks
+  with that reason instead of overrunning. **`after-merge` shares one budget the same way**
   (`src/hooks/budget.ts`, 25 s of its 30 s), so its children (the alias list, the worktree
   list, `gh pr view`, the origin) cannot add up past the hook; a note that would not fit is
   skipped whole. A hook that starts a child with the time left gives it no call at zero or
@@ -380,6 +383,14 @@ a command must never report success when it did not run.
   through `maskedLine`), kept small by the same rule as `update.log`. A write that fails is one
   stderr line and never changes the answer.
 - A guard decides with a PreToolUse answer (`ask` or `deny`), never exit code 2.
+- **Only the merge guard answers `allow`, and only for D31's exact form:** a command line that
+  is nothing but `gh pr merge <n>` with flags gh 2.102.0 has, when the whole policy passed
+  (`autoMerge` on, the base plain, the checks green, a review covering the fixes after it). An
+  `allow` skips auto mode's own "Merge Without Review" rule for that call (proved live, L1a.5),
+  so the guard's checks are what protect it; every other passing form — a wrapper, a second
+  command, an alias, an unknown flag, an armed `--auto` merge — stays silent (so auto mode
+  still applies), an unknown `gh pr merge` flag asks, and a crew session never gets it.
+  The judgment itself is `src/workflow/merge-check.ts`, shared with `workflow merge-check`.
 - A guard asks rather than denies when the person may mean it (a force-push); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
   to another project's session, a crew session's push or pull request — D24: the lead

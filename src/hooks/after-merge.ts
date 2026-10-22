@@ -46,6 +46,7 @@ import {
   nestedDialect,
   programName,
   readingsOf,
+  redirectionTargets,
   shellSteps,
   shortFlags,
   withoutRedirections,
@@ -137,6 +138,12 @@ export interface MergeCall {
   /** The word after `gh` that names no gh command: an alias to look up, or an extension. */
   unknown: string | null;
   /**
+   * A flag on the merge's own words that this guard does not know (`--frobnicate`), or null.
+   * Only gh 2.102.0's own flags are read (`MERGE_FLAGS`); a newer one may change what merges,
+   * so the call asks, and it is never the exact known-flag form D31 may allow.
+   */
+  unknownFlag: string | null;
+  /**
    * Not a merge but a pull request opened (`gh pr create`) or made ready (`gh pr ready`): what
    * the project's `openPr` setting governs (D16). Absent on a merge. `pullRequestMerges` and
    * `mergeCalls` never return such a call; `pullRequestOpenings` and `openingCalls` return
@@ -176,6 +183,7 @@ function call(fields: Partial<MergeCall> = {}): MergeCall {
     disarms: false,
     admin: false,
     unknown: null,
+    unknownFlag: null,
     ...fields,
   };
 }
@@ -674,13 +682,20 @@ function prCalls(rest: string[], moved: string | null, carried: string | null): 
   if (sub !== "merge") return [];
   if (args.some((arg) => arg === "-h" || arg === "--help")) return [];
   const named = mergeArguments(args);
+  const refusal =
+    moved !== null
+      ? say(moved, false)
+      : named.unknown === null
+        ? null
+        : `the merge carries \`${named.unknown}\`, a flag this guard does not know, so it cannot tell what it does`;
   return [
     call({
       target: { ref: named.ref, repo: repo ?? named.repo ?? carried },
-      refusal: moved === null ? null : say(moved, false),
+      refusal,
       arms: args.some(isAutoFlag),
       disarms: args.some(isDisableAutoFlag),
       admin: named.admin,
+      unknownFlag: named.unknown,
     }),
   ];
 }
@@ -773,19 +788,46 @@ const MERGE_FLAGS_WITH_VALUE = new Set([
 const MERGE_SHORT_WITH_VALUE = "AbtFR";
 
 /**
+ * The `gh pr merge` flags this guard knows (gh 2.102.0, `gh pr merge --help` read live). A
+ * flag that is not one of these — a newer gh's, a typo — may change what the merge does, so
+ * the call asks, and it is never the exact form D31 allows.
+ */
+const MERGE_FLAGS: ReadonlySet<string> = new Set([
+  "--admin",
+  "--author-email",
+  "--auto",
+  "--body",
+  "--body-file",
+  "--delete-branch",
+  "--disable-auto",
+  "--match-head-commit",
+  "--merge",
+  "--rebase",
+  "--squash",
+  "--subject",
+  "--repo",
+]);
+
+/** Those flags' short letters (`-A`, `-b`, `-F`, `-d`, `-m`, `-r`, `-s`, `-t`, `-R`). */
+const MERGE_LETTERS = "AbFdmrstR";
+
+/**
  * What a `gh pr merge`'s own words say, read the way gh reads them: `ref` null when they name
  * no pull request (the current branch's), else the number, URL or branch; `repo` the
- * `--repo` / `-R`; `admin` an `--admin` flag, with or without a value. A flag's value is
- * never read as a flag (`--subject --admin` is a subject), and nothing after `--` is a flag.
+ * `--repo` / `-R`; `admin` an `--admin` flag, with or without a value; `unknown` the first
+ * flag this guard does not know. A flag's value is never read as a flag (`--subject --admin`
+ * is a subject), and nothing after `--` is a flag.
  */
 function mergeArguments(words: string[]): {
   ref: string | null;
   repo: string | null;
   admin: boolean;
+  unknown: string | null;
 } {
   let ref: string | null = null;
   let repo: string | null = null;
   let admin = false;
+  let unknown: string | null = null;
   for (let index = 0; index < words.length; index++) {
     const word = words[index] ?? "";
     if (word === "--") {
@@ -796,6 +838,7 @@ function mergeArguments(words: string[]): {
       const at = word.indexOf("=");
       const name = at === -1 ? word : word.slice(0, at);
       const value = at === -1 ? undefined : word.slice(at + 1);
+      if (!MERGE_FLAGS.has(name)) unknown ??= name;
       if (name === "--repo") repo = value ?? words[index + 1] ?? null;
       if (name === "--admin") admin = true;
       // A flag that takes a value, written without `=`: the next word is its value, never the
@@ -805,6 +848,9 @@ function mergeArguments(words: string[]): {
     }
     if (isShort(word)) {
       const { flags, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
+      for (const letter of flags) {
+        if (!MERGE_LETTERS.includes(letter)) unknown ??= `-${letter}`;
+      }
       const letter = flags.slice(-1);
       if (letter !== "" && MERGE_SHORT_WITH_VALUE.includes(letter)) {
         const value = wantsNext ? (words[index + 1] ?? null) : word.slice(flags.length + 1);
@@ -815,7 +861,7 @@ function mergeArguments(words: string[]): {
     }
     ref ??= word || null;
   }
-  return { ref, repo, admin };
+  return { ref, repo, admin, unknown };
 }
 
 /** `gh api` flags that take a value (gh 2.102.0, `gh api --help`): `=value`, or the next word. */
@@ -1167,6 +1213,43 @@ export function requestsMerge(command: string, dialect?: Dialect): boolean {
  */
 export function requestsPullRequestChange(command: string, dialect?: Dialect): boolean {
   return pullRequestCalls(command, null, dialect).some((one) => !one.disarms);
+}
+
+/**
+ * The one merge a line is, when the WHOLE line is exactly `gh pr merge <n>` with flags this
+ * guard knows (D31). Only that form may the merge guard answer `allow` for: an `allow` skips
+ * auto mode's own "Merge Without Review" rule for the whole tool call (proved live, L1a.5),
+ * and any other work on the line — a second command, a pipe, a wrapper or an assignment
+ * before gh (`timeout 60 gh pr merge 7`), an alias, a `bash -c` — would skip that rule for
+ * work the guard never judged. A redirection that writes a file, or a pull request named by a
+ * branch or a URL rather than a number, is no exact merge either. So is an armed merge
+ * (`--auto`): it lands later, once the checks pass, with nobody watching, so a commit pushed
+ * after this check would merge unread — it stays silent, and auto mode's rule still applies.
+ *
+ * Null when the line is anything else. Read with the one shell reader, in the tool's dialect;
+ * an unknown dialect (both readings) is never exact.
+ */
+export function exactMergeOf(command: string, dialect?: Dialect): MergeCall | null {
+  const readings = readingsOf(command, dialect);
+  if (readings.length !== 1) return null;
+  const reading = readings[0];
+  if (reading === undefined) return null;
+  const steps = shellSteps(command, { dialect: reading.dialect, joinLines: reading.joinLines });
+  const step = steps[0];
+  if (steps.length !== 1 || step === undefined || step.pipedFrom !== null) return null;
+  const words = wordsOf(step.text, reading.dialect);
+  if (redirectionTargets(words).length > 0) return null;
+  const invocation = invocationOf(words);
+  if (invocation === undefined || invocation.program !== "gh") return null;
+  // An assignment or a wrapper before gh (`env`, `sudo`, `timeout`) runs more than the merge.
+  if (invocation.prefix.length > 0) return null;
+  const calls = pullRequestCalls(step.text, null, reading.dialect);
+  const one = calls[0];
+  if (calls.length !== 1 || one === undefined || !isMerge(one)) return null;
+  if (one.refusal !== null || one.unread !== null || one.unknown !== null) return null;
+  if (one.unknownFlag !== null || one.admin || one.disarms || one.arms) return null;
+  const ref = one.target?.ref ?? null;
+  return ref !== null && /^\d+$/.test(ref) ? one : null;
 }
 
 /**

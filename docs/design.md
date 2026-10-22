@@ -1976,7 +1976,7 @@ place (`auto-merge.ts`).
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:reviewer` by default). |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
-| `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source, and written by `workflow set`; the merge guard judges with them once its call site moves onto `readCover` (D17b). |
+| `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
 | `crew.enabled`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, the two caps (D37) and the free memory a start is queued by, and the tag in the names. |
 | the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts (the watch, the crew session's own hooks) will read them. |
 
@@ -1988,7 +1988,29 @@ says yes for the pull request's base; the merge names **this project's own repos
 git — the policy is about the repository the work is in, so another one always asks); every
 required check `gh pr checks --required --json name,bucket` reports is green (a `skipping` check
 counts as passed, which is GitHub's own rule for a merge); and — with `reviewBeforePush` on —
-the head commit from `gh pr view` has a recorded review that counts.
+the head from `gh pr view` is covered by a review (D17, § The review record).
+
+**The judgment is one home**, `src/workflow/merge-check.ts`: `checkPullRequest` reads those
+facts and decides, `checkBranch` does the same for a local branch against a base (the review gate
+only: a local merge has no pull request's checks or `autoMerge`), and
+`cc-smart-dev-kit workflow merge-check [<pr>… | --branch <b> --base <base>]` prints each verdict
+(`allowed`, or the reason it asks; exit 0 when every one is allowed, 1 when any asks) — the
+guard's own words, without making a merge. The hook keeps the rules about the command line: what
+is a merge, `--admin`, and another repository; it reads `ownHooks` from the integration base
+before any gh call, so a project that runs its own merge guard answers alone, and a crew session
+never opens a pull request (D24).
+
+**D31: the exact merge is answered `allow`.** Auto mode's built-in "Merge Without Review" rule
+blocks every merge no person approved; a hook's `allow` skips the classifier for that call
+(proved live, L1a.5). So `merge-guard` answers `allow`, with a short reason, only when the WHOLE
+line is exactly `gh pr merge <n>` with flags gh 2.102.0 has (`exactMergeOf` in `after-merge.ts`:
+one reading, one command, no wrapper or assignment before gh, no pipe, no writing redirection, no
+alias, a number rather than a branch or URL) and the whole policy above passed. Any other
+passing form — `timeout 60 gh pr merge 7`, `gh pr merge 5 && gh pr merge 6`, an alias, an
+unknown flag, an armed `--auto` merge (it lands later, so a commit pushed after the check would
+merge unread) — stays silent, so auto mode's own rule still applies to it; an unknown
+`gh pr merge` flag asks. **A crew session never gets `allow`** (D24: it never merges; the
+lead does), so silence is all it can get, and auto mode's rule still applies there.
 
 **It also governs opening a pull request** (D16, `openPr`): it reads `gh pr create`, `gh pr
 new` and `gh pr ready` — a `-R`, a `gh alias`, a `gh api` POST to the repository's pulls
@@ -2012,7 +2034,8 @@ and `autoMerge` on with `openPr: draft` (a draft is never merged). Each line say
 **The review gate is read as committed on the pull request's base**, never from a checkout's
 working copy. Every value the guard judges with — `autoMerge`, `reviewBeforePush`,
 `reviewAgents`, `fixesAfterReview.*` (the limits a fix after a review may reach and still count,
-D17, § The review record — read and shown with the gate; the guard judges with them from D17b), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
+D17, § The review record — read and shown with the gate, and the guard judges with them through
+`merge-check.ts`), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
 hands the merge to the project's own guard — comes from the built-in default, the person's
 `workflow.json`, and `.claude/cc-smart-dev-kit.json` as `git` holds it at `origin/<base>`
 (`resolveGate` in `src/workflow/resolve.ts`, over `readCommittedConfig` in
@@ -2101,8 +2124,13 @@ review of H itself covers H on any branch, as before. The one home is
 
 The limits come from this repo's own fix rounds: 10% of the reviewed change is covered, 105% and
 160% ask. A limit is a trade: up to 200 lines written after the review merge unread, which is the
-point of not paying a second review for a small fix. The merge guard still asks for a record of
-the exact head (`hasReview`) until its call site moves onto `readCover` (D17b).
+point of not paying a second review for a small fix. **The merge guard judges with this rule**
+(D17b): `checkPullRequest` in `src/workflow/merge-check.ts` reads the cover for the pull request's
+head on its head branch, and asks with the counts and the limit when the fixes are over it; a
+record of the exact head still covers at once, on any branch, with no git run.
+`cc-smart-dev-kit workflow merge-check --branch <branch> --base <base>` prints the same verdict
+for a local merge — the lead's hand-back gate (D22) — and `workflow show` prints the limits in
+force on one `gate fixesAfterReview in force:` line.
 
 **Every write holds the record's own lock** (`withLock` on the
 `reviews/` folder, a 3 s wait): two reviewers that finish at once both land. It is not the

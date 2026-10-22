@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -23,6 +24,7 @@ import { CREW_ENV } from "../crew/session";
 import {
   commitConfig,
   hookEnv,
+  makeClone,
   makeRepo,
   runHook,
   writeClaudeFile,
@@ -131,7 +133,7 @@ function answers(over: Record<string, string> = {}): Record<string, string> {
   return {
     checks: JSON.stringify([{ bucket: "pass", name: "build" }]),
     repo: JSON.stringify({ defaultBranchRef: { name: "main" } }),
-    view: JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 7 }),
+    view: JSON.stringify({ baseRefName: "dev", headRefName: "feat", headRefOid: HEAD, number: 7 }),
     ...over,
   };
 }
@@ -153,13 +155,15 @@ function envWithGh(gh: string | null, withoutGh = false): Record<string, string>
 
 /**
  * A recorded review for `sha`, written by hand into the state folder of `env`, as the
- * review-record hook writes one: by the agent `by` (the plugin's reviewer by default).
+ * review-record hook writes one: by the agent `by` (the plugin's reviewer by default), on
+ * `branches` (none: the exact commit only).
  */
 function recordReviewHere(
   env: Record<string, string>,
   repo: string,
   sha: string,
   by = "cc-smart-dev-kit:reviewer",
+  branches: string[] = [],
 ): void {
   const file = join(
     cliPaths(env).stateDir,
@@ -167,10 +171,11 @@ function recordReviewHere(
     `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
   );
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(
-    file,
-    `${JSON.stringify({ [sha]: { at: "2026-10-16T10:00:00.000Z", by: [by] } }, null, 2)}\n`,
-  );
+  const entry =
+    branches.length === 0
+      ? { at: "2026-10-16T10:00:00.000Z", by: [by] }
+      : { at: "2026-10-16T10:00:00.000Z", by: [by], branches };
+  writeFileSync(file, `${JSON.stringify({ [sha]: entry }, null, 2)}\n`);
 }
 
 /** Every branch a fixture's policy and answers name: each gets an `origin/<branch>` ref. */
@@ -209,6 +214,24 @@ function ask(reason: string): string {
     },
   });
 }
+
+/** The exact stdout of an `allow` decision (D31). */
+function allow(reason: string): string {
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: reason,
+    },
+  });
+}
+
+/** The reason an allowed merge gives when the recorded review is of the head itself. */
+const COVERED = "the review of aaaaaaa covers its head, and its required checks are green";
+
+/** The question when no review is recorded for the head or an earlier commit of its branch. */
+const NO_REVIEW =
+  "no review is recorded for aaaaaaa or for an earlier commit of feat (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)";
 
 /** What the guard said when it could not check: gh is missing, or a call did not answer. */
 function couldNotCheck(why: string): string {
@@ -252,13 +275,15 @@ function ready(
 }
 
 describe("the merge it lets through without a question", () => {
-  test("autoMerge on, the integration base, green checks, the review recorded: silent", async () => {
+  test("autoMerge on, the integration base, green checks, the review recorded: allow (D31)", async () => {
     const { env, gh, repo } = ready();
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
     // It read all three facts, read-only.
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --json number,baseRefName,headRefOid",
+      "pr view 7 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 7 --required --json name,bucket",
     ]);
@@ -272,7 +297,9 @@ describe("the merge it lets through without a question", () => {
       ]),
     });
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
   });
 
   test("reviewBeforePush off: no record is needed", async () => {
@@ -280,7 +307,9 @@ describe("the merge it lets through without a question", () => {
       ...CONFIG,
       workflow: { autoMerge: true, reviewBeforePush: false },
     });
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow("its required checks are green, and reviewBeforePush is off"),
+    });
   });
 
   test("a merge naming this project's own repository: judged, with gh repo view's own form", async () => {
@@ -292,9 +321,9 @@ describe("the merge it lets through without a question", () => {
     recordReviewHere(env, repo, HEAD);
     expect(
       await runHook(mergeGuardHook, input(repo, "gh pr -R Example-Org/App merge 7"), env),
-    ).toEqual({});
+    ).toEqual({ stdout: allow(COVERED) });
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefOid",
+      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefName,headRefOid",
       "repo view Example-Org/App --json defaultBranchRef",
       "pr checks 7 --required --repo Example-Org/App --json name,bucket",
     ]);
@@ -309,9 +338,9 @@ describe("the merge it lets through without a question", () => {
         input(withHost.repo, "gh pr --repo=github.com/example-org/app merge 7"),
         withHost.env,
       ),
-    ).toEqual({});
+    ).toEqual({ stdout: allow(COVERED) });
     expect(ghCalls(withHost.gh)).toEqual([
-      "pr view 7 --repo github.com/example-org/app --json number,baseRefName,headRefOid",
+      "pr view 7 --repo github.com/example-org/app --json number,baseRefName,headRefName,headRefOid",
       "repo view github.com/example-org/app --json defaultBranchRef",
       "pr checks 7 --required --repo github.com/example-org/app --json name,bucket",
     ]);
@@ -330,7 +359,228 @@ describe("the merge it lets through without a question", () => {
     const worktree = join(repo, "..", "app-wt-review");
     git(repo, "worktree", "add", "-q", "-b", "review-branch", worktree);
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(worktree, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
+  });
+});
+
+describe("D31: the allow, and only the exact merge", () => {
+  test("an unknown flag on `gh pr merge` asks, and gh is not called", async () => {
+    const { env, gh, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7 --frobnicate"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        "the merge carries `--frobnicate`, a flag this guard does not know, so it cannot tell what it does",
+      ),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("an unknown short flag on `gh pr merge` asks too", async () => {
+    const { env, gh, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7 -Zs"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        "the merge carries `-Z`, a flag this guard does not know, so it cannot tell what it does",
+      ),
+    });
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("a wrapper around an allowed merge stays silent, so auto mode's own rule still applies", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(await runHook(mergeGuardHook, input(repo, "timeout 60 gh pr merge 7"), env)).toEqual({});
+  });
+
+  test("a pull request named by its URL is no exact `<n>`: silent, not allowed", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(
+        mergeGuardHook,
+        input(repo, "gh pr merge https://github.com/example-org/app/pull/7"),
+        env,
+      ),
+    ).toEqual({});
+  });
+
+  test("a crew session never gets allow: the same passing merge is silent", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), {
+        ...env,
+        [CREW_ENV]: "B2-api-aaaaaa",
+      }),
+    ).toEqual({});
+  });
+
+  test("an armed merge (--auto) stays silent: it lands later, and a new commit would be unread", async () => {
+    const { env, repo } = ready();
+    recordReviewHere(env, repo, HEAD);
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr merge 7 --auto --squash"), env),
+    ).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D17: a review counts for its fixes. These cases run in a real repository with a bare
+// origin, so `readCover` really replays the reviewed change and measures the fix after it.
+// ---------------------------------------------------------------------------------------
+
+/** `n` lines `<tag> 1` … `<tag> n`, each ending in a newline. */
+function numbered(n: number, tag: string): string {
+  return Array.from({ length: n }, (_, index) => `${tag} ${index + 1}\n`).join("");
+}
+
+/** The commit `repo` is on. */
+function headOf(repo: string): string {
+  return git(repo, "rev-parse", "HEAD").trim();
+}
+
+/**
+ * A clone of a bare origin whose `dev` carries the policy, on a new `feat` branch: the
+ * commits are real, so the change after a review can be measured.
+ */
+function d17Repo(config: unknown = CONFIG): { repo: string; env: Record<string, string> } {
+  const { repo } = makeClone();
+  commitConfig(repo, config, ["dev"]);
+  git(repo, "checkout", "-q", "-b", "feat");
+  return { repo, env: hookEnv() };
+}
+
+/** Writes each file, commits everything, and returns the new commit. */
+function commitFiles(repo: string, files: Record<string, string>, message: string): string {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), content);
+  }
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", message);
+  return headOf(repo);
+}
+
+/** `env`, with a fake gh first on PATH answering for the pull request's real head and branch. */
+function withGh(
+  env: Record<string, string>,
+  head: string,
+  branch = "feat",
+): { env: Record<string, string>; gh: string } {
+  const gh = fakeGh(
+    answers({
+      view: JSON.stringify({
+        baseRefName: "dev",
+        headRefName: branch,
+        headRefOid: head,
+        number: 7,
+      }),
+    }),
+  );
+  return { env: { ...env, PATH: gh }, gh };
+}
+
+/** The reviewed change every D17 case starts from: 100 lines in 2 files. */
+function reviewedChange(repo: string): string {
+  return commitFiles(
+    repo,
+    { "src/a.txt": numbered(60, "a"), "src/b.txt": numbered(40, "b") },
+    "reviewed",
+  );
+}
+
+describe("D17: a review covers the fixes after it", () => {
+  test("review → a small fix → the merge is allowed", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(
+        `the review of ${reviewed.slice(0, 7)} covers its head, and its required checks are green`,
+      ),
+    });
+  });
+
+  test("review → the base merged in → a fix → still allowed (the base counts for nothing)", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    // The base moves on, as a merge into it would: 30 lines in one file, fetched.
+    git(repo, "checkout", "-q", "dev");
+    const moved = commitFiles(repo, { "docs/notes.txt": numbered(30, "n") }, "base work");
+    git(repo, "update-ref", "refs/remotes/origin/dev", moved);
+    git(repo, "checkout", "-q", "feat");
+    git(repo, "merge", "-q", "--no-edit", "origin/dev");
+    const head = commitFiles(repo, { "src/b.txt": numbered(42, "b") }, "fix");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(
+        `the review of ${reviewed.slice(0, 7)} covers its head, and its required checks are green`,
+      ),
+    });
+  });
+
+  test("review → a 600-line rewrite → asks, naming the counts and the limit", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    rmSync(join(repo, "src/a.txt"));
+    rmSync(join(repo, "src/b.txt"));
+    const head = commitFiles(repo, { "src/c.txt": numbered(500, "c") }, "rewrite");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        `600 lines in 3 files changed after the review of ${reviewed.slice(0, 7)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
+      ),
+    });
+  });
+
+  test("0/0/0: only the exact reviewed commit counts", async () => {
+    const { repo, env: base } = d17Repo({
+      ...CONFIG,
+      workflow: {
+        autoMerge: true,
+        fixesAfterReview: { lines: 0, files: 0, percent: 0 },
+      },
+    });
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    const fixed = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
+    const fixedGh = withGh(base, fixed);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), fixedGh.env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        `fixesAfterReview is 0/0/0, so only a review of ${fixed.slice(0, 7)} itself counts`,
+      ),
+    });
+    // The reviewed commit itself is allowed: no fix after it, and no measurement needed.
+    const reviewedGh = withGh(base, reviewed);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), reviewedGh.env)).toEqual({
+      stdout: allow(
+        `the review of ${reviewed.slice(0, 7)} covers its head, and its required checks are green`,
+      ),
+    });
+  });
+
+  test("a review on another branch never covers", async () => {
+    const { repo, env: base } = d17Repo();
+    const reviewed = reviewedChange(repo);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["other"]);
+    const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
+    const { env } = withGh(base, head);
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: willNotMerge(
+        "#7",
+        `no review is recorded for ${head.slice(0, 7)} or for an earlier commit of feat (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`,
+      ),
+    });
   });
 });
 
@@ -376,7 +626,12 @@ describe("every condition that asks", () => {
 
   test("the base is not the integration base: asks, and reads no checks", async () => {
     const { env, gh, repo } = ready(CONFIG, {
-      view: JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 7 }),
+      view: JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 7,
+      }),
     });
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
       stdout: willNotMerge(
@@ -385,7 +640,7 @@ describe("every condition that asks", () => {
       ),
     });
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --json number,baseRefName,headRefOid",
+      "pr view 7 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
     ]);
   });
@@ -405,7 +660,12 @@ describe("every condition that asks", () => {
       { ...CONFIG, worktrees: { base: "main" } },
       {
         repo: JSON.stringify({ defaultBranchRef: { name: "main" } }),
-        view: JSON.stringify({ baseRefName: "main", headRefOid: HEAD, number: 7 }),
+        view: JSON.stringify({
+          baseRefName: "main",
+          headRefName: "feat",
+          headRefOid: HEAD,
+          number: 7,
+        }),
       },
     );
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
@@ -472,10 +732,7 @@ describe("every condition that asks", () => {
   test("the head commit has no recorded review: asks, and says how to record it", async () => {
     const { env, repo } = ready();
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "#7",
-        "the head commit aaaaaaa has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)",
-      ),
+      stdout: willNotMerge("#7", NO_REVIEW),
     });
   });
 
@@ -483,10 +740,7 @@ describe("every condition that asks", () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, "b".repeat(40));
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
-      stdout: willNotMerge(
-        "#7",
-        "the head commit aaaaaaa has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)",
-      ),
+      stdout: willNotMerge("#7", NO_REVIEW),
     });
   });
 
@@ -600,8 +854,18 @@ describe("a merge that names another repository asks, whatever the policy says",
 describe("every merge in the command is judged", () => {
   test("the first is allowed, the second refused: asks, naming the second", async () => {
     const { env, gh, repo } = ready(CONFIG, {
-      "view-5": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 5 }),
-      "view-6": JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 6 }),
+      "view-5": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 5,
+      }),
+      "view-6": JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 6,
+      }),
     });
     recordReviewHere(env, repo, HEAD);
     expect(
@@ -615,17 +879,27 @@ describe("every merge in the command is judged", () => {
     // #5 was judged whole (the default branch is read once: it is one repository), then #6
     // was read and refused before its checks.
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
-      "pr view 6 --json number,baseRefName,headRefOid",
+      "pr view 6 --json number,baseRefName,headRefName,headRefOid",
     ]);
   });
 
   test("both allowed: silent, and both were read", async () => {
     const { env, gh, repo } = ready(CONFIG, {
-      "view-5": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 5 }),
-      "view-6": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 6 }),
+      "view-5": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 5,
+      }),
+      "view-6": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 6,
+      }),
       "checks-5": JSON.stringify([{ bucket: "pass", name: "build" }]),
       "checks-6": JSON.stringify([{ bucket: "pass", name: "build" }]),
     });
@@ -634,18 +908,28 @@ describe("every merge in the command is judged", () => {
       await runHook(mergeGuardHook, input(repo, "gh pr merge 5 && gh pr merge 6"), env),
     ).toEqual({});
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
-      "pr view 6 --json number,baseRefName,headRefOid",
+      "pr view 6 --json number,baseRefName,headRefName,headRefOid",
       "pr checks 6 --required --json name,bucket",
     ]);
   });
 
   test("the first refused, the second allowed: asks, naming the first", async () => {
     const { env, repo } = ready(CONFIG, {
-      "view-5": JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 5 }),
-      "view-6": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 6 }),
+      "view-5": JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 5,
+      }),
+      "view-6": JSON.stringify({
+        baseRefName: "dev",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 6,
+      }),
     });
     recordReviewHere(env, repo, HEAD);
     expect(
@@ -759,7 +1043,7 @@ describe("a gh alias is judged like what it expands to", () => {
     expect(await runHook(mergeGuardHook, input(repo, "gh m 7"), env)).toEqual({});
     expect(ghCalls(gh)).toEqual([
       "alias list",
-      "pr view 7 --json number,baseRefName,headRefOid",
+      "pr view 7 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 7 --required --json name,bucket",
     ]);
@@ -892,9 +1176,9 @@ describe("gh's own flags before the command word", () => {
     recordReviewHere(env, repo, HEAD);
     expect(
       await runHook(mergeGuardHook, input(repo, "gh -R Example-Org/App pr merge 7"), env),
-    ).toEqual({});
+    ).toEqual({ stdout: allow(COVERED) });
     expect(ghCalls(gh)).toEqual([
-      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefOid",
+      "pr view 7 --repo Example-Org/App --json number,baseRefName,headRefName,headRefOid",
       "repo view Example-Org/App --json defaultBranchRef",
       "pr checks 7 --required --repo Example-Org/App --json name,bucket",
     ]);
@@ -1122,15 +1406,27 @@ describe("the guard's own deadline", () => {
   test("the same command inside the default budget: judged as always", async () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
   });
 });
 
 describe("a merge with --admin always asks, whatever the policy says", () => {
   /** What `gh pr view 5` and `gh pr view 6` answer: both go into the integration base. */
   const FIVE_AND_SIX = {
-    "view-5": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 5 }),
-    "view-6": JSON.stringify({ baseRefName: "dev", headRefOid: HEAD, number: 6 }),
+    "view-5": JSON.stringify({
+      baseRefName: "dev",
+      headRefName: "feat",
+      headRefOid: HEAD,
+      number: 5,
+    }),
+    "view-6": JSON.stringify({
+      baseRefName: "dev",
+      headRefName: "feat",
+      headRefOid: HEAD,
+      number: 6,
+    }),
   };
 
   /** The question an `--admin` merge gets, `which` naming its pull request as the command does. */
@@ -1141,17 +1437,19 @@ describe("a merge with --admin always asks, whatever the policy says", () => {
     );
   }
 
-  test("every auto-merge condition met: the same merge without --admin is silent, with it asks", async () => {
+  test("every auto-merge condition met: the same merge without --admin is allowed, with it asks", async () => {
     const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
     recordReviewHere(env, repo, HEAD);
-    // The control: this merge is one the policy allows by itself.
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge"), env)).toEqual({});
+    // The control: this merge is one the policy allows by itself, and D31 allows it.
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
     expect(
       await runHook(mergeGuardHook, input(repo, "gh pr merge 5 --merge --admin"), env),
     ).toEqual({ stdout: adminAsks("#5") });
     // Only the allowed merge read anything: the --admin one asked from the line alone.
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
     ]);
@@ -1244,12 +1542,14 @@ describe("a merge with --admin always asks, whatever the policy says", () => {
     "gh pr merge 5 --merge -- --admin",
     // The value-taking flag the parser already knew: its value is not the pull request.
     `gh pr merge 5 --match-head-commit ${HEAD} --merge`,
-  ])("%j: no --admin, so judged as always: silent when allowed", async (command) => {
+  ])("%j: no --admin, so judged as always: allowed when the policy passes", async (command) => {
     const { env, gh, repo } = ready(CONFIG, FIVE_AND_SIX);
     recordReviewHere(env, repo, HEAD);
-    expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, command), env)).toEqual({
+      stdout: allow(COVERED),
+    });
     expect(ghCalls(gh)).toEqual([
-      "pr view 5 --json number,baseRefName,headRefOid",
+      "pr view 5 --json number,baseRefName,headRefName,headRefOid",
       "repo view --json defaultBranchRef",
       "pr checks 5 --required --json name,bucket",
     ]);
@@ -1281,9 +1581,6 @@ describe("the review gate is read as committed on the pull request's base (CM-1)
     if (result.stdout === undefined) return null;
     return JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason;
   }
-
-  const NO_REVIEW =
-    "the head commit aaaaaaa has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)";
 
   test("CM-1: a worktree's own uncommitted config cannot switch the review gate off", async () => {
     const { env, repo } = ready();
@@ -1335,19 +1632,23 @@ describe("the review gate is read as committed on the pull request's base (CM-1)
       workflow: { autoMerge: true, reviewAgents: ["fresh-eyes"] },
     });
     recordReviewHere(env, repo, HEAD, "fresh-eyes");
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
   });
 
   test("HK-6: another plugin's reviewer recorded the commit: asks", async () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, HEAD, "other-plugin:reviewer");
-    expect(await reasonFor(env, repo)).toContain("has no recorded review");
+    expect(await reasonFor(env, repo)).toContain("no review is recorded");
   });
 
   test("CM-1: a record the person made by hand counts whatever the list", async () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, HEAD, "workflow review-done");
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow(COVERED),
+    });
   });
 
   test("CM-1: a policy change counts once it is committed on the base", async () => {
@@ -1355,7 +1656,9 @@ describe("the review gate is read as committed on the pull request's base (CM-1)
     commitConfig(repo, { ...CONFIG, workflow: { autoMerge: true, reviewBeforePush: false } }, [
       "dev",
     ]);
-    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
+      stdout: allow("its required checks are green, and reviewBeforePush is off"),
+    });
   });
 
   test("CM-1: no origin/<base> to read the policy from: asks, naming it, and reads nothing with gh", async () => {
@@ -1408,7 +1711,12 @@ describe("the review gate is read as committed on the pull request's base (CM-1)
 
   test("CM-1: the pull request's own base is read: a base whose committed file is missing asks", async () => {
     const { env, repo } = ready(CONFIG, {
-      view: JSON.stringify({ baseRefName: "feature/x", headRefOid: HEAD, number: 7 }),
+      view: JSON.stringify({
+        baseRefName: "feature/x",
+        headRefName: "feat",
+        headRefOid: HEAD,
+        number: 7,
+      }),
     });
     // feature/x has a ref, but at the first commit, before the project's file.
     git(repo, "update-ref", "refs/remotes/origin/feature/x", "HEAD~1");

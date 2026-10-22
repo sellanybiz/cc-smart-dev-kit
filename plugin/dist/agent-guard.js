@@ -8319,10 +8319,6 @@ function readReviews(file) {
 function trusted(entry, agents) {
   return entry.by.some((by) => by === BY_HAND || recordsReview(by, agents));
 }
-function hasReview(file, sha, agents) {
-  const entry = readReviews(file)[sha];
-  return entry !== undefined && trusted(entry, agents);
-}
 function trustedReviews(file, agents) {
   return Object.entries(readReviews(file)).filter(([, entry]) => trusted(entry, agents)).sort(([, a], [, b]) => b.at.localeCompare(a.at)).map(([sha, entry]) => ({ sha, at: entry.at, branches: entry.branches ?? [] }));
 }
@@ -9095,6 +9091,7 @@ function call(fields = {}) {
     disarms: false,
     admin: false,
     unknown: null,
+    unknownFlag: null,
     ...fields
   };
 }
@@ -9418,13 +9415,15 @@ function prCalls(rest, moved, carried) {
   if (args.some((arg) => arg === "-h" || arg === "--help"))
     return [];
   const named = mergeArguments(args);
+  const refusal = moved !== null ? say(moved, false) : named.unknown === null ? null : `the merge carries \`${named.unknown}\`, a flag this guard does not know, so it cannot tell what it does`;
   return [
     call({
       target: { ref: named.ref, repo: repo ?? named.repo ?? carried },
-      refusal: moved === null ? null : say(moved, false),
+      refusal,
       arms: args.some(isAutoFlag),
       disarms: args.some(isDisableAutoFlag),
-      admin: named.admin
+      admin: named.admin,
+      unknownFlag: named.unknown
     })
   ];
 }
@@ -9502,10 +9501,27 @@ var MERGE_FLAGS_WITH_VALUE = new Set([
   "--subject"
 ]);
 var MERGE_SHORT_WITH_VALUE = "AbtFR";
+var MERGE_FLAGS = new Set([
+  "--admin",
+  "--author-email",
+  "--auto",
+  "--body",
+  "--body-file",
+  "--delete-branch",
+  "--disable-auto",
+  "--match-head-commit",
+  "--merge",
+  "--rebase",
+  "--squash",
+  "--subject",
+  "--repo"
+]);
+var MERGE_LETTERS = "AbFdmrstR";
 function mergeArguments(words) {
   let ref = null;
   let repo = null;
   let admin = false;
+  let unknown = null;
   for (let index = 0;index < words.length; index++) {
     const word = words[index] ?? "";
     if (word === "--") {
@@ -9516,6 +9532,8 @@ function mergeArguments(words) {
       const at = word.indexOf("=");
       const name = at === -1 ? word : word.slice(0, at);
       const value = at === -1 ? undefined : word.slice(at + 1);
+      if (!MERGE_FLAGS.has(name))
+        unknown ??= name;
       if (name === "--repo")
         repo = value ?? words[index + 1] ?? null;
       if (name === "--admin")
@@ -9526,6 +9544,10 @@ function mergeArguments(words) {
     }
     if (isShort(word)) {
       const { flags, wantsNext } = shortFlags(word, MERGE_SHORT_WITH_VALUE);
+      for (const letter of flags) {
+        if (!MERGE_LETTERS.includes(letter))
+          unknown ??= `-${letter}`;
+      }
       const letter = flags.slice(-1);
       if (letter !== "" && MERGE_SHORT_WITH_VALUE.includes(letter)) {
         const value = wantsNext ? words[index + 1] ?? null : word.slice(flags.length + 1);
@@ -9538,7 +9560,7 @@ function mergeArguments(words) {
     }
     ref ??= word || null;
   }
-  return { ref, repo, admin };
+  return { ref, repo, admin, unknown };
 }
 var API_VALUE_FLAGS = new Set([
   "--cache",
@@ -9778,6 +9800,36 @@ function mergesPullRequest(command, dialect) {
 }
 function requestsPullRequestChange(command, dialect) {
   return pullRequestCalls(command, null, dialect).some((one) => !one.disarms);
+}
+function exactMergeOf(command, dialect) {
+  const readings = readingsOf(command, dialect);
+  if (readings.length !== 1)
+    return null;
+  const reading = readings[0];
+  if (reading === undefined)
+    return null;
+  const steps = shellSteps(command, { dialect: reading.dialect, joinLines: reading.joinLines });
+  const step = steps[0];
+  if (steps.length !== 1 || step === undefined || step.pipedFrom !== null)
+    return null;
+  const words = wordsOf(step.text, reading.dialect);
+  if (redirectionTargets(words).length > 0)
+    return null;
+  const invocation = invocationOf(words);
+  if (invocation === undefined || invocation.program !== "gh")
+    return null;
+  if (invocation.prefix.length > 0)
+    return null;
+  const calls = pullRequestCalls(step.text, null, reading.dialect);
+  const one = calls[0];
+  if (calls.length !== 1 || one === undefined || !isMerge(one))
+    return null;
+  if (one.refusal !== null || one.unread !== null || one.unknown !== null)
+    return null;
+  if (one.unknownFlag !== null || one.admin || one.disarms || one.arms)
+    return null;
+  const ref = one.target?.ref ?? null;
+  return ref !== null && /^\d+$/.test(ref) ? one : null;
 }
 function mergeTargetOf(calls) {
   const named = calls.filter((one) => one.target !== null);
@@ -13624,11 +13676,269 @@ function worktreeLeftovers(context) {
   return answer(leftoversNote(base, finished, gone, new Map(kept.map((one) => [one.path, one.why]))));
 }
 
+// src/workflow/review-cover.ts
+import { mkdtempSync, rmSync as rmSync2 } from "fs";
+import { tmpdir as tmpdir3 } from "os";
+import { join as join23 } from "path";
+var MIN_COVER_GIT = "2.40.0";
+var PATHS_PER_CALL = 200;
+function short(sha) {
+  return sha.slice(0, 7);
+}
+function counted(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+function exactOnly(limits) {
+  return limits.lines === 0 && limits.files === 0 && limits.percent === 0;
+}
+function coverRefusal(delta, reviewed, limits, review) {
+  const of = short(review);
+  if (exactOnly(limits)) {
+    return `fixesAfterReview is 0/0/0, so only the reviewed commit ${of} itself counts`;
+  }
+  const [binary, ...more] = delta.binary;
+  if (binary !== undefined) {
+    const others = more.length === 0 ? "" : ` (and ${counted(more.length, "other")})`;
+    return `${binary}${others} is a binary file changed after the review of ${of}: its change cannot be counted`;
+  }
+  const maxLines = Math.max(limits.lines, Math.floor(reviewed.lines * limits.percent / 100));
+  const maxFiles = Math.max(limits.files, Math.floor(reviewed.files * limits.percent / 100));
+  if (delta.lines <= maxLines && delta.files <= maxFiles)
+    return null;
+  return `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` + `over the limit of ${counted(maxLines, "line")} and ${counted(maxFiles, "file")} ` + `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` + `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`;
+}
+function parseGitVersion(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  return match === null ? null : `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+}
+function tooOldToCover(version) {
+  return Bun.semver.order(version, MIN_COVER_GIT) < 0;
+}
+function oldGit(version, head) {
+  return `git ${version} is older than 2.40, so a change after a review cannot be measured: only a review of ${short(head)} itself counts (update git)`;
+}
+function parseNumstat(out) {
+  const parts = out.split("\x00");
+  const changed = [];
+  for (let index = 0;index < parts.length; index += 1) {
+    const part = parts[index] ?? "";
+    if (part === "")
+      continue;
+    const match = /^(-|\d+)\t(-|\d+)\t([\s\S]*)$/.exec(part);
+    if (match === null)
+      throw new Error(`git diff --numstat printed a line it cannot read: ${part}`);
+    let path = match[3] ?? "";
+    if (path === "") {
+      path = parts[index + 2] ?? "";
+      index += 2;
+      if (path === "")
+        throw new Error("git diff --numstat printed a rename without its path");
+    }
+    const lines = match[1] === "-" || match[2] === "-" ? null : Number(match[1]) + Number(match[2]);
+    changed.push({ path, lines });
+  }
+  return changed;
+}
+
+class Uncovered extends Error {
+  review;
+  constructor(message, review = null) {
+    super(message);
+    this.review = review;
+  }
+}
+function alternateEntry(folder) {
+  return `"${folder.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
+}
+function readCover(checkout, target, records, limits, git) {
+  const { head, branch } = target;
+  if (records.some((record) => record.sha === head)) {
+    return { covered: true, review: head, delta: null, reviewed: null };
+  }
+  const candidates = [
+    ...new Set(branch === null ? [] : records.filter((record) => record.branches.includes(branch)).map((r) => r.sha))
+  ];
+  if (candidates.length === 0) {
+    const earlier = branch === null ? "" : ` or for an earlier commit of ${branch}`;
+    return {
+      covered: false,
+      review: null,
+      why: `no review is recorded for ${short(head)}${earlier}`
+    };
+  }
+  if (exactOnly(limits)) {
+    return {
+      covered: false,
+      review: candidates[0] ?? null,
+      why: `fixesAfterReview is 0/0/0, so only a review of ${short(head)} itself counts`
+    };
+  }
+  let objects = null;
+  try {
+    objects = mkdtempSync(join23(tmpdir3(), `${COMMAND}-cover-`));
+    return measure(checkout, target, candidates, limits, git, objects);
+  } catch (error) {
+    if (error instanceof Uncovered)
+      return { covered: false, review: error.review, why: error.message };
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      covered: false,
+      review: null,
+      why: `the change after the review cannot be read (${why})`
+    };
+  } finally {
+    if (objects !== null)
+      rmSync2(objects, { recursive: true, force: true });
+  }
+}
+function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
+  const baseRef = `refs/remotes/origin/${base}`;
+  const own = {
+    GIT_OBJECT_DIRECTORY: objects,
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join23(checkout.commonDir, "objects"))
+  };
+  const run = (args) => {
+    const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
+    if (left <= 0)
+      throw new Uncovered("the time to measure the change after the review ran out");
+    const result = runGit(checkout.root, args, git.env, left, own);
+    if (result.code === null && result.err === "timed out") {
+      throw new Uncovered("the time to measure the change after the review ran out");
+    }
+    return result;
+  };
+  const commit = (rev) => {
+    const found = run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
+    return found.ok && COMMIT_SHA.test(found.out) ? found.out : null;
+  };
+  const asked = run(["--version"]);
+  if (!asked.ok)
+    throw new Uncovered(`git cannot be run here (${asked.err})`);
+  const version = parseGitVersion(asked.out);
+  if (version !== null && tooOldToCover(version))
+    throw new Uncovered(oldGit(version, head));
+  if (!COMMIT_SHA.test(head) || commit(head) === null) {
+    throw new Uncovered(`${short(head)} is not in this checkout: fetch it (git fetch origin)`);
+  }
+  if (commit(baseRef) === null) {
+    throw new Uncovered(`origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`);
+  }
+  const mergeBase = (a, b) => {
+    const found = run(["merge-base", a, b]);
+    if (!found.ok) {
+      throw new Uncovered(`${short(a)} and origin/${base} share no history`, a === head ? null : a);
+    }
+    return found.out;
+  };
+  const numstat = (from, to, review) => {
+    const diff = run(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]);
+    if (!diff.ok) {
+      throw new Uncovered(`the change after the review of ${short(review)} cannot be read (${diff.err})`, review);
+    }
+    return parseNumstat(diff.out);
+  };
+  const generatedOf = (paths) => {
+    const generated = new Set;
+    for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
+      const some = paths.slice(at, at + PATHS_PER_CALL);
+      const attrs = run([
+        "check-attr",
+        `--source=${baseRef}`,
+        "-z",
+        "linguist-generated",
+        "--",
+        ...some
+      ]);
+      if (!attrs.ok) {
+        throw new Uncovered(`which files origin/${base} marks as generated cannot be read (${attrs.err})`);
+      }
+      const fields = attrs.out.split("\x00");
+      for (let index = 0;index + 2 < fields.length; index += 3) {
+        const value = fields[index + 2];
+        if (value === "set" || value === "true")
+          generated.add(fields[index] ?? "");
+      }
+    }
+    return generated;
+  };
+  const tally = (changed, generated) => {
+    const count = { lines: 0, files: 0, generated: [], binary: [] };
+    for (const one of changed) {
+      if (generated.has(one.path)) {
+        count.generated.push(one.path);
+        continue;
+      }
+      count.files += 1;
+      if (one.lines === null)
+        count.binary.push(one.path);
+      else
+        count.lines += one.lines;
+    }
+    return count;
+  };
+  const onBase = mergeBase(head, baseRef);
+  const measured = [];
+  const unread = [];
+  for (const review of candidates) {
+    try {
+      if (commit(review) === null) {
+        throw new Uncovered(`the reviewed commit ${short(review)} is not in this checkout: fetch it (git fetch origin)`, review);
+      }
+      const replay = run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
+      const tree = replay.out.split(`
+`)[0] ?? "";
+      if (replay.code !== 0 && replay.code !== 1 || !COMMIT_SHA.test(tree)) {
+        throw new Uncovered(`the review of ${short(review)} cannot be replayed on origin/${base} (${replay.err})`, review);
+      }
+      const same = run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
+      if (same.code === 0)
+        continue;
+      if (same.code !== 1) {
+        throw new Uncovered(`the review of ${short(review)} cannot be compared (${same.err})`, review);
+      }
+      const after = numstat(tree, head, review);
+      const before = numstat(mergeBase(review, baseRef), review, review);
+      const generated = generatedOf([...new Set([...after, ...before].map((one) => one.path))]);
+      const delta = tally(after, generated);
+      const reviewed = tally(before, generated);
+      measured.push({
+        review,
+        delta,
+        reviewed,
+        refusal: coverRefusal(delta, reviewed, limits, review)
+      });
+    } catch (error) {
+      if (!(error instanceof Uncovered) || error.review === null)
+        throw error;
+      unread.push(error);
+    }
+  }
+  measured.sort((a, b) => Number(a.delta.binary.length > 0) - Number(b.delta.binary.length > 0) || a.delta.lines - b.delta.lines || a.delta.files - b.delta.files);
+  const covering = measured.find((one) => one.refusal === null);
+  if (covering !== undefined) {
+    return {
+      covered: true,
+      review: covering.review,
+      delta: covering.delta,
+      reviewed: covering.reviewed
+    };
+  }
+  const smallest = measured[0];
+  if (smallest !== undefined && smallest.refusal !== null) {
+    return { covered: false, review: smallest.review, why: smallest.refusal };
+  }
+  const [first] = unread;
+  if (first !== undefined)
+    throw first;
+  const listed = candidates.map(short).join(", ");
+  throw new Uncovered(`the review of ${branch ?? "this branch"} (${listed}) covers nothing new: its change is already in origin/${base}`);
+}
+
 // src/workflow/resolve.ts
 import { existsSync as existsSync14, readFileSync as readFileSync20 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, dirname as dirname10, join as join23 } from "path";
+import { delimiter, dirname as dirname10, join as join24 } from "path";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -13731,7 +14041,7 @@ var TAIL_BYTES = 512 * 1024;
 
 // src/cli/setup.ts
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join23(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join24(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/workflow/resolve.ts
@@ -14065,42 +14375,20 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
   return null;
 }
 
-// src/workflow/pr-switches.ts
-function turnOn(key, value, base) {
-  const where = base ?? "the integration base (worktrees.base)";
-  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": {"${key}": ${value === "true" ? "true" : `"${value}"`}}), committed to ${where} and pushed`;
-}
-function autoPushOff(resolved, base) {
-  if (resolved.autoPush.value)
-    return null;
-  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn("autoPush", "true", base)}`;
-}
-function openPrRefusal(resolved, base, opening) {
-  const { value } = resolved.openPr;
-  const from = sourceLabel(resolved.openPr, base);
-  if (value === "ready")
-    return null;
-  if (value === "draft") {
-    if (opening.kind === "create" && opening.draft)
-      return null;
-    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn("openPr", "ready", base)}`;
-  }
-  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
-}
-
-// src/hooks/merge-guard.ts
+// src/workflow/merge-check.ts
 var GH_TIMEOUT_MS2 = 1e4;
-var ALIAS_LIMIT_MS = 3000;
-var PULL_REQUEST_FACTS = "number,baseRefName,headRefOid";
+var PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
 function parsePullRequestFacts(json) {
   try {
     const view = JSON.parse(json);
-    const { baseRefName, headRefOid, number } = view;
+    const { baseRefName, headRefName, headRefOid, number } = view;
     if (typeof number !== "number" || typeof baseRefName !== "string")
       return null;
-    if (typeof headRefOid !== "string" || !/^[0-9a-f]{40,64}$/.test(headRefOid))
+    if (typeof headRefName !== "string" || headRefName === "")
       return null;
-    return { number, base: baseRefName, headOid: headRefOid };
+    if (typeof headRefOid !== "string" || !COMMIT_SHA.test(headRefOid))
+      return null;
+    return { number, base: baseRefName, headRef: headRefName, headOid: headRefOid };
   } catch {
     return null;
   }
@@ -14137,6 +14425,42 @@ function parseRequiredChecks(json) {
   }
 }
 var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+function reviewGateOf(paths, checkout, resolved) {
+  const repository = checkout.mainCheckout ?? checkout.root;
+  return {
+    reviewBeforePush: resolved.reviewBeforePush.value,
+    agents: resolved.reviewAgents.value,
+    limits: {
+      lines: resolved.fixesAfterReview.lines.value,
+      files: resolved.fixesAfterReview.files.value,
+      percent: resolved.fixesAfterReview.percent.value
+    },
+    file: reviewsFile(paths.stateDir, repository)
+  };
+}
+function coverOf(world, review, target) {
+  if (!review.reviewBeforePush)
+    return null;
+  return readCover(world.checkout, target, trustedReviews(review.file, review.agents), review.limits, {
+    env: world.env,
+    timeFor: world.timeFor
+  });
+}
+function reviewRefusal(cover) {
+  if (cover === null || cover.covered)
+    return null;
+  if (cover.review !== null)
+    return cover.why;
+  return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
+}
+function short2(sha) {
+  return sha.slice(0, 7);
+}
+function pullRequestAllowed(cover) {
+  if (cover === null)
+    return "its required checks are green, and reviewBeforePush is off";
+  return `the review of ${short2(cover.review)} covers its head, and its required checks are green`;
+}
 function mergeRefusal(facts) {
   if (facts.branchRefusal !== null)
     return facts.branchRefusal;
@@ -14150,33 +14474,18 @@ function mergeRefusal(facts) {
     const list = failing.map((check) => `${check.name} (${check.bucket})`).join(", ");
     return `its required checks are not all green: ${list}`;
   }
-  if (facts.reviewBeforePush && !facts.reviewed) {
-    return `the head commit ${facts.headOid.slice(0, 7)} has no recorded review (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
-  }
-  return null;
-}
-function notByItself(reason, number = null) {
-  const which = number === null ? "this pull request" : `#${number}`;
-  return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
+  return facts.reviewRefusal;
 }
 function policyUnread(branch, why, policy = "merge policy") {
   const where = branch === null ? "the workflow settings" : `the ${policy} committed on ${branch}`;
   return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
 }
-var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
-function notOpenedByItself(opening, reason) {
-  const what = opening.opens === "ready" ? "marks a pull request ready for review" : "opens a pull request";
-  return `cc-smart-dev-kit asks before this ${what}: ${reason}. Approve it yourself if you meant it.`;
-}
 function workflowUnread(error) {
   return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
 }
-function adminRefusal(ref) {
-  const which = ref === null ? "the current branch's pull request" : numericRef(ref) === null ? `\`${ref}\`` : `#${ref}`;
-  return `the command merges ${which} with \`--admin\`, which uses administrator rights to merge past the repository's branch protection (its required reviews, a code-owner approval among them, its required checks and its merge queue), so you decide each one`;
-}
-function adminMerge(calls) {
-  return calls.find((one) => one.admin && !one.disarms);
+function notByItself(reason, number = null) {
+  const which = number === null ? "this pull request" : `#${number}`;
+  return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
 }
 function notChecked(what, env) {
   const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;
@@ -14235,6 +14544,124 @@ function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS2) {
   const out = ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs);
   return out === null ? null : parseDefaultBranch(out);
 }
+function gateFor(world, branch) {
+  if (world.gateOf !== undefined)
+    return world.gateOf(branch);
+  const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (left <= 0)
+    return "late";
+  return resolveGate(world.paths, world.checkout, branch, {
+    env: world.env,
+    timeoutMs: left
+  });
+}
+function checkPullRequest(world, target, defaultBranches = new Map) {
+  const viewLeft = world.timeFor(GH_TIMEOUT_MS2);
+  if (viewLeft <= 0) {
+    return { kind: "late", number: null, what: "the pull request this command names" };
+  }
+  const view = viewPullRequest2(target, world.folder, world.env, viewLeft);
+  if (view === null) {
+    return { kind: "unread", number: null, what: "the pull request this command names" };
+  }
+  let read;
+  try {
+    read = gateFor(world, view.base);
+  } catch (error) {
+    return { kind: "refused", number: view.number, reason: workflowUnread(error) };
+  }
+  if (read === "late") {
+    return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
+  }
+  if (!read.ok) {
+    return { kind: "refused", number: view.number, reason: policyUnread(view.base, read.why) };
+  }
+  const { resolved, config: committed } = read.gate;
+  if (committed?.ownHooks?.includes("merge-guard") === true)
+    return { kind: "silent" };
+  const where = target.repo ?? "";
+  if (!defaultBranches.has(where)) {
+    const branchLeft = world.timeFor(GH_TIMEOUT_MS2);
+    if (branchLeft <= 0) {
+      return { kind: "late", number: view.number, what: "this repository's default branch" };
+    }
+    defaultBranches.set(where, defaultBranchOf(world.folder, world.env, target.repo, branchLeft));
+  }
+  const defaultBranch = defaultBranches.get(where) ?? null;
+  if (defaultBranch === null) {
+    return { kind: "unread", number: view.number, what: "this repository's default branch" };
+  }
+  const branchRefusal = autoMergeRefusal(resolved, committed, view.base, defaultBranch);
+  let checks = null;
+  if (branchRefusal === null) {
+    const checksLeft = world.timeFor(GH_TIMEOUT_MS2);
+    if (checksLeft <= 0) {
+      return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };
+    }
+    checks = requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft);
+    if (checks === null) {
+      return {
+        kind: "unread",
+        number: view.number,
+        what: `the required checks of #${view.number}`
+      };
+    }
+  }
+  const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
+  if (before !== null)
+    return { kind: "refused", number: view.number, reason: before };
+  const review = reviewGateOf(world.paths, world.checkout, resolved);
+  const cover = coverOf(world, review, {
+    head: view.headOid,
+    branch: view.headRef,
+    base: view.base
+  });
+  const refused = reviewRefusal(cover);
+  if (refused !== null)
+    return { kind: "refused", number: view.number, reason: refused };
+  return {
+    kind: "allowed",
+    reason: pullRequestAllowed(cover?.covered === true ? cover : null)
+  };
+}
+
+// src/workflow/pr-switches.ts
+function turnOn(key, value, base) {
+  const where = base ?? "the integration base (worktrees.base)";
+  return `turn it on for yourself with \`${COMMAND} workflow set ${key} ${value}\`, or for the project in ${CONFIG_PATH} ("workflow": {"${key}": ${value === "true" ? "true" : `"${value}"`}}), committed to ${where} and pushed`;
+}
+function autoPushOff(resolved, base) {
+  if (resolved.autoPush.value)
+    return null;
+  return `autoPush is off (${sourceLabel(resolved.autoPush, base)}), so a push is yours to approve: ${turnOn("autoPush", "true", base)}`;
+}
+function openPrRefusal(resolved, base, opening) {
+  const { value } = resolved.openPr;
+  const from = sourceLabel(resolved.openPr, base);
+  if (value === "ready")
+    return null;
+  if (value === "draft") {
+    if (opening.kind === "create" && opening.draft)
+      return null;
+    return opening.kind === "ready" ? `openPr is draft (${from}), so marking a pull request ready for review is yours to decide: ${turnOn("openPr", "ready", base)}` : `openPr is draft (${from}), and this pull request does not open as a draft (add \`--draft\`): ${turnOn("openPr", "ready", base)}`;
+  }
+  return `openPr is off (${from}), so opening or readying a pull request is yours to approve: ${turnOn("openPr", "draft", base)}`;
+}
+
+// src/hooks/merge-guard.ts
+var ALIAS_LIMIT_MS = 3000;
+var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
+function notOpenedByItself(opening, reason) {
+  const what = opening.opens === "ready" ? "marks a pull request ready for review" : "opens a pull request";
+  return `cc-smart-dev-kit asks before this ${what}: ${reason}. Approve it yourself if you meant it.`;
+}
+function adminRefusal(ref) {
+  const which = ref === null ? "the current branch's pull request" : numericRef(ref) === null ? `\`${ref}\`` : `#${ref}`;
+  return `the command merges ${which} with \`--admin\`, which uses administrator rights to merge past the repository's branch protection (its required reviews, a code-owner approval among them, its required checks and its merge queue), so you decide each one`;
+}
+function adminMerge(calls) {
+  return calls.find((one) => one.admin && !one.disarms);
+}
 function ownRepository(project, env, timeoutMs) {
   const folder = project.mainCheckout ?? project.root;
   const origin = runGit(folder, ["remote", "get-url", "origin"], env, timeoutMs);
@@ -14250,6 +14677,13 @@ function foreignRepository(repo, own) {
 }
 function numericRef(ref) {
   return ref !== null && /^\d+$/.test(ref) ? Number(ref) : null;
+}
+function askFor(verdict, env) {
+  if (verdict.kind === "refused")
+    return notByItself(verdict.reason, verdict.number);
+  if (verdict.kind === "unread")
+    return notChecked(verdict.what, env);
+  return notInTime(verdict.what);
 }
 function mergeGuard(context) {
   const { project, input, env, cwd, paths } = context;
@@ -14304,6 +14738,19 @@ function mergeGuard(context) {
     if (off !== null)
       return toolDecision("ask", notByItself(off));
   }
+  const world = {
+    paths,
+    checkout: {
+      root: project.root,
+      commonDir: project.commonDir,
+      isWorktree: project.isWorktree,
+      mainCheckout: project.mainCheckout
+    },
+    folder: cwd,
+    env,
+    timeFor,
+    gateOf
+  };
   const defaultBranches = new Map;
   let own = null;
   let ownRead = false;
@@ -14317,6 +14764,7 @@ function mergeGuard(context) {
     }
     return { late: false, reason: foreignRepository(repo, own) };
   };
+  let allowed = null;
   for (const merge of merges) {
     const number = numericRef(merge.target?.ref ?? null);
     if (merge.admin) {
@@ -14337,62 +14785,12 @@ function mergeGuard(context) {
         return toolDecision("ask", notByItself(foreign.reason, number));
       }
     }
-    const viewLeft = timeFor(GH_TIMEOUT_MS2);
-    if (viewLeft <= 0) {
-      return toolDecision("ask", notInTime("the pull request this command names"));
-    }
-    const view = viewPullRequest2(target, cwd, env, viewLeft);
-    if (view === null) {
-      return toolDecision("ask", notChecked("the pull request this command names", env));
-    }
-    let read;
-    try {
-      read = gateOf(view.base);
-    } catch (error) {
-      return toolDecision("ask", notByItself(workflowUnread(error), view.number));
-    }
-    if (read === "late") {
-      return toolDecision("ask", notInTime(`the policy committed on ${view.base}`));
-    }
-    if (!read.ok) {
-      return toolDecision("ask", notByItself(policyUnread(view.base, read.why), view.number));
-    }
-    const { resolved, config: committed } = read.gate;
-    const where = target.repo ?? "";
-    if (!defaultBranches.has(where)) {
-      const branchLeft = timeFor(GH_TIMEOUT_MS2);
-      if (branchLeft <= 0) {
-        return toolDecision("ask", notInTime("this repository's default branch"));
-      }
-      defaultBranches.set(where, defaultBranchOf(cwd, env, target.repo, branchLeft));
-    }
-    const defaultBranch = defaultBranches.get(where) ?? null;
-    if (defaultBranch === null) {
-      return toolDecision("ask", notChecked("this repository's default branch", env));
-    }
-    const branchRefusal = autoMergeRefusal(resolved, committed, view.base, defaultBranch);
-    let checks = null;
-    if (branchRefusal === null) {
-      const checksLeft = timeFor(GH_TIMEOUT_MS2);
-      if (checksLeft <= 0) {
-        return toolDecision("ask", notInTime(`the required checks of #${view.number}`));
-      }
-      checks = requiredChecks(view.number, target.repo, cwd, env, checksLeft);
-      if (checks === null) {
-        return toolDecision("ask", notChecked(`the required checks of #${view.number}`, env));
-      }
-    }
-    const repository = project.mainCheckout ?? project.root;
-    const reviewed = !resolved.reviewBeforePush.value || hasReview(reviewsFile(paths.stateDir, repository), view.headOid, resolved.reviewAgents.value);
-    const reason = mergeRefusal({
-      branchRefusal,
-      checks,
-      headOid: view.headOid,
-      reviewBeforePush: resolved.reviewBeforePush.value,
-      reviewed
-    });
-    if (reason !== null)
-      return toolDecision("ask", notByItself(reason, view.number));
+    const verdict = checkPullRequest(world, target, defaultBranches);
+    if (verdict.kind === "silent")
+      return SILENT;
+    if (verdict.kind !== "allowed")
+      return toolDecision("ask", askFor(verdict, env));
+    allowed = verdict.reason;
   }
   for (const opening of openings) {
     if (opening.refusal !== null) {
@@ -14428,6 +14826,9 @@ function mergeGuard(context) {
     });
     if (why !== null)
       return toolDecision("ask", notOpenedByItself(opening, why));
+  }
+  if (allowed !== null && !crew && exactMergeOf(command, dialect) !== null) {
+    return toolDecision("allow", allowed);
   }
   return SILENT;
 }
