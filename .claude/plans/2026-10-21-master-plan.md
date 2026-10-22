@@ -453,6 +453,16 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **`crew resume` lands in the main checkout (found live).** CC5 waited on a git ask; the lead stopped it and ran `crew resume`, which runs `claude respawn <id>` from `record.repo`: the session came back in the main checkout, `crew-role` marked it failed and the watch stopped it (nothing written). CC5 continues as round 2 from round 1's head (`0049873`, brief `briefs/cc5-2.md`); round 1's record stays until round 2 merges (its commits are not on the lead's branch yet). **CR1** (after CC5 and CC7): one proved way to bring a crew session back in its worktree for every resume path, the owner's probe in the morning, and `crew rm`/`status`/`stop` take the one live record when the others of that name are removed (brief `briefs/cr1.md`). **Until CR1: never `crew resume` or `crew answer` a stopped crew session; continue it as a new round from its branch head.**
 
+- 2026-10-23 (overnight): **BR1 merged** (`5068924`, bundles `32a0914`): root cause proved — a session the Claude daemon starts has no `DISPLAY`, so the Playwright MCP's own detached Chrome start died at once and its call failed at the relay's 30 s deadline. The launcher now starts Chrome itself with the desktop's display (read from the systemd user manager, bounded), waits for Chrome's own lock, or ends at once with one plain line; `browser check` has a whole-run limit and never hangs.
+
+### For the owner in the morning
+
+1. Read **Decided overnight** below.
+2. The 1.1.0 pull request: read it and its CI result; the merge is yours.
+3. Live proofs the crew sessions could not run: BR1 — close Chrome, then run `cc-smart-dev-kit browser check` from a terminal (it should start Chrome in the `claude-code` profile and connect); CR1's probe (its report names the exact `!` commands) for how a `--bg -w` session comes back in its worktree.
+4. After 1.1.0 is installed: remove `crew.max` 12 / `crew.maxOpus` 4 from this machine's own workflow file (now the machine-wide ceiling); turn the status line on (`cc-smart-dev-kit setup --statusline`) so the opus usage guard holds.
+5. Any crew session still waiting on a permission prompt (`claude attach <name>`).
+
 ### Decided overnight (for the owner's review)
 
 - **CC8 (no guard asks a crew session where the fix is mechanical).** CC6 listed every other ask a crew session can still meet (merge-guard, agent-guard, job-route, session-escape-guard, the bun shim's no-bun ask). Decided: build CC6's recommendation for each — a deny that names the step in a crew session, the person's own asks unchanged; a guard's crash and non-JSON input still ask (the bug path). Why: the owner's "I don't want to answer it again and again", and the hooks rule (a mechanical fix is a deny with the step). To undo: drop CC8 before the 1.1.0 merge.
