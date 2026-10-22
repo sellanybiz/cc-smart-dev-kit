@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CREW_ENV } from "../crew/session";
 
 const created: string[] = [];
 
@@ -26,7 +27,7 @@ const SESSION_VARIABLES: readonly string[] = [
   "CLAUDECODE",
   // A crew session's own id: every guard's crew part would otherwise fire in every test run
   // from a crew session (F2b-1: a plain session must keep today's silence).
-  "CC_SMART_DEV_KIT_CREW",
+  CREW_ENV,
   "TERM_PROGRAM",
   "LC_TERMINAL",
   "TMUX",

@@ -168,8 +168,16 @@ describe("Claude Code's own worktrees, and the retired engine", () => {
     expect(check(repo)).toEqual([
       engineLine(".claude/settings.json", ["worktree-remove"]),
       engineLine(".claude/settings.local.json", ["worktree-create"]),
-      // The plugin wires verify-gate on Stop since 1.1.0, so the project's own Stop hook now
-      // runs beside a plugin hook `ownHooks` does not name: doctor warns, as for any other.
+    ]);
+  });
+
+  test("a project Stop hook beside verify-gate: a warning only when the project sets checks.fast", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { checks: { fast: "bun run check" } });
+    writeClaudeFile(repo, "settings.json", {
+      hooks: { Stop: [{ hooks: [{ type: "command", command: "./stop.sh" }] }] },
+    });
+    expect(check(repo)).toEqual([
       "! project: the plugin's verify-gate and the project's ./stop.sh (.claude/settings.json) both run on Stop, so both may answer. If that is the project's own copy of verify-gate, list \"verify-gate\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
     ]);
   });

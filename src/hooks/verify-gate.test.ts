@@ -6,14 +6,15 @@ import { CREW_ENV } from "../crew/session";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { verifyGateHook } from "./specs";
+import { ranCheck } from "./verify-gate";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const CHECK = "bun run typecheck";
 
 /** The project's file with the fast check, in a fresh clone. */
-function project(): string {
+function project(check = CHECK): string {
   const { repo } = makeClone();
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", { checks: { fast: CHECK } });
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", { checks: { fast: check } });
   return repo;
 }
 
@@ -29,6 +30,29 @@ function toolUse(name: string, input: Record<string, unknown>, extra = {}) {
   };
 }
 
+/** One `tool_result` line for the call `toolUse` made. */
+function toolResult(
+  name: string,
+  result: { content: unknown; isError?: boolean },
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    type: "user",
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: `toolu_${name}`,
+          content: result.content,
+          ...(result.isError === true ? { is_error: true } : {}),
+        },
+      ],
+      role: "user",
+    },
+    ...extra,
+  };
+}
+
 /** A transcript file holding these lines, in order. */
 function transcript(lines: Array<Record<string, unknown>>): string {
   const file = join(tempDir("verify-gate-transcript"), "session.jsonl");
@@ -39,8 +63,22 @@ function transcript(lines: Array<Record<string, unknown>>): string {
 const EDIT = toolUse("Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" });
 const WRITE = toolUse("Write", { file_path: "src/b.ts", content: "b" });
 
+/** A Bash or PowerShell call. */
+function shell(name: string, command: string) {
+  return toolUse(name, { command });
+}
+
 /** A Bash call that runs the project's fast check. */
-const CHECKED = toolUse("Bash", { command: CHECK });
+const CHECKED = shell("Bash", CHECK);
+
+/** The reason this hook gives, written by hand: the test must not compute it. */
+const REASON = `This session changed files and has not run the project's fast check since: run \`${CHECK}\`, then stop.`;
+
+/** What Claude Code writes into the transcript when a Stop hook's block continues the turn. */
+const REMINDER = {
+  type: "user",
+  message: { content: [{ type: "text", text: `Stop hook feedback:\n${REASON}` }], role: "user" },
+};
 
 /** The Stop input for a session in `repo` on `path`. */
 function stop(repo: string, path: string): Record<string, unknown> {
@@ -54,10 +92,7 @@ function stop(repo: string, path: string): Record<string, unknown> {
 }
 
 /** The one block the hook gives, exactly as Claude Code reads it. */
-const BLOCK = JSON.stringify({
-  decision: "block",
-  reason: `This session changed files and has not run the project's fast check since: run \`${CHECK}\`, then stop.`,
-});
+const BLOCK = JSON.stringify({ decision: "block", reason: REASON });
 
 describe("verify-gate", () => {
   test("files changed and the check did not run: one block, naming the command", async () => {
@@ -78,13 +113,71 @@ describe("verify-gate", () => {
     expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({ stdout: BLOCK });
   });
 
+  test("another Bash call is not the check: the block stays", async () => {
+    const repo = project();
+    const path = transcript([EDIT, shell("Bash", "ls -la")]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({ stdout: BLOCK });
+  });
+
   test("a compound line that runs the check counts: `cd … && bun run typecheck 2>&1 | tail`", async () => {
+    const repo = project();
+    const path = transcript([EDIT, shell("Bash", `cd ${repo} && ${CHECK} 2>&1 | tail -20`)]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({});
+  });
+
+  test("a PowerShell line counts too: the Windows tool is a shell as well", async () => {
+    const repo = project();
+    const path = transcript([EDIT, shell("PowerShell", CHECK)]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({});
+  });
+
+  test("the check through `bash -c` counts: the shell reader steps inside", async () => {
+    const repo = project();
+    const path = transcript([EDIT, shell("Bash", `bash -c '${CHECK}'`)]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({});
+  });
+
+  test('a line that only quotes the check runs it not: `echo "bun run typecheck"`', async () => {
+    const repo = project();
+    const path = transcript([EDIT, shell("Bash", `echo "${CHECK}"`)]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({ stdout: BLOCK });
+  });
+
+  test("a check that failed still ran: its error result is no reason to remind", async () => {
     const repo = project();
     const path = transcript([
       EDIT,
-      toolUse("Bash", { command: `cd ${repo} && ${CHECK} 2>&1 | tail -20` }),
+      CHECKED,
+      toolResult("Bash", {
+        content: "error TS2322: Type 'string' is not assignable",
+        isError: true,
+      }),
     ]);
     expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({});
+  });
+
+  test("an edit that was refused changed nothing: silent", async () => {
+    const repo = project();
+    const path = transcript([
+      EDIT,
+      toolResult("Edit", {
+        content: "The user doesn't want to proceed with this tool use.",
+        isError: true,
+      }),
+    ]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({});
+  });
+
+  test("the reminder's own feedback is no second reminder: the next turn is silent", async () => {
+    const repo = project();
+    const path = transcript([EDIT, REMINDER]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({});
+  });
+
+  test("a change after the reminder earns the next one", async () => {
+    const repo = project();
+    const path = transcript([EDIT, REMINDER, WRITE]);
+    expect(await runHook(verifyGateHook, stop(repo, path), hookEnv())).toEqual({ stdout: BLOCK });
   });
 
   test("the stop a block caused (stop_hook_active): silent, never a second block", async () => {
@@ -153,5 +246,33 @@ describe("verify-gate", () => {
     const path = transcript([EDIT]);
     const input = { ...stop(repo, path), hook_event_name: "SubagentStop" };
     expect(await runHook(verifyGateHook, input, hookEnv())).toEqual({});
+  });
+});
+
+describe("ranCheck", () => {
+  test("the check's words, whole: a longer script name is not the check", () => {
+    expect(ranCheck("bun run check:neutral", "bun run check")).toBe(false);
+    expect(ranCheck("bun run check", "bun run check")).toBe(true);
+    expect(ranCheck("bun run check:neutral && bun run check", "bun run check")).toBe(true);
+    expect(ranCheck("bun run typecheck", "bun run check")).toBe(false);
+  });
+
+  test("wrappers, pipes and extra spaces are read through; quotes around it alone are not a run", () => {
+    expect(ranCheck("cd /x && bun   run check 2>&1 | tail -5", "bun run check")).toBe(true);
+    expect(ranCheck("timeout 300 bun run check", "bun run check")).toBe(true);
+    expect(ranCheck('echo "bun run check"', "bun run check")).toBe(false);
+    expect(ranCheck("bash -c 'bun run check'", "bun run check")).toBe(true);
+  });
+
+  test("a compound check matches when its commands run in that order", () => {
+    const check = "bun run typecheck && bun test src/changed";
+    expect(ranCheck("bun run typecheck && bun test src/changed", check)).toBe(true);
+    expect(ranCheck("bun run typecheck; bun test src/changed", check)).toBe(true);
+    expect(ranCheck("bun test src/changed && bun run typecheck", check)).toBe(false);
+  });
+
+  test("PowerShell reads the line in its own dialect", () => {
+    expect(ranCheck("bun run check; Write-Host done", "bun run check", "powershell")).toBe(true);
+    expect(ranCheck("bun run check", "bun run check", "bash")).toBe(true);
   });
 });

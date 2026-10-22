@@ -150,7 +150,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    * `verify-gate` hook blocks a stop **once** when this session changed files and no Bash call
    * ran `fast` after the last change. Write it as you would type it
    * (`"bun run typecheck && bun test src/changed"`); `project init` offers one read from
-   * `package.json`'s scripts. Optional, and inside it `fast` is required: `{}` names no check.
+   * `package.json`'s scripts. Optional, and inside it `fast` is required: `{}` is refused.
    * A field of 1.1.0: a project that sets it raises `requires` to `>=1.1`.
    */
   checks: z.strictObject({ fast: z.string().trim().min(1) }).optional(),

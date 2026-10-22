@@ -201,21 +201,27 @@ export interface DetectedFacts {
   fastCheck: string | null;
 }
 
-/** The script names that make an obvious fast check, the cheapest first. */
-const FAST_CHECK_SCRIPTS = ["check", "typecheck", "lint", "test"] as const;
+/**
+ * The script names that make an obvious fast check: the quick checks first, the project's own
+ * full `check` after them, its tests last (a suite is the slowest way to check one change).
+ */
+const FAST_CHECK_SCRIPTS = ["typecheck", "lint", "check", "test"] as const;
 
-/** The prefix a `package.json` script runs with, read from the lockfile beside it. */
+/**
+ * The prefix a `package.json` script runs with, read from the lockfile beside it. `yarn run`
+ * on purpose: `yarn check` is Yarn 1's own built-in, not the project's script.
+ */
 function runnerOf(root: string): string {
   if (existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb"))) return "bun run";
   if (existsSync(join(root, "pnpm-lock.yaml"))) return "pnpm run";
-  if (existsSync(join(root, "yarn.lock"))) return "yarn";
+  if (existsSync(join(root, "yarn.lock"))) return "yarn run";
   return "npm run";
 }
 
 /**
  * The fast check `project init` offers, read from the repo: a `package.json` script that says
- * the project checks itself (`check` first, then `typecheck`, `lint`, `test`), run with the
- * package manager the lockfile names. Null when the repo has no `package.json`, no such
+ * the project checks itself (`typecheck`, `lint`, `check`, `test` — in that order), run with
+ * the package manager the lockfile names. Null when the repo has no `package.json`, no such
  * script, or one this cannot read: then the question's default is `none`.
  */
 export function defaultFastCheck(root: string): string | null {
@@ -721,7 +727,7 @@ the project.
   --protected <a,b>      the branches the git guard asks about (default: the default
                          branch, the base, and GitHub's protected branches)
   --check <command>      the fast check a session runs before it stops (default: a script in
-                         package.json — check, typecheck, lint or test — with its package
+                         package.json — typecheck, lint, check or test — with its package
                          manager; "none" for no check)
   --no-check             no fast check
   --[no-]guard-main-folder
