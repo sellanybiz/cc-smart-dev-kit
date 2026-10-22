@@ -58,6 +58,7 @@ import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
 import { isObject } from "../setup/managed-json";
 import { CLAUDE_TIMEOUT_MS, commandContext } from "../update/apply";
+import { checkoutFold } from "../update/retired-repos";
 import {
   heldSince,
   type LastCheck,
@@ -1097,8 +1098,8 @@ async function projectAdd(
   }
   let root: null | string;
   try {
-    const checkout = await locateCheckoutAsync(folder, { env: action.portal.env });
-    root = checkout === null ? null : (checkout.mainCheckout ?? checkout.root);
+    root =
+      checkoutFold(await locateCheckoutAsync(folder, { env: action.portal.env }))?.main ?? null;
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
