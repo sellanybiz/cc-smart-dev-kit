@@ -30088,12 +30088,12 @@ function localFiles(worktree, mainCheckout, env) {
 import { existsSync as existsSync46, readFileSync as readFileSync57, statSync as statSync16 } from "fs";
 import { basename as basename9, isAbsolute as isAbsolute5, join as join52, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
-function idleMinutes(worktree, now) {
+function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
     admin = readFileSync57(join52(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
-    return 0;
+    return null;
   }
   if (!isAbsolute5(admin))
     admin = resolve7(worktree, admin);
@@ -30103,7 +30103,10 @@ function idleMinutes(worktree, now) {
       last = Math.max(last, statSync16(join52(admin, file)).mtimeMs);
     } catch {}
   }
-  return last === 0 ? 0 : (now - last) / 60000;
+  return last === 0 ? null : (now - last) / 60000;
+}
+function idleMinutes(worktree, now) {
+  return idleMinutesOrNull(worktree, now) ?? 0;
 }
 function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.locked)
@@ -30242,6 +30245,12 @@ function counted(n, word) {
 function exactOnly(limits) {
   return limits.lines === 0 && limits.files === 0 && limits.percent === 0;
 }
+function allowanceOf(reviewed, limits) {
+  return {
+    files: Math.max(limits.files, Math.floor(reviewed.files * limits.percent / 100)),
+    lines: Math.max(limits.lines, Math.floor(reviewed.lines * limits.percent / 100))
+  };
+}
 function coverRefusal(delta, reviewed, limits, review) {
   const of = short(review);
   if (exactOnly(limits)) {
@@ -30252,11 +30261,10 @@ function coverRefusal(delta, reviewed, limits, review) {
     const others = more.length === 0 ? "" : ` (and ${counted(more.length, "other")})`;
     return `${binary}${others} is a binary file changed after the review of ${of}: its change cannot be counted`;
   }
-  const maxLines = Math.max(limits.lines, Math.floor(reviewed.lines * limits.percent / 100));
-  const maxFiles = Math.max(limits.files, Math.floor(reviewed.files * limits.percent / 100));
-  if (delta.lines <= maxLines && delta.files <= maxFiles)
+  const allowance = allowanceOf(reviewed, limits);
+  if (delta.lines <= allowance.lines && delta.files <= allowance.files)
     return null;
-  return `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` + `over the limit of ${counted(maxLines, "line")} and ${counted(maxFiles, "file")} ` + `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` + `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`;
+  return `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` + `over the limit of ${counted(allowance.lines, "line")} and ${counted(allowance.files, "file")} ` + `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` + `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`;
 }
 function parseGitVersion(out) {
   const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
@@ -30476,7 +30484,13 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
   }
   const smallest = measured[0];
   if (smallest !== undefined && smallest.refusal !== null) {
-    return { covered: false, review: smallest.review, why: smallest.refusal };
+    return {
+      covered: false,
+      review: smallest.review,
+      why: smallest.refusal,
+      delta: smallest.delta,
+      reviewed: smallest.reviewed
+    };
   }
   const [first] = unread;
   if (first !== undefined)
@@ -30712,7 +30726,7 @@ function workOnRef(repo, ref, head, env, replayer = replayerFor(repo, env)) {
     return "replay";
   return replay === "changes" ? "missing" : "unknown";
 }
-function judgeOne(repo, listed, all, look) {
+function judgeOne(repo, listed, all, look, idle) {
   const ahead = runGit(repo, ["rev-list", "--count", `${look.ref}..${listed.head}`], look.env);
   if (!ahead.ok) {
     return {
@@ -30728,7 +30742,7 @@ function judgeOne(repo, listed, all, look) {
     base: look.label,
     containers: look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
     gitTooOld: look.replayer.tooOld,
-    idleMinutes: idleMinutes(listed.path, look.now),
+    idleMinutes: idle ?? 0,
     innerWorktree: innerWorktreeOf(listed.path, all),
     locked: listed.locked,
     mergedBy: aheadOfBase > 0 ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer) : null,
@@ -30760,20 +30774,22 @@ function scanWorktrees(repo, options) {
   const look = lookAt(repo, options);
   const all = listWorktrees(repo, env);
   const [main, ...others] = all;
-  const scanned = main === undefined ? [] : [{ listed: main, state: "main" }];
+  const scanned = main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
   for (const listed of others) {
     if (listed.locked) {
       scanned.push({
+        idleMinutes: idleMinutesOrNull(listed.path, look.now),
         listed,
         state: { finished: false, held: false, why: "locked with `git worktree lock`" }
       });
       continue;
     }
     if (listed.prunable || !existsSync47(listed.path)) {
-      scanned.push({ listed, state: "gone" });
+      scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
-    scanned.push({ listed, state: judgeOne(repo, listed, all, look) });
+    const idle = idleMinutesOrNull(listed.path, look.now);
+    scanned.push({ idleMinutes: idle, listed, state: judgeOne(repo, listed, all, look, idle) });
   }
   return scanned;
 }
@@ -30786,7 +30802,8 @@ function removeWorktree(repo, listed, options) {
       status: "kept"
     };
   }
-  const fresh = judgeOne(repo, current, all, lookAt(repo, options));
+  const look = lookAt(repo, options);
+  const fresh = judgeOne(repo, current, all, look, idleMinutesOrNull(current.path, look.now));
   if (!fresh.finished) {
     return {
       said: [`kept ${listed.path}: ${fresh.why}`],
@@ -33083,6 +33100,22 @@ function reviewRefusal(cover) {
     return cover.why;
   return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
 }
+function counted2(change) {
+  return { binary: change.binary.length, files: change.files, lines: change.lines };
+}
+function countsOf(change) {
+  return change === null || change === undefined ? null : counted2(change);
+}
+function detailOf(cover, limits) {
+  const reviewed = cover?.reviewed;
+  return {
+    allowance: reviewed === null || reviewed === undefined ? null : allowanceOf(reviewed, limits),
+    delta: countsOf(cover?.delta),
+    limits: { files: limits.files, lines: limits.lines, percent: limits.percent },
+    review: cover?.review ?? null,
+    reviewed: countsOf(reviewed)
+  };
+}
 function short2(sha) {
   return sha.slice(0, 7);
 }
@@ -33205,13 +33238,18 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
   try {
     read = gateFor(world, view.base);
   } catch (error) {
-    return { kind: "refused", number: view.number, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: view.number, reason: policyUnread(view.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: view.number,
+      reason: policyUnread(view.base, read.why)
+    };
   }
   const { resolved, config: committed } = read.gate;
   if (committed?.ownHooks?.includes("merge-guard") === true)
@@ -33245,8 +33283,9 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     }
   }
   const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
-  if (before !== null)
-    return { kind: "refused", number: view.number, reason: before };
+  if (before !== null) {
+    return { detail: null, kind: "refused", number: view.number, reason: before };
+  }
   const review = reviewGateOf(world.paths, world.checkout, resolved);
   const cover = coverOf(world, review, {
     head: view.headOid,
@@ -33254,9 +33293,16 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     base: view.base
   });
   const refused = reviewRefusal(cover);
-  if (refused !== null)
-    return { kind: "refused", number: view.number, reason: refused };
+  if (refused !== null) {
+    return {
+      detail: detailOf(cover, review.limits),
+      kind: "refused",
+      number: view.number,
+      reason: refused
+    };
+  }
   return {
+    detail: detailOf(cover, review.limits),
     kind: "allowed",
     reason: pullRequestAllowed(cover?.covered === true ? cover : null)
   };
@@ -33272,6 +33318,7 @@ function checkBranch(world, target) {
   const head = commitOf2(world, target.branch) ?? commitOf2(world, `origin/${target.branch}`);
   if (head === null) {
     return {
+      detail: null,
       kind: "refused",
       number: null,
       reason: `branch ${target.branch} is not in this checkout`
@@ -33281,20 +33328,27 @@ function checkBranch(world, target) {
   try {
     read = gateFor(world, target.base);
   } catch (error) {
-    return { kind: "refused", number: null, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: null, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: null, what: `the policy committed on ${target.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: null, reason: policyUnread(target.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: null,
+      reason: policyUnread(target.base, read.why)
+    };
   }
   const review = reviewGateOf(world.paths, world.checkout, read.gate.resolved);
   const cover = coverOf(world, review, { head, branch: target.branch, base: target.base });
+  const detail = detailOf(cover, review.limits);
   const refused = reviewRefusal(cover);
   if (refused !== null)
-    return { kind: "refused", number: null, reason: refused };
+    return { detail, kind: "refused", number: null, reason: refused };
   return {
+    detail,
     kind: "allowed",
     reason: branchAllowed(target.branch, head, cover?.covered === true ? cover : null)
   };
@@ -37663,8 +37717,8 @@ function numstatRecord(record) {
   if (found?.[1] === undefined || found[2] === undefined || found[3] === undefined)
     return null;
   return {
-    added: found[1] === "-" ? 0 : Number(found[1]),
-    deleted: found[2] === "-" ? 0 : Number(found[2]),
+    added: found[1] === "-" ? null : Number(found[1]),
+    deleted: found[2] === "-" ? null : Number(found[2]),
     path: found[3]
   };
 }
@@ -37675,7 +37729,7 @@ function diffAgainstBase(folder, baseSha, env) {
   }
   let insertions = 0;
   let deletions = 0;
-  const paths = [];
+  const byFile = [];
   for (const record of run.out.split("\x00")) {
     if (record === "")
       continue;
@@ -37683,11 +37737,17 @@ function diffAgainstBase(folder, baseSha, env) {
     if (one === null) {
       throw new DiffError(`git diff printed a record this reader cannot read: ${record}`);
     }
-    insertions += one.added;
-    deletions += one.deleted;
-    paths.push(one.path);
+    insertions += one.added ?? 0;
+    deletions += one.deleted ?? 0;
+    byFile.push(one);
   }
-  return { deletions, files: paths.length, insertions, paths };
+  return {
+    byFile,
+    deletions,
+    files: byFile.length,
+    insertions,
+    paths: byFile.map((one) => one.path)
+  };
 }
 function outsideBrief(paths, patterns) {
   if (patterns.length === 0)

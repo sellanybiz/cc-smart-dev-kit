@@ -6723,12 +6723,12 @@ function localFiles(worktree, mainCheckout, env) {
 // src/hooks/worktree-leftovers.ts
 import { existsSync as existsSync6, readFileSync as readFileSync7, statSync as statSync5 } from "fs";
 import { basename as basename3, isAbsolute, join as join10, resolve as resolve4 } from "path";
-function idleMinutes(worktree, now) {
+function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
     admin = readFileSync7(join10(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
-    return 0;
+    return null;
   }
   if (!isAbsolute(admin))
     admin = resolve4(worktree, admin);
@@ -6738,7 +6738,7 @@ function idleMinutes(worktree, now) {
       last = Math.max(last, statSync5(join10(admin, file)).mtimeMs);
     } catch {}
   }
-  return last === 0 ? 0 : (now - last) / 60000;
+  return last === 0 ? null : (now - last) / 60000;
 }
 
 // src/workflow/reviews.ts
@@ -7201,7 +7201,7 @@ function workOnBase(repo, baseRef, head, branch, env, replayer) {
     return "pull request";
   return null;
 }
-function judgeOne(repo, listed, all, look) {
+function judgeOne(repo, listed, all, look, idle) {
   const ahead = runGit(repo, ["rev-list", "--count", `${look.ref}..${listed.head}`], look.env);
   if (!ahead.ok) {
     return {
@@ -7217,7 +7217,7 @@ function judgeOne(repo, listed, all, look) {
     base: look.label,
     containers: look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
     gitTooOld: look.replayer.tooOld,
-    idleMinutes: idleMinutes(listed.path, look.now),
+    idleMinutes: idle ?? 0,
     innerWorktree: innerWorktreeOf(listed.path, all),
     locked: listed.locked,
     mergedBy: aheadOfBase > 0 ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer) : null,
@@ -7249,20 +7249,22 @@ function scanWorktrees(repo, options) {
   const look = lookAt(repo, options);
   const all = listWorktrees(repo, env);
   const [main, ...others] = all;
-  const scanned = main === undefined ? [] : [{ listed: main, state: "main" }];
+  const scanned = main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
   for (const listed of others) {
     if (listed.locked) {
       scanned.push({
+        idleMinutes: idleMinutesOrNull(listed.path, look.now),
         listed,
         state: { finished: false, held: false, why: "locked with `git worktree lock`" }
       });
       continue;
     }
     if (listed.prunable || !existsSync7(listed.path)) {
-      scanned.push({ listed, state: "gone" });
+      scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
-    scanned.push({ listed, state: judgeOne(repo, listed, all, look) });
+    const idle = idleMinutesOrNull(listed.path, look.now);
+    scanned.push({ idleMinutes: idle, listed, state: judgeOne(repo, listed, all, look, idle) });
   }
   return scanned;
 }
@@ -7275,7 +7277,8 @@ function removeWorktree(repo, listed, options) {
       status: "kept"
     };
   }
-  const fresh = judgeOne(repo, current, all, lookAt(repo, options));
+  const look = lookAt(repo, options);
+  const fresh = judgeOne(repo, current, all, look, idleMinutesOrNull(current.path, look.now));
   if (!fresh.finished) {
     return {
       said: [`kept ${listed.path}: ${fresh.why}`],

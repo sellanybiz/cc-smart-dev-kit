@@ -13320,6 +13320,20 @@ function checkStatus(check) {
     return "info";
   return "ok";
 }
+var CHECK_GROUPS = [
+  { id: "plugin", title: "The plugin" },
+  { id: "updates", title: "Updates" },
+  { id: "companions", title: "Companion plugins" },
+  { id: "mcp", title: "MCP servers" },
+  { id: "browser", title: "Browser" },
+  { id: "alerts", title: "Alerts and limits" },
+  { id: "project", title: "This project" },
+  { id: "gateway", title: "Gateway" },
+  { id: "live", title: "Live check" }
+];
+function groupTitle(group) {
+  return CHECK_GROUPS.find((entry) => entry.id === group)?.title ?? group;
+}
 
 // src/cli/ui/out.ts
 var UNICODE_MARKS = {
@@ -13594,6 +13608,7 @@ var BUCKET_MS = {
   "30d": 6 * 60 * 60 * 1000,
   "90d": 24 * 60 * 60 * 1000
 };
+var HISTORY_BUCKET_MS = BUCKET_MS;
 var HISTORY_BY = ["target", "slot", "model", "session"];
 var DEFAULT_HISTORY_RANGE = "1d";
 var DEFAULT_HISTORY_BY = "target";
@@ -26754,12 +26769,12 @@ function localFiles(worktree, mainCheckout, env) {
 import { existsSync as existsSync42, readFileSync as readFileSync52, statSync as statSync15 } from "fs";
 import { basename as basename8, isAbsolute as isAbsolute5, join as join47, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
-function idleMinutes(worktree, now) {
+function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
     admin = readFileSync52(join47(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
-    return 0;
+    return null;
   }
   if (!isAbsolute5(admin))
     admin = resolve7(worktree, admin);
@@ -26769,7 +26784,10 @@ function idleMinutes(worktree, now) {
       last = Math.max(last, statSync15(join47(admin, file)).mtimeMs);
     } catch {}
   }
-  return last === 0 ? 0 : (now - last) / 60000;
+  return last === 0 ? null : (now - last) / 60000;
+}
+function idleMinutes(worktree, now) {
+  return idleMinutesOrNull(worktree, now) ?? 0;
 }
 function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.locked)
@@ -26908,6 +26926,12 @@ function counted(n, word) {
 function exactOnly(limits) {
   return limits.lines === 0 && limits.files === 0 && limits.percent === 0;
 }
+function allowanceOf(reviewed, limits) {
+  return {
+    files: Math.max(limits.files, Math.floor(reviewed.files * limits.percent / 100)),
+    lines: Math.max(limits.lines, Math.floor(reviewed.lines * limits.percent / 100))
+  };
+}
 function coverRefusal(delta, reviewed, limits, review) {
   const of = short(review);
   if (exactOnly(limits)) {
@@ -26918,11 +26942,10 @@ function coverRefusal(delta, reviewed, limits, review) {
     const others = more.length === 0 ? "" : ` (and ${counted(more.length, "other")})`;
     return `${binary}${others} is a binary file changed after the review of ${of}: its change cannot be counted`;
   }
-  const maxLines = Math.max(limits.lines, Math.floor(reviewed.lines * limits.percent / 100));
-  const maxFiles = Math.max(limits.files, Math.floor(reviewed.files * limits.percent / 100));
-  if (delta.lines <= maxLines && delta.files <= maxFiles)
+  const allowance = allowanceOf(reviewed, limits);
+  if (delta.lines <= allowance.lines && delta.files <= allowance.files)
     return null;
-  return `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` + `over the limit of ${counted(maxLines, "line")} and ${counted(maxFiles, "file")} ` + `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` + `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`;
+  return `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` + `over the limit of ${counted(allowance.lines, "line")} and ${counted(allowance.files, "file")} ` + `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` + `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`;
 }
 function parseGitVersion(out) {
   const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
@@ -27142,7 +27165,13 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
   }
   const smallest = measured[0];
   if (smallest !== undefined && smallest.refusal !== null) {
-    return { covered: false, review: smallest.review, why: smallest.refusal };
+    return {
+      covered: false,
+      review: smallest.review,
+      why: smallest.refusal,
+      delta: smallest.delta,
+      reviewed: smallest.reviewed
+    };
   }
   const [first] = unread;
   if (first !== undefined)
@@ -27378,7 +27407,7 @@ function workOnRef(repo, ref, head, env, replayer = replayerFor(repo, env)) {
     return "replay";
   return replay === "changes" ? "missing" : "unknown";
 }
-function judgeOne(repo, listed, all, look) {
+function judgeOne(repo, listed, all, look, idle) {
   const ahead = runGit(repo, ["rev-list", "--count", `${look.ref}..${listed.head}`], look.env);
   if (!ahead.ok) {
     return {
@@ -27394,7 +27423,7 @@ function judgeOne(repo, listed, all, look) {
     base: look.label,
     containers: look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
     gitTooOld: look.replayer.tooOld,
-    idleMinutes: idleMinutes(listed.path, look.now),
+    idleMinutes: idle ?? 0,
     innerWorktree: innerWorktreeOf(listed.path, all),
     locked: listed.locked,
     mergedBy: aheadOfBase > 0 ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer) : null,
@@ -27426,20 +27455,22 @@ function scanWorktrees(repo, options) {
   const look = lookAt(repo, options);
   const all = listWorktrees(repo, env);
   const [main, ...others] = all;
-  const scanned = main === undefined ? [] : [{ listed: main, state: "main" }];
+  const scanned = main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
   for (const listed of others) {
     if (listed.locked) {
       scanned.push({
+        idleMinutes: idleMinutesOrNull(listed.path, look.now),
         listed,
         state: { finished: false, held: false, why: "locked with `git worktree lock`" }
       });
       continue;
     }
     if (listed.prunable || !existsSync43(listed.path)) {
-      scanned.push({ listed, state: "gone" });
+      scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
-    scanned.push({ listed, state: judgeOne(repo, listed, all, look) });
+    const idle = idleMinutesOrNull(listed.path, look.now);
+    scanned.push({ idleMinutes: idle, listed, state: judgeOne(repo, listed, all, look, idle) });
   }
   return scanned;
 }
@@ -27452,7 +27483,8 @@ function removeWorktree(repo, listed, options) {
       status: "kept"
     };
   }
-  const fresh = judgeOne(repo, current, all, lookAt(repo, options));
+  const look = lookAt(repo, options);
+  const fresh = judgeOne(repo, current, all, look, idleMinutesOrNull(current.path, look.now));
   if (!fresh.finished) {
     return {
       said: [`kept ${listed.path}: ${fresh.why}`],
@@ -28420,6 +28452,22 @@ function reviewRefusal(cover) {
     return cover.why;
   return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
 }
+function counted2(change) {
+  return { binary: change.binary.length, files: change.files, lines: change.lines };
+}
+function countsOf(change) {
+  return change === null || change === undefined ? null : counted2(change);
+}
+function detailOf(cover, limits) {
+  const reviewed = cover?.reviewed;
+  return {
+    allowance: reviewed === null || reviewed === undefined ? null : allowanceOf(reviewed, limits),
+    delta: countsOf(cover?.delta),
+    limits: { files: limits.files, lines: limits.lines, percent: limits.percent },
+    review: cover?.review ?? null,
+    reviewed: countsOf(reviewed)
+  };
+}
 function short2(sha) {
   return sha.slice(0, 7);
 }
@@ -28542,13 +28590,18 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
   try {
     read = gateFor(world, view.base);
   } catch (error) {
-    return { kind: "refused", number: view.number, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: view.number, reason: policyUnread(view.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: view.number,
+      reason: policyUnread(view.base, read.why)
+    };
   }
   const { resolved, config: committed } = read.gate;
   if (committed?.ownHooks?.includes("merge-guard") === true)
@@ -28582,8 +28635,9 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     }
   }
   const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
-  if (before !== null)
-    return { kind: "refused", number: view.number, reason: before };
+  if (before !== null) {
+    return { detail: null, kind: "refused", number: view.number, reason: before };
+  }
   const review = reviewGateOf(world.paths, world.checkout, resolved);
   const cover = coverOf(world, review, {
     head: view.headOid,
@@ -28591,9 +28645,16 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     base: view.base
   });
   const refused = reviewRefusal(cover);
-  if (refused !== null)
-    return { kind: "refused", number: view.number, reason: refused };
+  if (refused !== null) {
+    return {
+      detail: detailOf(cover, review.limits),
+      kind: "refused",
+      number: view.number,
+      reason: refused
+    };
+  }
   return {
+    detail: detailOf(cover, review.limits),
     kind: "allowed",
     reason: pullRequestAllowed(cover?.covered === true ? cover : null)
   };
@@ -28609,6 +28670,7 @@ function checkBranch(world, target) {
   const head = commitOf(world, target.branch) ?? commitOf(world, `origin/${target.branch}`);
   if (head === null) {
     return {
+      detail: null,
       kind: "refused",
       number: null,
       reason: `branch ${target.branch} is not in this checkout`
@@ -28618,20 +28680,27 @@ function checkBranch(world, target) {
   try {
     read = gateFor(world, target.base);
   } catch (error) {
-    return { kind: "refused", number: null, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: null, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: null, what: `the policy committed on ${target.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: null, reason: policyUnread(target.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: null,
+      reason: policyUnread(target.base, read.why)
+    };
   }
   const review = reviewGateOf(world.paths, world.checkout, read.gate.resolved);
   const cover = coverOf(world, review, { head, branch: target.branch, base: target.base });
+  const detail = detailOf(cover, review.limits);
   const refused = reviewRefusal(cover);
   if (refused !== null)
-    return { kind: "refused", number: null, reason: refused };
+    return { detail, kind: "refused", number: null, reason: refused };
   return {
+    detail,
     kind: "allowed",
     reason: branchAllowed(target.branch, head, cover?.covered === true ? cover : null)
   };
@@ -35418,8 +35487,8 @@ function numstatRecord(record) {
   if (found?.[1] === undefined || found[2] === undefined || found[3] === undefined)
     return null;
   return {
-    added: found[1] === "-" ? 0 : Number(found[1]),
-    deleted: found[2] === "-" ? 0 : Number(found[2]),
+    added: found[1] === "-" ? null : Number(found[1]),
+    deleted: found[2] === "-" ? null : Number(found[2]),
     path: found[3]
   };
 }
@@ -35430,7 +35499,7 @@ function diffAgainstBase(folder, baseSha, env) {
   }
   let insertions = 0;
   let deletions = 0;
-  const paths = [];
+  const byFile = [];
   for (const record of run.out.split("\x00")) {
     if (record === "")
       continue;
@@ -35438,11 +35507,17 @@ function diffAgainstBase(folder, baseSha, env) {
     if (one === null) {
       throw new DiffError(`git diff printed a record this reader cannot read: ${record}`);
     }
-    insertions += one.added;
-    deletions += one.deleted;
-    paths.push(one.path);
+    insertions += one.added ?? 0;
+    deletions += one.deleted ?? 0;
+    byFile.push(one);
   }
-  return { deletions, files: paths.length, insertions, paths };
+  return {
+    byFile,
+    deletions,
+    files: byFile.length,
+    insertions,
+    paths: byFile.map((one) => one.path)
+  };
 }
 function outsideBrief(paths, patterns) {
   if (patterns.length === 0)
@@ -36489,7 +36564,7 @@ function pruneAll(cache, nowMs) {
 // src/portal/api/work.ts
 var CREW_PAGE_EVENTS = 200;
 var WORK_SESSIONS_MS = 2 * 86400000;
-var GUARD_ASKS_DEFAULT = 200;
+var GUARD_ASKS_DEFAULT = 50;
 function repoOf(deps) {
   try {
     const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
@@ -36570,9 +36645,14 @@ function workAnswer(deps) {
 function mergeVerdictOf(verdict) {
   switch (verdict.kind) {
     case "allowed":
-      return { kind: "allowed", reason: verdict.reason };
+      return { detail: verdict.detail, kind: "allowed", reason: verdict.reason };
     case "refused":
-      return { kind: "refused", number: verdict.number, reason: verdict.reason };
+      return {
+        detail: verdict.detail,
+        kind: "refused",
+        number: verdict.number,
+        reason: verdict.reason
+      };
     case "silent":
       return { kind: "silent" };
     case "unread":
@@ -36611,6 +36691,7 @@ function crewAnswerFor(deps, ref) {
     brief = readFileSync64(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
   } catch {}
   let diff = {
+    byFile: [],
     deletions: 0,
     error: null,
     files: 0,
@@ -36623,6 +36704,7 @@ function crewAnswerFor(deps, ref) {
     try {
       const facts = diffAgainstBase(record.worktree, record.base.sha, deps.action.portal.env);
       diff = {
+        byFile: facts.byFile,
         deletions: facts.deletions,
         error: null,
         files: facts.files,
@@ -36643,10 +36725,24 @@ function crewAnswerFor(deps, ref) {
     crew: crewSummary(record, allEvents),
     diff,
     events,
+    memory: memoryOf(record, allEvents, deps.action.portal.now()),
     mergeCheck,
     report: reportOf(record.reportPath),
     reviews
   };
+}
+function memoryOf(record, events, nowMs) {
+  const kept = events.flatMap((event) => {
+    if (event.crew !== record.id || typeof event.memoryMb !== "number")
+      return [];
+    return [{ at: event.at, mb: event.memoryMb }];
+  });
+  kept.sort((a, b) => a.at.localeCompare(b.at));
+  const running = RUNNING_STATES.includes(record.state);
+  if (running && record.memoryMb !== null) {
+    kept.push({ at: new Date(nowMs).toISOString(), mb: record.memoryMb });
+  }
+  return kept;
 }
 function reportOf(file) {
   if (file === null)
@@ -36682,74 +36778,94 @@ function mergeCheckOf(deps, repo, branch, base) {
     };
   }
 }
+function attachCommand(record) {
+  return record.shortId === null ? null : `claude attach ${record.shortId}`;
+}
+function permissionWaitOf(wait, records) {
+  const record = records.find((one) => one.sessionId === wait.session);
+  return {
+    asker: wait.asker,
+    attach: record === undefined ? null : attachCommand(record),
+    at: wait.at,
+    crew: record === undefined ? null : { id: record.id, name: record.name, shortId: record.shortId },
+    kind: wait.kind,
+    project: wait.project,
+    session: wait.session,
+    tool: wait.tool
+  };
+}
 async function needsAnswer(deps) {
   const paths = deps.action.portal.paths;
   const now = deps.action.portal.now();
   const found = repoOf(deps);
-  const crew = [];
+  let records = [];
   if ("repo" in found) {
     try {
-      for (const record of listCrew(paths.stateDir, found.repo).records) {
-        const index = openQuestionIndex(record);
-        const question = index === null ? undefined : record.questions[index];
-        if (question === undefined)
-          continue;
-        crew.push({
-          askedAt: question.askedAt,
-          crew: {
-            id: record.id,
-            name: record.name,
-            shortId: record.shortId,
-            state: record.state
-          },
-          options: question.options,
-          question: question.question,
-          recommended: question.recommended
-        });
-      }
+      records = listCrew(paths.stateDir, found.repo).records;
     } catch {}
+  }
+  const crew = [];
+  for (const record of records) {
+    const index = openQuestionIndex(record);
+    const question = index === null ? undefined : record.questions[index];
+    if (question === undefined)
+      continue;
+    crew.push({
+      askedAt: question.askedAt,
+      crew: {
+        id: record.id,
+        name: record.name,
+        shortId: record.shortId,
+        state: record.state
+      },
+      options: question.options,
+      question: question.question,
+      recommended: question.recommended
+    });
   }
   const permissions = openWaits(paths, {
     nowMs: now,
     project: null,
     session: null,
     sinceMs: now - OPEN_WAIT_MAX_AGE_MS
-  }).map((wait) => ({
-    asker: wait.asker,
-    at: wait.at,
-    kind: wait.kind,
-    project: wait.project,
-    session: wait.session,
-    tool: wait.tool
-  }));
+  }).map((wait) => permissionWaitOf(wait, records));
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {
-    breaker: breakerOf(deps, now),
+    breakers: await breakersOf2(deps, now),
     crew,
     doctor: {
       at: doctor?.at ?? null,
-      failures: (doctor?.checks ?? []).filter((check) => !check.ok).map((check) => ({ text: check.text }))
+      failures: (doctor?.checks ?? []).flatMap((check) => check.ok ? [] : [
+        {
+          fix: check.fix,
+          section: check.group === undefined ? null : groupTitle(check.group),
+          text: check.text
+        }
+      ])
     },
     permissions,
     update
   };
 }
-function breakerOf(deps, now) {
+async function breakersOf2(deps, now) {
   let text;
   try {
     text = readFileSync64(deps.action.portal.paths.gatewayStateFile, "utf8");
   } catch {
-    return null;
+    return [];
   }
   const state = parseLimitState(text);
   if (state === null)
-    return null;
-  const [slot, record] = currentBreakers(state, now)[0] ?? [];
-  if (slot === undefined || record === undefined)
-    return null;
-  return {
+    return [];
+  const open = currentBreakers(state, now);
+  if (open.length === 0)
+    return [];
+  const router = "config" in deps.found ? await routerFacts(deps.action.portal, deps.found.config.port) : null;
+  const live = router?.up === true ? router.breakers : null;
+  return open.map(([slot, record]) => ({
     held: record.held,
+    heldNow: live === null ? null : live[slot]?.heldNow ?? 0,
     since: new Date(record.since).toISOString(),
     slot,
     targets: record.targets.map((target) => ({
@@ -36757,14 +36873,43 @@ function breakerOf(deps, now) {
       target: target.target,
       until: new Date(target.until).toISOString()
     }))
-  };
+  }));
+}
+function guardBuckets(rows, from, to, bucketMs) {
+  const counts = new Map;
+  for (const row of rows) {
+    const at = bucketStart(row.at, bucketMs);
+    const bucket = counts.get(at) ?? {};
+    bucket[row.hook] = (bucket[row.hook] ?? 0) + 1;
+    counts.set(at, bucket);
+  }
+  const buckets = [];
+  const last = bucketStart(to, bucketMs);
+  for (let at = bucketStart(from, bucketMs);at <= last; at += bucketMs) {
+    buckets.push({ at, byHook: counts.get(at) ?? {} });
+  }
+  return buckets;
 }
 function guardAsksAnswer(deps, query) {
+  const now = deps.action.portal.now();
+  const from = now - HISTORY_RANGE_MS[query.range];
+  const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
     text = readFileSync64(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
-    return { asks: [], byHook: {}, kept: 0, skipped: 0 };
+    return {
+      asks: [],
+      bucketMs,
+      buckets: guardBuckets([], from, now, bucketMs),
+      byHook: {},
+      guards: [],
+      kept: 0,
+      next: null,
+      range: query.range,
+      sessions: [],
+      skipped: 0
+    };
   }
   const asks = [];
   const byHook = {};
@@ -36787,7 +36932,7 @@ function guardAsksAnswer(deps, query) {
     const value = parsed;
     const hook = typeof value.hook === "string" ? value.hook : null;
     const at = typeof value.at === "number" ? value.at : null;
-    if (hook === null || at === null) {
+    if (hook === null || at === null || !Number.isSafeInteger(at)) {
       skipped += 1;
       continue;
     }
@@ -36800,15 +36945,62 @@ function guardAsksAnswer(deps, query) {
       tool: oneLine(typeof value.tool === "string" ? value.tool : "", 64)
     });
   }
-  const kept = asks.filter((ask) => (query.hook === null || ask.hook === query.hook) && (query.session === null || ask.session === query.session) && (query.tool === null || ask.tool === query.tool) && (query.q === null || ask.reason.toLowerCase().includes(query.q.toLowerCase()))).sort((a, b) => b.at - a.at).slice(0, query.limit);
-  return { asks: kept, byHook, kept: kept.length, skipped };
+  const inRange = asks.filter((ask) => ask.at >= from && ask.at <= now);
+  const guards = [...new Set(inRange.map((ask) => ask.hook))].sort();
+  const sessions = [
+    ...new Set(inRange.flatMap((ask) => ask.session === "" ? [] : [ask.session]))
+  ].sort();
+  const keptRows = inRange.filter((ask) => (query.hook === null || ask.hook === query.hook) && (query.session === null || ask.session === query.session) && (query.tool === null || ask.tool === query.tool) && (query.q === null || ask.reason.toLowerCase().includes(query.q.toLowerCase())));
+  const sorted = [...keptRows].sort((a, b) => b.at - a.at);
+  let start = 0;
+  const cursor = query.cursor;
+  if (cursor !== null) {
+    const found = sorted.findIndex((ask) => ask.at <= cursor.at);
+    start = found === -1 ? sorted.length : found;
+    let given = 0;
+    while (given < cursor.n && sorted[start]?.at === cursor.at) {
+      start += 1;
+      given += 1;
+    }
+  }
+  const page = sorted.slice(start, start + query.limit);
+  const last = page[page.length - 1];
+  let next = null;
+  if (last !== undefined && start + query.limit < sorted.length) {
+    const before = cursor !== null && cursor.at === last.at ? cursor.n : 0;
+    const here = page.filter((ask) => ask.at === last.at).length;
+    next = `${last.at}.${before + here}`;
+  }
+  return {
+    asks: page,
+    bucketMs,
+    buckets: guardBuckets(keptRows, from, now, bucketMs),
+    byHook,
+    guards,
+    kept: keptRows.length,
+    next,
+    range: query.range,
+    sessions,
+    skipped
+  };
+}
+function autoCleanOf(deps, repo) {
+  const record = readRepoRecord(autoCleanFiles(deps.action.portal.paths.stateDir, repo));
+  if (record === null)
+    return null;
+  return {
+    base: record.base,
+    lastRunAt: new Date(record.lastRunAt).toISOString(),
+    removed: record.removed
+  };
 }
 function worktreesAnswer(deps) {
   const found = repoOf(deps);
   if ("note" in found) {
-    return { base: "", from: "default", note: found.note, worktrees: [] };
+    return { autoClean: null, base: "", from: "default", note: found.note, worktrees: [] };
   }
   const { repo } = found;
+  const now = deps.action.portal.now();
   try {
     const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
     const chosen = baseBranch(checkout, deps.action.portal.env, repo);
@@ -36816,7 +37008,7 @@ function worktreesAnswer(deps) {
       base: chosen.base,
       claudeConfigDir: deps.action.portal.paths.claudeConfigDir,
       env: deps.action.portal.env,
-      now: deps.action.portal.now()
+      now
     };
     let note = null;
     let scanned;
@@ -36825,7 +37017,7 @@ function worktreesAnswer(deps) {
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error);
       if (!why.includes("is not known here")) {
-        return { base: "", from: "default", note: why, worktrees: [] };
+        return { autoClean: null, base: "", from: "default", note: why, worktrees: [] };
       }
       scanned = scanWorktrees(repo, {
         ...judged,
@@ -36836,16 +37028,44 @@ function worktreesAnswer(deps) {
     const worktrees = scanned.map((worktree) => {
       const { branch, head, path } = worktree.listed;
       if (worktree.state === "main") {
-        return { branch, head, kind: "main", path, why: null };
+        return { branch, head, idleMinutes: null, kind: "main", path, why: null };
       }
       if (worktree.state === "gone") {
-        return { branch, head, kind: "gone", path, why: "its folder no longer exists" };
+        return {
+          branch,
+          head,
+          idleMinutes: null,
+          kind: "gone",
+          path,
+          why: "its folder no longer exists"
+        };
       }
-      return worktree.state.finished ? { branch, head, kind: "finished", path, why: null } : { branch, head, kind: "kept", path, why: worktree.state.why };
+      return worktree.state.finished ? {
+        branch,
+        head,
+        idleMinutes: worktree.idleMinutes,
+        kind: "finished",
+        path,
+        why: null
+      } : {
+        branch,
+        head,
+        idleMinutes: worktree.idleMinutes,
+        kind: "kept",
+        path,
+        why: worktree.state.why
+      };
     });
-    return { base: chosen.base, from: chosen.from, note, worktrees };
+    return {
+      autoClean: autoCleanOf(deps, repo),
+      base: chosen.base,
+      from: chosen.from,
+      note,
+      worktrees
+    };
   } catch (error) {
     return {
+      autoClean: null,
       base: "",
       from: "default",
       note: error instanceof Error ? error.message : String(error),
@@ -36953,6 +37173,16 @@ function cursorOf(value) {
   const number = Number(value);
   return Number.isInteger(number) && number >= 1 ? number : "bad";
 }
+function guardCursorOf(value) {
+  if (value === null)
+    return null;
+  const found = /^(\d+)\.(\d+)$/.exec(value);
+  if (found?.[1] === undefined || found[2] === undefined)
+    return "bad";
+  const at = Number(found[1]);
+  const n = Number(found[2]);
+  return Number.isSafeInteger(at) && Number.isSafeInteger(n) ? { at, n } : "bad";
+}
 async function answerApi(deps, url) {
   const path = url.pathname;
   const query = url.searchParams;
@@ -37049,11 +37279,22 @@ async function answerApi(deps, url) {
       }
     }
     case "/api/guard-asks": {
-      const limit = limitOf(query.get("limit"), GUARD_ASKS_DEFAULT);
+      const range = rangeOf(query.get("range"));
+      const cursor = guardCursorOf(query.get("cursor"));
+      if (range === null || cursor === "bad") {
+        return {
+          body: {
+            error: `guard-asks takes range=${Object.keys(HISTORY_RANGE_MS).join("|")}, cursor=<at>.<n>, limit, hook, session, tool and q`
+          },
+          status: 400
+        };
+      }
       return ok(guardAsksAnswer(deps, {
+        cursor,
         hook: wordOf(query.get("hook")),
-        limit,
+        limit: limitOf(query.get("limit"), GUARD_ASKS_DEFAULT),
         q: wordOf(query.get("q")),
+        range,
         session: wordOf(query.get("session")),
         tool: wordOf(query.get("tool"))
       }));

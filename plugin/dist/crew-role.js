@@ -14481,12 +14481,12 @@ function localFiles(worktree, mainCheckout, env) {
 import { existsSync as existsSync14, readFileSync as readFileSync22, statSync as statSync11 } from "fs";
 import { basename as basename5, isAbsolute as isAbsolute5, join as join25, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
-function idleMinutes(worktree, now) {
+function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
     admin = readFileSync22(join25(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
-    return 0;
+    return null;
   }
   if (!isAbsolute5(admin))
     admin = resolve6(worktree, admin);
@@ -14496,7 +14496,10 @@ function idleMinutes(worktree, now) {
       last = Math.max(last, statSync11(join25(admin, file)).mtimeMs);
     } catch {}
   }
-  return last === 0 ? 0 : (now - last) / 60000;
+  return last === 0 ? null : (now - last) / 60000;
+}
+function idleMinutes(worktree, now) {
+  return idleMinutesOrNull(worktree, now) ?? 0;
 }
 function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.locked)
@@ -14635,6 +14638,12 @@ function counted(n, word) {
 function exactOnly(limits) {
   return limits.lines === 0 && limits.files === 0 && limits.percent === 0;
 }
+function allowanceOf(reviewed, limits) {
+  return {
+    files: Math.max(limits.files, Math.floor(reviewed.files * limits.percent / 100)),
+    lines: Math.max(limits.lines, Math.floor(reviewed.lines * limits.percent / 100))
+  };
+}
 function coverRefusal(delta, reviewed, limits, review) {
   const of = short(review);
   if (exactOnly(limits)) {
@@ -14645,11 +14654,10 @@ function coverRefusal(delta, reviewed, limits, review) {
     const others = more.length === 0 ? "" : ` (and ${counted(more.length, "other")})`;
     return `${binary}${others} is a binary file changed after the review of ${of}: its change cannot be counted`;
   }
-  const maxLines = Math.max(limits.lines, Math.floor(reviewed.lines * limits.percent / 100));
-  const maxFiles = Math.max(limits.files, Math.floor(reviewed.files * limits.percent / 100));
-  if (delta.lines <= maxLines && delta.files <= maxFiles)
+  const allowance = allowanceOf(reviewed, limits);
+  if (delta.lines <= allowance.lines && delta.files <= allowance.files)
     return null;
-  return `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` + `over the limit of ${counted(maxLines, "line")} and ${counted(maxFiles, "file")} ` + `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` + `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`;
+  return `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` + `over the limit of ${counted(allowance.lines, "line")} and ${counted(allowance.files, "file")} ` + `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` + `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`;
 }
 function parseGitVersion(out) {
   const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
@@ -14869,7 +14877,13 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
   }
   const smallest = measured[0];
   if (smallest !== undefined && smallest.refusal !== null) {
-    return { covered: false, review: smallest.review, why: smallest.refusal };
+    return {
+      covered: false,
+      review: smallest.review,
+      why: smallest.refusal,
+      delta: smallest.delta,
+      reviewed: smallest.reviewed
+    };
   }
   const [first] = unread;
   if (first !== undefined)
@@ -15320,6 +15334,22 @@ function reviewRefusal(cover) {
     return cover.why;
   return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
 }
+function counted2(change) {
+  return { binary: change.binary.length, files: change.files, lines: change.lines };
+}
+function countsOf(change) {
+  return change === null || change === undefined ? null : counted2(change);
+}
+function detailOf(cover, limits) {
+  const reviewed = cover?.reviewed;
+  return {
+    allowance: reviewed === null || reviewed === undefined ? null : allowanceOf(reviewed, limits),
+    delta: countsOf(cover?.delta),
+    limits: { files: limits.files, lines: limits.lines, percent: limits.percent },
+    review: cover?.review ?? null,
+    reviewed: countsOf(reviewed)
+  };
+}
 function short2(sha) {
   return sha.slice(0, 7);
 }
@@ -15435,13 +15465,18 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
   try {
     read = gateFor(world, view.base);
   } catch (error) {
-    return { kind: "refused", number: view.number, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: view.number, reason: policyUnread(view.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: view.number,
+      reason: policyUnread(view.base, read.why)
+    };
   }
   const { resolved, config: committed } = read.gate;
   if (committed?.ownHooks?.includes("merge-guard") === true)
@@ -15475,8 +15510,9 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     }
   }
   const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
-  if (before !== null)
-    return { kind: "refused", number: view.number, reason: before };
+  if (before !== null) {
+    return { detail: null, kind: "refused", number: view.number, reason: before };
+  }
   const review = reviewGateOf(world.paths, world.checkout, resolved);
   const cover = coverOf(world, review, {
     head: view.headOid,
@@ -15484,9 +15520,16 @@ function checkPullRequest(world, target, defaultBranches = new Map) {
     base: view.base
   });
   const refused = reviewRefusal(cover);
-  if (refused !== null)
-    return { kind: "refused", number: view.number, reason: refused };
+  if (refused !== null) {
+    return {
+      detail: detailOf(cover, review.limits),
+      kind: "refused",
+      number: view.number,
+      reason: refused
+    };
+  }
   return {
+    detail: detailOf(cover, review.limits),
     kind: "allowed",
     reason: pullRequestAllowed(cover?.covered === true ? cover : null)
   };
