@@ -117,6 +117,30 @@ describe("the check always ends", () => {
     expect(reported.seen[0]?.why).toContain("no answer in");
   });
 
+  test("a launcher that exits at once ends the check at once, with its own line", async () => {
+    // The post-restart refusal: `browser mcp` prints one line and exits 2. The check must report
+    // that line now, not after its 30 s answer limit.
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true });
+    writeWorldToken(world);
+    const reported = checker();
+    const began = Date.now();
+    const result = await runBrowserCheck({
+      check: reported.check,
+      cli: fakeCli(
+        'process.stderr.write("the browser cannot connect. Open Google Chrome.\\n"); process.exit(2);\n',
+      ),
+      limitsMs: 4_000, // the answer limit here is 1 s
+      log: () => undefined,
+      machine: world.deps,
+      paths: world.paths,
+    });
+    expect(Date.now() - began).toBeLessThan(900);
+    expect(result).toEqual({ failed: 1, total: 1 });
+    expect(reported.seen[0]?.why).toContain("exited before answering");
+    expect(reported.seen[0]?.why).toContain("Open Google Chrome");
+  });
+
   test("a child that answers initialize and not its tools ends at the whole check's limit", async () => {
     // Every call is answered by nothing: each has its own limit, and the whole run has the one
     // that ends it (before this, eight calls could each wait 90 s).

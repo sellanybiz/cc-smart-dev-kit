@@ -2306,10 +2306,10 @@ Store extension is 0.4.0 at the time of writing.
 10. **Edge** (`--browser=msedge`) if it is ever supported: Playwright maps a user data dir for it,
     but the plugin's own discovery and guide say Google Chrome only, and Brave/Chromium have no
     channel mapping at all (the plugin no longer looks for a Chromium).
-12. **Uploads from the output folder**: the MCP now runs in the output folder, so a relative
+11. **Uploads from the output folder**: the MCP now runs in the output folder, so a relative
     upload path is read from there. Check that `browser check`'s upload (a full path) still
     passes, and that a session that names a file relative to its project gets a clear error.
-13. **A Chrome the kit starts, after a restart**: with Chrome closed, the first browser call must
+12. **A Chrome the kit starts, after a restart**: with Chrome closed, the first browser call must
     start it in the `claude-code` profile and connect with nobody at the desktop — run
     `browser check` with Chrome closed, from a terminal session and from a background one (the
     launcher takes the display from the systemd user manager there), on Linux. With no reachable
@@ -2317,7 +2317,7 @@ Store extension is 0.4.0 at the time of writing.
     proved in tests (`src/browser/chrome-start.test.ts`), not yet live.
 13. **A profile Chrome's own dialog made** (`Profile 2`, named `claude-code` in Chrome): the MCP
     is told `--profile-dir-name=Profile 2` and must connect to that profile.
-11. **`doctor` must not open a page.** Its MCP check runs `claude mcp get playwright`, which starts
+14. **`doctor` must not open a page.** Its MCP check runs `claude mcp get playwright`, which starts
     the launcher once. With the token saved, the MCP must answer `initialize` and its tool list
     WITHOUT connecting to Chrome (the connect page is opened on the first browser call) — watch
     that no window comes to the front and no `connect.html` tab appears. Without a token the

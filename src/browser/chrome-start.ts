@@ -27,6 +27,12 @@
  *   The environment is an argument, and the system call is a dep, so a test never sees the
  *   machine's own display (`.claude/rules/browser.md`).
  */
+
+import { randomUUID } from "node:crypto";
+import { closeSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { COMMAND } from "../build-info";
 import { type ChromeDeps, chromeMayBeRunning } from "./chrome";
 
 /**
@@ -38,6 +44,12 @@ export const CHROME_START_LIMIT_MS = 15_000;
 
 /** How often the readiness question is asked while that limit runs: a readiness gate, not a retry. */
 const CHROME_READY_POLL_MS = 200;
+
+/**
+ * How long the desktop lookup may take. `systemctl --user show-environment` answers in
+ * milliseconds; a wedged user manager must become "no display" (one line), never a silent wait.
+ */
+export const DESKTOP_LOOKUP_LIMIT_MS = 5_000;
 
 /**
  * The variables a program needs to open a window on the person's desktop, and nothing else: a
@@ -57,12 +69,42 @@ export interface DesktopEnvironment {
   display: boolean;
   /** The variables, ready to merge over the child's own environment (empty keys left out). */
   vars: Record<string, string>;
-  /** `session`: this process's own; `user-manager`: the person's graphical session's; `none`. */
-  source: "session" | "user-manager" | "none";
+  /**
+   * `session`: this process's own display variables; `user-manager`: the person's graphical
+   * session's; `platform`: none are needed (macOS, Windows); `none`: no display anywhere.
+   */
+  source: "session" | "user-manager" | "platform" | "none";
 }
 
 /** A command's exit code and combined output, as `Machine.run` answers. */
 type RunCommand = (argv: string[]) => { exitCode: number; output: string };
+
+/**
+ * The desktop lookup's own command: the same shape as `Machine.run`, with its own short ceiling,
+ * because the launcher runs it before it starts anything and a person is waiting for a line.
+ */
+export function runDesktopLookup(
+  argv: string[],
+  env: Record<string, string | undefined>,
+  limitMs: number = DESKTOP_LOOKUP_LIMIT_MS,
+): { exitCode: number; output: string } {
+  try {
+    const result = Bun.spawnSync(argv, {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: limitMs,
+    });
+    return {
+      // A command killed at the limit has no exit code: it answered nothing, which is no display.
+      exitCode: result.exitCode ?? 1,
+      output: `${result.stdout.toString()}${result.stderr.toString()}`,
+    };
+  } catch (error) {
+    return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 /** `KEY=VALUE` lines from `systemctl --user show-environment`. */
 function parseEnvironment(text: string): Record<string, string> {
@@ -91,9 +133,8 @@ function desktopVars(from: Record<string, string | undefined>): Record<string, s
  *   2. on Linux, the systemd user manager's — the graphical session imports `DISPLAY`/
  *      `WAYLAND_DISPLAY` there, and a session the Claude daemon starts does not have them
  *      (measured 2026-10-23: the daemon's `XDG_SESSION_TYPE=tty`, the manager's `DISPLAY=:10.0`);
- *   3. nothing: `display: false`, and the caller says the one step.
- *
- * macOS and Windows need no variable for a window, so an empty environment there is a display.
+ *   3. on macOS and Windows: `platform` — no variable is needed for a window there;
+ *   4. nothing: `display: false`, and the caller says the one step.
  */
 export function desktopEnvironment(
   env: Record<string, string | undefined>,
@@ -103,7 +144,7 @@ export function desktopEnvironment(
   if (own.DISPLAY !== undefined || own.WAYLAND_DISPLAY !== undefined) {
     return { display: true, source: "session", vars: own };
   }
-  if (options.platform !== "linux") return { display: true, source: "session", vars: own };
+  if (options.platform !== "linux") return { display: true, source: "platform", vars: own };
   const answer = options.run?.(["systemctl", "--user", "show-environment"]);
   if (answer !== undefined && answer.exitCode === 0) {
     const manager = desktopVars(parseEnvironment(answer.output));
@@ -136,6 +177,11 @@ export interface StartedChrome {
   kill: (signal: NodeJS.Signals) => void;
   /** The last lines Chrome wrote to stderr, for the one plain line (its own words). */
   stderr: () => string;
+  /**
+   * The caller needs nothing more from this child's log (it came up): let its file go. The browser
+   * itself is untouched — it outlives this process, and its next stderr write has a file to go to.
+   */
+  release?: () => void;
 }
 
 /** Starts Chrome detached: `env` is its whole environment, and its stdout is nobody's. */
@@ -143,35 +189,59 @@ export type StartChrome = (argv: string[], env: Record<string, string>) => Start
 
 /**
  * The real start: its own process group (it outlives this process, as the person's browser does),
- * stderr kept for the failure line, stdout ignored. Never called by a test: the launcher's deps
- * carry a fake there.
+ * its stderr kept for the failure line. The stderr goes to a FILE, never a pipe: the started Chrome
+ * outlives this process, and a pipe whose reader has gone would fail its next stderr write — the
+ * person's own browser must never die from our plumbing.
  */
 export const realStartChrome: StartChrome = (argv, env) => {
+  const log = join(tmpdir(), `${COMMAND}-chrome-${randomUUID()}.log`);
+  let fd: number | null = null;
+  try {
+    fd = openSync(log, "w", 0o600);
+  } catch {
+    fd = null; // No log file is no reason not to start the browser; the line says the exit code.
+  }
   const child = Bun.spawn(argv, {
     detached: true,
     env,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "ignore", fd ?? "ignore"],
   });
   child.unref();
-  const lines: string[] = [];
-  void (async () => {
-    const decoder = new TextDecoder();
+  let said = "";
+  /** Chrome's own last words, read off its file. */
+  const read = () => {
     try {
-      for await (const chunk of child.stderr) {
-        for (const line of decoder.decode(chunk).split("\n")) {
-          if (line.trim() === "") continue;
-          lines.push(line.trim());
-          if (lines.length > 5) lines.shift();
-        }
-      }
+      said = readFileSync(log, "utf8")
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .slice(-2)
+        .join(" ");
     } catch {
-      // The pipe closed: there is nothing more to say, and nothing here may throw.
+      said = "";
     }
-  })();
+  };
+  const release = () => {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {}
+      fd = null;
+    }
+    try {
+      // On Windows an open file cannot be removed while Chrome holds it: a failed removal leaves a
+      // small log in the temp folder, which is not worth a note to the person.
+      unlinkSync(log);
+    } catch {}
+  };
   return {
-    exited: child.exited,
+    exited: child.exited.then((code) => {
+      read();
+      release();
+      return code;
+    }),
     kill: (signal) => child.kill(signal),
-    stderr: () => lines.slice(-2).join(" "),
+    stderr: () => said,
+    release,
   };
 };
 
@@ -258,7 +328,10 @@ export async function ensureChromeRunning(
   const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
   const deadline = Date.now() + limitMs;
   for (;;) {
-    if (running()) return { ok: true, started: true };
+    if (running()) {
+      child.release?.();
+      return { ok: true, started: true };
+    }
     const left = deadline - Date.now();
     if (left <= 0) {
       child.kill("SIGTERM");
@@ -278,6 +351,13 @@ export async function ensureChromeRunning(
       sleep(Math.min(CHROME_READY_POLL_MS, left)).then(() => null),
     ]);
     if (exited !== null) {
+      // Chrome's own second-instance path: a launch that finds another Chrome hands it the page
+      // and exits 0. The lock that made it exit is the one this call wanted, so ask once more
+      // before failing — the person opening Chrome, or another session starting it, is a success.
+      if (running()) {
+        child.release?.();
+        return { ok: true, started: true };
+      }
       const said = child.stderr().trim();
       const detail = `exited at once (code ${String(exited)}${said === "" ? "" : `: ${said}`})`;
       return { ok: false, why: chromeStartFailedMessage(ready.profileDirName, detail) };

@@ -13,6 +13,8 @@ import {
   chromeLaunchArgv,
   desktopEnvironment,
   ensureChromeRunning,
+  realStartChrome,
+  runDesktopLookup,
   type StartedChrome,
 } from "./chrome-start";
 
@@ -81,7 +83,7 @@ describe("desktopEnvironment", () => {
         },
       );
       expect(read.display).toBe(true);
-      expect(read.source).toBe("session");
+      expect(read.source).toBe("platform");
     }
   });
 });
@@ -193,6 +195,19 @@ describe("ensureChromeRunning", () => {
     expect(testWorld.starts).toHaveLength(1);
   });
 
+  test("a spawned Chrome that hands off to a running one and exits 0 is a success", async () => {
+    // The person opens Chrome, or another session starts it, between this call's first question
+    // and the spawned Chrome's start: Chrome's own second-instance path hands the URL over and
+    // exits 0. The lock is there, so the browser can connect — never a false failure.
+    let running = false;
+    const testWorld = world({ lock: () => (running ? "host-4242" : null) });
+    const promise = ensureChromeRunning(ready, testWorld.deps);
+    await Bun.sleep(5);
+    running = true;
+    testWorld.exit(0);
+    expect(await promise).toEqual({ ok: true, started: true });
+  });
+
   test("a Chrome that exits at once: its own words, and the one step to take", async () => {
     const testWorld = world();
     testWorld.deps.limitMs = 1_000;
@@ -244,5 +259,36 @@ describe("ensureChromeRunning", () => {
       expect(result.why).toContain("could not be started (EACCES: permission denied)");
       expect(result.why).toContain("Open Google Chrome");
     }
+  });
+});
+
+describe("runDesktopLookup", () => {
+  test("a stuck user manager is no display, not a silent wait", () => {
+    const began = Date.now();
+    const result = runDesktopLookup(
+      [process.execPath, "-e", "setTimeout(() => undefined, 5000)"],
+      {},
+      60,
+    );
+    expect(Date.now() - began).toBeLessThan(2_000);
+    expect(result.exitCode).not.toBe(0);
+  });
+});
+
+describe("realStartChrome", () => {
+  test("Chrome's own words come off a file, never a pipe it could outlive", async () => {
+    // The started Chrome is the person's browser and outlives this process; a pipe whose reader
+    // has gone would fail its next stderr write. This child writes and exits like a Chrome that
+    // cannot open a window.
+    const child = realStartChrome(
+      [
+        process.execPath,
+        "-e",
+        "process.stderr.write('Missing X server or $DISPLAY\\n'); process.exit(1)",
+      ],
+      {},
+    );
+    expect(await child.exited).toBe(1);
+    expect(child.stderr()).toBe("Missing X server or $DISPLAY");
   });
 });

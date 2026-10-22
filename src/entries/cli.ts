@@ -2,7 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { uptime } from "node:os";
 import { join, resolve } from "node:path";
 import { browserCheckCommand, runBrowserCheck } from "../browser/check";
-import { realStartChrome } from "../browser/chrome-start";
+import { desktopEnvironment, realStartChrome, runDesktopLookup } from "../browser/chrome-start";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { runBrowserMcp } from "../browser/launcher";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
@@ -598,6 +598,11 @@ async function main(argv: string[]): Promise<number> {
           // This session's environment: the desktop lookup (the user manager's DISPLAY for a
           // background session) and the environment of a Chrome the launcher starts itself.
           env: process.env,
+          desktop: () =>
+            desktopEnvironment(process.env, {
+              platform: machine.platform,
+              run: (argv) => runDesktopLookup(argv, process.env),
+            }),
           log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
           spawn: (argv, options) => {
             // The token goes on top of this process's environment: the MCP must find bun and

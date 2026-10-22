@@ -93,6 +93,8 @@ class Session {
   private readonly process: Subprocess<"pipe", "pipe", "pipe">;
   /** The launcher's and the MCP's own stderr, for a failure the person can act on. */
   private readonly errors: string[] = [];
+  /** When the child's stderr has ended: its last words are whole only then. */
+  private readonly errorsDone: Promise<void>;
   /** When the whole check's own limit is spent: no request may run past it. */
   private readonly deadline: number;
 
@@ -104,7 +106,7 @@ class Session {
     this.deadline = Date.now() + limits.wholeMs;
     this.process = Bun.spawn(argv, { stderr: "pipe", stdin: "pipe", stdout: "pipe" });
     void this.read();
-    void this.readErrors();
+    this.errorsDone = this.readErrors();
   }
 
   /** True once the whole check's limit is spent: every later answer is refused at once. */
@@ -166,7 +168,22 @@ class Session {
         error: { message: `${method}: no answer in ${String(timeoutMs / 1000)} s` },
       }),
     );
-    return Promise.race([new Promise<McpMessage>((done) => this.pending.set(id, done)), timeout]);
+    // A child that has exited will never answer: fail the call now, with its own last words (the
+    // launcher's refusal), instead of waiting the whole answer limit for nothing.
+    const gone = this.process.exited.then(async (): Promise<McpMessage> => {
+      await this.errorsDone;
+      const said = this.lastStderr();
+      return {
+        error: {
+          message: `${method}: the browser command exited before answering${said === "" ? "" : ` — ${said}`}`,
+        },
+      };
+    });
+    return Promise.race([
+      new Promise<McpMessage>((done) => this.pending.set(id, done)),
+      timeout,
+      gone,
+    ]);
   }
 
   /** True when the server answered `initialize`; false with the stderr it left behind. */

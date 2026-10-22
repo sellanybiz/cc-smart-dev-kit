@@ -56,12 +56,7 @@ import type { CliPaths } from "../cli/paths";
 import { ensurePrivateDir } from "../machine/private-dir";
 import { MCP_VERSIONS } from "../mcp/versions";
 import { type ChromeDeps, connectPrerequisites } from "./chrome";
-import {
-  type DesktopEnvironment,
-  desktopEnvironment,
-  ensureChromeRunning,
-  type StartChrome,
-} from "./chrome-start";
+import { type DesktopEnvironment, ensureChromeRunning, type StartChrome } from "./chrome-start";
 import { BROWSER_TOKEN_ENV, type BrowserToken, readBrowserToken } from "./token";
 
 /** Oldest files are deleted once the output folder grows past this (the MCP's own limit). */
@@ -90,22 +85,17 @@ export interface BrowserMcpDeps {
     options: { cwd: string; env: Record<string, string>; stdio: "inherit" },
   ) => McpChild;
   /** Chrome's files on this machine: where the `claude-code` profile is (`claudeCodeProfileOn`). */
-  chrome: ChromeDeps & {
-    home: string;
-    platform: NodeJS.Platform;
-    /** Runs a command, for the user manager's display environment (Linux). */
-    run?: (argv: string[]) => { exitCode: number; output: string };
-  };
+  chrome: ChromeDeps & { home: string; platform: NodeJS.Platform };
   /**
-   * This process's environment: the desktop lookup, and the environment of a Chrome this launcher
-   * starts (it inherits HOME, PATH and the rest, as a program the person starts does).
+   * This process's environment: the environment of a Chrome this launcher starts (it inherits
+   * HOME, PATH and the rest, as a program the person starts does).
    */
   env: Record<string, string | undefined>;
   /**
-   * The person's desktop. Default: `desktopEnvironment` from this environment and the user
-   * manager's — one home for the question, and a test hands in its own.
+   * The person's desktop: `desktopEnvironment` from this environment and the user manager's. It is
+   * built by the caller, so its system call is the caller's bounded one (`runDesktopLookup`).
    */
-  desktop?: () => DesktopEnvironment;
+  desktop: () => DesktopEnvironment;
   /** Starts the person's Chrome, detached; the launcher waits for its singleton lock. */
   startChrome: StartChrome;
   log: (line: string) => void;
@@ -220,18 +210,11 @@ export async function runBrowserMcp(
   // desktop, and the MCP is started once Chrome's singleton lock is there. A session the Claude
   // daemon starts has no DISPLAY, and the MCP's own Chrome start would die unseen and end in its
   // generic 30-second failure; a start that cannot work is one plain line instead.
-  const desktop =
-    deps.desktop ??
-    (() =>
-      desktopEnvironment(deps.env, {
-        platform: deps.chrome.platform,
-        ...(deps.chrome.run === undefined ? {} : { run: deps.chrome.run }),
-      }));
   const chrome = await ensureChromeRunning(
     { chrome: ready.chrome, profileDirName: ready.profile.dirName, userDataDir: ready.userDataDir },
     {
       chrome: deps.chrome,
-      desktop,
+      desktop: deps.desktop,
       env: deps.env,
       startChrome: deps.startChrome,
       ...(deps.chromeLimitMs === undefined ? {} : { limitMs: deps.chromeLimitMs }),

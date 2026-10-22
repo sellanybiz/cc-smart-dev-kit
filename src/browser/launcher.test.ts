@@ -63,7 +63,8 @@ function launcher(
   const deps: BrowserMcpDeps = {
     chrome: chromeDeps,
     desktop: () => desktop,
-    env: { DISPLAY: ":0", PATH: "/usr/bin" },
+    // No DISPLAY here: the desktop's own value must be the one that reaches Chrome.
+    env: { PATH: "/usr/bin" },
     log: (line) => lines.push(line),
     spawn: (argv, options) => {
       mcp.push({ argv, cwd: options.cwd, env: options.env });
