@@ -32,7 +32,12 @@ import {
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { GUARD_BUDGET_ENV } from "./budget";
-import { CREW_PR_REFUSAL, OPENING_DEFAULT_UNREAD, opensElsewhere } from "./merge-guard";
+import {
+  CREW_MERGE_REFUSAL,
+  CREW_PR_REFUSAL,
+  OPENING_DEFAULT_UNREAD,
+  opensElsewhere,
+} from "./merge-guard";
 import { mergeGuardHook } from "./specs";
 
 /** The commit the fake gh reports as the pull request's head. */
@@ -408,7 +413,7 @@ describe("D31: the allow, and only the exact merge", () => {
     ).toEqual({});
   });
 
-  test("a crew session never gets allow: the same passing merge is silent", async () => {
+  test("a crew session never gets allow: the same passing merge is refused (D24, CC8)", async () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, HEAD);
     expect(
@@ -416,7 +421,15 @@ describe("D31: the allow, and only the exact merge", () => {
         ...env,
         [CREW_ENV]: "B2-api-aaaaaa",
       }),
-    ).toEqual({});
+    ).toEqual({
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: CREW_MERGE_REFUSAL,
+        },
+      }),
+    });
   });
 
   test("an armed merge (--auto) stays silent: it lands later, and a new commit would be unread", async () => {
@@ -1978,13 +1991,151 @@ describe("D24: a crew session opens no pull request", () => {
     });
   });
 
-  test("D24: a merge or a pull request view is none of the opening rule", async () => {
+  test("D24: a merge or a pull request view is none of the opening rule, and a merge is refused", async () => {
     const { env, repo } = ready(opening("ready"));
     const crew = { ...env, ...CREW };
     expect(await decide(crew, repo, "gh pr view 5")).toBeNull();
     expect(await decide(crew, repo, "gh pr checks 5")).toBeNull();
-    // A merge keeps its own policy (here autoMerge is off: asks, not denies).
-    expect((await decide(crew, repo, "gh pr merge 7"))?.decision).toBe("ask");
+    // A merge is refused whole (CC8): a crew session never merges, and nobody is there to ask.
+    expect(await decide(crew, repo, "gh pr merge 7")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    // The person's session keeps the policy's own question (here autoMerge is off: asks).
+    expect((await decide(env, repo, "gh pr merge 7"))?.decision).toBe("ask");
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CC8: a crew session is never asked before a merge. Every question the guard puts to a
+// person — a policy off, --admin, another repository, a check not green, no covering
+// review, a policy or a form it cannot read, its own budget — is the same refusal (D24):
+// it commits on its branch, and the lead merges. The person's own session keeps each ask.
+// ---------------------------------------------------------------------------------------
+
+describe("CC8: a crew session is never asked before a merge", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  /** The crew session's answer, the person's own answer, and the refusal is the step. */
+  async function refusedForCrew(
+    prepared: { env: Record<string, string>; repo: string },
+    command: string,
+    personSays: string,
+  ): Promise<void> {
+    expect(await decide({ ...prepared.env, ...CREW }, prepared.repo, command)).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    // The person's own session keeps the question, and its words.
+    const person = await decide(prepared.env, prepared.repo, command);
+    expect(person?.decision).toBe("ask");
+    expect(person?.reason).toContain(personSays);
+  }
+
+  test("the policy is off (project): refused, where the person is asked", async () => {
+    await refusedForCrew(
+      ready({ ...CONFIG, workflow: { autoMerge: false } }),
+      "gh pr merge 7",
+      "autoMerge is off",
+    );
+  });
+
+  test("the policy is off (the default): refused too", async () => {
+    await refusedForCrew(
+      ready({ requires: ">=0.4", worktrees: { base: "dev" } }),
+      "gh pr merge 7",
+      "autoMerge is off",
+    );
+  });
+
+  test("an --admin merge: refused, where the person decides each one", async () => {
+    await refusedForCrew(ready(), "gh pr merge 7 --admin", "administrator rights");
+  });
+
+  test("another repository: refused, where the person is asked", async () => {
+    await refusedForCrew(
+      ready(CONFIG, undefined, false, true),
+      "gh pr merge 7 --repo example-org/elsewhere",
+      "only this project's own repository",
+    );
+  });
+
+  test("a required check that is not green: refused, where the person is asked", async () => {
+    await refusedForCrew(
+      ready(CONFIG, { checks: JSON.stringify([{ bucket: "fail", name: "build" }]) }),
+      "gh pr merge 7",
+      "check",
+    );
+  });
+
+  test("no review covering the head: refused, where the person is asked", async () => {
+    await refusedForCrew(ready(), "gh pr merge 7", "no review is recorded");
+  });
+
+  test("a policy it cannot read: refused, where the person is asked", async () => {
+    // The project's policy is in its file, but never committed to `origin/dev`: the guard
+    // cannot read what it would judge with.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const gh = fakeGh(answers());
+    await refusedForCrew({ env: envWithGh(gh), repo }, "gh pr merge 7", "cannot be read");
+  });
+
+  test("a form it cannot judge (an unknown flag): refused, where the person is asked", async () => {
+    await refusedForCrew(ready(), "gh pr merge 7 -Z", "flag this guard does not know");
+  });
+
+  test("its own budget ask: refused, where the person is asked", async () => {
+    // No time for the first read (the policy committed on the base): the person's session is
+    // asked in time. A crew session never reaches the budget: the crew part refuses first.
+    const prepared = ready();
+    recordReviewHere(prepared.env, prepared.repo, HEAD);
+    const crew = { ...prepared.env, ...CREW, [GUARD_BUDGET_ENV]: "1000" };
+    expect(await decide(crew, prepared.repo, "gh pr merge 7")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    const person = await decide(
+      { ...prepared.env, [GUARD_BUDGET_ENV]: "1000" },
+      prepared.repo,
+      "gh pr merge 7",
+    );
+    expect(person?.decision).toBe("ask");
+    expect(person?.reason).toContain("in time");
+  });
+
+  test("a passing merge the policy allows: refused, never allowed (D24)", async () => {
+    const prepared = ready();
+    recordReviewHere(prepared.env, prepared.repo, HEAD);
+    expect(await decide({ ...prepared.env, ...CREW }, prepared.repo, "gh pr merge 7")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    // The person's own session still gets the allow (D31).
+    expect(
+      JSON.parse(
+        (await runHook(mergeGuardHook, input(prepared.repo, "gh pr merge 7"), prepared.env))
+          .stdout ?? "{}",
+      ).hookSpecificOutput.permissionDecision,
+    ).toBe("allow");
+  });
+
+  test("--disable-auto lands nothing: it stays silent for a crew session too", async () => {
+    // It takes an armed merge back rather than merging: no step is needed.
+    const prepared = ready();
+    expect(
+      await decide({ ...prepared.env, ...CREW }, prepared.repo, "gh pr merge 7 --disable-auto"),
+    ).toBeNull();
+  });
+
+  test("an alias that expands to gh pr merge is refused too", async () => {
+    const prepared = ready({ requires: ">=0.4", worktrees: { base: "dev" } });
+    const env = envWithGh(fakeGh(answers({ "alias list": "mg: pr merge 7\n" })));
+    expect(await decide({ ...env, ...CREW }, prepared.repo, "gh mg")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    expect((await decide(env, prepared.repo, "gh mg"))?.decision).toBe("ask");
   });
 });
 

@@ -81,7 +81,7 @@ import {
 } from "./job-route";
 import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
-import { crewPrAnswer, mergeGuard } from "./merge-guard";
+import { crewPullRequestAnswer, mergeGuard } from "./merge-guard";
 import { crewMessageAnswer, messageGuard } from "./message-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
@@ -218,9 +218,10 @@ export const mergeGuardHook: HookSpec = {
     const command = commandOf(input);
     return command !== "" && requestsPullRequestChange(command);
   }),
-  // A crew session opens no pull request, whatever the project's file says, and with no file
-  // (`crewPrAnswer`: the same reader as `run`, aliases included).
-  crewLimits: (input, _checkout, { env }) => crewPrAnswer(input, env, stringField(input.cwd) ?? ""),
+  // A crew session opens no pull request and merges none, whatever the project's file says, and
+  // with no file (`crewPullRequestAnswer`: the same reader as `run`, aliases included).
+  crewLimits: (input, _checkout, { env }) =>
+    crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard,
 };
 
