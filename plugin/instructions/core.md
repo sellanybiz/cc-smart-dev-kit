@@ -89,13 +89,15 @@ Opus spawn. Never put `model:` or `effort:` in an agent's frontmatter — perman
 | `model` | What it is | Give it |
 |---|---|---|
 | `haiku` | the **scout** | file discovery, searches, reading, summaries, mechanical bounded work |
-| `sonnet` | the **worker** | routine building, doc updates, test runs, mechanical edits, UI checks; code that touches security, money, permissions, a schema or deploy plumbing |
-| `opus` | Claude Opus | architecture and UI/UX, with the design judgment in them; plan second-reads, tangled debugging, ambiguous research; the review of a risky change set (§ Review) |
+| `sonnet` | the **worker** | routine building, doc updates, test runs, mechanical edits, UI checks (measured facts, not design); code that touches security, money, permissions, a schema or deploy plumbing |
+| `opus` | Claude Opus | architecture and every UI/UX design (layout, components, pages, styling), at `high` or above; plan second-reads, tangled debugging, ambiguous research; the review of a risky change set (§ Review) |
 | `fable` | Claude Fable | the hardest long-horizon work, a fresh attempt when the person is not satisfied, or building when the person asks; never the default |
 
-**Opus builds architecture and UI/UX** (the design judgment in them) **up to `xhigh`, with no approval; `max` needs
-the person's yes** — a session nobody watches refuses it (`claude -p`), and a fork runs at the session's own effort.
-All other building runs on `sonnet`. **Fable advises; it builds only when the person asks.**
+**UI/UX design runs only on `opus` or `fable`, at `high` or above — never `haiku`, `sonnet` or an affordable slot;
+declare it `Opus reason: ui` (`Fable reason: ui-design`).** Opus builds architecture and UI/UX **up to `xhigh`, with
+no approval; `max` needs the person's yes** — a session nobody watches refuses it (`claude -p`), and a fork runs at
+the session's own effort. All other building runs on `sonnet`; checking is not design (`ui-verifier` measures on
+`sonnet`, the verdict is Opus or Fable). **Fable advises; it builds only when the person asks.**
 Read-only agents (Plan, Reviewer, Explore) take `Fable reason:
 <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`; a builder, or a fork, needs `Fable reason:
 build - <what the person asked>` — each word's use is in `/cc-smart-dev-kit:subagent-decision` § Choosing Fable. A
@@ -104,18 +106,16 @@ session may run on Fable as its main model: the person's choice — **never comm
 word on it.** `opus` and `fable` mean the tier, whatever model answers; `agent-guard` asks for Fable, and for Opus at `max`.
 
 **With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router), each Claude family has a
-slot the person controls (`haiku` → scout, `sonnet` → worker, `opus`, `fable`; auto mode's safety checks → judge). A
-slot with a chain sends that family to the person's models; one with no chain is off — plain Claude on their login. No
-hidden Claude fallback. What answers is live config, read once a session (`cc-smart-dev-kit gateway status`).
+slot the person controls (`haiku` → scout, `sonnet` → worker, `opus`, `fable`; auto mode's safety checks → judge): a
+chain sends it to the person's models, one with no chain is off (plain Claude, no hidden fallback), and `gateway status` shows what answers.
 
-**Every slot and its fallback switch is the person's** — never set or change one yourself. **Never
-change the path your own model traffic takes** (`gateway on`/`off`/`slot`/`fallback`, a router restart,
-its address) from your own shell tool: the session cuts its own line mid-change. Give the person the
-command to run instead (`/cc-smart-dev-kit:gateway`).
+**Every slot and its fallback switch is the person's** — never set or change one yourself. **Never change the path
+your own model traffic takes** (`gateway on`/`off`/`slot`/`fallback`, a restart, its address) from your shell tool:
+the session cuts its own line mid-change — give the person the command instead (`/cc-smart-dev-kit:gateway`).
 
-**Effort:** `high` for searches, reads and building, `xhigh` for the hardest judgment (architecture, UI/UX, a risky
-review), `max` for the hardest problem only (on Opus, with the person's yes, above). An affordable gateway slot
-always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
+**Effort:** `high` for searches, reads and building (UI/UX too, unless a reason takes it to `xhigh`), `xhigh` for
+the hardest judgment (architecture, a risky review), `max` for the hardest problem only (on Opus, with the person's
+yes, above). An affordable gateway slot always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
 
 **Say it when you launch.** The reply that starts an agent names its slot, the model behind it
 and its effort — "a reviewer (`sonnet` → Claude Sonnet, effort high)" — so the person sees which

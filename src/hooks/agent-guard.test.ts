@@ -2522,3 +2522,89 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     ).toEqual({ decision: "ask", launches: 0, tool: "Workflow", why: "unreadable" });
   });
 });
+
+describe("D50: UI/UX work runs only on opus or fable, at high or above", () => {
+  /** A launch that declares UI/UX work in its reason line, as the plugin's instructions say. */
+  const UI = "Build the settings page: layout, components, styling.\nOpus reason: ui - the page";
+
+  it("a declared UI launch on sonnet is denied, with the rule in words", () => {
+    const result = verdict({ effort: "high", model: "sonnet", prompt: UI });
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain(
+      "This launch declares UI/UX work (`Opus reason: ui - the page`)",
+    );
+    expect(result.reason).toContain(
+      "Use `opus` or `fable` at `high`, `xhigh` or `max` for UI/UX work (D50).",
+    );
+  });
+
+  it("a declared UI launch on haiku or an affordable slot is denied too", () => {
+    expect(verdict({ effort: "high", model: "haiku", prompt: UI }).decision).toBe("deny");
+    const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
+    expect(verdict({ effort: "max", model: "sonnet", prompt: UI }, on).decision).toBe("deny");
+    expect(
+      verdict({ effort: "max", model: "cc-smart-dev-kit-worker", prompt: UI }, on).decision,
+    ).toBe("deny");
+    expect(verdict({ effort: "max", model: "omniroute:glm-5.3-flash", prompt: UI }).decision).toBe(
+      "deny",
+    );
+  });
+
+  it("a declared UI launch on opus at high is allowed; at medium it is denied", () => {
+    const allowed = verdict({ effort: "high", model: "opus", prompt: UI });
+    expect(allowed.decision).toBe("allow");
+    expect(allowed.why).toBe("opus:high:ui");
+    expect(verdict({ effort: "xhigh", model: "opus", prompt: UI }).decision).toBe("allow");
+    const medium = verdict({ effort: "medium", model: "opus", prompt: UI });
+    expect(medium.decision).toBe("deny");
+    expect(medium.reason).toContain(
+      "Use `opus` or `fable` at `high`, `xhigh` or `max` for UI/UX work (D50).",
+    );
+  });
+
+  it("a declared UI launch on the fable tier at high passes the UI rule: the Fable ask stands", () => {
+    const readOnly = verdict({
+      effort: "high",
+      model: "fable",
+      prompt: "Measure the page.\nFable reason: ui-design - the layout judgment",
+      subagent_type: "Plan",
+    });
+    // D50 allows fable at high; every Fable launch still asks the person (the rule kept).
+    expect(readOnly.decision).toBe("ask");
+    const low = verdict({
+      effort: "medium",
+      model: "fable",
+      prompt: "Measure the page.\nFable reason: ui-design - the layout judgment",
+      subagent_type: "Plan",
+    });
+    expect(low.decision).toBe("deny");
+    expect(low.reason).toContain("for UI/UX work (D50)");
+  });
+
+  it("checking is not design: a ui-verifier launch on sonnet is allowed", () => {
+    // The verifier collects measured facts and screenshots; no declaration, so no UI rule.
+    expect(
+      verdict({
+        effort: "high",
+        model: "sonnet",
+        prompt: "Check the settings page at 375x812 and dark mode; facts only.",
+        subagent_type: "cc-smart-dev-kit:ui-verifier",
+      }).decision,
+    ).toBe("allow");
+    // And a prompt that merely talks about UI work is never sniffed for keywords.
+    expect(
+      verdict({ effort: "high", model: "sonnet", prompt: "Build the UI page, layout and all." })
+        .decision,
+    ).toBe("allow");
+  });
+
+  it("a declared UI launch after Claude Code's effort override is judged on what runs", () => {
+    const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
+    // The opus launch names high; CLAUDE_CODE_EFFORT_LEVEL puts every subagent at medium.
+    const result = verdict({ effort: "high", model: "opus", prompt: UI }, on, {
+      CLAUDE_CODE_EFFORT_LEVEL: "medium",
+    });
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("for UI/UX work (D50)");
+  });
+});

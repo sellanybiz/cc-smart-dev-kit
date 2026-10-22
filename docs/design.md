@@ -1328,7 +1328,7 @@ that, so the plugin ships no worktree hook at all.
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request, or opens or readies one (`openPr`, D16: `off` asks before any of them, `draft` lets a draft create through and asks for a ready one and for `gh pr ready`, `ready` asks for neither). Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. **A crew session opens no pull request** (D24): `gh pr create` pushes the branch, so it is denied. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records), and a crew session's message to another crew session of this repo that does not carry the `crew tell` tag (§ The crew talks). |
-| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
+| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port and before an edit of the kit's own settings. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). § The job route. |
@@ -1491,6 +1491,18 @@ knows (`best`, `inherit`, an id the guard cannot read) — may stand for a highe
 asks at any effort, is refused in `claude -p`, and is recorded as `opus:unreadable`. (Before D11 the tier needed a review
 agent type or a listed reason word, and refused every launch but a review at `high`; that
 reason list, the review-agent list and its variable are gone.)
+
+**UI/UX work** (the owner's decision D50, 2026-10-22) is the one case where a prompt line decides:
+`Opus reason: ui` or `Fable reason: ui-design` declares it, and `UI_POLICY` in the same pure
+module holds the rule — the tiers `opus` and `fable`, and the lowest effort `high` — one home, so
+lifting the rule is one change when a cheap open-source model proves good at UI/UX. A declared
+launch is denied on Sonnet, Haiku or an affordable slot, and below `high`, before any rule below
+would allow it; the denial names the allowed models and efforts. The prompt is never sniffed for
+keywords: a prompt that merely talks about a page or a layout is left alone, because a false
+positive would block real work. Checking is not design: the `ui-verifier` may run on `sonnet`,
+and the design verdict is made on `opus` or `fable` (`/cc-smart-dev-kit:ui-verify`). The same
+rule reaches the crew kinds (§ The kinds): `ui` is `opus` at `high`, and the launcher refuses an
+override that would put it elsewhere.
 
 An `ask` in a session nobody
 watches (`claude -p`, `CLAUDE_CODE_SESSION_ATTENDED=0`) is refused just like a deny — Claude
@@ -2320,16 +2332,20 @@ many of those on the opus tier (D37), the free memory a new one needs, when a qu
 blocked one is stopped (D35: a crew session never outlives its work) — and the `tag` of their names.
 `workflow show` prints each with its source.
 
-**The kinds** (D46) say what a phase needs, and so the model and effort its crew session runs on:
+**The kinds** (D46, D50) say what a phase needs, and so the model and effort its crew session runs on:
 `CREW_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
 guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`, `tests` — runs on
 `sonnet`, the worker slot: at `max` when an affordable gateway slot answers it, at `high` when
 Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
-Work that needs judgment — `architecture`, `ui` — runs on `opus` at `xhigh`, whatever answers the
-tier. `crewLaunch(kind, gateway, env)` makes that choice from the same reading of the gateway
-the guard makes, so a crew session never starts on a model or an effort the guard would refuse a
-subagent; a test runs every kind through the guard.
+Work that needs judgment — `architecture` — runs on `opus` at `xhigh`, whatever answers the
+tier. `ui` is the exception (`UI_POLICY`, D50): it runs on `opus` at `high`, never on an
+affordable model — `crewLaunch` names a tier, so `isAffordable` is false whatever answers it,
+and `crew kinds` prints `never` in its affordable-slot column. A `ui` session's override that
+would put it on an affordable model or below `high` is refused by the launcher with one plain
+line (`uiRefusal`), before the guard is asked. `crewLaunch(kind, gateway, env)` makes that
+choice from the same reading of the gateway the guard makes, so a crew session never starts on a
+model or an effort the guard would refuse a subagent; a test runs every kind through the guard.
 
 **The names** (D26, `src/crew/names.ts`) show the role, because agent view has no parent link
 and no grouping by lead — the name is how a person, and the portal, groups the sessions:

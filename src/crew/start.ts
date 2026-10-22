@@ -43,6 +43,9 @@ import {
   isCrewKind,
   type LaunchModel,
   resolveLaunchModel,
+  uiEffortAllowed,
+  uiRuleText,
+  uiTierAllowed,
 } from "../models/launch-policy";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
@@ -148,10 +151,20 @@ function oneLine(text: string): string {
 }
 
 /**
+ * The one plain line a `ui` session's override is refused with (D50): UI/UX work never runs on
+ * an affordable model or below `high`, and the kind's own model and effort already meet the
+ * rule. The names in it come from `UI_POLICY`, the rule's one home.
+ */
+function uiRefusal(): string {
+  return `UI/UX work runs only on ${uiRuleText()} (D50): pick one of those for a \`ui\` session.`;
+}
+
+/**
  * The model and effort: the kind's own, or the override (`--model`, `--effort`) — a model
  * without an effort runs at the kind's effort, or at `AFFORDABLE_EFFORT` when an affordable
- * model answers it. Either way the Agent guard's policy judges it: anything it would refuse or
- * ask the person about is refused here, with its words.
+ * model answers it. A `ui` session is never put on an affordable model or below `high` (D50).
+ * Either way the Agent guard's policy judges it: anything it would refuse or ask the person
+ * about is refused here, with its words.
  */
 export function chooseLaunch(
   kind: CrewKind,
@@ -166,6 +179,9 @@ export function chooseLaunch(
   const effort = (
     override.effort ?? (override.model === null ? own.effort : kindEffort)
   ).toLowerCase();
+  if (kind === "ui" && (!uiTierAllowed(real) || !uiEffortAllowed(effort))) {
+    return { refusal: uiRefusal() };
+  }
   const verdict = judgeLaunch(
     { effort, fork: false, model, prompt: "", subagentType: CREW_AGENT_TYPE, tool: "Agent" },
     { ...gateway, sessionModel: null },

@@ -87,6 +87,61 @@ export function effortAllowed(effort: string): boolean {
   return (ALLOWED_EFFORTS as readonly string[]).includes(effort.toLowerCase());
 }
 
+/**
+ * Where UI/UX work may run (the owner's decision D50, 2026-10-22): design judgment, layout,
+ * components, pages and styling run only on these tiers, at this effort or above. Affordable
+ * models — Haiku, Sonnet, a backend target behind a slot — are not good at UI/UX design today.
+ * **Checking is not design:** the `ui-verifier` may run on `sonnet`, and the design verdict is
+ * made on one of these tiers.
+ *
+ * **One home.** The Agent guard's UI rule, the crew kind `ui` and the crew launcher read these
+ * two values. Lift the rule in one change — both values here, with the guard's and the
+ * launcher's tests — when a cheap open-source model proves good at UI/UX.
+ */
+export const UI_POLICY = {
+  /** The lowest effort UI/UX work runs at. */
+  minEffort: "high",
+  /** The tiers UI/UX work may run on, in the order a message names them. */
+  tiers: ["opus", "fable"],
+} as const satisfies { minEffort: Effort; tiers: readonly string[] };
+
+/**
+ * The reason words that declare UI/UX work (D50), read as the first word of an
+ * `Opus reason:` or `Fable reason:` line: `ui` (the crew kind) and `ui-design` (the Fable
+ * read-only word). A prompt is never sniffed for keywords: the declaration is the contract.
+ */
+export const UI_REASON_WORDS = ["ui", "ui-design"] as const;
+
+/** True when a launch's tier is one UI/UX work may run on (D50). */
+export function uiTierAllowed(real: LaunchModel): boolean {
+  return real.tier !== null && UI_POLICY.tiers.includes(real.tier);
+}
+
+/** True when an effort is at or above UI/UX work's minimum; false for none or an unknown one. */
+export function uiEffortAllowed(effort: null | string): boolean {
+  if (effort === null) return false;
+  const levels = ALLOWED_EFFORTS as readonly string[];
+  return levels.indexOf(effort.toLowerCase()) >= levels.indexOf(UI_POLICY.minEffort);
+}
+
+/** The efforts UI/UX work may run at, lowest first: the minimum and above. */
+export const UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
+
+/**
+ * UI/UX work's rule in words, for a refusal: the tiers and the efforts it may run at, built
+ * from `UI_POLICY` (`opus` or `fable` at `high`, `xhigh` or `max`).
+ */
+export function uiRuleText(): string {
+  const named = (levels: readonly string[]) =>
+    levels.length < 2
+      ? levels.map((one) => `\`${one}\``).join("")
+      : `${levels
+          .slice(0, -1)
+          .map((one) => `\`${one}\``)
+          .join(", ")} or \`${levels.at(-1)}\``;
+  return `${named(UI_POLICY.tiers)} at ${named(UI_EFFORTS)}`;
+}
+
 /** The model a launch will really run on, after Claude Code's env and the gateway config. */
 export interface LaunchModel {
   /** True when the first target that answers is a Claude model (the person's own login). */
@@ -433,8 +488,11 @@ export function effectiveLaunch(
 export interface CrewKindPolicy {
   /** What the kind is for, in a few words: what `crew kinds` prints beside it. */
   about: string;
-  /** The effort when an affordable slot answers the family; the same as `effort` for a tier. */
-  affordableEffort: Effort;
+  /**
+   * The effort when an affordable slot answers the family; the same as `effort` for a tier, and
+   * null for a kind that never runs on one (`ui`, D50).
+   */
+  affordableEffort: Effort | null;
   /** The effort when Claude answers the family. */
   effort: Effort;
   /** The family name the launcher passes as the crew session's `--model`. */
@@ -442,14 +500,16 @@ export interface CrewKindPolicy {
 }
 
 /**
- * The kinds of crew phase, and the model and effort each runs on (the owner's decision D46).
- * Routine work — building, docs, tests — goes to `sonnet`, the worker slot: at `max` when an
- * affordable slot answers it, at `high` when Claude Sonnet does. So does code that touches
+ * The kinds of crew phase, and the model and effort each runs on (the owner's decisions D46 and
+ * D50). Routine work — building, docs, tests — goes to `sonnet`, the worker slot: at `max` when
+ * an affordable slot answers it, at `high` when Claude Sonnet does. So does code that touches
  * security, money, permissions, a schema or deploy plumbing: it builds like any other code.
- * Only work that needs design judgment — architecture, UI — goes to `opus` at `xhigh`, whatever
- * answers the tier. A kind's name may also be the word of an `Opus reason: <word>` line in a
- * launch record: the guard takes any word there, so `security` still names an Opus review. A
- * person may override one crew session's model (the launcher's own flag); the table is the default.
+ * Work that needs design judgment — architecture — goes to `opus` at `xhigh`, whatever answers
+ * the tier. UI/UX work is the exception (`UI_POLICY`, D50): `opus` at `high` by default, and
+ * never an affordable model — the launcher refuses an override that would put it there. A
+ * kind's name may also be the word of an `Opus reason: <word>` line in a launch record: the
+ * guard takes any word there, so `security` still names an Opus review. A person may override
+ * one crew session's model (the launcher's own flag); the table is the default.
  */
 export const CREW_KINDS = {
   build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
@@ -491,7 +551,13 @@ export const CREW_KINDS = {
     effort: "xhigh",
     model: "opus",
   },
-  ui: { about: "UI and UX judgment", affordableEffort: "xhigh", effort: "xhigh", model: "opus" },
+  ui: {
+    about: "UI and UX judgment",
+    // `opus` is a tier, never affordable: this column is never read for `ui` (D50).
+    affordableEffort: null,
+    effort: UI_POLICY.minEffort,
+    model: UI_POLICY.tiers[0],
+  },
 } as const satisfies Record<string, CrewKindPolicy>;
 
 /** One kind of crew phase. */
@@ -523,7 +589,9 @@ export function crewLaunch(kind: CrewKind, gateway: GatewayFacts, env: Env): Cre
   const policy: CrewKindPolicy = CREW_KINDS[kind];
   const real = resolveLaunchModel(policy.model, gateway, env);
   return {
-    effort: isAffordable(real) ? policy.affordableEffort : policy.effort,
+    // A kind that never runs on an affordable model (`ui`) has no affordable effort: its own
+    // tier's effort stands, which is what `policy.effort` gives.
+    effort: isAffordable(real) ? (policy.affordableEffort ?? policy.effort) : policy.effort,
     model: policy.model,
     real,
   };

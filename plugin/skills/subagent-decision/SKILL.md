@@ -25,7 +25,7 @@ work), and which model and effort each agent gets too (§ Subagents).
 | A whole phase of a plan, where the project has crew sessions on | a crew session, not a subagent — `/cc-smart-dev-kit:lead` |
 | A phase of a plan with crew sessions off, a piece of one; any job that both explores and edits | `general-purpose` |
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
-| Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify` |
+| Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify`: the facts on `sonnet`, the design verdict on `opus` or `fable` |
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
 | Questions about Claude Code, the Agent SDK or the API | `claude-code-guide` (built-in) |
 
@@ -73,6 +73,14 @@ the judgment for it in the brief:
   never a design verdict.
 - **Its limits in words** — an affordable model follows written limits less reliably than Claude.
 - Two failed tries at the same job → hand it to `opus`; never a third affordable try.
+
+## UI/UX work
+
+Design judgment, layout, components, pages and styling run only on `opus` or `fable`, at `high` or above — never on
+an affordable model (the core instructions' model table). Declare it when you launch: `Opus reason: ui`, or
+`Fable reason: ui-design`; `agent-guard` refuses a declared UI launch on anything else. The one exception is
+checking, which is not design: the `ui-verifier` may run on `sonnet` and brings back measured facts and screenshots,
+and you make the design verdict on `opus` or `fable` (`/cc-smart-dev-kit:ui-verify`).
 
 ## Choosing Fable
 

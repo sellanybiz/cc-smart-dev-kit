@@ -26,6 +26,14 @@
  * and asks the person at `max`. No reason line is needed; an `Opus reason: <word>` line, when a
  * prompt carries one, only names the purpose in the record.
  *
+ * **UI/UX work** (the owner's decision D50, 2026-10-22): design judgment, layout, components,
+ * pages and styling run only on the tiers and at the efforts `UI_POLICY` names — `opus` or
+ * `fable`, at `high` or above, never an affordable model. A launch declares it with
+ * `Opus reason: ui` (or `Fable reason: ui-design`); one that declares it on another tier or
+ * below `high` is denied, before every rule below would allow it. A prompt is never sniffed for
+ * keywords: the declaration is the contract. Checking is not design: `ui-verifier` may run on
+ * `sonnet`, and the design verdict is made on `opus` or `fable`.
+ *
  * | The model behind the launch | The verdict |
  * |---|---|
  * | an affordable slot key / a `<backend>:<model>` target / `haiku` or `sonnet` (or their ids) while the gateway is on and the family's slot chain starts with a backend | allow; with the gateway on, its effort must be `max`, else deny |
@@ -34,6 +42,7 @@
  * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or an unattended session (`claude -p`): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
+ * | a launch that declares UI/UX work (`Opus reason: ui`, `Fable reason: ui-design`) | allow only on the `opus` or `fable` tier at `high`, `xhigh` or `max` (`UI_POLICY`, D50); anything else — Sonnet, Haiku, an affordable slot, or a tier below `high` — is denied with the rule in words |
  * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
  *
  * A reason word is read with the punctuation around it dropped: `Fable reason: plan.` names
@@ -126,6 +135,10 @@ import {
   resolveLaunchModel,
   SUBAGENT_MODEL_ENV,
   SUBAGENT_MODEL_FORCE_ENV,
+  UI_REASON_WORDS,
+  uiEffortAllowed,
+  uiRuleText,
+  uiTierAllowed,
   WORKFLOW_SUBAGENT_MODEL_ENV,
 } from "../models/launch-policy";
 import {
@@ -897,11 +910,28 @@ const REASON_WORD_MAX = 40;
 /**
  * The first word of an `Opus reason:` line, lower case and without the punctuation around it
  * (`security.` and `` `security` `` both read `security`); null when the line has no word.
- * Nothing decides on it: it only names the purpose in the record.
+ * Mostly it only names the purpose in the record; the UI rule (`uiDeclaration`) decides on it.
  */
 function firstWord(text: null | string): null | string {
   const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
   return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
+}
+
+/**
+ * The UI/UX declaration a launch's prompt carries, or null (D50): the first word of an
+ * `Opus reason:` or a `Fable reason:` line, when it is one of `UI_REASON_WORDS`. Only a
+ * declared launch is held to the UI rule — a prompt that merely talks about a page or a
+ * layout is never sniffed for keywords, because a false positive would block real work.
+ */
+function uiDeclaration(prompt: string): null | string {
+  for (const label of ["Opus reason", "Fable reason"]) {
+    const said = reasonLine(prompt, label);
+    const word = firstWord(said);
+    if (word !== null && (UI_REASON_WORDS as readonly string[]).includes(word)) {
+      return `${label}: ${said}`;
+    }
+  }
+  return null;
 }
 
 const NO_MODEL = [
@@ -934,6 +964,18 @@ function effortDenial(effort: string): string {
     `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
     `A subagent runs at ${EFFORTS} — never \`low\`, on any model.`,
     EFFORT_USE,
+  ].join("\n");
+}
+
+/**
+ * Said when a launch declares UI/UX work (D50) and would run on a tier or an effort UI/UX work
+ * never runs at. The line names the allowed models and efforts, built from `UI_POLICY`.
+ */
+function uiDenial(real: LaunchModel, effort: null | string, declared: string): string {
+  return [
+    `This launch declares UI/UX work (\`${declared}\`) and would run on \`${real.model}\` ${atEffort(effort)}.`,
+    `Use ${uiRuleText()} for UI/UX work (D50).`,
+    "Checking is not design: `cc-smart-dev-kit:ui-verifier` may run on an affordable model, and you judge its measured facts and screenshots on one of those tiers.",
   ].join("\n");
 }
 
@@ -1118,6 +1160,18 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
       ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV)
       : new Set(ctx.readOnlyAgents.map(agentKey));
   const builder = !readOnly.has(agentKey(type));
+
+  // UI/UX work (D50) comes before every tier rule: a launch that declares it runs only on the
+  // tiers and at the efforts `UI_POLICY` names, so a declared UI launch on Sonnet, Haiku or an
+  // affordable slot — or on an allowed tier below `high` — is refused here rather than allowed
+  // by the rule below. A fork names no effort: it runs at the session's own, which the person
+  // chose, so only its tier is judged.
+  const declared = uiDeclaration(launch.prompt);
+  if (declared !== null) {
+    const effort = launch.effort?.toLowerCase() ?? null;
+    const tooLow = effort !== null && !uiEffortAllowed(effort);
+    if (!uiTierAllowed(real) || tooLow) return deny(real, uiDenial(real, effort, declared));
+  }
 
   // The premium tiers come FIRST, before the affordable rule: `opus` and `fable` are the tier
   // whatever model answers behind them (owner, 2026-10-16), so an override or a family slot that

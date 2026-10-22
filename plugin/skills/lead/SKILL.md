@@ -35,7 +35,9 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
 - **Each phase gets a kind**, and the kind picks the model and the effort:
   `cc-smart-dev-kit crew kinds` (or `crew --help`) lists each kind with its model. Pick
   the kind of the phase's riskiest part; a kind that runs on opus is for design judgment, never
-  a way to get a stronger builder. Override `--model` or `--effort` only when the person asks.
+  a way to get a stronger builder. `ui` is opus at `high` — never an affordable model, because
+  UI/UX design is not affordable work — and `crew start` refuses an override that would put it
+  there. Override `--model` or `--effort` only when the person asks.
 
 ## 3. Start each phase
 

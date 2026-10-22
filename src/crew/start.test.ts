@@ -445,6 +445,43 @@ describe("the refusals before anything is recorded", () => {
     ).toBe(0);
     expect(world.out[0]).toContain("· opus high ·");
   });
+
+  test("D50: a ui session starts on opus at high by default", async () => {
+    const world = await ledWorld();
+    const argv = startArgs(world.brief);
+    argv[argv.indexOf("build")] = "ui";
+    expect(await runCrew(argv, world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· opus high ·");
+    expect(world.claudeCalls()[0]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "high"]);
+  });
+
+  test.each([
+    [["--model", "sonnet"]],
+    [["--model", "haiku"]],
+    [["--effort", "medium"]],
+    [["--model", "sonnet", "--effort", "xhigh"]],
+  ])("D50: a ui session refuses the override %j, with one plain line", async (more) => {
+    const world = await ledWorld();
+    const argv = startArgs(world.brief, ...more);
+    argv[argv.indexOf("build")] = "ui";
+    expect(await runCrew(argv, world.ctx())).toBe(2);
+    expect(world.err).toEqual([
+      "crew start: UI/UX work runs only on `opus` or `fable` at `high`, `xhigh` or `max` (D50): pick one of those for a `ui` session.",
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
+  test("D50: a ui session takes an opus override at xhigh, and other kinds keep theirs", async () => {
+    const world = await ledWorld();
+    const ui = startArgs(world.brief, "--model", "opus", "--effort", "xhigh");
+    ui[ui.indexOf("build")] = "ui";
+    expect(await runCrew(ui, world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· opus xhigh ·");
+    // The rule is the `ui` kind's alone: a build session on sonnet is still routine work.
+    const other = await ledWorld();
+    expect(await runCrew(startArgs(other.brief, "--model", "sonnet"), other.ctx())).toBe(0);
+    expect(other.out[0]).toContain("· sonnet high ·");
+  });
 });
 
 describe("D25: the queue — still one line, at once", () => {

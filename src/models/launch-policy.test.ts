@@ -18,6 +18,11 @@ import {
   isAffordable,
   isCrewKind,
   resolveLaunchModel,
+  UI_EFFORTS,
+  UI_POLICY,
+  uiEffortAllowed,
+  uiRuleText,
+  uiTierAllowed,
 } from "./launch-policy";
 
 const NO_ENV = {} as Record<string, string | undefined>;
@@ -57,7 +62,7 @@ const CLAUDE_SLOTS: GatewayFacts = {
 const CONFIG_BUT_OFF: GatewayFacts = { ...AFFORDABLE, gatewayOn: false };
 
 describe("D46: the crew kinds", () => {
-  test("D46: eight kinds name sonnet, only architecture and ui name opus at xhigh", () => {
+  test("D46/D50: eight kinds name sonnet, architecture names opus at xhigh, ui names opus at high", () => {
     expect(CREW_KINDS).toEqual({
       build: {
         about: "routine building",
@@ -115,8 +120,8 @@ describe("D46: the crew kinds", () => {
       },
       ui: {
         about: "UI and UX judgment",
-        affordableEffort: "xhigh",
-        effort: "xhigh",
+        affordableEffort: null,
+        effort: "high",
         model: "opus",
       },
     });
@@ -198,9 +203,11 @@ describe("D46: the crew kinds", () => {
     for (const gateway of [NO_GATEWAY, AFFORDABLE, CLAUDE_SLOTS, CONFIG_BUT_OFF]) {
       for (const kind of CREW_KIND_NAMES) {
         const { effort, model } = crewLaunch(kind, gateway, NO_ENV);
+        // The `ui` kind declares UI/UX work (D50): its own launch must pass its own rule.
+        const prompt = kind === "ui" ? "Build it.\nOpus reason: ui - the page" : "Build it.";
         const launch = readLaunch({
           hook_event_name: "PreToolUse",
-          tool_input: { effort, model, prompt: "Build it.", subagent_type: "general-purpose" },
+          tool_input: { effort, model, prompt, subagent_type: "general-purpose" },
           tool_name: "Agent",
         });
         if (launch === null) throw new Error("not an Agent call");
@@ -219,6 +226,47 @@ describe("D46: the crew kinds", () => {
     expect(crewLaunch(sonnetKind, AFFORDABLE, NO_ENV).real).toEqual(
       resolveLaunchModel("sonnet", AFFORDABLE, NO_ENV),
     );
+  });
+});
+
+describe("D50: UI/UX work runs only on the tiers and efforts UI_POLICY names", () => {
+  test("the one home: opus and fable, at high and above", () => {
+    expect(UI_POLICY).toEqual({ minEffort: "high", tiers: ["opus", "fable"] });
+    expect(UI_EFFORTS).toEqual(["high", "xhigh", "max"]);
+    expect(uiRuleText()).toBe("`opus` or `fable` at `high`, `xhigh` or `max`");
+  });
+
+  test("the allowed tiers: opus and fable; never Haiku, Sonnet or an affordable model", () => {
+    const tier = (model: string, gateway: GatewayFacts = NO_GATEWAY) =>
+      resolveLaunchModel(model, gateway, NO_ENV);
+    expect(uiTierAllowed(tier("opus"))).toBe(true);
+    expect(uiTierAllowed(tier("fable"))).toBe(true);
+    expect(uiTierAllowed(tier("sonnet"))).toBe(false);
+    expect(uiTierAllowed(tier("haiku"))).toBe(false);
+    // A backend target behind the opus tier is still the opus tier, whatever answers it.
+    expect(uiTierAllowed(tier("opus", AFFORDABLE))).toBe(true);
+    // A backend target named directly has no tier, so UI/UX work is refused.
+    expect(uiTierAllowed(tier("omniroute:glm-5.3-flash"))).toBe(false);
+  });
+
+  test("the minimum effort: high, xhigh and max pass; medium, low and none do not", () => {
+    for (const effort of ["high", "xhigh", "max", "HIGH"]) {
+      expect(`${effort}: ${uiEffortAllowed(effort)}`).toBe(`${effort}: true`);
+    }
+    for (const effort of ["medium", "low", "turbo", "", null]) {
+      expect(`${effort}: ${uiEffortAllowed(effort)}`).toBe(`${effort}: false`);
+    }
+  });
+
+  test("D50: the ui kind is opus at high, on every gateway, and never affordable", () => {
+    for (const gateway of [NO_GATEWAY, AFFORDABLE, CLAUDE_SLOTS, CONFIG_BUT_OFF]) {
+      const launch = crewLaunch("ui", gateway, NO_ENV);
+      expect(launch).toMatchObject({ effort: "high", model: "opus" });
+      expect(launch.real.tier).toBe("opus");
+      expect(isAffordable(launch.real)).toBe(false);
+      expect(uiTierAllowed(launch.real)).toBe(true);
+      expect(uiEffortAllowed(launch.effort)).toBe(true);
+    }
   });
 });
 

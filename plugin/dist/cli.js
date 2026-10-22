@@ -22948,6 +22948,25 @@ var AFFORDABLE_EFFORT = "max";
 function effortAllowed(effort) {
   return ALLOWED_EFFORTS.includes(effort.toLowerCase());
 }
+var UI_POLICY = {
+  minEffort: "high",
+  tiers: ["opus", "fable"]
+};
+var UI_REASON_WORDS = ["ui", "ui-design"];
+function uiTierAllowed(real) {
+  return real.tier !== null && UI_POLICY.tiers.includes(real.tier);
+}
+function uiEffortAllowed(effort) {
+  if (effort === null)
+    return false;
+  const levels = ALLOWED_EFFORTS;
+  return levels.indexOf(effort.toLowerCase()) >= levels.indexOf(UI_POLICY.minEffort);
+}
+var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
+function uiRuleText() {
+  const named = (levels) => levels.length < 2 ? levels.map((one) => `\`${one}\``).join("") : `${levels.slice(0, -1).map((one) => `\`${one}\``).join(", ")} or \`${levels.at(-1)}\``;
+  return `${named(UI_POLICY.tiers)} at ${named(UI_EFFORTS)}`;
+}
 function premiumTier(family) {
   return family === "fable" || family === "opus" ? family : null;
 }
@@ -23118,7 +23137,12 @@ var CREW_KINDS = {
     effort: "xhigh",
     model: "opus"
   },
-  ui: { about: "UI and UX judgment", affordableEffort: "xhigh", effort: "xhigh", model: "opus" }
+  ui: {
+    about: "UI and UX judgment",
+    affordableEffort: null,
+    effort: UI_POLICY.minEffort,
+    model: UI_POLICY.tiers[0]
+  }
 };
 var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 function isCrewKind(value) {
@@ -23128,7 +23152,7 @@ function crewLaunch(kind, gateway, env) {
   const policy = CREW_KINDS[kind];
   const real = resolveLaunchModel(policy.model, gateway, env);
   return {
-    effort: isAffordable(real) ? policy.affordableEffort : policy.effort,
+    effort: isAffordable(real) ? policy.affordableEffort ?? policy.effort : policy.effort,
     model: policy.model,
     real
   };
@@ -24157,6 +24181,16 @@ function firstWord2(text) {
   const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
   return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
 }
+function uiDeclaration(prompt2) {
+  for (const label of ["Opus reason", "Fable reason"]) {
+    const said = reasonLine(prompt2, label);
+    const word = firstWord2(said);
+    if (word !== null && UI_REASON_WORDS.includes(word)) {
+      return `${label}: ${said}`;
+    }
+  }
+  return null;
+}
 var NO_MODEL = [
   "This Agent launch names no `model`.",
   "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
@@ -24179,6 +24213,14 @@ function effortDenial(effort) {
     `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
     `A subagent runs at ${EFFORTS} \u2014 never \`low\`, on any model.`,
     EFFORT_USE
+  ].join(`
+`);
+}
+function uiDenial(real, effort, declared) {
+  return [
+    `This launch declares UI/UX work (\`${declared}\`) and would run on \`${real.model}\` ${atEffort(effort)}.`,
+    `Use ${uiRuleText()} for UI/UX work (D50).`,
+    "Checking is not design: `cc-smart-dev-kit:ui-verifier` may run on an affordable model, and you judge its measured facts and screenshots on one of those tiers."
   ].join(`
 `);
 }
@@ -24283,6 +24325,13 @@ function judgeModel(launch, real, ctx, env) {
   const type = launch.subagentType ?? "";
   const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
   const builder = !readOnly.has(agentKey(type));
+  const declared = uiDeclaration(launch.prompt);
+  if (declared !== null) {
+    const effort = launch.effort?.toLowerCase() ?? null;
+    const tooLow = effort !== null && !uiEffortAllowed(effort);
+    if (!uiTierAllowed(real) || tooLow)
+      return deny(real, uiDenial(real, effort, declared));
+  }
   if (real.tier === "fable") {
     const said = reasonLine(launch.prompt, "Fable reason");
     const word = reasonWord(said, builder ? BUILDER_WORDS : FABLE_REASONS);
@@ -28790,6 +28839,9 @@ function handoffSuffixOf(n) {
 function oneLine2(text) {
   return text.replace(/\s*\n\s*/g, " ").trim();
 }
+function uiRefusal() {
+  return `UI/UX work runs only on ${uiRuleText()} (D50): pick one of those for a \`ui\` session.`;
+}
 function chooseLaunch(kind, override, ctx) {
   const gateway = gatewayFactsOf(ctx.paths);
   const own = crewLaunch(kind, gateway, ctx.env);
@@ -28797,6 +28849,9 @@ function chooseLaunch(kind, override, ctx) {
   const real = override.model === null ? own.real : resolveLaunchModel(model, gateway, ctx.env);
   const kindEffort = isAffordable(real) ? AFFORDABLE_EFFORT : CREW_KINDS[kind].effort;
   const effort = (override.effort ?? (override.model === null ? own.effort : kindEffort)).toLowerCase();
+  if (kind === "ui" && (!uiTierAllowed(real) || !uiEffortAllowed(effort))) {
+    return { refusal: uiRefusal() };
+  }
   const verdict = judgeLaunch({ effort, fork: false, model, prompt: "", subagentType: CREW_AGENT_TYPE, tool: "Agent" }, { ...gateway, sessionModel: null }, ctx.env);
   if (verdict.decision === "deny") {
     return {
@@ -33085,7 +33140,13 @@ function kindLines() {
   const head = ["kind", "model", "effort on Claude", "effort on a slot", "for"];
   const rows = CREW_KIND_NAMES.map((kind) => {
     const policy = CREW_KINDS[kind];
-    return [kind, policy.model, policy.effort, policy.affordableEffort, policy.about];
+    return [
+      kind,
+      policy.model,
+      policy.effort,
+      policy.affordableEffort ?? "never",
+      policy.about
+    ];
   });
   const widths = head.map((_, column) => Math.max(...[head, ...rows].map((row) => (row[column] ?? "").length)));
   const line = (cells) => cells.map((cell, column) => column === cells.length - 1 ? cell : cell.padEnd(widths[column] ?? 0)).join("  ");

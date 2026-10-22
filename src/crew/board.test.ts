@@ -513,7 +513,8 @@ describe("crew kinds", () => {
         kind,
         policy.model,
         policy.effort,
-        policy.affordableEffort,
+        // A kind that never runs on an affordable model prints so (`ui`, D50).
+        policy.affordableEffort ?? "never",
         policy.about,
       ]);
     }

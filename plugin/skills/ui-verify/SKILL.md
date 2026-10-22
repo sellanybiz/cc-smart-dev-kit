@@ -14,8 +14,8 @@ A UI check is two steps, and the session that wants the check owns both:
 
 1. **Launch** the `cc-smart-dev-kit:ui-verifier` agent to drive the browser. That is many tool calls
    and large page snapshots — work for the affordable worker slot.
-2. **Judge the design yourself** from the key screenshots it saved. The verdict stays with
-   the main model.
+2. **Judge the design yourself** from the key screenshots it saved — on `opus` or `fable`, the
+   only models design judgment runs on (§ 3).
 
 The agent's own file holds its matrix, its safe-versus-mutating gate and its report format.
 This skill is what **you** do around it. A plan's owner (a subagent) does not launch a check
@@ -32,7 +32,8 @@ check (`/cc-smart-dev-kit:verify-change` § 5).
 ## 2. Launch the agent — one at a time
 
 `Agent` with the `cc-smart-dev-kit:ui-verifier` type, on `sonnet` (the worker slot; effort as the
-core instructions say for that slot). **One at a time:** the session's Playwright MCP server
+core instructions say for that slot — the measured facts may run on an affordable model, the design
+verdict may not). **One at a time:** the session's Playwright MCP server
 drives one browser, and a second agent fights the first for its pages. Another session has
 its own MCP server and its own tab group, so a check there does not clash with this one (with
 `cc-smart-dev-kit setup` run, every session drives the person's own Chrome through the Playwright
@@ -53,12 +54,15 @@ A browser tool that will not connect usually means the extension's token is not 
 - "facts and measured values only, no design verdict", and that a case it could not
   reproduce is a result it reports.
 
-## 3. Judge the design — your step
+## 3. Judge the design — on Opus or Fable
 
 Open the key screenshots, read the measured values, and answer the design question yourself:
 aligned, consistent with the product's look, nothing clipped, dark and light, every
-breakpoint? That judgment is what the check exists for. An affordable model sees layout, colour and
-clipping well but miscounts fine detail, so it measures and you judge.
+breakpoint? That judgment is design work, so it runs only on `opus` or `fable`, at `high` or above
+(the core instructions' model table); an affordable model sees layout, colour and clipping but
+miscounts fine detail, so it measures and you judge. If this session runs on an affordable model,
+hand the verdict to a read-only agent on `opus` (`Plan`, with the screenshots' paths) and take its
+answer as the verdict.
 
 ## 4. Close out
 

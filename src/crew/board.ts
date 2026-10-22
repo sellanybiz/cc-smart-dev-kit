@@ -404,7 +404,14 @@ export function kindLines(): string[] {
   const head = ["kind", "model", "effort on Claude", "effort on a slot", "for"];
   const rows = CREW_KIND_NAMES.map((kind) => {
     const policy = CREW_KINDS[kind];
-    return [kind, policy.model, policy.effort, policy.affordableEffort, policy.about];
+    return [
+      kind,
+      policy.model,
+      policy.effort,
+      // A kind that never runs on an affordable model says so (`ui`, D50).
+      policy.affordableEffort ?? "never",
+      policy.about,
+    ];
   });
   const widths = head.map((_, column) =>
     Math.max(...[head, ...rows].map((row) => (row[column] ?? "").length)),
