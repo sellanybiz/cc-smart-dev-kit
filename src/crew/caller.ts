@@ -44,13 +44,14 @@ export function reasonOf(error: unknown): string {
 }
 
 /** The commands a lead runs, and what a crew session never does with each. */
-export const LEAD_COMMANDS = ["lead", "start", "answer", "watch"] as const;
+export const LEAD_COMMANDS = ["lead", "start", "answer", "watch", "resume"] as const;
 export type LeadCommand = (typeof LEAD_COMMANDS)[number];
 
 /** What a crew session never does, per command, in the words the refusal uses. */
 const NEVER_DOES: Record<LeadCommand, string> = {
   answer: "answers its lead's questions",
   lead: "leads",
+  resume: "stops, removes or resumes crew sessions",
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions",
 };

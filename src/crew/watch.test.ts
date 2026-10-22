@@ -6,18 +6,26 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
+import type { ResolvedWorkflow } from "../workflow/resolve";
+import { resolveWorkflow } from "../workflow/resolve";
 import { runCrew } from "./command";
 import {
   appendCrewEvent,
   type CrewRecord,
   createCrew,
+  eventsEndOffset,
   listCrew,
+  readCrew,
   readWatchState,
+  type WatchState,
   writeLead,
 } from "./store";
+import type { GatewayNow } from "./wait";
+import { type WatchScope, watchPass } from "./watch";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
@@ -829,5 +837,245 @@ describe("crew watch", () => {
     );
     expect(code).toBe(1);
     expect(world.err[0]).toContain("never watches");
+  });
+});
+
+describe("D42: the watch resumes a paused crew session", () => {
+  const MINUTE = 60_000;
+  const WORKER = "cc-smart-dev-kit-worker";
+  const SLOT_WAIT = { kind: "slot", since: "2026-10-21T09:50:00.000Z", slot: WORKER } as const;
+
+  /** The workflow settings the watch reads, as `crew watch` itself resolves them. */
+  function resolvedOf(world: Awaited<ReturnType<typeof leadWorld>>): ResolvedWorkflow {
+    const env = world.ctx().env;
+    const checkout = locateCheckout(world.repo, { env });
+    if (checkout === null) throw new Error("the world's repo is not a checkout");
+    return resolveWorkflow(world.paths, loadProjectConfig(checkout).config);
+  }
+
+  /** A paused crew session of the lead, on the worker slot, waiting out its breaker. */
+  async function pausedCrew(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    change: Partial<CrewRecord> = {},
+  ): Promise<CrewRecord> {
+    return await addCrew(world, "paused", {
+      lastPause: { backoffMs: 0, since: "2026-10-21T09:50:00.000Z" },
+      // The session agent view lists, so a message reaches it (the fake `claude`'s row).
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      model: {
+        named: "sonnet",
+        resolved: "claude-sonnet-5-5",
+        slot: WORKER,
+        tier: null,
+      },
+      waitingFor: SLOT_WAIT,
+      ...change,
+    });
+  }
+
+  /** What the gateway says: ready (no breaker), or a breaker still open on the worker slot. */
+  function facts(change: Partial<GatewayNow> = {}): GatewayNow {
+    return { breakers: {}, inUse: null, limits: {}, requests: 10, ...change };
+  }
+
+  const openBreaker = () =>
+    facts({
+      breakers: {
+        [WORKER]: {
+          held: 1,
+          lastAt: T0,
+          since: T0 - 10 * MINUTE,
+          targets: [{ status: 429, target: "omniroute:glm-5.3-flash", until: T0 + MINUTE }],
+        },
+      },
+      inUse: { [WORKER]: ["omniroute:glm-5.3-flash"] },
+    });
+
+  /** One pass, with the gateway facts the test hands in and the clock it names. */
+  async function pass(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    resolved: ResolvedWorkflow,
+    gateway: GatewayNow,
+    state: WatchState,
+    nowMs: number = T0,
+  ) {
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(gateway),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    return await watchPass(state, world.ctx({ now: () => nowMs }), scope);
+  }
+
+  /** The watch's state as a fresh one: at the log's end, the monitor note already said. */
+  function fresh(world: Awaited<ReturnType<typeof leadWorld>>): WatchState {
+    return { noted: true, offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} };
+  }
+
+  test("never while the breaker is open; then one message, and the wait cleared", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    // Open: nothing happens, no line, the record stays paused.
+    expect(
+      (await pass(world, resolved, openBreaker(), fresh(world))).state.resumedAt,
+    ).toBeUndefined();
+    expect(world.out).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+
+    // Closed: the watch sends the message line (only a session holds SendMessage), and the
+    // record is working again, with one state event.
+    const done = await pass(world, resolved, facts(), fresh(world));
+    expect(done.lines).toBe(2);
+    expect(world.out).toEqual([
+      `SendMessage {"to":"${NAME}","message":"The wait is over: worker answers again. Go on with phase B6b, then hand it back as usual."}`,
+      `${NAME}: working — the wait is over; the message to it wakes it`,
+    ]);
+    expect(done.state.resumedAt).toBe(T0);
+    expect(done.state.routerRequests).toBe(10);
+    const after = readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("working");
+    expect(after?.waitingFor).toBeUndefined();
+    expect(after?.reportPath).toBeNull();
+  });
+
+  test("a session with no process is resumed with the text, and never as a copy", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world, {
+      waitingFor: {
+        kind: "claude-limit",
+        model: "claude-sonnet-5-5",
+        resetsAt: "2026-10-21T09:58:00.000Z",
+      },
+    });
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const done = await watchPass(fresh(world), ctx, scope);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([
+      [
+        "--bg",
+        "--resume",
+        record.sessionId ?? "",
+        "The wait is over: Claude's limit reset at 09:58. Go on with phase B6b, then hand it back as usual.",
+      ],
+    ]);
+    expect(done.lines).toBe(1);
+    expect(world.out).toEqual([`${NAME}: working — the wait is over; it was resumed`]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
+  });
+
+  test("one first; the next 30 s later, and only after the router answered a request since", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const first = await pausedCrew(world);
+    const second = await pausedCrew(world, {
+      id: "B6c-api-live-9f9f9f",
+      name: "C my-app B6c api-live",
+      phase: "B6c",
+      sessionId: "b2c3d4e5-0000-1111-2222-333333333333",
+      shortId: "b2c3d4e5",
+      slug: "api-live",
+      waitingFor: { ...SLOT_WAIT, since: "2026-10-21T09:51:00.000Z" },
+      lastPause: { backoffMs: 0, since: "2026-10-21T09:51:00.000Z" },
+    });
+
+    // The canary: the oldest wait goes.
+    let done = await pass(world, resolved, facts({ requests: 10 }), fresh(world));
+    expect(done.state.resumedAt).toBe(T0);
+    expect(readCrew(world.paths.stateDir, world.repo, first.id)?.state).toBe("working");
+    expect(readCrew(world.paths.stateDir, world.repo, second.id)?.state).toBe("paused");
+
+    // 20 s later: too soon, even though the router answered.
+    done = await pass(world, resolved, facts({ requests: 14 }), done.state, T0 + 20_000);
+    expect(done.lines).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, second.id)?.state).toBe("paused");
+
+    // 31 s later, but the router handled no request since the canary: the others stay put.
+    done = await pass(world, resolved, facts({ requests: 10 }), done.state, T0 + 31_000);
+    expect(done.lines).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, second.id)?.state).toBe("paused");
+
+    // 31 s later, and the router answered: the next one goes, one line for its state event.
+    done = await pass(world, resolved, facts({ requests: 11 }), done.state, T0 + 31_000);
+    expect(done.lines).toBe(1);
+    expect(readCrew(world.paths.stateDir, world.repo, second.id)?.state).toBe("working");
+    expect(world.out).toContain(
+      "C my-app B6c api-live: working — the wait is over; it was resumed",
+    );
+  });
+
+  test("a limit still current: the session waits, however long its reset time has passed", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const limited = await pausedCrew(world, {
+      model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
+      waitingFor: {
+        kind: "claude-limit",
+        model: "claude-opus-5-5",
+        resetsAt: "2026-10-21T10:04:00.000Z",
+      },
+    });
+    const current = facts({
+      limits: {
+        "claude-opus-5-5": { claim: "five_hour", resetsAt: 1_792_623_600, seenAt: T0 },
+      },
+    });
+    // The reset time passed, but the router still records the limit: never while it is current.
+    let done = await pass(world, resolved, current, fresh(world), T0 + 5 * MINUTE);
+    expect(done.lines).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, limited.id)?.state).toBe("paused");
+    // The router dropped it, but the reset time plus the jitter is still ahead.
+    done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
+    expect(done.lines).toBe(0);
+    // Both are past: it goes.
+    done = await pass(world, resolved, facts(), done.state, T0 + 6 * MINUTE);
+    expect(done.lines).toBe(2);
+    expect(readCrew(world.paths.stateDir, world.repo, limited.id)?.state).toBe("working");
+  });
+
+  test("a re-pause's hold-off: five minutes more, whatever the gateway says", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const again = await pausedCrew(world, {
+      lastPause: { backoffMs: 5 * MINUTE, since: "2026-10-21T10:00:00.000Z" },
+      waitingFor: { kind: "unknown", since: "2026-10-21T10:00:00.000Z" },
+    });
+    let done = await pass(world, resolved, facts(), fresh(world), T0 + 4 * MINUTE);
+    expect(done.lines).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("paused");
+    done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
+    expect(done.lines).toBe(2);
+    expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("working");
+  });
+
+  test("a resume that claude refuses is one line, and the record stays paused", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]", FAKE_BG: "fail" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const done = await watchPass(fresh(world), ctx, scope);
+    expect(world.out).toEqual([
+      `${NAME}: not resumed — claude --bg --resume ${record.sessionId} failed (exit 4): something broke`,
+    ]);
+    expect(done.lines).toBe(1);
+    expect(done.state.resumedAt).toBeUndefined();
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 });

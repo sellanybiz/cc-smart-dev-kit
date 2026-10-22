@@ -15,7 +15,7 @@ import { type AnswerArgs, runCrewAnswer } from "./answer";
 import { commaList, parseOptions } from "./args";
 import { runCrewAttach, runCrewKinds, runCrewList, runCrewStatus } from "./board";
 import type { CrewContext } from "./context";
-import { runCrewResume, runCrewStop } from "./end";
+import { runCrewResume, runCrewResumePaused, runCrewStop } from "./end";
 import { type LeadArgs, runCrewLead } from "./lead";
 import { isNameTag, isPhase, isSlug, PHASE_RULE, SLUG_RULE, TAG_RULE } from "./names";
 import { runCrewRm } from "./remove";
@@ -249,6 +249,40 @@ export function parseTargetArgs(
   return { ref };
 }
 
+/**
+ * `crew resume`'s arguments, checked: one crew session by its name, id or short id, or
+ * `--paused` for every paused crew session of a lead at once (D42, after `/login`), with
+ * `--lead <session>` when the command's own session is not the lead.
+ */
+export function parseResumeArgs(
+  argv: readonly string[],
+): { all: true; lead: null | string } | { error: string } | { ref: string } {
+  const parsed = parseOptions(argv, ["--lead"], ["--paused"]);
+  if ("error" in parsed) return parsed;
+  const [ref, ...extra] = parsed.positionals;
+  const lead = parsed.options.get("--lead") ?? null;
+  if (parsed.flags.has("--paused")) {
+    if (ref !== undefined) {
+      return {
+        error: `crew resume --paused takes no crew session: name one, or --paused for all of them`,
+      };
+    }
+    return { all: true, lead };
+  }
+  if (lead !== null) {
+    return { error: "--lead is for --paused: name that crew session, or resume every paused one" };
+  }
+  if (ref === undefined) {
+    return {
+      error: "Say which crew session: crew resume <name|id>, or --paused for every paused one",
+    };
+  }
+  if (extra.length > 0) {
+    return { error: `Unknown argument: ${extra.join(" ")} (put a name with spaces in quotes)` };
+  }
+  return { ref };
+}
+
 /** `crew kinds` takes no argument; the mistake when it gets one. */
 export function parseKindsArgs(argv: readonly string[]): null | { error: string } {
   const parsed = parseOptions(argv, []);
@@ -309,7 +343,17 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
     }
     return runCrewKinds(ctx);
   }
-  if (sub === "status" || sub === "attach" || sub === "stop" || sub === "resume" || sub === "rm") {
+  if (sub === "resume") {
+    const args = parseResumeArgs(rest);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    return await guarded(sub, ctx, () =>
+      "all" in args ? runCrewResumePaused(args.lead, ctx) : runCrewResume(args.ref, ctx),
+    );
+  }
+  if (sub === "status" || sub === "attach" || sub === "stop" || sub === "rm") {
     const args = parseTargetArgs(sub, rest);
     if ("error" in args) {
       ctx.error(usageError(args.error, sub));
@@ -318,7 +362,6 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
     const { ref } = args;
     const run = {
       attach: () => runCrewAttach(ref, ctx),
-      resume: () => runCrewResume(ref, ctx),
       rm: () => runCrewRm(ref, ctx),
       status: () => runCrewStatus(ref, ctx),
       stop: () => runCrewStop(ref, ctx),

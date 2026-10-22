@@ -1336,7 +1336,7 @@ that, so the plugin ships no worktree hook at all.
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
-| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. § Lead and the crew › The crew session's and the lead's hooks. |
+| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
 | `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the six machine-wide
@@ -2404,8 +2404,10 @@ repository, under the state folder:
   (`answeringSlot`), the effort, the permission mode, the worktree, the branch, the ref it starts
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
   and where it is: its state, its last line, its report, its pull request, its memory, its
-  questions, what it waits for while `paused` (`waitingFor`: a gateway slot, or Claude's own
-  limit), when its session started (`startedAt`, optional: the crew session's own time caps count
+  questions, what it waits for while `paused` (`waitingFor`: a gateway slot whose breaker is
+  open, Claude's own plan limit, or `unknown` when the router's state explains nothing; with the
+  pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
+  § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
   of the old crew session, set by a hand-off and by nothing else), and when it was recorded and
   changed. The states are `queued`, `starting`,
@@ -2495,7 +2497,11 @@ polls or retries. In order:
    (`crew report --status done|failed`), and D36's rule: never ask the person or call
    AskUserQuestion; a question goes to the lead with `crew report --question … --option …
    --recommend <n>`, the crew session goes on with what it does not block, and `--status blocked` only
-   when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":"<id>"}}`.
+   when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":"<id>",
+   "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`:
+   the two watchdog keys are CC1's (`src/setup/retry-watchdog.ts`), and there is **no wait
+   limit** on purpose (D42: keep waiting), so no `…_MAX_WAIT_MS` and no
+   `…_MAX_USAGE_LIMIT_WAIT_MS`. A crew session is unattended, which is what the watchdog is for.
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
    a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
@@ -2660,6 +2666,10 @@ the store records — a session the kit does not know is the person's own:
   launcher). A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
   another starts from the merged result, and the folder `claude -w` opens is the record's own
   worktree, so a hand-off's numbered folder is the right one;
+- it **resumes the paused crew sessions** of this lead once the gateway answers again (D42): one
+  first (the canary), the others `RESUME_SPACING_MS` (30 s) apart and only after the router
+  answered a request since, and never while a slot's breaker is open or a Claude limit is
+  current (§ Waiting out a limit);
 - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
   the conversation stays; a session that crashed has nothing to stop), and a `blocked` one that
   has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A stop that fails
@@ -2682,6 +2692,39 @@ list` and the portal read it, and into the event the watch writes when it ends t
 `run_in_background: true`, re-armed per event, and the end of the run starts the lead's next
 turn); a pass with nothing to say waits for the next, so it never wakes the lead with no news.
 `--timeout <seconds>` bounds the wait.
+
+#### Waiting out a limit
+
+A model limit ends a turn the retry watchdog did not outlast — the plan's usage limit, an
+overloaded model, a server error. The kit waits it out, with no time limit (D42: the owner chose
+"keep waiting"; no `limitWaitHours`, no `…_MAX_WAIT_MS`), in three parts (`src/crew/wait.ts`):
+
+- **Each crew session's own settings turn the watchdog on** (the keys CC1 writes for a machine,
+  `src/setup/retry-watchdog.ts`), so most limits are waited out inside the turn.
+- **The pause** (`crew-role`, StopFailure): a stop with `rate_limit`, `overloaded` or
+  `server_error` marks the record `paused` and takes `waitingFor` from the router's limit state,
+  in this order: `slot` — the slot the crew session's model reaches has a current breaker record,
+  with the time it opened; `claude-limit` — a current plan limit, the session's own model first,
+  else the freshest of a model whose family has a slot, with its reset time; `unknown` —
+  nothing the state file explains. One `state` event carries the line the watch shows
+  (`C kit B6b portal-live: paused — worker slot limited since 21:05; goes on by itself when it
+  answers`), and `lastPause` records when the wait began and the hold-off it carries: 0 on a
+  first pause, then 5, 10 and 20 minutes while pauses come within 15 minutes of each other.
+  A crew session that ended its phase, was stopped, or still waits in the queue pauses nothing.
+- **The resume** (the lead's watch): never while the slot's breaker is open (its first target in
+  use is not one the record says rests) or the model's limit is current. A slot wait is over when
+  the breaker record closed (the router recorded an answer — only an answer closes it) or the
+  chain's first target changed; a Claude limit's when the reset time passed, plus
+  `LIMIT_RESET_JITTER_MS` (90 s), and the router dropped the record; an `unknown` wait's after
+  its hold-off, with no breaker or limit that would explain it now. One crew session goes first
+  (the canary); the next no sooner than 30 s after it, and only once the router answered a
+  request since — its health page's count grew, and the state file's closed breaker or dropped
+  limit is that answer when the page is not there. The transport is `crew answer`'s: a message
+  for a session whose process lives (the watch prints the `SendMessage` line, because only a
+  session holds that tool), `claude --bg --resume <id> "<text>"` for one whose session has no
+  process; the text names what changed and the phase. The record is `working` with its wait
+  cleared, in the same act. `crew resume --paused` is the person's way at once — after `/login`
+  on another account — for every paused crew session of a lead.
 
 **The hand-off** — `crew start <phase> --continue <old crew session>` — starts the next crew session of a
 phase that ran out of room: the same phase and slug, cut from the **old crew session's head** (not
@@ -2816,7 +2859,11 @@ each is silent unless its own session is the one it is about, and neither reads
   line as its reason (`{"decision":"block","reason":…}`), and never again while `stop_hook_active`
   is true. Claude Code shows each block as a `stop-hook-error` notification and caps consecutive
   blocks at 9; this hook blocks at most once per turn. Nothing runs while `background_tasks` is not
-  empty: that turn is not over, and Claude Code wakes the session when the work lands. A store that
+  empty: that turn is not over, and Claude Code wakes the session when the work lands. At
+  **StopFailure** on `rate_limit`, `overloaded` or `server_error` it marks the crew session
+  **paused**, with what it waits for taken from the router's state file (D42, § Waiting out a
+  limit), and answers nothing: Claude Code ignores that hook's output, so the pause is the
+  record and its event, and the lead's watch is what resumes it. A store that
   cannot be read is one line on stderr and no block.
 - **`lead-notes`** (`src/hooks/lead-notes.ts`) is silent unless the input's `session_id` is a lead
   recorded in this repository. Each turn a lead starts — `UserPromptSubmit` (which also fires on a

@@ -20,6 +20,12 @@
  *   with the report step as its reason (`{"decision":"block","reason":…}`; Claude Code runs no
  *   second block while `stop_hook_active` is true). Nothing runs while `background_tasks` is not
  *   empty: that turn is not over, and Claude Code wakes the session when the work lands.
+ * - **StopFailure (D42)**: marks the crew session `paused` when a model limit ended its turn
+ *   (`rate_limit`, `overloaded`, `server_error`), with what it waits for taken from the router's
+ *   state file (`waitingFor`: its slot's breaker, Claude's plan limit, else `unknown`) and one
+ *   `state` event the lead's watch shows. It never resumes anything: the watch does, once the
+ *   gateway answers again (`src/crew/wait.ts`, `src/crew/watch.ts`). A stop of a crew session
+ *   that already ended its phase, or waits in the queue, pauses nothing.
  *
  * A store that cannot be read is one line on stderr and no block: a crew session keeps working,
  * and a Stop hook never stops a session on a bug of the kit's.
@@ -27,6 +33,7 @@
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { REPORT_COMMAND } from "../crew/brief";
+import { RUNNING_STATES } from "../crew/places";
 import { crewIdOf } from "../crew/session";
 import {
   type CrewRecord,
@@ -35,6 +42,7 @@ import {
   readCrewEvents,
   updateCrew,
 } from "../crew/store";
+import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
 import { maskedLine } from "../gateway/plain-text";
 import {
   addContext,
@@ -170,9 +178,10 @@ async function stopAnswer(
 
 /**
  * Every answer of the hook, for every event it is wired for. `repo` is null outside a git checkout
- * (the PreToolUse answer needs none; a card and a stop need the store, so they stay silent there).
- * Async because the Stop answer writes the record: `onConfigProblem` and `outsideGit` call it too,
- * so a broken or too new project file never changes an answer.
+ * (the PreToolUse answer needs none; a card, a stop and a pause need the store, so they stay
+ * silent there). Async because the Stop and StopFailure answers write the record:
+ * `onConfigProblem` and `outsideGit` call it too, so a broken or too new project file never
+ * changes an answer.
  */
 export async function crewRoleAnswer(
   input: HookInput,
@@ -180,6 +189,7 @@ export async function crewRoleAnswer(
   env: Env,
   paths: CliPaths,
   repo: null | string,
+  options: CrewRoleOptions = {},
 ): Promise<HookResult> {
   const id = crewIdOf(env);
   if (id === null) return SILENT;
@@ -192,5 +202,54 @@ export async function crewRoleAnswer(
   if (repo === null) return SILENT;
   if (event === "SessionStart") return startCard(input, id, repo, paths);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths);
+  if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, options);
+  return SILENT;
+}
+
+/** What a crew session's pause reads besides its input; a test hands in its own. */
+export interface CrewRoleOptions {
+  /** The clock the pause records and its line shows; undefined: `Date.now()`. */
+  nowMs?: number;
+  /** Shown times use it; undefined: the machine's. */
+  timeZone?: string;
+}
+
+/**
+ * StopFailure: the turn ended on a model limit, so the crew session is `paused` with what it
+ * waits for (D42). One `state` event, whose line the watch shows; the record's `lastPause`
+ * carries the hold-off a re-pause doubles. Never a block and never stdout: Claude Code ignores
+ * a StopFailure hook's output, and the pause is the store's.
+ */
+async function stopFailureAnswer(
+  input: HookInput,
+  id: string,
+  repo: string,
+  paths: CliPaths,
+  options: CrewRoleOptions,
+): Promise<HookResult> {
+  const error = stringField(input.error);
+  if (!pausesCrew(error)) return SILENT;
+  const found = recordOf(id, repo, paths);
+  if (!found.ok) return found.result;
+  const record = found.record;
+  // Only a session that runs now waits for a model to answer: one that ended its phase, was
+  // stopped, or still waits in the queue has no turn to pause.
+  if (!(RUNNING_STATES as readonly string[]).includes(record.state)) return SILENT;
+  const nowMs = options.nowMs ?? Date.now();
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  const text = pauseText(waitingFor, error, nowMs, options.timeZone);
+  try {
+    await updateCrew(
+      paths.stateDir,
+      repo,
+      id,
+      { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor },
+      nowMs,
+      text,
+    );
+  } catch (why) {
+    // A store that cannot be written is one line: the session goes on, and its next turn may pause.
+    return storeProblem(reasonOf(why));
+  }
   return SILENT;
 }

@@ -17,7 +17,10 @@
  *      folder), then start now or queued (`placeFor`: its phases, the cap, the memory), and the
  *      record (`starting` or `queued`, one `created` event);
  *   5. its files: the brief with its frame (`brief.md`) and the settings file that names the
- *      crew session to its own session (`settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":<id>}}`);
+ *      crew session to its own session and turns Claude Code's retry watchdog on, with no wait
+ *      limit (`settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":<id>,
+ *      "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`,
+ *      D42);
  *   6. a queued crew session ends here. Otherwise: `git worktree add -b crew/<phase>-<slug>
  *      .claude/worktrees/crew-<phase>-<slug> <base>` in the main checkout (fast; anything slow is
  *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …`
@@ -47,6 +50,12 @@ import {
   uiRuleText,
   uiTierAllowed,
 } from "../models/launch-policy";
+import {
+  RETRY_WATCHDOG_ENV,
+  RETRY_WATCHDOG_RECHECK_ENV,
+  RETRY_WATCHDOG_RECHECK_MS,
+  RETRY_WATCHDOG_VALUE,
+} from "../setup/retry-watchdog";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
 import { claudeDeps } from "./agents";
@@ -833,9 +842,23 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         worktree: planned.worktree,
       }),
     );
+    // The crew session's own settings: who it is, and Claude Code's retry watchdog (D42), so
+    // a turn waits out a limit instead of ending. The keys and their values are CC1's
+    // (`src/setup/retry-watchdog.ts`), and there is no wait limit on purpose: the owner chose
+    // "keep waiting", so no `…_MAX_WAIT_MS` and no `…_MAX_USAGE_LIMIT_WAIT_MS`.
     writeStoreFile(
       crewSettingsFile(ctx.paths.stateDir, caller.repo, record.id),
-      `${JSON.stringify({ env: { [CREW_ENV]: record.id } }, null, 2)}\n`,
+      `${JSON.stringify(
+        {
+          env: {
+            [CREW_ENV]: record.id,
+            [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
+            [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS),
+          },
+        },
+        null,
+        2,
+      )}\n`,
     );
   } catch (error) {
     return await failed(record, `its brief could not be written: ${reasonOf(error)}`, ctx);

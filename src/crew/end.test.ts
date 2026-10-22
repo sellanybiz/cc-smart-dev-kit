@@ -8,10 +8,14 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
+import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
+import { OTHER_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
-import { runCrew } from "./command";
+import { parseResumeArgs, runCrew } from "./command";
 import { readCrew, readCrewEvents, writeLead } from "./store";
+
+/** The session of another lead of the world: its paused crew sessions are not this lead's. */
+const OTHER_LEAD = OTHER_SESSION;
 
 /** The session `claude agents` lists, so a failed stop is a real failure and not a gone session. */
 const LISTED = JSON.stringify([
@@ -633,6 +637,140 @@ describe("crew resume", () => {
     ]);
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "stopped",
+    });
+  });
+});
+
+describe("D42: crew resume --paused", () => {
+  /** A paused crew session of `lead`, waiting out its slot, paused `minutesAgo`. */
+  function pausedChange(minutesAgo: number, change: Parameters<BoardWorld["addCrew"]>[0] = {}) {
+    const since = new Date(NOW - minutesAgo * MINUTE).toISOString();
+    return {
+      lastPause: { backoffMs: 0, since },
+      state: "paused",
+      waitingFor: { kind: "slot" as const, since, slot: "cc-smart-dev-kit-worker" },
+      ...change,
+    };
+  }
+
+  test("every paused crew session of this lead, oldest wait first, and no other", async () => {
+    const world = await boardWorld();
+    const first = await world.addCrew({ atMs: NOW - 20 * MINUTE, ...pausedChange(20) });
+    const second = await world.addCrew({
+      atMs: NOW - 10 * MINUTE,
+      phase: "B2",
+      shortId: "b2c3d4e5",
+      slug: "api",
+      ...pausedChange(10),
+    });
+    // A working one, and a paused one of another lead: neither is touched.
+    await world.addCrew({ atMs: NOW - 5 * MINUTE, phase: "B3", shortId: "c3d4e5f6", slug: "x" });
+    await world.addCrew({
+      atMs: NOW - 3 * MINUTE,
+      leadSessionId: OTHER_LEAD,
+      phase: "B4",
+      shortId: "d4e5f6a7",
+      slug: "y",
+      ...pausedChange(3),
+    });
+    expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(0);
+    expect(world.claudeCalls()).toEqual([
+      ["respawn", "a1b2c3d4"],
+      ["respawn", "b2c3d4e5"],
+    ]);
+    expect(world.out).toEqual([
+      "resumed C my-app B1 help (a1b2c3d4)",
+      "resumed C my-app B2 api (b2c3d4e5)",
+    ]);
+    for (const record of [first, second]) {
+      const saved = await readCrew(world.paths.stateDir, world.repo, record.id);
+      expect(saved).toMatchObject({ state: "working" });
+      // The wait goes with the pause: a record that kept it would look paused to a reader.
+      expect(saved?.waitingFor).toBeUndefined();
+    }
+    expect(readCrewEvents(world.paths.stateDir, world.repo).events.at(-1)).toMatchObject({
+      state: "working",
+      text: "resumed by the lead after a limit",
+    });
+  });
+
+  test("--lead names the lead whose paused crew sessions to resume", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ ...pausedChange(5) });
+    await world.addCrew({
+      atMs: NOW - 2 * MINUTE,
+      leadSessionId: OTHER_LEAD,
+      phase: "B4",
+      shortId: "d4e5f6a7",
+      slug: "y",
+      ...pausedChange(2),
+    });
+    expect(await runCrew(["resume", "--paused", "--lead", OTHER_LEAD], world.ctx())).toBe(0);
+    expect(world.claudeCalls()).toEqual([["respawn", "d4e5f6a7"]]);
+    expect(world.out).toEqual(["resumed C my-app B4 y (d4e5f6a7)"]);
+  });
+
+  test("nothing paused: one line, nothing run", async () => {
+    const world = await boardWorld();
+    await world.addCrew();
+    expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["no paused crew session of this lead"]);
+    expect(world.claudeCalls()).toEqual([]);
+  });
+
+  test("a respawn that fails is named, the others still go, and the exit code says so", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ ...pausedChange(20) });
+    await world.addCrew({
+      atMs: NOW - 10 * MINUTE,
+      phase: "B2",
+      shortId: "b2c3d4e5",
+      slug: "api",
+      ...pausedChange(10),
+    });
+    expect(await runCrew(["resume", "--paused"], world.ctx({}, { FAKE_RESPAWN: "fail" }))).toBe(1);
+    expect(world.err).toEqual([
+      "crew resume: C my-app B1 help: claude respawn a1b2c3d4 failed (exit 1): could not respawn",
+      "crew resume: C my-app B2 api: claude respawn b2c3d4e5 failed (exit 1): could not respawn",
+    ]);
+    expect(world.out).toEqual([]);
+  });
+
+  test("a crew session's own session never resumes every paused one", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ ...pausedChange(5) });
+    expect(
+      await runCrew(
+        ["resume", "--paused"],
+        world.ctx({}, { CC_SMART_DEV_KIT_CREW: "B2-api-aaaaaa" }),
+      ),
+    ).toBe(1);
+    expect(world.err[0]).toBe(
+      "crew resume: this session is the crew session B2-api-aaaaaa, and a crew session never stops, removes or resumes crew sessions",
+    );
+    expect(world.claudeCalls()).toEqual([]);
+  });
+});
+
+describe("crew resume's arguments", () => {
+  test("one crew session, or --paused for all of them of one lead", () => {
+    expect(parseResumeArgs(["C my-app B1 help"])).toEqual({ ref: "C my-app B1 help" });
+    expect(parseResumeArgs(["--paused"])).toEqual({ all: true, lead: null });
+    expect(parseResumeArgs(["--paused", "--lead", "s-1"])).toEqual({ all: true, lead: "s-1" });
+  });
+
+  test("the mistakes: neither a name nor --paused, both, and --lead alone", () => {
+    expect(parseResumeArgs([])).toEqual({
+      error: "Say which crew session: crew resume <name|id>, or --paused for every paused one",
+    });
+    expect(parseResumeArgs(["x", "--paused"])).toEqual({
+      error: "crew resume --paused takes no crew session: name one, or --paused for all of them",
+    });
+    expect(parseResumeArgs(["--lead", "s-1"])).toEqual({
+      error: "--lead is for --paused: name that crew session, or resume every paused one",
+    });
+    expect(parseResumeArgs(["a", "b"])).toEqual({
+      error: "Unknown argument: b (put a name with spaces in quotes)",
     });
   });
 });

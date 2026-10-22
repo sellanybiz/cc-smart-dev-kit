@@ -91,15 +91,20 @@ ${NAMED}`,
     summary: "End a crew session the lead merged: session, worktree, branch.",
   },
   {
-    args: CREW,
+    args: `${CREW} | --paused [--lead <session>]`,
     help: `Usage: ${COMMAND} crew resume ${CREW}
+       ${COMMAND} crew resume --paused [--lead <session>]
 
 Restarts that one crew session's Claude session (claude respawn <id>); it keeps its conversation. Never all
 sessions. Refused for a crew session that is removed or merged, or has no session yet.
 
+--paused restarts every paused crew session of the lead at once: the way on after /login on another
+account, without waiting for the limit to lift. --lead names the lead when this command's own
+session is not the one whose crew sessions to resume. Never claude respawn --all.
+
 ${NAMED}`,
     name: "resume",
-    summary: "Restart one crew session's Claude session.",
+    summary: "Restart one crew session's Claude session, or every paused one.",
   },
   {
     args: CREW,

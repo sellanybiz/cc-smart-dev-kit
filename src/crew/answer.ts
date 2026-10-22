@@ -142,7 +142,7 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     return 1;
   }
   if (way === "resume") {
-    const resumed = await resume(ctx, record, args.text);
+    const resumed = await resumeSession(ctx, record, args.text);
     if (!resumed.ok) {
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
@@ -174,16 +174,21 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
 }
 
 /** What a resume of a stopped crew session gave back. */
-type ResumeResult = { ok: true } | { ok: false; why: string };
+export type ResumeResult = { ok: true } | { ok: false; why: string };
 
 /**
  * Resumes the stopped crew session `record` with `text` as its next prompt:
  * `claude --bg --resume <session id> "<text>"`. The command runs in the crew session's own worktree,
  * so the session goes on where it stopped (it keeps its name, its worktree and its conversation).
  * A crew session with no session id cannot be resumed, and a `claude` that refuses is reported with
- * its own words.
+ * its own words. `crew answer` and the lead's watch (`watch.ts`) both resume this way: one home
+ * for the transport (D42).
  */
-async function resume(ctx: CrewContext, record: CrewRecord, text: string): Promise<ResumeResult> {
+export async function resumeSession(
+  ctx: CrewContext,
+  record: CrewRecord,
+  text: string,
+): Promise<ResumeResult> {
   if (record.sessionId === null) {
     return { ok: false, why: `${record.name} has no session to resume` };
   }

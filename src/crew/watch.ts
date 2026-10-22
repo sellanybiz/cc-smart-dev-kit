@@ -23,6 +23,9 @@
  *
  * - it starts the **queued** crew sessions of this lead when a place frees — through the launcher's own
  *   path (`startQueued`), never a second launcher;
+ * - it **resumes the paused** crew sessions of this lead once the gateway answers again (D42):
+ *   one first, the others 30 s apart and only after the router answered a request since, never
+ *   while a slot's breaker is open or a Claude limit is current (`src/crew/wait.ts`);
  * - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
  *   the conversation stays), and a `blocked` one that has idled past
  *   `workflow.crew.idleStopMinutes`;
@@ -36,7 +39,8 @@ import { runGit } from "../hooks/git";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workOnRef } from "../worktrees/scan";
-import { agentRows, claudeDeps, rowOf } from "./agents";
+import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
+import { resumeSession, sendMessageLine } from "./answer";
 import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
@@ -58,6 +62,16 @@ import {
 } from "./store";
 import { monitorsRunHere } from "./telemetry";
 import { changedAt, transcriptFile } from "./transcript";
+import {
+  type GatewayNow,
+  gatewayNow,
+  pauseStartedAt,
+  REPAUSE_WINDOW_MS,
+  RESUME_SPACING_MS,
+  resumeText,
+  routerAnsweredSince,
+  waitOver,
+} from "./wait";
 
 /** How often the watch reads agent view. */
 export const WATCH_POLL_MS = 20_000;
@@ -250,6 +264,12 @@ export interface WatchScope {
   mergeInto: string;
   repo: string;
   resolved: ResolvedWorkflow;
+  /**
+   * What the gateway says at a moment (D42), for the paused crew sessions. Left out, one pass
+   * reads the state file, the config and the router's health page. A test hands in its own: no
+   * test reaches a real router's port.
+   */
+  gateway?: (nowMs: number) => Promise<GatewayNow>;
 }
 
 /**
@@ -318,7 +338,102 @@ function sayEvents(
   return read.offset;
 }
 
-/** One pass of the watch: what changed, what is started, what is ended. */
+/**
+ * How long after a resume the wave is still one wave: a further paused crew session resumed
+ * within this is one of it (30 s apart, and only after the router answered), and one resumed
+ * after it starts a new wave with a canary of its own.
+ */
+const RESUME_WAVE_GAP_MS = REPAUSE_WINDOW_MS;
+
+/** What a resume of a paused crew session leaves in the watch's state: when, and the router's count then. */
+type ResumeMark = Pick<WatchState, "resumedAt" | "routerRequests">;
+
+/**
+ * Resumes the ready paused crew sessions of one pass (D42): **one at a time**. The first of a
+ * wave is the canary. Each further one waits `RESUME_SPACING_MS` after the resume before it,
+ * and only goes once the router answered a request since (`routerAnsweredSince`); a pass that
+ * may not resume yet says nothing, because nothing changed.
+ */
+async function resumePaused(
+  paused: readonly CrewRecord[],
+  state: WatchState,
+  ctx: CrewContext,
+  gateway: (nowMs: number) => Promise<GatewayNow>,
+  agents: null | AgentRow[],
+  say: (line: string) => void,
+): Promise<null | ResumeMark> {
+  const now = ctx.now();
+  const facts = await gateway(now);
+  const ready = paused
+    .filter((one) => waitOver(one, facts, now))
+    .sort(
+      (a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt),
+    );
+  const [next] = ready;
+  if (next === undefined) return null;
+  const last = state.resumedAt;
+  if (last !== undefined && now - last < RESUME_WAVE_GAP_MS) {
+    if (now - last < RESUME_SPACING_MS) return null;
+    if (!routerAnsweredSince(facts, state.routerRequests ?? null)) return null;
+  }
+  // A resume that failed is no resume: the next pass tries again, and the others wait for it.
+  if (!(await resumeOne(next, ctx, now, agents, say))) return null;
+  return { resumedAt: now, routerRequests: facts.requests };
+}
+
+/**
+ * Takes one paused crew session out of its wait, the way `crew answer` reaches a crew session:
+ * a message for one whose session still has a process (the CLI prints the `SendMessage` line;
+ * only a session holds that tool), `claude --bg --resume <id> "<text>"` for one whose session
+ * has none. The record is `working` again in the same act, so the watch never resumes it twice
+ * and it holds its place. A resume that fails is one line, and the record stays `paused`.
+ */
+async function resumeOne(
+  record: CrewRecord,
+  ctx: CrewContext,
+  now: number,
+  agents: null | AgentRow[],
+  say: (line: string) => void,
+): Promise<boolean> {
+  const text = resumeText(record, record.waitingFor, now);
+  const live = isLiveRow(agents === null ? null : rowOf(agents, record));
+  if (live) {
+    say(sendMessageLine(record.name, text));
+    await sayResumed(record, "the wait is over; the message to it wakes it", ctx, now, say);
+    return true;
+  }
+  const resumed = await resumeSession(ctx, record, text);
+  if (!resumed.ok) {
+    say(`${record.name}: not resumed — ${resumed.why}`);
+    return false;
+  }
+  await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
+  return true;
+}
+
+/** Records a resumed crew session `working` with its wait cleared; one line when the store cannot. */
+async function sayResumed(
+  record: CrewRecord,
+  text: string,
+  ctx: CrewContext,
+  now: number,
+  say: (line: string) => void,
+): Promise<void> {
+  try {
+    await updateCrew(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      { state: "working", waitingFor: undefined },
+      now,
+      text,
+    );
+  } catch (error) {
+    say(`${record.name}: resumed, but the store could not record it: ${reasonOf(error)}`);
+  }
+}
+
+/** One pass of the watch: what changed, what is started, what is resumed, what is ended. */
 export async function watchPass(
   state: WatchState,
   ctx: CrewContext,
@@ -450,9 +565,37 @@ export async function watchPass(
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   for (const record of queued) await startQueued(record, ctx, resolved);
 
+  // Crew sessions that wait out a limit: resume them once the gateway answers again (D42), one
+  // at a time, and never while a breaker is open or a limit is current.
+  const paused = listCrew(ctx.paths.stateDir, repo).records.filter(
+    (one) => one.leadSessionId === scope.leadSessionId && one.state === "paused",
+  );
+  const marked =
+    paused.length === 0
+      ? null
+      : await resumePaused(
+          paused,
+          state,
+          ctx,
+          scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)),
+          agents,
+          say,
+        );
+
   // What this pass itself wrote is said now, in the same pass — once.
   offset = sayEvents(offset, scope, ctx, say);
-  return { lines, state: { noted, offset, said } };
+  const resumedAt = marked?.resumedAt ?? state.resumedAt;
+  const routerRequests = marked === null ? state.routerRequests : marked.routerRequests;
+  return {
+    lines,
+    state: {
+      noted,
+      offset,
+      said,
+      ...(resumedAt === undefined ? {} : { resumedAt }),
+      ...(routerRequests === undefined ? {} : { routerRequests }),
+    },
+  };
 }
 
 /**

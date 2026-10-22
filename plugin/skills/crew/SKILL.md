@@ -52,6 +52,9 @@ Each step's procedure is its skill; the brief's done-check decides when the phas
   `/cc-smart-dev-kit:commit` says, naming the phase.
 - **Git: commit on your branch, nothing more.** Never push, open a pull request, merge, or
   rebase onto another branch: the lead handles git.
+- **A model limit pauses you; your lead wakes you.** When a limit ends a turn, the store says
+  `paused`, and the lead's watch resumes you once the gateway answers again — a message, or a
+  resume of your session, that says what changed. Pick up at your last step; never start over.
 
 ## 4. The report
 

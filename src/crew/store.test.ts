@@ -597,6 +597,40 @@ describe("what a paused crew session waits for", () => {
     });
   });
 
+  test("or on nothing the router explains, with the pause before it kept", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const unknown = { kind: "unknown", since: "2026-10-21T21:05:00.000Z" } as const;
+    await updateCrew(
+      state,
+      REPO,
+      "crew-K-contracts",
+      {
+        lastPause: { backoffMs: 300_000, since: "2026-10-21T21:05:00.000Z" },
+        state: "paused",
+        waitingFor: unknown,
+      },
+      T1,
+    );
+    const saved = JSON.parse(readFileSync(crewFile(state, REPO, "crew-K-contracts"), "utf8"));
+    expect(saved.waitingFor).toEqual(unknown);
+    expect(saved.lastPause).toEqual({
+      backoffMs: 300_000,
+      since: "2026-10-21T21:05:00.000Z",
+    });
+    // The pause before it stays when the crew session goes on; only the wait is cleared.
+    await updateCrew(
+      state,
+      REPO,
+      "crew-K-contracts",
+      { state: "working", waitingFor: undefined },
+      T1 + 60_000,
+    );
+    const after = readCrew(state, REPO, "crew-K-contracts");
+    expect(after).not.toHaveProperty("waitingFor");
+    expect(after?.lastPause?.backoffMs).toBe(300_000);
+  });
+
   test("when the crew session goes on, the wait is cleared and leaves nothing in the file", async () => {
     const state = tempDir("state");
     await createCrew(state, queued(), T0);
@@ -671,14 +705,18 @@ describe("what a paused crew session waits for", () => {
     );
     const unknown = fail({ waitingFor: { kind: "account-switch" } }, "crew-d");
     expect(unknown.read).toThrow(
-      `Invalid ${unknown.file}: waitingFor.kind: Invalid discriminator value. Expected 'slot' | 'claude-limit'`,
+      `Invalid ${unknown.file}: waitingFor.kind: Invalid discriminator value. Expected 'slot' | 'claude-limit' | 'unknown'`,
+    );
+    const noSince = fail({ waitingFor: { kind: "unknown" } }, "crew-e");
+    expect(noSince.read).toThrow(
+      `Invalid ${noSince.file}: waitingFor.since: Invalid input: expected string, received undefined`,
     );
     // A list names each broken one and goes on with the good ones.
     onDisk(state, { waitingFor: SLOT_WAIT, state: "paused" }, "crew-good");
     const listed = listCrew(state, REPO);
     expect(listed.records.map((one) => one.id)).toEqual(["crew-good"]);
     expect(listed.broken.map((one) => one.file).sort()).toEqual(
-      [noSlot.file, noReset.file, empty.file, unknown.file].sort(),
+      [noSlot.file, noReset.file, empty.file, unknown.file, noSince.file].sort(),
     );
   });
 });

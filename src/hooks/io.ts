@@ -44,6 +44,11 @@ export interface HookInput {
   last_assistant_message?: unknown;
   /** Stop: the background work still running or waiting to wake this session (an array). */
   background_tasks?: unknown;
+  /**
+   * StopFailure: why the turn ended (`rate_limit` for the plan limit and a short rate limit,
+   * `server_error`, …). The crew session's pause reads it (`src/hooks/crew-role.ts`, D42).
+   */
+  error?: unknown;
   /** The session's transcript: every event carries it (StopFailure, PreToolUse, …). */
   transcript_path?: unknown;
 }

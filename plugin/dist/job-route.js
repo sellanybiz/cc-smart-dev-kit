@@ -10229,6 +10229,7 @@ import { mkdirSync as mkdirSync8, readFileSync as readFileSync9, statSync as sta
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+var SLOT_PREFIX = "cc-smart-dev-kit-";
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
 var CONTEXT_SUFFIX = /\[1m\]$/i;
 function isBackendName(name) {
@@ -10285,6 +10286,15 @@ function claudeFamily(model) {
 }
 function familySlotKey(family) {
   return Object.keys(FAMILY_SLOTS).find((key) => FAMILY_SLOTS[key] === family) ?? null;
+}
+function familySlotFor(model) {
+  if (typeof model !== "string")
+    return null;
+  const family = claudeFamily(model);
+  if (family === null)
+    return null;
+  const slot = familySlotKey(family);
+  return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
 var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
@@ -12075,20 +12085,98 @@ var LEAD_SKILL = `${PLUGIN}:lead`;
 // src/crew/brief.ts
 var REPORT_COMMAND = `${COMMAND} crew report`;
 
+// src/jobs/config.ts
+import { isAbsolute as isAbsolute3, join as join17 } from "path";
+var absolutePath = string2().min(1).refine((path) => isAbsolute3(path), "must be an absolute path");
+var jobsMachineConfigSchema = strictObject({
+  stateDir: absolutePath.optional(),
+  budgetGb: number2().int().min(1).optional(),
+  reserveGb: number2().int().min(0).optional(),
+  sharedDirs: array(absolutePath).optional(),
+  launch: _enum(["auto", "plain"]).optional(),
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional()
+});
+
+// src/jobs/memory.ts
+var GIB = 1024 ** 3;
+
+// src/jobs/queue.ts
+var GIB2 = 1024 ** 3;
+
+// src/jobs/store.ts
+import {
+  chmodSync as chmodSync2,
+  existsSync as existsSync10,
+  mkdirSync as mkdirSync10,
+  readdirSync as readdirSync5,
+  readFileSync as readFileSync14,
+  realpathSync as realpathSync4,
+  renameSync as renameSync2,
+  statfsSync,
+  statSync as statSync9,
+  unlinkSync as unlinkSync3,
+  utimesSync,
+  writeFileSync as writeFileSync4
+} from "fs";
+var NETWORK_FS = new Map([
+  [26985, "NFS"],
+  [20859, "SMB"],
+  [4283649346, "CIFS"],
+  [4266872130, "SMB2"],
+  [16914839, "9p"],
+  [1397113167, "AFS"],
+  [1799439955, "AFS"],
+  [12805120, "Ceph"],
+  [1937076805, "Coda"],
+  [22092, "NCP"],
+  [198183888, "Lustre"],
+  [18225520, "GFS2"],
+  [1952539503, "OCFS2"]
+]);
+var NETWORK_FUSE = new Set([
+  "sshfs",
+  "rclone",
+  "s3fs",
+  "gcsfuse",
+  "goofys",
+  "glusterfs",
+  "juicefs",
+  "davfs",
+  "curlftpfs",
+  "cephfs"
+]);
+var realSharedFolderFacts = {
+  platform: process.platform,
+  fsType: (dir) => {
+    try {
+      return statfsSync(dir).type;
+    } catch {
+      return null;
+    }
+  },
+  mountinfo: () => {
+    try {
+      return readFileSync14("/proc/self/mountinfo", "utf8");
+    } catch {
+      return null;
+    }
+  }
+};
+
 // src/crew/store.ts
 import {
   appendFileSync as appendFileSync5,
   closeSync as closeSync5,
-  existsSync as existsSync10,
+  existsSync as existsSync11,
   fstatSync as fstatSync3,
-  mkdirSync as mkdirSync10,
+  mkdirSync as mkdirSync11,
   openSync as openSync5,
-  readdirSync as readdirSync5,
-  readFileSync as readFileSync14,
+  readdirSync as readdirSync6,
+  readFileSync as readFileSync15,
   readSync as readSync3,
-  statSync as statSync9
+  statSync as statSync10
 } from "fs";
-import { dirname as dirname8, join as join17 } from "path";
+import { dirname as dirname8, join as join18 } from "path";
 
 // src/zod-issues.ts
 function describeIssues(issues) {
@@ -12113,25 +12201,25 @@ function fileId(id, what) {
   return id;
 }
 function crewRootDir(stateDir) {
-  return join17(stateDir, "crew");
+  return join18(stateDir, "crew");
 }
 function crewStoreDir(stateDir, repo) {
-  return join17(crewRootDir(stateDir), repoKey(repo));
+  return join18(crewRootDir(stateDir), repoKey(repo));
 }
 function crewFile(stateDir, repo, id) {
-  return join17(crewStoreDir(stateDir, repo), "crew", `${fileId(id, "crew id")}.json`);
+  return join18(crewStoreDir(stateDir, repo), "crew", `${fileId(id, "crew id")}.json`);
 }
 function leadFile(stateDir, repo, sessionId) {
-  return join17(crewStoreDir(stateDir, repo), "leads", `${fileId(sessionId, "session id")}.json`);
+  return join18(crewStoreDir(stateDir, repo), "leads", `${fileId(sessionId, "session id")}.json`);
 }
 function crewFilesDir(stateDir, repo, id) {
-  return join17(crewStoreDir(stateDir, repo), "files", fileId(id, "crew id"));
+  return join18(crewStoreDir(stateDir, repo), "files", fileId(id, "crew id"));
 }
 function crewBriefFile(stateDir, repo, id) {
-  return join17(crewFilesDir(stateDir, repo, id), "brief.md");
+  return join18(crewFilesDir(stateDir, repo, id), "brief.md");
 }
 function crewEventsFile(stateDir, repo) {
-  return join17(crewStoreDir(stateDir, repo), "events.jsonl");
+  return join18(crewStoreDir(stateDir, repo), "events.jsonl");
 }
 var text = string2().min(1);
 var version2 = number2().int().min(1);
@@ -12172,6 +12260,10 @@ var waitingForSchema = discriminatedUnion("kind", [
     kind: literal("claude-limit"),
     model: text,
     resetsAt: text.nullable()
+  }),
+  looseObject({
+    kind: literal("unknown"),
+    since: text
   })
 ]);
 var crewFields = object({
@@ -12208,6 +12300,7 @@ var crewFields = object({
   pr: number2().int().positive().nullable(),
   memoryMb: number2().min(0).nullable(),
   waitingFor: waitingForSchema.optional(),
+  lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
   createdAt: text,
@@ -12295,7 +12388,7 @@ function checked(schema, value, file) {
 function readRecord(schema, file) {
   let raw;
   try {
-    raw = readFileSync14(file, "utf8");
+    raw = readFileSync15(file, "utf8");
   } catch (error) {
     if (notThere(error))
       return null;
@@ -12311,13 +12404,13 @@ function readRecord(schema, file) {
 }
 function listRecords(schema, folder) {
   const listed = { broken: [], records: [] };
-  if (!existsSync10(folder))
+  if (!existsSync11(folder))
     return listed;
   const found = [];
-  for (const name of readdirSync5(folder).sort()) {
+  for (const name of readdirSync6(folder).sort()) {
     if (!RECORD_FILE.test(name))
       continue;
-    const file = join17(folder, name);
+    const file = join18(folder, name);
     try {
       const record2 = readRecord(schema, file);
       if (record2 !== null)
@@ -12331,7 +12424,7 @@ function listRecords(schema, folder) {
   return listed;
 }
 function writeStoreFile(file, text) {
-  mkdirSync10(dirname8(file), { mode: 448, recursive: true });
+  mkdirSync11(dirname8(file), { mode: 448, recursive: true });
   atomicWrite(file, text, 384);
 }
 function writeRecord(file, value) {
@@ -12341,20 +12434,20 @@ function writeRecord(file, value) {
 function appendEvent(stateDir, repo, event) {
   const file = crewEventsFile(stateDir, repo);
   const line = checked(crewEventSchema, event, file);
-  mkdirSync10(dirname8(file), { mode: 448, recursive: true });
+  mkdirSync11(dirname8(file), { mode: 448, recursive: true });
   appendFileSync5(file, `${JSON.stringify(line)}
 `, { mode: 384 });
 }
 async function underStoreLock(stateDir, repo, write) {
   const folder = crewStoreDir(stateDir, repo);
-  mkdirSync10(folder, { mode: 448, recursive: true });
+  mkdirSync11(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: STORE_LOCK_WAIT_MS });
 }
 function readCrew(stateDir, repo, id) {
   return readRecord(crewRecordSchema, crewFile(stateDir, repo, id));
 }
 function listCrew(stateDir, repo) {
-  return listRecords(crewRecordSchema, join17(crewStoreDir(stateDir, repo), "crew"));
+  return listRecords(crewRecordSchema, join18(crewStoreDir(stateDir, repo), "crew"));
 }
 async function updateCrew(stateDir, repo, id, change, atMs, text = null, memoryMb = null) {
   return await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
@@ -12384,7 +12477,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     }
     const at = iso(atMs);
     const { change, event } = plan(before, at);
-    const after = checked(crewRecordSchema, {
+    const merged = {
       ...before,
       ...change,
       createdAt: before.createdAt,
@@ -12392,7 +12485,10 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
       repo: before.repo,
       updatedAt: at,
       version: Math.max(before.version, CREW_STORE_VERSION)
-    }, file);
+    };
+    if (merged.state !== "paused")
+      delete merged.waitingFor;
+    const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
     if (line !== null)
@@ -12451,22 +12547,24 @@ function readReport(file) {
 var watchStateFields = object({
   noted: boolean2().default(false),
   offset: count,
-  said: record(string2(), string2())
+  said: record(string2(), string2()),
+  resumedAt: number2().int().min(0).optional(),
+  routerRequests: number2().int().min(0).nullable().optional()
 });
 function eventsEndOffset(stateDir, repo) {
   try {
-    return statSync9(crewEventsFile(stateDir, repo)).size;
+    return statSync10(crewEventsFile(stateDir, repo)).size;
   } catch {
     return 0;
   }
 }
 function notesStateFile(stateDir, repo, leadSessionId) {
-  return join17(crewStoreDir(stateDir, repo), "notes", `${fileId(leadSessionId, "session id")}.json`);
+  return join18(crewStoreDir(stateDir, repo), "notes", `${fileId(leadSessionId, "session id")}.json`);
 }
 var notesStateFields = object({ offset: count });
 function readNotesState(stateDir, repo, leadSessionId) {
   try {
-    const raw = readFileSync14(notesStateFile(stateDir, repo, leadSessionId), "utf8");
+    const raw = readFileSync15(notesStateFile(stateDir, repo, leadSessionId), "utf8");
     const parsed = notesStateFields.safeParse(JSON.parse(raw));
     if (parsed.success)
       return parsed.data;
@@ -12478,6 +12576,231 @@ function writeNotesState(stateDir, repo, leadSessionId, state) {
 `);
 }
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
+
+// src/crew/places.ts
+var RUNNING_STATES = [
+  "starting",
+  "working",
+  "blocked",
+  "paused",
+  "quiet"
+];
+
+// src/crew/wait.ts
+import { readFileSync as readFileSync16 } from "fs";
+
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  version: literal(1)
+});
+function emptyLimitState() {
+  return { fallbacks: {}, limits: {}, version: 1 };
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+
+// src/gateway/breaker.ts
+var BREAKER_REMINDER_MS = 10 * 60000;
+function slotShortName(slot) {
+  return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
+}
+
+// src/gateway/fallback-answer.ts
+var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
+
+// src/gateway/safety-checks.ts
+var countSchema = object({
+  cacheRead: number2(),
+  cacheWrite: number2(),
+  checks: number2(),
+  input: number2(),
+  output: number2()
+});
+var daySchema = object({
+  anthropic: countSchema,
+  checks: number2(),
+  fallback: countSchema
+});
+var stateSchema2 = object({
+  days: record(string2(), daySchema),
+  version: literal(1)
+});
+
+// src/gateway/router.ts
+var HOP_BY_HOP = new Set([
+  "connection",
+  "keep-alive",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade"
+]);
+var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
+var ABOVE_HIGH = new Set(["max", "xhigh"]);
+var encoder = new TextEncoder;
+var CHECK_USAGE_MAX_BYTES = 256 * 1024;
+
+// src/crew/wait.ts
+var FIRST_BACKOFF_MS = 5 * 60000;
+var MAX_BACKOFF_MS = 20 * 60000;
+var REPAUSE_WINDOW_MS = 15 * 60000;
+var CREW_PAUSE_ERRORS = [
+  "rate_limit",
+  "overloaded",
+  "overloaded_error",
+  "server_error"
+];
+function pausesCrew(error) {
+  return error !== null && CREW_PAUSE_ERRORS.includes(error);
+}
+function readState(file) {
+  try {
+    return parseLimitState(readFileSync16(file, "utf8")) ?? emptyLimitState();
+  } catch {
+    return emptyLimitState();
+  }
+}
+function breakersBySlot(state, nowMs) {
+  return Object.fromEntries(currentBreakers(state, nowMs));
+}
+function limitsByModel(state, nowMs) {
+  return Object.fromEntries(currentLimits(state, nowMs));
+}
+function readWaitFacts(paths, nowMs) {
+  const state = readState(paths.gatewayStateFile);
+  return {
+    breakers: breakersBySlot(state, nowMs),
+    inUse: null,
+    limits: limitsByModel(state, nowMs)
+  };
+}
+function iso2(atMs) {
+  return new Date(atMs).toISOString();
+}
+function oneLine2(text) {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length <= 40 ? one : `${one.slice(0, 39)}\u2026`;
+}
+function limitForStop(record, limits) {
+  for (const name of [record.model.resolved, record.model.named]) {
+    const model = withoutContextSuffix(name);
+    const found = limits[model];
+    if (found !== undefined)
+      return [model, found];
+  }
+  return Object.entries(limits).filter(([model]) => familySlotFor(model) !== null).sort(([, a], [, b]) => b.seenAt - a.seenAt)[0];
+}
+function waitFor(record, facts, nowMs) {
+  const slot = record.model.slot;
+  const breaker = slot === null ? undefined : facts.breakers[slot];
+  if (slot !== null && breaker !== undefined) {
+    return { kind: "slot", since: iso2(breaker.since), slot };
+  }
+  const limit = limitForStop(record, facts.limits);
+  if (limit !== undefined) {
+    return {
+      kind: "claude-limit",
+      model: limit[0],
+      resetsAt: limit[1].resetsAt === null ? null : iso2(limit[1].resetsAt * 1000)
+    };
+  }
+  return { kind: "unknown", since: iso2(nowMs) };
+}
+function pauseBackoff(previous, nowMs) {
+  if (previous === undefined)
+    return 0;
+  const since = Date.parse(previous.since);
+  if (!Number.isFinite(since) || nowMs - since >= REPAUSE_WINDOW_MS)
+    return 0;
+  if (previous.backoffMs <= 0)
+    return FIRST_BACKOFF_MS;
+  return Math.min(previous.backoffMs * 2, MAX_BACKOFF_MS);
+}
+function lastPauseOf(previous, nowMs) {
+  return { backoffMs: pauseBackoff(previous, nowMs), since: iso2(nowMs) };
+}
+function pauseText(waiting, error, nowMs, timeZone) {
+  const goesOn = "goes on by itself when it answers";
+  switch (waiting.kind) {
+    case "slot":
+      return `${slotShortName(waiting.slot)} slot limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+    case "claude-limit": {
+      const reset = waiting.resetsAt === null ? "at its limit, no reset time named" : `at its limit, resets ${formatClock(Math.floor(Date.parse(waiting.resetsAt) / 1000), nowMs, timeZone)}`;
+      return `${waiting.model} is ${reset}; ${goesOn} once the limit lifts`;
+    }
+    default:
+      return `it stopped on ${oneLine2(error)}; the watch goes on with it once a model answers`;
+  }
+}
 
 // src/hooks/crew-role.ts
 var CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
@@ -12560,7 +12883,7 @@ async function stopAnswer(input, id, repo, paths) {
   const newest = events.events.filter((event) => event.crew === id && (event.type === "step" || event.type === "report")).at(-1);
   return newest?.type === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
-async function crewRoleAnswer(input, event, env, paths, repo) {
+async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   const id = crewIdOf(env);
   if (id === null)
     return SILENT;
@@ -12574,34 +12897,56 @@ async function crewRoleAnswer(input, event, env, paths, repo) {
     return startCard(input, id, repo, paths);
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
+  if (event === "StopFailure")
+    return await stopFailureAnswer(input, id, repo, paths, options);
+  return SILENT;
+}
+async function stopFailureAnswer(input, id, repo, paths, options) {
+  const error = stringField(input.error);
+  if (!pausesCrew(error))
+    return SILENT;
+  const found = recordOf(id, repo, paths);
+  if (!found.ok)
+    return found.result;
+  const record = found.record;
+  if (!RUNNING_STATES.includes(record.state))
+    return SILENT;
+  const nowMs = options.nowMs ?? Date.now();
+  const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs);
+  const text = pauseText(waitingFor, error, nowMs, options.timeZone);
+  try {
+    await updateCrew(paths.stateDir, repo, id, { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor }, nowMs, text);
+  } catch (why) {
+    return storeProblem(reasonOf2(why));
+  }
   return SILENT;
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync12, mkdirSync as mkdirSync12, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname9, join as join19 } from "path";
+import { existsSync as existsSync13, mkdirSync as mkdirSync13, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname9, join as join20 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync11, mkdirSync as mkdirSync11, readFileSync as readFileSync15, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync12, mkdirSync as mkdirSync12, readFileSync as readFileSync17, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { join as join18 } from "path";
+import { join as join19 } from "path";
 function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 }
 function namesDir(env) {
-  return join18(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+  return join19(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync11(file) ? cleanSessionName(readFileSync15(file, "utf8")) : null;
+    return existsSync12(file) ? cleanSessionName(readFileSync17(file, "utf8")) : null;
   } catch {
     return null;
   }
 }
 function writeAtomic(file, text) {
   const partial = `${file}.${process.pid}.tmp`;
-  writeFileSync4(partial, text);
-  renameSync2(partial, file);
+  writeFileSync5(partial, text);
+  renameSync3(partial, file);
 }
 function namingNote(sessionId, current) {
   const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
@@ -12615,7 +12960,7 @@ function sessionName(context) {
   if (!isSessionId(sessionId))
     return SILENT;
   const dir = namesDir(env);
-  const wanted = readName(join18(dir, `${sessionId}.name`));
+  const wanted = readName(join19(dir, `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
   if (event === "SessionStart") {
     return {
@@ -12624,10 +12969,10 @@ function sessionName(context) {
       })
     };
   }
-  const appliedFile = join18(dir, sessionId);
+  const appliedFile = join19(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
-    mkdirSync11(dir, { recursive: true });
+    mkdirSync12(dir, { recursive: true });
     writeAtomic(appliedFile, title);
     return {
       stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
@@ -12648,12 +12993,12 @@ function fableSessionModelName(real) {
   return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
 }
 function fableSessionMark(env, sessionId) {
-  return join19(namesDir(env), `${sessionId}.fable`);
+  return join20(namesDir(env), `${sessionId}.fable`);
 }
 function firstTime(mark) {
   try {
-    mkdirSync12(dirname9(mark), { recursive: true });
-    writeFileSync5(mark, "", { flag: "wx" });
+    mkdirSync13(dirname9(mark), { recursive: true });
+    writeFileSync6(mark, "", { flag: "wx" });
     return true;
   } catch {
     return false;
@@ -12676,7 +13021,7 @@ function fableSession(input, env, paths) {
   if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
     return SILENT;
   const mark = fableSessionMark(env, sessionId);
-  if (existsSync12(mark))
+  if (existsSync13(mark))
     return SILENT;
   let model;
   if (event === "SessionStart")
@@ -12787,8 +13132,8 @@ function routeFacts(input) {
 }
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync6, readFileSync as readFileSync16, readlinkSync as readlinkSync3 } from "fs";
-import { join as join20 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync18, readlinkSync as readlinkSync3 } from "fs";
+import { join as join21 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -12807,8 +13152,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join20(worktree, relative);
-    const there = join20(mainCheckout, relative);
+    const here = join21(worktree, relative);
+    const there = join21(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -12816,9 +13161,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync6(here).every((entry) => same(join20(relative, entry)));
+        return b.isDirectory() && readdirSync7(here).every((entry) => same(join21(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync16(here).equals(readFileSync16(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync18(here).equals(readFileSync18(there));
     } catch {
       return false;
     }
@@ -12840,22 +13185,22 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync17, statSync as statSync10 } from "fs";
-import { basename as basename5, isAbsolute as isAbsolute3, join as join21, resolve as resolve6 } from "path";
+import { readFileSync as readFileSync19, statSync as statSync11 } from "fs";
+import { basename as basename5, isAbsolute as isAbsolute4, join as join22, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync17(join21(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync19(join22(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
-  if (!isAbsolute3(admin))
+  if (!isAbsolute4(admin))
     admin = resolve6(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join21("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join22("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync10(join21(admin, file)).mtimeMs);
+      last = Math.max(last, statSync11(join22(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -12866,7 +13211,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync10(listed.path);
+    statSync11(listed.path);
   } catch {
     return "gone";
   }
@@ -12937,10 +13282,10 @@ function worktreeLeftovers(context) {
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync13, readFileSync as readFileSync18 } from "fs";
+import { existsSync as existsSync14, readFileSync as readFileSync20 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, dirname as dirname10, join as join22 } from "path";
+import { delimiter, dirname as dirname10, join as join23 } from "path";
 
 // src/browser/chrome.ts
 var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -13043,7 +13388,7 @@ var TAIL_BYTES = 512 * 1024;
 
 // src/cli/setup.ts
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join22(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join23(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/workflow/resolve.ts
@@ -13054,11 +13399,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync13(file))
+  if (!existsSync14(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync18(file, "utf8"));
+    raw = JSON.parse(readFileSync20(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -13109,7 +13454,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync18(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync20(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -13118,11 +13463,11 @@ function statusLineIsOurs(paths) {
     return false;
   }
 }
-function current(value, source) {
+function current2(value, source) {
   return { value, source };
 }
 function projectFlag(value) {
-  return value === undefined ? current(false, "default") : current(value, "project");
+  return value === undefined ? current2(false, "default") : current2(value, "project");
 }
 function sourceLabel(value, branch) {
   return value.source === "project" && branch !== null ? `project, committed on origin/${branch}` : value.source;
@@ -13181,91 +13526,13 @@ function resolveWorkflow(paths, projectConfig) {
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag)
     },
     switches: {
-      statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
+      statusLine: statusLineIsOurs(paths) ? current2(true, "personal") : current2(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),
       jobRoute: projectFlag(projectConfig?.jobs?.route),
-      updateHold: isHeld(updateFiles(paths.stateDir)) ? current(true, "personal") : current(false, "default")
+      updateHold: isHeld(updateFiles(paths.stateDir)) ? current2(true, "personal") : current2(false, "default")
     }
   };
 }
-
-// src/jobs/config.ts
-import { isAbsolute as isAbsolute4, join as join23 } from "path";
-var absolutePath = string2().min(1).refine((path) => isAbsolute4(path), "must be an absolute path");
-var jobsMachineConfigSchema = strictObject({
-  stateDir: absolutePath.optional(),
-  budgetGb: number2().int().min(1).optional(),
-  reserveGb: number2().int().min(0).optional(),
-  sharedDirs: array(absolutePath).optional(),
-  launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional()
-});
-
-// src/jobs/memory.ts
-var GIB = 1024 ** 3;
-
-// src/jobs/queue.ts
-var GIB2 = 1024 ** 3;
-
-// src/jobs/store.ts
-import {
-  chmodSync as chmodSync2,
-  existsSync as existsSync14,
-  mkdirSync as mkdirSync13,
-  readdirSync as readdirSync7,
-  readFileSync as readFileSync19,
-  realpathSync as realpathSync4,
-  renameSync as renameSync3,
-  statfsSync,
-  statSync as statSync11,
-  unlinkSync as unlinkSync3,
-  utimesSync,
-  writeFileSync as writeFileSync6
-} from "fs";
-var NETWORK_FS = new Map([
-  [26985, "NFS"],
-  [20859, "SMB"],
-  [4283649346, "CIFS"],
-  [4266872130, "SMB2"],
-  [16914839, "9p"],
-  [1397113167, "AFS"],
-  [1799439955, "AFS"],
-  [12805120, "Ceph"],
-  [1937076805, "Coda"],
-  [22092, "NCP"],
-  [198183888, "Lustre"],
-  [18225520, "GFS2"],
-  [1952539503, "OCFS2"]
-]);
-var NETWORK_FUSE = new Set([
-  "sshfs",
-  "rclone",
-  "s3fs",
-  "gcsfuse",
-  "goofys",
-  "glusterfs",
-  "juicefs",
-  "davfs",
-  "curlftpfs",
-  "cephfs"
-]);
-var realSharedFolderFacts = {
-  platform: process.platform,
-  fsType: (dir) => {
-    try {
-      return statfsSync(dir).type;
-    } catch {
-      return null;
-    }
-  },
-  mountinfo: () => {
-    try {
-      return readFileSync19("/proc/self/mountinfo", "utf8");
-    } catch {
-      return null;
-    }
-  }
-};
 
 // src/crew/transcript.ts
 var TAIL_BYTES2 = 256 * 1024;
@@ -14528,7 +14795,7 @@ var sessionNameHook = {
 };
 var crewRoleHook = {
   name: "crew-role",
-  events: ["SessionStart", "PreToolUse", "Stop"],
+  events: ["SessionStart", "PreToolUse", "Stop", "StopFailure"],
   onConfigProblem: (_message, input, event, checkout, context) => crewRoleAnswer(input, event, context.env, context.paths, checkout.mainCheckout ?? checkout.root),
   outsideGit: (input, event, _why, context) => crewRoleAnswer(input, event, context.env, context.paths, null),
   onCrash: (why, input, event, context) => {

@@ -18,7 +18,7 @@
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop | machine-wide: the card, the ask refused, the report block (`crew-role.ts`) |
+ * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
  * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once (`lead-notes.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
@@ -276,16 +276,19 @@ export const sessionNameHook: HookSpec = {
 /**
  * The crew session's own hook (`crew-role.ts`): the role card at a start, a resume or a compaction;
  * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); the last line recorded at
- * a stop, and one block when the turn ended on a step with no report. **Machine-wide**: it is silent
+ * a stop, and one block when the turn ended on a step with no report; the crew session marked
+ * `paused` when a model limit ended its turn (D42). **Machine-wide**: it is silent
  * unless `CC_SMART_DEV_KIT_CREW` names a crew session, and its answer never depends on the project's
  * file — the PreToolUse deny reads no store at all, so a broken or too new file, and a folder
  * outside git, are judged the same way. It is in `PLUGIN_HOOK_NAMES`, so a project that runs its own
  * copy silences it through `ownHooks`. A crash asks about the calls in its domain (the two tools),
  * and is silent outside a crew session: a plain session must never be asked because of this hook.
+ * A StopFailure pauses the record and answers nothing: Claude Code ignores that hook's output, so
+ * the pause is fail-open like the Stop block.
  */
 export const crewRoleHook: HookSpec = {
   name: "crew-role",
-  events: ["SessionStart", "PreToolUse", "Stop"],
+  events: ["SessionStart", "PreToolUse", "Stop", "StopFailure"],
   onConfigProblem: (_message, input, event, checkout, context) =>
     crewRoleAnswer(
       input,

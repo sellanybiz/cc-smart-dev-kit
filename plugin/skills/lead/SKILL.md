@@ -92,6 +92,7 @@ idle. So after the starts, **go on**.
 | `needs you` (a permission wait) | give the person `claude attach <name>` |
 | `told` (one crew session told another a contract change or question) | nothing, unless it changes the plan or the two cannot settle it: then `crew answer` both |
 | `failed`, `blocked`, `quiet`, a turn ended with no report | § 6 |
+| `paused` (a model limit) | nothing: the watch resumes it once the gateway answers again, one first and the others 30 s apart; after `/login` on another account, `cc-smart-dev-kit crew resume --paused` |
 
 **Between lines:** the integration work that is yours — the merges, the full check after each,
 the shared files, the plan file — and stay free for the person. **Never poll, wait or sleep.**
