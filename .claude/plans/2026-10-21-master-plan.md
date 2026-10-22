@@ -112,6 +112,7 @@ The lead checked in the code: `src/workflow/reviews.ts:134` (exact sha), `src/ho
 | 4c | N1 (sonnet): worker sessions renamed the crew (D45) | W1b, W1c; before W2 |
 | 3c | O1 (rules-maintainer, sonnet): less Opus in the plugin (D46) | nothing |
 | 5c | C1 (sonnet): the crew talks (D47) | N1 |
+| 6b | WIN (sonnet): every 1.0.0 addition checked against native Windows; the Windows CI job covers them; `docs/windows-setup.md` says what is proved | the integrator (W1b, W1c), A4, WS, BR1 |
 | 7 | L2 close (lead); L1b the remaining proofs run during waves 1–6 | every phase |
 
 A phase whose files another phase edits branches after that phase lands; everything else runs at once. On each hand-back the lead checks it, merges it, rebuilds, and in the same turn starts what it unblocked. Each wave holds at most 4 Opus builders.
@@ -388,3 +389,4 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 - 2026-10-22: A4, BR0 and WS stalled for about 13 hours with no commit (heartbeat-only streams on the chain; a command with no time limit). Stopped; A4's and BR0's work saved as WIP commits (`4f5558f`, `d15565c`) and both resumed with a timeout rule; WS relaunched fresh. W1b, W1c and O1 handed back; one integrator merges them (with one home for "is this branch on the base": A6's verdict). L2m merged (`c74cec8`: 0.7.0 in the 1.0.0 line). The web-app study and the 2.1.301-2.1.306 walk saved as research.
 - 2026-10-22: owner decision D47 (the crew design: hub-and-spoke, contract-only peers through `crew tell`, the store as the board, the guard enforces the tag, the whole plan started at once). Phase C1 added after N1; the research archived.
 - 2026-10-22: every subagent on the machine stalled: the worker chain was only Ollama Cloud, which sent heartbeats, and the router never rested a heartbeat-only target (bug, now in BR1). The owner chose to drop Ollama from both chains for now (`gateway slot worker claude-sonnet-5-5`, `slot scout claude-haiku-5-5`, run by the owner) over a 0.7.1 hotfix.
+- 2026-10-22: the owner dropped Ollama from both chains (worker = `claude-sonnet-5-5`, scout = `claude-haiku-5-5`); requests flow again. A4, BR0, WS and the integrator had stopped; their work was saved (A4 `a9a14c0`, WS `2b67c06`; the integrator's W1c commit `402c9b0` kept, its half-done W1b merge dropped). BR0 merged (`d7a4386`). Relaunched: the integrator (W1b, O1, fixes), A4, WS, and started BR1 and CC1. The owner asked for the whole of 1.0.0 and a Windows-ready plugin: phase WIN added.
