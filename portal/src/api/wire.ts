@@ -405,16 +405,40 @@ export interface SettingsData {
 export type SettingsAnswer = SettingsData;
 
 export interface ProjectSummary {
+  id: string;
   configFile: null | string;
-  name: null | string;
-  root: null | string;
+  name: string;
+  root: string;
   set: boolean;
+  uncommitted: boolean | null;
+  lastUsed: null | string;
+  worktrees: null | number;
+  source: "added" | "sessions";
+  current: boolean;
 }
 
 export interface ProjectsAnswer {
   current: ProjectCardData;
   projects: ProjectSummary[];
   note: null | string;
+}
+
+export interface ProjectBranch {
+  base: null | string;
+  branch: string;
+  draft: boolean;
+  kind: "crew" | "pr";
+  number: null | number;
+  title: null | string;
+  verdict: MergeVerdict;
+}
+
+export interface ProjectAnswer {
+  branches: ProjectBranch[];
+  branchesNote: null | string;
+  card: ProjectCardData;
+  checkedAt: string;
+  project: ProjectSummary;
 }
 
 // ── Work, crew, needs ──────────────────────────────────────────────────────────────────
@@ -866,6 +890,7 @@ export const ACTION_NAMES = [
   "doctor.run",
   "omniroute.rollback",
   "omniroute.update",
+  "project.add",
   "project.preview",
   "project.write",
   "router.restart",

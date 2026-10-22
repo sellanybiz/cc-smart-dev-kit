@@ -34,6 +34,7 @@ import {
   type CommittedConfig,
   type CommittedOptions,
   readCommittedConfig,
+  readCommittedConfigAsync,
 } from "../project/resolve";
 import { statuslineSetting } from "../setup/statusline";
 import { isHeld, updateFiles } from "../update/state";
@@ -289,6 +290,39 @@ export function resolveGate(
     // A committed file too new or broken, or no git at all: the gate is unknown, never guessed.
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+  return gateOfCommitted(paths, branch, committed);
+}
+
+/**
+ * `resolveGate`, without blocking the caller: the same gate from the same committed file,
+ * read with `Bun.spawn` (`readCommittedConfigAsync`). The portal's merge verdicts run inside
+ * the server's own process (`.claude/rules/portal.md`); a hook or a command keeps the
+ * blocking read above.
+ */
+export async function resolveGateAsync(
+  paths: CliPaths,
+  checkout: Checkout,
+  branch: string | null,
+  options: CommittedOptions = {},
+): Promise<GateRead> {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed: CommittedConfig;
+  try {
+    committed = await readCommittedConfigAsync(checkout, branch, options);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  return gateOfCommitted(paths, branch, committed);
+}
+
+/** The gate a committed read gives, or why it cannot judge. One home for both readers. */
+function gateOfCommitted(
+  paths: CliPaths,
+  branch: string | null,
+  committed: CommittedConfig,
+): GateRead {
   if (!committed.found) return { ok: false, why: committed.why };
   const resolved = resolveWorkflow(paths, committed.config);
   return { ok: true, gate: { branch, config: committed.config, resolved } };

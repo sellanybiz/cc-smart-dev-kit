@@ -101,11 +101,11 @@ function branchWorld(policy: Record<string, unknown> = {}): {
 const LIMITS = { files: 10, lines: 200, percent: 20 };
 
 describe("checkBranch's review detail", () => {
-  test("a reviewed branch with a small fix: the review, the change after it, and the limits", () => {
+  test("a reviewed branch with a small fix: the review, the change after it, and the limits", async () => {
     const { env, repo, reviewed } = branchWorld();
     recordReview(env, repo, reviewed, "feat");
     const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
-    expect(checkBranch(worldOf(repo, env), { base: "main", branch: "feat" })).toEqual({
+    expect(await checkBranch(worldOf(repo, env), { base: "main", branch: "feat" })).toEqual({
       detail: {
         allowance: { files: 10, lines: 200 },
         delta: { binary: 0, files: 1, lines: 5 },
@@ -118,23 +118,23 @@ describe("checkBranch's review detail", () => {
     });
   });
 
-  test("a review of the head itself: no change after it, and none in the detail", () => {
+  test("a review of the head itself: no change after it, and none in the detail", async () => {
     const { env, repo, reviewed } = branchWorld();
     recordReview(env, repo, reviewed, "feat");
-    expect(checkBranch(worldOf(repo, env), { base: "main", branch: "feat" })).toEqual({
+    expect(await checkBranch(worldOf(repo, env), { base: "main", branch: "feat" })).toEqual({
       detail: { allowance: null, delta: null, limits: LIMITS, review: reviewed, reviewed: null },
       kind: "allowed",
       reason: `the review of ${reviewed.slice(0, 7)} is of ${reviewed.slice(0, 7)} itself`,
     });
   });
 
-  test("a rewrite over the limit: the refused verdict names the measured change and the limits", () => {
+  test("a rewrite over the limit: the refused verdict names the measured change and the limits", async () => {
     const { env, repo, reviewed } = branchWorld();
     recordReview(env, repo, reviewed, "feat");
     rmSync(join(repo, "src/a.txt"));
     rmSync(join(repo, "src/b.txt"));
     commitFiles(repo, { "src/c.txt": numbered(500, "c") }, "rewrite");
-    const verdict = checkBranch(worldOf(repo, env), { base: "main", branch: "feat" });
+    const verdict = await checkBranch(worldOf(repo, env), { base: "main", branch: "feat" });
     expect(verdict.kind).toBe("refused");
     expect(verdict).toMatchObject({
       detail: {
@@ -149,27 +149,27 @@ describe("checkBranch's review detail", () => {
     });
   });
 
-  test("no review recorded: refused, and the detail still carries the gate's limits", () => {
+  test("no review recorded: refused, and the detail still carries the gate's limits", async () => {
     const { env, repo } = branchWorld();
-    expect(checkBranch(worldOf(repo, env), { base: "main", branch: "feat" })).toMatchObject({
+    expect(await checkBranch(worldOf(repo, env), { base: "main", branch: "feat" })).toMatchObject({
       detail: { allowance: null, delta: null, limits: LIMITS, review: null, reviewed: null },
       kind: "refused",
       number: null,
     });
   });
 
-  test("reviewBeforePush off: no review is required, and the limits still show", () => {
+  test("reviewBeforePush off: no review is required, and the limits still show", async () => {
     const { env, repo } = branchWorld({ workflow: { reviewBeforePush: false } });
-    const verdict = checkBranch(worldOf(repo, env), { base: "main", branch: "feat" });
+    const verdict = await checkBranch(worldOf(repo, env), { base: "main", branch: "feat" });
     expect(verdict).toMatchObject({
       detail: { allowance: null, delta: null, limits: LIMITS, review: null, reviewed: null },
       kind: "allowed",
     });
   });
 
-  test("a branch that is not in this checkout: the gate was never read, so no detail", () => {
+  test("a branch that is not in this checkout: the gate was never read, so no detail", async () => {
     const { env, repo } = branchWorld();
-    expect(checkBranch(worldOf(repo, env), { base: "main", branch: "nowhere" })).toEqual({
+    expect(await checkBranch(worldOf(repo, env), { base: "main", branch: "nowhere" })).toEqual({
       detail: null,
       kind: "refused",
       number: null,

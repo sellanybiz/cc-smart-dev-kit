@@ -14,8 +14,10 @@ import type {
   CrewReview,
   HistoryAnswer,
   HistoryRequest,
+  MergeVerdict,
   ModelRow,
   OpenBreaker,
+  ProjectInitPlan,
   RequestsAnswer,
   RouterFacts,
   SlotRow,
@@ -25,7 +27,16 @@ import type {
   HistoryPoint as WireHistoryPoint,
 } from "./wire";
 
-export type { BackendRow, ModelRow, OpenBreaker, RouterFacts, SlotRow, SlotTarget, SwitchFacts };
+export type {
+  BackendRow,
+  ModelRow,
+  OpenBreaker,
+  ProjectInitPlan,
+  RouterFacts,
+  SlotRow,
+  SlotTarget,
+  SwitchFacts,
+};
 
 // ── The shell ──────────────────────────────────────────────────────────────────────────
 
@@ -495,18 +506,33 @@ export interface SettingsData {
 }
 
 /**
- * One git project on this machine (planned: B8, from the session records; a folder that is
- * gone or not git is left out).
+ * One git project on this machine: a repository from Claude Code's session records, or a
+ * folder the person added (`project.add`). A worktree is folded into its repository.
  */
 export interface ProjectListRow {
+  /** The server's short id for it: the page's address and the `project.*` actions name it. */
   id: string;
   name: string;
+  /** The main checkout's root folder. */
   path: string;
   /** `.claude/cc-smart-dev-kit.json` is there. */
   setUp: boolean;
-  /** ISO 8601: the newest session in it; null until B8 lists every repository. */
+  /** True: the project files are not committed on HEAD yet; null when git could not tell. */
+  uncommitted: boolean | null;
+  /** ISO 8601: the newest session in it or its worktrees; null when it has none. */
   lastUsed: null | string;
+  /** Its linked worktrees, the main checkout not counted; null when git could not list them. */
   worktrees: null | number;
+  /** Where the row came from: the session records, or the person's "Add a folder". */
+  source: "added" | "sessions";
+  /** True: the portal was started in this project. */
+  current: boolean;
+}
+
+/** The Projects tab: every project, newest use first, and why the list is short (or null). */
+export interface ProjectList {
+  rows: ProjectListRow[];
+  note: null | string;
 }
 
 /** `src/project/init.ts` › `ProjectInitAnswers` (the form's fields). */
@@ -517,13 +543,60 @@ export interface ProjectInitAnswers {
   guards: { guardMainFolder: boolean; sessionNames: boolean; jobRoute: boolean };
 }
 
-/** A project's page (planned: B8): its row, its settings and its form's first answers. */
+/** The merge guard's verdict on one branch, in the page's words (from `MergeVerdict`). */
+export interface BranchVerdict {
+  /** The command's own kind: `allowed`, `refused`, `silent`, `unread` or `late`. */
+  kind: MergeVerdict["kind"];
+  /** `ok`: it would merge by itself; `warn`: it is refused or ran late; `info`: no verdict. */
+  tone: "info" | "ok" | "warn";
+  /** The short word the table shows. */
+  label: string;
+  /** Why, in the guard's own words; null when it said nothing. */
+  reason: null | string;
+}
+
+/** One open pull request or crew branch of a project, with the merge guard's verdict. */
+export interface ProjectBranchRow {
+  branch: string;
+  /** The branch it would merge into; null when it is not known. */
+  base: null | string;
+  draft: boolean;
+  kind: "crew" | "pr";
+  /** The pull request's number; null for a crew branch. */
+  number: null | number;
+  title: null | string;
+  verdict: BranchVerdict;
+}
+
+/**
+ * The set-up card's data. The page previews again before it writes (`project.preview`), so
+ * the plan and its hash come from that answer, never from a page read a while ago.
+ */
+export interface ProjectSetup {
+  /** Why the project cannot be read at all; null when it can. */
+  error: null | string;
+  /** The answers the preview sends: the project's own file, or the command line's defaults. */
+  answers: ProjectInitAnswers | null;
+  /** Why the plan could not be made when the page was read; null when it could. */
+  planError: null | string;
+}
+
+/** A project's page: its row, its own settings, its branches' verdicts and its set-up card. */
 export interface ProjectData {
   project: ProjectListRow;
-  settings: SettingsData;
+  /** The project's own answers when it is set up; null when it is not. */
   answers: ProjectInitAnswers | null;
-  /** True while the main checkout's file differs from `origin/<base>`; null when not known. */
-  uncommitted: null | boolean;
+  setup: ProjectSetup;
+  branches: ProjectBranchRow[];
+  /** Why the branches could not all be read; null when they were. */
+  branchesNote: null | string;
+  /** ISO 8601: when the verdicts were read (the server keeps them about a minute). */
+  checkedAt: string;
+  /**
+   * The resolved work-flow rows. Only the portal's own project has them (`/api/settings`
+   * reads the folder the portal runs in); null for every other project.
+   */
+  settings: null | SettingsData;
 }
 
 // ── The heavy-job queue (planned: `GET /api/jobs` and the `jobs` event) ───────────────

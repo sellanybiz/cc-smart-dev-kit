@@ -625,6 +625,31 @@ rather than written over field by field. `Write the files` asks first and runs
 file gets Claude Code's `"worktree": {"baseRef": "head"}` when the base branch is not the
 repo's default branch.
 
+**Settings → Projects (B8).** `/api/projects` (`src/portal/api/projects.ts`) lists every
+repository from Claude Code's session records (`sessionWorkFolderTimes` in
+`src/sessions/command.ts`, the one reader `sessionWorkFolders` is built on), each folder taken
+to its main checkout by `checkoutOfAsync` on `checkoutFold` (`src/update/retired-repos.ts`, the
+fold the retired-repo scan uses too), plus the roots the person added (`portal-projects.json` in the state folder, written
+atomically under the state folder's lock). Each row carries an id (12 hex of the root's
+sha256), the last use, the worktree count (`git worktree list --porcelain`), whether the
+project files are set and committed on the branch it is on (`git status --porcelain` on the
+two files; the merge gate itself reads them from `origin/<base>`), and whether
+the portal's own folder is in it. `/api/projects/<id>` adds the project-init card for that
+root and the open pull requests (`gh pr list`) and crew branches (`listCrew`), each judged by
+`checkPullRequest` / `checkBranch` — the merge guard's own code — under **one deadline per
+page** (`PROJECT_BRANCHES_DEADLINE_MS`; past it a verdict is `late`, never a guess) and kept
+for `PROJECT_BRANCHES_CACHE_MS` (a read the deadline cut short is not kept). The verdicts run
+`PROJECT_VERDICTS_AT_ONCE` at a time and share one default-branch read; crew rows are only the
+states whose branch still waits for a merge (`CREW_BRANCH_STATES`). The list itself is kept for
+`PROJECTS_LIST_CACHE_MS`, shared by looks at once, dropped by an add or a write, and its scan
+runs at most `PROJECT_GIT_AT_ONCE` git children together. Every git and `gh` child on these paths is awaited
+(`Bun.spawn`): merge-check takes an injectable async `GhRunner` (default `spawnGh`), and the
+merge guard and `workflow merge-check` await it with their time budget unchanged, so a verdict
+never freezes the pages or the live stream. `project.preview` and `project.write` take an
+optional `project` id, looked up in that list (an unknown id writes nothing; no path ever comes
+from the request), and `project.add {folder}` adds a git folder's main checkout to the list —
+so a write reaches only a listed folder, and Add a folder is what extends the list.
+
 **The workflow module is behind one seam** (`src/portal/workflow-adapter.ts`). The values,
 the writes, the auto-merge rule and the project's two files all come from `src/workflow/`
 and `src/project/init.ts` through one typed interface, injected as `PortalOptions.workflow`
@@ -795,7 +820,7 @@ folders' fingerprint, with the queue read only when it changes). The doctor pass
 action's lines are not polled: the server publishes them when it has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
-`health`, `machine`, `settings`, `projects`, `work`, `crew/<id>`, `flow`, `needs`,
+`health`, `machine`, `settings`, `projects`, `projects/<id>`, `work`, `crew/<id>`, `flow`, `needs`,
 `guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
 through the door. Each answer is built from the same readers the server-rendered pages use
 (`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer

@@ -133,25 +133,71 @@ export interface MachineAnswer extends MachineData {}
 /** `GET /api/settings`: the Settings page. Needs no gateway config. */
 export interface SettingsAnswer extends SettingsData {}
 
-/** One project, as a row in `/api/projects`. */
+/** One project, as a row in `/api/projects` (B8). */
 export interface ProjectSummary {
+  /**
+   * The project's id: a short hash of its root. The page and the `project.*` actions name a
+   * project by this id, never by a path, and the server looks the id up in its own list.
+   */
+  id: string;
   configFile: null | string;
-  name: null | string;
-  root: null | string;
+  /** The root folder's own name. */
+  name: string;
+  /** The main checkout's root: a worktree is folded into the repository it belongs to. */
+  root: string;
   /** True: `.claude/cc-smart-dev-kit.json` is there. */
   set: boolean;
+  /**
+   * True: the project files differ from what is committed on HEAD (or are not committed at
+   * all), so the merge gate does not read them yet. False: committed. Null: git could not tell.
+   */
+  uncommitted: boolean | null;
+  /** The newest Claude Code session record in it or its worktrees (ISO); null when none. */
+  lastUsed: null | string;
+  /** Its linked worktrees, the main checkout not counted; null when git could not list them. */
+  worktrees: null | number;
+  /** Where the row came from: Claude Code's session records, or the person's "Add a folder". */
+  source: "added" | "sessions";
+  /** True: the folder the portal was started in belongs to it. */
+  current: boolean;
 }
 
-/** `GET /api/projects`: the project the portal runs in, and the rows of its page (B8). */
+/** `GET /api/projects`: every project the person works in, newest use first (B8). */
 export interface ProjectsAnswer {
   /** The project whose folder the portal was started in: the Machine card's data. */
   current: ProjectCardData;
-  /**
-   * One row per repository a person works in. Until B8 lists every repository from the
-   * session records, this holds the current project alone, and `note` says so.
-   */
+  /** One row per repository, from the session records and the added folders. */
   projects: ProjectSummary[];
+  /** Why the list is short or empty (no session records were found); null otherwise. */
   note: null | string;
+}
+
+/** One branch on a project's page, with the merge guard's verdict on it. */
+export interface ProjectBranch {
+  /** The branch it would merge into; null when it is not known. */
+  base: null | string;
+  branch: string;
+  draft: boolean;
+  /** `pr`: an open pull request. `crew`: a crew session's branch with no pull request yet. */
+  kind: "crew" | "pr";
+  /** The pull request's number; null for a crew branch. */
+  number: null | number;
+  title: null | string;
+  /** `workflow merge-check`'s verdict, from its one home. */
+  verdict: MergeVerdict;
+}
+
+/** `GET /api/projects/<id>`: one project's page (B8). An unknown id: 404. */
+export interface ProjectAnswer {
+  /** The open pull requests and crew branches, each with its verdict. */
+  branches: ProjectBranch[];
+  /** Why the branches could not all be read (no `gh`, the time ran out); null when they were. */
+  branchesNote: null | string;
+  /** The project-init card for this project's root: its settings, or the "Set up" preview. */
+  card: ProjectCardData;
+  /** When the verdicts were read (ISO); they are kept for about a minute. */
+  checkedAt: string;
+  project: ProjectSummary;
 }
 
 /** A crew session, as the Work view and a crew page show it. */

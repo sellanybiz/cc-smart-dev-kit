@@ -18,7 +18,8 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import {
   parseBrowserToken,
@@ -50,12 +51,14 @@ import { realMemoryFacts } from "../jobs/memory";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
+import { locateCheckoutAsync } from "../project/resolve";
 import { type AutoModeSource, applyAutoMode, autoModeSource } from "../setup/auto-mode";
 import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
 import { isObject } from "../setup/managed-json";
 import { CLAUDE_TIMEOUT_MS, commandContext } from "../update/apply";
+import { checkoutFold } from "../update/retired-repos";
 import {
   heldSince,
   type LastCheck,
@@ -64,6 +67,12 @@ import {
   updateFiles,
 } from "../update/state";
 import { runWorktrees } from "../worktrees/command";
+import {
+  addProjectRoot,
+  forgetProjectsList,
+  type ProjectsWorld,
+  projectRootById,
+} from "./api/projects";
 import type { LivePublish } from "./api/types";
 import type { PortalContext } from "./context";
 import {
@@ -902,6 +911,41 @@ export function parseProjectForm(
   };
 }
 
+/** The Projects page's own world: the portal's folder, paths, environment and clock. */
+function projectsWorld(action: ActionContext): ProjectsWorld {
+  return {
+    cwd: action.cwd,
+    env: action.portal.env,
+    now: action.portal.now,
+    paths: action.portal.paths,
+  };
+}
+
+/**
+ * The folder a `project.*` action works in. The page may name a project by its id — the one
+ * `/api/projects` listed — and the server looks that id up in its own list: a path from a
+ * request is never used. No id: the folder the portal runs in, as before.
+ */
+async function projectTarget(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<{ cwd: string } | { why: string }> {
+  const named = body.project;
+  // A `project` that is there but is not a string is a request this action cannot read: it
+  // names no project, and it must never fall back to the portal's own folder by accident.
+  if (named !== undefined && typeof named !== "string") {
+    return {
+      why: "The project must be named by its id, as a string; nothing was read or written.",
+    };
+  }
+  const id = named === undefined ? "" : named.trim();
+  if (id === "") return { cwd: action.cwd };
+  const root = await projectRootById(projectsWorld(action), id);
+  return root === null
+    ? { why: `No project of the list has the id "${id}", so nothing was read or written.` }
+    : { cwd: root };
+}
+
 /**
  * The answers a POST would write: the form's own fields over the project's own defaults
  * (`projectInitDefaults`), so the fields the form does not show — the workflow policy, and
@@ -910,6 +954,7 @@ export function parseProjectForm(
 function projectAnswers(
   action: ActionContext,
   body: Record<string, unknown>,
+  cwd: string,
 ):
   | {
       ok: true;
@@ -922,7 +967,7 @@ function projectAnswers(
       root: string;
     }
   | { ok: false; why: string } {
-  const project = readProject(action.portal, action.cwd);
+  const project = readProject(action.portal, cwd);
   if (project.root === null) {
     return { ok: false, why: project.why ?? "there is no project folder here" };
   }
@@ -948,7 +993,9 @@ async function projectPreview(
   action: ActionContext,
   body: Record<string, unknown>,
 ): Promise<ActionResult> {
-  const built = projectAnswers(action, body);
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const built = projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   try {
     const plan = action.workflow.planProjectInit({
@@ -991,7 +1038,9 @@ async function projectWrite(
   if (body.confirm !== true) {
     return { lines: ["The write was not confirmed, so nothing was written."], ok: false };
   }
-  const built = projectAnswers(action, body);
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const built = projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   if (body.previewHash !== projectFilesHash(built)) {
     return {
@@ -1014,6 +1063,9 @@ async function projectWrite(
     if (writes.length === 0) {
       return { lines: ["Nothing to change: both files already say this."], ok: true };
     }
+    // A row of the list holds the project's two files: the page's next look must read them
+    // again, not the list kept before this write.
+    forgetProjectsList();
     return {
       lines: [
         ...writes.map((write) => `${write.created ? "+" : "~"} ${write.file}`),
@@ -1021,6 +1073,63 @@ async function projectWrite(
       ],
       ok: true,
     };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+/**
+ * `project.add`: adds a folder to the Projects page's list. The folder must be absolute, must
+ * exist, and must be inside a git checkout; its main checkout root is what goes into the list,
+ * so a worktree path adds the repository it belongs to. Anything else is refused in words and
+ * nothing is written. The list file is the kit's own state (`portalProjectsFile`), written
+ * atomically under the state folder's lock (`addProjectRoot`); the person's files are not
+ * touched, and no git child blocks the server (`locateCheckoutAsync`).
+ */
+async function projectAdd(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const folder = typeof body.folder === "string" ? body.folder.trim() : "";
+  if (folder === "") {
+    return { lines: ["Type the folder to add, with its full path."], ok: false };
+  }
+  if (!isAbsolute(folder)) {
+    return {
+      lines: [`"${folder}" is not an absolute path: give the folder's full path.`],
+      ok: false,
+    };
+  }
+  let isFolder = false;
+  try {
+    isFolder = existsSync(folder) && statSync(folder).isDirectory();
+  } catch {
+    isFolder = false;
+  }
+  if (!isFolder) {
+    return {
+      lines: [`${folder} is not a folder on this machine, so nothing was added.`],
+      ok: false,
+    };
+  }
+  let root: null | string;
+  try {
+    root =
+      checkoutFold(await locateCheckoutAsync(folder, { env: action.portal.env }))?.main ?? null;
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+  if (root === null) {
+    return {
+      lines: [`${folder} is not inside a git checkout, so there is no project to add.`],
+      ok: false,
+    };
+  }
+  try {
+    const result = await addProjectRoot(action.portal.paths, root);
+    return result.added
+      ? { lines: [`Added ${root} to the projects list.`], ok: true }
+      : { lines: [`${root} is already in the projects list.`], ok: true };
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
@@ -1202,6 +1311,7 @@ export const ACTION_NAMES = [
   "doctor.run",
   "omniroute.rollback",
   "omniroute.update",
+  "project.add",
   "project.preview",
   "project.write",
   "router.restart",
@@ -1288,6 +1398,8 @@ export async function runAction(
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.add":
+      return projectAdd(action, body);
     case "crew.answer": {
       const crew = crewRef(body);
       const answer = typeof body.answer === "string" ? body.answer.trim() : "";

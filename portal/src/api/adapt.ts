@@ -11,6 +11,7 @@
 
 import { KIT_NAME, slotName } from "@/lib/format";
 import type {
+  BranchVerdict,
   CrewDetail,
   CrewEvent,
   CrewRecord,
@@ -27,6 +28,8 @@ import type {
   NeedsItem,
   OverviewData,
   ProjectData,
+  ProjectInitAnswers,
+  ProjectList,
   ProjectListRow,
   RecentRequest,
   RouterHealth,
@@ -49,10 +52,13 @@ import type {
   NeedsAnswer,
   OverviewAnswer,
   PortalFacts,
+  ProjectAnswer,
+  ProjectSummary,
   ProjectsAnswer,
   RecentEntry,
   RouterFacts,
   UpdateAnswer,
+  ProjectInitAnswers as WireProjectInitAnswers,
   WorkAnswer,
   WorktreesAnswer,
 } from "./wire";
@@ -174,41 +180,77 @@ export function settingsOf(answer: SettingsData): SettingsData {
   return answer;
 }
 
-/** The id a project goes by in the page's address: its folder, or `current` outside git. */
-function projectId(root: null | string): string {
-  return root ?? "current";
-}
-
-/** The project list. */
-export function projectsOf(answer: ProjectsAnswer): ProjectListRow[] {
-  return answer.projects.map((project) => ({
-    id: projectId(project.root),
-    lastUsed: null,
-    name: project.name ?? project.root ?? "this folder",
-    path: project.root ?? "",
-    setUp: project.set,
-    worktrees: null,
-  }));
-}
-
-/** One project's page: the portal's own project is the only one the server knows yet. */
-export function projectOf(id: string, answer: ProjectsAnswer, settings: SettingsData): ProjectData {
-  const row = projectsOf(answer).find((project) => project.id === id);
-  if (row === undefined) throw new Error(`No project "${id}" is known on this machine.`);
-  const answers = answer.current.answers;
+/** One project's row, as the server sends it: its id is the server's, never a path. */
+function projectRowOf(project: ProjectSummary): ProjectListRow {
   return {
-    answers:
-      answers === null
-        ? null
-        : {
-            base: answers.base,
-            bases: answers.bases,
-            guards: answers.guards,
-            protectedBranches: answers.protectedBranches,
-          },
-    project: row,
-    settings,
-    uncommitted: null,
+    current: project.current,
+    id: project.id,
+    lastUsed: project.lastUsed,
+    name: project.name,
+    path: project.root,
+    setUp: project.set,
+    source: project.source,
+    uncommitted: project.uncommitted,
+    worktrees: project.worktrees,
+  };
+}
+
+/** The project list, in the server's order (newest use first), and its note. */
+export function projectsOf(answer: ProjectsAnswer): ProjectList {
+  return { note: answer.note, rows: answer.projects.map(projectRowOf) };
+}
+
+/** The form's four fields: the opaque `workflow` object stays on the server's side. */
+function initAnswersOf(answers: WireProjectInitAnswers | null): ProjectInitAnswers | null {
+  return answers === null
+    ? null
+    : {
+        base: answers.base,
+        bases: answers.bases,
+        guards: answers.guards,
+        protectedBranches: answers.protectedBranches,
+      };
+}
+
+/** The merge guard's verdict on one branch, in the page's words and tone. */
+export function branchVerdictOf(verdict: MergeVerdict): BranchVerdict {
+  switch (verdict.kind) {
+    case "allowed":
+      return { kind: "allowed", label: "allowed", reason: verdict.reason, tone: "ok" };
+    case "refused":
+      return { kind: "refused", label: "refused", reason: verdict.reason, tone: "warn" };
+    case "late":
+      return { kind: "late", label: "ran late", reason: verdict.what, tone: "warn" };
+    case "unread":
+      return { kind: "unread", label: "not read", reason: verdict.what, tone: "info" };
+    case "silent":
+      return { kind: "silent", label: "no verdict", reason: null, tone: "info" };
+  }
+}
+
+/**
+ * One project's page. `settings` is the portal's own `/api/settings`: it describes the folder
+ * the portal runs in, so it is kept for the current project only.
+ */
+export function projectOf(answer: ProjectAnswer, settings: SettingsData | null): ProjectData {
+  const card = answer.card;
+  const answers = initAnswersOf(card.answers);
+  return {
+    answers: card.set ? answers : null,
+    branches: answer.branches.map((branch) => ({
+      base: branch.base,
+      branch: branch.branch,
+      draft: branch.draft,
+      kind: branch.kind,
+      number: branch.number,
+      title: branch.title,
+      verdict: branchVerdictOf(branch.verdict),
+    })),
+    branchesNote: answer.branchesNote,
+    checkedAt: answer.checkedAt,
+    project: projectRowOf(answer.project),
+    settings: answer.project.current ? settings : null,
+    setup: { answers, error: card.error, planError: card.planError },
   };
 }
 

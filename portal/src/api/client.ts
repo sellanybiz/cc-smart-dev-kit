@@ -32,7 +32,7 @@ import type {
   OverviewData,
   PortalFacts,
   ProjectData,
-  ProjectListRow,
+  ProjectList,
   RequestPage,
   RequestQuery,
   SettingsData,
@@ -61,7 +61,7 @@ export interface PortalClient {
   health(): Promise<HealthData>;
   machine(): Promise<MachineData>;
   settings(): Promise<SettingsData>;
-  projects(): Promise<ProjectListRow[]>;
+  projects(): Promise<ProjectList>;
   project(id: string): Promise<ProjectData>;
   jobs(): Promise<JobsData>;
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
@@ -158,11 +158,14 @@ export function mockClient(scenario: MockScenario): PortalClient {
     guardAsks: (query) => answer(() => data.guardAsks(query)),
     worktrees: () => answer(() => data.worktrees),
     update: () => answer(() => data.update),
-    act: (action) =>
-      answer(() => ({
-        lines: [`Mock data: ${action} sent nothing. The real portal runs it.`],
-        ok: true,
-      })),
+    act: (action, body) =>
+      answer(
+        () =>
+          data.act(action, body) ?? {
+            lines: [`Mock data: ${action} sent nothing. The real portal runs it.`],
+            ok: true,
+          },
+      ),
     onEvent: () => () => {},
     connection: (listener) => {
       listener(scenario === "reconnecting" ? "reconnecting" : "live");
@@ -246,11 +249,9 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     settings: async () => adapt.settingsOf(await settings()),
     projects: async () => adapt.projectsOf(await get<Wire.ProjectsAnswer>("/api/projects")),
     project: async (id) => {
-      const [answer, rows] = await Promise.all([
-        get<Wire.ProjectsAnswer>("/api/projects"),
-        settings(),
-      ]);
-      return adapt.projectOf(id, answer, rows);
+      const answer = await get<Wire.ProjectAnswer>(`/api/projects/${encodeURIComponent(id)}`);
+      // `/api/settings` reads the portal's own folder: only that project's page shows it.
+      return adapt.projectOf(answer, answer.project.current ? await settings() : null);
     },
     jobs: async () => {
       const answer = await get<Wire.ApiError | Wire.JobsAnswer>("/api/jobs");

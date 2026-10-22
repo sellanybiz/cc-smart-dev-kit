@@ -40,7 +40,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { type GitRun, GUARD_GIT_TIMEOUT_MS, runGit } from "../hooks/git";
+import { type GitRun, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import type { Checkout } from "../project/resolve";
 import { COMMIT_SHA, type TrustedReview } from "./reviews";
@@ -85,6 +85,18 @@ export interface CoverGit {
    * left (the merge guard's `timeFor`). Zero or less: out of time. Left out: `limitMs`.
    */
   timeFor?: (limitMs: number) => number;
+  /**
+   * How one git call runs: `runGitAsync` (never `Bun.spawnSync`) in use, a fake in a test.
+   * The measurement is read inside the portal's own process too, where a blocking spawn
+   * freezes every page and the live stream (`.claude/rules/portal.md`).
+   */
+  run?: (
+    cwd: string,
+    args: string[],
+    env: Env,
+    timeoutMs: number,
+    own: Record<string, string>,
+  ) => Promise<GitRun>;
 }
 
 /** The answer: covered by which review (and by how much change), or not, and why. */
@@ -255,13 +267,13 @@ function alternateEntry(folder: string): string {
  * The covered candidate with the smallest change is the one named; when none is covered, the
  * reason is about the candidate with the smallest change. Never throws.
  */
-export function readCover(
+export async function readCover(
   checkout: Checkout,
   target: CoverTarget,
   records: readonly TrustedReview[],
   limits: FixLimits,
   git: CoverGit,
-): Cover {
+): Promise<Cover> {
   const { head, branch } = target;
   if (records.some((record) => record.sha === head)) {
     return { covered: true, review: head, delta: null, reviewed: null };
@@ -291,7 +303,9 @@ export function readCover(
   let objects: string | null = null;
   try {
     objects = mkdtempSync(join(tmpdir(), `${COMMAND}-cover-`));
-    return measure(checkout, target, candidates, limits, git, objects);
+    // Awaited inside this try: a rejected measurement must become the answer below, never
+    // escape past the `finally` that removes the temporary object folder.
+    return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
       return { covered: false, review: error.review, why: error.message };
@@ -307,57 +321,66 @@ export function readCover(
 }
 
 /** The measurement itself: every git call `readCover` makes. Throws `Uncovered` with a reason. */
-function measure(
+async function measure(
   checkout: Checkout,
   { head, branch, base }: CoverTarget,
   candidates: readonly string[],
   limits: FixLimits,
   git: CoverGit,
   objects: string,
-): Cover {
+): Promise<Cover> {
   const baseRef = `refs/remotes/origin/${base}`;
   // Every call reads the repository's objects and writes only into the temporary folder.
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join(checkout.commonDir, "objects")),
   };
-  const run = (args: string[]): GitRun => {
+  const run = async (args: string[]): Promise<GitRun> => {
     const left = (git.timeFor ?? ((limit: number) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0) throw new Uncovered("the time to measure the change after the review ran out");
-    const result = runGit(checkout.root, args, git.env, left, own);
+    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, own);
     if (result.code === null && result.err === "timed out") {
       throw new Uncovered("the time to measure the change after the review ran out");
     }
     return result;
   };
-  const commit = (rev: string): string | null => {
-    const found = run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
+  const commit = async (rev: string): Promise<string | null> => {
+    const found = await run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
     return found.ok && COMMIT_SHA.test(found.out) ? found.out : null;
   };
 
-  const asked = run(["--version"]);
+  const asked = await run(["--version"]);
   if (!asked.ok) throw new Uncovered(`git cannot be run here (${asked.err})`);
   const version = parseGitVersion(asked.out);
   if (version !== null && tooOldToCover(version)) throw new Uncovered(oldGit(version, head));
-  if (!COMMIT_SHA.test(head) || commit(head) === null) {
+  if (!COMMIT_SHA.test(head) || (await commit(head)) === null) {
     throw new Uncovered(`${short(head)} is not in this checkout: fetch it (git fetch origin)`);
   }
-  if (commit(baseRef) === null) {
+  if ((await commit(baseRef)) === null) {
     throw new Uncovered(
       `origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`,
     );
   }
-  const mergeBase = (a: string, b: string): string => {
-    const found = run(["merge-base", a, b]);
+  const mergeBase = async (a: string, b: string): Promise<string> => {
+    const found = await run(["merge-base", a, b]);
     if (!found.ok) {
       throw new Uncovered(`${short(a)} and origin/${base} share no history`, a === head ? null : a);
     }
     return found.out;
   };
-  const numstat = (from: string, to: string, review: string): Changed[] => {
+  const numstat = async (from: string, to: string, review: string): Promise<Changed[]> => {
     // No textconv and no external diff: what is counted is the bytes in the commits, never what
     // a checkout's own attributes or config turn them into.
-    const diff = run(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]);
+    const diff = await run([
+      "diff",
+      "--no-textconv",
+      "--no-ext-diff",
+      "--numstat",
+      "-z",
+      "-M",
+      from,
+      to,
+    ]);
     if (!diff.ok) {
       throw new Uncovered(
         `the change after the review of ${short(review)} cannot be read (${diff.err})`,
@@ -366,11 +389,11 @@ function measure(
     }
     return parseNumstat(diff.out);
   };
-  const generatedOf = (paths: readonly string[]): Set<string> => {
+  const generatedOf = async (paths: readonly string[]): Promise<Set<string>> => {
     const generated = new Set<string>();
     for (let at = 0; at < paths.length; at += PATHS_PER_CALL) {
       const some = paths.slice(at, at + PATHS_PER_CALL);
-      const attrs = run([
+      const attrs = await run([
         "check-attr",
         `--source=${baseRef}`,
         "-z",
@@ -405,18 +428,18 @@ function measure(
     return count;
   };
 
-  const onBase = mergeBase(head, baseRef);
+  const onBase = await mergeBase(head, baseRef);
   const measured: Measured[] = [];
   const unread: Uncovered[] = [];
   for (const review of candidates) {
     try {
-      if (commit(review) === null) {
+      if ((await commit(review)) === null) {
         throw new Uncovered(
           `the reviewed commit ${short(review)} is not in this checkout: fetch it (git fetch origin)`,
           review,
         );
       }
-      const replay = run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
+      const replay = await run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
       // Exit 1 is a conflicted replay: its tree is still valid, and the conflict counts as change.
       const tree = replay.out.split("\n")[0] ?? "";
       if ((replay.code !== 0 && replay.code !== 1) || !COMMIT_SHA.test(tree)) {
@@ -425,7 +448,7 @@ function measure(
           review,
         );
       }
-      const same = run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
+      const same = await run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
       if (same.code === 0) continue; // its change is all in the base already: no candidate
       if (same.code !== 1) {
         throw new Uncovered(
@@ -433,9 +456,11 @@ function measure(
           review,
         );
       }
-      const after = numstat(tree, head, review);
-      const before = numstat(mergeBase(review, baseRef), review, review);
-      const generated = generatedOf([...new Set([...after, ...before].map((one) => one.path))]);
+      const after = await numstat(tree, head, review);
+      const before = await numstat(await mergeBase(review, baseRef), review, review);
+      const generated = await generatedOf([
+        ...new Set([...after, ...before].map((one) => one.path)),
+      ]);
       const delta = tally(after, generated);
       const reviewed = tally(before, generated);
       measured.push({

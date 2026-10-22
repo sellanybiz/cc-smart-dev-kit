@@ -19,6 +19,7 @@ import {
   slotsAnswer,
   updateAnswer,
 } from "./data";
+import { projectAnswerFor } from "./projects";
 import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
   crewAnswerFor,
@@ -101,7 +102,7 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
     case "/api/settings":
       return ok(settingsAnswer(deps));
     case "/api/projects":
-      return ok(projectsAnswer(deps));
+      return ok(await projectsAnswer(deps));
     case "/api/work":
       return ok(workAnswer(deps));
     case "/api/needs":
@@ -216,6 +217,19 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
     default:
       break;
   }
+  if (path.startsWith("/api/projects/")) {
+    let id: string;
+    try {
+      id = decodeURIComponent(path.slice("/api/projects/".length));
+    } catch {
+      return { body: { error: "name a project" }, status: 400 };
+    }
+    if (id === "" || id.includes("/")) {
+      return { body: { error: "name a project" }, status: 400 };
+    }
+    const answer = await projectAnswerFor(deps, id);
+    return "error" in answer ? { body: answer, status: 404 } : ok(answer);
+  }
   if (path.startsWith("/api/crew/")) {
     let ref: string;
     try {
@@ -226,7 +240,7 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
     if (ref === "" || ref.includes("/")) {
       return { body: { error: "name a crew session" }, status: 400 };
     }
-    const answer = crewAnswerFor(deps, ref);
+    const answer = await crewAnswerFor(deps, ref);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);
   }
   return null;
