@@ -240,6 +240,48 @@ function Get-Calls($World) {
   return @(Get-Content -Path $World.log | Where-Object { $_ -ne "" })
 }
 
+# The one fenced `Language` block in README.md that holds this marker, taken as ONE line: the
+# by-hand setup line a person pastes (README, section Install, step 3). The README is its one
+# home, so this test reads it and never keeps a copy.
+function Get-ByHandLine([string]$Language, [string]$Marker) {
+  $readme = Join-Path $root "README.md"
+  if (-not (Test-Path $readme)) { Stop-Smoke "README.md is not at the repo root" }
+  $text = Get-Content -Raw $readme
+  $pattern = '(?ms)^[ \t]*```' + $Language + '[ \t]*\r?\n(.*?)^[ \t]*```[ \t]*\r?$'
+  $blocks = @([regex]::Matches($text, $pattern) | ForEach-Object { $_.Groups[1].Value })
+  $found = @($blocks | Where-Object { $_.Contains($Marker) })
+  if ($found.Count -ne 1) {
+    Stop-Smoke "README.md must hold exactly one ``$Language`` block containing `"$Marker`": found $($found.Count)"
+  }
+  $body = $found | Select-Object -First 1
+  $lines = @($body -split "\r?\n" | Where-Object { $_.Trim() -ne "" })
+  if ($lines.Count -ne 1) {
+    Stop-Smoke "the by-hand ``$Language`` setup must be ONE line to paste: found $($lines.Count)"
+  }
+  return ($lines | Select-Object -First 1).Trim()
+}
+
+# A PowerShell line run the way the person runs it -- in a PowerShell of the same version this
+# test runs under -- with a world's environment: the README's by-hand line on native Windows.
+function Invoke-PowerShellLine($World, [string]$Line) {
+  $applied = @{}
+  foreach ($key in $World.env.Keys) {
+    $applied[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
+    [Environment]::SetEnvironmentVariable($key, [string]$World.env[$key], "Process")
+  }
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = (& $shell -NoProfile -ExecutionPolicy Bypass -Command $Line 2>&1 | ForEach-Object {
+      if ($_ -is [System.Management.Automation.ErrorRecord]) { "$($_.Exception.Message)" } else { [string]$_ }
+    }) -join "`n"
+  } finally {
+    $ErrorActionPreference = $previous
+    foreach ($key in $applied.Keys) { [Environment]::SetEnvironmentVariable($key, $applied[$key], "Process") }
+  }
+  return @{ out = $out }
+}
+
 function Assert-Contains([string]$What, [string]$Text, [string]$Expected) {
   if (-not $Text.Contains($Expected)) {
     Stop-Smoke "$What`: expected to find `"$Expected`" in:`n$Text"
@@ -608,6 +650,33 @@ try {
   }
   $passed++
   $names.Add("nobody is logged in")
+
+  # 19. The README's own by-hand line for native Windows (section Install, step 3): it finds
+  #     the newest installed version in Claude Code's cache by itself and runs setup from it
+  #     through bun, with the plugin's two flags. Two versions are in the cache, and the
+  #     OLDER one ("0.9.0") sorts after the newer ("0.10.0") as text, so only a version-order
+  #     pick passes. Run as the person pastes it, with `--dry-run` added as the README says.
+  $byHand = New-World "by-hand"
+  $cache = Join-Path $byHand.home ".claude\plugins\cache\cc-smart-dev-kit\cc-smart-dev-kit"
+  foreach ($version in @("0.9.0", "0.10.0")) {
+    $dir = Join-Path $cache $version
+    New-Item -ItemType Directory -Force -Path (Join-Path $dir "dist") | Out-Null
+    Set-Content -Path (Join-Path $dir "dist\cli.js") -Value 'await import("the plugin");'
+    Set-Content -Path (Join-Path $dir "bunfig.toml") -Value ""
+  }
+  $line = Get-ByHandLine "powershell" "plugins\cache"
+  $result = Invoke-PowerShellLine $byHand ($line + " --dry-run")
+  $newest = Join-Path $cache "0.10.0"
+  $expected = "bun --no-env-file --config=$newest\bunfig.toml $newest\dist\cli.js setup --dry-run"
+  $calls = @(Get-Calls $byHand)
+  if ($calls -notcontains $expected) {
+    Stop-Smoke "the by-hand Windows line: expected `"$expected`", got:`n$($calls -join "`n")`n$($result.out)"
+  }
+  if ($calls -match "0\.9\.0") {
+    Stop-Smoke "the by-hand Windows line: it picked 0.9.0, not the newest version:`n$($calls -join "`n")"
+  }
+  $passed++
+  $names.Add("the README's by-hand line on Windows")
 } finally {
   Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter "cc-smart-dev-kit-install-*" -Directory -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
