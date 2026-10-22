@@ -22,10 +22,74 @@ command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
 
-## 1.0.0 — the search command is gone
+## 1.0.0 — safety, the crew, and native Windows
 
-The plugin's `search` command is gone. Use Claude Code's own WebSearch and WebFetch, or
-the Tavily MCP server.
+**Done in this release:**
+
+- **The worktree engine is gone, and its fields are refused** (`worktrees.prefix`,
+  `worktrees.setup`, `worktrees.engine`): a file that sets one does not load, the error names
+  the field and the fix, `cc-smart-dev-kit project init` removes the fields and every engine
+  hook line in one run, and `doctor` finds a leftover line by its command text (D20).
+- **A major version waits for the person**, shipped first as 0.7.0 so every machine holds
+  1.0.0 until its person runs `cc-smart-dev-kit update`; `update` and `setup` first list each
+  repository that still carries a retired field or an engine line (D33, D38). Claude Code's
+  own plugin auto-update is off for this marketplace: `setup` writes `autoUpdate: false`
+  (D39).
+- **The `search` command is gone** (D40): Claude Code's own WebSearch and WebFetch, or the
+  Tavily MCP server, are what is left.
+- **Anthropic's server tools go to Anthropic** (D41): a request that carries web search is sent
+  to Anthropic as it came, whatever the slot, so a Sonnet or Haiku session's WebSearch runs a
+  real search; at a Claude limit the answer is a short note naming Tavily.
+- **An affordable model's thinking stays visible** (A1b): the router keeps it, marked as its
+  own with the backend's signature inside, removes it only on a request to Claude (no
+  "Invalid `signature`" 400), and gives a backend its own signature back.
+- **The breaker** (D42): while every target of a slot is limited or down, the router holds the
+  request (up to 240 s) and then answers a 429 Claude Code retries; a heartbeat-only target
+  rests like any other failure; the status line and the StopFailure alert name it; a crew
+  session waits out a limit, and its lead resumes it once the gateway answers again.
+- **Claude judges first** (D44): auto mode's checks go to Claude first; while Claude is limited
+  or down, the worker slot's tested targets judge in its place. WebSearch never falls back to
+  them, and opus and fable keep no fallback.
+- **Crew sessions** (D34, D35, D37, D45, D47): `cc-smart-dev-kit crew lead|start|watch|list|
+  status|step|report|answer|tell|self-watch|stop|rm|resume|attach|kinds`. A small lead starts
+  each phase as a background session in its own worktree, never waits, hears each change as one
+  line, routes a question to the person only when it is the person's, merges the branch and
+  ends the session. Off by default (`crew.enabled`). The `lead` and `crew` skills and
+  `plugin/instructions/core.md` place each phase inline, in a subagent or in a crew session
+  (W5).
+- **Reviews count for their fix commits** (D17): a review covers its branch's head while the
+  change since it stays within `fixesAfterReview` (200 lines, 10 files, or 20 % — whichever is
+  more), the base's own changes and generated files not counted. `workflow merge-check` prints
+  the same verdict without merging, and the merge guard answers `allow` for an exact merge that
+  passes every rule (D31).
+- **The agent guard judges what really runs** (G1, G2): the model and effort Claude Code
+  really gives a launch after its own overrides, and every Workflow run — by inline script,
+  path, name or plugin. `medium` is now an allowed subagent effort.
+- **Less Opus** (D46, D50): Opus builds architecture and UI/UX work only, and the other kinds
+  build on the worker slot; a review runs on Opus only for a risky change set; UI/UX design
+  runs only on `opus` or `fable`, at `high` or above, and the agent guard and the crew launcher
+  refuse it anywhere else.
+- **The hook frame fails closed** (A4), with the `session-escape-guard` (a session never
+  loosens its own limits), the shell judge in `job-route` (a raw `claude --bg` and `claude -p`
+  judged, polling refused, a lead's long waits moved to the background), the git guard's
+  refusal of a crew session's push (D24), and the message guard's crew tag (D47).
+- **A subagent never hands back with its own background work running** (D53): a SubagentStop
+  check blocks the stop once, with one plain reason.
+- **Finished worktrees clean themselves** (D48): after a merge into the base, and at an
+  attended session start at most once an hour, through the same safe clean as
+  `worktrees --clean`; `worktrees.autoClean` turns it off. A squash or rebase merge counts as
+  finished (A6).
+- **`cc-smart-dev-kit report`** (R1): the flow report — agent launches and the parallel share,
+  minutes blocked on prompts and which guard asked, waits on background work, compactions,
+  auto-mode blocks, merges that asked; never message text.
+- **Help from one table, with `--help` on every command** (B1), and one shell reader for every
+  guard (A2).
+- **claude-mem's two start blocks are off** (D23): `setup` writes both keys off and turns
+  Claude Code's own task tools on; `restore` puts them back.
+- **Claude Code's retry watchdog** (D42): `setup` offers it once (default no), and each crew
+  session's own settings turn it on with no wait limit (CC1, BR3).
+- **Native Windows** (WIN): every 1.0.0 part checked against native Windows, a Windows CI job,
+  and `docs/windows-setup.md` with the checklist for a real PC and what is still owed.
 
 ## 0.7.0 — a major version waits for the person (D33)
 
