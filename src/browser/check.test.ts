@@ -5,8 +5,16 @@
  * tested here.
  */
 import { describe, expect, test } from "bun:test";
+import { chmodSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { chromeWorld, writeWorldToken } from "../testing/chrome-world";
-import { browserCheckCommand, checkPrerequisites, fileUrlHint } from "./check";
+import { tempDir } from "../testing/temp";
+import {
+  browserCheckCommand,
+  checkPrerequisites,
+  fileUrlHint,
+  runBrowserCheck,
+} from "./check";
 
 describe("browserCheckCommand", () => {
   test("this bun, the plugin's two flags, and this bundle", () => {
@@ -71,5 +79,83 @@ describe("fileUrlHint", () => {
     expect(fileUrlHint()).toContain("claude-code");
     expect(fileUrlHint()).toContain("Allow access to file URLs");
     expect(fileUrlHint()).toContain("chrome://extensions/?id=");
+  });
+});
+
+/** A fake CLI for the check's session: it ignores `browser mcp` and answers what this file says. */
+function fakeCli(script: string): string[] {
+  const file = join(tempDir("browser-check-child"), "child.js");
+  writeFileSync(file, script);
+  return [process.execPath, file];
+}
+
+/** Reports every check it is given, and keeps them. */
+function checker() {
+  const seen: { name: string; ok: boolean; why?: string | undefined }[] = [];
+  return {
+    check: (name: string, ok: boolean, why?: string) => seen.push({ name, ok, why }),
+    seen,
+  };
+}
+
+describe("the check always ends", () => {
+  test("a child that never answers ends the check within the ready limit, and it stops there", async () => {
+    // The launcher's own child never answers `initialize`: nothing else can work, so the run must
+    // stop at once instead of waiting for every later call.
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true });
+    writeWorldToken(world);
+    const reported = checker();
+    const began = Date.now();
+    const result = await runBrowserCheck({
+      check: reported.check,
+      cli: fakeCli("process.stdin.resume();\n"),
+      limitsMs: 1_200,
+      log: () => undefined,
+      machine: world.deps,
+      paths: world.paths,
+    });
+    expect(Date.now() - began).toBeLessThan(4_000);
+    expect(result).toEqual({ failed: 1, total: 1 });
+    expect(reported.seen).toHaveLength(1);
+    expect(reported.seen[0]?.ok).toBe(false);
+    expect(reported.seen[0]?.why).toContain("no answer in");
+  });
+
+  test("a child that answers initialize and not its tools ends at the whole check's limit", async () => {
+    // Every call is answered by nothing: each has its own limit, and the whole run has the one
+    // that ends it (before this, eight calls could each wait 90 s).
+    const world = chromeWorld();
+    world.withProfile({ fileUrls: true });
+    writeWorldToken(world);
+    const reported = checker();
+    const began = Date.now();
+    const result = await runBrowserCheck({
+      check: reported.check,
+      cli: fakeCli(`
+        process.stdin.on("data", (chunk) => {
+          for (const line of chunk.toString().split("\\n")) {
+            if (line.trim() === "") continue;
+            const message = JSON.parse(line);
+            if (message.method !== "initialize") continue;
+            process.stdout.write(JSON.stringify({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: { capabilities: {}, protocolVersion: "2025-06-18", serverInfo: { name: "fake", version: "1" } },
+            }) + "\\n");
+          }
+        });
+        process.stdin.resume();
+      `),
+      limitsMs: 1_200,
+      log: () => undefined,
+      machine: world.deps,
+      paths: world.paths,
+    });
+    expect(Date.now() - began).toBeLessThan(6_000);
+    expect(result.failed).toBeGreaterThan(0);
+    const said = reported.seen.map((one) => one.why ?? "").join("\n");
+    expect(said).toContain("ran out of its");
+    expect(said).toContain("1.2 s limit");
   });
 });

@@ -32,19 +32,50 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Subprocess } from "bun";
+import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { bunConfigArg } from "../setup/bun-config";
 import {
   type ChromeDeps,
   CLAUDE_CODE_PROFILE,
-  chromeUserDataDir,
+  connectPrerequisites,
   extensionVersion,
-  findChrome,
-  findClaudeCodeProfile,
-  isExtensionInstalledInProfile,
   PLAYWRIGHT_EXTENSION_SETTINGS_URL,
 } from "./chrome";
 import { readBrowserToken, type TokenDeps } from "./token";
+
+/**
+ * The whole check's budget. Every wait inside it is shorter than this and built from it, so
+ * `browser check` always ends: one answer that never comes, a child that never stops, and a whole
+ * run that hangs each have their own limit. A real run takes a few seconds; this ceiling is only
+ * ever reached by something broken (before it, a dead Chrome made the run go past 60 s and keep
+ * going, because every call had its own 90-second wait and nothing bounded the run).
+ */
+export const CHECK_LIMIT_MS = 120_000;
+
+/** Every limit of a run, from its one whole-check number. */
+interface CheckLimits {
+  /** The whole run. */
+  wholeMs: number;
+  /** One answer to `initialize`: how long the launcher and the MCP get to start. */
+  readyMs: number;
+  /** One answer to a `tools/call`. */
+  stepMs: number;
+  /** A child, after close-input and SIGTERM, before SIGKILL. */
+  stopMs: number;
+}
+
+/** The limits of a run whose whole budget is `wholeMs`; each one is shorter than the whole. */
+function limitsFor(wholeMs: number): CheckLimits {
+  return {
+    wholeMs,
+    // The MCP's own connect deadline is 30 s: an answer gets a little more, so a failed call
+    // reports the MCP's own words (the profile, the token) rather than this file's timeout.
+    stepMs: Math.round(wholeMs / 3),
+    readyMs: Math.round(wholeMs / 4),
+    stopMs: Math.round(wholeMs / 24),
+  };
+}
 
 type ToolResult = { images: number; isError: boolean; text: string };
 
@@ -62,14 +93,23 @@ class Session {
   private readonly process: Subprocess<"pipe", "pipe", "pipe">;
   /** The launcher's and the MCP's own stderr, for a failure the person can act on. */
   private readonly errors: string[] = [];
+  /** When the whole check's own limit is spent: no request may run past it. */
+  private readonly deadline: number;
 
   constructor(
     readonly name: string,
     argv: string[],
+    private readonly limits: CheckLimits,
   ) {
+    this.deadline = Date.now() + limits.wholeMs;
     this.process = Bun.spawn(argv, { stderr: "pipe", stdin: "pipe", stdout: "pipe" });
     void this.read();
     void this.readErrors();
+  }
+
+  /** True once the whole check's limit is spent: every later answer is refused at once. */
+  expired(): boolean {
+    return this.deadline - Date.now() <= 0;
   }
 
   private async readErrors(): Promise<void> {
@@ -108,7 +148,17 @@ class Session {
     void this.process.stdin.flush();
   }
 
-  private request(method: string, params: object, timeoutMs: number): Promise<McpMessage> {
+  private request(method: string, params: object, limitMs: number): Promise<McpMessage> {
+    const left = this.deadline - Date.now();
+    if (left <= 0) {
+      // The whole check's own limit is spent: answer at once, and say which limit it was.
+      return Promise.resolve({
+        error: {
+          message: `${method}: the check ran out of its ${String(this.limits.wholeMs / 1000)} s limit`,
+        },
+      });
+    }
+    const timeoutMs = Math.min(limitMs, left);
     const id = this.nextId++;
     this.send({ id, method, params });
     const timeout = Bun.sleep(timeoutMs).then(
@@ -128,7 +178,7 @@ class Session {
         clientInfo: { name: this.name, version: "1" },
         protocolVersion: "2025-06-18",
       },
-      30_000,
+      this.limits.readyMs,
     );
     if (answer.error !== undefined) {
       return { ok: false, why: `${answer.error.message} — ${this.lastStderr()}` };
@@ -138,9 +188,9 @@ class Session {
   }
 
   async call(tool: string, args: object = {}): Promise<ToolResult> {
-    // An upper bound so one hung call fails the check instead of hanging it. The MCP's own
-    // connect deadline is 30 s with a token; a call still waiting at 90 s is broken.
-    const message = await this.request("tools/call", { arguments: args, name: tool }, 90_000);
+    // One upper bound per answer, under the whole check's: an answer still waiting at the step's
+    // limit is a broken call, not a slow one.
+    const message = await this.request("tools/call", { arguments: args, name: tool }, this.limits.stepMs);
     const content = message.result?.content ?? [];
     return {
       images: content.filter((part) => part.type === "image").length,
@@ -159,10 +209,25 @@ class Session {
     try {
       if (how === "SIGTERM") this.process.kill("SIGTERM");
       else void this.process.stdin.end();
-      await this.process.exited;
+      if (await this.exitedWithinStopLimit()) return;
+      // A child that ignores both: SIGKILL, then the same short limit again, so this never waits
+      // on a process that cannot be stopped.
+      this.process.kill("SIGKILL");
+      await this.exitedWithinStopLimit();
     } catch {
       // Already gone: an exited child is not a failure of the check.
     }
+  }
+
+  /** True when the child exited within the stop limit. */
+  private async exitedWithinStopLimit(): Promise<boolean> {
+    return await Promise.race([
+      this.process.exited.then(
+        () => true,
+        () => true,
+      ),
+      Bun.sleep(this.limits.stopMs).then(() => false),
+    ]);
   }
 }
 
@@ -230,43 +295,20 @@ export type Prerequisites =
 /**
  * Everything the connection needs, checked before a browser is started: Chrome, the profile, the
  * extension in it, and the token. Without all four the run would either fail after a 30-second
- * wait or (with no token) never connect at all — this says which one is missing instead.
+ * wait or (with no token) never connect at all — this says which one is missing instead. The first
+ * three are `connectPrerequisites` (one home, shared with the launcher); this adds the token.
  */
 export function checkPrerequisites(paths: CliPaths, deps: CheckPrerequisitesDeps): Prerequisites {
-  if (findChrome(deps) === null) {
-    return {
-      ok: false,
-      why: "Google Chrome is not installed; run: cc-smart-dev-kit browser setup",
-    };
-  }
-  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
-  if (userDataDir === null) {
-    return {
-      ok: false,
-      why: `this system's Chrome profile folder is not one cc-smart-dev-kit knows (${deps.platform})`,
-    };
-  }
-  const profile = findClaudeCodeProfile(userDataDir, deps);
-  if (profile === null) {
-    return {
-      ok: false,
-      why: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is not there yet; run: cc-smart-dev-kit browser setup`,
-    };
-  }
-  if (!isExtensionInstalledInProfile(profile.dir, deps)) {
-    return {
-      ok: false,
-      why: `the Playwright extension is not installed in the "${profile.dirName}" profile; run: cc-smart-dev-kit browser setup`,
-    };
-  }
+  const connect = connectPrerequisites(deps);
+  if (!connect.ok) return connect;
   const token = readBrowserToken(paths, deps);
   if (token.source === "none") {
     return {
       ok: false,
-      why: `the browser token is not set (${token.reason}); run: cc-smart-dev-kit browser token`,
+      why: `the browser token is not set (${token.reason}); run: ${COMMAND} browser token`,
     };
   }
-  return { ok: true, profileDir: profile.dir };
+  return { ok: true, profileDir: connect.profile.dir };
 }
 
 /** The line a file:// failure is read with: the one switch that fixes it. */
@@ -287,6 +329,8 @@ export interface BrowserCheckDeps {
   /** The machine's own facts; a test hands in a temp home. */
   machine: CheckPrerequisitesDeps;
   paths: CliPaths;
+  /** The whole check's budget; a test makes it short. Default: `CHECK_LIMIT_MS`. */
+  limitsMs?: number;
 }
 
 /**
@@ -309,6 +353,7 @@ export async function runBrowserCheck(
     check("the browser is ready to connect", false, prerequisites.why);
     return { failed: 1, total: 1 };
   }
+  const limits = limitsFor(deps.limitsMs ?? CHECK_LIMIT_MS);
   const version = extensionVersion(prerequisites.profileDir, deps.machine);
   deps.log(
     `This drives your own Chrome, in the "${CLAUDE_CODE_PROFILE}" profile` +
@@ -325,12 +370,21 @@ export async function runBrowserCheck(
     localPage,
     "<!doctype html><title>local</title><p id='here'>a local file opens</p>",
   );
-  const session = new Session("check", [...deps.cli, "browser", "mcp", `--output-dir=${output}`]);
+  const session = new Session(
+    "check",
+    [...deps.cli, "browser", "mcp", `--output-dir=${output}`],
+    limits,
+  );
   const namesIn = (dir: string) => (existsSync(dir) ? readdirSync(dir) : []);
 
   try {
     const started = await session.start();
     check("the launcher starts the Playwright MCP with the token", started.ok, started.why);
+    if (!started.ok) {
+      // Nothing else can work: every later call would wait out its own limit for the same reason.
+      // The launcher's own line (in `why`) is the one a person acts on.
+      return { failed: results.filter((ok) => !ok).length, total: results.length };
+    }
 
     const page = await session.call("browser_navigate", { url });
     const snapshot = await session.call("browser_snapshot");
@@ -387,7 +441,7 @@ export async function runBrowserCheck(
         target: ref(links, "get the file"),
       })
     ).text;
-    for (let look = 0; look < 10 && !seen.includes("Downloaded file"); look++) {
+    for (let look = 0; look < 10 && !seen.includes("Downloaded file") && !session.expired(); look++) {
       await Bun.sleep(300); // bounded by the ten looks: the report arrives with a later call
       seen += (await session.call("browser_tabs", { action: "list" })).text;
     }
@@ -404,6 +458,16 @@ export async function runBrowserCheck(
       !closed.isError,
       closed.text.slice(0, 200),
     );
+
+    // One line for the whole run's own limit: when it is spent, every check above it failed on
+    // that limit, and this says so once instead of leaving the reader to add them up.
+    if (session.expired()) {
+      check(
+        "the check finished within its time limit",
+        false,
+        `the check ran out of its ${String(limits.wholeMs / 1000)} s limit`,
+      );
+    }
 
     await session.stop("close input");
   } catch (error) {
