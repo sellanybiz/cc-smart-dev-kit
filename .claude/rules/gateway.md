@@ -136,7 +136,8 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.
 - **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
-  no chain; the person picks from the live list (`gateway models`, the portal). A rule that
+  no chain the person did not pick; the person picks from the live list (setup's questions,
+  `gateway models`, the portal). A rule that
   must name a model is keyed by family and the first version it holds for
   (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
   id: a newer version gets its family's newest row, and a version below every row, or an id

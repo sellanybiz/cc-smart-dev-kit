@@ -70,6 +70,7 @@ describe("setup's questions with a saved address that holds a credential", () =>
       backend: "omniroute",
       label: "OmniRoute",
       saved,
+      hasConfig: true,
       defaultBaseUrl: "http://127.0.0.1:20128",
       slots: [],
       claudeWords: ["claude", "off"],

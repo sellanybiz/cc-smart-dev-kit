@@ -886,6 +886,10 @@ describe("cc-smart-dev-kit gateway setup on a terminal: the questions", () => {
     expect(asked.left()).toBe(0);
     expect(result.exitCode).toBe(1);
     expect(existsSync(m.paths.config)).toBe(false);
+    // The way back is the questions: the stdin flag would check the key at the saved address.
+    expect(result.stderr).toContain(
+      "Find or make it there, then run again: cc-smart-dev-kit gateway setup (on this terminal it asks the address and the key again)",
+    );
   });
 
   test("a terminal that cannot hide what is typed: the key is never asked", async () => {
@@ -910,6 +914,66 @@ describe("cc-smart-dev-kit gateway setup on a terminal: the questions", () => {
     expect(JSON.parse(readFileSync(m.paths.config, "utf8")).backends.omniroute.apiKey).toBe(
       PLANTED_KEY,
     );
+  });
+
+  test("a port another program holds: refused before the first question, OmniRoute not called", async () => {
+    const m = machine();
+    m.port.other = true;
+    const asked = scriptedPrompts([], PLANTED_KEY);
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe(
+      "cc-smart-dev-kit: port 20100 is used by another program (an older router? stop it first)\n",
+    );
+    expect(asked.shown()).toBe("");
+    expect(m.apiCalls).toEqual([]);
+    expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("Enter keeps the saved key at a new address: checked there, saved, backed up", async () => {
+    const m = machine();
+    const server = fakeServer();
+    // A judge chain with no test proof for the new address: setup names it.
+    m.writeConfig(server.port, { "cc-smart-dev-kit-judge": ["omniroute:m1"] });
+    const asked = scriptedPrompts(["http://127.0.0.1:20999", null, null, null, null, null], "");
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    for (const call of m.apiCalls) expect(call.url).toStartWith("http://127.0.0.1:20999/");
+    expect(m.apiCalls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toContain(
+      "GET /v1/models",
+    );
+    const config = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(config.backends.omniroute).toEqual({
+      apiKey: PLANTED_KEY,
+      baseUrl: "http://127.0.0.1:20999",
+    });
+    expect(result.stdout).toContain(
+      " and its address to http://127.0.0.1:20999 in ~/.config/cc-smart-dev-kit/gateway.json",
+    );
+    expect(listBackups(m.paths.stateDir, m.paths.config)).toHaveLength(1);
+    expect(result.stdout).toContain(
+      "! the judge chain's omniroute:m1 has no test for omniroute's address now, so Claude judges until it is tested: cc-smart-dev-kit gateway slot judge omniroute:m1",
+    );
+    expect(`${result.stdout}${asked.shown()}`).not.toContain(PLANTED_KEY);
+  });
+
+  test("a config with no OmniRoute key: Enter puts the router in place and changes nothing", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, {}, { backends: {}, slots: {} });
+    const before = readFileSync(m.paths.config, "utf8");
+    const asked = scriptedPrompts([null], "");
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      "· no OmniRoute API key was given: the config stays as it is, and no slot is asked",
+    );
+    expect(asked.left()).toBe(0);
+    expect(readFileSync(m.paths.config, "utf8")).toBe(before);
+    expect(existsSync(m.paths.copy)).toBe(true);
+    expect(m.apiCalls).toEqual([]);
   });
 
   test("no terminal, or --yes: nothing is asked", async () => {

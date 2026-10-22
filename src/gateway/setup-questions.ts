@@ -44,6 +44,8 @@ export interface SetupFacts {
   label: string;
   /** Its address and key in the config now; null when it has none yet. */
   saved: null | SetupBackend;
+  /** True when a config is there (maybe with no key for this backend, written by hand). */
+  hasConfig: boolean;
   /** The address to offer when nothing is saved. */
   defaultBaseUrl: string;
   /** The slots, in the order they are asked. */
@@ -173,6 +175,14 @@ export async function askSetupQuestions(
   if (typed === null) return { stopped: true };
   const key = typed.trim() === "" ? null : typed.trim();
   const apiKey = key ?? facts.saved?.apiKey;
+  if (apiKey === undefined && facts.hasConfig) {
+    // A config with no key for this backend (written by hand): setup still puts the router
+    // in place, as it did before it asked, and changes nothing in the config.
+    facts.print(
+      `· no ${facts.label} API key was given: the config stays as it is, and no slot is asked`,
+    );
+    return { answers: { baseUrl, chains: {}, ids: [], key: null, turnOn: false } };
+  }
   if (apiKey === undefined) {
     return { error: `no ${facts.label} API key was given. Give one: ${facts.keyFlags}` };
   }

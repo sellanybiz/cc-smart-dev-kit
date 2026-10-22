@@ -18,21 +18,29 @@ import { gatewayContext } from "./context";
 /** A terminal whose echo can be switched off, answering with `lines` (as `readSecretLine` reads). */
 function fakeTty(lines: string[]): {
   modes: boolean[];
+  /** How often the read was paused: once per secret read, or stdin keeps the process alive. */
+  pauses: () => number;
   terminal: {
     isTTY: boolean;
     off: () => void;
     on: (event: "data", listener: (chunk: Buffer) => void) => void;
+    pause: () => void;
     setRawMode: (on: boolean) => void;
   };
 } {
   let listener: ((chunk: Buffer) => void) | undefined;
+  let pauses = 0;
   const modes: boolean[] = [];
   return {
     modes,
+    pauses: () => pauses,
     terminal: {
       isTTY: true,
       off: () => {
         listener = undefined;
+      },
+      pause: () => {
+        pauses += 1;
       },
       on: (_event: "data", next: (chunk: Buffer) => void) => {
         listener = next;
@@ -71,6 +79,8 @@ describe("the gateway context: the terminal for --omniroute-password", () => {
     // No echo while it is read (`setRawMode`), and the line comes back cleaned.
     expect(await ctx.readSecret?.("Password")).toBe("the-dashboard-password");
     expect(tty.modes).toEqual([true, false]);
+    // The read is paused again, so the process can end when the command is done.
+    expect(tty.pauses()).toBe(1);
   });
 
   test("a terminal that cannot hide it gets none, so the flag says to use stdin", () => {

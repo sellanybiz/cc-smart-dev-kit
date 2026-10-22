@@ -70,6 +70,7 @@ import { formatLimitState, parseLimitState } from "./limit-state";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { startRouter } from "./router";
 import {
+  checkRouterPort,
   type InstallOptions,
   installRouter,
   type RouterService,
@@ -392,12 +393,14 @@ export function keyRefusedMessage(options: {
   configPath: string;
   detail: string;
   status: number;
+  /** The way to try again, when it is not the stdin flag (setup's questions). */
+  again?: string;
 }): string {
   return [
     `${options.backend} answered HTTP ${String(options.status)} for this key (${options.detail}, ${shownValue(options.baseUrl)}): it does not accept it.`,
     `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
     wantedKeyWords(options.backend),
-    `Find or make it there, then run again: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} < key-file`,
+    `Find or make it there, then run again: ${options.again ?? `${COMMAND} gateway setup --backend-key-stdin ${options.backend} < key-file`}`,
   ].join("\n");
 }
 
@@ -407,11 +410,15 @@ export function keyUncheckedMessage(options: {
   baseUrl: string;
   configPath: string;
   detail: string;
+  /** The way to try again, when it is not the stdin flag (setup's questions). */
+  again?: string;
 }): string {
   return [
     `could not ask ${options.backend} at ${shownValue(options.baseUrl)} whether it accepts this key (${options.detail}).`,
     `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
-    `Start ${options.backend} and run again, or save the key without checking it: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} --save-unchecked < key-file`,
+    options.again === undefined
+      ? `Start ${options.backend} and run again, or save the key without checking it: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} --save-unchecked < key-file`
+      : `Start ${options.backend} and run again: ${options.again}`,
   ].join("\n");
 }
 
@@ -1759,6 +1766,14 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     !options.omniroutePassword &&
     !options.omniroutePasswordStdin;
   if (asks && ctx.prompts) {
+    // The port first, as everywhere in setup: nobody answers questions for a port another
+    // program holds, and OmniRoute is not called for it.
+    await checkRouterPort({
+      port: configuredPort(configPath),
+      probe: ctx.probe,
+      runner: ctx.runner,
+      service,
+    });
     const asked = await askSetupQuestions(ctx.prompts, setupFacts(ctx));
     if ("stopped" in asked) {
       ctx.error(STOPPED);
@@ -1875,6 +1890,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
               configPath,
               detail: check.detail,
               status: check.status,
+              ...(answers === null ? {} : { again: SETUP_AGAIN }),
             }),
           );
         }
@@ -1886,6 +1902,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
                 baseUrl,
                 configPath,
                 detail: check.detail,
+                ...(answers === null ? {} : { again: SETUP_AGAIN }),
               }),
             );
           }
@@ -1982,6 +1999,9 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   return code;
 }
 
+/** How to try setup's questions again: the stdin flag would check the key at the old address. */
+const SETUP_AGAIN = `${COMMAND} gateway setup (on this terminal it asks the address and the key again)`;
+
 /** What `setup` says when the person stopped it at a question (Ctrl+C): exit 130. */
 const STOPPED = "Stopped. Nothing was changed.";
 
@@ -2007,6 +2027,7 @@ function setupFacts(ctx: GatewayContext): Parameters<typeof askSetupQuestions>[1
     backend: OMNIROUTE,
     label: "OmniRoute",
     saved: savedOmniroute(configPath),
+    hasConfig: config !== null,
     defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
     slots: Object.entries(FAMILY_SLOTS).map(([key, family]) => ({
       chain: config?.slots[key] ?? [],
@@ -2054,9 +2075,20 @@ function saveAnsweredChains(ctx: GatewayContext, answers: SetupAnswers): void {
       ctx.print(`! ${slot} stays as it was: ${plan.error}`);
       continue;
     }
-    saveConfig(configPath, plan.config);
+    // A proof for a target no worker or judge chain holds any more goes, as with `gateway
+    // slot`; the worker's new targets get theirs from `proveWorkerTargets`, after the lock.
+    const next = plan.key === WORKER_SLOT ? withJudgeProofs(plan.config, {}) : plan.config;
+    saveConfig(configPath, next);
     if (plan.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, plan.key);
-    for (const line of slotChangeLines(plan)) ctx.print(line);
+    for (const line of slotChangeLines({ ...plan, config: next })) ctx.print(line);
+  }
+  const now = loadConfigFile(configPath);
+  const judge = now.slots[JUDGE_SLOT] ?? [];
+  const untested = judge.filter((target) => !judgeTargetUsable(now, target));
+  if (untested.length > 0) {
+    ctx.print(
+      `! the judge chain's ${untested.join(", ")} has no test for ${OMNIROUTE}'s address now, so Claude judges until it is tested: ${COMMAND} gateway slot judge ${judge.join(",")}`,
+    );
   }
 }
 
