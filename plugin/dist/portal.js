@@ -11862,7 +11862,7 @@ function remotePluginVersion(url, ref, baseEnv) {
 
 // src/portal/actions.ts
 import { createHash as createHash8 } from "crypto";
-import { readFileSync as readFileSync55 } from "fs";
+import { readFileSync as readFileSync56 } from "fs";
 import { join as join51 } from "path";
 
 // src/browser/setup.ts
@@ -12121,7 +12121,7 @@ function legacyBrowserInfo(paths, deps) {
 }
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync46, readFileSync as readFileSync53 } from "fs";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync46, readFileSync as readFileSync54 } from "fs";
 import { dirname as dirname19, join as join48 } from "path";
 
 // src/gateway/doctor.ts
@@ -16817,6 +16817,7 @@ var PLUGIN_HOOK_NAMES = [
   "fable-session",
   "after-merge",
   "review-record",
+  "subagent-background",
   "worktree-leftovers",
   "session-name",
   "crew-role",
@@ -17230,7 +17231,7 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync45, readFileSync as readFileSync52 } from "fs";
+import { existsSync as existsSync45, readFileSync as readFileSync53 } from "fs";
 import { join as join47 } from "path";
 
 // src/hooks/git.ts
@@ -26125,6 +26126,49 @@ function inEscapeDomain(input) {
   return ESCAPE_SHELL_TOOLS.includes(tool) && DOMAIN_TEXT.test(commandOf2(input));
 }
 
+// src/hooks/subagent-background.ts
+import { readFileSync as readFileSync51 } from "fs";
+var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
+function backgroundTaskIds(input) {
+  if (!Array.isArray(input.background_tasks))
+    return [];
+  const ids = [];
+  for (const task of input.background_tasks) {
+    if (typeof task !== "object" || task === null || Array.isArray(task))
+      continue;
+    const id = stringField(task.id);
+    if (id !== null)
+      ids.push(id);
+  }
+  return ids;
+}
+function startedByAgent(text, ids) {
+  return ids.some((id) => text.includes(id));
+}
+function subagentBackground(context) {
+  const { input, event, project } = context;
+  if (project.config === null)
+    return SILENT;
+  if (event !== "SubagentStop")
+    return SILENT;
+  if (input.stop_hook_active === true)
+    return SILENT;
+  const selfId = stringField(input.agent_id);
+  const ids = backgroundTaskIds(input).filter((id) => id !== selfId);
+  if (ids.length === 0)
+    return SILENT;
+  const transcript = stringField(input.agent_transcript_path);
+  if (transcript === null)
+    return SILENT;
+  let text;
+  try {
+    text = readFileSync51(transcript, "utf8");
+  } catch {
+    return SILENT;
+  }
+  return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
+}
+
 // src/hooks/specs.ts
 function cannotCheck(what, message) {
   return `cc-smart-dev-kit cannot check ${what}: ${message}`;
@@ -26240,6 +26284,14 @@ var reviewRecordHook = {
   },
   run: reviewRecord
 };
+var subagentBackgroundHook = {
+  name: "subagent-background",
+  events: ["SubagentStop"],
+  onConfigProblem: (message) => ({
+    stderr: `cc-smart-dev-kit subagent-background: ${message}`
+  }),
+  run: subagentBackground
+};
 var worktreeLeftoversHook = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
@@ -26326,6 +26378,7 @@ var HOOKS = [
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
+  subagentBackgroundHook,
   worktreeLeftoversHook,
   sessionNameHook,
   crewRoleHook,
@@ -26349,7 +26402,7 @@ var MACHINE_WIDE_HOOKS = [
 ];
 
 // src/cli/project-init.ts
-import { existsSync as existsSync44, readFileSync as readFileSync51 } from "fs";
+import { existsSync as existsSync44, readFileSync as readFileSync52 } from "fs";
 
 // src/project/init.ts
 import { existsSync as existsSync43 } from "fs";
@@ -26815,7 +26868,7 @@ function defaultBases(facts) {
   return { "hotfix/": facts.defaultBranch, "release/": facts.defaultBranch };
 }
 function readText(file) {
-  return existsSync44(file) ? readFileSync51(file, "utf8") : null;
+  return existsSync44(file) ? readFileSync52(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText(file);
@@ -26943,7 +26996,7 @@ function baseRefOf(sources) {
     if (!existsSync45(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync52(file, "utf8"));
+      const parsed = JSON.parse(readFileSync53(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -26957,7 +27010,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync52(file, "utf8"));
+  const parsed = JSON.parse(readFileSync53(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -27092,7 +27145,7 @@ function readSettings2(file) {
   if (!existsSync46(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync53(file, "utf8"));
+    const parsed = JSON.parse(readFileSync54(file, "utf8"));
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -27158,7 +27211,7 @@ function checkLauncher(paths, platform) {
       }
     ];
   }
-  const script = readFileSync53(launcher, "utf8");
+  const script = readFileSync54(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [
@@ -27192,7 +27245,7 @@ function checkLauncherCmd(paths, shLauncher) {
       text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ${shLauncher}). Run: cc-smart-dev-kit setup`
     };
   }
-  const script = readFileSync53(cmd, "utf8");
+  const script = readFileSync54(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -27511,7 +27564,7 @@ function checkInstructions(paths, source) {
       text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: cc-smart-dev-kit setup`
     };
   }
-  const text = existsSync46(where.claudeMd) ? readFileSync53(where.claudeMd, "utf8") : "";
+  const text = existsSync46(where.claudeMd) ? readFileSync54(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -27572,7 +27625,7 @@ function checkProjectImports(paths, cwd) {
         continue;
       let text;
       try {
-        text = readFileSync53(from, "utf8");
+        text = readFileSync54(from, "utf8");
       } catch {
         continue;
       }
@@ -28647,7 +28700,7 @@ ${USAGE3}`);
 
 // src/portal/facts.ts
 import { createHash as createHash7 } from "crypto";
-import { readFileSync as readFileSync54 } from "fs";
+import { readFileSync as readFileSync55 } from "fs";
 import { basename as basename8, join as join50 } from "path";
 
 // src/portal/workflow-adapter.ts
@@ -29071,7 +29124,7 @@ function readConfig(ctx) {
 }
 function configExists(ctx) {
   try {
-    readFileSync54(ctx.paths.gatewayConfigFile);
+    readFileSync55(ctx.paths.gatewayConfigFile);
     return true;
   } catch (error) {
     return error.code !== "ENOENT";
@@ -29367,7 +29420,7 @@ function claimText(claim) {
 function limitFacts(ctx) {
   let text = null;
   try {
-    text = readFileSync54(ctx.paths.gatewayStateFile, "utf8");
+    text = readFileSync55(ctx.paths.gatewayStateFile, "utf8");
   } catch {
     text = null;
   }
@@ -29466,7 +29519,7 @@ function projectName(root) {
 }
 function readTextFile(file) {
   try {
-    return readFileSync54(file, "utf8");
+    return readFileSync55(file, "utf8");
   } catch {
     return null;
   }
@@ -29644,7 +29697,7 @@ function parseMemory(text) {
 }
 function readMemory(paths) {
   try {
-    return parseMemory(readFileSync55(memoryFile(paths), "utf8"));
+    return parseMemory(readFileSync56(memoryFile(paths), "utf8"));
   } catch {
     return emptyMemory();
   }

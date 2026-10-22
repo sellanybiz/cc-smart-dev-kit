@@ -187,10 +187,11 @@ esac
 
   test("no worktree hook: a plugin WorktreeCreate would replace Claude Code's worktrees everywhere", () => {
     // `WorktreeCreate` and `WorktreeRemove` are never wired: they would replace Claude Code's
-    // own worktrees in every project. `SubagentStop` is allowed only for a hook that touches no
-    // worktree, so every SubagentStop entry here is checked to be `review-record` and nothing
-    // else. SubagentStart is the same hook's start (it notes the commit a review agent starts
-    // on) and nothing else.
+    // own worktrees in every project. A `SubagentStop` hook is allowed only when it touches no
+    // worktree, so the SubagentStop entries here are checked by name and nothing else:
+    // `review-record` (the merge gate's record) and `subagent-background` (a subagent's
+    // hand-back with its own background work still running). SubagentStart is `review-record`'s
+    // own start (it notes the commit a review agent starts on) and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
       "Notification",
       "PostModelSwitch",
@@ -204,12 +205,10 @@ esac
       "SubagentStop",
       "UserPromptSubmit",
     ]);
-    for (const subagentEvent of ["SubagentStart", "SubagentStop"]) {
-      const bundles = wired
-        .filter(({ event }) => event === subagentEvent)
-        .map(({ handler }) => bundleOf(handler));
-      expect(bundles).toEqual(["review-record"]);
-    }
+    const bundlesFor = (event: string) =>
+      wired.filter(({ event: one }) => one === event).map(({ handler }) => bundleOf(handler));
+    expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
+    expect(bundlesFor("SubagentStop")).toEqual(["review-record", "subagent-background"]);
   });
 
   test("each hook is wired for exactly the events it handles", () => {

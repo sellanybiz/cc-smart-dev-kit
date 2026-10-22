@@ -15,6 +15,7 @@ paths:
   - "src/entries/session-escape-guard.ts"
   - "src/entries/session-name.ts"
   - "src/entries/stop-failure.ts"
+  - "src/entries/subagent-background.ts"
   - "src/entries/update-check.ts"
   - "src/entries/worktree-leftovers.ts"
   - "plugin/hooks/**"
@@ -45,14 +46,18 @@ subagents, and one that prints no folder makes the creation fail (proved live). 
 WorktreeCreate cannot step aside for a project that did not opt in, and a hook-made worktree
 loses Claude Code's lock, its cleanup marker, `-w "#123"` and its Git LFS handling.
 
-**A plugin SubagentStop hook that touches no worktree is fine** (today: `review-record`
-only, which also runs on SubagentStart to note the commit and branch a review agent starts
-on, and records the review of that start commit, on that branch, at the stop — commits made
-while it read count as change after the review, `src/workflow/review-cover.ts`). It can be silent for a
-project that never opted in, it removes nothing, and no other SubagentStop hook competes with
-it. `entries.test.ts` fails when `hooks.json` wires WorktreeCreate, WorktreeRemove, or a
-SubagentStart or SubagentStop entry that runs anything but `review-record`. The review gate
-it feeds stops mistakes, not a same-user process set on getting past it
+**A plugin SubagentStop hook that touches no worktree is fine.** Two are wired, both on the
+subagent's stop alone: `review-record` (which also runs on SubagentStart to note the commit
+and branch a review agent starts on, and records the review of that start commit, on that
+branch, at the stop — commits made while it read count as change after the review,
+`src/workflow/review-cover.ts`) and `subagent-background` (one block when a subagent ends its
+turn with background work it started still running, `src/hooks/subagent-background.ts`).
+Each can be silent for a project that never opted in, neither removes anything, and no other
+SubagentStop hook competes with them. `entries.test.ts` fails when `hooks.json` wires
+WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside the exact
+list it names (`review-record` on SubagentStart; `review-record` and `subagent-background` on
+SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
+feeds stops mistakes, not a same-user process set on getting past it
 (`docs/design.md` § The review record).
 
 ## The plugin's hooks: shell form, through the bun shim
@@ -379,6 +384,10 @@ a command must never report success when it did not run.
   guard on an input that is not JSON and expects an ask, so a guard without one fails a test.
   An `onCrash` that throws is one stderr line, exit 0: never worse than the line.
 - No informational plugin hook exits 1 (`crashExitCode`): a bug never stops a person's work.
+- **`subagent-background` never blocks on a failure.** A broken input, a broken or too new
+  `cc-smart-dev-kit.json`, and a transcript it cannot read are no block (one stderr line where
+  the frame says one, exit 0): it can only block when it has read the agent's own transcript and
+  found that agent's background task in it, so a subagent can always finish.
 - **Every ask is recorded.** The frame appends one JSON line to `guard-asks.jsonl` in the state
   folder (`src/hooks/ask-log.ts`: the time, the hook, the session, the tool, a short reason put
   through `maskedLine`), kept small by the same rule as `update.log`. A write that fails is one

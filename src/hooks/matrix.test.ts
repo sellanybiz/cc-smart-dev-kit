@@ -44,6 +44,7 @@ import {
   reviewRecordHook,
   sessionEscapeGuardHook,
   sessionNameHook,
+  subagentBackgroundHook,
   worktreeLeftoversHook,
 } from "./specs";
 
@@ -373,6 +374,61 @@ const CASES: Case[] = [
       expect(result.exitCode ?? 0).toBe(0);
       expect(result.stdout).toBeUndefined();
       expect(result.stderr).toStartWith("cc-smart-dev-kit review-record: ");
+    },
+  },
+  {
+    spec: subagentBackgroundHook,
+    own: { event: "SubagentStop" },
+    setup: (config) => {
+      const repo = project(config);
+      // The subagent's own transcript, where a background Bash tool result names the task id:
+      // the input's `background_tasks` is the session's list, so this is what proves the task
+      // is this agent's (src/hooks/subagent-background.ts).
+      const transcript = join(tempDir("subagent-transcript"), "agent.jsonl");
+      writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: "user",
+          agentId: AGENT,
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_bash",
+                content:
+                  "Command running in background with ID: shell1234. Output is being written to: /tmp/claude/tasks/shell1234.output.",
+              },
+            ],
+          },
+        })}\n`,
+      );
+      return {
+        input: {
+          hook_event_name: "SubagentStop",
+          session_id: SESSION,
+          cwd: repo,
+          agent_id: AGENT,
+          agent_type: "general-purpose",
+          agent_transcript_path: transcript,
+          stop_hook_active: false,
+          background_tasks: [
+            {
+              id: "shell1234",
+              type: "shell",
+              status: "running",
+              description: "the tests",
+              command: "bun test",
+            },
+          ],
+        },
+        env: hookEnv(),
+      };
+    },
+    // One stderr line, exit 0: a subagent must always finish.
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      expect(result.stdout).toBeUndefined();
+      expect(result.stderr).toStartWith("cc-smart-dev-kit subagent-background: ");
     },
   },
   {

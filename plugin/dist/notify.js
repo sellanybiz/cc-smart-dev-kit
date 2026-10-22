@@ -6389,6 +6389,7 @@ var PLUGIN_HOOK_NAMES = [
   "fable-session",
   "after-merge",
   "review-record",
+  "subagent-background",
   "worktree-leftovers",
   "session-name",
   "crew-role",

@@ -71,8 +71,10 @@ your brief and the review record. You give the rest:
 - anything worth keeping in memory: the lead saves it.
 
 `--status failed` with the reason when the phase cannot be done. The report is your last act:
-end the turn after it. If a turn ends on a step with no report, the `crew-role` hook blocks it
-once with the report line — report, then end the turn.
+end the turn after it. **Your own background work is finished by then:** wait for every
+command and agent you started, or stop it. A hand-back that leaves one running is blocked once
+by the `subagent-background` hook. If a turn ends on a step with no report, the `crew-role`
+hook blocks it once with the report line — report, then end the turn.
 
 ## 5. Questions
 

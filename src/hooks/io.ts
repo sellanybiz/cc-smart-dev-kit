@@ -30,6 +30,12 @@ export interface HookInput {
   /** SubagentStop. */
   agent_id?: unknown;
   agent_type?: unknown;
+  /**
+   * SubagentStop: the JSONL transcript of the subagent that stops (the subagent's own file,
+   * not the session's `transcript_path`). `subagent-background` reads it to tell the agent's
+   * own background task ids from the session's (`src/hooks/subagent-background.ts`).
+   */
+  agent_transcript_path?: unknown;
   /** PreToolUse, PostToolUse, PostToolUseFailure. */
   tool_name?: unknown;
   tool_input?: unknown;

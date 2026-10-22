@@ -48,6 +48,10 @@ A subagent has none of your conversation. Treat it as a smart colleague who just
   the session's own scripts.
 - **Its limits:** no commit, no push, no new agents, no messages to other sessions, no
   questions to the person — unless the brief says so. "Your final message is your report."
+- **Nothing of its own still runs when it reports:** the brief tells it to wait for every
+  background command and agent it started, or to stop it, before the final message. One that
+  hands back early is blocked once and told to wait or stop it — and Claude Code keeps such an
+  agent open until the work lands.
 - **When it is blocked, it reports and stops.** It never retries in a loop, never works
   around a guard, a hook or a permission refusal, and never widens its scope.
 - **A dense report:** findings with `file:line` evidence and the commands it actually ran. No

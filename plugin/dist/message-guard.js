@@ -6409,6 +6409,7 @@ var PLUGIN_HOOK_NAMES = [
   "fable-session",
   "after-merge",
   "review-record",
+  "subagent-background",
   "worktree-leftovers",
   "session-name",
   "crew-role",
@@ -15425,6 +15426,49 @@ function inEscapeDomain(input) {
   return ESCAPE_SHELL_TOOLS.includes(tool) && DOMAIN_TEXT.test(commandOf2(input));
 }
 
+// src/hooks/subagent-background.ts
+import { readFileSync as readFileSync21 } from "fs";
+var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
+function backgroundTaskIds(input) {
+  if (!Array.isArray(input.background_tasks))
+    return [];
+  const ids = [];
+  for (const task of input.background_tasks) {
+    if (typeof task !== "object" || task === null || Array.isArray(task))
+      continue;
+    const id = stringField(task.id);
+    if (id !== null)
+      ids.push(id);
+  }
+  return ids;
+}
+function startedByAgent(text, ids) {
+  return ids.some((id) => text.includes(id));
+}
+function subagentBackground(context) {
+  const { input, event, project } = context;
+  if (project.config === null)
+    return SILENT;
+  if (event !== "SubagentStop")
+    return SILENT;
+  if (input.stop_hook_active === true)
+    return SILENT;
+  const selfId = stringField(input.agent_id);
+  const ids = backgroundTaskIds(input).filter((id) => id !== selfId);
+  if (ids.length === 0)
+    return SILENT;
+  const transcript = stringField(input.agent_transcript_path);
+  if (transcript === null)
+    return SILENT;
+  let text;
+  try {
+    text = readFileSync21(transcript, "utf8");
+  } catch {
+    return SILENT;
+  }
+  return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
+}
+
 // src/hooks/specs.ts
 function cannotCheck(what, message) {
   return `cc-smart-dev-kit cannot check ${what}: ${message}`;
@@ -15540,6 +15584,14 @@ var reviewRecordHook = {
   },
   run: reviewRecord
 };
+var subagentBackgroundHook = {
+  name: "subagent-background",
+  events: ["SubagentStop"],
+  onConfigProblem: (message) => ({
+    stderr: `cc-smart-dev-kit subagent-background: ${message}`
+  }),
+  run: subagentBackground
+};
 var worktreeLeftoversHook = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
@@ -15626,6 +15678,7 @@ var HOOKS = [
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
+  subagentBackgroundHook,
   worktreeLeftoversHook,
   sessionNameHook,
   crewRoleHook,
