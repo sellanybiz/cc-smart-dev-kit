@@ -279,6 +279,7 @@ export function crewDetail(
       delta: { lines: 74, files: 2 },
       reviewed: { lines: 612, files: 9 },
       limits: { lines: 50, files: 5, percent: 10 },
+      allowance: { lines: 61, files: 5 },
     },
     memory,
     reviews: merged

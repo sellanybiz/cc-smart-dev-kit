@@ -74,15 +74,6 @@ const VERDICT: Record<MergeCheck["kind"], { tone: Tone; pill: string; words: str
   late: { tone: "info", pill: "merged", words: "It merged before the guard judged it" },
 };
 
-/**
- * How much may change after a review and still be covered by it: the limit, or that percent of
- * the reviewed change, whichever is more. The gate's own rule (`coverRefusal`,
- * `src/workflow/review-cover.ts`), drawn here as a meter; the verdict itself is the server's.
- */
-function allowance(limit: number, percent: number, reviewed: number): number {
-  return Math.max(limit, Math.floor((reviewed * percent) / 100));
-}
-
 /** One count since the review against what the review still covers: the words and a meter. */
 function DeltaMeter({ label, used, allowed }: { label: string; used: number; allowed: number }) {
   const over = used > allowed;
@@ -118,7 +109,7 @@ function DeltaMeter({ label, used, allowed }: { label: string; used: number; all
 
 function MergeVerdict({ check }: { check: MergeCheck }) {
   const verdict = VERDICT[check.kind];
-  const { delta, reviewed, limits } = check;
+  const { allowance, delta, reviewed, limits } = check;
   return (
     <div className="flex flex-col gap-4 text-sm">
       <div className="flex flex-col gap-1.5">
@@ -161,18 +152,10 @@ function MergeVerdict({ check }: { check: MergeCheck }) {
           </>
         )}
       </dl>
-      {delta !== null && reviewed !== null && limits !== null && (
+      {delta !== null && allowance !== null && (
         <div className="flex flex-col gap-3 rounded-lg border p-3">
-          <DeltaMeter
-            label="Lines since the review"
-            used={delta.lines}
-            allowed={allowance(limits.lines, limits.percent, reviewed.lines)}
-          />
-          <DeltaMeter
-            label="Files since the review"
-            used={delta.files}
-            allowed={allowance(limits.files, limits.percent, reviewed.files)}
-          />
+          <DeltaMeter label="Lines since the review" used={delta.lines} allowed={allowance.lines} />
+          <DeltaMeter label="Files since the review" used={delta.files} allowed={allowance.files} />
         </div>
       )}
     </div>

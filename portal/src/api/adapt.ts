@@ -327,6 +327,7 @@ export function mergeCheckOf(verdict: MergeVerdict): MergeCheck | null {
     case "refused": {
       const detail = verdict.detail;
       return {
+        allowance: detail?.allowance ?? null,
         allowed: verdict.kind === "allowed",
         delta: detail?.delta ?? null,
         kind: verdict.kind,
@@ -339,6 +340,7 @@ export function mergeCheckOf(verdict: MergeVerdict): MergeCheck | null {
     }
     default:
       return {
+        allowance: null,
         allowed: false,
         delta: null,
         kind: verdict.kind,

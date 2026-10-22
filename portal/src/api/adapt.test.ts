@@ -253,6 +253,7 @@ describe("the adapters", () => {
       ],
       mergeCheck: {
         detail: {
+          allowance: { files: 5, lines: 61 },
           delta: { files: 2, lines: 74 },
           limits: { files: 5, lines: 50, percent: 10 },
           review: "4f2a9c1",
@@ -278,6 +279,7 @@ describe("the adapters", () => {
       { at: Date.parse("2026-10-22T10:06:00.000Z"), mb: 512 },
     ]);
     expect(data.mergeCheck).toEqual({
+      allowance: { files: 5, lines: 61 },
       allowed: false,
       delta: { files: 2, lines: 74 },
       kind: "refused",
@@ -297,6 +299,7 @@ describe("the adapters", () => {
   test("the merge verdict: allowed with no detail, and one the guard could not read", () => {
     expect(mergeCheckOf({ detail: null, kind: "allowed", reason: "reviewed at the head" })).toEqual(
       {
+        allowance: null,
         allowed: true,
         delta: null,
         kind: "allowed",
@@ -308,6 +311,7 @@ describe("the adapters", () => {
       },
     );
     expect(mergeCheckOf({ kind: "unread", number: 3, what: "gh is not signed in" })).toEqual({
+      allowance: null,
       allowed: false,
       delta: null,
       kind: "unread",

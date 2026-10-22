@@ -664,6 +664,8 @@ export interface MergeCheck {
   reviewed: null | ChangeCount;
   /** Null when the verdict does not say. */
   limits: null | { lines: number; files: number; percent: number };
+  /** What may still change after the review and stay covered (the gate's own count); null when it does not say. */
+  allowance: null | { lines: number; files: number };
 }
 
 /** One file of the diff against the base; `added` and `removed` are null for a binary file. */
