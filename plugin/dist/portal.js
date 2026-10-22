@@ -22739,6 +22739,7 @@ var crewFields = object({
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
+  mergedBeforeRemoval: boolean2().optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -22924,6 +22925,9 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     };
     if (merged.state !== "paused")
       delete merged.waitingFor;
+    if (merged.state === "removed") {
+      merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
@@ -23009,6 +23013,26 @@ function readNotesState(stateDir, repo, leadSessionId) {
 }
 function writeNotesState(stateDir, repo, leadSessionId, state) {
   writeStoreFile(notesStateFile(stateDir, repo, leadSessionId), `${JSON.stringify(state, null, 2)}
+`);
+}
+function stopStateFile(stateDir, repo, id) {
+  return join36(crewStoreDir(stateDir, repo), "stop", `${fileId(id, "crew id")}.json`);
+}
+var stopStateFields = object({
+  last: _enum(["report", "step"]).nullable(),
+  offset: count
+});
+function readStopState(stateDir, repo, id) {
+  try {
+    const raw = readFileSync43(stopStateFile(stateDir, repo, id), "utf8");
+    const parsed = stopStateFields.safeParse(JSON.parse(raw));
+    if (parsed.success)
+      return parsed.data;
+  } catch {}
+  return null;
+}
+function writeStopState(stateDir, repo, id, state) {
+  writeStoreFile(stopStateFile(stateDir, repo, id), `${JSON.stringify(state, null, 2)}
 `);
 }
 var selfWatchStateFields = object({ at: number2().int().min(0), kind: text });
@@ -23188,14 +23212,22 @@ async function stopAnswer(input, id, repo, paths) {
       return storeProblem(reasonOf2(error));
     }
   }
+  const cursor = readStopState(paths.stateDir, repo, id);
   let events;
   try {
-    events = readCrewEvents(paths.stateDir, repo, 0);
+    events = readCrewEvents(paths.stateDir, repo, cursor?.offset ?? 0);
   } catch (error) {
     return storeProblem(reasonOf2(error));
   }
   const newest = events.events.filter((event) => event.crew === id && (event.type === "step" || event.type === "report")).at(-1);
-  return newest?.type === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
+  const fresh = newest?.type === "step" ? "step" : newest?.type === "report" ? "report" : null;
+  const last = fresh ?? cursor?.last ?? null;
+  try {
+    writeStopState(paths.stateDir, repo, id, { last, offset: events.offset });
+  } catch (error) {
+    return storeProblem(reasonOf2(error));
+  }
+  return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
 async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   const id = crewIdOf(env);

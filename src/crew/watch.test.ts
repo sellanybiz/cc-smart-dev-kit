@@ -781,6 +781,63 @@ describe("crew watch", () => {
     expect(world.out).toContain("C my-app B6b portal-live: working — started (a1b2c3d4)");
   });
 
+  test("F3: a phase removed before its work was merged holds its dependent, and the lead is told once", async () => {
+    const world = await leadWorld();
+    // B6a's crew session was removed with nothing merged: `crew rm` removes a queued or failed
+    // phase too, and that removal proves nothing about the work.
+    await addCrew(world, "removed", {
+      branch: "crew/B6a-x",
+      id: "B6a-x-111111",
+      name: "C my-app B6a x",
+      phase: "B6a",
+      sessionId: null,
+      shortId: null,
+      slug: "x",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6a-x"),
+    });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
+    expect(world.out).toEqual([
+      'C my-app B6b portal-live: still waits for B6a (C my-app B6a x was removed before its work was merged); it will not start by itself — to drop the wait: cc-smart-dev-kit crew rm "C my-app B6b portal-live", then start B6b again',
+    ]);
+    const queued = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.id === QUEUED_ID,
+    );
+    expect(queued?.state).toBe("queued");
+
+    // Once, not on every pass.
+    world.out.length = 0;
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([]);
+  });
+
+  test("F3: a phase removed after the lead merged it releases the crew session that waits for it", async () => {
+    const world = await leadWorld();
+    const first = await addCrew(world, "merged", {
+      branch: "crew/B6a-x",
+      id: "B6a-x-111111",
+      name: "C my-app B6a x",
+      phase: "B6a",
+      sessionId: null,
+      shortId: null,
+      slug: "x",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6a-x"),
+    });
+    const { updateCrew } = await import("./store");
+    // `crew rm` marks it removed; the store keeps that it was merged before the removal.
+    await updateCrew(world.paths.stateDir, world.repo, first.id, { state: "removed" }, T0);
+    expect(
+      listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === first.id),
+    ).toMatchObject({ mergedBeforeRemoval: true, state: "removed" });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(world.out).toContain("C my-app B6b portal-live: working — started (a1b2c3d4)");
+  });
+
   test("D25: a queued next crew session of a hand-off is launched in its own numbered worktree", async () => {
     const world = await leadWorld();
     await queuedCrew(world, {

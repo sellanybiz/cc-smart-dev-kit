@@ -4,9 +4,12 @@
  * returns at once either way (D25); a queued crew session is started later by its lead's watch
  * (`crew watch`, a later phase), oldest first.
  *
- * - **Its phases** (`--waits-for`): each must be `done` or `merged` in the same repository — the
- *   newest record of that phase counts, so a hand-off's next crew session or a second try is the one
- *   read. `removed` counts as finished too: `crew rm` refuses a branch the lead has not merged.
+ * - **Its phases** (`--waits-for`): each must be `merged` in the same repository — the newest
+ *   record of that phase counts, so a hand-off's next crew session or a second try is the one
+ *   read. A `removed` crew session counts only when it was `merged` before its removal
+ *   (`mergedBeforeRemoval`, kept by the store): `crew rm` also removes a phase whose work was
+ *   never merged — a queued one, or one that failed before it committed — and that removal
+ *   releases nothing, because the work a dependent builds on is not there.
  * - **Two caps** (D37). `workflow.crew.max` counts every crew session of every repository on this
  *   machine (the store of each, `listAllCrew`) whose session holds a place: `starting`,
  *   `working`, `blocked`, `paused`, `quiet`. `workflow.crew.maxOpus` counts those of them on
@@ -40,13 +43,24 @@ export const RUNNING_STATES: readonly CrewState[] = [
 ];
 
 /**
- * The states in which a phase another crew session waits for counts as finished: **`merged` or
+ * The states in which a phase another crew session waits for can count as finished: **`merged` or
  * `removed` only.** A crew session that finished its phase (`done`) has not given the lead anything
  * to merge yet, and a dependent phase that branched from the lead's branch before the merge
- * would miss the work it waits for. So a phase counts as finished when the lead merged it (or
- * the crew session was removed, which only happens after the merge).
+ * would miss the work it waits for. A `removed` record counts only when the lead had merged its
+ * work before the removal (`finishesWait`): a removal is no proof of a merge.
  */
 export const FINISHED_STATES: readonly CrewState[] = ["merged", "removed"];
+
+/**
+ * True when `record`'s phase is finished for a crew session that waits for it: the lead merged
+ * its branch, or it was removed after that merge. A `removed` crew session whose work the lead
+ * never merged releases nothing — a dependent that started from it would build on work that is
+ * not on the lead's branch.
+ */
+export function finishesWait(record: CrewRecord): boolean {
+  if (!(FINISHED_STATES as readonly string[]).includes(record.state)) return false;
+  return record.state === "merged" || record.mergedBeforeRemoval === true;
+}
 
 /** How long a start waits for another start's decision: a decision takes milliseconds. */
 export const PLACES_LOCK_WAIT_MS = 5_000;
@@ -60,6 +74,12 @@ export function runningCrew(records: readonly CrewRecord[]): CrewRecord[] {
 export interface Wait {
   phase: string;
   state: null | string;
+  /**
+   * The phase's newest crew session, when it was removed before the lead merged its work: its id
+   * and its name, so the lead's watch can say which one and that the wait will not lift by
+   * itself. Absent in every other case.
+   */
+  removedUnmerged?: { id: string; name: string };
 }
 
 /**
@@ -78,8 +98,14 @@ export function unmetWaits(
         (last, one) => (last === null || one.createdAt >= last.createdAt ? one : last),
         null,
       );
-    if (newest !== null && (FINISHED_STATES as readonly string[]).includes(newest.state)) continue;
-    unmet.push({ phase, state: newest?.state ?? null });
+    if (newest !== null && finishesWait(newest)) continue;
+    unmet.push({
+      phase,
+      state: newest?.state ?? null,
+      ...(newest !== null && newest.state === "removed" && newest.mergedBeforeRemoval !== true
+        ? { removedUnmerged: { id: newest.id, name: newest.name } }
+        : {}),
+    });
   }
   return unmet;
 }

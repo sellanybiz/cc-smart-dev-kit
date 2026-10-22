@@ -73,16 +73,18 @@ ${NAMED}`,
     args: CREW,
     help: `Usage: ${COMMAND} crew rm ${CREW}
 
-Ends a crew session whose work the lead merged. In this order, stopping at the first refusal:
+Ends a crew session whose work the lead merged; one that waits in the queue is removed at once,
+because nothing else went. In this order, stopping at the first refusal:
   1. its branch must be merged into the lead's branch, the one checked out in the lead's
      folder; until then it says how many commits are missing and where to merge. A crew session never
      pushes: the lead merges.
   2. nothing in its worktree may be uncommitted;
   3. its session is stopped, and the lock Claude Code leaves on the worktree is released (a lock
-     a person took is never taken);
+     a person took is never taken); a refusal after that locks it again with the same reason;
   4. the worktree is judged the way worktrees --clean judges it (no program or container uses
      it, no file git does not keep) and removed, then its branch;
-  5. only then claude rm deletes the session, and the crew session is marked removed.
+  5. only then claude rm deletes the session, and the crew session is marked removed, keeping
+     whether the lead had merged it before the removal.
 Nothing is ever forced. A step that fails leaves the crew session as it is: fix the cause and run the
 command again.
 

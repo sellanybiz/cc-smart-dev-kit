@@ -2475,6 +2475,7 @@ repository, under the state folder:
 <stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
 <stateDir>/crew/<repo key>/watch/<lead id>.json       where that lead's watch is in the log
 <stateDir>/crew/<repo key>/notes/<lead id>.json       where that lead's notes hook is in the log
+<stateDir>/crew/<repo key>/stop/<crew id>.json        where that crew session's Stop hook is in the log
 <stateDir>/crew/<repo key>/self/<crew id>.json      what that crew session's own watch last said
 <stateDir>/crew/lock                                  the machine-wide lock of a start decision
 ```
@@ -2499,7 +2500,9 @@ repository, under the state folder:
   pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
   § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
-  of the old crew session, set by a hand-off and by nothing else), and when it was recorded and
+  of the old crew session, set by a hand-off and by nothing else), whether the lead had merged its
+  work before its removal (`mergedBeforeRemoval`, optional: set by the store when the state becomes
+  `removed`, from the state the record was in — the fact a phase that waits for it starts on), and when it was recorded and
   changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`CREW_STATES`, each one's meaning in the file). **A lead record** holds its session
@@ -2567,7 +2570,10 @@ polls or retries. In order:
    (`starting` or `queued`) under the same hold. First the name must be free: no crew session of this
    repository holds the branch (`holdsName`: every record but a `removed` one, and a `failed` one
    that never got a session and left no worktree), and neither the branch nor the folder exists. Then, in order: **its phases** (`--waits-for`) — each phase's newest crew session here must be
-   `merged` or `removed`; **a crew session that finished its phase (`done`) is not enough**, because
+   `merged`, or `removed` after that merge (`mergedBeforeRemoval`, kept by the store): a
+   `removed` crew session whose work the lead never merged releases nothing, because `crew rm`
+   removes a queued or failed phase too, and a dependent that started from it would build on
+   work that is not on the lead's branch; **a crew session that finished its phase (`done`) is not enough**, because
    the lead has not merged it yet, and a dependent phase that branched before the merge would
    miss the work it waits for; **the two caps** (D37)
    — the crew of every repository on this machine in `starting`, `working`, `blocked`,
@@ -2637,8 +2643,8 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   the rest still prints.
 - **`stop`** runs `claude stop <short id>`: the conversation stays on disk. A crew session that was
   running becomes `stopped`; one that ended with an outcome (`done`, `failed`, `handoff`,
-  `merged`) keeps it, because a phase that waits for it (`--waits-for`) reads `done` and
-  `merged`, and stopping its process changes neither. A stop Claude Code refuses for a session
+  `merged`) keeps it, because a phase that waits for it (`--waits-for`) reads only a merge,
+  and stopping its process changes nothing about that. A stop Claude Code refuses for a session
   that agent view does not list counts as stopped (the goal is met); one it refuses for a listed
   session is an error and changes nothing.
 - **`resume`** runs `claude respawn <short id>` for that one session — never `--all`, which
@@ -2655,7 +2661,9 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   `worktrees --clean` uses: it sees a squash merge). A conflict, an error or a git older than 2.38
   is not certain, and the crew session is kept. Then: uncommitted work in the worktree refuses it (before any
   side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
-  lock — its reason starts `claude session` — is released); the session is stopped; the kit's
+  lock — its reason starts `claude session` — is released, and **locked again with the same
+  reason if a later step refuses**, because the lock is what keeps `worktrees --clean` and the
+  background clean off the worktree); the session is stopped; the kit's
   own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges
   the worktree **against the lead's branch rather than `origin/<base>`** (`ScanOptions.against`)
   and removes it, then its branch by the same rule (`deleteBranchOnRef`); and only then
@@ -2664,7 +2672,9 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   a second `crew rm` goes straight to it. Nothing is ever forced: `claude rm` has two force
   flags (`--discard-unpushed`, `--force-remove-worktree`), and neither is used.
   A squash-merged crew branch is removed like any other; a squash that missed a later commit
-  of the crew session is refused, with the count.
+  of the crew session is refused, with the count. **A queued crew session is removed at once**,
+  and so is one whose launch left nothing behind: the removal records whether the lead had merged
+  first (`mergedBeforeRemoval`), so the phases that wait for it start on that fact alone.
 
 ### The crew session's steps, its report, and the lead's watch
 
@@ -2755,7 +2765,11 @@ the store records — a session the kit does not know is the person's own:
   path (`startQueued`, in `start.ts`: the same `launch` that `crew start` runs, never a second
   launcher). A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
   another starts from the merged result, and the folder `claude -w` opens is the record's own
-  worktree, so a hand-off's numbered folder is the right one;
+  worktree, so a hand-off's numbered folder is the right one. A queued crew session held by a
+  phase that was **removed before its work was merged** never starts by itself, and the watch
+  says so **once**, with the way to drop the wait (`crew rm` the queued crew session, then start
+  its phase again): the work it waits for is not on the lead's branch, so pretending it is
+  merged would build the next phase on nothing;
 - it **resumes the paused crew sessions** of this lead once the gateway answers again (D42): one
   first (the canary), the others `RESUME_SPACING_MS` (30 s) apart and only after the router
   answered a request since, and never while a slot's breaker is open or a Claude limit is
@@ -2952,7 +2966,10 @@ each is silent unless its own session is the one it is about, and neither reads
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew
   session is a `step`, the turn ended mid-phase with no report: it **blocks once** with the report
   line as its reason (`{"decision":"block","reason":…}`), and never again while `stop_hook_active`
-  is true. Claude Code shows each block as a `stop-hook-error` notification and caps consecutive
+  is true. The events log is read from a **per-crew cursor** (`<store>/stop/<crew id>.json`: the
+  byte after the last line it read, and the newest `step` or `report` it saw), through the store's
+  one `readCrewEvents`, so a Stop costs the same on day 30 as on day 1: the log only grows.
+  Claude Code shows each block as a `stop-hook-error` notification and caps consecutive
   blocks at 9; this hook blocks at most once per turn. Nothing runs while `background_tasks` is not
   empty: that turn is not over, and Claude Code wakes the session when the work lands. At
   **StopFailure** on `rate_limit`, `overloaded` or `server_error` it marks the crew session

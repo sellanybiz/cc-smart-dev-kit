@@ -66,7 +66,7 @@ export type AutoCleanStatus =
   | "cleaned"
   /** It stopped with an error, which is in the log. */
   | "failed"
-  /** The project turned it off, or has no usable file. */
+  /** The project turned it off: `worktrees.autoClean` is `false`. */
   | "off"
   /** A session-start run within the hour of the last one. */
   | "recent";

@@ -25507,6 +25507,7 @@ var crewFields = object({
   lastPause: looseObject({ backoffMs: count, since: text }).optional(),
   startedAt: text.nullable().optional(),
   continues: text.nullable().optional(),
+  mergedBeforeRemoval: boolean2().optional(),
   createdAt: text,
   updatedAt: text
 });
@@ -25743,6 +25744,9 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     };
     if (merged.state !== "paused")
       delete merged.waitingFor;
+    if (merged.state === "removed") {
+      merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
@@ -25924,6 +25928,26 @@ function writeNotesState(stateDir, repo, leadSessionId, state) {
   writeStoreFile(notesStateFile(stateDir, repo, leadSessionId), `${JSON.stringify(state, null, 2)}
 `);
 }
+function stopStateFile(stateDir, repo, id) {
+  return join44(crewStoreDir(stateDir, repo), "stop", `${fileId(id, "crew id")}.json`);
+}
+var stopStateFields = object({
+  last: _enum(["report", "step"]).nullable(),
+  offset: count
+});
+function readStopState(stateDir, repo, id) {
+  try {
+    const raw = readFileSync49(stopStateFile(stateDir, repo, id), "utf8");
+    const parsed = stopStateFields.safeParse(JSON.parse(raw));
+    if (parsed.success)
+      return parsed.data;
+  } catch {}
+  return null;
+}
+function writeStopState(stateDir, repo, id, state) {
+  writeStoreFile(stopStateFile(stateDir, repo, id), `${JSON.stringify(state, null, 2)}
+`);
+}
 function selfWatchStateFile(stateDir, repo, id) {
   return join44(crewStoreDir(stateDir, repo), "self", `${fileId(id, "crew id")}.json`);
 }
@@ -25951,6 +25975,11 @@ var RUNNING_STATES = [
   "quiet"
 ];
 var FINISHED_STATES = ["merged", "removed"];
+function finishesWait(record) {
+  if (!FINISHED_STATES.includes(record.state))
+    return false;
+  return record.state === "merged" || record.mergedBeforeRemoval === true;
+}
 var PLACES_LOCK_WAIT_MS = 5000;
 function runningCrew(records) {
   return records.filter((one) => RUNNING_STATES.includes(one.state));
@@ -25959,9 +25988,13 @@ function unmetWaits(waitsFor, repoRecords) {
   const unmet = [];
   for (const phase of waitsFor) {
     const newest = repoRecords.filter((one) => one.phase === phase).reduce((last, one) => last === null || one.createdAt >= last.createdAt ? one : last, null);
-    if (newest !== null && FINISHED_STATES.includes(newest.state))
+    if (newest !== null && finishesWait(newest))
       continue;
-    unmet.push({ phase, state: newest?.state ?? null });
+    unmet.push({
+      phase,
+      state: newest?.state ?? null,
+      ...newest !== null && newest.state === "removed" && newest.mergedBeforeRemoval !== true ? { removedUnmerged: { id: newest.id, name: newest.name } } : {}
+    });
   }
   return unmet;
 }
@@ -26313,14 +26346,22 @@ async function stopAnswer(input, id, repo, paths) {
       return storeProblem(reasonOf2(error));
     }
   }
+  const cursor = readStopState(paths.stateDir, repo, id);
   let events;
   try {
-    events = readCrewEvents(paths.stateDir, repo, 0);
+    events = readCrewEvents(paths.stateDir, repo, cursor?.offset ?? 0);
   } catch (error) {
     return storeProblem(reasonOf2(error));
   }
   const newest = events.events.filter((event) => event.crew === id && (event.type === "step" || event.type === "report")).at(-1);
-  return newest?.type === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
+  const fresh = newest?.type === "step" ? "step" : newest?.type === "report" ? "report" : null;
+  const last = fresh ?? cursor?.last ?? null;
+  try {
+    writeStopState(paths.stateDir, repo, id, { last, offset: events.offset });
+  } catch (error) {
+    return storeProblem(reasonOf2(error));
+  }
+  return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
 async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   const id = crewIdOf(env);
@@ -30613,6 +30654,13 @@ function phasesWaitingFor(record, records) {
   }
   return [...phases].sort();
 }
+function stuckWaitLine(record, records) {
+  const stuck = unmetWaits(record.waitsFor, records).filter((wait) => wait.removedUnmerged !== undefined);
+  if (stuck.length === 0)
+    return null;
+  const phases = stuck.map((wait) => `${wait.phase} (${wait.removedUnmerged?.name ?? wait.phase} was removed before its work was merged)`).join(", ");
+  return `${record.name}: still waits for ${phases}; it will not start by itself \u2014 to drop the wait: ${COMMAND} crew rm "${record.name}", then start ${record.phase} again`;
+}
 function isRunning3(record) {
   return runningCrew([record]).length === 1;
 }
@@ -30783,9 +30831,19 @@ async function watchPass(state, ctx, scope) {
       delete said[stopKey];
     }
   }
-  const queued = listCrew(ctx.paths.stateDir, repo).records.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  for (const record of queued)
+  const here = listCrew(ctx.paths.stateDir, repo).records;
+  const queued = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  for (const record of queued) {
     await startQueued(record, ctx, resolved);
+    const waitKey = `${record.id}:wait`;
+    const stuck = stuckWaitLine(record, here);
+    if (stuck !== null && said[waitKey] !== stuck) {
+      say(stuck);
+      said[waitKey] = stuck;
+    } else if (stuck === null) {
+      delete said[waitKey];
+    }
+  }
   const paused = listCrew(ctx.paths.stateDir, repo).records.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "paused");
   const marked = paused.length === 0 ? null : await resumePaused(paused, state, ctx, scope.gateway ?? ((now) => gatewayNow(ctx.paths, now)), agents, say);
   offset = sayEvents(offset, scope, ctx, say);
@@ -34691,13 +34749,26 @@ async function runCrewRm(ref, ctx) {
       ctx.error(`note: ${stopped.why}; going on, the check below stops the removal if anything still works in its worktree`);
     }
   }
+  let releasedReason = null;
   if (listed !== undefined && locked) {
     const unlock = runGit(repo, ["worktree", "unlock", listed.path], ctx.env, GIT_TIMEOUT_MS4);
     if (!unlock.ok) {
       return refuse2(failure2(`crew rm: ${shown} could not be unlocked: ${unlock.err}`, `Fix: git worktree unlock ${record.worktree} by hand, then run crew rm again`), ctx);
     }
+    releasedReason = listed.lockReason ?? "";
     ctx.print(`unlocked ${shown}`);
   }
+  const refuseKept = (refusal) => {
+    if (releasedReason !== null && listed !== undefined) {
+      const again = runGit(repo, ["worktree", "lock", "--reason", releasedReason, listed.path], ctx.env, GIT_TIMEOUT_MS4);
+      if (again.ok) {
+        ctx.print(`locked ${shown} again, with the same reason`);
+      } else {
+        ctx.error(`note: ${shown} could not be locked again (${lastLine2(again.err)}); lock it yourself if you mean to keep it: git worktree lock ${record.worktree}`);
+      }
+    }
+    return refuse2(refusal, ctx);
+  };
   if (listed !== undefined) {
     let judged;
     try {
@@ -34710,17 +34781,17 @@ async function runCrewRm(ref, ctx) {
         idleLimit: 0
       }).find((one) => one.state !== "main" && samePath3(one.listed.path, record.worktree));
     } catch (error) {
-      return refuse2(failure2(`crew rm: ${reasonOf4(error)}`), ctx);
+      return refuseKept(failure2(`crew rm: ${reasonOf4(error)}`));
     }
     if (judged === undefined || judged.state === "main") {
-      return refuse2(failure2(`crew rm: ${shown} is listed by git but could not be judged`), ctx);
+      return refuseKept(failure2(`crew rm: ${shown} is listed by git but could not be judged`));
     }
     if (judged.state === "gone") {
       pruneWorktrees(repo, ctx.env);
       ctx.print(`forgot ${shown} (its folder was already gone)`);
     } else {
       if (!judged.state.finished) {
-        return refuse2(failure2(`crew rm: ${shown} is kept: ${judged.state.why}`, "Fix: clear that, then run crew rm again; it never forces"), ctx);
+        return refuseKept(failure2(`crew rm: ${shown} is kept: ${judged.state.why}`, "Fix: clear that, then run crew rm again; it never forces"));
       }
       const removal = removeWorktree(repo, judged.listed, {
         against: { label: lead.label, ref: lead.sha },
@@ -34734,7 +34805,7 @@ async function runCrewRm(ref, ctx) {
       for (const said of removal.said)
         ctx.print(said);
       if (removal.status !== "removed") {
-        return refuse2(failure2(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"), ctx);
+        return refuseKept(failure2(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"));
       }
     }
   }
@@ -35274,16 +35345,18 @@ ${NAMED}`,
     args: CREW,
     help: `Usage: ${COMMAND} crew rm ${CREW}
 
-Ends a crew session whose work the lead merged. In this order, stopping at the first refusal:
+Ends a crew session whose work the lead merged; one that waits in the queue is removed at once,
+because nothing else went. In this order, stopping at the first refusal:
   1. its branch must be merged into the lead's branch, the one checked out in the lead's
      folder; until then it says how many commits are missing and where to merge. A crew session never
      pushes: the lead merges.
   2. nothing in its worktree may be uncommitted;
   3. its session is stopped, and the lock Claude Code leaves on the worktree is released (a lock
-     a person took is never taken);
+     a person took is never taken); a refusal after that locks it again with the same reason;
   4. the worktree is judged the way worktrees --clean judges it (no program or container uses
      it, no file git does not keep) and removed, then its branch;
-  5. only then claude rm deletes the session, and the crew session is marked removed.
+  5. only then claude rm deletes the session, and the crew session is marked removed, keeping
+     whether the lead had merged it before the removal.
 Nothing is ever forced. A step that fails leaves the crew session as it is: fix the cause and run the
 command again.
 

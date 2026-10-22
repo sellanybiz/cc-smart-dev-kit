@@ -79,20 +79,42 @@ describe("the crew that hold a place", () => {
 });
 
 describe("the phases a crew session waits for", () => {
-  test("merged or removed is finished; done is not, and anything else is not", () => {
+  test("merged, and a removal after the merge, is finished; done, an unmerged removal and anything else is not", () => {
     const records = [
       crew("A", "done"),
       crew("B", "merged"),
-      crew("C", "removed"),
+      { ...crew("C", "removed"), mergedBeforeRemoval: true },
       crew("D", "working"),
       crew("E", "failed"),
+      crew("F", "removed"),
     ];
-    expect(unmetWaits(["A", "B", "C", "D", "E", "F"], records)).toEqual([
+    const unmergedF = {
+      phase: "F",
+      state: "removed",
+      removedUnmerged: { id: "F-x-0", name: "C my-app F x" },
+    };
+    expect(unmetWaits(["A", "B", "C", "D", "E", "F", "G"], records)).toEqual([
       { phase: "A", state: "done" },
       { phase: "D", state: "working" },
       { phase: "E", state: "failed" },
-      { phase: "F", state: null },
+      unmergedF,
+      { phase: "G", state: null },
     ]);
+  });
+
+  test("F3: a removed crew session releases its dependents only when it was merged before the removal", () => {
+    const merged = { ...crew("A", "removed"), mergedBeforeRemoval: true };
+    expect(unmetWaits(["A"], [merged])).toEqual([]);
+    // Removed before its work was merged: the dependent would branch without the work it waits for.
+    const unmerged = { ...crew("B", "removed"), mergedBeforeRemoval: false };
+    const waiting = {
+      phase: "B",
+      state: "removed",
+      removedUnmerged: { id: "B-x-0", name: "C my-app B x" },
+    };
+    expect(unmetWaits(["B"], [unmerged])).toEqual([waiting]);
+    // A record an older kit wrote carries no fact either way: no proof of a merge, so it still waits.
+    expect(unmetWaits(["B"], [crew("B", "removed")])).toEqual([waiting]);
   });
 
   test("a phase's newest crew session counts: a hand-off's next crew session, a second try", () => {
