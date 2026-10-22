@@ -45,12 +45,15 @@
  * standard input (`sh <<'EOF' … EOF`, `echo "git push -f" | sh`) are commands. git's own
  * options before the subcommand are read as git reads them (`--config-env x=y`), and one
  * this guard does not know (a newer git's) makes every word after it a possible subcommand.
+ * `git send-pack` and a `git -c alias.x=push x` on the line are pushes, and a program the
+ * line works out when it runs (`$(which git) push`, `$GIT push`) asks when its words name a
+ * push: the guard cannot name the program, so it never stays silent about the push.
  *
- * Known limits: a git alias (`-c alias.x=… x`, or one in the user's config), a `branch -f`,
- * a `checkout -B` and a `switch -C` (they move a branch), brace expansion (`{git,push}`), a
- * program named at run time (`$(…)`, a variable), `-EncodedCommand`, `ssh`, a script file,
- * a `cd` it cannot follow (`cd -`, `cd ~/x`, `cd $DIR`) and a branch it cannot read are not
- * asked about; `git checkout <name>` cannot tell a file from a branch, so it stays silent.
+ * Known limits: a git alias from the person's own config (one set with `-c` on the line is
+ * read), a `branch -f`, a `checkout -B` and a `switch -C` (they move a branch), brace
+ * expansion (`{git,push}`), `-EncodedCommand`, `ssh`, a script file, a `cd` it cannot follow
+ * (`cd -`, `cd ~/x`, `cd $DIR`) and a branch it cannot read are not asked about; `git
+ * checkout <name>` cannot tell a file from a branch, so it stays silent.
  */
 import { isAbsolute, resolve } from "node:path";
 import { crewIdOf } from "../crew/session";
@@ -606,14 +609,55 @@ export function gitCalls(args: readonly string[]): GitCall[] {
   return [];
 }
 
+/**
+ * The question when the line's program is worked out when it runs (`$GIT`, `$(which git)`)
+ * and its words name a push: the guard cannot tell whether it pushes, so it asks.
+ */
+const COMPUTED_PUSH_ASK =
+  "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push …`) if you meant it.";
+
+/** True when a command's words name a push, for a program the reader cannot name. */
+function namesPush(words: readonly string[]): boolean {
+  return words.some((word) => word === "push" || word === "send-pack");
+}
+
+/** True when a command's program is computed and the words of that command name a push. */
+function computedPushIn(command: string, dialect?: Dialect): boolean {
+  return readingsOf(command, dialect).some((reading) =>
+    shellSteps(command, {
+      blindWhenOpen: true,
+      dialect: reading.dialect,
+      joinLines: reading.joinLines,
+    }).some((step) => {
+      const words = wordsOf(step.text, reading.dialect);
+      const invocation = invocationOf(words);
+      return invocation?.computed === true && namesPush(words);
+    }),
+  );
+}
+
 function gitQuestions(args: string[], folder: Folder, run: GuardRun): string[] {
   return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+}
+
+/**
+ * The words a `-c alias.<name>=push` (or `=send-pack`) gives the subcommand it names, or
+ * null when the subcommand is no push alias. `git -c alias.p=push p origin main` pushes.
+ */
+function pushAlias(call: GitCall): string[] | null {
+  const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
+  if (value === null || value === undefined) return null;
+  const words = wordsOf(value);
+  const first = words[0] ?? "";
+  return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 
 function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
   const { options } = run;
   const { rest, sub } = call;
-  if (sub === "push") {
+  const alias = pushAlias(call);
+  // `git send-pack` pushes, and so does an alias a `-c` on the line expands to a push.
+  if (sub === "push" || sub === "send-pack" || alias !== null) {
     const where = folder === null ? null : resolve(folder, ...call.dirs);
     const place: PushPlace = {
       branch: () => (where === null ? undefined : currentBranch(where, run)),
@@ -628,7 +672,12 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
       run.refusals.add(CREW_PUSH_REFUSAL);
       return [];
     }
-    return pushQuestions(rest, place, options.protectedBranches, options.pushRules.autoPushAsk);
+    return pushQuestions(
+      alias === null ? rest : [...alias, ...rest],
+      place,
+      options.protectedBranches,
+      options.pushRules.autoPushAsk,
+    );
   }
   if (sub === "stash") return stashQuestions(rest, options.sharedStash);
   if (sub === "worktree" && rest[0] === "remove") {
@@ -701,12 +750,16 @@ function inspect(
   const { dialect, joinLines } = reading;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
-    const invocation = invocationOf(wordsOf(step.text, dialect));
+    const words = wordsOf(step.text, dialect);
+    const invocation = invocationOf(words);
     if (invocation === undefined) continue;
     const { args, program } = invocation;
     // A redirection (`>log`, `2>&1`) is the shell's: git never sees it as a refspec.
     const operands = withoutRedirections(args);
     if (program === "git") found.push(...gitQuestions(operands, folder, run));
+    // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
+    // guard cannot name it, so a line whose words name a push asks, never stays silent.
+    if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
     if (CHANGE_DIR.has(program)) folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
@@ -753,8 +806,9 @@ export function guardVerdict(command: string, cwd: string, options: GuardOptions
 
 /**
  * True when the command line runs git at all (what the guard asks about when it cannot read
- * its config), in the tool's dialect, or in both when it is not given.
+ * its config), in the tool's dialect, or in both when it is not given. A `$GIT push` counts:
+ * the guard cannot name the program, but a push's words are there.
  */
 export function runsGit(command: string, dialect?: Dialect): boolean {
-  return programsOf(command, dialect).includes("git");
+  return programsOf(command, dialect).includes("git") || computedPushIn(command, dialect);
 }

@@ -1337,15 +1337,15 @@ that, so the plugin ships no worktree hook at all.
 
 | Hook | Event (matcher) | On when | What it does |
 |---|---|---|---|
-| `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists (its crew part needs no file) | Asks before **any** `git push` while `autoPush` is off (D15: the default, so a push leaves the machine), and asks for a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. `autoPush` is read as the merge guard reads its gate (`resolveGate`: the default, the person's `workflow.json`, the project's file committed on `origin/<base>`), so a session cannot switch it off in its own worktree; a policy it cannot read asks. **A crew session never pushes** (D24): a push from one (`CC_SMART_DEV_KIT_CREW` set) is denied, whatever `autoPush` says — the session commits and the lead merges locally. That is the guard's **crew part** (`crewPushAnswer`), which the frame runs before `ownHooks` and the file, so it holds with no `cc-smart-dev-kit.json` and whatever `ownHooks` lists. One shell lexer (`src/shell/command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. Apart from that one refusal it asks, never denies: the person may mean it. |
+| `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists (its crew part needs no file) | Asks before **any** `git push` while `autoPush` is off (D15: the default, so a push leaves the machine), and asks for a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. `autoPush` is read as the merge guard reads its gate (`resolveGate`: the default, the person's `workflow.json`, the project's file committed on `origin/<base>`), so a session cannot switch it off in its own worktree; a policy it cannot read asks. **A crew session never pushes** (D24): a push from one (`CC_SMART_DEV_KIT_CREW` set) is denied, whatever `autoPush` says — the session commits and the lead merges locally. That is the guard's **crew part** (`crewPushAnswer`), which the frame runs before `ownHooks` and the file, so it holds with no `cc-smart-dev-kit.json` and whatever `ownHooks` lists. One shell lexer (`src/shell/command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `setsid`/`flock`/`script -c`/`busybox sh -c`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. `git send-pack` and a `git -c alias.x=push x` on the line push too, and a program the line works out when it runs (`$(which git) push`, `$GIT push`) asks rather than pass unseen. Known limits: a git alias from the person's own config, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. Apart from that one refusal it asks, never denies: the person may mean it. |
 | `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. (Until 0.6.0 it also placed Serena's edits, with the `serena-root` hook's record; both went with Serena.) |
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists (its crew part needs no file) | Asks the person before a command that merges a pull request, or opens or readies one (`openPr`, D16: `off` asks before any of them, `draft` lets a draft create through and asks for a ready one and for `gh pr ready`, `ready` asks for neither). Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. **A crew session opens no pull request** (D24): `gh pr create` pushes the branch, so it is denied. That is the guard's **crew part** (`crewPrAnswer`), which the frame runs before `ownHooks` and the file, so it holds with no `cc-smart-dev-kit.json` and whatever `ownHooks` lists. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists (its crew part needs no file) | Denies a message to a session that works outside this repo (from Claude Code's session records), and a crew session's message to another crew session of this repo that does not carry the `crew tell` tag (§ The crew talks); a message to the session's own lead is denied with the `crew report` route. The crew rule is the guard's **crew part** (`crewMessageAnswer`), which the frame runs before `ownHooks` and the file, so it holds with no `cc-smart-dev-kit.json` and whatever `ownHooks` lists. |
 | `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
-| `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port and before an edit of the kit's own settings. § The session-escape guard. |
+| `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
-| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's `crew start` is denied; a polling loop over `crew list|status` or `claude agents --json` (a `while`/`until`/`for`/`foreach` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). § The Bash judge and the job route. |
+| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's `crew start` is denied; a polling loop over `crew list|status` or `claude agents --json` (a repeating `while`/`until`/`do` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read; a `for`/`foreach` over a fixed list is no poll) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). § The Bash judge and the job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send the other sessions when it went into `worktrees.base`, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
@@ -1583,28 +1583,36 @@ the calls in its domain (§ One frame for every hook).
 | A line that runs `cc-smart-dev-kit workflow review-done` | **deny** | A review is recorded by the review-record hook when a review agent returns. A session never records its own. |
 | A line that runs a kit command (the launcher, or `bun …/dist/cli.js` / `portal.js`) with `CLAUDECODE` removed | **deny** | The kit's commands that change this machine's settings (the workflow gate, the portal, updates) refuse to run while Claude Code's `CLAUDECODE` is set — a courtesy a command can drop. This is the lock. |
 | A line that reaches the portal's port (20150) on this machine | **ask** | The portal has no sign-in of its own (D9): its pages change the gateway, the judge, updates and the review gate. |
-| An Edit, Write or NotebookEdit of a `.claude/cc-smart-dev-kit.json`, the kit's settings folder (`workflow.json`, `gateway.json`) or its state folder (the review record, the ask log) | **ask** | They hold the limits the guards enforce: the project's gate and `ownHooks`, the person's own policy, the record of what was reviewed. |
+| An Edit, Write or NotebookEdit of a `.claude/cc-smart-dev-kit.json`, the kit's settings folder (`workflow.json`, `gateway.json`), its state folder (the review record, the ask log) or its installed plugin folder (`plugins/cache/<marketplace>/<plugin>`) | **ask** | They hold the limits the guards enforce: the project's gate and `ownHooks`, the person's own policy, the record of what was reviewed, and the guard bundles Claude Code runs. |
 
 **How `CLAUDECODE` counts as removed.** The shell reader (`src/shell/command.ts`) gives each
-command of the line, its wrappers, and the lines it runs (`bash -c`, `eval`, a here-string,
+command of the line, its wrappers (`setsid env …`, `flock <file> env …`, `script -c …`,
+`busybox sh -c …`), and the lines it runs (`bash -c`, `eval`, a here-string,
 `cc-smart-dev-kit job run --`, `ssh host '…'`). On one command: `CLAUDECODE=…` before it, `env -u
 CLAUDECODE`, `env --unset`, `env -i` (and `env -`), `sudo`/`doas`/`su`/`runuser`/`ssh`/`systemd-run`
 (a fresh environment). For the commands after it in the same line: `unset CLAUDECODE`, `export
 CLAUDECODE=…`, `export -n`, `declare +x`, a step that is only `CLAUDECODE=`, and in PowerShell any
 write to `$env:CLAUDECODE` (`Remove-Item Env:CLAUDECODE`, `SetEnvironmentVariable`; the whole
 line counts, because PowerShell's lexer cuts at braces). A kit command is also found as an
-argument of a runner (`find -exec`, `watch`, `parallel`), except after programs that only read
-their arguments (`ls`, `grep`, `git`, `echo`…), so `env -u CLAUDECODE claude -p` and `env -u
-CLAUDECODE bun test` — the usual way to start a nested session — are not touched. Claude Code's
+argument of a runner (`find -exec`, `watch`, `parallel`), **and the words before the kit word
+inside that runner's arguments count too** — `find … -exec env -u CLAUDECODE <kit> …`, `flock
+<file> env -u CLAUDECODE <kit> …` — except after programs that only read their arguments (`ls`,
+`grep`, `git`, `echo`…), so `env -u CLAUDECODE claude -p` and `env -u
+CLAUDECODE bun test` — the usual way to start a nested session — are not touched. PowerShell's
+`Start-Process` is read by its `-FilePath`/`-ArgumentList` (or the positional words), and
+`-UseNewEnvironment` starts the command with a fresh environment, the same as `sudo`. Claude Code's
 Bash tool keeps no `export` or `unset` from one call to the next (seen live 2026-10-22: an
-`unset CLAUDECODE` in one call, `CLAUDECODE=1` again in the next), so a line is the unit.
+`unset CLAUDECODE` in one call, `CLAUDECODE=1` again in the next), so a line is the unit. A
+program the line works out when it runs (`$(which <kit>)`, `$KIT`) cannot be named: when the
+line names the kit command, the guard **asks** instead of staying silent.
 
 **How an edit is matched.** The path the call names is taken as written and as a real path (an
 Edit follows a link, so `notes.txt` linking to `workflow.json` changes `workflow.json`);
 either one that is a `.claude/cc-smart-dev-kit.json` (any folder: the main checkout, a worktree
 inside `.claude/worktrees/`, a folder outside git), or inside the settings or state folder
-(`cliPaths()`, so `CLAUDE_CONFIG_DIR` moves the state folder with it), asks. Names compare
-without case.
+(`cliPaths()`, so `CLAUDE_CONFIG_DIR` moves the state folder with it) or the installed plugin
+folder, asks. **Each folder is compared as written and by its real path**, so a home folder whose
+`~/.config` is a link cannot hide the file. Names compare without case.
 
 **How a shell write is matched.** A Bash or PowerShell line that writes those same files asks,
 with the Edit's reason: a redirect (`>`, `>>`, `>|`, `&>`; `2>&1` and `>&2` name no file; the
@@ -1614,11 +1622,14 @@ reader's `redirectionTargets` gives the targets), `tee` (and `Tee-Object`), `sed
 `Add-Content`, `Out-File` (`sc`, `ac`, `si`, `ni`, … — PowerShell takes any prefix of a
 parameter name). Every target goes through the same `kitFileKind` as an Edit, as written (the
 `~`, a relative path against the input's `cwd` and against each `cd` / `Set-Location` /
-`Push-Location` the line ran before it) and as a real path. A target the line works out when it
+`Push-Location` the line ran before it) and as a real path, with each folder compared as written
+and by its real path. A write into the installed plugin folder asks too (never a deny: a person
+may mean it before an update), and Claude Code's own `claude plugin …` commands are not touched.
+A target the line works out when it
 runs (`> $FILE`, `$(mktemp)`, a glob) cannot be resolved: it asks only when the line also names
 a protected file or folder by text (`cc-smart-dev-kit.json`, `.config/cc-smart-dev-kit`, the
-state folder), and passes otherwise. `cat`, `grep`, `sed` without `-i`, `cp` *from* the file and
-a message that names it all pass.
+state folder, the plugin cache folder), and passes otherwise. `cat`, `grep`, `sed` without `-i`,
+`cp` *from* the file and a message that names it all pass.
 
 **What it does not read.** The limit is the one the review gate has: it stops mistakes and the
 easy shortcut, not a same-user process set on getting past it. A script file's content (`env -u
@@ -1857,13 +1868,20 @@ with the one shell reader and answers four things:
   overrides; the prompt is read for a `Fable reason:` line. No model or no effort is refused, the
   `fable` tier asks, the `opus` tier at `max` asks — and in an outer `claude -p`, every ask is a
   refusal. A `claude` subcommand (`claude agents`, `claude stop`, …) is not a launch and is left
-  alone.
+  alone. The reader steps over the wrappers around a launch (`setsid claude --bg`, `flock <file>
+  claude --bg`), and reads `npx` / `bunx` / `pnpm dlx` of `@anthropic-ai/claude-code` as `claude`.
+  A program the line works out when it runs (`$(which claude) --bg`) is judged by the same
+  words: `--bg` is a background launch, and `-p` counts as one only when a word names Claude
+  Code (`cp -p` is no launch).
 - **a crew session's `crew start`**: denied, in the launcher's own words (`CREW_NEVER_DOES`,
   `src/crew/brief.ts`): the need goes to the lead with `crew report --question`.
-- **polling**: a `crew list` / `crew status` read or a `claude agents --json` read inside a
-  `while` / `until` / `for` / `foreach` loop or a `watch`, or beside a `sleep` or
-  `Start-Sleep`, is denied — a crew session's news arrives by itself, through the lead's watch
-  and the monitors. One read, and `crew watch` itself, pass.
+- **polling**: a `crew list` / `crew status` read or a `claude agents --json` read that repeats
+  over time — inside a `while` / `until` / `do` loop (bash, the condition included) or a
+  PowerShell `while` / `do`, or a `watch` — or beside a `sleep` or `Start-Sleep`, is denied — a
+  crew session's news arrives by itself, through the lead's watch and the monitors. A
+  `for` / `foreach` over a fixed list with no wait is no poll (F2a-6), and neither is a read
+  whose output a later loop walks (`claude agents --json | … | while read id; do …`). One read,
+  and `crew watch` itself, pass.
 
 **The route** is the heavy-job queue's door, and the project's opt-in: with
 `"jobs": { "route": true }` in its `.claude/cc-smart-dev-kit.json` (the `switches.jobRoute`
@@ -2088,7 +2106,9 @@ all), an extension whose words name a merge, and a command whose earlier steps c
 the branch or the repository the merge acts on (`cd`/`pushd`/`git -C`, `git switch`/`checkout`,
 a `GH_REPO=`/`GH_HOST=` assignment, an `env` prefix): the guard does not follow those, it asks. A
 quote, a here-doc or a comment is not a command, and the wrappers the git guard reads work the
-same way (`timeout 60 gh pr merge 5`).
+same way (`timeout 60 gh pr merge 5`, `setsid gh pr merge 5`). A program the line works out when
+it runs (`$(which gh) pr merge 5`, `$GH pr merge 5`) cannot be named, so a line whose words name
+a merge asks rather than pass unseen.
 
 Everything it reads is read-only (`gh pr view`, `gh repo view`, `gh pr checks`, `gh alias
 list`), each call takes 10 s and the hook has 30 s (`hooks.json`), and only a command that

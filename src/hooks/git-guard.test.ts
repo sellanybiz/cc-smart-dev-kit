@@ -109,6 +109,57 @@ describe("a force-push asks", () => {
   });
 });
 
+describe("F2a-1: a push behind a wrapper, a shell, an alias, send-pack or a computed program", () => {
+  it.each([
+    ["setsid git push --force origin fix/x"],
+    ["flock /tmp/l git push --force origin fix/x"],
+    ["unbuffer git push --force origin fix/x"],
+    ["chrt -f 50 git push --force origin fix/x"],
+    ["taskset -c 0-3 git push --force origin fix/x"],
+    ["script -qc 'git push -f origin fix/x'"],
+    ["ksh -c 'git push -f origin fix/x'"],
+    ["mksh -c 'git push -f origin fix/x'"],
+    ["fish -c 'git push -f origin fix/x'"],
+    ["busybox sh -c 'git push -f origin fix/x'"],
+    ["git send-pack --force origin fix/x"],
+    ["git -c alias.p=push p --force origin fix/x"],
+    ["git -c alias.s=send-pack s --force origin fix/x"],
+  ])("%j asks", (command) => {
+    expect(guard(command)).toContain("force-push");
+  });
+
+  it("send-pack and an alias reach a protected branch", () => {
+    expect(guard("git send-pack origin dev")).toContain("straight to `dev`");
+    expect(guard("git -c alias.p=push p origin dev")).toContain("straight to `dev`");
+  });
+
+  it.each([["$(which git) push --force origin main"], ["GIT=git; $GIT push origin HEAD"]])(
+    "a computed program whose words name a push asks: %j",
+    (command) => {
+      expect(guard(command)).toContain("cannot tell whether it pushes");
+    },
+  );
+
+  it("a computed program with no push word passes, and so does a plain `echo push`", () => {
+    expect(guard("$(which git) status")).toBeUndefined();
+    expect(guard("echo push")).toBeUndefined();
+  });
+});
+
+describe("F2a-3: PowerShell Start-Process runs what it is given", () => {
+  it.each([
+    "Start-Process -FilePath git -ArgumentList 'push -f origin fix/x'",
+    "Start-Process git 'push -f origin fix/x'",
+    "Start-Process -FilePath git -ArgumentList 'push origin dev'",
+  ])("%j asks", (command) => {
+    expect(guard(command, neutral, true, "powershell")).toBeDefined();
+  });
+
+  it("a Start-Process that runs no git passes", () => {
+    expect(guard("Start-Process notepad 'notes.txt'", neutral, true, "powershell")).toBeUndefined();
+  });
+});
+
 describe("a push to a protected branch asks", () => {
   it.each([
     ["git push origin dev", "dev"],

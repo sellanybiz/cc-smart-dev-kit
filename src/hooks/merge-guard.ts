@@ -101,6 +101,8 @@ import {
 import { openPrRefusal } from "../workflow/pr-switches";
 import { type GateRead, resolveGate } from "../workflow/resolve";
 import {
+  COMPUTED_MERGE,
+  computedMergeRisk,
   exactMergeOf,
   isMerge,
   type MergeCall,
@@ -226,14 +228,20 @@ export function mergeGuard(context: HookContext): HookResult {
   const command = stringField(toolInput(input).command);
   // The line in the dialect of the tool that runs it: Bash and PowerShell quote differently.
   const dialect = dialectOfTool(input.tool_name);
+  if (command === null) return SILENT;
   // The cheap pure read first: an ordinary Bash call finds nothing here and pays nothing.
-  if (command === null || !requestsPullRequestChange(command, dialect)) return SILENT;
+  // A computed program whose words name a merge counts (`$GH pr merge 5`).
+  if (!requestsPullRequestChange(command, dialect)) return SILENT;
   const config: CcSmartDevKitConfig | null = project.config;
   // A project that never opted in must not notice the plugin (`.claude/rules/hooks.md`):
   // the policy it would judge with lives in the project's own file. (A crew session's
   // opening refusal is not here: the guard's crew part already answered it before the file,
   // `crewPrAnswer`.)
   if (config === null) return SILENT;
+  // A program the line works out when it runs cannot be named: the guard asks.
+  if (computedMergeRisk(command, dialect)) {
+    return toolDecision("ask", notByItself(COMPUTED_MERGE));
+  }
   // The crew bit here is only for the `allow` below: a crew session never merges by itself
   // (D24), and an `allow` skips auto mode's own rule.
   const crew = crewIdOf(env) !== null;

@@ -1090,6 +1090,7 @@ function cliPaths(env = process.env) {
     claudeConfigDir,
     settingsFile: join6(claudeConfigDir, "settings.json"),
     installedPluginsFile: join6(claudeConfigDir, "plugins", "installed_plugins.json"),
+    pluginCacheDir: join6(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
     knownMarketplacesFile: join6(claudeConfigDir, "plugins", "known_marketplaces.json"),
     projectsDir: join6(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),
@@ -20320,7 +20321,7 @@ function lex(text, options) {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
-          raw += `$(${read(true)}`;
+          raw += `$(${read(true).raw}`;
         } else {
           raw += readArithmetic(end);
         }
@@ -20377,7 +20378,7 @@ function lex(text, options) {
     const after = text.charAt(at + 1);
     return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
   }
-  function read(nested) {
+  function read(nested, substitutions = 0) {
     let raw = "";
     let current = "";
     let depth = 0;
@@ -20429,6 +20430,14 @@ function lex(text, options) {
         const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
         if (arithmetic !== -1) {
           take(readArithmetic(arithmetic));
+          continue;
+        }
+        if (char === "$" && next === "(" && substitutions < MAX_INNER) {
+          at += 2;
+          const substitution = read(true, substitutions + 1);
+          if (!substitution.closed)
+            open = true;
+          take(`$(${substitution.raw}`);
           continue;
         }
         if (char === "#" && wordStart && !afterClose) {
@@ -20496,7 +20505,7 @@ function lex(text, options) {
         afterPipe = char === "|";
         if (nested && char === ")" && depth === 0) {
           at++;
-          return `${raw})`;
+          return { closed: true, raw: `${raw})` };
         }
         if (nested && char === "(")
           depth++;
@@ -20517,7 +20526,7 @@ function lex(text, options) {
       at++;
     }
     push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
-    return raw;
+    return { closed: false, raw };
   }
   if (options.body === true)
     readDouble(false);
@@ -20692,8 +20701,21 @@ var CHANGE_DIR = new Set([
 ]);
 var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
 var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
+var CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
 var WRAPPERS = {
   builtin: { long: [], short: "" },
+  busybox: { long: [], short: "" },
+  chrt: {
+    long: [
+      "--sched-runtime",
+      "--sched-period",
+      "--sched-deadline",
+      "--sched-priority",
+      "--reset-on-fork"
+    ],
+    short: "PT",
+    skip: (word) => /^-?\d+$/.test(word)
+  },
   command: { inert: ["-v", "-V"], long: [], short: "" },
   doas: { long: [], short: "uC" },
   env: {
@@ -20702,9 +20724,26 @@ var WRAPPERS = {
     split: { long: "--split-string", short: "S" }
   },
   exec: { long: [], short: "a" },
+  flock: {
+    long: ["--timeout", "--conflict-exit-code", "--command"],
+    short: "wEc",
+    skip: () => true,
+    runs: { long: "--command", short: "c" }
+  },
   ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
   nice: { long: ["--adjustment"], short: "n" },
   nohup: { long: [], short: "" },
+  nsenter: {
+    long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
+    short: "tSG"
+  },
+  script: {
+    long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
+    short: "cEOI",
+    skip: () => true,
+    runs: { long: "--command", short: "c" }
+  },
+  setsid: { long: [], short: "" },
   stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
   sudo: {
     long: [
@@ -20720,8 +20759,10 @@ var WRAPPERS = {
     ],
     short: "ughpCDRTU"
   },
+  taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
   time: { long: [], short: "" },
   timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+  unbuffer: { long: [], short: "" },
   xargs: {
     long: [
       "--arg-file",
@@ -20737,7 +20778,44 @@ var WRAPPERS = {
     short: "adEILnPs"
   }
 };
-var SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
+var SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
+function isWrapper(word) {
+  return WRAPPERS[programName(word)] !== undefined;
+}
+var CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
+var PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
+function packageCommand(program, args) {
+  let rest;
+  if (PACKAGE_RUNNERS.has(program))
+    rest = args;
+  else if (program === "pnpm" && args[0] === "dlx")
+    rest = args.slice(1);
+  else
+    return null;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      const pkg = rest[index + 1];
+      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg) ? { args: rest.slice(index + 2), program: "claude" } : null;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (name === "-p" || name === "--package") {
+      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
+      const pkg = inline ?? rest[index + 1];
+      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg))
+        return null;
+      const after = rest.slice(index + (inline === undefined ? 2 : 1));
+      const command = after[0] === "claude" ? after.slice(1) : after;
+      return { args: [...command], program: "claude" };
+    }
+    if (word.startsWith("-")) {
+      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
+      continue;
+    }
+    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
+  }
+  return null;
+}
 function programName(word) {
   return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
 }
@@ -20756,12 +20834,19 @@ function isShort(arg) {
 }
 function afterWrapper(words, from, spec) {
   let index = from;
+  let skipped = false;
   while (index < words.length) {
     const word = words[index] ?? "";
     if (word === "--")
       return { index: index + 1 };
-    if (!isShort(word) && !word.startsWith("--"))
+    if (!isShort(word) && !word.startsWith("--")) {
+      if (!skipped && spec.skip?.(word) === true) {
+        skipped = true;
+        index++;
+        continue;
+      }
       break;
+    }
     const name = word.split("=")[0] ?? word;
     if (spec.inert?.some((inert) => inert === name || inert === word) === true)
       return;
@@ -20771,6 +20856,10 @@ function afterWrapper(words, from, spec) {
         const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
         const to = index + (valued ? 2 : 1);
         return { index, split: { from: index, to, value, keep: null } };
+      }
+      if (spec.runs !== undefined && name === spec.runs.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
       }
       index += valued ? 2 : 1;
       continue;
@@ -20785,9 +20874,13 @@ function afterWrapper(words, from, spec) {
         split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
       };
     }
+    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
+    }
     index += wantsNext ? 2 : 1;
   }
-  return { index: spec.skip?.(words[index] ?? "") === true ? index + 1 : index };
+  return { index };
 }
 function invocationOf(words) {
   let list = [...words];
@@ -20817,13 +20910,111 @@ function invocationOf(words) {
       splits++;
       continue;
     }
+    if (after.runs !== undefined && splits < MAX_NESTING) {
+      const { from, to, value } = after.runs;
+      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
+      index = from;
+      splits++;
+      continue;
+    }
     index = after.split === undefined ? after.index : after.split.to;
   }
   const first = list[index];
   if (first === undefined)
     return;
-  return { args: list.slice(index + 1), prefix: list.slice(0, index), program: programName(first) };
+  const program = programName(first);
+  const ran = packageCommand(program, list.slice(index + 1));
+  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
+  const command = started ?? ran;
+  return {
+    args: command?.args ?? list.slice(index + 1),
+    computed: isComputedWord(first),
+    prefix: [...list.slice(0, index), ...started?.prefix ?? []],
+    program: command?.program ?? program
+  };
 }
+function isComputedWord(word) {
+  if (!word.startsWith("$") && !word.startsWith("`"))
+    return false;
+  return /[$`(){}[\]\s]/.test(programName(word));
+}
+var START_PROCESS_PARAMETERS = new Map([
+  ["argumentlist", true],
+  ["credential", true],
+  ["erroraction", true],
+  ["errorvariable", true],
+  ["filepath", true],
+  ["informationaction", true],
+  ["informationvariable", true],
+  ["loaduserprofile", false],
+  ["nonewwindow", false],
+  ["outbuffer", true],
+  ["outvariable", true],
+  ["passthru", false],
+  ["pipelinevariable", true],
+  ["redirectstandarderror", true],
+  ["redirectstandardinput", true],
+  ["redirectstandardoutput", true],
+  ["usenewenvironment", false],
+  ["verb", true],
+  ["wait", false],
+  ["warningaction", true],
+  ["warningvariable", true],
+  ["windowstyle", true],
+  ["workingdirectory", true]
+]);
+function startProcessParameter(word) {
+  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
+  const given = match?.[1]?.toLowerCase() ?? "";
+  if (given === "")
+    return null;
+  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
+  const [name] = names;
+  if (names.length !== 1 || name === undefined)
+    return null;
+  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
+}
+function startProcess(args) {
+  let file = null;
+  let list = null;
+  let fresh = null;
+  const positional = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(index + 1));
+      break;
+    }
+    const parameter = startProcessParameter(arg);
+    if (parameter === null) {
+      if (!arg.startsWith("-"))
+        positional.push(arg);
+      continue;
+    }
+    const { name, takesValue } = parameter;
+    let value = parameter.value;
+    if (takesValue && value === undefined) {
+      value = args[index + 1];
+      index++;
+    }
+    if (name === "filepath" && value !== undefined)
+      file = value;
+    else if (name === "argumentlist" && value !== undefined) {
+      list = value.split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
+    } else if (name === "usenewenvironment")
+      fresh = arg;
+  }
+  file ??= positional[0] ?? null;
+  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  if (file === null)
+    return null;
+  return {
+    args: list,
+    prefix: fresh === null ? [] : [START_PROCESS, fresh],
+    program: programName(file)
+  };
+}
+var START_PROCESS = "start-process";
 function withoutRedirections(args) {
   const kept = [];
   for (let index = 0;index < args.length; index++) {
@@ -21670,13 +21861,37 @@ function gitCalls(args) {
   }
   return [];
 }
+var COMPUTED_PUSH_ASK = "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push \u2026`) if you meant it.";
+function namesPush(words) {
+  return words.some((word) => word === "push" || word === "send-pack");
+}
+function computedPushIn(command, dialect) {
+  return readingsOf(command, dialect).some((reading) => shellSteps(command, {
+    blindWhenOpen: true,
+    dialect: reading.dialect,
+    joinLines: reading.joinLines
+  }).some((step) => {
+    const words = wordsOf(step.text, reading.dialect);
+    const invocation = invocationOf(words);
+    return invocation?.computed === true && namesPush(words);
+  }));
+}
 function gitQuestions(args, folder, run) {
   return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+}
+function pushAlias(call) {
+  const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
+  if (value === null || value === undefined)
+    return null;
+  const words = wordsOf(value);
+  const first = words[0] ?? "";
+  return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 function callQuestions(call, folder, run) {
   const { options } = run;
   const { rest, sub } = call;
-  if (sub === "push") {
+  const alias = pushAlias(call);
+  if (sub === "push" || sub === "send-pack" || alias !== null) {
     const where = folder === null ? null : resolve5(folder, ...call.dirs);
     const place = {
       branch: () => where === null ? undefined : currentBranch(where, run),
@@ -21691,7 +21906,7 @@ function callQuestions(call, folder, run) {
       run.refusals.add(CREW_PUSH_REFUSAL);
       return [];
     }
-    return pushQuestions(rest, place, options.protectedBranches, options.pushRules.autoPushAsk);
+    return pushQuestions(alias === null ? rest : [...alias, ...rest], place, options.protectedBranches, options.pushRules.autoPushAsk);
   }
   if (sub === "stash")
     return stashQuestions(rest, options.sharedStash);
@@ -21734,13 +21949,16 @@ function inspect(command, cwd, reading, run, depth = 0) {
   let folder = cwd;
   const { dialect, joinLines } = reading;
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
-    const invocation = invocationOf(wordsOf(step.text, dialect));
+    const words = wordsOf(step.text, dialect);
+    const invocation = invocationOf(words);
     if (invocation === undefined)
       continue;
     const { args, program } = invocation;
     const operands = withoutRedirections(args);
     if (program === "git")
       found.push(...gitQuestions(operands, folder, run));
+    if (invocation.computed && namesPush(words))
+      found.push(COMPUTED_PUSH_ASK);
     if (CHANGE_DIR.has(program))
       folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -21764,7 +21982,7 @@ function guardVerdict(command, cwd, options) {
   return { refuse, ask: refuse.length > 0 ? [] : [...new Set(found)] };
 }
 function runsGit(command, dialect) {
-  return programsOf(command, dialect).includes("git");
+  return programsOf(command, dialect).includes("git") || computedPushIn(command, dialect);
 }
 
 // src/hooks/after-merge.ts
@@ -22540,8 +22758,20 @@ function unquoteYaml(value) {
 function mergesPullRequest(command, dialect) {
   return pullRequestMerges(command, null, dialect).some((one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null));
 }
+var COMPUTED_MERGE = "This command runs a program it works out when it runs, and its words name a merge, so this guard cannot tell whether it merges a pull request. Write the command out in full if you meant it.";
+function computedMergeRisk(command, dialect) {
+  return readingsOf(command, dialect).some((reading) => shellSteps(command, {
+    blindWhenOpen: true,
+    dialect: reading.dialect,
+    joinLines: reading.joinLines
+  }).some((step) => {
+    const words = wordsOf(step.text, reading.dialect);
+    const invocation = invocationOf(words);
+    return invocation?.computed === true && words.some((word) => /merge/i.test(word));
+  }));
+}
 function requestsPullRequestChange(command, dialect) {
-  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms);
+  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms) || computedMergeRisk(command, dialect);
 }
 function exactMergeOf(command, dialect) {
   const readings = readingsOf(command, dialect);
@@ -26966,6 +27196,23 @@ function watchTarget(args) {
 function startsLoop(words) {
   return LOOP_KEYWORDS.has((words[0] ?? "").toLowerCase());
 }
+function loopMark(words, dialect, state) {
+  const first = (words[0] ?? "").toLowerCase();
+  if (dialect === "powershell") {
+    if (first === "while" || first === "do")
+      state.powershellRepeat = true;
+    return state.powershellRepeat;
+  }
+  if (first === "done") {
+    state.open.pop();
+    return state.open.includes("repeat");
+  }
+  if (first === "while" || first === "until")
+    state.open.push("repeat");
+  else if (first === "for" || first === "foreach")
+    state.open.push("fixed");
+  return state.open.includes("repeat");
+}
 function isShellStep(step) {
   return isAssignmentOnly(step.words) || CHANGE_DIR.has(step.program);
 }
@@ -26974,12 +27221,19 @@ function walk(line, dialect, depth, top, all, state) {
     const words = wordsOf(step.text, dialect);
     if (words.length === 0)
       continue;
+    const inRepeat = loopMark(words, dialect, state);
     if (startsLoop(words))
       state.loops = true;
     const invocation = invocationOf(words);
     if (invocation === undefined)
       continue;
-    const read = { args: invocation.args, program: invocation.program, words };
+    const read = {
+      args: invocation.args,
+      computed: invocation.computed,
+      inRepeat,
+      program: invocation.program,
+      words
+    };
     if (depth === 0)
       top.push(read);
     all.push(read);
@@ -26989,20 +27243,39 @@ function walk(line, dialect, depth, top, all, state) {
     }
   }
 }
+function computedLaunch(step) {
+  if (!step.computed)
+    return null;
+  const lower = step.words.map((word) => word.toLowerCase());
+  const bg = lower.some((word) => word === "--bg" || word === "--background");
+  const print = lower.some((word) => word === "-p" || word === "--print") && lower.some((word) => word.includes("claude"));
+  if (!bg && !print)
+    return null;
+  return {
+    effort: optionValue(step.args, "--effort"),
+    form: bg ? "bg" : "print",
+    model: optionValue(step.args, "--model"),
+    prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" ")
+  };
+}
 function readBash(command, dialect = "bash") {
   const top = [];
   const steps = [];
-  const state = { loops: false };
+  const state = { loops: false, open: [], powershellRepeat: false };
   walk(command, dialect, 0, top, steps, state);
   let crewStarts = 0;
   let statusReads = 0;
+  let statusReadsInLoop = 0;
   let waits = state.loops;
   const launches = [];
   for (const step of steps) {
     if (isCrewStart(step.program, step.args))
       crewStarts++;
-    if (isStatusRead(step.program, step.args))
+    if (isStatusRead(step.program, step.args)) {
       statusReads++;
+      if (step.inRepeat)
+        statusReadsInLoop++;
+    }
     if (WAIT_PROGRAMS.has(step.program))
       waits = true;
     const target = step.program === "watch" ? watchTarget(step.args) : null;
@@ -27010,14 +27283,19 @@ function readBash(command, dialect = "bash") {
       const watched = invocationOf(target);
       if (watched !== undefined && isStatusRead(watched.program, watched.args)) {
         statusReads++;
+        statusReadsInLoop++;
         waits = true;
       }
     }
-    const launch = claudeLaunch(step);
+    const launch = claudeLaunch(step) ?? computedLaunch(step);
     if (launch !== null)
       launches.push(launch);
   }
-  return { crewStarts, launches, statusReads, steps, top, waits };
+  const poll = statusReadsInLoop > 0 || sleepsIn(steps) && statusReads > 0;
+  return { crewStarts, launches, poll, statusReads, steps, top, waits };
+}
+function sleepsIn(steps) {
+  return steps.some((step) => WAIT_PROGRAMS.has(step.program));
 }
 function backgroundFor(top) {
   if (top.length === 0)
@@ -27101,7 +27379,7 @@ function judgeBash(reading, context) {
   }
   if (ask !== null)
     return ask;
-  if (reading.statusReads > 0 && reading.waits) {
+  if (reading.poll) {
     return { decision: "deny", reason: pollReason(), why: "poll" };
   }
   return null;
@@ -27116,7 +27394,7 @@ function commandOf(input) {
   return stringField(fields.command);
 }
 function judgedDomain(reading) {
-  return reading.crewStarts > 0 || reading.launches.length > 0 || reading.statusReads > 0 && reading.waits;
+  return reading.crewStarts > 0 || reading.launches.length > 0 || reading.poll;
 }
 
 // src/hooks/job-route.ts
@@ -31416,11 +31694,16 @@ function mergeGuard(context) {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   const dialect = dialectOfTool(input.tool_name);
-  if (command === null || !requestsPullRequestChange(command, dialect))
+  if (command === null)
+    return SILENT;
+  if (!requestsPullRequestChange(command, dialect))
     return SILENT;
   const config = project.config;
   if (config === null)
     return SILENT;
+  if (computedMergeRisk(command, dialect)) {
+    return toolDecision("ask", notByItself(COMPUTED_MERGE));
+  }
   const crew = crewIdOf(env) !== null;
   const admin = adminMerge(pullRequestMerges(command, null, dialect));
   if (admin !== undefined) {
@@ -31846,6 +32129,8 @@ function prefixDrop(prefix, program) {
     return OVERWRITTEN;
   if (prefix.some((word) => RESETTERS.has(programName(word))))
     return RESET;
+  if (prefix.some((word, at) => isFreshEnvironment(prefix[at - 1] ?? "", word)))
+    return RESET;
   for (let at = 0;at < prefix.length; at++) {
     if (programName(prefix[at] ?? "") !== "env")
       continue;
@@ -31883,6 +32168,12 @@ function prefixDrop(prefix, program) {
     }
   }
   return null;
+}
+function isFreshEnvironment(before, parameter) {
+  if (programName(before) !== "start-process")
+    return false;
+  const given = /^-([a-z]+)$/i.exec(parameter)?.[1]?.toLowerCase() ?? "";
+  return given !== "" && "usenewenvironment".startsWith(given);
 }
 var POWERSHELL_DROPS = [
   new RegExp(String.raw`\$\{?env:${CLAUDECODE}\}?\s*=(?!=)`, "i"),
@@ -32014,11 +32305,12 @@ function movedTo2(invocation, folder, ctx) {
 }
 function protectedNeedles(paths) {
   const settings = dirname20(paths.workflowConfigFile);
-  const needles = [PROJECT_FILE, settings, paths.stateDir];
-  for (const folder of [settings, paths.stateDir]) {
+  const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
+  for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative3(paths.home, folder);
     if (!underHome.startsWith("..") && !isAbsolute6(underHome))
       needles.push(underHome);
+    needles.push(realPath(folder));
   }
   return needles.map((needle) => needle.replace(/\\/g, "/").toLowerCase());
 }
@@ -32026,6 +32318,16 @@ function namesProtected(text, paths) {
   const lower = text.replace(/\\/g, "/").toLowerCase();
   return protectedNeedles(paths).some((needle) => lower.includes(needle));
 }
+function innerKitPrefix(program, operands) {
+  const words = [program, ...operands];
+  const atKit = words.findIndex(isKitWord);
+  if (atKit === -1)
+    return [];
+  const atStart = words.slice(0, atKit).findIndex((word) => isWrapper(word) || isAssignmentOnly([word]));
+  return atStart === -1 ? [] : words.slice(atStart, atKit);
+}
+var COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
+var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`, "i");
 var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
@@ -32078,8 +32380,12 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
       const resets = RESETTERS.has(program) ? RESET : null;
       const here = dropped ?? prefixDrop(prefix, program) ?? resets;
       const kit = kitArguments(program, operands);
-      if (kit !== null)
-        judgeKitCommand(kit, here, found);
+      if (kit !== null) {
+        const inside = prefixDrop(innerKitPrefix(program, operands), program);
+        judgeKitCommand(kit, here ?? inside, found);
+      }
+      if (invocation.computed && KIT_WORD.test(ctx.text))
+        found.asks.add(COMPUTED_KIT_ASK);
       if (depth < MAX_NESTING) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {
@@ -32128,8 +32434,12 @@ function judgeShell(input, paths) {
 var PROJECT_FILE_WHAT = `the project's ${COMMAND} settings (the workflow gate, which hooks run)`;
 var SETTINGS_WHAT = "the kit's own settings folder (the person's workflow and gateway settings)";
 var STATE_WHAT = "the kit's own state folder (the review record, the ask log)";
+var PLUGIN_WHAT = "the kit's own installed plugin folder (the guards and hooks Claude Code runs from it)";
 function expanded(path, home) {
   return /^~(?=$|[\\/])/.test(path) ? `${home}${path.slice(1)}` : path;
+}
+function folderForms(folder) {
+  return [folder, realPath(folder)];
 }
 function kitFileKind(path, paths) {
   const parts = path.split(/[\\/]/);
@@ -32138,9 +32448,12 @@ function kitFileKind(path, paths) {
     return PROJECT_FILE_WHAT;
   }
   const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname20);
-  if (settingsFolders.some((folder) => isInside(path, folder, true)))
+  const inside = (folder) => folderForms(folder).some((form) => isInside(path, form, true));
+  if (settingsFolders.some(inside))
     return SETTINGS_WHAT;
-  return isInside(path, paths.stateDir, true) ? STATE_WHAT : null;
+  if (inside(paths.stateDir))
+    return STATE_WHAT;
+  return inside(paths.pluginCacheDir) ? PLUGIN_WHAT : null;
 }
 function editedPaths(input, cwd, home) {
   const fields = toolInput(input);
