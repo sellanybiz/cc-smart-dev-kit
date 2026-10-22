@@ -1435,10 +1435,12 @@ stop the router only after every session restarted.
 - If the router is down, every Claude Code request fails. The service restarts itself;
   `gateway off` and a restart of the sessions is the way out.
 - **A model's context window can disagree** in three places: what Claude Code assumes for
-  the Claude model it thinks it talks to (Opus with `[1m]`: 1M; Haiku: 200K), what
-  OmniRoute's catalog says (it refuses a bigger request itself), and what the provider
-  serves. Check all three before a model goes into a slot; with the fallback on, keep a
-  target with a larger window after one with a smaller one.
+  the Claude model it thinks it talks to (the window its status line reports, which
+  `cc-smart-dev-kit statusline` records and `crew self-watch` measures a crew session
+  against), what OmniRoute's catalog says (it refuses a bigger request itself — and the
+  window `crew self-watch` uses once a backend answers), and what the provider serves. Check all three before a model goes into
+  a slot; with the fallback on, keep a target with a larger window after one with a smaller
+  one.
 - **Images:** OmniRoute leaves an image in a request only when its catalog marks the
   model vision-capable; otherwise another model describes the image and the slot's model
   answers from that caption. Check a new model's image support before it goes in a slot.

@@ -14,16 +14,18 @@
  * **Nothing else is printed.** A crew session that is fine sees nothing. The line is repeated every
  * 15 minutes while it is ignored, so a crew session that missed it sees it again.
  *
- * **The window.** The kit knows no backend's window; Claude Code's own is 200 000 tokens, or
- * 1 000 000 for a model whose name carries `[1m]` (`transcript.ts`). A model the kit does not
- * know has no window, and so no context line — the time lines still apply.
+ * **The window.** The model that wrote the last reply decides it (`context-window.ts`): Claude
+ * Code's own number when the status line recorded one for that model, the kit's table
+ * otherwise, and a backend's own model list for a bare backend model. A model whose window the
+ * kit cannot know has no window, and so no context line — the time lines still apply.
  */
 import { COMMAND } from "../build-info/names";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
+import { windowWatch } from "./context-window";
 import { runningCrew } from "./places";
 import { readCrew, readSelfWatchState, writeSelfWatchState } from "./store";
-import { contextPercent, contextUseOf, contextWindowOf, transcriptFile } from "./transcript";
+import { contextPercent, contextUseOf, transcriptFile } from "./transcript";
 
 /** How long the crew session waits before it says the same line again. */
 export const SELF_WATCH_REPEAT_MS = 15 * 60_000;
@@ -111,6 +113,9 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
   const { repo, resolved } = self.self;
   let { record } = self.self;
   const thresholds = thresholdsOf(resolved);
+  // What it learns about windows is kept between polls: the gateway config once, and a
+  // backend's list for its own lifetime (`context-window.ts`).
+  const windows = windowWatch({ paths: ctx.paths });
   // A line that is ignored is said again when its time is up, and the watch keeps looking —
   // until the crew session's phase is over: a crew session that hands off or reports ends its work, and
   // its monitor has nothing more to say.
@@ -122,7 +127,7 @@ export async function runCrewSelfWatch(ctx: CrewContext, once = false): Promise<
         : contextUseOf(transcriptFile(ctx.paths.projectsDir, record.worktree, record.sessionId));
     // The model that wrote the last reply is the truth about the window (a fallback target may
     // have answered); the record's own model stands in before there is a reply.
-    const window = contextWindowOf(usage?.model ?? record.model.resolved);
+    const window = await windows.of(usage?.model ?? record.model.resolved, now);
     const percent = usage === null ? null : contextPercent(usage, window);
     const hours = hoursSince(Date.parse(record.startedAt ?? record.createdAt), now);
     const advice = adviceFor(percent, hours, thresholds);
