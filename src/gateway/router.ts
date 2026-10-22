@@ -30,7 +30,10 @@
  *     that answered 429 / 5xx rests a while (`cooldownSeconds`); the last target of a
  *     slot is always tried. A client that hangs up rests nothing. When the chain is used
  *     up, its last answer (or a 502) goes back: the router never adds a target of its
- *     own, Claude included.
+ *     own, Claude included. With the slot's breaker on (`breakerOn`) there is one
+ *     exception: when every target failed for want of capacity and the last one is a
+ *     backend, the request is held for a while (`./breaker.ts`) and then answered with a
+ *     429 that Claude Code retries by itself; Anthropic's own answers always pass.
  *   - An explicit `<backend>:<model>` → that backend, no fallback.
  *   - Auto mode's safety check (`isAutoModeGuard`, on the request as it came, so an old
  *     name in `aliases` is seen too) → the `cc-smart-dev-kit-judge` slot's tested targets when
@@ -88,6 +91,26 @@ import { dirname } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { atomicWrite } from "../setup/write";
 import {
+  BREAKER_HEARTBEAT_WAIT_MS,
+  BREAKER_MAX_HELD,
+  BREAKER_POLL_MS,
+  BREAKER_RELEASED_RETRY_AFTER_SEC,
+  BREAKER_REMINDER_MS,
+  BREAKER_SHUTDOWN_RETRY_AFTER_SEC,
+  type BreakerFailure,
+  breakerAnswer,
+  capRetryAfter,
+  clientRetryAfter,
+  describeFailures,
+  earliestRestSeconds,
+  formatDuration,
+  isCapacityFailure,
+  slotShortName,
+} from "./breaker";
+import {
+  BREAKER_HOLD_NON_STREAMING_MS,
+  breakerHoldMs,
+  breakerOn,
   fallbackOn,
   type GatewayConfig,
   judgeTargetUsable,
@@ -103,8 +126,10 @@ import {
 } from "./fallback-answer";
 import { type BackendFetchOptions, backendFetch } from "./hosts";
 import {
+  currentBreakers,
   currentLimits,
   emptyLimitState,
+  formatClock,
   formatLimitState,
   type LimitState,
   parseLimitState,
@@ -112,6 +137,7 @@ import {
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
 import type { RouterPaths } from "./paths";
 import { maskedLine, oneLine } from "./plain-text";
+import { backendRefusal, isRefusalStatus, REFUSAL_STATUS } from "./refusal";
 import {
   addCheckTokens,
   type CheckSide,
@@ -224,6 +250,16 @@ export interface RouterDeps {
    * before an answer; it may throw, and the router logs that once. Absent: no file.
    */
   saveState?: (text: string) => void;
+  /**
+   * Aborted when the router is told to stop (SIGTERM): every request the breaker holds is
+   * answered at once with a short `retry-after`, so the drain stays short. Absent: never.
+   */
+  shutdown?: AbortSignal;
+  /**
+   * Waits `ms` milliseconds: how the breaker's hold passes its seconds. Absent: a timer. A test
+   * passes one that moves its fake clock (`now`) instead of waiting.
+   */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** How often a slot's fallback record's `lastAt` reaches the state file, at most: once a minute. */
@@ -287,12 +323,19 @@ export function anthropicError(status: number, type: string, message: string): R
 
 /**
  * What Claude Code gets when the target that answers last is a backend refusing its own key
- * (401 or 403): a 400 in Anthropic's error shape that names the backend and the check to run,
+ * (401 or 403): an error in Anthropic's shape that names the backend and the check to run,
  * with `x-should-retry: false`. Never the 401 itself, which Claude Code reads as the person's
- * own login failing. The exact status Claude Code 2.1.300 shows and does not retry:
- * docs/claude-code-contract.md.
+ * own login failing. A 400 is not retried (Claude Code 2.1.300), but since 2.1.304 it is sent
+ * again without its deferred tools, so a model call gets `REFUSAL_STATUS` instead
+ * (`./refusal.ts`); auto mode's safety check (`resendSafe` false) has no deferred tools and
+ * keeps the 400. docs/claude-code-contract.md.
  */
-export function backendKeyRefused(label: string, backend: string, status: number): Response {
+export function backendKeyRefused(
+  label: string,
+  backend: string,
+  status: number,
+  resendSafe = true,
+): Response {
   return Response.json(
     {
       error: {
@@ -301,7 +344,7 @@ export function backendKeyRefused(label: string, backend: string, status: number
       },
       type: "error",
     },
-    { headers: { "x-should-retry": "false" }, status: 400 },
+    { headers: { "x-should-retry": "false" }, status: resendSafe ? REFUSAL_STATUS : 400 },
   );
 }
 
@@ -358,7 +401,11 @@ export function retryAfterSeconds(value: null | string, nowMs: number): null | n
   return Math.max(0, Math.ceil((at - nowMs) / 1000));
 }
 
-/** Response headers for the client; an affordable backend's `retry-after` made whole seconds. */
+/**
+ * Response headers for the client; an affordable backend's `retry-after` made whole seconds
+ * and capped at what Claude Code waits for (`capRetryAfter`): above 60 it ends the request at
+ * once instead of retrying, even with the breaker off.
+ */
 function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number): Headers {
   const dropped = droppedHeaders(upstream);
   const out = new Headers();
@@ -366,7 +413,7 @@ function responseHeaders(upstream: Headers, normalizeRetryAfterAt: null | number
     if (dropped.has(name) || name.startsWith("proxy-")) return;
     if (name === "retry-after" && normalizeRetryAfterAt !== null) {
       const seconds = retryAfterSeconds(value, normalizeRetryAfterAt);
-      if (seconds !== null) out.set(name, String(seconds));
+      if (seconds !== null) out.set(name, String(capRetryAfter(seconds)));
       return;
     }
     out.append(name, value);
@@ -877,6 +924,17 @@ function sameModel(a: string, b: string): boolean {
 
 /** How one request ended — the log line and the response. */
 interface Outcome {
+  /**
+   * The breaker's own answer (`breaker(<slot>)` is the target): whether the request waited
+   * in the hold, and how many upstream calls it made as a probe while the breaker was open.
+   */
+  breaker?: { held: boolean; probes: number };
+  /**
+   * Set when the breaker applies and every target in use failed for want of capacity (or
+   * rests, or is being probed by another request): each one's failure. `response` is then the
+   * answer that would go back, and the caller drops it when it holds the request instead.
+   */
+  capacity?: BreakerFailure[];
   fallbacks: number;
   response: Response;
   skipped: number;
@@ -884,6 +942,54 @@ interface Outcome {
 }
 
 type Attempt = { failure: string; status: null | number } | { response: Response };
+
+/** A target's result in one pass over a chain; `capacity` says whether it is a capacity failure. */
+interface AttemptRecord extends BreakerFailure {
+  capacity: boolean;
+}
+
+/**
+ * How a pass over a chain treats the breaker (`chain`'s `hold`); null where the breaker does
+ * not apply (breaker off, the judge, `count_tokens`, an explicit `<backend>:<model>`).
+ */
+interface HoldMode {
+  /**
+   * The slot's breaker is open: a resting backend is not asked even when it is the last
+   * target, and only one request at a time asks each target (the probe).
+   */
+  holding: boolean;
+  /**
+   * How long the last backend of a streaming request may take to give its headers and its
+   * first real event (`BREAKER_HEARTBEAT_WAIT_MS`, less what is left of the hold). Null: no
+   * deadline.
+   */
+  lastWaitMs: null | number;
+  /** Upstream calls made as a probe, counted for the request's log line. */
+  probes: { count: number };
+}
+
+/** A slot whose breaker is open now: what the router keeps in memory (`limitState.breakers`). */
+interface OpenBreaker {
+  /** Each target's last failure, from the last pass over the chain. */
+  failures: BreakerFailure[];
+  /** Requests held since it opened. */
+  held: number;
+  /** Requests waiting in the hold now. */
+  heldNow: number;
+  /** Milliseconds: the last reminder line, or when it opened. */
+  reminderAt: number;
+  /** Milliseconds: the last write of its record to the state file. */
+  savedAt: number;
+  /** Milliseconds: when it opened. */
+  since: number;
+}
+
+/** An empty record is dropped from the state, so a file without breakers reads as none. */
+function withoutEmptyBreakers(state: LimitState): void {
+  if (state.breakers !== undefined && Object.keys(state.breakers).length === 0) {
+    delete state.breakers;
+  }
+}
 
 /**
  * How much of a safety check's answer is kept to read its `usage`. The answer to a check
@@ -961,6 +1067,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     name: "the limit state",
     after: "it starts over",
   });
+  // A breaker record a stopped router left behind is dropped once it is no longer current.
+  for (const slot of Object.keys(limitState.breakers ?? {})) {
+    if (!currentBreakers(limitState, deps.now()).some(([key]) => key === slot)) {
+      delete limitState.breakers?.[slot];
+    }
+  }
+  withoutEmptyBreakers(limitState);
   /** Auto mode's safety checks counted so far, by local day (`safety-checks.ts`). */
   const safetyChecks: SafetyCheckState = loadedState(
     deps.loadSafetyChecks,
@@ -988,6 +1101,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const restoredLogged = new Set<string>();
   /** The config the fallback records were last checked against (`dropRemovedFallbacks`). */
   let checkedConfig: GatewayConfig | null = null;
+  /** Slots whose breaker is open now. In memory: a restart starts closed, the record stays. */
+  const openBreakers = new Map<string, OpenBreaker>();
+  /** Targets a request is probing now, while a breaker is open: one request at a time asks each. */
+  const probing = new Set<string>();
+  /** Why each resting target rests (its last failure), for the breaker's answer and record. */
+  const restReasons = new Map<string, { reason: string; status: null | number }>();
+  const sleep =
+    deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   /** Write the state file in the background, once for any number of changes in a row. */
   const persist = stateWriter(
@@ -1137,6 +1258,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       changed = true;
     }
     if (changed) persist();
+    // A breaker for a slot taken out of the config, or switched off, is over.
+    for (const slot of new Set([
+      ...openBreakers.keys(),
+      ...Object.keys(limitState.breakers ?? {}),
+    ])) {
+      if (Object.hasOwn(config.slots, slot) && breakerOn(config, slot)) continue;
+      closeBreaker(slot, "removed from the config or switched off");
+    }
   }
 
   /**
@@ -1346,12 +1475,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const scanner = sseScanner();
     const held: Uint8Array[] = [];
     /** `status` null on a timeout (the target rests), the 2xx otherwise (it does not). */
-    const fail = async (failure: string, status: null | number): Promise<Attempt> => {
-      try {
-        await reader.cancel();
-      } catch (error) {
+    const fail = (failure: string, status: null | number): Attempt => {
+      // Not awaited: a stalled upstream may never settle its cancel, and the request must go
+      // on to the next target (and the target rest) whatever the upstream does.
+      reader.cancel().catch((error: unknown) => {
         deps.log(`WARN could not cancel a held upstream stream: ${messageOf(error)}`);
-      }
+      });
       return { failure, status };
     };
     for (;;) {
@@ -1613,7 +1742,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         ? retryAfterSeconds(result.response.headers.get("retry-after"), deps.now())
         : null;
     const seconds = cooldownSeconds(status, retryAfter);
-    if (seconds !== null) cooling.set(label, deps.now() + seconds * 1000);
+    if (seconds === null) return;
+    cooling.set(label, deps.now() + seconds * 1000);
+    restReasons.set(label, {
+      reason: printable("response" in result ? `HTTP ${status}` : result.failure, 120),
+      status,
+    });
   }
 
   /** The targets resting now, with the seconds left; expired ones are forgotten. */
@@ -1643,6 +1777,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * it is the last. The last target's answer is returned whatever it is; with no
    * answer at all, a 502 in Anthropic's error shape. The caller passes only the targets
    * in use (`targetsInUse`): with the fallback switch off, one.
+   *
+   * With `hold` (the slot's breaker applies), the outcome also says whether every target
+   * failed for want of capacity (`Outcome.capacity`): the caller then holds the request. While
+   * a breaker is open (`hold.holding`), a resting backend is not asked even as the last
+   * target, and one request at a time asks each target. Anthropic's answer is always the
+   * answer, however it failed, so the last target being Anthropic never sets `capacity`.
    */
   async function chain(
     req: Request,
@@ -1654,10 +1794,32 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     guard: boolean,
     /** The Claude model the request named, and its bytes (`targetUpstream`); a size WARN names it. */
     asked: Asked | null = null,
+    hold: HoldMode | null = null,
   ): Promise<Outcome> {
     // A safety check is no conversation: the hint below ("/compact it …") would mislead.
     const standsInFor = guard ? null : (asked?.model ?? null);
     const failures: string[] = [];
+    /** Each target's result in this pass, for the breaker. */
+    const records: AttemptRecord[] = [];
+    const note = (
+      label: string,
+      status: null | number,
+      reason: string,
+      capacity: boolean,
+      until: number = cooling.get(label) ?? deps.now(),
+    ): void => {
+      records.push({ capacity, reason: printable(reason, 120), status, target: label, until });
+    };
+    /** Every target failed for want of capacity: each one's failure; undefined otherwise. */
+    const capacityOf = (): BreakerFailure[] | undefined =>
+      hold !== null && records.length > 0 && records.every((record) => record.capacity)
+        ? records.map((record) => ({
+            reason: record.reason,
+            status: record.status,
+            target: record.target,
+            until: record.until,
+          }))
+        : undefined;
     let fallbacks = 0;
     let skipped = 0;
     /** The last target gave no headers by its deadline (only a safety check's judge has one). */
@@ -1666,8 +1828,26 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const last = index === targets.length - 1;
       const label = formatTarget(target);
       const restsUntil = cooling.get(label);
-      if (!last && restsUntil !== undefined && restsUntil > deps.now()) {
+      const resting = restsUntil !== undefined && restsUntil > deps.now();
+      // While a breaker is open, a resting backend is not asked even as the last target: the
+      // requests that wait would otherwise ask it all at once. An Anthropic last target is
+      // always asked, and its answer is the answer.
+      if (resting && (!last || (hold?.holding === true && target.kind === "backend"))) {
         failures.push(`${label}: resting after a failure`);
+        const why = restReasons.get(label);
+        note(
+          label,
+          why?.status ?? null,
+          why?.reason ?? "resting after a failure",
+          true,
+          restsUntil,
+        );
+        skipped += 1;
+        continue;
+      }
+      if (hold?.holding === true && probing.has(label)) {
+        failures.push(`${label}: another request is asking it`);
+        note(label, null, "another request is probing it", true);
         skipped += 1;
         continue;
       }
@@ -1678,45 +1858,65 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       // An auto-mode check on a backend (the judge) gets the deadline on every target, the
       // last too, though it does not stream: a judge that hangs would hold every action, the
       // judge after it would never be asked, and a lone judge would never answer at all.
+      // With the breaker on, the last backend of a streaming request gets one too, a long one:
+      // a stream of heartbeats only would stall Claude Code for 5 minutes, and a target that
+      // never gives a real event opens the breaker instead.
+      const lastWaitMs =
+        hold !== null && last && target.kind === "backend" && body.stream === true
+          ? hold.lastWaitMs
+          : null;
       const deadlineAt =
         target.kind === "backend" && (guard || (!last && body.stream === true))
           ? deps.now() + config.timeouts.firstByteMs
-          : null;
+          : lastWaitMs !== null
+            ? deps.now() + lastWaitMs
+            : null;
       const built = targetUpstream(req, url, config, body, target, guard, asked);
-      let result: Attempt =
-        "error" in built
-          ? { failure: built.error, status: null }
-          : await send(req, built.upstream, deadlineAt);
-      if (req.signal.aborted) return closed(result, label);
-      if (target.kind === "anthropic" && "response" in result) {
-        observeClaude(target.model, result.response, url.pathname);
+      // A call made while a breaker is open is a probe: it is the only one for this target.
+      const probe = hold?.holding === true && !("error" in built);
+      if (probe) {
+        probing.add(label);
+        if (hold !== null) hold.probes.count += 1;
       }
-      // A backend's stream is held until its first real event while another target can
-      // still answer, and for a safety check on every target, the last too: its deadline
-      // holds after the headers as well (a stream of heartbeats would hold every action).
-      if (
-        "response" in result &&
-        (!last || guard) &&
-        target.kind === "backend" &&
-        result.response.ok &&
-        (result.response.headers.get("content-type") ?? "").includes("text/event-stream")
-      ) {
-        result = await holdFirstEvent(result.response, deadlineAt, {
-          known: knownSecrets(req, config),
-          last,
-        });
-        // A hang-up during the hold breaks the read: the client's doing, not the
-        // target's — it must not rest the target for every other session.
+      let result: Attempt;
+      try {
+        result =
+          "error" in built
+            ? { failure: built.error, status: null }
+            : await send(req, built.upstream, deadlineAt);
         if (req.signal.aborted) return closed(result, label);
-      } else if (
-        "response" in result &&
-        !last &&
-        target.kind === "backend" &&
-        result.response.ok &&
-        (result.response.headers.get("content-type") ?? "").includes("application/json")
-      ) {
-        result = await readJsonAnswer(result.response, knownSecrets(req, config));
-        if (req.signal.aborted) return closed(result, label);
+        if (target.kind === "anthropic" && "response" in result) {
+          observeClaude(target.model, result.response, url.pathname);
+        }
+        // A backend's stream is held until its first real event while another target can
+        // still answer, and for a safety check on every target, the last too: its deadline
+        // holds after the headers as well (a stream of heartbeats would hold every action).
+        if (
+          "response" in result &&
+          (!last || guard || lastWaitMs !== null) &&
+          target.kind === "backend" &&
+          result.response.ok &&
+          (result.response.headers.get("content-type") ?? "").includes("text/event-stream")
+        ) {
+          result = await holdFirstEvent(result.response, deadlineAt, {
+            known: knownSecrets(req, config),
+            last,
+          });
+          // A hang-up during the hold breaks the read: the client's doing, not the
+          // target's — it must not rest the target for every other session.
+          if (req.signal.aborted) return closed(result, label);
+        } else if (
+          "response" in result &&
+          !last &&
+          target.kind === "backend" &&
+          result.response.ok &&
+          (result.response.headers.get("content-type") ?? "").includes("application/json")
+        ) {
+          result = await readJsonAnswer(result.response, knownSecrets(req, config));
+          if (req.signal.aborted) return closed(result, label);
+        }
+      } finally {
+        if (probe) probing.delete(label);
       }
       // Only a model's answer says whether a target can answer: a `count_tokens` answer
       // neither starts nor ends a rest (its 200 during a plan limit says nothing of it).
@@ -1725,6 +1925,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         lastTimedOut =
           last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
         failures.push(`${label}: ${result.failure}`);
+        // A target missing from the config is the person's to fix, never a want of capacity.
+        note(
+          label,
+          result.status,
+          result.failure,
+          !("error" in built) && isCapacityFailure(result.status),
+        );
         if (!last) {
           fallbacks += 1;
           deps.log(`WARN ${label} failed (${result.failure}); trying the next target`);
@@ -1765,7 +1972,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           );
           return {
             fallbacks,
-            response: backendKeyRefused(label, target.backend, status),
+            response: backendKeyRefused(label, target.backend, status, !guard),
             skipped,
             target: label,
           };
@@ -1773,15 +1980,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         if (status >= 400) {
           // Any target, Anthropic too: its reason is the only trace of why the slot
           // failed. Read from a copy: Claude Code still gets the whole answer, at once.
-          logErrorAnswer(
-            result.response.clone(),
-            knownSecrets(req, config),
-            `WARN ${label} answered ${status}; returned as it is`,
+          const known = knownSecrets(req, config);
+          const follow =
             target.kind === "anthropic"
               ? signatureWarn(target.model, status)
               : standsInFor === null || (status !== 400 && status !== 413)
                 ? undefined
-                : (snippet) => {
+                : (snippet: string) => {
                     const kind = TOO_LONG.test(snippet)
                       ? "too long"
                       : UNSUPPORTED.test(snippet)
@@ -1791,10 +1996,46 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
                     deps.log(
                       `WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than ${label} takes: /compact it, start a new one, or put a target that takes it first in ${name}`,
                     );
-                  },
+                  };
+          if (
+            target.kind === "backend" &&
+            !guard &&
+            url.pathname === MESSAGES_PATH &&
+            isRefusalStatus(status)
+          ) {
+            // Claude Code sends a 400 or 422 it does not know again without its deferred
+            // tools, and the chain is walked twice: relay the refusal in a form it does not
+            // send again (`./refusal.ts`). The reason is read here, so the answer waits for it
+            // (one chunk, at most a second).
+            const snippet = await errorSnippet(result.response, known);
+            const refused = backendRefusal(label, status, snippet);
+            deps.log(
+              `WARN ${label} answered ${status}; returned as a ${refused.status} (Claude Code would send a ${status} again without its deferred tools) — ${snippet}`,
+            );
+            follow?.(snippet);
+            return { fallbacks, response: refused, skipped, target: label };
+          }
+          logErrorAnswer(
+            result.response.clone(),
+            known,
+            `WARN ${label} answered ${status}; returned as it is`,
+            follow,
           );
         }
-        return { fallbacks, response: relay(result.response, target), skipped, target: label };
+        const answer: Outcome = {
+          fallbacks,
+          response: relay(result.response, target),
+          skipped,
+          target: label,
+        };
+        // The last backend failed for want of capacity: when every other target did too, the
+        // breaker decides what the request gets (Anthropic's answer is never held).
+        if (last && hold !== null && target.kind === "backend" && isCapacityFailure(status)) {
+          note(label, status, `HTTP ${status}`, true);
+          const capacity = capacityOf();
+          if (capacity !== undefined) answer.capacity = capacity;
+        }
+        return answer;
       }
       // Reading the snippet also cancels the rest of this discarded answer; the next
       // target is asked meanwhile.
@@ -1804,11 +2045,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         `WARN ${label} answered ${status}; trying the next target`,
       );
       failures.push(`${label}: HTTP ${status}`);
+      note(label, status, `HTTP ${status}`, isCapacityFailure(status));
       fallbacks += 1;
     }
     const lastTarget = targets.at(-1);
     const answered = failures.join("; ") || "no targets";
+    const capacity = capacityOf();
     return {
+      ...(capacity === undefined ? {} : { capacity }),
       fallbacks,
       // A judge that never answered: a timeout in Anthropic's shape, so Claude Code fails the
       // check (and asks the person, or tries another model) instead of waiting on it.
@@ -1837,6 +2081,264 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     };
   }
 
+  /** How long one request may be held, from its start: 60 s at most when it does not stream. */
+  function holdLimitMs(config: GatewayConfig, body: Record<string, unknown>): number {
+    const limit = breakerHoldMs(config);
+    return body.stream === true ? limit : Math.min(limit, BREAKER_HOLD_NON_STREAMING_MS);
+  }
+
+  /** How a pass over the chain treats the breaker (`HoldMode`). */
+  function holdMode(
+    config: GatewayConfig,
+    body: Record<string, unknown>,
+    startMs: number,
+    holding: boolean,
+    probes: { count: number },
+  ): HoldMode {
+    const limit = holdLimitMs(config, body);
+    // The wait counts from the request's start, so it and the hold stay under the ceiling.
+    const left = Math.max(startMs + limit - deps.now(), 1);
+    return {
+      holding,
+      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, left),
+      probes,
+    };
+  }
+
+  /** Put a slot's open breaker into the limit state and queue the write. */
+  function recordBreaker(slot: string, open: OpenBreaker): void {
+    const now = deps.now();
+    open.savedAt = now;
+    limitState.breakers = {
+      ...limitState.breakers,
+      [slot]: {
+        held: open.held,
+        lastAt: now,
+        since: open.since,
+        targets: open.failures.map((failure) => ({
+          status: failure.status,
+          target: failure.target,
+          until: failure.until,
+        })),
+      },
+    };
+    persist();
+  }
+
+  /**
+   * The slot's breaker, opened if it is not: one WARN and one write of its record when it
+   * opens (a record a restart kept gives its start back), and the targets' failures kept
+   * fresh after that. The record's `lastAt` reaches the file at most once a minute while
+   * requests keep coming, so a router that stopped leaves a record that goes stale
+   * (`currentBreakers`).
+   */
+  function breakerFor(slot: string, failures: BreakerFailure[], holdMs: number): OpenBreaker {
+    const now = deps.now();
+    const existing = openBreakers.get(slot);
+    if (existing !== undefined) {
+      existing.failures = failures;
+      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS) recordBreaker(slot, existing);
+      return existing;
+    }
+    const before = currentBreakers(limitState, now).find(([key]) => key === slot)?.[1];
+    const open: OpenBreaker = {
+      failures,
+      held: before?.held ?? 0,
+      heldNow: 0,
+      reminderAt: now,
+      savedAt: now,
+      since: before?.since ?? now,
+    };
+    openBreakers.set(slot, open);
+    recordBreaker(slot, open);
+    const wait = clientRetryAfter(earliestRestSeconds(failures, now));
+    deps.log(
+      `WARN ${slot}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`,
+    );
+    return open;
+  }
+
+  /**
+   * The breaker is over for this slot: a target answered, or the slot's switch went off or
+   * the slot left the config. Its record leaves the state, with one line. A record a restart
+   * kept, for a breaker this router never opened, goes the same way.
+   */
+  function closeBreaker(slot: string, why: string): void {
+    const open = openBreakers.get(slot);
+    const stored =
+      limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, slot)
+        ? limitState.breakers[slot]
+        : undefined;
+    if (open === undefined && stored === undefined) return;
+    const since = open?.since ?? stored?.since ?? deps.now();
+    const held = open?.held ?? stored?.held ?? 0;
+    openBreakers.delete(slot);
+    delete limitState.breakers?.[slot];
+    withoutEmptyBreakers(limitState);
+    persist();
+    deps.log(`${slot}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
+  }
+
+  /** The breakers open now, for the health page. */
+  function breakersNow(): Record<string, unknown> {
+    return Object.fromEntries(
+      [...openBreakers].map(([slot, open]) => [
+        slot,
+        {
+          held: open.held,
+          heldNow: open.heldNow,
+          since: open.since,
+          targets: open.failures.map((failure) => ({
+            status: failure.status,
+            target: failure.target,
+            until: failure.until,
+          })),
+        },
+      ]),
+    );
+  }
+
+  /**
+   * Waits `ms` (`RouterDeps.sleep`), or less: it ends at once when a signal aborts (the
+   * client hung up, the router is stopping).
+   */
+  function pause(ms: number, ...signals: (AbortSignal | undefined)[]): Promise<void> {
+    return new Promise((resolve) => {
+      const live = signals.filter((signal) => signal !== undefined);
+      const finish = () => {
+        for (const signal of live) signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      if (live.some((signal) => signal.aborted)) return finish();
+      for (const signal of live) signal.addEventListener("abort", finish, { once: true });
+      void sleep(ms).then(finish);
+    });
+  }
+
+  /**
+   * Holds a request whose slot has every target limited or down, up to its hold (from its
+   * start), and answers a 429 Claude Code retries by itself (`breakerAnswer`).
+   *
+   * While it waits, the config is read once a second: a changed chain is served at once, a
+   * slot taken out of the config releases the request (retry-after 1: the retry routes it
+   * the way a new request goes), and a switch turned off serves it the normal way. Each pass
+   * asks only a target that does not rest and that no other request is probing, so the
+   * waiting requests are not a storm: a probe that answers closes the breaker and every
+   * request goes on the normal chain. A hang-up rests nothing (499). At most
+   * `BREAKER_MAX_HELD` requests wait per slot: the next one is answered at once. At SIGTERM
+   * every waiting request is answered with a short `retry-after`.
+   */
+  async function holdRequest(
+    ctx: {
+      asked: Asked | null;
+      body: Record<string, unknown>;
+      probes: { count: number };
+      req: Request;
+      slot: string;
+      startMs: number;
+      url: URL;
+    },
+    config0: GatewayConfig,
+    targets0: Target[],
+    first: Outcome,
+  ): Promise<{ outcome: Outcome; targets: Target[] }> {
+    const { asked, body, probes, req, slot, startMs, url } = ctx;
+    let config = config0;
+    let targets = targets0;
+    let outcome = first;
+    let open = breakerFor(slot, first.capacity ?? [], holdLimitMs(config, body));
+    let counted: OpenBreaker | null = null;
+    /** The router was told to stop (SIGTERM). */
+    const stopping = (): boolean => deps.shutdown?.aborted === true;
+    const answer = (response: Response): { outcome: Outcome; targets: Target[] } => ({
+      outcome: {
+        breaker: { held: counted !== null, probes: probes.count },
+        fallbacks: 0,
+        response,
+        skipped: 0,
+        target: `breaker(${slot})`,
+      },
+      targets,
+    });
+    try {
+      for (;;) {
+        // The answer a pass would have given is not used: drop its body.
+        void discard(outcome.response);
+        const now = deps.now();
+        const failures = outcome.capacity ?? [];
+        const endsAt = startMs + holdLimitMs(config, body);
+        const reply = (retryAfterSec?: number, message?: string): Response =>
+          breakerAnswer({
+            failures,
+            nowMs: now,
+            sinceMs: open.since,
+            slot,
+            ...(retryAfterSec === undefined ? {} : { retryAfterSec }),
+            ...(message === undefined ? {} : { message }),
+          });
+        if (stopping()) {
+          return answer(
+            reply(
+              BREAKER_SHUTDOWN_RETRY_AFTER_SEC,
+              `cc-smart-dev-kit-router: the router is restarting; ${slot} had no target answering. Ask again`,
+            ),
+          );
+        }
+        if (now >= endsAt) {
+          if (now - open.reminderAt >= BREAKER_REMINDER_MS) {
+            open.reminderAt = now;
+            deps.log(
+              `WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), now)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`,
+            );
+          }
+          return answer(reply());
+        }
+        if (counted === null) {
+          if (open.heldNow >= BREAKER_MAX_HELD) return answer(reply());
+          counted = open;
+          open.heldNow += 1;
+          open.held += 1;
+        }
+        await pause(Math.min(BREAKER_POLL_MS, endsAt - now), req.signal, deps.shutdown);
+        // The client hung up: rest nothing, as for any hang-up.
+        if (req.signal.aborted) {
+          return answer(anthropicError(499, "api_error", "client closed the request"));
+        }
+        if (stopping()) continue;
+        const next = deps.getConfig();
+        const route = resolveRoute(slot, next);
+        if (route.kind !== "slot" || route.targets.length === 0) {
+          return answer(
+            reply(
+              BREAKER_RELEASED_RETRY_AFTER_SEC,
+              `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`,
+            ),
+          );
+        }
+        config = next;
+        targets = targetsInUse(route.targets, fallbackOn(next, slot));
+        const holds = breakerOn(next, slot);
+        outcome = await chain(
+          req,
+          url,
+          config,
+          body,
+          targets,
+          slot,
+          false,
+          asked,
+          holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+        );
+        if (req.signal.aborted) return { outcome, targets };
+        // A target answered (or the switch went off): the request goes on the normal way.
+        if (outcome.capacity === undefined) return { outcome, targets };
+        open = breakerFor(slot, outcome.capacity, holdLimitMs(config, body));
+      }
+    } finally {
+      if (counted !== null) counted.heldNow -= 1;
+    }
+  }
+
   /**
    * A slot's request, the same way for every slot: its targets in use (`targetsInUse`: the
    * whole chain while its fallback switch is on, the first alone while it is off), in order
@@ -1859,9 +2361,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     guard: boolean,
     asked: Asked | null,
   ): Promise<Outcome> {
-    const targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
-    const first = targets[0];
+    const startMs = deps.now();
+    let targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
     if (url.pathname === COUNT_TOKENS_PATH) {
+      const first = targets[0];
       // Token counting has no fallback: the first target answers, or no one does.
       if (first === undefined || first.kind === "backend") {
         return {
@@ -1877,8 +2380,37 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       return chain(req, url, config, body, [first], slot, guard, asked);
     }
-    const outcome = await chain(req, url, config, body, targets, slot, guard, asked);
-    if (req.signal.aborted || first === undefined) return outcome;
+    // The breaker applies to a model call of a slot whose switch is on, never to a safety
+    // check (it has a deadline on every target and a 504; a held check would freeze every
+    // action). An explicit `<backend>:<model>` does not come through here at all.
+    const breaks = !guard && url.pathname === MESSAGES_PATH && breakerOn(config, slot);
+    const probes = { count: 0 };
+    let outcome = await chain(
+      req,
+      url,
+      config,
+      body,
+      targets,
+      slot,
+      guard,
+      asked,
+      breaks ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+    );
+    if (breaks && outcome.capacity !== undefined && !req.signal.aborted) {
+      const held = await holdRequest(
+        { asked, body, probes, req, slot, startMs, url },
+        config,
+        targets,
+        outcome,
+      );
+      outcome = held.outcome;
+      targets = held.targets;
+    }
+    const first = targets[0];
+    if (breaks && outcome.breaker === undefined && !req.signal.aborted && outcome.response.ok) {
+      closeBreaker(slot, "answers again");
+    }
+    if (req.signal.aborted || first === undefined || outcome.breaker !== undefined) return outcome;
     if (first.kind === "anthropic" && outcome.target !== formatTarget(first)) {
       const limited = withoutContextSuffix(first.model);
       const limit = currentLimits(limitState, deps.now()).find(([model]) => model === limited);
@@ -2327,7 +2859,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const url = new URL(req.url);
     const model = { name: "-" };
     const line = (outcome: Outcome) =>
-      `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`;
+      `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
+        outcome.breaker === undefined
+          ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`
+          : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`
+      }`;
 
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -2338,6 +2874,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
     if (req.method === "GET" && url.pathname === HEALTH_PATH) {
       return Response.json({
+        breakers: breakersNow(),
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
         ok: true,
@@ -2410,6 +2947,9 @@ export async function startRouter(
       throw error;
     }
   };
+  // Aborted at SIGTERM: the requests the breaker holds are answered at once (retry-after 5),
+  // so the drain below does not wait for their hold.
+  const shutdown = new AbortController();
   const handlerFor = (port: number) =>
     createRouter({
       configPath,
@@ -2424,6 +2964,7 @@ export async function startRouter(
       port,
       saveSafetyChecks: (text) => writeState(paths.safetyChecksFile, text),
       saveState: (text) => writeState(statePath, text),
+      shutdown: shutdown.signal,
     });
 
   const fd = inheritedListenFd(env, process.pid);
@@ -2446,6 +2987,7 @@ export async function startRouter(
     // the last connection has closed. The unit's TimeoutStopSec bounds the wait.
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      shutdown.abort();
       exitWhenDone(server.stop(false), log, () => {});
     });
     return;
@@ -2479,6 +3021,7 @@ export async function startRouter(
     log(
       `SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`,
     );
+    shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
     exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);

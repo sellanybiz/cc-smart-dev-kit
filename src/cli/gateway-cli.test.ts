@@ -46,7 +46,12 @@ afterEach(() => {
  * page, on one free port.
  */
 function fakeServer(
-  options: { judge?: Record<string, "allow" | "block">; modelsStatus?: number } = {},
+  options: {
+    /** What the health page says about open breakers (`breakers`). */
+    breakers?: Record<string, unknown>;
+    judge?: Record<string, "allow" | "block">;
+    modelsStatus?: number;
+  } = {},
 ) {
   const seenKeys: string[] = [];
   /** Each judge test request: its model, the key it carried, and its body. */
@@ -83,6 +88,7 @@ function fakeServer(
       }
       if (url.pathname === "/__cc-smart-dev-kit/health") {
         return Response.json({
+          ...(options.breakers === undefined ? {} : { breakers: options.breakers }),
           cooling: {},
           fallbacks: 0,
           ok: true,
@@ -1994,6 +2000,33 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
         "  cc-smart-dev-kit-judge default: Claude judges every check, alone: no worker target has passed the judge test yet (omniroute:m1, omniroute:m2; cc-smart-dev-kit gateway setup tests them)",
         "",
       ].join("\n"),
+    );
+  });
+});
+
+describe("status names an open breaker", () => {
+  test("one line per slot whose every target is limited or down, with each target's rest", async () => {
+    const m = machine();
+    const at = Date.UTC(2026, 9, 15, 10, 0, 0);
+    const server = fakeServer({
+      breakers: {
+        "cc-smart-dev-kit-worker": {
+          held: 4,
+          heldNow: 2,
+          since: at,
+          targets: [
+            { status: 429, target: "omniroute:m1", until: at + 60_000 },
+            { status: null, target: "omniroute:m2", until: at + 30_000 },
+          ],
+        },
+      },
+    });
+    m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["omniroute:m1", "omniroute:m2"] });
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stderr).toBe("");
+    const line = status.stdout.split("\n").find((text) => text.includes("all targets limited"));
+    expect(line).toMatch(
+      /^ {2}cc-smart-dev-kit-worker: all targets limited, holding requests since (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d \(omniroute:m1 429 until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d; omniroute:m2 no answer until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d\)$/,
     );
   });
 });

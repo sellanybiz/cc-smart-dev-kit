@@ -7043,12 +7043,12 @@ function planUsageLimit(status, header) {
     resetsAt: Number.isInteger(reset) && reset > 0 ? reset : null
   };
 }
-var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 function capacityFailureStatus(status) {
-  return FALLBACK_ANY.has(status) || status >= 500 && status <= 599;
+  return CAPACITY_STATUSES.has(status) || status >= 500 && status <= 599;
 }
 function fallbackKind(status, target) {
-  if (FALLBACK_ANY.has(status))
+  if (CAPACITY_STATUSES.has(status))
     return "next";
   if (target.kind === "backend" && (status < 200 || status > 299))
     return "next-warn";
@@ -7073,6 +7073,7 @@ var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
 var BREAKER_HOLD_CEILING_MS = 240000;
+var BREAKER_HOLD_NON_STREAMING_MS = 60000;
 var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
 var NO_CONFIG_MEANS = "every slot is off: each Claude model goes to Anthropic as Claude Code sent it (your own Claude login) until it is fixed";
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
@@ -7178,6 +7179,9 @@ function breakerOn(config, slot) {
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
   return true;
+}
+function breakerHoldMs(config) {
+  return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
 }
 function breakerWords(config, slot) {
   if (slot === JUDGE_SLOT)
@@ -7338,6 +7342,177 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
 // src/gateway/router.ts
 import { mkdirSync as mkdirSync4, readFileSync as readFileSync7 } from "fs";
 import { dirname as dirname4 } from "path";
+
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  version: literal(1)
+});
+function emptyLimitState() {
+  return { fallbacks: {}, limits: {}, version: 1 };
+}
+function formatLimitState(state) {
+  return `${JSON.stringify(state, null, 2)}
+`;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentFallbacks(state, nowMs) {
+  return Object.entries(state.fallbacks).filter(([, record2]) => current(record2.resetsAt, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+
+// src/gateway/breaker.ts
+var BREAKER_MAX_HELD = 64;
+var CLIENT_RETRY_AFTER_CEILING_SEC = 60;
+var BREAKER_RETRY_AFTER_UNKNOWN_SEC = 30;
+var BREAKER_POLL_MS = 1000;
+var BREAKER_HEARTBEAT_WAIT_MS = 180000;
+var BREAKER_REMINDER_MS = 10 * 60000;
+var BREAKER_SHUTDOWN_RETRY_AFTER_SEC = 5;
+var BREAKER_RELEASED_RETRY_AFTER_SEC = 1;
+function isCapacityFailure(status) {
+  return status === null || CAPACITY_STATUSES.has(status);
+}
+function capRetryAfter(seconds) {
+  return Math.min(seconds, CLIENT_RETRY_AFTER_CEILING_SEC);
+}
+function clientRetryAfter(seconds) {
+  if (seconds === null)
+    return BREAKER_RETRY_AFTER_UNKNOWN_SEC;
+  return Math.max(1, capRetryAfter(Math.ceil(seconds)));
+}
+function slotShortName(slot) {
+  return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
+}
+function earliestRestSeconds(failures, nowMs) {
+  if (failures.length === 0)
+    return null;
+  const earliest = Math.min(...failures.map((failure) => failure.until));
+  return Math.max(0, Math.ceil((earliest - nowMs) / 1000));
+}
+function describeFailures(failures, nowMs) {
+  return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
+}
+function breakerMessage(slot, sinceMs, failures, nowMs) {
+  const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
+  const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
+  return `cc-smart-dev-kit-router: every target of ${slot} is limited or down since ${since}${named}; change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`;
+}
+function breakerAnswer(answer) {
+  const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
+  return Response.json({
+    error: {
+      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs),
+      type: "rate_limit_error"
+    },
+    type: "error"
+  }, { headers: { "retry-after": String(retryAfter), "x-should-retry": "true" }, status: 429 });
+}
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60)
+    return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
+}
+function breakerStatusLines(value, nowMs) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return [];
+  const lines = [];
+  for (const [slot, record] of Object.entries(value).sort(([a], [b]) => a < b ? -1 : 1)) {
+    if (typeof record !== "object" || record === null)
+      continue;
+    const since = "since" in record && typeof record.since === "number" ? record.since : null;
+    const targets = "targets" in record && Array.isArray(record.targets) ? record.targets : [];
+    const named = targets.flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null)
+        return [];
+      const target = "target" in entry && typeof entry.target === "string" ? entry.target : null;
+      if (target === null)
+        return [];
+      const status = "status" in entry && typeof entry.status === "number" ? entry.status : null;
+      const until = "until" in entry && typeof entry.until === "number" ? entry.until : null;
+      const why = status === null ? "no answer" : String(status);
+      const when = until === null ? "" : ` until ${formatClock(Math.ceil(until / 1000), nowMs)}`;
+      return [`${target} ${why}${when}`];
+    });
+    const sinceWords = since === null ? "" : ` since ${formatClock(Math.floor(since / 1000), nowMs)}`;
+    lines.push(`  ${slot}: all targets limited, holding requests${sinceWords}${named.length > 0 ? ` (${named.join("; ")})` : ""}`);
+  }
+  return lines;
+}
 
 // src/gateway/fallback-answer.ts
 import { createHash as createHash2, randomUUID } from "crypto";
@@ -7761,89 +7936,6 @@ function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, 
   return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
 
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var breakerTargetSchema = object({
-  status: int().nullable(),
-  target: string2(),
-  until: number2()
-});
-var breakerSchema = object({
-  held: int().min(0),
-  lastAt: number2(),
-  since: number2(),
-  targets: array(breakerTargetSchema)
-});
-var stateSchema = object({
-  breakers: record(string2(), breakerSchema).optional(),
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  version: literal(1)
-});
-function emptyLimitState() {
-  return { fallbacks: {}, limits: {}, version: 1 };
-}
-function formatLimitState(state) {
-  return `${JSON.stringify(state, null, 2)}
-`;
-}
-function parseLimitState(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = stateSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
-function formatClock(epochSec, nowMs, timeZone) {
-  const at = new Date(epochSec * 1000);
-  const day = (date) => new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone,
-    year: "numeric"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    timeZone
-  }).format(at);
-  if (day(at) === day(new Date(nowMs)))
-    return time;
-  const date = new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    timeZone
-  }).format(at);
-  return `${date} ${time}`;
-}
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
-}
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-function currentFallbacks(state, nowMs) {
-  return Object.entries(state.fallbacks).filter(([, record2]) => current(record2.resetsAt, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-
 // src/gateway/listen.ts
 import { mkdtempSync, rmSync } from "fs";
 import net from "net";
@@ -8034,6 +8126,25 @@ function maskSecrets(text, known = []) {
 }
 function maskedLine(text, known, max, options = {}) {
   return oneLine(maskSecrets(text, known), max, options);
+}
+
+// src/gateway/refusal.ts
+var REFUSAL_STATUS = 424;
+var LENGTH_REFUSAL = /too long|too large|too many tokens|token limit|exceeds? (?:the |this )?(?:model'?s? )?(?:maximum )?(?:context|token)|(?:maximum|max) context|context (?:length|window|limit)/i;
+function isLengthRefusal(reason) {
+  return LENGTH_REFUSAL.test(reason);
+}
+function isRefusalStatus(status) {
+  return status === 400 || status === 422;
+}
+function errorBody(status, message, headers) {
+  return Response.json({ error: { message, type: "invalid_request_error" }, type: "error" }, { headers, status });
+}
+function backendRefusal(label, status, reason) {
+  if (isLengthRefusal(reason)) {
+    return errorBody(400, `prompt is too long: ${label} refused this conversation as too long for it (HTTP ${status}: ${reason}). Put a target with a larger window first in the slot: ${COMMAND} gateway slot <slot> <targets>`, { "x-should-retry": "false" });
+  }
+  return errorBody(REFUSAL_STATUS, `cc-smart-dev-kit-router: ${label} refused this request (HTTP ${status}): ${reason}`, { "x-should-retry": "false" });
 }
 
 // src/gateway/safety-checks.ts
@@ -8297,14 +8408,14 @@ var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 function anthropicError(status, type, message) {
   return Response.json({ error: { message, type }, type: "error" }, { status });
 }
-function backendKeyRefused(label, backend, status) {
+function backendKeyRefused(label, backend, status, resendSafe = true) {
   return Response.json({
     error: {
       message: `cc-smart-dev-kit-router: ${label} refused the key the gateway config holds for ${backend} (HTTP ${status}${status === 403 ? ": the key, or what it may reach, such as a provider connection it is not allowed to use" : ""}). Your Claude login is not the problem. Check it: ${COMMAND} gateway check`,
       type: "invalid_request_error"
     },
     type: "error"
-  }, { headers: { "x-should-retry": "false" }, status: 400 });
+  }, { headers: { "x-should-retry": "false" }, status: resendSafe ? REFUSAL_STATUS : 400 });
 }
 function droppedHeaders(headers) {
   const dropped = new Set(HOP_BY_HOP);
@@ -8360,7 +8471,7 @@ function responseHeaders(upstream, normalizeRetryAfterAt) {
     if (name === "retry-after" && normalizeRetryAfterAt !== null) {
       const seconds = retryAfterSeconds(value, normalizeRetryAfterAt);
       if (seconds !== null)
-        out.set(name, String(seconds));
+        out.set(name, String(capRetryAfter(seconds)));
       return;
     }
     out.append(name, value);
@@ -8691,6 +8802,11 @@ function deadline(ms) {
 function sameModel(a, b) {
   return withoutContextSuffix(a) === withoutContextSuffix(b);
 }
+function withoutEmptyBreakers(state) {
+  if (state.breakers !== undefined && Object.keys(state.breakers).length === 0) {
+    delete state.breakers;
+  }
+}
 var CHECK_USAGE_MAX_BYTES = 256 * 1024;
 function stateWriter(deps, what, save) {
   if (save === undefined)
@@ -8736,6 +8852,12 @@ function createRouter(deps) {
     name: "the limit state",
     after: "it starts over"
   });
+  for (const slot of Object.keys(limitState.breakers ?? {})) {
+    if (!currentBreakers(limitState, deps.now()).some(([key]) => key === slot)) {
+      delete limitState.breakers?.[slot];
+    }
+  }
+  withoutEmptyBreakers(limitState);
   const safetyChecks = loadedState(deps.loadSafetyChecks, parseSafetyCheckState, emptySafetyChecks, {
     file: "the safety-check file",
     name: "the safety-check counts",
@@ -8747,6 +8869,10 @@ function createRouter(deps) {
   const markedLogged = new Set;
   const restoredLogged = new Set;
   let checkedConfig = null;
+  const openBreakers = new Map;
+  const probing = new Set;
+  const restReasons = new Map;
+  const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const persist = stateWriter(deps, "the limit state", deps.saveState === undefined ? undefined : () => deps.saveState?.(formatLimitState(limitState)));
   const persistChecks = stateWriter(deps, "the safety-check counts", deps.saveSafetyChecks === undefined ? undefined : () => deps.saveSafetyChecks?.(formatSafetyCheckState(safetyChecks)));
   function loadedState(load, parse, empty, words) {
@@ -8836,6 +8962,14 @@ function createRouter(deps) {
     }
     if (changed)
       persist();
+    for (const slot of new Set([
+      ...openBreakers.keys(),
+      ...Object.keys(limitState.breakers ?? {})
+    ])) {
+      if (Object.hasOwn(config.slots, slot) && breakerOn(config, slot))
+        continue;
+      closeBreaker(slot, "removed from the config or switched off");
+    }
   }
   function judgeTargetsOf(config) {
     const judge = resolveRoute(JUDGE_SLOT, config);
@@ -8965,12 +9099,10 @@ function createRouter(deps) {
     const decoder = new TextDecoder;
     const scanner = sseScanner();
     const held = [];
-    const fail = async (failure, status) => {
-      try {
-        await reader.cancel();
-      } catch (error) {
+    const fail = (failure, status) => {
+      reader.cancel().catch((error) => {
         deps.log(`WARN could not cancel a held upstream stream: ${messageOf(error)}`);
-      }
+      });
       return { failure, status };
     };
     for (;; ) {
@@ -9148,8 +9280,13 @@ function createRouter(deps) {
       return;
     const retryAfter = "response" in result ? retryAfterSeconds(result.response.headers.get("retry-after"), deps.now()) : null;
     const seconds = cooldownSeconds(status, retryAfter);
-    if (seconds !== null)
-      cooling.set(label, deps.now() + seconds * 1000);
+    if (seconds === null)
+      return;
+    cooling.set(label, deps.now() + seconds * 1000);
+    restReasons.set(label, {
+      reason: printable("response" in result ? `HTTP ${status}` : result.failure, 120),
+      status
+    });
   }
   function coolingNow() {
     const now = deps.now();
@@ -9172,9 +9309,19 @@ function createRouter(deps) {
       target: label
     };
   }
-  async function chain(req, url, config, body, targets, name, guard, asked = null) {
+  async function chain(req, url, config, body, targets, name, guard, asked = null, hold = null) {
     const standsInFor = guard ? null : asked?.model ?? null;
     const failures = [];
+    const records = [];
+    const note = (label, status, reason, capacity, until = cooling.get(label) ?? deps.now()) => {
+      records.push({ capacity, reason: printable(reason, 120), status, target: label, until });
+    };
+    const capacityOf = () => hold !== null && records.length > 0 && records.every((record) => record.capacity) ? records.map((record) => ({
+      reason: record.reason,
+      status: record.status,
+      target: record.target,
+      until: record.until
+    })) : undefined;
     let fallbacks = 0;
     let skipped = 0;
     let lastTimedOut = false;
@@ -9182,36 +9329,59 @@ function createRouter(deps) {
       const last = index === targets.length - 1;
       const label = formatTarget(target);
       const restsUntil = cooling.get(label);
-      if (!last && restsUntil !== undefined && restsUntil > deps.now()) {
+      const resting = restsUntil !== undefined && restsUntil > deps.now();
+      if (resting && (!last || hold?.holding === true && target.kind === "backend")) {
         failures.push(`${label}: resting after a failure`);
+        const why = restReasons.get(label);
+        note(label, why?.status ?? null, why?.reason ?? "resting after a failure", true, restsUntil);
         skipped += 1;
         continue;
       }
-      const deadlineAt = target.kind === "backend" && (guard || !last && body.stream === true) ? deps.now() + config.timeouts.firstByteMs : null;
-      const built = targetUpstream(req, url, config, body, target, guard, asked);
-      let result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
-      if (req.signal.aborted)
-        return closed(result, label);
-      if (target.kind === "anthropic" && "response" in result) {
-        observeClaude(target.model, result.response, url.pathname);
+      if (hold?.holding === true && probing.has(label)) {
+        failures.push(`${label}: another request is asking it`);
+        note(label, null, "another request is probing it", true);
+        skipped += 1;
+        continue;
       }
-      if ("response" in result && (!last || guard) && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
-        result = await holdFirstEvent(result.response, deadlineAt, {
-          known: knownSecrets(req, config),
-          last
-        });
+      const lastWaitMs = hold !== null && last && target.kind === "backend" && body.stream === true ? hold.lastWaitMs : null;
+      const deadlineAt = target.kind === "backend" && (guard || !last && body.stream === true) ? deps.now() + config.timeouts.firstByteMs : lastWaitMs !== null ? deps.now() + lastWaitMs : null;
+      const built = targetUpstream(req, url, config, body, target, guard, asked);
+      const probe = hold?.holding === true && !("error" in built);
+      if (probe) {
+        probing.add(label);
+        if (hold !== null)
+          hold.probes.count += 1;
+      }
+      let result;
+      try {
+        result = "error" in built ? { failure: built.error, status: null } : await send(req, built.upstream, deadlineAt);
         if (req.signal.aborted)
           return closed(result, label);
-      } else if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("application/json")) {
-        result = await readJsonAnswer(result.response, knownSecrets(req, config));
-        if (req.signal.aborted)
-          return closed(result, label);
+        if (target.kind === "anthropic" && "response" in result) {
+          observeClaude(target.model, result.response, url.pathname);
+        }
+        if ("response" in result && (!last || guard || lastWaitMs !== null) && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("text/event-stream")) {
+          result = await holdFirstEvent(result.response, deadlineAt, {
+            known: knownSecrets(req, config),
+            last
+          });
+          if (req.signal.aborted)
+            return closed(result, label);
+        } else if ("response" in result && !last && target.kind === "backend" && result.response.ok && (result.response.headers.get("content-type") ?? "").includes("application/json")) {
+          result = await readJsonAnswer(result.response, knownSecrets(req, config));
+          if (req.signal.aborted)
+            return closed(result, label);
+        }
+      } finally {
+        if (probe)
+          probing.delete(label);
       }
       if (url.pathname === MESSAGES_PATH)
         noteCooldown(label, result);
       if ("failure" in result) {
         lastTimedOut = last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
         failures.push(`${label}: ${result.failure}`);
+        note(label, result.status, result.failure, !("error" in built) && isCapacityFailure(result.status));
         if (!last) {
           fallbacks += 1;
           deps.log(`WARN ${label} failed (${result.failure}); trying the next target`);
@@ -9234,28 +9404,52 @@ function createRouter(deps) {
           logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; returned as a 400 (the backend refused its key)`);
           return {
             fallbacks,
-            response: backendKeyRefused(label, target.backend, status),
+            response: backendKeyRefused(label, target.backend, status, !guard),
             skipped,
             target: label
           };
         }
         if (status >= 400) {
-          logErrorAnswer(result.response.clone(), knownSecrets(req, config), `WARN ${label} answered ${status}; returned as it is`, target.kind === "anthropic" ? signatureWarn(target.model, status) : standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
+          const known = knownSecrets(req, config);
+          const follow = target.kind === "anthropic" ? signatureWarn(target.model, status) : standsInFor === null || status !== 400 && status !== 413 ? undefined : (snippet) => {
             const kind = TOO_LONG.test(snippet) ? "too long" : UNSUPPORTED.test(snippet) ? "a kind of content it does not take" : null;
             if (kind === null)
               return;
             deps.log(`WARN ${name}: ${label} refused this ${standsInFor} conversation (${kind}). A long ([1m], 200k+ tokens) or rich (images, documents, server tools) ${standsInFor} conversation may be more than ${label} takes: /compact it, start a new one, or put a target that takes it first in ${name}`);
-          });
+          };
+          if (target.kind === "backend" && !guard && url.pathname === MESSAGES_PATH && isRefusalStatus(status)) {
+            const snippet = await errorSnippet(result.response, known);
+            const refused = backendRefusal(label, status, snippet);
+            deps.log(`WARN ${label} answered ${status}; returned as a ${refused.status} (Claude Code would send a ${status} again without its deferred tools) \u2014 ${snippet}`);
+            follow?.(snippet);
+            return { fallbacks, response: refused, skipped, target: label };
+          }
+          logErrorAnswer(result.response.clone(), known, `WARN ${label} answered ${status}; returned as it is`, follow);
         }
-        return { fallbacks, response: relay(result.response, target), skipped, target: label };
+        const answer = {
+          fallbacks,
+          response: relay(result.response, target),
+          skipped,
+          target: label
+        };
+        if (last && hold !== null && target.kind === "backend" && isCapacityFailure(status)) {
+          note(label, status, `HTTP ${status}`, true);
+          const capacity = capacityOf();
+          if (capacity !== undefined)
+            answer.capacity = capacity;
+        }
+        return answer;
       }
       logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; trying the next target`);
       failures.push(`${label}: HTTP ${status}`);
+      note(label, status, `HTTP ${status}`, isCapacityFailure(status));
       fallbacks += 1;
     }
     const lastTarget = targets.at(-1);
     const answered = failures.join("; ") || "no targets";
+    const capacity = capacityOf();
     return {
+      ...capacity === undefined ? {} : { capacity },
       fallbacks,
       response: lastTimedOut ? anthropicError(504, "timeout_error", `cc-smart-dev-kit-router: no target for ${name} answered within ${config.timeouts.firstByteMs} ms (${answered})`) : anthropicError(502, "api_error", `cc-smart-dev-kit-router: no target for ${name} answered (${answered})`),
       skipped,
@@ -9270,10 +9464,184 @@ function createRouter(deps) {
       target: "refused"
     };
   }
+  function holdLimitMs(config, body) {
+    const limit = breakerHoldMs(config);
+    return body.stream === true ? limit : Math.min(limit, BREAKER_HOLD_NON_STREAMING_MS);
+  }
+  function holdMode(config, body, startMs, holding, probes) {
+    const limit = holdLimitMs(config, body);
+    const left = Math.max(startMs + limit - deps.now(), 1);
+    return {
+      holding,
+      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, left),
+      probes
+    };
+  }
+  function recordBreaker(slot, open) {
+    const now = deps.now();
+    open.savedAt = now;
+    limitState.breakers = {
+      ...limitState.breakers,
+      [slot]: {
+        held: open.held,
+        lastAt: now,
+        since: open.since,
+        targets: open.failures.map((failure) => ({
+          status: failure.status,
+          target: failure.target,
+          until: failure.until
+        }))
+      }
+    };
+    persist();
+  }
+  function breakerFor(slot, failures, holdMs) {
+    const now = deps.now();
+    const existing = openBreakers.get(slot);
+    if (existing !== undefined) {
+      existing.failures = failures;
+      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS)
+        recordBreaker(slot, existing);
+      return existing;
+    }
+    const before = currentBreakers(limitState, now).find(([key]) => key === slot)?.[1];
+    const open = {
+      failures,
+      held: before?.held ?? 0,
+      heldNow: 0,
+      reminderAt: now,
+      savedAt: now,
+      since: before?.since ?? now
+    };
+    openBreakers.set(slot, open);
+    recordBreaker(slot, open);
+    const wait = clientRetryAfter(earliestRestSeconds(failures, now));
+    deps.log(`WARN ${slot}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`);
+    return open;
+  }
+  function closeBreaker(slot, why) {
+    const open = openBreakers.get(slot);
+    const stored = limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, slot) ? limitState.breakers[slot] : undefined;
+    if (open === undefined && stored === undefined)
+      return;
+    const since = open?.since ?? stored?.since ?? deps.now();
+    const held = open?.held ?? stored?.held ?? 0;
+    openBreakers.delete(slot);
+    delete limitState.breakers?.[slot];
+    withoutEmptyBreakers(limitState);
+    persist();
+    deps.log(`${slot}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
+  }
+  function breakersNow() {
+    return Object.fromEntries([...openBreakers].map(([slot, open]) => [
+      slot,
+      {
+        held: open.held,
+        heldNow: open.heldNow,
+        since: open.since,
+        targets: open.failures.map((failure) => ({
+          status: failure.status,
+          target: failure.target,
+          until: failure.until
+        }))
+      }
+    ]));
+  }
+  function pause(ms, ...signals) {
+    return new Promise((resolve) => {
+      const live = signals.filter((signal) => signal !== undefined);
+      const finish = () => {
+        for (const signal of live)
+          signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      if (live.some((signal) => signal.aborted))
+        return finish();
+      for (const signal of live)
+        signal.addEventListener("abort", finish, { once: true });
+      sleep(ms).then(finish);
+    });
+  }
+  async function holdRequest(ctx, config0, targets0, first) {
+    const { asked, body, probes, req, slot, startMs, url } = ctx;
+    let config = config0;
+    let targets = targets0;
+    let outcome = first;
+    let open = breakerFor(slot, first.capacity ?? [], holdLimitMs(config, body));
+    let counted = null;
+    const stopping = () => deps.shutdown?.aborted === true;
+    const answer = (response) => ({
+      outcome: {
+        breaker: { held: counted !== null, probes: probes.count },
+        fallbacks: 0,
+        response,
+        skipped: 0,
+        target: `breaker(${slot})`
+      },
+      targets
+    });
+    try {
+      for (;; ) {
+        discard(outcome.response);
+        const now = deps.now();
+        const failures = outcome.capacity ?? [];
+        const endsAt = startMs + holdLimitMs(config, body);
+        const reply = (retryAfterSec, message) => breakerAnswer({
+          failures,
+          nowMs: now,
+          sinceMs: open.since,
+          slot,
+          ...retryAfterSec === undefined ? {} : { retryAfterSec },
+          ...message === undefined ? {} : { message }
+        });
+        if (stopping()) {
+          return answer(reply(BREAKER_SHUTDOWN_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: the router is restarting; ${slot} had no target answering. Ask again`));
+        }
+        if (now >= endsAt) {
+          if (now - open.reminderAt >= BREAKER_REMINDER_MS) {
+            open.reminderAt = now;
+            deps.log(`WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), now)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`);
+          }
+          return answer(reply());
+        }
+        if (counted === null) {
+          if (open.heldNow >= BREAKER_MAX_HELD)
+            return answer(reply());
+          counted = open;
+          open.heldNow += 1;
+          open.held += 1;
+        }
+        await pause(Math.min(BREAKER_POLL_MS, endsAt - now), req.signal, deps.shutdown);
+        if (req.signal.aborted) {
+          return answer(anthropicError(499, "api_error", "client closed the request"));
+        }
+        if (stopping())
+          continue;
+        const next = deps.getConfig();
+        const route = resolveRoute(slot, next);
+        if (route.kind !== "slot" || route.targets.length === 0) {
+          return answer(reply(BREAKER_RELEASED_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`));
+        }
+        config = next;
+        targets = targetsInUse(route.targets, fallbackOn(next, slot));
+        const holds = breakerOn(next, slot);
+        outcome = await chain(req, url, config, body, targets, slot, false, asked, holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null);
+        if (req.signal.aborted)
+          return { outcome, targets };
+        if (outcome.capacity === undefined)
+          return { outcome, targets };
+        open = breakerFor(slot, outcome.capacity, holdLimitMs(config, body));
+      }
+    } finally {
+      if (counted !== null)
+        counted.heldNow -= 1;
+    }
+  }
   async function slotRequest(req, url, config, body, slot, chained, guard, asked) {
-    const targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
-    const first = targets[0];
+    const startMs = deps.now();
+    let targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
     if (url.pathname === COUNT_TOKENS_PATH) {
+      const first = targets[0];
       if (first === undefined || first.kind === "backend") {
         return {
           fallbacks: 0,
@@ -9284,8 +9652,19 @@ function createRouter(deps) {
       }
       return chain(req, url, config, body, [first], slot, guard, asked);
     }
-    const outcome = await chain(req, url, config, body, targets, slot, guard, asked);
-    if (req.signal.aborted || first === undefined)
+    const breaks = !guard && url.pathname === MESSAGES_PATH && breakerOn(config, slot);
+    const probes = { count: 0 };
+    let outcome = await chain(req, url, config, body, targets, slot, guard, asked, breaks ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null);
+    if (breaks && outcome.capacity !== undefined && !req.signal.aborted) {
+      const held = await holdRequest({ asked, body, probes, req, slot, startMs, url }, config, targets, outcome);
+      outcome = held.outcome;
+      targets = held.targets;
+    }
+    const first = targets[0];
+    if (breaks && outcome.breaker === undefined && !req.signal.aborted && outcome.response.ok) {
+      closeBreaker(slot, "answers again");
+    }
+    if (req.signal.aborted || first === undefined || outcome.breaker !== undefined)
       return outcome;
     if (first.kind === "anthropic" && outcome.target !== formatTarget(first)) {
       const limited = withoutContextSuffix(first.model);
@@ -9573,7 +9952,7 @@ function createRouter(deps) {
     const startMs = deps.now();
     const url = new URL(req.url);
     const model = { name: "-" };
-    const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`;
+    const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
       const outcome = refusal("cc-smart-dev-kit-router accepts requests from this machine only");
@@ -9582,6 +9961,7 @@ function createRouter(deps) {
     }
     if (req.method === "GET" && url.pathname === HEALTH_PATH) {
       return Response.json({
+        breakers: breakersNow(),
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
         ok: true,
@@ -9628,6 +10008,7 @@ async function startRouter(paths, env = process.env) {
       throw error;
     }
   };
+  const shutdown = new AbortController;
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
@@ -9638,7 +10019,8 @@ async function startRouter(paths, env = process.env) {
     now: () => Date.now(),
     port,
     saveSafetyChecks: (text) => writeState(paths.safetyChecksFile, text),
-    saveState: (text) => writeState(statePath, text)
+    saveState: (text) => writeState(statePath, text),
+    shutdown: shutdown.signal
   });
   const fd = inheritedListenFd(env, process.pid);
   for (const name of LISTEN_VARS)
@@ -9653,6 +10035,7 @@ async function startRouter(paths, env = process.env) {
     log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${configPort} (config ${configPath})`);
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
+      shutdown.abort();
       exitWhenDone(server.stop(false), log, () => {});
     });
     return;
@@ -9671,6 +10054,7 @@ async function startRouter(paths, env = process.env) {
   log(`cc-smart-dev-kit-router listening on http://127.0.0.1:${relay.port} (the socket systemd holds; config ${configPath})`);
   process.once("SIGTERM", () => {
     log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting; new connections wait in the socket for the next router`);
+    shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
     exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
@@ -13396,6 +13780,8 @@ async function commandStatus(ctx) {
     const cooling = isJsonObject7(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
+    for (const line of breakerStatusLines(body.breakers, ctx.probe.now()))
+      ctx.print(line);
   }
   if (config !== null) {
     for (const [name, backend] of Object.entries(config.backends)) {

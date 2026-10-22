@@ -26,15 +26,17 @@ The rules for changing it: `.claude/rules/gateway.md`.
   only while the slot's **fallback switch** is on (§ The fallback switch). A target is any
   `<backend>:<model>` or `claude-<model>`, in any order, in any slot. **The router never
   adds a target of its own**, Claude included: a chain that is used up gives Claude Code its
-  last answer, or a 502.
+  last answer, or a 502. One exception, with the slot's breaker on (the default): when every
+  target failed for want of capacity and the last one is a backend, the request is held for a
+  while and then answered with a 429 Claude Code retries (§ The breaker). Anthropic's own
+  answers always pass unchanged.
 - **A request that carries one of Anthropic's server tools** (web search) goes to Anthropic
   as Claude Code sent it, whatever its slot, because no affordable backend can run the tool
   (§ Anthropic's server tools).
 - **Auto mode's safety check** is judged by Claude first. While Claude is limited or down,
   the worker chain's targets that passed the judge test judge in its place. The person may give
   the `cc-smart-dev-kit-judge` slot a chain of their own, and that wins (§ The judge slot).
-  Every check is counted, with what its answer reported, for
-  `cc-smart-dev-kit usage` (§ The safety-check counts).
+  Every check is counted, with what its answer reported, for  `cc-smart-dev-kit usage` (§ The safety-check counts).
 - The router writes the plan limits it sees to a small state file, which the status line
   and the usage-limit alert read, and reads it back when it starts (§ The limit state, the
   status line, the alert).
@@ -213,6 +215,97 @@ was (`config.ts`, tested in `config.test.ts`).
   `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` or `{kind:
   "claude-limit", model, resetsAt}`, and a lead's record may carry `pausedAgents`, the ids of its
   own subagents waiting to be woken. Both are optional.
+
+## The breaker
+
+What it does when every target of a slot is limited or down. Code: `src/gateway/breaker.ts`
+(the pure parts) and `slotRequest`, `holdRequest` and `chain` in `src/gateway/router.ts`. Tests:
+`gateway.test.ts` › "the breaker", `breaker.test.ts`.
+
+**Why.** Before it, a used-up chain failed a request within minutes, and every agent on the
+machine died with it, while the limit it waited out might last an hour. Claude Code retries a
+429 without quota headers by itself (10 times, with a `retry-after` of at most 60 s), so the
+router can turn "dead" into "wait and ask again". The Claude Code facts it rests on, proved on
+2.1.306 (`docs/claude-code-contract.md` § Usage limits): a request held with no headers is not
+cut for at least 330 s; a `retry-after` above 60 makes Claude Code fail at once; a 429 never
+switches `--fallback-model` (a 529 does after three).
+
+**When it applies.** All of these:
+
+- the slot's breaker is on (`breakerOn`) and the request is a model call (`/v1/messages`, never
+  `count_tokens`), not a safety check, and not an explicit `<backend>:<model>` (which has no
+  slot);
+- every target in use failed with a **capacity kind** (`isCapacityFailure`: 408, 429, 500,
+  502, 503, 504, 529, a network error, no response headers in time, or no real event in time),
+  or rests, or is being probed by another request;
+- the last target is an affordable backend. **Anthropic's own answers always pass unchanged**,
+  quota 429 included: Claude Code's auto-continue, its watchdog's wait for a reset and the
+  StopFailure alert need the real headers. A refused key (401, 403), a refusal (400, 422) and
+  an error inside a 200 stream are not capacity failures: the person must fix them, and they
+  are never held.
+
+**What it does** (the first request that sees it opens the breaker):
+
+1. **One WARN** when it opens: `cc-smart-dev-kit-worker: every target limited or down (<target:
+   reason, until>…); holding requests up to 240 s, then asking Claude Code to retry (retry-after
+   N)`. Its record goes into the state file (`breakers`, written once, then at most once a
+   minute while requests come: `lastAt`).
+2. **No storm while it is open.** A resting target is not asked, **the last one included** (a
+   closed breaker asks the last target even while it rests). Each target has one **probe** at a
+   time: the request that finds its rest over asks it, and the others wait behind that call.
+   A probe that fails rests the target again (`cooldownSeconds`); one that answers closes the
+   breaker, and the held requests go on the normal chain.
+3. **The hold.** Each held request polls once a second: it reads the config, and a changed
+   chain is served at once. A slot taken out of the config releases the request with a 429
+   `retry-after: 1`, so the retry routes it the way a new request goes; a switch turned off
+   serves it the normal way. The hold counts from the request's start and lasts up to
+   `timeouts.breakerHoldMs` (240 s; **60 s** when the request does not stream; `0` holds none and
+   answers at once). A client that hangs up gets 499 and rests nothing. At most **64** requests
+   wait per slot (`BREAKER_MAX_HELD`): the 65th is answered at once. At SIGTERM every waiting
+   request is answered with `retry-after: 5`, so the drain stays short.
+4. **A heartbeat-only last target.** With the breaker on, the last backend of a streaming
+   request gets `BREAKER_HEARTBEAT_WAIT_MS` (180 s, less what is left of the hold) for its
+   headers and its first real event. A stream of keep-alive comments alone then opens the
+   breaker instead of stalling Claude Code for its whole 5 minutes.
+5. **The answer** when the hold ends: `429`, `rate_limit_error`, `retry-after` = the seconds
+   until the earliest rest ends, from 1 to 60 (30 when none is known), `x-should-retry: true`,
+   **never** an `anthropic-ratelimit-unified-*` header, and the message
+   `cc-smart-dev-kit-router: every target of cc-smart-dev-kit-worker is limited or down since
+   21:05 (omniroute:a: HTTP 429, until 21:07; …); change it: cc-smart-dev-kit gateway slot worker
+   <targets>`. The request line reads `→ breaker(cc-smart-dev-kit-worker) 429 240013ms held
+   probes=1` (`not-held` when the 65th or a hold of 0 answered at once).
+6. **Why 429, not 529.** A 429 is retried for every login type, never switches a
+   `--fallback-model`, and is not dropped for Claude Code's own background calls (a 529 is).
+   It is no quota limit, so Claude Code shows "(not your usage limit)" and never auto-continues.
+   The router never fakes the quota headers: Claude Code would show plan-limit and upsell
+   messages, and `/usage` would mislead.
+7. **It ends** when a target answers below 400: one line, `cc-smart-dev-kit-worker: answers
+   again after 1h12m; 37 requests held`, and the record leaves the state file. A slot taken out
+   of the config, or whose switch went off, ends it too. While it is open, a reminder line comes
+   at most every 10 minutes.
+
+**What a person sees.** `gateway status` (the router's health page, `breakers`): `cc-smart-dev-kit-worker:
+all targets limited, holding requests since 21:05 (omniroute:a 429 until 21:07; …)`. The way
+out is in the answer: `cc-smart-dev-kit gateway slot worker <targets>` (a changed chain is served
+within a second), or `gateway breaker worker off` for the old behaviour.
+
+**Without Claude Code's retry watchdog**, the bridge is 11 requests × (240 s hold + a wait of at
+most 60 s), about 55 minutes. The watchdog (`CLAUDE_CODE_RETRY_WATCHDOG`) and the kit's own
+resume of paused workers are separate layers, not part of the router.
+
+**Other fixes that ship with it, breaker on or off:**
+
+- **`retry-after` is capped at 60** on every answer relayed from a backend, an HTTP date
+  included (`capRetryAfter`). Above 60 Claude Code does not retry at all. The target's own rest
+  is not capped (up to 600 s).
+- **A backend's refusal is relayed so Claude Code does not send it again** (`refusal.ts`).
+  Since 2.1.304 Claude Code sends a 400 or 422 it does not recognise on a request that carried
+  deferred tools again without them (every MCP tool loaded, about 184K tokens instead of 70K),
+  and the router walked the chain a second time. Now the last backend's 400 or 422 goes back as
+  a 424 `invalid_request_error` (`x-should-retry: false`, the backend's reason in the message),
+  or, when the reason says the conversation is too long, as a 400 that starts "prompt is too
+  long" — Claude Code's own wording, which starts its compaction. The key refusal (401, 403) is
+  a 424 as well. Anthropic's own 400 and the safety check's answers are not touched.
 
 ## The judge slot
 
@@ -642,16 +735,21 @@ reaches Claude Code**.
 
 - **The last target is always tried and its answer returned**, whatever it is. Nothing is
   added after it: with every target failed, Claude Code gets the last answer, or a 502 when
-  none answered at all. No request goes to Anthropic that the chain does not name.
-- **One exception: a backend refusing its own key.** When the answer that goes back is a
-  backend's 401 or 403, Claude Code gets a 400 `invalid_request_error` instead, with
+  none answered at all. No request goes to Anthropic that the chain does not name. **With the
+  slot's breaker on** (§ The breaker), a last answer that is a backend's capacity failure,
+  when every other target failed that way too, becomes the breaker's 429 after a hold.
+  Anthropic's own answers always pass unchanged.
+- **Two exceptions: a backend refusing its key, or the request.** When the answer that goes
+  back is a backend's 401 or 403, Claude Code gets a 424 `invalid_request_error` instead, with
   `x-should-retry: false`, whose message names the backend and says to run
   `cc-smart-dev-kit gateway check` (`backendKeyRefused`). Passed on as it is, Claude Code
   reads a 401 as its own login failing and says "Please run /login", which cannot fix a
-  backend key; a 5xx it would retry up to 10 times, each one refused again. A 400 it shows
-  and does not retry (code.claude.com/docs/en/errors, § Automatic retries). The status
-  Claude Code shows is proved live in `docs/claude-code-contract.md`. Anthropic's own 401
-  is the person's login, and goes back unchanged.
+  backend key; a 5xx it would retry up to 10 times, each one refused again. A 400 is not
+  retried, but since 2.1.304 it is sent again without its deferred tools (§ The breaker, last
+  list), so it is a 424: shown once as `API Error: 424 …`, not sent again. The same goes for a
+  backend's 400 or 422 refusal of a model call (`refusal.ts`; "prompt is too long" when its
+  reason says so). Auto mode's safety check keeps the 400 of a refused key. Anthropic's own 401
+  and 400 are the person's login and Claude's answer, and go back unchanged.
 - **The stream hold.** OmniRoute answers `200` after about a second, then sends keep-alive
   comments and reports failures inside the stream. So for an affordable backend that is not
   last, the router holds the stream until the first real event, then replays it and pipes
@@ -665,13 +763,16 @@ reaches Claude Code**.
   the last one misses it, the answer is a 504 `timeout_error` in Anthropic's shape.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
-  memory. A resting target is skipped unless it is the last. Only a `/v1/messages` answer
-  starts or ends a rest: a `count_tokens` answer says nothing about whether a target can
-  answer.
+  memory. A resting target is skipped unless it is the last (and, with an open breaker, a
+  resting last backend is skipped too: § The breaker). A target that gives no headers or no
+  real event by its deadline rests like any failure, 30 s: a second request skips it at once. The router does not wait for the stalled stream to close (`holdFirstEvent` cancels it in the background): an upstream whose cancel never settled used to hold the request, and so the rest, for ever.
+  Requests that were already waiting on it when it failed each wait their own deadline.
+  Only a `/v1/messages` answer starts or ends a rest: a `count_tokens` answer says nothing
+  about whether a target can answer.
 - **`count_tokens`** has no fallback. When the first target is an affordable backend the answer
   is 404, and Claude Code estimates instead.
 - Errors the router makes use Anthropic's error shape. An affordable backend's `retry-after` is
-  rounded to whole seconds.
+  rounded to whole seconds and capped at 60 (Claude Code ends the request at once above it).
 - **The log names the reason.** When any target answers 4xx or 5xx to a model call
   (`/v1/messages` or `count_tokens`; Anthropic too, and a `claude-…` request sent straight
   to Anthropic), a `WARN` line carries the start of its error answer: one chunk,
@@ -1176,6 +1277,20 @@ stop the router only after every session restarted.
   answers from that caption. Check a new model's image support before it goes in a slot.
 - An affordable subagent's `ToolSearch` changes its tool list, so that backend's prompt cache
   restarts from that point. It costs a little and breaks nothing.
+- **The breaker bridges, it does not wait for ever.** Held for at most 240 s, then a 429 that
+  Claude Code retries up to 10 times: about 55 minutes without Claude Code's retry watchdog.
+  A limit that lasts longer ends the turn with "API Error: Server is temporarily limiting
+  requests (not your usage limit)" and the router's message. A hold longer than 240 s is
+  refused by the config: a request held with no headers was proved safe to 330 s only.
+- **A held request holds a connection**, up to 64 per slot. The 65th is answered with the 429
+  at once. A router restart answers every held request with `retry-after: 5`.
+- **Concurrent requests that were already waiting on a target when it failed** each wait their
+  own deadline (`timeouts.firstByteMs`); the rest only spares the requests that come after.
+- **The breaker's record in the state file is refreshed only while requests come.** After the
+  last request it goes stale in 15 minutes and the status line stops showing it, though the
+  targets may still be down; the next request opens the breaker again with its first start.
+- **A backend's refusal is a 424, not its own status.** Claude Code shows `API Error: 424 …`
+  for it. The backend's own status is in the message, the router's log and nothing else.
 
 ## Troubleshooting
 
@@ -1188,9 +1303,11 @@ Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 | Every Claude request is refused at once, and the socket is `failed` | `doctor`: "the router failed to start again and again, so systemd closed its socket"; `systemctl --user show -p Result cc-smart-dev-kit-router.socket` says `service-start-limit-hit`; why: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` (it clears the start limit with `reset-failed` and opens both again) |
 | `gateway setup`: "… failed … Starting cc-smart-dev-kit-router without its socket" | the socket could not open: `ss -ltnp` (another program on the port?), `journalctl --user -u cc-smart-dev-kit-router.socket -n 30` | the router runs and binds the port itself, but its restarts refuse requests: free the port, then `cc-smart-dev-kit gateway setup` again |
 | `doctor`: no socket unit, or it is not the one setup writes | a router set up by an older version, or `port` changed in `gateway.json` | `cc-smart-dev-kit gateway setup` (the move refuses requests once, during the old router's drain) |
+| A request ends with `every target of cc-smart-dev-kit-… is limited or down` (a 429, "not your usage limit") | `gateway status`: the breaker line names each target and when its rest ends; the log's `WARN … every target limited or down` and `breaker(…) 429` lines | the limit or outage is the backends'. `cc-smart-dev-kit gateway slot <slot> <targets>` puts another target in (served within a second), or wait: Claude Code retries by itself. `gateway breaker <slot> off` gives the old behaviour |
 | Subagents are slow, or answer from a later target | the log's `fallbacks=` and `skipped=`; the health page's `cooling` | the backend is down or busy; wait out the cooldown |
 | A slot's request fails at once though it has more targets | `gateway status`: "fallback off" | `cc-smart-dev-kit gateway fallback <slot> on` |
 | `cc-smart-dev-kit-… is off …, and this request names the slot` (a 400) | `settings.json` still holds 0.4.3's `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `…_SONNET_MODEL` | `cc-smart-dev-kit gateway on` takes them out; or give the slot a chain |
+| A request ends `API Error: 424 … refused this request` | the `WARN … returned as a 424` line: the backend's own status and reason | the backend refused this request (a field, a kind of content): pick a target that takes it. A long conversation shows "prompt is too long" instead: `/compact`, or a target with a larger window first |
 | A slot request ends `→ claude-… 400` | the `WARN claude-… answered 400` line next to it (written just after it): Anthropic's reason | a field outside `messages`, `system` and `tools` that the Claude target refuses: add it to `requestForClaudeFallback`'s table (with a test and a contract row). A reason inside the messages (a prefill, an affordable model's thinking blocks) is not translated: § What a Claude target sees |
 | `403 … accepts requests from this machine only` | the caller sends `Origin` or a foreign `Host` | use `http://127.0.0.1:<port>` from a local program |
 | `no target for cc-smart-dev-kit-… answered` | the error lists each target's failure | fix the first reason (key, model id, backend down) |

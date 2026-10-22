@@ -74,7 +74,12 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   the router never picks a Claude model for it.
 - **A chain is the person's**: any targets, any order, any one first. The router never adds
   a target, Claude included: not at the end of a chain, not when every target fails, not
-  when one rests. A used-up chain returns its last answer, or a 502.
+  when one rests. A used-up chain returns its last answer, or a 502 — **except with the slot's
+  breaker on**: when every target failed for want of capacity (`isCapacityFailure`) and the last
+  one is a backend, the request is held and then answered with the breaker's 429
+  (`slotRequest`, `holdRequest`). **Anthropic's own answers always pass unchanged**, its quota
+  429 included: Claude Code's auto-continue, its watchdog and our StopFailure alert read the
+  real headers. A last target that is Anthropic is never held.
 - **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
   answers on the statuses `fallbackKind` names; off, only the first target ever answers.
   Default on for scout, worker, the judge and a machine's own slots; off for opus and fable
@@ -89,6 +94,21 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   A slot's switch goes when the slot is turned off (`slot <slot> off`), the judge's excepted
   (below), and stays when its chain is only changed. The contract, with the state file's `breakers`: `docs/gateway.md` § The
   breaker switch and its hold.
+- **The breaker's rules** (`docs/gateway.md` § The breaker):
+  - **Never fake Anthropic's quota headers.** Its 429 carries `x-should-retry: true` and a
+    `retry-after` of 1 to 60, and never an `anthropic-ratelimit-unified-*` header: Claude Code
+    would show plan-limit and upsell messages, and `/usage` would mislead.
+  - **Every `retry-after` the router relays from a backend, or sends, is 60 or less**
+    (`capRetryAfter`), breaker on or off: above 60 Claude Code ends the request at once.
+  - **A hold counts from the request's start** and never exceeds `timeouts.breakerHoldMs`
+    (60 s for a request that does not stream). The longest wait for the last target's first
+    event is part of that hold, not added to it.
+  - **Held means asked once.** While a breaker is open, a resting backend is not asked, the
+    last one included, and one request at a time probes each target. A hang-up rests nothing.
+  - **A refused key or request is never held**, and never relayed as a 400 or 422 Claude Code
+    does not know: since 2.1.304 it sends such a request again without its deferred tools,
+    and the chain is walked twice. A model call's refusal is a 424, or "prompt is too long"
+    when its reason says so (`refusal.ts`); Anthropic's own 400 passes unchanged.
 - **A safety check on a backend has a deadline on every target, the last too** (a lone judge
   that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.

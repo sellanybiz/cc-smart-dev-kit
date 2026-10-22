@@ -315,6 +315,15 @@ An optional local router between Claude Code and the model providers
   writes the plan limits it saw to a small state file that the status line and the
   StopFailure alert read. The alert's worker runs through the launcher, never from the
   plugin's version folder.
+- **A used-up chain is bridged, not handed back dead (D42, the breaker).** When every target of
+  a slot failed for want of capacity and the last one is a backend, the router holds the
+  request (up to 240 s from its start, 60 s if it does not stream; the config is read once a
+  second, so a changed chain is served at once), asks each resting target once through a single
+  probe, and then answers a 429 that Claude Code retries by itself. Anthropic's own answers pass
+  unchanged, and the router never fakes its quota headers. The same change caps every
+  `retry-after` it relays at 60 (Claude Code fails the request at once above it) and relays a
+  backend's refusal as a 424 (Claude Code sends an unknown 400 or 422 again without its deferred
+  tools): `gateway.md` § The breaker.
 - A config `aliases` map lets a machine's old model names reach the new slots while it
   moves. The plugin ships none; a project's migration writes them.
 - `gateway on` / `off` change Claude Code's settings only as owned keys through

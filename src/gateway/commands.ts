@@ -24,6 +24,7 @@ import { withLock } from "../setup/lock";
 import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
+import { breakerStatusLines } from "./breaker";
 import {
   breakerOn,
   breakerWords,
@@ -1033,6 +1034,7 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     const cooling = isJsonObject(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
+    for (const line of breakerStatusLines(body.breakers, ctx.probe.now())) ctx.print(line);
   }
   if (config !== null) {
     for (const [name, backend] of Object.entries(config.backends)) {

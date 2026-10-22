@@ -6633,7 +6633,7 @@ function familySlotFor(model) {
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
 var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
-var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;

@@ -434,8 +434,12 @@ export function planUsageLimit(
   };
 }
 
-/** Statuses that mean "this target cannot answer now: try the next one". */
-const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+/**
+ * Statuses that mean "this target cannot answer now: try the next one". They are also the
+ * statuses of a capacity failure, the ones the breaker holds a request for
+ * (`isCapacityFailure`, `./breaker.ts`).
+ */
+export const CAPACITY_STATUSES: ReadonlySet<number> = new Set([408, 429, 500, 502, 503, 504, 529]);
 
 /**
  * Is this status a capacity failure of Claude: it cannot answer now? The statuses a chain
@@ -445,7 +449,7 @@ const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
  * naming Tavily is better at once. A chain's own list stays `fallbackKind`'s.
  */
 export function capacityFailureStatus(status: number): boolean {
-  return FALLBACK_ANY.has(status) || (status >= 500 && status <= 599);
+  return CAPACITY_STATUSES.has(status) || (status >= 500 && status <= 599);
 }
 
 /**
@@ -459,7 +463,7 @@ export function capacityFailureStatus(status: number): boolean {
  * The caller returns the last target's answer whatever it is.
  */
 export function fallbackKind(status: number, target: Target): "next" | "next-warn" | "stay" {
-  if (FALLBACK_ANY.has(status)) return "next";
+  if (CAPACITY_STATUSES.has(status)) return "next";
   if (target.kind === "backend" && (status < 200 || status > 299)) return "next-warn";
   return "stay";
 }
