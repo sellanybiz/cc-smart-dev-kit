@@ -16,8 +16,15 @@ import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "n
 import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
-import { crewEventsFile, leadFile, notesStateFile, writeStoreFile } from "../crew/store";
+import {
+  createCrew,
+  crewEventsFile,
+  leadFile,
+  notesStateFile,
+  writeStoreFile,
+} from "../crew/store";
 import { PLUGIN_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
+import { locateCheckout } from "../project/resolve";
 import {
   hookEnv,
   makeClone,
@@ -27,7 +34,9 @@ import {
   writeSessionRecord,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { CREW_PUSH_REFUSAL } from "./git-guard";
 import type { HookResult } from "./io";
+import { CREW_PR_REFUSAL } from "./merge-guard";
 import type { HookSpec } from "./run";
 import {
   afterMergeHook,
@@ -383,11 +392,25 @@ const CASES: Case[] = [
       const repo = project(config);
       // The subagent's own transcript, where a background Bash tool result names the task id:
       // the input's `background_tasks` is the session's list, so this is what proves the task
-      // is this agent's (src/hooks/subagent-background.ts).
+      // is this agent's (src/hooks/subagent-background.ts). The `tool_use` line comes first,
+      // as Claude Code writes it: only a result of the agent's own Bash call counts.
       const transcript = join(tempDir("subagent-transcript"), "agent.jsonl");
       writeFileSync(
         transcript,
         `${JSON.stringify({
+          type: "assistant",
+          agentId: AGENT,
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_bash",
+                name: "Bash",
+                input: { command: "bun test", run_in_background: true },
+              },
+            ],
+          },
+        })}\n${JSON.stringify({
           type: "user",
           agentId: AGENT,
           message: {
@@ -670,6 +693,161 @@ describe("the guard matrix", () => {
       expect(Number(pluginAnswered) + Number(wired)).toBe(expected);
     },
   );
+});
+
+/**
+ * A crew session's refusals (D24, D47) hold in a project that never opted in, and in one whose
+ * `ownHooks` names its own copy of the guard: the frame runs each guard's crew part before
+ * `ownHooks` and before the project's file (`HookSpec.crewLimits`, `run.ts`). The same rows
+ * prove a plain session keeps the old behaviour: silent with no file, and the project's own
+ * guard alone when it is listed.
+ */
+describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1, F2b-2)", () => {
+  const SELF = { id: "B1-lookup-1a2b3c", name: "C app B1 lookup", phase: "B1" };
+  const PEER = { id: "B2-api-4d5e6f", name: "C app B2 api", phase: "B2" };
+  const LEAD = "LEAD app lead";
+
+  /** One crew session's record, as `crew start` writes it. */
+  async function record(
+    stateDir: string,
+    repo: string,
+    one: { id: string; name: string; phase: string },
+  ): Promise<void> {
+    await createCrew(
+      stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: `crew/${one.phase}-${one.id}`,
+        effort: "high",
+        files: [],
+        id: one.id,
+        kind: "build",
+        lastLine: null,
+        leadName: LEAD,
+        leadSessionId: "c00f9bb5-1111-2222-3333-444444444444",
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: one.name,
+        permissionMode: "auto",
+        phase: one.phase,
+        plan: "lead",
+        pr: null,
+        questions: [],
+        repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: one.id,
+        state: "working",
+        waitsFor: [],
+        worktree: join(repo, ".claude", "worktrees", one.id),
+      },
+      Date.parse("2026-10-21T10:00:00.000Z"),
+    );
+  }
+
+  /** A repo (with the project's file only when `config` is given) and the two crew records. */
+  async function world(config?: unknown): Promise<{
+    crew: Record<string, string>;
+    env: Record<string, string>;
+    repo: string;
+  }> {
+    const { repo } = makeClone();
+    if (config !== undefined) writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+    const env = hookEnv();
+    const root = locateCheckout(repo)?.root ?? repo;
+    const stateDir = cliPaths(env).stateDir;
+    for (const one of [SELF, PEER]) await record(stateDir, root, one);
+    return { crew: { ...env, [CREW_ENV]: SELF.id }, env, repo };
+  }
+
+  /** The shell call a crew session may not run. */
+  function shell(repo: string, command: string): Record<string, unknown> {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION,
+      cwd: repo,
+      tool_name: "Bash",
+      tool_input: { command },
+    };
+  }
+
+  /** The message a crew session sends. */
+  function message(repo: string, to: string, text: string): Record<string, unknown> {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION,
+      cwd: repo,
+      tool_name: "SendMessage",
+      tool_input: { message: text, to },
+    };
+  }
+
+  /** A denial, checked as the guard's answer: the reason is written by hand, never computed. */
+  function denied(result: HookResult, reason: string): void {
+    expect(result.exitCode ?? 0).toBe(0);
+    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    expect(output.permissionDecision).toBe("deny");
+    expect(output.permissionDecisionReason).toBe(reason);
+  }
+
+  /** The refusal of an untagged message to the peer, in the guard's own words. */
+  const UNTAGGED = [
+    `"C app B2 api" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
+    `Fix: cc-smart-dev-kit crew tell "C app B2 api" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
+    `It writes the first line the note must carry ("[B1] CONTRACT: …"), and records the note for your lead.`,
+    `That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done.`,
+  ].join("\n");
+
+  /** The refusal of a message to the lead, in the guard's own words. */
+  const TO_LEAD = [
+    `"LEAD app lead" is your lead, and a crew session reaches its lead through crew report, not a message.`,
+    `Fix: cc-smart-dev-kit crew report --status done, or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    "The report is recorded for the lead, and its watch wakes the lead on the line.",
+  ].join("\n");
+
+  async function expectRefused(crew: Record<string, string>, repo: string): Promise<void> {
+    denied(
+      await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), crew),
+      CREW_PUSH_REFUSAL,
+    );
+    denied(
+      await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), crew),
+      CREW_PR_REFUSAL,
+    );
+    denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
+    denied(await runHook(messageGuardHook, message(repo, LEAD, "done"), crew), TO_LEAD);
+  }
+
+  test("no cc-smart-dev-kit.json: the push, the pull request and the untagged peer message are denied", async () => {
+    const { crew, repo } = await world(undefined);
+    await expectRefused(crew, repo);
+  });
+
+  test('ownHooks: ["git-guard", "merge-guard"] silences none of the crew refusals', async () => {
+    const { crew, repo } = await world({ ownHooks: ["git-guard", "merge-guard"] });
+    await expectRefused(crew, repo);
+  });
+
+  test("ownHooks listing message-guard silences no crew message refusal", async () => {
+    const { crew, repo } = await world({ ownHooks: ["message-guard"] });
+    denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
+  });
+
+  test("a file that needs a newer plugin does not soften them either", async () => {
+    const { crew, repo } = await world({ requires: ">=99" });
+    await expectRefused(crew, repo);
+  });
+
+  test("a plain session with no file keeps today's silence; a crew session's other git work is not judged", async () => {
+    const { crew, env, repo } = await world(undefined);
+    expect(await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), env)).toEqual({});
+    expect(await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), env)).toEqual({});
+    expect(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), env)).toEqual({});
+    // A crew session's other git work is not refused either: this part judges a push only.
+    expect(await runHook(gitGuardHook, shell(repo, "git status"), crew)).toEqual({});
+  });
 });
 
 test("an input that is not JSON: a guard asks, any other hook says one line; for another event: nothing", async () => {

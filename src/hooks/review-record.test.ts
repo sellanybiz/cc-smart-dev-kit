@@ -210,6 +210,29 @@ describe("the commit it records is the one the reviewer read (HK-6)", () => {
     expect(recorded(env, repo)).toEqual({});
   });
 
+  test("F2b-5: the stop a block caused is silent when its start is gone: the first stop recorded the review", async () => {
+    // `subagent-background` blocks a hand-back that leaves background work running. The first
+    // stop's review-record took the start and recorded the review; the second stop
+    // (`stop_hook_active`) finds no start. Saying "no start was seen … run the review again"
+    // there is false, and sends the agent to repeat a review that is already recorded.
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    await runHook(reviewRecordHook, started(repo, { agent_type: REVIEWER }), env);
+    expect(await runHook(reviewRecordHook, stopped(repo, { agent_type: REVIEWER }), env)).toEqual(
+      {},
+    );
+    expect(
+      await runHook(
+        reviewRecordHook,
+        stopped(repo, { agent_type: REVIEWER, stop_hook_active: true }),
+        env,
+      ),
+    ).toEqual({});
+    expect(recorded(env, repo)).toEqual({ [head]: [REVIEWER] });
+  });
+
   test("a stop takes its start back: the same id stopping again records nothing new", async () => {
     const env = hookEnv();
     const repo = makeRepo();

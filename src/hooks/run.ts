@@ -3,21 +3,24 @@
  *
  * 1. Read the input. Not a JSON object, a wrong event, or a `cwd` that is not a folder in
  *    git: nothing to do.
- * 2. **The project's own copy**: when the project's cc-smart-dev-kit.json lists the hook in
+ * 2. **A guard's crew part** (`crewLimits`): what a crew session may never do, run before the
+ *    project's own copy and its file, so a crew session cannot switch it off (`D24`, `D47`).
+ * 3. **The project's own copy**: when the project's cc-smart-dev-kit.json lists the hook in
  *    `ownHooks`, exit 0 and print nothing, so the project's copy runs alone (a hook with
- *    `alwaysOn` skips this step: the project cannot switch it off). Only that field
+ *    `alwaysOn` skips this step: the project cannot switch it off; the crew part above has
+ *    already run). Only that field
  *    is read here (`ownHooksOf`), so it works even when the rest of the file is broken or
  *    needs a newer plugin. Nothing else silences a plugin hook: a project hook on the same
  *    event does not (it may be a logger, and a guard must not go quiet for it).
- * 3. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
+ * 4. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
  *    hook **fails closed** in its own way (`onConfigProblem`): a guard asks, an informational
  *    hook prints one line.
- * 4. Run the hook. A guard's own crash answers through `onCrash` (a guard asks about the
+ * 5. Run the hook. A guard's own crash answers through `onCrash` (a guard asks about the
  *    call in its own domain, never a silent pass); an informational hook's crash is one line
  *    on stderr and exit 0 — a bug never stops a person's work. Claude Code holds the second
  *    belt: a guard's hooks.json entry carries `onFailure: "block"`, so a hook that cannot
  *    start, times out or answers nothing readable blocks the tool call.
- * 5. **Record an ask.** When the answer asks the person, the frame appends one line to
+ * 6. **Record an ask.** When the answer asks the person, the frame appends one line to
  *    `guard-asks.jsonl` in the state folder (`src/hooks/ask-log.ts`); a write that fails is
  *    one line on stderr and never changes the answer.
  *
@@ -113,6 +116,20 @@ export interface HookSpec {
     context: HookEnvContext,
   ) => HookResult | Promise<HookResult>;
   /**
+   * A guard's **crew part**: what a crew session may never do, whatever the project's file
+   * says — it never pushes, opens no pull request (`D24`), and its message to another crew
+   * session carries the `crew tell` tag (`D47`). The frame runs it after finding the
+   * checkout and **before `ownHooks` and the file**, because those are the two ways a session
+   * could switch the limit off, and it holds in a project with no file at all. It judges no
+   * other call: without `CC_SMART_DEV_KIT_CREW` it must be silent, so an ordinary session
+   * pays nothing for it, and an answer that is not a denial is the same as silence.
+   */
+  crewLimits?: (
+    input: HookInput,
+    checkout: Checkout,
+    context: HookEnvContext,
+  ) => HookResult | Promise<HookResult>;
+  /**
    * Facts for the hook log only (`CC_SMART_DEV_KIT_HOOK_LOG`), never part of the answer: what the
    * hook's own parser read in the input, and — where the answer is a judgement — what it
    * judged. `doctor --live` reads them to prove a guard read the call, not only that the
@@ -150,6 +167,11 @@ export interface HookSpec {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** True when a hook's answer says anything at all: stdout, stderr, or a non-zero exit code. */
+function saysSomething(result: HookResult): boolean {
+  return result.stdout !== undefined || result.stderr !== undefined || (result.exitCode ?? 0) !== 0;
 }
 
 /**
@@ -238,6 +260,13 @@ async function answer(
     }
     if (checkout === null)
       return await outside(input, event, `${cwd} is not in a git checkout`, context);
+
+    // A guard's crew part first (step 2): a crew session's own limits are not the project's
+    // to switch off, and hold with no file at all (D24, D47).
+    if (spec.crewLimits !== undefined) {
+      const crew = await spec.crewLimits(input, checkout, context);
+      if (saysSomething(crew)) return crew;
+    }
 
     if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 

@@ -40,25 +40,69 @@ function repoWithConfig(): string {
 }
 
 /**
+ * One tool result the agent's transcript holds: the assistant's `tool_use` line and the
+ * `user` line that answers it, the way Claude Code writes them (`docs/claude-code-contract.md`
+ * § Hooks). `tool` is the call that produced the result — the hook counts an id only in a
+ * result of the agent's own Bash or Agent call.
+ */
+interface ToolResult {
+  text: string;
+  tool?: "Agent" | "Bash" | "Read";
+  /** True to write the result's `content` as text blocks (the shape a real Agent result has). */
+  blocks?: boolean;
+}
+
+/**
  * A subagent transcript with the given tool results, written the way Claude Code writes one:
  * every line carries the agent's own `agentId`.
  */
-function transcript(...said: string[]): string {
+function transcript(...said: Array<string | ToolResult>): string {
+  const path = join(tempDir("subagent-transcript"), "agent.jsonl");
+  const lines: string[] = [];
+  said.forEach((one, index) => {
+    const result: ToolResult = typeof one === "string" ? { text: one } : one;
+    const id = `toolu_${index + 1}`;
+    lines.push(
+      JSON.stringify({
+        type: "assistant",
+        agentId: AGENT,
+        message: {
+          content: [
+            { type: "tool_use", id, name: result.tool ?? "Bash", input: { command: "sleep 60" } },
+          ],
+        },
+      }),
+    );
+    lines.push(
+      JSON.stringify({
+        type: "user",
+        agentId: AGENT,
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: id,
+              content: result.blocks === true ? [{ type: "text", text: result.text }] : result.text,
+            },
+          ],
+        },
+      }),
+    );
+  });
+  writeFileSync(path, lines.map((line) => `${line}\n`).join(""));
+  return path;
+}
+
+/** A transcript holding one plain prompt line (the brief the agent started from). */
+function prompt(text: string): string {
   const path = join(tempDir("subagent-transcript"), "agent.jsonl");
   writeFileSync(
     path,
-    said
-      .map(
-        (text) =>
-          `${JSON.stringify({
-            type: "user",
-            agentId: AGENT,
-            message: {
-              content: [{ type: "tool_result", tool_use_id: "toolu_1", content: text }],
-            },
-          })}\n`,
-      )
-      .join(""),
+    `${JSON.stringify({
+      type: "user",
+      agentId: AGENT,
+      message: { content: [{ type: "text", text }] },
+    })}\n`,
   );
   return path;
 }
@@ -183,9 +227,11 @@ describe("the hook", () => {
     const result = await runHook(
       subagentBackgroundHook,
       stop(repo, {
-        agent_transcript_path: transcript(
-          `Async agent launched successfully. agentId: ${CHILD} (internal ID - do not mention to the user.)`,
-        ),
+        agent_transcript_path: transcript({
+          blocks: true,
+          text: `Async agent launched successfully. agentId: ${CHILD} (internal ID - do not mention to the user.)`,
+          tool: "Agent",
+        }),
         background_tasks: [
           {
             id: CHILD,
@@ -199,6 +245,78 @@ describe("the hook", () => {
       hookEnv(),
     );
     expect(result).toEqual({ stdout: BLOCK });
+  });
+
+  test("F2b-4: the parent's background id in the brief is not work this agent started: no block", async () => {
+    // The brief says what the parent waits on, so its id appears in the agent's text. A plain
+    // substring over the transcript would block the hand-back, and the reason ("wait for it or
+    // stop it") could make the agent stop the parent's work.
+    const repo = repoWithConfig();
+    expect(
+      await runHook(
+        subagentBackgroundHook,
+        stop(repo, {
+          agent_transcript_path: prompt(
+            `Your task: build the phase. The parent's tests run in the background (task shell1234); do not wait for it.`,
+          ),
+          background_tasks: [SHELL_TASK],
+        }),
+        hookEnv(),
+      ),
+    ).toEqual({});
+  });
+
+  test("F2b-4: an id a file the agent read names is not a task it started: no block", async () => {
+    const repo = repoWithConfig();
+    expect(
+      await runHook(
+        subagentBackgroundHook,
+        stop(repo, {
+          agent_transcript_path: transcript({
+            text: "notes.md\n- the lead's background task shell1234 writes /tmp/out.log\n",
+            tool: "Read",
+          }),
+          background_tasks: [SHELL_TASK],
+        }),
+        hookEnv(),
+      ),
+    ).toEqual({});
+    // Even a Bash result that merely mentions the id is no background launch of this agent.
+    expect(
+      await runHook(
+        subagentBackgroundHook,
+        stop(repo, {
+          agent_transcript_path: transcript("echo shell1234"),
+          background_tasks: [SHELL_TASK],
+        }),
+        hookEnv(),
+      ),
+    ).toEqual({});
+  });
+
+  test("F2b-4: a child agent's id in a non-Agent result is not a launch of it: no block", async () => {
+    const repo = repoWithConfig();
+    expect(
+      await runHook(
+        subagentBackgroundHook,
+        stop(repo, {
+          agent_transcript_path: transcript({
+            text: `grep found: agentId: ${CHILD} in the log`,
+            tool: "Bash",
+          }),
+          background_tasks: [
+            {
+              id: CHILD,
+              type: "subagent",
+              status: "running",
+              description: "the searches",
+              agent_type: "Explore",
+            },
+          ],
+        }),
+        hookEnv(),
+      ),
+    ).toEqual({});
   });
 
   test("a transcript it was not told, or cannot read, is no block: it cannot tell whose work it is", async () => {

@@ -21355,6 +21355,22 @@ function pushRulesFor(env, autoPushAsk) {
   return { crew: crewIdOf(env) !== null, autoPushAsk };
 }
 var CREW_PUSH_REFUSAL = "A crew session never pushes: it commits on its own branch, and the lead merges that branch " + "locally (`git merge`). Only the lead's final push reaches the remote, and the person " + "approves that one. Stop at your commit and say so in your report.";
+function crewPushAnswer(input, env, cwd) {
+  if (crewIdOf(env) === null)
+    return SILENT;
+  const command = stringField(toolInput(input).command);
+  if (command === null)
+    return SILENT;
+  const verdict = guardVerdict(command, cwd, {
+    protectedBranches: [],
+    pushRules: { crew: true, autoPushAsk: () => null },
+    sharedStash: false,
+    env,
+    dialect: dialectOfTool(input.tool_name)
+  });
+  return verdict.refuse.length === 0 ? SILENT : toolDecision("deny", verdict.refuse.join(`
+`));
+}
 var PUSH_VALUE_OPTIONS = [
   ["--exec", 4],
   ["--push-option", 4],
@@ -31331,6 +31347,21 @@ function openPrRefusal(resolved, base, opening) {
 // src/hooks/merge-guard.ts
 var ALIAS_LIMIT_MS = 3000;
 var CREW_PR_REFUSAL = "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " + "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " + "at your commit and say so in your report.";
+function crewPrAnswer(input, env, cwd) {
+  if (crewIdOf(env) === null)
+    return SILENT;
+  const command = stringField(toolInput(input).command);
+  if (command === null)
+    return SILENT;
+  const dialect = dialectOfTool(input.tool_name);
+  if (!requestsPullRequestChange(command, dialect))
+    return SILENT;
+  if (pullRequestOpenings(command, null, dialect).length > 0) {
+    return toolDecision("deny", CREW_PR_REFUSAL);
+  }
+  const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect);
+  return calls.some((one) => !isMerge(one)) ? toolDecision("deny", CREW_PR_REFUSAL) : SILENT;
+}
 function notOpenedByItself(opening, reason) {
   const what = opening.opens === "ready" ? "marks a pull request ready for review" : "opens a pull request";
   return `cc-smart-dev-kit asks before this ${what}: ${reason}. Approve it yourself if you meant it.`;
@@ -31375,9 +31406,6 @@ function mergeGuard(context) {
   if (config === null)
     return SILENT;
   const crew = crewIdOf(env) !== null;
-  if (crew && pullRequestOpenings(command, null, dialect).length > 0) {
-    return toolDecision("deny", CREW_PR_REFUSAL);
-  }
   const admin = adminMerge(pullRequestMerges(command, null, dialect));
   if (admin !== undefined) {
     return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
@@ -31398,8 +31426,6 @@ function mergeGuard(context) {
   const calls = pullRequestCallsWithAliases(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect);
   const merges = calls.filter((one) => isMerge(one) && !one.disarms);
   const openings = calls.filter((one) => !isMerge(one));
-  if (crew && openings.length > 0)
-    return toolDecision("deny", CREW_PR_REFUSAL);
   const integration = config.worktrees?.base ?? null;
   if (integration !== null && merges.length > 0) {
     let early;
@@ -31568,7 +31594,15 @@ function untaggedTellRefusal(to, from) {
   ].join(`
 `);
 }
-function untaggedCrewTell(repo, env, to, message, stateDir) {
+function leadTellRefusal(to) {
+  return [
+    `"${to}" is your lead, and a crew session reaches its lead through crew report, not a message.`,
+    `Fix: ${COMMAND} crew report --status done, or ${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
+    "The report is recorded for the lead, and its watch wakes the lead on the line."
+  ].join(`
+`);
+}
+function crewTellProblem(repo, env, to, message, stateDir) {
   const id = crewIdOf(env);
   if (id === null)
     return null;
@@ -31576,10 +31610,29 @@ function untaggedCrewTell(repo, env, to, message, stateDir) {
   if (from === null)
     return null;
   const name = withoutListRef(to);
+  if (name === from.leadName)
+    return { from, kind: "lead", to: name };
   const target = listCrew(stateDir, repo).records.find((one) => one.name === name && one.id !== from.id);
   if (target === undefined)
     return null;
-  return hasTellTag(message, from.phase) ? null : { from, to: name };
+  return hasTellTag(message, from.phase) ? null : { from, kind: "tag", to: name };
+}
+function crewMessageAnswer(input, env, repo, stateDir) {
+  if (crewIdOf(env) === null)
+    return SILENT;
+  const to = stringField(toolInput(input).to);
+  if (to === null)
+    return SILENT;
+  const message = stringField(toolInput(input).message) ?? "";
+  let problem;
+  try {
+    problem = crewTellProblem(repo, env, to, message, stateDir);
+  } catch {
+    return SILENT;
+  }
+  if (problem === null)
+    return SILENT;
+  return toolDecision("deny", problem.kind === "lead" ? leadTellRefusal(problem.to) : untaggedTellRefusal(problem.to, problem.from));
 }
 function messageGuard(context) {
   const { project, input, env, paths } = context;
@@ -31597,16 +31650,7 @@ function messageGuard(context) {
   const repo = project.mainCheckout ?? project.root;
   const folders = listWorktrees(realPath(repo), env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
   const folder = messageLeavesRepo(to, sessions, folders);
-  if (folder !== null)
-    return toolDecision("deny", otherProjectRefusal(to, folder));
-  const message = stringField(toolInput(input).message) ?? "";
-  let tell;
-  try {
-    tell = untaggedCrewTell(repo, env, to, message, paths.stateDir);
-  } catch {
-    return SILENT;
-  }
-  return tell === null ? SILENT : toolDecision("deny", untaggedTellRefusal(tell.to, tell.from));
+  return folder === null ? SILENT : toolDecision("deny", otherProjectRefusal(to, folder));
 }
 
 // src/hooks/push-policy.ts
@@ -31689,6 +31733,8 @@ async function reviewRecord(context) {
     if (commit === null)
       return SILENT;
     if (start === null) {
+      if (input.stop_hook_active === true)
+        return SILENT;
       return said("no start was seen for this review agent, so no review is recorded: run the review again");
     }
     await recordReview(reviewsFile(paths.stateDir, repository), start.head, agent, Date.now(), start.branch);
@@ -32117,6 +32163,8 @@ function inEscapeDomain(input) {
 // src/hooks/subagent-background.ts
 import { readFileSync as readFileSync59 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
+var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
+var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
 function backgroundTaskIds(input) {
   if (!Array.isArray(input.background_tasks))
     return [];
@@ -32130,8 +32178,69 @@ function backgroundTaskIds(input) {
   }
   return ids;
 }
+function lineObject(line) {
+  if (line.trim() === "")
+    return null;
+  try {
+    const value = JSON.parse(line);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function contentBlocks(line) {
+  const message = line.message;
+  if (typeof message !== "object" || message === null || Array.isArray(message))
+    return [];
+  const content = message.content;
+  if (!Array.isArray(content))
+    return [];
+  return content.filter((block) => typeof block === "object" && block !== null && !Array.isArray(block));
+}
+function resultText(content) {
+  if (typeof content === "string")
+    return content;
+  if (!Array.isArray(content))
+    return "";
+  return content.map((block) => {
+    if (typeof block !== "object" || block === null || Array.isArray(block))
+      return "";
+    const text = block.text;
+    return typeof text === "string" ? text : "";
+  }).join(`
+`);
+}
 function startedByAgent(text, ids) {
-  return ids.some((id) => text.includes(id));
+  const wanted = new Set(ids);
+  if (wanted.size === 0)
+    return false;
+  const tools = new Map;
+  const results = [];
+  for (const raw of text.split(`
+`)) {
+    const line = lineObject(raw);
+    if (line === null)
+      continue;
+    for (const block of contentBlocks(line)) {
+      if (block.type === "tool_use") {
+        const id = stringField(block.id);
+        const name = stringField(block.name);
+        if (id !== null && name !== null)
+          tools.set(id, name);
+      } else if (block.type === "tool_result") {
+        results.push({
+          text: resultText(block.content),
+          tool: tools.get(stringField(block.tool_use_id) ?? "")
+        });
+      }
+    }
+  }
+  for (const result of results) {
+    const found = result.tool === "Bash" ? BACKGROUND_ID.exec(result.text)?.[1] : result.tool !== undefined && AGENT_TOOLS.includes(result.tool) && AGENT_ID.exec(result.text)?.[1];
+    if (typeof found === "string" && wanted.has(found))
+      return true;
+  }
+  return false;
 }
 function subagentBackground(context) {
   const { input, event, project } = context;
@@ -32198,6 +32307,7 @@ var gitGuardHook = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
+  crewLimits: (input, _checkout, { env }) => crewPushAnswer(input, env, stringField(input.cwd) ?? ""),
   run: (context) => {
     const { project, input, cwd, env } = context;
     const config = project.config;
@@ -32234,6 +32344,7 @@ var mergeGuardHook = {
     const command = commandOf3(input);
     return command !== "" && requestsPullRequestChange(command);
   }),
+  crewLimits: (input, _checkout, { env }) => crewPrAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard
 };
 var mainFolderGuardHook = {
@@ -32252,6 +32363,7 @@ var messageGuardHook = {
   events: ["PreToolUse"],
   onConfigProblem: (message) => toolDecision("ask", cannotCheck("whether this message may go to that session", message)),
   onCrash: guardCrash("whether this message may go to that session", (input) => toolOf2(input) === "SendMessage"),
+  crewLimits: (input, checkout, { env, paths }) => crewMessageAnswer(input, env, checkout.mainCheckout ?? checkout.root, paths.stateDir),
   run: messageGuard
 };
 var afterMergeHook = {

@@ -34,6 +34,13 @@
  * Every hook here is wired by the plugin, in `plugin/hooks/hooks.json`. The worktree engine
  * a project used to wire itself is retired (1.0.0): its three hook names only print the fix
  * (`src/hooks/settings-hooks.ts`).
+ *
+ * Three guards — `git-guard`, `merge-guard` and `message-guard` — also carry a **crew part**
+ * (`HookSpec.crewLimits`): a crew session never pushes, opens no pull request, and its peer
+ * messages carry the `crew tell` tag (D24, D47). The frame runs that part **before `ownHooks`
+ * and before the project's file is read**, so a project with no `cc-smart-dev-kit.json`, and
+ * one whose `ownHooks` lists its own copy of the guard, cannot lose it. Each part is the
+ * guard's own detector (`crewPushAnswer`, `crewPrAnswer`, `crewMessageAnswer`), never a copy.
  */
 
 import { crewIdOf } from "../crew/session";
@@ -45,7 +52,13 @@ import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-gua
 import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
-import { DEFAULT_PROTECTED_BRANCHES, guardVerdict, pushRulesFor, runsGit } from "./git-guard";
+import {
+  crewPushAnswer,
+  DEFAULT_PROTECTED_BRANCHES,
+  guardVerdict,
+  pushRulesFor,
+  runsGit,
+} from "./git-guard";
 import {
   addContext,
   type HookInput,
@@ -64,8 +77,8 @@ import {
 } from "./job-route";
 import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
-import { mergeGuard } from "./merge-guard";
-import { messageGuard } from "./message-guard";
+import { crewPrAnswer, mergeGuard } from "./merge-guard";
+import { crewMessageAnswer, messageGuard } from "./message-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
@@ -145,6 +158,10 @@ export const gitGuardHook: HookSpec = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
+  // A crew session's push is denied whatever the project's file says, and with no file
+  // (`crewPushAnswer`: the same detector as `run`, with only the crew rule on).
+  crewLimits: (input, _checkout, { env }) =>
+    crewPushAnswer(input, env, stringField(input.cwd) ?? ""),
   run: (context): HookResult => {
     const { project, input, cwd, env } = context;
     const config = project.config;
@@ -190,6 +207,9 @@ export const mergeGuardHook: HookSpec = {
     const command = commandOf(input);
     return command !== "" && requestsPullRequestChange(command);
   }),
+  // A crew session opens no pull request, whatever the project's file says, and with no file
+  // (`crewPrAnswer`: the same reader as `run`, aliases included).
+  crewLimits: (input, _checkout, { env }) => crewPrAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard,
 };
 
@@ -222,6 +242,10 @@ export const messageGuardHook: HookSpec = {
     "whether this message may go to that session",
     (input) => toolOf(input) === "SendMessage",
   ),
+  // The D47 crew rule, whatever the project's file says, and with no file: a peer message
+  // carries the `crew tell` tag, and a message to its own lead goes through `crew report`.
+  crewLimits: (input, checkout, { env, paths }) =>
+    crewMessageAnswer(input, env, checkout.mainCheckout ?? checkout.root, paths.stateDir),
   run: messageGuard,
 };
 

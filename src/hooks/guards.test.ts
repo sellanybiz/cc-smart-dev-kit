@@ -365,13 +365,33 @@ describe("the message guard: crew sessions talk in contract notes (D47)", () => 
     expect(late.stdout).toContain('"permissionDecision":"deny"');
   });
 
-  test("a message to the lead, to yourself, or to a session outside the store goes through", async () => {
+  test("a message to yourself, or to a session outside the store goes through", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
-    expect(await crew.send("LEAD app lead", "done")).toEqual({});
     expect(await crew.send(SELF.name, "note to self")).toEqual({});
     expect(await crew.send("someone else", "hello")).toEqual({});
+  });
+
+  test("F2b-3: a message to its own lead is refused, naming crew report", async () => {
+    // `crew tell` matches the lead too (src/crew/tell.ts): a crew session reaches its lead
+    // through the recorded report, never a raw message. The tag does not change that — the
+    // lead is not a peer.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+    for (const message of ["done", "[B1] CONTRACT: x.ts:lookup is gone"]) {
+      expect([message, await crew.send("LEAD app lead", message)]).toEqual([
+        message,
+        deny(
+          [
+            '"LEAD app lead" is your lead, and a crew session reaches its lead through crew report, not a message.',
+            'Fix: cc-smart-dev-kit crew report --status done, or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>',
+            "The report is recorded for the lead, and its watch wakes the lead on the line.",
+          ].join("\n"),
+        ),
+      ]);
+    }
   });
 
   test("a session that is no crew session is not judged: the lead messages as it likes", async () => {

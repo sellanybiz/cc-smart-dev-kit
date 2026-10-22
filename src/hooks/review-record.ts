@@ -22,7 +22,9 @@
  * commit made while the reviewer read is a fix it never saw. Such commits count as change
  * after the review, as every later fix does, when the merge guard asks whether the review
  * still covers the branch's head (`src/workflow/review-cover.ts`, D17). A stop with no start
- * seen (the plugin was updated mid-review) records nothing.
+ * seen (the plugin was updated mid-review) records nothing and says so — except the stop that
+ * a block caused (`stop_hook_active`): the first stop took the start and recorded the review,
+ * so the second has nothing to record and must not claim otherwise.
  *
  * Which agents count is the workflow's `reviewAgents` (default `["cc-smart-dev-kit:reviewer"]`,
  * the plugin's own reviewer), compared by `recordsReview`: a `plugin:name` exactly, a bare
@@ -148,6 +150,10 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
     if (commit === null) return SILENT;
     if (start === null) {
+      // The stop a block caused (`subagent-background` blocked the first one, say): that first
+      // stop already took the start and recorded the review, so "no start was seen" would be
+      // false, and the agent would run the review again for nothing.
+      if (input.stop_hook_active === true) return SILENT;
       return said(
         "no start was seen for this review agent, so no review is recorded: run the review again",
       );

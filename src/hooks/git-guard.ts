@@ -30,7 +30,11 @@
  * "ask", never "deny": the person may mean it, and a hook cannot tell. **One exception: a crew
  * session never pushes** (D24). A session the crew launcher started (`CC_SMART_DEV_KIT_CREW`
  * is set in its environment) commits on its own branch and the lead merges it locally, so any
- * `git push` from it is denied, whatever `autoPush` says. Claude Code's background sessions
+ * `git push` from it is denied, whatever `autoPush` says. The refusal is the guard's **crew
+ * part** (`crewPushAnswer`, `HookSpec.crewLimits`): the frame runs it before `ownHooks` and
+ * before the project's file is read, so a project that lists its own `git-guard` in
+ * `ownHooks`, and a project with no `cc-smart-dev-kit.json` at all, cannot lose it. Claude
+ * Code's background sessions
  * push a worktree's branch on their own when the repository has a remote, which is the reason
  * for the rule (`docs/claude-code-contract.md`). Every command of a
  * line is read on its own, through the one shell reader (`src/shell/command.ts`), in the
@@ -53,6 +57,7 @@ import { crewIdOf } from "../crew/session";
 import {
   CHANGE_DIR,
   type Dialect,
+  dialectOfTool,
   invocationOf,
   isShort,
   MAX_NESTING,
@@ -67,6 +72,14 @@ import {
   wordsOf,
 } from "../shell/command";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
+import {
+  type HookInput,
+  type HookResult,
+  SILENT,
+  stringField,
+  toolDecision,
+  toolInput,
+} from "./io";
 import type { Env } from "./run";
 
 /** The branches asked about when cc-smart-dev-kit.json names none. */
@@ -99,6 +112,31 @@ export const CREW_PUSH_REFUSAL =
   "A crew session never pushes: it commits on its own branch, and the lead merges that branch " +
   "locally (`git merge`). Only the lead's final push reaches the remote, and the person " +
   "approves that one. Stop at your commit and say so in your report.";
+
+/**
+ * The guard's crew part (D24): a crew session's `git push`, in any form the guard's own
+ * detector reads, is denied. One detector — the same `guardVerdict` the guard's `run` uses,
+ * with only the crew rule on — so a spelling that gets past one gets past both; a question
+ * the same line would raise (a `reset --hard` beside it, say) is none of this part's, and
+ * the guard's `run` asks it when the project lets the guard answer at all.
+ *
+ * Not a crew session, or a line with no push: silence, so an ordinary session pays nothing
+ * and every other call goes on through the frame's usual steps.
+ */
+export function crewPushAnswer(input: HookInput, env: Env, cwd: string): HookResult {
+  if (crewIdOf(env) === null) return SILENT;
+  const command = stringField(toolInput(input).command);
+  if (command === null) return SILENT;
+  const verdict = guardVerdict(command, cwd, {
+    // Only the crew rule is on: these values are never reached for a push with `crew` set.
+    protectedBranches: [],
+    pushRules: { crew: true, autoPushAsk: () => null },
+    sharedStash: false,
+    env,
+    dialect: dialectOfTool(input.tool_name),
+  });
+  return verdict.refuse.length === 0 ? SILENT : toolDecision("deny", verdict.refuse.join("\n"));
+}
 
 export interface GuardOptions {
   protectedBranches: string[];
