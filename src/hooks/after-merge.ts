@@ -1557,9 +1557,9 @@ function leadsOf(
 
 /**
  * Records one `merge` event per other lead (D55), so that lead's own watch says the line
- * without waiting for the message the merging session sends. News, never a guard: a store that
- * cannot be read, or an event that cannot be written, costs nothing — the note still says to
- * send the message.
+ * without waiting for the message the merging session sends. `found` is the store's leads as
+ * the caller read them, so the store is read once. News, never a guard: an event that cannot be
+ * written costs nothing — the note still says to send the message.
  */
 async function recordMerged(
   context: HookContext,
@@ -1567,13 +1567,8 @@ async function recordMerged(
   pr: PullRequestView,
   base: string,
   sessionId: string,
+  found: { merger: LeadRecord | null; others: LeadRecord[] },
 ): Promise<void> {
-  let found: { merger: LeadRecord | null; others: LeadRecord[] };
-  try {
-    found = leadsOf(context.paths.stateDir, repo, sessionId);
-  } catch {
-    return;
-  }
   const who = found.merger?.name ?? "a session";
   const line = mergedLine(pr, base, who);
   for (const one of found.others) {
@@ -1697,10 +1692,13 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
     // The other leads of this repo (D55): the note names them, and each one's watch also gets
     // the merge from the store, so the line arrives without waiting for a message.
     const mergedBy = isSessionId(input.session_id) ? input.session_id : null;
-    let others: LeadRecord[] = [];
+    let found: { merger: LeadRecord | null; others: LeadRecord[] } = {
+      merger: null,
+      others: [],
+    };
     if (mergedBy !== null) {
       try {
-        others = leadsOf(context.paths.stateDir, repo, mergedBy).others;
+        found = leadsOf(context.paths.stateDir, repo, mergedBy);
       } catch {
         // A store that cannot be read leaves the note without lead names.
       }
@@ -1710,10 +1708,10 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
         pr,
         base,
         project.config?.worktrees?.bases ?? {},
-        others.map((one) => one.name),
+        found.others.map((one) => one.name),
       ),
     );
-    if (mergedBy !== null) await recordMerged(context, repo, pr, base, mergedBy);
+    if (mergedBy !== null) await recordMerged(context, repo, pr, base, mergedBy, found);
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, "");
   }
