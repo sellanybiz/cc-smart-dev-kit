@@ -1,9 +1,10 @@
 /**
- * The crew session's own hook (`crew-role.ts`): the card at a start, the ask refused, the report
- * block at a stop, the pause at a model limit, and silence everywhere else.
+ * The crew session's own hook (`crew-role.ts`): the card at a start, the session's own folder
+ * checked against its worktree (H101), the ask refused, the report block at a stop, the pause at
+ * a model limit, and silence everywhere else.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
@@ -21,8 +22,14 @@ import {
 } from "../crew/store";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
-import { crewRoleAnswer, questionStep, roleCard } from "./crew-role";
+import { git, tempDir } from "../testing/temp";
+import {
+  crewRoleAnswer,
+  questionStep,
+  roleCard,
+  wrongFolderCard,
+  wrongFolderReason,
+} from "./crew-role";
 import type { HookResult } from "./io";
 import { addContext, toolDecision } from "./io";
 import { crewRoleHook } from "./specs";
@@ -77,6 +84,16 @@ async function crewWorld(change: Partial<NewCrew> = {}): Promise<{
   const stateDir = cliPaths(env).stateDir;
   const record = await createCrew(stateDir, newCrew(repo, change), T0);
   return { env, record, repo, stateDir };
+}
+
+/**
+ * The real worktree of the record `newCrew` makes: `git worktree add` on its branch, at HEAD.
+ * Its session starts in it, so its SessionStart input's `cwd` is this folder.
+ */
+function makeWorktree(repo: string): string {
+  const worktree = join(repo, ".claude", "worktrees", "crew-W2-hooks");
+  git(repo, "worktree", "add", "-q", "-b", "crew/W2-hooks", worktree, "HEAD");
+  return worktree;
 }
 
 /** The environment of a plain session: no crew id. */
@@ -169,13 +186,15 @@ describe("a session that is not a crew session hears nothing", () => {
 describe("SessionStart: the role card", () => {
   test("the exact card, built from the record and the brief's path", async () => {
     const world = await crewWorld();
+    // A crew session starts in its worktree: its SessionStart input's `cwd` is that folder.
+    const worktree = makeWorktree(world.repo);
     const brief = crewBriefFile(world.stateDir, world.repo, CREW_ID);
     const result = await runHook(
       crewRoleHook,
       {
         hook_event_name: "SessionStart",
         session_id: "s",
-        cwd: world.repo,
+        cwd: worktree,
         source: "startup",
       },
       world.env,
@@ -199,10 +218,11 @@ describe("SessionStart: the role card", () => {
 
   test("a resume and a compaction say it again; a clear does not", async () => {
     const world = await crewWorld();
+    const worktree = makeWorktree(world.repo);
     const answer = async (source: string) =>
       await runHook(
         crewRoleHook,
-        { hook_event_name: "SessionStart", session_id: "s", cwd: world.repo, source },
+        { hook_event_name: "SessionStart", session_id: "s", cwd: worktree, source },
         world.env,
       );
     for (const source of ["resume", "compact"]) {
@@ -224,6 +244,116 @@ describe("SessionStart: the role card", () => {
     expect(result).toEqual({
       stderr: `cc-smart-dev-kit crew-role: no crew session "${CREW_ID}" is recorded for ${repo}`,
     });
+  });
+});
+
+describe("H101: the session checks its own folder against its worktree", () => {
+  test("in its worktree, a starting record becomes working, and the card is the normal one", async () => {
+    const world = await crewWorld({ startedAt: "2026-10-21T09:00:00.000Z", state: "starting" });
+    const worktree = makeWorktree(world.repo);
+    const result = await runHook(
+      crewRoleHook,
+      { hook_event_name: "SessionStart", session_id: "s", cwd: worktree, source: "startup" },
+      world.env,
+    );
+    const brief = crewBriefFile(world.stateDir, world.repo, CREW_ID);
+    expect(result).toEqual(addContext("SessionStart", roleCard(world.record, brief)));
+    const record = readCrew(world.stateDir, world.repo, CREW_ID);
+    expect(record?.state).toBe("working");
+    // The launch's own start time stays: the launcher recorded when the session started.
+    expect(record?.startedAt).toBe("2026-10-21T09:00:00.000Z");
+    // One state event: the lead's watch says the session reached its worktree.
+    expect(
+      readCrewEvents(world.stateDir, world.repo).events.map((one) => [
+        one.type,
+        one.state,
+        one.text,
+      ]),
+    ).toEqual([
+      ["created", "starting", null],
+      ["state", "working", "started in its worktree"],
+    ]);
+  });
+
+  test("outside its worktree: failed with the reason, and a card that says stop", async () => {
+    const world = await crewWorld({ state: "starting" });
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-W2-hooks");
+    // What `claude agents --json` reports at once for a `-w` launch (2.1.308): the main
+    // checkout. The session's own `cwd` is the truth, and it is not the worktree.
+    const result = await runHook(
+      crewRoleHook,
+      { hook_event_name: "SessionStart", session_id: "s", cwd: world.repo, source: "startup" },
+      world.env,
+    );
+    const card = wrongFolderCard(world.record, world.repo);
+    expect(result).toEqual(addContext("SessionStart", card));
+    expect(card).toContain(
+      `You are the crew session \`C app W2 hooks\`, and you are in \`${world.repo}\`, not in your worktree \`${worktree}\`.`,
+    );
+    expect(card).toContain(
+      "Do nothing here — change no file, run no command — and end your turn now.",
+    );
+    // The record is failed, with the reason: the lead's monitor hears it, and its watch stops
+    // the session (D35).
+    const record = readCrew(world.stateDir, world.repo, CREW_ID);
+    expect(record?.state).toBe("failed");
+    expect(
+      readCrewEvents(world.stateDir, world.repo).events.map((one) => [
+        one.type,
+        one.state,
+        one.text,
+      ]),
+    ).toEqual([
+      ["created", "starting", null],
+      ["state", "failed", wrongFolderReason(world.record, world.repo)],
+    ]);
+  });
+
+  test("a symlink that leads out of the worktree is outside it", async () => {
+    const world = await crewWorld();
+    const worktree = makeWorktree(world.repo);
+    // A name inside the worktree that really is the main checkout: the real path decides, so a
+    // session that entered through the link is not mistaken for one in its worktree.
+    const out = join(worktree, "out-link");
+    symlinkSync(world.repo, out);
+    const result = await runHook(
+      crewRoleHook,
+      { hook_event_name: "SessionStart", session_id: "s", cwd: out, source: "startup" },
+      world.env,
+    );
+    expect(result).toEqual(addContext("SessionStart", wrongFolderCard(world.record, out)));
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.state).toBe("failed");
+  });
+
+  test("a phase that already ended keeps its state: a resumed merged session is told to stop, still merged", async () => {
+    const world = await crewWorld({ state: "merged" });
+    const result = await runHook(
+      crewRoleHook,
+      { hook_event_name: "SessionStart", session_id: "s", cwd: world.repo, source: "resume" },
+      world.env,
+    );
+    expect(result).toEqual(addContext("SessionStart", wrongFolderCard(world.record, world.repo)));
+    // `merged` is what a dependent phase waits for, and `crew rm` reads it: failing it would keep
+    // that phase queued for ever.
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.state).toBe("merged");
+    expect(readCrewEvents(world.stateDir, world.repo).events.map((one) => one.state)).toEqual([
+      "merged",
+    ]);
+  });
+
+  test("a folder inside the worktree is the worktree: the normal card", async () => {
+    const world = await crewWorld();
+    const worktree = makeWorktree(world.repo);
+    const inside = join(worktree, "src");
+    mkdirSync(inside, { recursive: true });
+    const result = await runHook(
+      crewRoleHook,
+      { hook_event_name: "SessionStart", session_id: "s", cwd: inside, source: "startup" },
+      world.env,
+    );
+    const brief = crewBriefFile(world.stateDir, world.repo, CREW_ID);
+    expect(result).toEqual(addContext("SessionStart", roleCard(world.record, brief)));
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.state).toBe("working");
   });
 });
 

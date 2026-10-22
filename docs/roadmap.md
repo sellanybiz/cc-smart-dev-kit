@@ -22,6 +22,18 @@ command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
 
+## 1.0.1 — a crew session reaches its worktree
+
+**A hotfix of 1.0.0**, from its first live use (H101). `crew start` read
+`claude agents --json` once right after `claude --bg -w …` and judged the session's folder from
+it; that read reports the launch folder until a `--bg -w` session has entered its worktree
+(2.1.308, `docs/claude-code-contract.md`), so every crew session was failed and stopped within a
+second of starting. The launcher now records the session's id and leaves it `starting`; the
+crew session's own `SessionStart` hook checks its real `cwd` against its worktree, marks a
+session anywhere else `failed` with the reason (the lead's watch stops it), and turns a
+`starting` record `working` when it is where it belongs. No new field, command or switch: a
+patch.
+
 ## 1.0.0 — safety, the crew, and native Windows
 
 **Done in this release:**

@@ -6,8 +6,9 @@
  *   `backgrounded · <short id> · <name>` (proved live, L1a.1: 0.9 s; `--session-id` is ignored
  *   with `--bg`, so the short id is read from that line);
  * - `claude agents --json --all` — one row per session (`id`, `sessionId`, `cwd`, `pid`, `state`
- *   …), read once to see that the new session works in its worktree;
- * - `claude stop <id>` — for a session that started in the wrong folder.
+ *   …), read once to record the new session's id and see that agent view lists it. **Not** its
+ *   `cwd`: that read shows the launch folder until a `-w` session has entered its worktree
+ *   (2.1.308, `docs/claude-code-contract.md`).
  *
  * **Which `claude`:** the one on PATH (`Bun.which`), else the native installer's place,
  * `~/.local/bin` (`claude`; on Windows `claude.exe`, then npm's `claude.cmd`). **A `.cmd` is no

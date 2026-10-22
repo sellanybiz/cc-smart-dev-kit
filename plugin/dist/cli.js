@@ -331,7 +331,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.0.0",
+  version: "1.0.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -27899,21 +27899,33 @@ async function createCrew(stateDir, crew, atMs) {
   });
 }
 async function updateCrew(stateDir, repo, id, change, atMs, text = null, memoryMb = null) {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
+  const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change,
     event: (after) => after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb)
   }));
+  return record2;
+}
+async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text = null) {
+  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    if (!states.includes(before.state))
+      return null;
+    return {
+      change,
+      event: (after) => after.state === before.state ? null : eventOf(after, at, "state", text)
+    };
+  });
 }
 async function addCrewQuestion(stateDir, repo, id, asked, atMs) {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
+  const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
       questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }]
     },
     event: (after) => eventOf(after, at, "question", asked.question)
   }));
+  return record2;
 }
 async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resumes = null) {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+  const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
     if (asked === undefined)
       throw new CrewStoreError(`crew "${id}" has no question ${index}`);
@@ -27928,6 +27940,7 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
       event: (after) => state === null ? null : eventOf(after, at, "state", "an answer brought it back")
     };
   });
+  return record2;
 }
 function eventOf(crew, at, type, text, memoryMb = null) {
   return {
@@ -27950,7 +27963,10 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
       throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
     }
     const at = iso(atMs);
-    const { change, event } = plan(before, at);
+    const planned = plan(before, at);
+    if (planned === null)
+      return { changed: false, record: before };
+    const { change, event } = planned;
     const merged = {
       ...before,
       ...change,
@@ -27970,7 +27986,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     const line = event(after);
     if (line !== null)
       appendEvent(stateDir, repo, line);
-    return after;
+    return { changed: true, record: after };
   });
 }
 function readLead(stateDir, repo, sessionId) {
@@ -28538,15 +28554,48 @@ function recordOf2(id, repo, paths) {
   }
   return { ok: true, record };
 }
-function startCard(input, id, repo, paths) {
+function wrongFolderReason(record, cwd) {
+  return `its session is in ${cwd}, not in its worktree ${record.worktree}`;
+}
+function wrongFolderCard(record, cwd) {
+  return [
+    `You are the crew session \`${record.name}\`, and you are in \`${cwd}\`, not in your worktree \`${record.worktree}\`.`,
+    "This crew session is failed: its work belongs in its worktree, and a session anywhere else would edit another checkout.",
+    "Do nothing here \u2014 change no file, run no command \u2014 and end your turn now."
+  ].join(`
+`);
+}
+async function startCard(input, id, repo, paths, options) {
   const source = stringField(input.source);
   if (source !== "startup" && source !== "resume" && source !== "compact")
     return SILENT;
   const found = recordOf2(id, repo, paths);
   if (!found.ok)
     return found.result;
+  const record = found.record;
+  const nowMs = options.nowMs ?? Date.now();
+  const cwd = stringField(input.cwd);
+  if (cwd !== null && !isInside(realPath(cwd), realPath(record.worktree))) {
+    let stderr;
+    try {
+      await updateCrewIfState(paths.stateDir, repo, id, RUNNING_STATES, { state: "failed" }, nowMs, wrongFolderReason(record, cwd));
+    } catch (error) {
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf2(error)}`;
+    }
+    const answer = addContext("SessionStart", wrongFolderCard(record, cwd));
+    return stderr === undefined ? answer : { ...answer, stderr };
+  }
+  let stderr;
+  if (record.state === "starting") {
+    try {
+      await updateCrewIfState(paths.stateDir, repo, id, ["starting"], { startedAt: record.startedAt ?? new Date(nowMs).toISOString(), state: "working" }, nowMs, "started in its worktree");
+    } catch (error) {
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf2(error)}`;
+    }
+  }
   const brief = crewBriefFile(paths.stateDir, repo, id);
-  return addContext("SessionStart", roleCard(found.record, brief));
+  const answer = addContext("SessionStart", roleCard(record, brief));
+  return stderr === undefined ? answer : { ...answer, stderr };
 }
 async function stopAnswer(input, id, repo, paths) {
   if (input.stop_hook_active === true)
@@ -28592,7 +28641,7 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   if (repo === null)
     return SILENT;
   if (event === "SessionStart")
-    return startCard(input, id, repo, paths);
+    return await startCard(input, id, repo, paths, options);
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")
@@ -31490,14 +31539,9 @@ ${run.stderr}`;
     return await failed(record, `session ${shortId} started, but claude agents does not list it`, ctx, { shortId });
   }
   const sessionId = row.sessionId;
-  if (row.cwd === null || !samePath3(row.cwd, worktree)) {
-    const stop = callClaude(deps, spec.claude, ["stop", shortId], spec.repo);
-    const stopped = stop.ok && stop.run.exitCode === 0;
-    return await failed(record, `session ${shortId} works in ${row.cwd ?? "an unknown folder"}, not in its worktree: ${stopped ? "it was stopped" : `stop it: claude stop ${shortId}`}`, ctx, { sessionId, shortId });
-  }
   let recorded = true;
   try {
-    await updateCrew(ctx.paths.stateDir, spec.repo, record.id, { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString(), state: "working" }, ctx.now(), `started (${shortId})`);
+    await updateCrew(ctx.paths.stateDir, spec.repo, record.id, { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString() }, ctx.now());
   } catch (error) {
     recorded = false;
     ctx.error(`crew start: the store could not record the start: ${reasonOf3(error)}`);
@@ -32013,6 +32057,7 @@ function contextPercent(use, window) {
 
 // src/crew/watch.ts
 var WATCH_POLL_MS = 20000;
+var WORKTREE_CONFIRM_MS = 3 * 60000;
 var OVER_STATES = ["done", "failed", "handoff", "stopped"];
 var GIT_TIMEOUT_MS3 = 15000;
 var CLIP_CHARS = 120;
@@ -32044,7 +32089,7 @@ function eventLine(event, record, waits, reviewed) {
   const name = event.name;
   switch (event.type) {
     case "state": {
-      if (event.state === "starting")
+      if (event.state === "starting" && (event.text === null || event.text === ""))
         return null;
       const line = event.text === null || event.text === "" ? `${name}: ${event.state}` : `${name}: ${event.state} \u2014 ${event.text}`;
       return typeof event.memoryMb === "number" ? `${line} \xB7 held ${Math.round(event.memoryMb)} MB` : line;
@@ -32111,6 +32156,12 @@ function crewAlert(record, row, now, quietMinutes, projectsDir) {
   if (row.state === "done" && (record.state === "working" || record.state === "starting")) {
     return `${record.name}: ended its turn with no report`;
   }
+  if (record.state === "starting" && isLiveRow(row)) {
+    const since = Date.parse(record.startedAt ?? record.createdAt);
+    if (Number.isFinite(since) && now - since > WORKTREE_CONFIRM_MS) {
+      return `${record.name}: never confirmed its worktree \u2014 its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+    }
+  }
   if (row.state === "working" && record.sessionId !== null) {
     const last = changedAt(transcriptFile(projectsDir, record.worktree, record.sessionId));
     if (last !== null && now - last > quietMinutes * 60000) {
@@ -32128,7 +32179,7 @@ function branchMerged(record, mergeInto, ctx) {
   const found = workOnRef(mergeInto, "HEAD", tip.out, ctx.env);
   return found === "ancestor" || found === "replay";
 }
-async function stopCrew(record, state, reason, ctx, row) {
+async function stopSession(record, ctx) {
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   const shortId = record.shortId;
   if (claude === null)
@@ -32139,6 +32190,15 @@ async function stopCrew(record, state, reason, ctx, row) {
   if (!called.ok || called.run.exitCode !== 0) {
     return `${record.name}: not stopped \u2014 claude stop ${shortId} failed`;
   }
+  return null;
+}
+function failedStopLine(record) {
+  return `${record.name}: its session stopped \u2014 it failed; the record stays failed`;
+}
+async function stopCrew(record, state, reason, ctx, row) {
+  const why = await stopSession(record, ctx);
+  if (why !== null)
+    return why;
   await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state }, ctx.now(), reason, memoryMbOf(row?.pid ?? null));
   return null;
 }
@@ -32246,6 +32306,7 @@ async function watchPass(state, ctx, scope) {
     const listed = row !== null && row.state !== "stopped" && row.state !== "failed";
     const stopKey = `${record.id}:stop`;
     let refusal = null;
+    let news = null;
     if (OVER_STATES.includes(record.state) && branchMerged(record, scope.mergeInto, ctx)) {
       const reason = "the lead merged its branch; `crew rm` removes it";
       if (listed) {
@@ -32253,7 +32314,16 @@ async function watchPass(state, ctx, scope) {
       } else {
         await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state: "merged" }, ctx.now(), reason);
       }
-    } else if ((record.state === "done" || record.state === "failed") && listed) {
+    } else if (record.state === "failed" && listed) {
+      const line = failedStopLine(record);
+      if (said[stopKey] !== line) {
+        refusal = await stopSession(record, ctx);
+        if (refusal === null)
+          news = line;
+      } else {
+        news = line;
+      }
+    } else if (record.state === "done" && listed) {
       refusal = await stopCrew(record, "stopped", "its turn ended", ctx, row);
     } else if (record.state === "blocked" && listed) {
       const idle = ctx.now() - Date.parse(record.updatedAt);
@@ -32262,10 +32332,11 @@ async function watchPass(state, ctx, scope) {
         refusal = await stopCrew(record, "stopped", `it has been blocked for ${minutes} minutes; an answer brings it back`, ctx, row);
       }
     }
-    if (refusal !== null && said[stopKey] !== refusal) {
-      say(refusal);
-      said[stopKey] = refusal;
-    } else if (refusal === null) {
+    const saidLine = refusal ?? news;
+    if (saidLine !== null && said[stopKey] !== saidLine) {
+      say(saidLine);
+      said[stopKey] = saidLine;
+    } else if (saidLine === null && record.state !== "failed") {
       delete said[stopKey];
     }
   }
@@ -36474,7 +36545,7 @@ async function markState(record, state, text, ctx) {
     return false;
   }
 }
-async function stopSession(record, ctx) {
+async function stopSession2(record, ctx) {
   if (record.shortId === null)
     return { ok: false, why: `${record.name} has no session to stop` };
   const stop = claudeFailure(ctx, record.repo, ["stop", record.shortId]);
@@ -36502,7 +36573,7 @@ async function runCrewStop(ref, ctx) {
     ctx.print(`${record.name} is stopped already; \`claude attach ${id}\` opens it again`);
     return 0;
   }
-  const stopped = await stopSession(record, ctx);
+  const stopped = await stopSession2(record, ctx);
   if (!stopped.ok) {
     return refuse2(failure2(`crew stop: ${stopped.why}`, `Fix: claude stop ${id} by hand, or ${COMMAND} crew list to see it`), ctx);
   }
@@ -36730,7 +36801,7 @@ async function runCrewRm(ref, ctx) {
     return refuse2(failure2(`crew rm: ${shown} is locked${why}, and not by Claude Code`, `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock`), ctx);
   }
   if (record.shortId !== null && record.state !== "stopped") {
-    const stopped = await stopSession(record, ctx);
+    const stopped = await stopSession2(record, ctx);
     if (stopped.ok) {
       ctx.print(stopped.gone ? `session ${record.shortId} was gone already` : `stopped session ${record.shortId}`);
     } else {

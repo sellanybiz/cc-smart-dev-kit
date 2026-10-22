@@ -436,6 +436,73 @@ describe("crew watch", () => {
     expect(record?.state).toBe("stopped");
   });
 
+  test("H101: a failed crew session's session is stopped once, and the record stays failed", async () => {
+    // The crew session's own SessionStart hook marked it failed (its folder was not its
+    // worktree, src/hooks/crew-role.ts): the watch is what ends its session (D35), and the
+    // board must keep showing the failure, not a stop that hides it.
+    const world = await leadWorld();
+    await addCrew(world, "failed");
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: its session stopped — it failed; the record stays failed",
+    ]);
+    expect(world.claudeCalls()).toContainEqual(["stop", "aaaa1111"]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("failed");
+    // A pass while agent view still lists the session stops it no second time, and says nothing.
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(1);
+  });
+
+  test("H101: a starting crew session that never confirms its worktree is one alert, said once", async () => {
+    // Its SessionStart hook never turned the record `working`: it may have crashed, been
+    // silenced by ownHooks, or run outside git. Ten minutes on, the lead hears it once.
+    const world = await leadWorld();
+    await addCrew(world, "starting", {
+      startedAt: new Date(T0 - 10 * 60_000).toISOString(),
+    });
+    const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: never confirmed its worktree — its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)",
+    ]);
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+    // An alert, never an action: the record is left as it is, and no session is stopped.
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("starting");
+  });
+
+  test("H101: a starting crew session within the confirm window is no alert", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "starting", { startedAt: new Date(T0 - 60_000).toISOString() });
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    expect(world.out).toEqual([]);
+  });
+
+  test("H101: a starting crew session whose session died is failed, and it frees its place", async () => {
+    // It never reached its SessionStart hook (that is where a crew session checks its folder):
+    // the watch's own store-truth rule reads agent view and fails the record.
+    const world = await leadWorld();
+    await addCrew(world, "starting");
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "failed" })]) }),
+    );
+    expect(world.out).toEqual(["C my-app B6b portal-live: failed — its session failed"]);
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("failed");
+  });
+
   test("D35: a session the store does not record is never stopped", async () => {
     const world = await leadWorld();
     // No crew session in the store, but agent view lists a session.
@@ -712,10 +779,11 @@ describe("crew watch", () => {
     const code = await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
-    // One line, from the state event the launch writes: not the launcher's line as well.
-    expect(world.out).toEqual(["C my-app B6b portal-live: working — started (a1b2c3d4)"]);
+    // One line, from the state event the launch writes: not the launcher's line as well. The
+    // crew session is `starting`: its own SessionStart hook says when it is in its worktree.
+    expect(world.out).toEqual(["C my-app B6b portal-live: starting — started from the queue"]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
-    expect(record?.state).toBe("working");
+    expect(record?.state).toBe("starting");
     expect(record?.sessionId).toBe("a1b2c3d4-0000-1111-2222-333333333333");
     expect(record?.startedAt).toBe("2026-10-21T10:00:00.000Z");
     expect(record?.base?.ref).toBe("main");
@@ -778,7 +846,7 @@ describe("crew watch", () => {
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
-    expect(world.out).toContain("C my-app B6b portal-live: working — started (a1b2c3d4)");
+    expect(world.out).toContain("C my-app B6b portal-live: starting — started from the queue");
   });
 
   test("F3: a phase removed before its work was merged holds its dependent, and the lead is told once", async () => {
@@ -835,7 +903,7 @@ describe("crew watch", () => {
 
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
-    expect(world.out).toContain("C my-app B6b portal-live: working — started (a1b2c3d4)");
+    expect(world.out).toContain("C my-app B6b portal-live: starting — started from the queue");
   });
 
   test("D25: a queued next crew session of a hand-off is launched in its own numbered worktree", async () => {

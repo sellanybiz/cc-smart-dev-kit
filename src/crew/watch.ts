@@ -80,6 +80,15 @@ import {
 export const WATCH_POLL_MS = 20_000;
 
 /**
+ * How long a `starting` crew session may run before its own SessionStart hook has said it reached
+ * its worktree (H101). The hook runs within seconds of the session's start; past this, it never
+ * did — a crash, `ownHooks` silencing it, or a session outside git — so the watch alerts the lead
+ * once. The record stays `starting`, and the alert is the only sign: the folder is never judged
+ * from agent view (it reports the launch folder).
+ */
+export const WORKTREE_CONFIRM_MS = 3 * 60_000;
+
+/**
  * The states a crew session's work is over in: the watch looks at the lead's merge for each of them,
  * because the merge can come after the crew session was stopped.
  */
@@ -146,7 +155,10 @@ export function eventLine(
   const name = event.name;
   switch (event.type) {
     case "state": {
-      if (event.state === "starting") return null;
+      // `created` is the lead's own launch, which it saw. A `starting` event is news only when the
+      // launcher gave it a line: one the watch started from the queue ("started from the queue").
+      // The crew session's own SessionStart hook then says `working`, in the same way (H101).
+      if (event.state === "starting" && (event.text === null || event.text === "")) return null;
       const line =
         event.text === null || event.text === ""
           ? `${name}: ${event.state}`
@@ -230,6 +242,9 @@ function isRunning(record: CrewRecord): boolean {
  *
  * - it **needs the person**: agent view says it waits on a permission prompt or an input;
  * - it **ended its turn with no report**: its session is done, but its record is still at work;
+ * - it **never confirmed its worktree**: its session is listed and alive, but its own start hook
+ *   has not turned the `starting` record `working` within `WORKTREE_CONFIRM_MS` (H101: the hook
+ *   may have crashed, been silenced by `ownHooks`, or run outside git);
  * - it is **quiet**: agent view says working, but its transcript has not been written for
  *   `quietMinutes`.
  */
@@ -246,6 +261,14 @@ export function crewAlert(
   }
   if (row.state === "done" && (record.state === "working" || record.state === "starting")) {
     return `${record.name}: ended its turn with no report`;
+  }
+  if (record.state === "starting" && isLiveRow(row)) {
+    const since = Date.parse(record.startedAt ?? record.createdAt);
+    if (Number.isFinite(since) && now - since > WORKTREE_CONFIRM_MS) {
+      // One stable line, so it is said once while the record stays `starting` (the map in the
+      // watch's state keeps it from repeating).
+      return `${record.name}: never confirmed its worktree — its session runs, but its own start hook has not recorded it in the worktree (it may have crashed, be silenced by ownHooks, or run outside git)`;
+    }
   }
   if (row.state === "working" && record.sessionId !== null) {
     const last = changedAt(transcriptFile(projectsDir, record.worktree, record.sessionId));
@@ -296,17 +319,10 @@ export interface WatchScope {
 }
 
 /**
- * Stops the session of `record` (`claude stop`; the conversation stays on disk, so the crew session can
- * be read, and resumed by an answer) and records the state it ends in with `reason`. Null when
- * done; else why not, for an alert.
+ * Stops `record`'s Claude session: `claude stop`, so the conversation stays on disk and the crew
+ * session can be read and resumed by an answer. Null when done; else why not, for an alert.
  */
-async function stopCrew(
-  record: CrewRecord,
-  state: "merged" | "stopped",
-  reason: string,
-  ctx: CrewContext,
-  row: null | AgentRow,
-): Promise<null | string> {
+async function stopSession(record: CrewRecord, ctx: CrewContext): Promise<null | string> {
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   const shortId = record.shortId;
   if (claude === null) return `${record.name}: not stopped — claude is not on PATH`;
@@ -315,6 +331,27 @@ async function stopCrew(
   if (!called.ok || called.run.exitCode !== 0) {
     return `${record.name}: not stopped — claude stop ${shortId} failed`;
   }
+  return null;
+}
+
+/** The one line the watch says when it ends the session of a crew session that failed (H101). */
+export function failedStopLine(record: CrewRecord): string {
+  return `${record.name}: its session stopped — it failed; the record stays failed`;
+}
+
+/**
+ * Stops the session of `record` (`stopSession`) and records the state it ends in with `reason`.
+ * Null when done; else why not, for an alert.
+ */
+async function stopCrew(
+  record: CrewRecord,
+  state: "merged" | "stopped",
+  reason: string,
+  ctx: CrewContext,
+  row: null | AgentRow,
+): Promise<null | string> {
+  const why = await stopSession(record, ctx);
+  if (why !== null) return why;
   await updateCrew(
     ctx.paths.stateDir,
     record.repo,
@@ -544,6 +581,8 @@ export async function watchPass(
     const listed = row !== null && row.state !== "stopped" && row.state !== "failed";
     const stopKey = `${record.id}:stop`;
     let refusal: null | string = null;
+    /** What the watch did about it, when the act is news of its own (a failed record's stop). */
+    let news: null | string = null;
     if (OVER_STATES.includes(record.state) && branchMerged(record, scope.mergeInto, ctx)) {
       const reason = "the lead merged its branch; `crew rm` removes it";
       if (listed) {
@@ -558,7 +597,18 @@ export async function watchPass(
           reason,
         );
       }
-    } else if ((record.state === "done" || record.state === "failed") && listed) {
+    } else if (record.state === "failed" && listed) {
+      // Its record says failed and **stays failed**: the board must show why it ended, not a
+      // stop that hides it. Its session is ended all the same (D35), once (a pass while agent
+      // view catches up does not stop it a second time), and one line says so.
+      const line = failedStopLine(record);
+      if (said[stopKey] !== line) {
+        refusal = await stopSession(record, ctx);
+        if (refusal === null) news = line;
+      } else {
+        news = line;
+      }
+    } else if (record.state === "done" && listed) {
       refusal = await stopCrew(record, "stopped", "its turn ended", ctx, row);
     } else if (record.state === "blocked" && listed) {
       const idle = ctx.now() - Date.parse(record.updatedAt);
@@ -573,11 +623,14 @@ export async function watchPass(
         );
       }
     }
-    // A stop that fails is said once, not on every pass.
-    if (refusal !== null && said[stopKey] !== refusal) {
-      say(refusal);
-      said[stopKey] = refusal;
-    } else if (refusal === null) {
+    // A stop that fails is said once, not on every pass; a failed crew session's stop is said once
+    // and is also the mark that its session was ended (its record stays `failed`, so nothing else
+    // would remember it).
+    const saidLine = refusal ?? news;
+    if (saidLine !== null && said[stopKey] !== saidLine) {
+      say(saidLine);
+      said[stopKey] = saidLine;
+    } else if (saidLine === null && record.state !== "failed") {
       delete said[stopKey];
     }
   }

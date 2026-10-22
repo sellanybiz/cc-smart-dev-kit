@@ -19,7 +19,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.0.0",
+  version: "1.0.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -25009,13 +25009,24 @@ function listAllCrew(stateDir) {
   return all;
 }
 async function updateCrew(stateDir, repo, id, change, atMs, text = null, memoryMb = null) {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
+  const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change,
     event: (after) => after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb)
   }));
+  return record2;
+}
+async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text = null) {
+  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    if (!states.includes(before.state))
+      return null;
+    return {
+      change,
+      event: (after) => after.state === before.state ? null : eventOf(after, at, "state", text)
+    };
+  });
 }
 async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resumes = null) {
-  return await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+  const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
     if (asked === undefined)
       throw new CrewStoreError(`crew "${id}" has no question ${index}`);
@@ -25030,6 +25041,7 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
       event: (after) => state === null ? null : eventOf(after, at, "state", "an answer brought it back")
     };
   });
+  return record2;
 }
 function eventOf(crew, at, type, text, memoryMb = null) {
   return {
@@ -25052,7 +25064,10 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
       throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
     }
     const at = iso(atMs);
-    const { change, event } = plan(before, at);
+    const planned = plan(before, at);
+    if (planned === null)
+      return { changed: false, record: before };
+    const { change, event } = planned;
     const merged = {
       ...before,
       ...change,
@@ -25072,7 +25087,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
     const line = event(after);
     if (line !== null)
       appendEvent(stateDir, repo, line);
-    return after;
+    return { changed: true, record: after };
   });
 }
 function readLead(stateDir, repo, sessionId) {
@@ -25333,15 +25348,48 @@ function recordOf2(id, repo, paths) {
   }
   return { ok: true, record };
 }
-function startCard(input, id, repo, paths) {
+function wrongFolderReason(record, cwd) {
+  return `its session is in ${cwd}, not in its worktree ${record.worktree}`;
+}
+function wrongFolderCard(record, cwd) {
+  return [
+    `You are the crew session \`${record.name}\`, and you are in \`${cwd}\`, not in your worktree \`${record.worktree}\`.`,
+    "This crew session is failed: its work belongs in its worktree, and a session anywhere else would edit another checkout.",
+    "Do nothing here \u2014 change no file, run no command \u2014 and end your turn now."
+  ].join(`
+`);
+}
+async function startCard(input, id, repo, paths, options) {
   const source = stringField(input.source);
   if (source !== "startup" && source !== "resume" && source !== "compact")
     return SILENT;
   const found = recordOf2(id, repo, paths);
   if (!found.ok)
     return found.result;
+  const record = found.record;
+  const nowMs = options.nowMs ?? Date.now();
+  const cwd = stringField(input.cwd);
+  if (cwd !== null && !isInside(realPath(cwd), realPath(record.worktree))) {
+    let stderr;
+    try {
+      await updateCrewIfState(paths.stateDir, repo, id, RUNNING_STATES, { state: "failed" }, nowMs, wrongFolderReason(record, cwd));
+    } catch (error) {
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf2(error)}`;
+    }
+    const answer = addContext("SessionStart", wrongFolderCard(record, cwd));
+    return stderr === undefined ? answer : { ...answer, stderr };
+  }
+  let stderr;
+  if (record.state === "starting") {
+    try {
+      await updateCrewIfState(paths.stateDir, repo, id, ["starting"], { startedAt: record.startedAt ?? new Date(nowMs).toISOString(), state: "working" }, nowMs, "started in its worktree");
+    } catch (error) {
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf2(error)}`;
+    }
+  }
   const brief = crewBriefFile(paths.stateDir, repo, id);
-  return addContext("SessionStart", roleCard(found.record, brief));
+  const answer = addContext("SessionStart", roleCard(record, brief));
+  return stderr === undefined ? answer : { ...answer, stderr };
 }
 async function stopAnswer(input, id, repo, paths) {
   if (input.stop_hook_active === true)
@@ -25387,7 +25435,7 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   if (repo === null)
     return SILENT;
   if (event === "SessionStart")
-    return startCard(input, id, repo, paths);
+    return await startCard(input, id, repo, paths, options);
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")
@@ -27826,6 +27874,7 @@ function isSessionId2(id) {
 var TAIL_BYTES = 256 * 1024;
 
 // src/crew/watch.ts
+var WORKTREE_CONFIRM_MS = 3 * 60000;
 var CLIP_CHARS = 120;
 function clip(text) {
   const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
@@ -27855,7 +27904,7 @@ function eventLine(event, record, waits, reviewed) {
   const name = event.name;
   switch (event.type) {
     case "state": {
-      if (event.state === "starting")
+      if (event.state === "starting" && (event.text === null || event.text === ""))
         return null;
       const line = event.text === null || event.text === "" ? `${name}: ${event.state}` : `${name}: ${event.state} \u2014 ${event.text}`;
       return typeof event.memoryMb === "number" ? `${line} \xB7 held ${Math.round(event.memoryMb)} MB` : line;

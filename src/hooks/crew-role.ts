@@ -7,7 +7,12 @@
  *   its brief file — its name and phase, the files the phase owns, the brief's path, how to hand
  *   back (`crew report`), how to ask or tell (`crew report --question`, `crew tell`), and the git
  *   rule (commit on its branch, never push). A resumed or compacted crew session gets it again,
- *   because its first prompt is gone from its context.
+ *   because its first prompt is gone from its context. **The session's own `cwd` is checked
+ *   against the record's worktree**: `claude agents --json` reports the launch folder until a
+ *   `--bg -w` session has entered its worktree (2.1.308), so the launcher cannot judge it; the
+ *   session can. Inside the worktree, a `starting` record becomes `working`; outside it, the
+ *   record is `failed` with the reason (the lead's watch then ends the session) and the card
+ *   tells it to do nothing and end its turn.
  * - **PreToolUse on `AskUserQuestion` and `ExitPlanMode`**: denied with the report step (D36). A
  *   crew session never asks the person: its question goes to its lead, which answers it or asks
  *   the person. The answer is a **deny**, not an ask: the fix is mechanical, and asking the person
@@ -44,10 +49,12 @@ import {
   readCrewEvents,
   readStopState,
   updateCrew,
+  updateCrewIfState,
   writeStopState,
 } from "../crew/store";
 import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
 import { maskedLine } from "../gateway/plain-text";
+import { isInside, realPath } from "./git";
 import {
   addContext,
   type HookInput,
@@ -127,15 +134,94 @@ function recordOf(
   return { ok: true, record };
 }
 
-/** SessionStart: the role card, for a start, a resume and a compaction only. */
-function startCard(input: HookInput, id: string, repo: string, paths: CliPaths): HookResult {
+/** Why a crew session is failed when it starts outside its worktree: where it is, and where it belongs. */
+export function wrongFolderReason(record: CrewRecord, cwd: string): string {
+  return `its session is in ${cwd}, not in its worktree ${record.worktree}`;
+}
+
+/**
+ * The card a crew session gets when it started outside its worktree: it does nothing and ends its
+ * turn. The record is already `failed`, so the lead's watch stops its session (`src/crew/watch.ts`).
+ */
+export function wrongFolderCard(record: CrewRecord, cwd: string): string {
+  return [
+    `You are the crew session \`${record.name}\`, and you are in \`${cwd}\`, not in your worktree \`${record.worktree}\`.`,
+    "This crew session is failed: its work belongs in its worktree, and a session anywhere else would edit another checkout.",
+    "Do nothing here — change no file, run no command — and end your turn now.",
+  ].join("\n");
+}
+
+/**
+ * SessionStart: the role card, for a start, a resume and a compaction only. The session's real
+ * `cwd` decides: inside its worktree the card is the normal one (and a `starting` record is
+ * `working` from here); outside it the record is `failed` and the card says to stop.
+ */
+async function startCard(
+  input: HookInput,
+  id: string,
+  repo: string,
+  paths: CliPaths,
+  options: CrewRoleOptions,
+): Promise<HookResult> {
   const source = stringField(input.source);
   // A `clear` is a new conversation: no card, as on a session that is not a crew session's.
   if (source !== "startup" && source !== "resume" && source !== "compact") return SILENT;
   const found = recordOf(id, repo, paths);
   if (!found.ok) return found.result;
+  const record = found.record;
+  const nowMs = options.nowMs ?? Date.now();
+  const cwd = stringField(input.cwd);
+  if (cwd !== null && !isInside(realPath(cwd), realPath(record.worktree))) {
+    // It is ours (the store records it): a crew session outside its worktree would edit another
+    // checkout. Fail it here, where the session's real folder is known, and say stop. **Only an
+    // open record is failed** (`updateCrewIfState`: the state is read again under the store's
+    // lock): a phase that ended — `done`, `handoff`, `merged`, `removed` — keeps its state,
+    // because `merged` is what a dependent phase waits for and `crew rm` reads it. A store that
+    // cannot record is one line: the card still tells the session to stop. **The hook cannot stop
+    // the session itself**: Claude Code 2.1.308 takes a SessionStart answer's `{"continue": false}`
+    // without acting on it (proved offline, `docs/claude-code-contract.md`), so the card is the
+    // word and the lead's watch is the act (D35).
+    let stderr: undefined | string;
+    try {
+      await updateCrewIfState(
+        paths.stateDir,
+        repo,
+        id,
+        RUNNING_STATES,
+        { state: "failed" },
+        nowMs,
+        wrongFolderReason(record, cwd),
+      );
+    } catch (error) {
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf(error)}`;
+    }
+    const answer = addContext("SessionStart", wrongFolderCard(record, cwd));
+    return stderr === undefined ? answer : { ...answer, stderr };
+  }
+  // In its worktree: its session runs there, so a record the launcher left `starting` is
+  // `working` from here, and the lead's watch says so once from the state event. Only a record
+  // that is still `starting` moves (`updateCrewIfState`), so this never writes over a `failed`
+  // or `merged` the watch recorded meanwhile. A store that cannot record is one line; the
+  // session still gets its task.
+  let stderr: undefined | string;
+  if (record.state === "starting") {
+    try {
+      await updateCrewIfState(
+        paths.stateDir,
+        repo,
+        id,
+        ["starting"],
+        { startedAt: record.startedAt ?? new Date(nowMs).toISOString(), state: "working" },
+        nowMs,
+        "started in its worktree",
+      );
+    } catch (error) {
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf(error)}`;
+    }
+  }
   const brief = crewBriefFile(paths.stateDir, repo, id);
-  return addContext("SessionStart", roleCard(found.record, brief));
+  const answer = addContext("SessionStart", roleCard(record, brief));
+  return stderr === undefined ? answer : { ...answer, stderr };
 }
 
 /** Stop: record the last line, then block once when the turn ended with a step and no report. */
@@ -218,7 +304,7 @@ export async function crewRoleAnswer(
       : SILENT;
   }
   if (repo === null) return SILENT;
-  if (event === "SessionStart") return startCard(input, id, repo, paths);
+  if (event === "SessionStart") return await startCard(input, id, repo, paths, options);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, options);
   return SILENT;
