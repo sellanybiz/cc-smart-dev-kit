@@ -2179,11 +2179,12 @@ neither planned to change:
 
 **Chrome closed is not a problem.** After a machine restart Chrome is closed, and that used to
 leave the browser broken until you opened Chrome by hand. Now the first browser call starts your
-own Chrome with the `claude-code` profile itself, on your desktop — from a background session too:
-it takes the desktop's display settings from your graphical session, which a background session
-does not inherit. It goes on once Chrome is up, so the call works with nobody at the desktop. A
-Chrome that cannot be started — no reachable desktop, or an error of Chrome's own — is one line at
-once, naming the one step: open Google Chrome with that profile, then start a new session.
+own Chrome with the `claude-code` profile itself, on your desktop — on Linux from a background
+session too: it takes the desktop's display settings from your graphical session, which a
+background session does not inherit. It goes on once Chrome is up, so the call works with nobody
+at the desktop. A Chrome that cannot be started — no reachable desktop, or an error of Chrome's
+own — is one line at once, naming the one step: open Google Chrome with that profile, then start a
+new session.
 
 **The token is required, and there is no approval mode.** The extension normally asks you, in a
 page, to approve every connection. The plugin never runs that way: `browser mcp` refuses to start

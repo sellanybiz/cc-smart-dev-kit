@@ -2625,7 +2625,7 @@ filter that made each session's windows its own.
   lock within `CHROME_START_LIMIT_MS`. Nothing retries and nothing waits past that. The file checks
   come first (`connectPrerequisites`: Chrome, the profile, the extension), so the MCP's generic
   deadline never speaks for a file that is missing. A started Chrome is the person's own browser,
-  not a second one, and no byte of Chrome's files is written.
+  not a second one, and the plugin writes no byte of Chrome's files.
 - **`browser check` is bounded from one constant.** `CHECK_LIMIT_MS` bounds the whole run, and the
   waits inside it are derived from it (the start, one answer, one stop); a child that ignores
   close-input and SIGTERM gets SIGKILL. A failed start ends the run at once. Before this, every
