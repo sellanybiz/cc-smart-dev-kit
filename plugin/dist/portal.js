@@ -983,6 +983,15 @@ function prerequisiteChecks(paths, deps) {
     ok: true,
     text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is at ${profile.dir} (found by ${how})`
   }));
+  checks.push(chromeMayBeRunning(userDataDir, deps.platform, deps) ? line({
+    ok: true,
+    info: true,
+    text: "Google Chrome is running: the browser connects to it"
+  }) : line({
+    ok: true,
+    info: true,
+    text: `Google Chrome is not running: the first browser call starts it in the "${profile.dirName}" profile`
+  }));
   const installed = isExtensionInstalledInProfile(profile.dir, deps);
   const version = installed ? extensionVersion(profile.dir, deps) : null;
   checks.push(installed ? line({
