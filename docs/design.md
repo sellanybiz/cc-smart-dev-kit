@@ -2337,7 +2337,7 @@ place (`auto-merge.ts`).
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
-| `crew.enabled`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, the two caps (D37) and the free memory a start is queued by, and the tag in the names. |
+| `crew.enabled`, `crew.perLead`, `crew.perLeadOpus`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.usagePercent`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, one lead's caps and the machine's guards a start is queued by (D54), the free memory, the 5-hour window's share past which a new opus crew session waits, and the tag in the names. |
 | the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts (the watch, the crew session's own hooks) will read them. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through
@@ -2932,17 +2932,30 @@ polls or retries. In order:
    removes a queued or failed phase too, and a dependent that started from it would build on
    work that is not on the lead's branch; **a crew session that finished its phase (`done`) is not enough**, because
    the lead has not merged it yet, and a dependent phase that branched before the merge would
-   miss the work it waits for; **the two caps** (D37)
-   — the crew of every repository on this machine in `starting`, `working`, `blocked`,
-   `paused` or `quiet` stay below `workflow.crew.max` (6), and, for a new opus-tier crew session, the
-   opus-tier ones among them stay below `workflow.crew.maxOpus` (2): the tier the model's name
-   stands for, recorded at launch (`model.tier`), so the opus kinds (`architecture`, `ui`) and an
-   override onto opus both count; the queued line names the cap that holds it; **the memory** — the memory free now less what heavy
+   miss the work it waits for; **its lead's caps** (D54) — the crew sessions of one lead (the
+   session that started them, `leadSessionId`), in every repository on this machine, in
+   `starting`, `working`, `blocked`, `paused` or `quiet`, stay below `workflow.crew.perLead`
+   (4), and, for a new opus-tier crew session, its opus-tier ones below
+   `workflow.crew.perLeadOpus` (2): the tier the model's name stands for, recorded at launch
+   (`model.tier`), so the opus kinds (`architecture`, `ui`) and an override onto opus both
+   count — so one lead can never take every place and starve the others (the owner runs about
+   a dozen leads at once); **the machine's guards** — `workflow.crew.max` (24) is a safety
+   ceiling no lead reaches alone, and `workflow.crew.maxOpus` an optional machine-wide opus
+   ceiling, unset by default (a person who sets one keeps it); **the 5-hour usage window**
+   (D54) — past `workflow.crew.usagePercent` (85) a new opus-tier crew session waits, unless
+   the gateway's opus slot has a chain in use with its fallback on (`src/crew/usage-guard.ts`);
+   the window is the one Claude Code's status line reads, recorded by
+   `cc-smart-dev-kit statusline` in `<stateDir>/usage-window.json` (the reader's one home,
+   `src/cli/usage-window.ts`), and with no reading — or one whose window has reset — the guard
+   does not hold, and `crew start` and `crew list` say so once; **the memory** — the memory free
+   now less what heavy
    jobs reserved and have not used yet (the job queue's own reading) is at least
-   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS). The store alone
+   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS). The queued line
+   names what holds it. The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
    finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own
-   queued ones. A queued crew session has no worktree yet and its `base` is null: it is cut from its
+   queued ones, oldest first, so no lead starves another. A queued crew session has no worktree
+   yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
 4. **Its files** (`files/<id>/`): `brief.md` — the brief as given, then a fixed frame (`brief.ts`):
    who it is and for whom, its worktree and branch, the files it owns, the git rule (D24: commit on

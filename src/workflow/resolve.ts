@@ -79,8 +79,12 @@ export interface ResolvedWorkflow {
     enabled: ResolvedValue<boolean>;
     idleStopMinutes: ResolvedValue<number>;
     max: ResolvedValue<number>;
-    maxOpus: ResolvedValue<number>;
+    /** Null: no machine-wide opus count is set (D54). */
+    maxOpus: ResolvedValue<null | number>;
     memoryGb: ResolvedValue<number>;
+    perLead: ResolvedValue<number>;
+    perLeadOpus: ResolvedValue<number>;
+    usagePercent: ResolvedValue<number>;
     quietMinutes: ResolvedValue<number>;
     handoffPercent: ResolvedValue<number>;
     softHours: ResolvedValue<number>;
@@ -314,6 +318,9 @@ const RESOLVED: {
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
   "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.perLead": (r) => r.crew.perLead,
+  "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
+  "crew.usagePercent": (r) => r.crew.usagePercent,
   "crew.quietMinutes": (r) => r.crew.quietMinutes,
   "crew.handoffPercent": (r) => r.crew.handoffPercent,
   "crew.softHours": (r) => r.crew.softHours,
@@ -388,6 +395,12 @@ export function resolveWorkflow(
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
+      perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
+      usagePercent: of(
+        "crew.usagePercent",
+        crew.usagePercent ?? workflowDefaults.crew.usagePercent,
+      ),
       quietMinutes: of(
         "crew.quietMinutes",
         crew.quietMinutes ?? workflowDefaults.crew.quietMinutes,

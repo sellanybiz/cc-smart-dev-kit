@@ -184,6 +184,17 @@ describe("one value, as a person types it", () => {
       ok: false,
       why: "crew.maxOpus is a whole number, 1 or more",
     });
+    expect(parseWorkflowValue("crew.perLead", "4")).toEqual({ ok: true, value: 4 });
+    expect(parseWorkflowValue("crew.perLead", "0")).toEqual({
+      ok: false,
+      why: "crew.perLead is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("crew.perLeadOpus", "2")).toEqual({ ok: true, value: 2 });
+    expect(parseWorkflowValue("crew.usagePercent", "85")).toEqual({ ok: true, value: 85 });
+    expect(parseWorkflowValue("crew.usagePercent", "101")).toEqual({
+      ok: false,
+      why: "crew.usagePercent is a whole number 1-100",
+    });
     expect(parseWorkflowValue("crew.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
     expect(parseWorkflowValue("crew.handoffPercent", "101")).toEqual({
       ok: false,
@@ -302,13 +313,16 @@ describe("resolveWorkflow: the order", () => {
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
-      max: { value: 6, source: "default" },
-      maxOpus: { value: 2, source: "default" },
+      max: { value: 24, source: "default" },
+      maxOpus: { value: null, source: "default" },
       maxHours: { value: 4, source: "default" },
       memoryGb: { value: 2, source: "default" },
+      perLead: { value: 4, source: "default" },
+      perLeadOpus: { value: 2, source: "default" },
       quietMinutes: { value: 20, source: "default" },
       softHours: { value: 2, source: "default" },
       tag: { value: null, source: "default" },
+      usagePercent: { value: 85, source: "default" },
     });
     expect(resolved.fixesAfterReview).toEqual({
       files: { value: 10, source: "default" },

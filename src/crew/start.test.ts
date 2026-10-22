@@ -5,7 +5,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { recordUsageWindow } from "../cli/usage-window";
 import {
   crewWorld,
   LEAD_SESSION,
@@ -24,9 +25,18 @@ import {
   readCrewEvents,
   writeLead,
 } from "./store";
+import { usageUnreadLine } from "./usage-guard";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
+
+/** A gateway config whose opus slot has a chain in use with its fallback on. */
+const OPUS_CHAIN = {
+  backends: { omniroute: { apiKey: "test-key", baseUrl: "http://127.0.0.1:20199" } },
+  fallback: { "cc-smart-dev-kit-opus": true },
+  slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+  version: 1,
+};
 
 /** A world whose session is a registered lead (`crew lead` already ran). */
 async function ledWorld() {
@@ -60,13 +70,14 @@ function onlyCrew(stateDir: string, repo: string): CrewRecord {
   return records[0] as CrewRecord;
 }
 
-/** A recorded crew session of another repository, in `state`. */
+/** A recorded crew session of another repository, in `state`, for `lead` (another lead by default). */
 async function otherCrew(
   stateDir: string,
   n: number,
   state: string,
   phase = `P${n}`,
   tier: null | string = null,
+  lead = "other-lead",
 ) {
   await createCrew(
     stateDir,
@@ -80,7 +91,7 @@ async function otherCrew(
       kind: "build",
       lastLine: null,
       leadName: "LEAD other plan",
-      leadSessionId: "other-lead",
+      leadSessionId: lead,
       memoryMb: null,
       model: { named: tier ?? "sonnet", resolved: tier ?? "sonnet", slot: null, tier },
       name: `C other ${phase} x`,
@@ -487,14 +498,15 @@ describe("the refusals before anything is recorded", () => {
 });
 
 describe("D25: the queue — still one line, at once", () => {
-  test("D25: the cap reached across repositories: queued, no worktree, no session", async () => {
+  test("D54: the machine's ceiling reached across repositories: queued, no worktree, no session", async () => {
     const world = await ledWorld();
+    world.writeConfig({ max: 6 });
     for (const n of [1, 2, 3, 4, 5, 6]) await otherCrew(world.paths.stateDir, n, "working");
     await otherCrew(world.paths.stateDir, 7, "done");
     await otherCrew(world.paths.stateDir, 8, "queued");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: 6 of 6 running; it starts when one finishes",
+      "queued C my-app B6b portal-live: 6 of 6 crew sessions running on this machine; it starts when one finishes",
     ]);
     const record = onlyCrew(world.paths.stateDir, world.repo);
     expect(record).toMatchObject({ base: null, baseRef: "main", state: "queued" });
@@ -504,12 +516,25 @@ describe("D25: the queue — still one line, at once", () => {
     expect(existsSync(crewBriefFile(world.paths.stateDir, world.repo, ID))).toBe(true);
   });
 
-  test("D37: an opus crew session is queued at 2 opus crew sessions running while the total is under 6", async () => {
+  test("D54: a lead's cap holds its next crew session; another lead's do not count", async () => {
     const world = await ledWorld();
-    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus");
-    await otherCrew(world.paths.stateDir, 2, "blocked", "P2", "opus");
-    await otherCrew(world.paths.stateDir, 3, "done", "P3", "opus");
+    world.writeConfig({ perLead: 2 });
+    await otherCrew(world.paths.stateDir, 1, "working", "P1", null, LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 2, "blocked", "P2", null, LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 3, "working");
     await otherCrew(world.paths.stateDir, 4, "working");
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app B6b portal-live: its lead has 2 of 2 crew sessions running; it starts when one of them finishes",
+    ]);
+  });
+
+  test("D54: a lead's opus cap holds its next opus crew session while its sonnet one starts", async () => {
+    const world = await ledWorld();
+    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 2, "blocked", "P2", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 3, "done", "P3", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 4, "working", "P4", null, LEAD_SESSION);
     const opusArgs = [
       "start",
       "W1a",
@@ -522,30 +547,149 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app W1a launcher: 2 of 2 opus crew sessions running; it starts when one of them finishes",
+      "queued C my-app W1a launcher: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     ]);
     // An override onto opus counts too.
     const onto = startArgs(world.brief, "--model", "opus", "--effort", "high");
     expect(await runCrew(onto, world.ctx({ randomSuffix: () => "000001" }))).toBe(0);
     expect(world.out[1]).toBe(
-      "queued C my-app B6b portal-live: 2 of 2 opus crew sessions running; it starts when one of them finishes",
+      "queued C my-app B6b portal-live: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     );
   });
 
   test("D37: a sonnet crew session still starts then, and its record names no tier", async () => {
     const world = await ledWorld();
-    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus");
-    await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus");
+    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus", LEAD_SESSION);
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out[0]).toStartWith("started C my-app B6b portal-live (");
     expect(onlyCrew(world.paths.stateDir, world.repo).model.tier).toBeNull();
   });
 
-  test("D37: workflow.crew.maxOpus of the project sets the opus cap; an opus crew records its tier", async () => {
+  test("D54: workflow.crew.maxOpus, when a person sets it, caps the opus tier across leads", async () => {
     const world = await ledWorld();
-    world.writeConfig({ maxOpus: 3 });
+    world.writeConfig({ maxOpus: 2 });
     await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus");
     await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus");
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app W1a launcher: 2 of 2 opus crew sessions running on this machine; it starts when one of them finishes",
+    ]);
+    // With no machine-wide count set, the same two crew sessions hold nothing back.
+    world.writeConfig({});
+    const second = [
+      "start",
+      "W1b",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(second, world.ctx({ randomSuffix: () => "000002" }))).toBe(0);
+    expect(world.out[1]).toStartWith("started C my-app W1b launcher (");
+    const started = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.phase === "W1b",
+    );
+    expect(started?.model).toEqual({ named: "opus", resolved: "opus", slot: null, tier: "opus" });
+  });
+
+  test("workflow.crew.max of the project sets the ceiling", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ max: 1 });
+    await otherCrew(world.paths.stateDir, 1, "blocked");
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app B6b portal-live: 1 of 1 crew sessions running on this machine; it starts when one finishes",
+    ]);
+  });
+
+  test("D54: past 85% of the 5-hour window, a new opus crew session is queued with that reason", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ usagePercent: 85 });
+    recordUsageWindow(
+      world.paths,
+      { rate_limits: { five_hour: { resets_at: T0 / 1000 + 3600, used_percentage: 90 } } },
+      T0,
+    );
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app W1a launcher: the 5-hour usage window is at 90%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
+    ]);
+    // A sonnet crew session is not held by the window.
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[1]).toStartWith("started C my-app B6b portal-live (");
+  });
+
+  test("D54: the gateway's opus slot with its fallback chain on lifts the guard; the window still holds without it", async () => {
+    const world = await ledWorld();
+    recordUsageWindow(
+      world.paths,
+      { rate_limits: { five_hour: { resets_at: T0 / 1000 + 3600, used_percentage: 90 } } },
+      T0,
+    );
+    // A chain saved but the gateway off: no fallback answers, so the window still holds.
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(OPUS_CHAIN)}\n`, {
+      mode: 0o600,
+    });
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    expect(world.out[0]).toStartWith(
+      "queued C my-app W1a launcher: the 5-hour usage window is at 90%",
+    );
+    // The gateway on, the chain in use with its fallback on: the guard does not hold.
+    mkdirSync(dirname(world.paths.settingsFile), { recursive: true });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
+    );
+    const lifted = [
+      "start",
+      "W1b",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(lifted, world.ctx())).toBe(0);
+    expect(world.out[1]).toStartWith("started C my-app W1b launcher (");
+  });
+
+  test("D54: a window that cannot be read never holds, and the start says so once", async () => {
+    const world = await ledWorld();
     const opusArgs = [
       "start",
       "W1a",
@@ -558,22 +702,12 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out[0]).toStartWith("started C my-app W1a launcher (");
-    expect(onlyCrew(world.paths.stateDir, world.repo).model).toEqual({
-      named: "opus",
-      resolved: "opus",
-      slot: null,
-      tier: "opus",
-    });
-  });
-
-  test("workflow.crew.max of the project sets the cap", async () => {
-    const world = await ledWorld();
-    world.writeConfig({ max: 1 });
-    await otherCrew(world.paths.stateDir, 1, "blocked");
-    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
-    expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: 1 of 1 running; it starts when one finishes",
-    ]);
+    expect(world.out[1]).toBe(usageUnreadLine());
+    // A sonnet crew session has nothing to say about the window.
+    expect(await runCrew(startArgs(world.brief), world.ctx({ randomSuffix: () => "000004" }))).toBe(
+      0,
+    );
+    expect(world.out).toHaveLength(3);
   });
 
   test("less free memory than workflow.crew.memoryGb: queued", async () => {

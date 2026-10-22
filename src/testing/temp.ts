@@ -24,6 +24,10 @@ export function removeTempDirs(): void {
  */
 const SESSION_VARIABLES: readonly string[] = [
   "CLAUDECODE",
+  // A crew session runs its phase's suite from inside itself (`src/crew/start.ts` writes
+  // this into its settings): without this line the suite's whole crew world would think it
+  // is a crew session and refuse every lead command. A test that wants one sets it itself.
+  "CC_SMART_DEV_KIT_CREW",
   "TERM_PROGRAM",
   "LC_TERMINAL",
   "TMUX",

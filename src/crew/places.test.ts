@@ -10,6 +10,7 @@ import {
   placeFor,
   RUNNING_STATES,
   runningCrew,
+  runningForLead,
   unmetWaits,
   withPlacesLock,
 } from "./places";
@@ -128,13 +129,20 @@ describe("the phases a crew session waits for", () => {
 describe("D25: start now, or queued with the reason", () => {
   const free = {
     freeGb: 10,
-    max: 6,
-    maxOpus: 2,
+    leadRunning: 0,
+    leadRunningOpus: 0,
+    max: 24,
+    maxOpus: null,
     needGb: 2,
     opus: false,
+    opusFallback: false,
+    perLead: 4,
+    perLeadOpus: 2,
     running: 1,
     runningOpus: 0,
     unmet: [],
+    usageHoldPercent: 85,
+    usagePercent: null,
   };
 
   test("a free place and enough memory: start", () => {
@@ -142,25 +150,45 @@ describe("D25: start now, or queued with the reason", () => {
     expect(placeFor({ ...free, freeGb: null })).toEqual({ start: true });
   });
 
-  test("D37: the cap of all crew sessions", () => {
-    expect(placeFor({ ...free, running: 6 })).toEqual({
+  test("D54: a lead's own cap, across every repository of the machine", () => {
+    expect(placeFor({ ...free, leadRunning: 4 })).toEqual({
       start: false,
-      why: "6 of 6 running; it starts when one finishes",
+      why: "its lead has 4 of 4 crew sessions running; it starts when one of them finishes",
+    });
+    // Another lead's crew sessions do not count: four running in all, one of them this lead's.
+    expect(placeFor({ ...free, running: 4, leadRunning: 1 })).toEqual({ start: true });
+  });
+
+  test("D54: a lead's opus cap holds only a new opus crew session", () => {
+    const atIt = { ...free, leadRunning: 3, leadRunningOpus: 2 };
+    expect(placeFor({ ...atIt, opus: true })).toEqual({
+      start: false,
+      why: "its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
+    });
+    expect(placeFor(atIt)).toEqual({ start: true });
+    // Its lead's opus cap comes first: it names the cap that holds it.
+    expect(placeFor({ ...atIt, opus: true, leadRunning: 4 })).toMatchObject({
+      why: "its lead has 4 of 4 crew sessions running; it starts when one of them finishes",
     });
   });
 
-  test("D37: an opus crew session at 2 opus running is queued while the total is under 6", () => {
-    const twoOpus = { ...free, running: 3, runningOpus: 2 };
-    expect(placeFor({ ...twoOpus, opus: true })).toEqual({
+  test("D54: the machine's safety ceiling", () => {
+    expect(placeFor({ ...free, running: 24 })).toEqual({
       start: false,
-      why: "2 of 2 opus crew sessions running; it starts when one of them finishes",
+      why: "24 of 24 crew sessions running on this machine; it starts when one finishes",
     });
-    // A sonnet crew session still starts then.
-    expect(placeFor(twoOpus)).toEqual({ start: true });
-    // And the total cap comes first: it names the cap that holds it.
-    expect(placeFor({ ...twoOpus, opus: true, running: 6 })).toMatchObject({
-      why: "6 of 6 running; it starts when one finishes",
+    // Under the ceiling, a lead's caps are what hold its crew sessions.
+    expect(placeFor({ ...free, running: 23, leadRunning: 1 })).toEqual({ start: true });
+  });
+
+  test("D54: the optional machine-wide opus ceiling: unset counts nothing", () => {
+    const many = { ...free, leadRunning: 1, leadRunningOpus: 1, running: 5, runningOpus: 4 };
+    expect(placeFor({ ...many, opus: true })).toEqual({ start: true });
+    expect(placeFor({ ...many, opus: true, maxOpus: 4 })).toEqual({
+      start: false,
+      why: "4 of 4 opus crew sessions running on this machine; it starts when one of them finishes",
     });
+    expect(placeFor({ ...many, maxOpus: 4 })).toEqual({ start: true });
   });
 
   test("D37: the opus-tier crew sessions among the running ones, by the tier recorded at launch", () => {
@@ -181,15 +209,54 @@ describe("D25: start now, or queued with the reason", () => {
     });
   });
 
-  test("its phases first, then the cap", () => {
+  test("D54: past 85% of the 5-hour window, a new opus crew session waits", () => {
+    const past = { ...free, opus: true, usagePercent: 87 };
+    expect(placeFor(past)).toEqual({
+      start: false,
+      why: "the 5-hour usage window is at 87%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
+    });
+    // At the share exactly, it starts: past it holds.
+    expect(placeFor({ ...past, usagePercent: 85 })).toEqual({ start: true });
+    // A sonnet crew session still starts past it.
+    expect(placeFor({ ...past, opus: false })).toEqual({ start: true });
+    // A window that cannot be read never holds.
+    expect(placeFor({ ...past, usagePercent: null })).toEqual({ start: true });
+    // The gateway's opus slot with its fallback chain on lifts the guard.
+    expect(placeFor({ ...past, opusFallback: true })).toEqual({ start: true });
+  });
+
+  test("D54: its phases first, then the lead's caps, the ceiling, the memory, and the window", () => {
     const unmet = [
       { phase: "B6c", state: "working" },
       { phase: "B7", state: null },
     ];
-    expect(placeFor({ ...free, running: 6, unmet })).toEqual({
+    expect(placeFor({ ...free, leadRunning: 4, unmet })).toEqual({
       start: false,
       why: "waits for B6c (working), B7 (not started yet); it starts when each is merged",
     });
+    const opus = { ...free, opus: true, leadRunning: 1, leadRunningOpus: 1, running: 24 };
+    expect(placeFor(opus)).toMatchObject({
+      why: "24 of 24 crew sessions running on this machine; it starts when one finishes",
+    });
+    expect(placeFor({ ...opus, running: 2, freeGb: 0 })).toMatchObject({
+      why: "0 GB free, a crew session needs 2 GB; it starts when memory frees",
+    });
+    expect(placeFor({ ...opus, running: 2, freeGb: 10, usagePercent: 90 })).toMatchObject({
+      why: "the 5-hour usage window is at 90%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
+    });
+  });
+});
+
+describe("D54: a lead's crew sessions, across every repository's store", () => {
+  test("only the lead's own count; a record with no lead field counts toward the machine alone", () => {
+    const mine = crew("A", "working");
+    const theirs = { ...crew("B", "working"), leadSessionId: "another-lead" };
+    const old = { ...crew("C", "working") } as Partial<CrewRecord>;
+    delete old.leadSessionId;
+    const records = [mine, theirs, old as CrewRecord];
+    expect(runningForLead(records, "lead").map((one) => one.phase)).toEqual(["A"]);
+    // The machine's ceiling still counts every one that holds a place.
+    expect(runningCrew(records).map((one) => one.phase)).toEqual(["A", "B", "C"]);
   });
 });
 
