@@ -20,9 +20,9 @@
  * worker (D35); a name alone is not enough.
  */
 import { existsSync } from "node:fs";
-import { agentRows, isLiveRow, rowOf } from "./agents";
+import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { readCaller, reasonOf } from "./caller";
-import { type ClaudeDeps, callClaude, findClaude } from "./claude";
+import { callClaude, findClaude } from "./claude";
 import type { WorkerContext } from "./context";
 import { answerWorkerQuestion, listWorkers, readReport, type WorkerRecord } from "./store";
 
@@ -200,13 +200,7 @@ async function resume(
       why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed",
     };
   }
-  const deps: ClaudeDeps = {
-    env: ctx.env,
-    home: ctx.paths.home,
-    platform: ctx.platform,
-    runProgram: ctx.runProgram,
-    which: ctx.which,
-  };
+  const deps = claudeDeps(ctx);
   const folder = existsSync(record.worktree) ? record.worktree : ctx.cwd;
   const called = callClaude(deps, claude, ["--bg", "--resume", record.sessionId, text], folder);
   if (!called.ok) return { ok: false, why: called.why };

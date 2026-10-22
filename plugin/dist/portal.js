@@ -16464,11 +16464,13 @@ function parseWorktreeList(porcelain) {
     const path = value("worktree");
     if (path === undefined)
       continue;
+    const lockReason = value("locked")?.trim();
     worktrees.push({
       path,
       head: value("HEAD") ?? "",
       branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
       locked: flag("locked"),
+      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
       prunable: flag("prunable")
     });
   }
@@ -19071,29 +19073,29 @@ var WORKER_KINDS = {
   tests: { about: "tests and test runs", affordableEffort: "max", effort: "high", model: "sonnet" },
   security: {
     about: "code that touches security",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus"
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
   },
   money: {
     about: "code that touches money",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus"
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
   },
   permissions: {
     about: "code that touches permissions",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus"
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
   },
   schema: {
     about: "a schema or a contract",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus"
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet"
   },
-  deploy: { about: "deploy plumbing", affordableEffort: "xhigh", effort: "xhigh", model: "opus" },
+  deploy: { about: "deploy plumbing", affordableEffort: "max", effort: "high", model: "sonnet" },
   architecture: {
     about: "architecture and design",
     affordableEffort: "xhigh",

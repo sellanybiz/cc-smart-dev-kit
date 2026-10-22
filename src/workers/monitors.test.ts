@@ -7,9 +7,12 @@
  * file honest: the shape Claude Code's loader requires, and the names the kit's skills carry.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { LEAD_SKILL, WORKER_SKILL } from "./skills";
+
+/** The plugin's skills folder. */
+const SKILLS = join(import.meta.dir, "..", "..", "plugin", "skills");
 
 /** The plugin's monitors file. */
 const MONITORS = join(import.meta.dir, "..", "..", "plugin", "monitors", "monitors.json");
@@ -64,6 +67,13 @@ describe("the plugin's monitors", () => {
     expect(events?.command).toContain("worker watch");
     expect(self?.name).toBe("worker-self");
     expect(self?.command).toContain("worker self-watch");
+  });
+
+  test("the two skills the monitors arm on exist in the plugin", () => {
+    for (const skill of [LEAD_SKILL, WORKER_SKILL]) {
+      const folder = skill.slice(skill.indexOf(":") + 1);
+      expect(existsSync(join(SKILLS, folder, "SKILL.md"))).toBe(true);
+    }
   });
 
   test("every command runs the kit's own command, and never a bare path", () => {

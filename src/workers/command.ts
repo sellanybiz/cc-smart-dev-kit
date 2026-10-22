@@ -41,8 +41,7 @@ const KIND_LINES = WORKER_KIND_NAMES.map(
  * (`usage.ts`), so the lines and each command's own help are one text.
  */
 const OTHER_COMMANDS = BOARD_COMMANDS.map(
-  (one) =>
-    `  ${`${one.name}${one.args === "" ? "" : ` ${one.args}`}`.padEnd(24)}${one.summary}`,
+  (one) => `  ${`${one.name}${one.args === "" ? "" : ` ${one.args}`}`.padEnd(24)}${one.summary}`,
 ).join("\n");
 
 /** How far in a command's description starts in the usage (the columns after the command). */

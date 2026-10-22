@@ -304,6 +304,39 @@ export function workOnBase(
   return null;
 }
 
+/** Where a branch's work stands against a ref (`workOnRef`). */
+export type WorkOnRef =
+  /** Every commit of the branch is an ancestor of the ref. */
+  | "ancestor"
+  /** Merging the branch into the ref would change nothing: a squash or rebase merge put it there. */
+  | "replay"
+  /** Merging the branch into the ref would change it: the branch holds work the ref does not. */
+  | "missing"
+  /** Git could not say (a conflict, an error, a git too old for the replay): treat it as not merged. */
+  | "unknown";
+
+/**
+ * Is the work of the commit `head` on `ref`? The one answer for "is this branch merged": an
+ * ancestor (a merge commit or a fast-forward), or a merge of it that changes nothing (a squash
+ * merge, `replayOntoBase`). A worker's removal and the lead's watch both ask it, so they agree
+ * with `worktrees --clean`. Only "ancestor" and "replay" are certain; keep what is at stake for
+ * the rest.
+ */
+export function workOnRef(
+  repo: string,
+  ref: string,
+  head: string,
+  env: Env,
+  replayer: Replayer = replayerFor(repo, env),
+): WorkOnRef {
+  const ancestor = runGit(repo, ["merge-base", "--is-ancestor", head, ref], env);
+  if (ancestor.ok) return "ancestor";
+  if (ancestor.code !== 1) return "unknown";
+  const replay = replayer.replay(ref, head);
+  if (replay === "nothing") return "replay";
+  return replay === "changes" ? "missing" : "unknown";
+}
+
 /** What one look at this machine gives every worktree of the scan. */
 interface MachineLook {
   containers: "unknown" | ContainerMounts[];

@@ -19,9 +19,10 @@
 import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { isInside, runGit } from "../hooks/git";
+import { claudeDeps } from "./agents";
 import { findWorker, isRefusal, type Records, type Refusal, readRecords } from "./board";
 import { REPORT_COMMAND } from "./brief";
-import { agentRow, type ClaudeDeps, callClaude, findClaude, parseAgents } from "./claude";
+import { agentRow, callClaude, findClaude, parseAgents } from "./claude";
 import type { WorkerContext } from "./context";
 import { lastLine } from "./display";
 import { RUNNING_STATES } from "./places";
@@ -54,17 +55,6 @@ export function refuse(refusal: Refusal, ctx: WorkerContext): number {
 /** A refusal of exit 1 with these lines. */
 export function failure(...lines: string[]): Refusal {
   return { code: 1, lines };
-}
-
-/** The deps of one `claude` call, from the context. */
-function depsOf(ctx: WorkerContext): ClaudeDeps {
-  return {
-    env: ctx.env,
-    home: ctx.paths.home,
-    platform: ctx.platform,
-    runProgram: ctx.runProgram,
-    which: ctx.which,
-  };
 }
 
 /** A path as a person reads it from the repository: `.claude/worktrees/<name>`. */
@@ -104,7 +94,7 @@ export function claudeFailure(ctx: WorkerContext, repo: string, args: string[]):
   const command = `claude ${args.join(" ")}`;
   const binary = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (binary === null) return "claude is not on PATH, nor in ~/.local/bin";
-  const call = callClaude(depsOf(ctx), binary, args, repo, CLAUDE_END_TIMEOUT_MS);
+  const call = callClaude(claudeDeps(ctx), binary, args, repo, CLAUDE_END_TIMEOUT_MS);
   if (!call.ok) return call.why;
   if (call.run.timedOut) return `${command} did not answer in time`;
   if (call.run.exitCode === 0) return null;
@@ -117,7 +107,7 @@ export function sessionUnknown(ctx: WorkerContext, record: WorkerRecord): boolea
   const binary = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (binary === null || record.shortId === null) return false;
   const listed = callClaude(
-    depsOf(ctx),
+    claudeDeps(ctx),
     binary,
     ["agents", "--json", "--all"],
     record.repo,

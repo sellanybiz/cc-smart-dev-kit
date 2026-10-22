@@ -8,7 +8,7 @@
  *   1. the shared checks (`readCaller`: not a worker, workers on, a Claude session, no bypass),
  *      and a lead recorded for this session in this repository (`worker lead` first);
  *   2. the brief (a file, or stdin with `-`), the model and effort — the kind's (`workerLaunch`,
- *      D21), or the person's override judged by the Agent guard's own policy (`judgeLaunch`): a
+ *      D46), or the person's override judged by the Agent guard's own policy (`judgeLaunch`): a
  *      launch the guard refuses is refused, and one it would ask the person about (`opus` at
  *      `max`, Fable) is refused too, because `worker start` never asks; the person starts such a
  *      session themselves;
@@ -46,11 +46,11 @@ import {
 } from "../models/launch-policy";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
+import { claudeDeps } from "./agents";
 import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
 import { type Caller, readCaller, reasonOf, requireSession } from "./caller";
 import {
   agentRow,
-  type ClaudeDeps,
   callClaude,
   findClaude,
   launchArgs,
@@ -60,6 +60,7 @@ import {
   WORKER_PERMISSION_MODE,
 } from "./claude";
 import type { Env, WorkerContext } from "./context";
+import { lastLine, modelText } from "./display";
 import { workerName } from "./names";
 import {
   OPUS_TIER,
@@ -189,16 +190,6 @@ export function chooseLaunch(
     };
   }
   return { effort, model, real, slot: answeringSlot(model, gateway, ctx.env) };
-}
-
-/** `named → resolved`, or the name alone when nothing else answers it. */
-function modelTextOf(named: string, resolved: string): string {
-  return resolved === named ? named : `${named} → ${resolved}`;
-}
-
-/** The same, for a launch just chosen. */
-function modelText(chosen: { model: string; real: LaunchModel }): string {
-  return modelTextOf(chosen.model, chosen.real.model);
 }
 
 /** One git call's trimmed output, or null when it failed. */
@@ -595,11 +586,6 @@ async function failed(
   return 1;
 }
 
-/** The last line a program printed, for a message. */
-function lastLine(text: string): string {
-  return text.trim().split(/\r?\n/).at(-1)?.trim() ?? "";
-}
-
 /** Step 6: the worktree, the session, the one check of where it works. */
 async function launch(spec: LaunchSpec, record: WorkerRecord, ctx: WorkerContext): Promise<number> {
   const { worktree } = spec;
@@ -616,13 +602,7 @@ async function launch(spec: LaunchSpec, record: WorkerRecord, ctx: WorkerContext
   } catch (error) {
     ctx.error(`worker start: the .worktreeinclude files were not copied: ${reasonOf(error)}`);
   }
-  const deps: ClaudeDeps = {
-    env: ctx.env,
-    home: ctx.paths.home,
-    platform: ctx.platform,
-    runProgram: ctx.runProgram,
-    which: ctx.which,
-  };
+  const deps = claudeDeps(ctx);
   const briefFile = workerBriefFile(ctx.paths.stateDir, spec.repo, record.id);
   const args = launchArgs({
     effort: spec.effort,
@@ -749,14 +729,7 @@ async function stopContinued(planned: Plan, args: StartArgs, ctx: WorkerContext)
   if (old === undefined || old.shortId === null) return;
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) return;
-  const deps: ClaudeDeps = {
-    env: ctx.env,
-    home: ctx.paths.home,
-    platform: ctx.platform,
-    runProgram: ctx.runProgram,
-    which: ctx.which,
-  };
-  const called = callClaude(deps, claude, ["stop", old.shortId], planned.caller.repo);
+  const called = callClaude(claudeDeps(ctx), claude, ["stop", old.shortId], planned.caller.repo);
   if (!called.ok || called.run.exitCode !== 0) {
     ctx.error(
       `worker start: the old worker's session was not stopped: claude stop ${old.shortId} failed`,
@@ -879,7 +852,7 @@ function specOf(planned: Plan): LaunchSpec {
     leadName: planned.lead.name,
     model: planned.chosen.model,
     repo: planned.caller.repo,
-    resolved: modelText(planned.chosen),
+    resolved: modelText(planned.chosen.model, planned.chosen.real.model),
     worktree: planned.worktree,
   };
 }
@@ -950,7 +923,7 @@ export async function startQueued(
       leadName: record.leadName,
       model: record.model.named,
       repo: record.repo,
-      resolved: modelTextOf(record.model.named, record.model.resolved),
+      resolved: modelText(record.model.named, record.model.resolved),
       worktree: record.worktree,
     },
     record,

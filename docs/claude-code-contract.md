@@ -298,6 +298,24 @@ live check or the router's log shows it.
 | **An Opus-shaped body reaches a backend as it is**, and OmniRoute serves it: its Claude-to-OpenAI translation builds a new body that leaves `thinking` (`adaptive`) and `context_management` out, passes `output_config.effort` on as `reasoning_effort`, and its per-provider table makes that effort one the provider takes (Ollama Cloud: `xhigh` → `max`). The `anthropic-beta` header never reaches a backend. (Why a model slot needs no translation of its own when a backend is first.) | OmniRoute 3.8.51 | read: its installed source, `open-sse/translator/request/claude-to-openai.ts` and `open-sse/config/providers/registry/ollama-cloud/index.ts` (2026-10-17); unit (what the backend gets): `gateway.test.ts` › "model slots (opus, fable) and every slot by its family" › "an opus chain whose first target is a backend: …". **Not live:** no real Opus session was answered by a backend through this version |
 | Claude Code answers a `tool_use` with a `tool_result` whose `tool_use_id` is the `id` it was given (the Messages API's own rule), so a fallback answer's `tool_use` id made safe by the router is the only id the history ever holds; nothing is mapped back. OmniRoute 16.3.5 makes OpenAI-shaped tool call ids safe itself (`sanitizeToolId` in its `openai-to-claude` translator: every character outside `[a-zA-Z0-9_-]` becomes `_`); a backend that passes a provider's own ids through may not. | 2.1.300 | read: the Messages API docs (tool use), OmniRoute 16.3.5's installed source; unit: `fallback-answer.test.ts` › "a whole answer" › "thinking and redacted_thinking blocks go; …", "a streamed answer" › "thinking blocks' events go, …". Not live: no fallback answered with a bad id here |
 
+## Lead and workers
+
+What `cc-smart-dev-kit worker …` relies on (`src/workers/`, `docs/design.md` § Lead and
+workers). **Every row below was written here, on 2.1.306, when the lead-and-workers phases were
+merged**: the "How it is proved" column says which part was seen to hold and which part is the
+help text only.
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| **A plugin's monitors**, `monitors/monitors.json`, are an array of objects with exactly four keys: `name`, `command`, `description` and `when`. `when` is `on-skill-invoke:<plugin>:<skill>` (the monitor starts when the skill is used). Each is a command Claude Code starts and ends with the session (session-scoped, so it runs from the version folder and needs no copy in `~/.local/share/`); each line it prints is one notification to the session, at most 10 lines at once and then 1 every 2 seconds. A monitor does not run with telemetry off. | 2.1.306 | written here. Proved: `claude plugin validate` ignores the default-path file (it checks `experimental.monitors` in the manifest only), so `src/workers/monitors.test.ts` guards the shape. Not proved: that a monitor runs in a `--bg` session. |
+| `claude --bg --resume <id> "<text>"` starts a stopped background session again with `<text>` as its next prompt (`worker answer` to a stopped worker). | 2.1.306 | written here from `claude --help`; not proved live. |
+| `claude agents --json --all` prints one row per session with `id`, `sessionId`, `cwd`, `pid`, `state`, `status` and `waitingFor`. | 2.1.306 | written here; `src/workers/claude.ts` reads only these fields and treats a missing one as unknown (unit proof on a hand-written copy). |
+| A session's transcript is `<config>/projects/<project folder>/<session id>.jsonl`, one JSON record per line, and a reply's `message.usage` holds `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` (what `worker self-watch` measures the context by). | 2.1.306 | written here; unit proof only (`src/workers/transcript.ts` reads a hand-written copy). |
+| `claude rm <id>` refuses while the session's worktree is locked or still there; a session's worktree is locked with a reason that starts `claude session ` (`worker rm` releases that lock, and only that one). | 2.1.306 | proved, L1a.1. |
+| `claude stop <id>` stops one background session and keeps its conversation. | 2.1.306 | written here from `claude --help`. Not proved: its exit code for a session it does not know (`worker stop` counts a session agent view does not list as gone). |
+| `claude respawn <id>` restarts one background session with its conversation. | 2.1.306 | written here from `claude --help`; not proved live. |
+| `claude attach <id>` opens a background session in a terminal (`worker attach` prints the line; it needs a terminal). | 2.1.306 | written here from `claude --help`. |
+
 ## Relied on, not proved yet
 
 The design depends on these, but no test or live check here has proved them. "The docs

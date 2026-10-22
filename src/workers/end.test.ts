@@ -295,6 +295,50 @@ describe("worker rm: the lead must have merged the branch (D24)", () => {
     });
   });
 
+  test("a branch the lead squash-merged is merged too: its work is on the lead's branch", async () => {
+    const world = await boardWorld();
+    const record = await world.addWorker();
+    const { branch, worktree } = places(world.repo);
+    commitWork(worktree);
+    git(world.repo, "merge", "--squash", branch);
+    git(world.repo, "commit", "-m", "the worker's phase, squashed");
+
+    expect(await runWorker(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: worktree }))).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([
+      "stopped session a1b2c3d4",
+      `removed ${worktree}`,
+      `deleted branch ${branch}`,
+      "removed session a1b2c3d4",
+      "removed W my-app B1 help",
+    ]);
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", branch)).toBe("");
+    expect(await readWorker(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "removed",
+    });
+  });
+
+  test("a squash merge that missed a later commit of the worker is refused, and nothing is touched", async () => {
+    const world = await boardWorld();
+    const record = await world.addWorker();
+    const { branch, worktree } = places(world.repo);
+    commitWork(worktree);
+    git(world.repo, "merge", "--squash", branch);
+    git(world.repo, "commit", "-m", "the worker's phase, squashed");
+    // The worker went on after the lead squashed: that work is on no other branch.
+    writeFileSync(join(worktree, "more.ts"), "export const y = 2;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "more");
+
+    expect(await runWorker(["rm", record.id], world.ctx())).toBe(1);
+    expect(world.err[0]).toStartWith(`worker rm: ${branch} has `);
+    expect(world.out).toEqual([]);
+    expect(world.claudeCalls()).toEqual([]);
+    expect(existsSync(worktree)).toBe(true);
+    expect(git(world.repo, "branch", "--list", branch)).not.toBe("");
+  });
+
   test("a worktree with uncommitted work is refused before anything is touched", async () => {
     const world = await boardWorld();
     const record = await world.addWorker();

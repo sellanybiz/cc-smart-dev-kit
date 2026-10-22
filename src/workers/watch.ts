@@ -35,6 +35,7 @@
 import { runGit } from "../hooks/git";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
+import { workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, rowOf } from "./agents";
 import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
@@ -213,12 +214,13 @@ export function workerAlert(
 
 /**
  * True when the lead merged the branch of `record`: the branch holds a commit of its own, and
- * its tip is an ancestor of the commit `mergeInto` (the lead's folder) is on.
+ * its work is on the commit `mergeInto` (the lead's folder) is on — `workOnRef`, the answer
+ * `worker rm` gives too: its tip is an ancestor (a merge commit), or merging it changes nothing
+ * (a squash merge). When git cannot say, the branch is not reported merged.
  *
  * A branch with no commit of its own — a worker that failed or was stopped before it committed —
  * has its base as its tip, and the base is an ancestor of the lead's branch for that reason alone:
- * it was never merged, and is not reported as merged. A squash merge leaves no ancestor, and is
- * not found either: the lead's merge is `git merge --no-ff <branch>` (the lead skill).
+ * it was never merged, and is not reported as merged.
  */
 export function branchMerged(record: WorkerRecord, mergeInto: string, ctx: WorkerContext): boolean {
   if (record.base === null) return false;
@@ -229,12 +231,8 @@ export function branchMerged(record: WorkerRecord, mergeInto: string, ctx: Worke
     GIT_TIMEOUT_MS,
   );
   if (!tip.ok || tip.out === "" || tip.out === record.base.sha) return false;
-  return runGit(
-    mergeInto,
-    ["merge-base", "--is-ancestor", tip.out, "HEAD"],
-    ctx.env,
-    GIT_TIMEOUT_MS,
-  ).ok;
+  const found = workOnRef(mergeInto, "HEAD", tip.out, ctx.env);
+  return found === "ancestor" || found === "replay";
 }
 
 /** What one pass of the watch works over. */

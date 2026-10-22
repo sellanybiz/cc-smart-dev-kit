@@ -2351,9 +2351,13 @@ session (`CC_SMART_DEV_KIT_WORKER` set) never runs `stop`, `rm` or `resume`.
   the caps: the person or the lead asked for exactly this session.
 - **`rm`** ends a finished worker, and refuses at the first step that would lose something. A
   worker commits on its branch and never pushes (D24), so **only the lead's branch decides**
-  whether its work is kept: `git merge-base --is-ancestor` of the worker's branch against the
-  commit checked out in the lead's own folder (its lead record's `cwd`; the ref the worker was cut
-  from when that folder is gone). Then: uncommitted work in the worktree refuses it (before any
+  whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `worker rm` and
+  the lead's watch share) asks it of the worker's branch against the commit checked out in the
+  lead's own folder (its lead record's `cwd`; the ref the worker was cut from when that folder is
+  gone). The work is there when the branch is an ancestor (a merge commit, a fast-forward), or
+  when merging it into that commit changes nothing (`git merge-tree --write-tree`, the replay
+  `worktrees --clean` uses: it sees a squash merge). A conflict, an error or a git older than 2.38
+  is not certain, and the worker is kept. Then: uncommitted work in the worktree refuses it (before any
   side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
   lock — its reason starts `claude session` — is released); the session is stopped; the kit's
   own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges
@@ -2363,9 +2367,8 @@ session (`CC_SMART_DEV_KIT_WORKER` set) never runs `stop`, `rm` or `resume`.
   `claude rm` that fails leaves the worker `stopped` with a `step` event saying what is left, and
   a second `worker rm` goes straight to it. Nothing is ever forced: `claude rm` has two force
   flags (`--discard-unpushed`, `--force-remove-worktree`), and neither is used.
-  **Limit:** a branch the lead *squashed* is not an ancestor of the lead's branch, so `rm`
-  refuses it; the lead merges a worker's branch with a merge commit (`workflow.mergeMethod`
-  `merge`, the default).
+  A squash-merged worker branch is removed like any other; a squash that missed a later commit
+  of the worker is refused, with the count.
 
 ### The worker's steps, its report, and the lead's watch
 
@@ -2464,9 +2467,10 @@ the store records — a session the kit does not know is the person's own:
 - it **marks a worker `merged`** when the lead merged its branch, and the line says `worker rm`
   removes it. The branch must hold a commit of its own (its tip is not the base it was cut from —
   a worker that failed before it committed is an ancestor of the lead's branch for that reason
-  alone), and its tip must be an ancestor of the commit **the lead's own folder** is on (the
-  lead's record holds it; the main checkout when that is gone). A squash merge leaves no ancestor
-  and is not found: the lead merges with `git merge --no-ff`. The merge is looked for on every
+  alone), and its work must be on the commit **the lead's own folder** is on (the lead's record
+  holds it; the main checkout when that is gone): `workOnRef`, the answer `worker rm` gives too —
+  its tip is an ancestor, or merging it changes nothing, which is how a squash merge shows. When
+  git cannot say, it is not marked. The merge is looked for on every
   worker whose work is over (`done`, `failed`, `handoff`, `stopped`): a worker stopped after its
   turn ended is merged later, when the lead merges the branch.
 

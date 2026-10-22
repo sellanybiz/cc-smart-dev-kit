@@ -4,9 +4,10 @@
  *
  * In order, each step only when the one before it was done, and nothing ever forced:
  *   1. a queued worker (never started) is removed at once: it has nothing to lose;
- *   2. refused while the lead's branch does not hold every commit of the worker's branch (D24:
- *      a worker commits on its branch and never pushes; the lead merges locally), with the count
- *      and where to merge;
+ *   2. refused while the lead's branch does not hold the work of the worker's branch (D24: a
+ *      worker commits on its branch and never pushes; the lead merges locally): every commit by
+ *      ancestry, or a merge that changes nothing (a squash merge). With the count and where to
+ *      merge; when git cannot say, the worker is kept;
  *   3. refused while its worktree holds changes no one committed, or holds a lock a person took
  *      (the refusal shows its reason and the line that releases it) — before anything is
  *      touched, so a refusal costs nothing;
@@ -35,6 +36,8 @@ import {
   pruneWorktrees,
   removeWorktree,
   scanWorktrees,
+  type WorkOnRef,
+  workOnRef,
 } from "../worktrees/scan";
 import { isRefusal } from "./board";
 import type { WorkerContext } from "./context";
@@ -56,25 +59,17 @@ import {
 import { appendWorkerEvent } from "./store";
 
 /**
- * True when the lead's ref holds every commit of `branch`; null when git cannot say (and why).
- * `worker rm` and the watch ask this; `merge-base --is-ancestor` is git's own answer, and the
- * one a merge commit leaves.
+ * Is the work of `branch` on the lead's ref? One answer for the removal and the watch
+ * (`workOnRef`): an ancestor, or a merge that changes nothing (a squash merge). Anything git
+ * cannot say counts as not merged, and the worker is kept.
  */
 function mergedInto(
   repo: string,
   lead: LeadRef,
   branch: string,
   env: WorkerContext["env"],
-): { merged: boolean } | { why: string } {
-  const run = runGit(
-    repo,
-    ["merge-base", "--is-ancestor", `refs/heads/${branch}`, lead.sha],
-    env,
-    GIT_TIMEOUT_MS,
-  );
-  if (run.ok) return { merged: true };
-  if (run.code === 1) return { merged: false };
-  return { why: run.err };
+): WorkOnRef {
+  return workOnRef(repo, lead.sha, `refs/heads/${branch}`, env);
 }
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
@@ -109,15 +104,16 @@ export async function runWorkerRm(ref: string, ctx: WorkerContext): Promise<numb
   ).ok;
   if (branchThere) {
     const merged = mergedInto(repo, lead, record.branch, ctx.env);
-    if ("why" in merged) {
+    if (merged === "unknown") {
       return refuse(
         failure(
-          `worker rm: git could not compare ${record.branch} with ${lead.label}: ${merged.why}`,
+          `worker rm: git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`,
+          `Fix: merge it first (git merge ${record.branch}, in ${lead.folder}) so that it is an ancestor, then run worker rm again`,
         ),
         ctx,
       );
     }
-    if (!merged.merged) {
+    if (merged === "missing") {
       const count = commitsNotOn(repo, lead, record.branch, ctx.env);
       const missing = count === null ? "some commits" : commits(count);
       return refuse(

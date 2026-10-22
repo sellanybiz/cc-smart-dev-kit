@@ -460,6 +460,28 @@ describe("worker watch", () => {
     expect(record?.state).toBe("merged");
   });
 
+  test("D35: a branch the lead squash-merged is marked merged too", async () => {
+    const world = await leadWorld();
+    await addWorker(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "wk-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "wk/B6b-portal-live", worktree);
+    writeFileSync(join(worktree, "done.txt"), "x\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "the phase");
+    // A squash merge leaves no ancestor: the branch's commit is not on the lead's branch.
+    git(world.repo, "merge", "--squash", "-q", "wk/B6b-portal-live");
+    git(world.repo, "commit", "-q", "-m", "the phase, squashed");
+    await runWorker(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+    );
+    expect(world.out).toContain(
+      "W my-app B6b portal-live: merged — the lead merged its branch; `worker rm` removes it",
+    );
+    const [record] = listWorkers(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("merged");
+  });
+
   test("D35: a branch with no commit of its own is never reported merged", async () => {
     const world = await leadWorld();
     // A worker that failed before it committed: its branch is its base, which is an ancestor of
