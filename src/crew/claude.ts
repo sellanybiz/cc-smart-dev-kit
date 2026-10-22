@@ -18,7 +18,12 @@
  */
 import { statSync } from "node:fs";
 import { join } from "node:path";
+import { PLUGIN } from "../build-info/names";
 import { windowsRun } from "../hooks/detached";
+import { TAVILY_SERVER_NAME } from "../mcp/names";
+import { type McpContext, mcpServers, SERVER_NAMES, type ServerName } from "../mcp/servers";
+import type { CrewKind } from "../models/launch-policy";
+import { CREW_KEEP_RULE, parseCrewKeep } from "../workflow/schema";
 
 type Env = Record<string, string | undefined>;
 
@@ -160,6 +165,8 @@ export function callClaude(
 /** What a crew session's `claude --bg` names. */
 export interface CrewLaunchSpec {
   effort: string;
+  /** The MCP servers this session loads, in `--mcp-config`'s file. */
+  mcpFile: string;
   model: string;
   name: string;
   /** The first line of its conversation: who it is, and where its brief is. */
@@ -170,7 +177,14 @@ export interface CrewLaunchSpec {
   worktreeName: string;
 }
 
-/** The arguments of a crew session's `claude --bg`, in the order the live proof ran them (L1a.1). */
+/**
+ * The arguments of a crew session's `claude --bg`, in the order the live proof ran them (L1a.1),
+ * with the lean start's two MCP options after `--autocompact`.
+ *
+ * **`--mcp-config` comes before `--settings`, never last:** it takes any number of files, so a
+ * prompt after it would be read as another config file (proved live on 2.1.309: `Say ok` became
+ * `MCP config file not found: …/Say ok`). `--settings` takes one value and ends the list.
+ */
 export function launchArgs(spec: CrewLaunchSpec): string[] {
   return [
     "--bg",
@@ -186,10 +200,133 @@ export function launchArgs(spec: CrewLaunchSpec): string[] {
     CREW_PERMISSION_MODE,
     "--autocompact",
     CREW_AUTOCOMPACT,
+    "--strict-mcp-config",
+    "--mcp-config",
+    spec.mcpFile,
     "--settings",
     spec.settingsFile,
     spec.prompt,
   ];
+}
+
+/** One row of `claude plugin list --json`, as much as a lean start reads. */
+export interface PluginRow {
+  enabled: boolean;
+  id: string;
+}
+
+/**
+ * The rows `claude plugin list --json` printed; null when it is not a JSON list. A row with no
+ * string `id` names no plugin to turn off and is dropped; an `enabled` that is not `true` is off.
+ */
+export function parsePluginList(output: string): null | PluginRow[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const rows: PluginRow[] = [];
+  for (const row of parsed) {
+    if (typeof row !== "object" || row === null) continue;
+    const { enabled, id } = row as { enabled?: unknown; id?: unknown };
+    if (typeof id !== "string" || id === "") continue;
+    rows.push({ enabled: enabled === true, id });
+  }
+  return rows;
+}
+
+/**
+ * The MCP servers a crew session of `kind` keeps: Tavily, for the research every phase may need,
+ * and the browser for `ui` work (D50). Everything else is not loaded (`--strict-mcp-config`), so
+ * its tools never reach the session's context.
+ */
+export function serversFor(kind: null | CrewKind): ServerName[] {
+  const names: ServerName[] = [TAVILY_SERVER_NAME];
+  if (kind === "ui") names.push("playwright");
+  return names;
+}
+
+/** What a lean launch turns off, and what it keeps. */
+export interface LeanLaunch {
+  /** The plugin ids the session turns off: every enabled one but this plugin and the kept ones. */
+  off: string[];
+  /** The MCP servers it passes, exactly as the kit registers them. */
+  servers: Record<string, unknown>;
+}
+
+/**
+ * The lean start: **every enabled plugin but this one goes off** for the session, and **only the
+ * servers its kind needs are kept**, plus what the project's `workflow.crew.keep` names.
+ *
+ * - The off list is written as `enabledPlugins: {<id>: false}` in the session's own settings
+ *   file. Entries merge key by key across settings sources, so the plugins it does not name stay
+ *   as they are (proved live on 2.1.309, `docs/claude-code-contract.md`).
+ * - `enabled: null` means the plugin list could not be read: nothing is turned off, and a kept
+ *   plugin is not refused (a lean start never fails a start over a list it could not read).
+ * - A keep entry that names nothing this machine runs — or a server cc-smart-dev-kit does not
+ *   register — is refused with the plain line the project fixes.
+ */
+export function leanLaunch(input: {
+  context: McpContext;
+  enabled: null | readonly PluginRow[];
+  keep: readonly string[];
+  kind: null | CrewKind;
+}): { lean: LeanLaunch; ok: true } | { ok: false; why: string } {
+  const keptPlugins = new Set<string>();
+  const keptServers = new Set<ServerName>(serversFor(input.kind));
+  for (const entry of input.keep) {
+    const parsed = parseCrewKeep(entry);
+    if (parsed === null) {
+      return { ok: false, why: `workflow.crew.keep: "${entry}" is not ${CREW_KEEP_RULE}` };
+    }
+    if (parsed.kind === "plugin") {
+      // This plugin is always kept, whatever origin its copy loads from.
+      if (parsed.id.startsWith(`${PLUGIN}@`)) continue;
+      if (
+        input.enabled !== null &&
+        !input.enabled.some((row) => row.enabled && row.id === parsed.id)
+      ) {
+        return {
+          ok: false,
+          why: `workflow.crew.keep names plugin "${parsed.id}", which is not enabled in this Claude Code`,
+        };
+      }
+      keptPlugins.add(parsed.id);
+      continue;
+    }
+    if (!SERVER_NAMES.includes(parsed.name as ServerName)) {
+      return {
+        ok: false,
+        why: `workflow.crew.keep names server "${parsed.name}"; a crew session can keep only the servers cc-smart-dev-kit registers (${SERVER_NAMES.join(", ")})`,
+      };
+    }
+    keptServers.add(parsed.name as ServerName);
+  }
+  const off =
+    input.enabled === null
+      ? []
+      : [
+          ...new Set(
+            input.enabled
+              .filter((row) => row.enabled && !row.id.startsWith(`${PLUGIN}@`))
+              .map((row) => row.id)
+              .filter((id) => !keptPlugins.has(id)),
+          ),
+        ].sort();
+  const servers: Record<string, unknown> = {};
+  for (const one of mcpServers(input.context)) {
+    // `skipped`: the registration the kit would write is a note, not a server (Tavily, no key).
+    if (!keptServers.has(one.name) || one.skipped !== undefined) continue;
+    servers[one.name] = JSON.parse(one.json);
+  }
+  return { lean: { off, servers }, ok: true };
+}
+
+/** The `--mcp-config` file: the kept servers under `mcpServers`, as their registrations read. */
+export function mcpConfigText(servers: Record<string, unknown>): string {
+  return `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`;
 }
 
 /** `backgrounded · <short id> · <name>`: the line `claude --bg` prints. */
