@@ -193,6 +193,18 @@ export function eventLine(
       const kind = event.tell?.kind ?? "note";
       return `${name}: told ${told.join(", ")} · ${kind} · ${clip(event.text ?? "")}`;
     }
+    case "lead-tell": {
+      // Another lead of this repository told this one a note (D55). The event's name is the
+      // sending lead, and its text is the note's first line without the tag — the line already
+      // names the lead, so the tag would say it twice.
+      const kind = event.tell?.kind ?? "note";
+      return `${name}: ${kind} from another lead · ${clip(event.text ?? "")}`;
+    }
+    case "clash":
+    case "merge":
+      // Both carry their whole line, written where it happened: the start's file clash (D55)
+      // and a pull request merged into the base, for the other leads (D55).
+      return event.text === null || event.text === "" ? null : event.text;
     default:
       return null;
   }

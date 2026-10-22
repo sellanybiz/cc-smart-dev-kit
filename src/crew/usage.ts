@@ -4,8 +4,9 @@
  * can never drift (`dynamic.md` § One source per value).
  *
  * The commands themselves: `board.ts` (`list`, `status`, `kinds`, `attach`), `end.ts` (`stop`,
- * `resume`), `remove.ts` (`rm`) and `tell.ts` (`tell`, one of the crew's own commands, whose help
- * is here so `crew tell --help` and the help table read the same text).
+ * `resume`), `remove.ts` (`rm`), `tell.ts` (`tell`, one of the crew's own commands, whose help
+ * is here so `crew tell --help` and the help table read the same text) and `lead-tell.ts`
+ * (`crew lead tell`, whose help is here for the same reason).
  */
 import { COMMAND } from "../build-info/names";
 
@@ -157,3 +158,26 @@ SendMessage line per receiver, to send as it is: only a session can send a messa
 
 The message guard refuses a crew session's message to another crew session without that
 first line, and names this command.`;
+
+/** What `crew lead tell <lead…>` is, in the usage line that names the lead's own commands. */
+export const LEAD_TELL_ARGS = '<lead…> --kind contract|question "<text>"';
+
+/** `crew lead tell`'s one short line in the list of commands. */
+export const LEAD_TELL_SUMMARY =
+  "Tell another lead of this repository a contract change, or ask one a contract question.";
+
+/** `crew lead tell --help`: what it does, the two kinds, and the line it prints. */
+export const LEAD_TELL_USAGE = `Usage: ${COMMAND} crew lead tell ${LEAD_TELL_ARGS}
+
+Tells one or more other leads of this repository a contract change, or asks them a contract
+question — the same two kinds a crew session tells another (crew tell). A <lead> is a session
+that ran crew lead here: its name, its session id, or the first 8 characters of it. A crew
+session never runs this: it talks to its own lead through crew report.
+
+The first line carries the tag and the point, because it is the line the receiver sees:
+  [<your lead name>] CONTRACT: <what changed: file:symbol, commit>   and the note ends "No reply needed."
+  [<your lead name>] QUESTION: <the ask>
+The note is recorded for each receiving lead, so that lead's watch shows it as one line, and
+the command prints one SendMessage line per lead, to send as it is: only a session sends a
+message.`;
+

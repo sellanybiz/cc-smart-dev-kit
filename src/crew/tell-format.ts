@@ -1,14 +1,18 @@
 /**
  * The words of a note one crew session tells another (D47), in one place: `crew tell` writes
  * them (`tell.ts`) and the message guard checks them (`src/hooks/message-guard.ts`), so the two
- * can never disagree about what a tagged message is.
+ * can never disagree about what a tagged message is. A note one **lead** tells another lead of
+ * the same repository (D55, `lead-tell.ts`) is the same two kinds under the sender's lead name,
+ * and the words of both live here too.
  *
- * Only two kinds cross between crew sessions. A **contract** note says "I changed X you use"
- * (file, symbol, commit) and needs no reply. A **question** asks what another session's contract
- * accepts. Status and "done" are never told to a peer: they go to the lead with `crew report`.
+ * Only two kinds cross between crew sessions, and between leads. A **contract** note says
+ * "I changed X you use" (file, symbol, commit) and needs no reply. A **question** asks what
+ * another session's contract accepts. Status and "done" are never told to a peer: they go to
+ * the lead with `crew report`.
  *
- * The first line of the message is the tag and the point: `[<phase>] CONTRACT: <what>`. It is the
- * preview line the receiver sees, so it says the whole thing.
+ * The first line of the message is the tag and the point: `[<phase>] CONTRACT: <what>` between
+ * crew sessions, `[<lead name>] CONTRACT: <what>` between leads. It is the preview line the
+ * receiver sees, so it says the whole thing.
  */
 
 /** The two kinds, in the order the help lists them. */
@@ -42,15 +46,33 @@ export function tellHeadline(phase: string, kind: TellKind, text: string): strin
 }
 
 /**
- * The whole message: the headline, then the rest of the text as given, and for a contract note
- * the line that says no reply is needed.
+ * The first line of a note one lead tells another lead (D55): the sender's lead name is the tag,
+ * because the receiver has to know which plan of this repository it comes from.
  */
-export function tellMessage(phase: string, kind: TellKind, text: string): string {
+export function leadTellHeadline(leadName: string, kind: TellKind, text: string): string {
+  return `[${leadName}] ${LABELS[kind]}: ${firstLineOf(text)}`;
+}
+
+/**
+ * The whole message: its first line, then the rest of the text as given, and for a contract
+ * note the line that says no reply is needed.
+ */
+function messageLines(firstLine: string, kind: TellKind, text: string): string {
   const rest = text.trim().split(/\r?\n/).slice(1).join("\n").trimEnd();
-  const parts = [tellHeadline(phase, kind, text)];
+  const parts = [firstLine];
   if (rest !== "") parts.push(rest);
   if (kind === "contract") parts.push(NO_REPLY);
   return parts.join("\n");
+}
+
+/** The whole message `crew tell` makes, from its headline. */
+export function tellMessage(phase: string, kind: TellKind, text: string): string {
+  return messageLines(tellHeadline(phase, kind, text), kind, text);
+}
+
+/** The whole message one lead sends another lead, from its headline. */
+export function leadTellMessage(leadName: string, kind: TellKind, text: string): string {
+  return messageLines(leadTellHeadline(leadName, kind, text), kind, text);
 }
 
 /** True when the first line of `message` starts with a tag of `phase`, of either kind. */

@@ -38,6 +38,7 @@ export const REPORT_COMMAND = `${COMMAND} crew report`;
 export const CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
   lead: "leads",
+  "lead tell": "tells another lead",
   resume: "stops, removes or resumes crew sessions",
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions",

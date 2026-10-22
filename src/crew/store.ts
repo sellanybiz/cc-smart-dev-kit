@@ -108,9 +108,27 @@ export function isKnownState(state: string): state is CrewState {
 /**
  * What one line of the events log says happened: `question` is a crew session asking its lead
  * (D36); `tell` is a crew session telling other crew sessions a contract change or a contract
- * question (D47), kept so the lead sees it.
+ * question (D47), kept so the lead sees it; `lead-tell` is one lead telling another lead of the
+ * same repository a note (D55); `clash` is a new crew session whose `--files` another lead's
+ * crew session holds too (D55); `merge` is a pull request merged into the base, for the other
+ * leads (D55).
+ *
+ * **Only `clash` names a real crew session** (the one whose files another phase wants). A
+ * `lead-tell` and a `merge` happen outside any crew session: their `crew` is the id of the
+ * session that wrote the line, and their `state` is `working`, the state of a session running
+ * a command — a lead has no crew state, and nothing reads one from these three.
  */
-export const CREW_EVENT_TYPES = ["created", "state", "step", "report", "question", "tell"] as const;
+export const CREW_EVENT_TYPES = [
+  "created",
+  "state",
+  "step",
+  "report",
+  "question",
+  "tell",
+  "lead-tell",
+  "clash",
+  "merge",
+] as const;
 export type CrewEventType = (typeof CREW_EVENT_TYPES)[number];
 
 /** How a crew session's hand-back ends. */

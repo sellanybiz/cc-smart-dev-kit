@@ -77,6 +77,7 @@ import {
   refusedUntrusted,
 } from "./claude";
 import type { CrewContext, Env } from "./context";
+import { matchesFilePattern } from "./diff";
 import { lastLine, modelText } from "./display";
 import { CREW_REF, crewName } from "./names";
 import {
@@ -85,11 +86,13 @@ import {
   placeFor,
   runningCrew,
   runningForLead,
+  RUNNING_STATES,
   unmetWaits,
   withPlacesLock,
 } from "./places";
 import { CREW_ENV } from "./session";
 import {
+  appendCrewEvent,
   type CrewChange,
   type CrewRecord,
   createCrew,
@@ -761,6 +764,158 @@ async function stopContinued(planned: Plan, args: StartArgs, ctx: CrewContext): 
   ctx.print(`${old.name}: session stopped — it handed off; its branch and its record stay`);
 }
 
+/**
+ * The states in which a crew session holds the files its `--files` list names: its session is
+ * running, or it waits in the queue for a place (D55).
+ */
+const CLASH_STATES: readonly string[] = [...RUNNING_STATES, "queued"];
+
+/** How many shared files a clash line names before it says how many more there are. */
+const CLASH_FILES_SHOWN = 3;
+
+/** What two `--files` lists share (D55). */
+export interface FileOverlap {
+  /** The tracked files both lists name, sorted; empty when no existing file decided it. */
+  files: string[];
+  /**
+   * The two patterns that may name the same file that does not exist yet; null when the
+   * tracked files decided it.
+   */
+  patterns: [string, string] | null;
+}
+
+/** The fixed part of a pattern, before its first wildcard. */
+function fixedPrefix(pattern: string): string {
+  const wildcard = pattern.search(/[*?[\]{}]/);
+  return wildcard === -1 ? pattern : pattern.slice(0, wildcard);
+}
+
+/** True when one fixed prefix holds the other: the patterns are meant to name the same place. */
+function prefixesMeet(one: string, two: string): boolean {
+  return one === two || one.startsWith(two) || two.startsWith(one);
+}
+
+/**
+ * What two `--files` lists share, or null when they share nothing: the tracked files both
+ * name — and, for a pattern that names no tracked file yet, two fixed prefixes that hold each
+ * other, because two patterns under one folder are meant to reach the same new files. It is
+ * only a warning: two leads may mean to share a file.
+ */
+export function filesOverlap(
+  ours: readonly string[],
+  theirs: readonly string[],
+  tracked: readonly string[],
+): FileOverlap | null {
+  const expand = (patterns: readonly string[]): string[][] =>
+    patterns.map((pattern) => {
+      const glob = new Bun.Glob(pattern);
+      return tracked.filter((path) => matchesFilePattern(path, pattern, glob));
+    });
+  const mine = expand(ours);
+  const other = expand(theirs);
+  const mineFiles = new Set(mine.flat());
+  const shared = [...new Set(other.flat())].filter((path) => mineFiles.has(path)).sort();
+  if (shared.length > 0) return { files: shared, patterns: null };
+  for (let a = 0; a < ours.length; a += 1) {
+    // A pattern that names a tracked file is judged by those files alone, so the prefix rule
+    // stands in only for a pattern that names nothing yet.
+    const named = (mine[a]?.length ?? 0) > 0;
+    for (let b = 0; b < theirs.length; b += 1) {
+      if (named && (other[b]?.length ?? 0) > 0) continue;
+      const one = ours[a] as string;
+      const two = theirs[b] as string;
+      if (prefixesMeet(fixedPrefix(one), fixedPrefix(two))) {
+        return { files: [], patterns: [one, two] };
+      }
+    }
+  }
+  return null;
+}
+
+/** The files git tracks in `repo`, as git names them; empty when git cannot say. */
+function trackedFiles(repo: string, env: Env): string[] {
+  const run = runGit(repo, ["ls-files", "-z"], env, GIT_TIMEOUT_MS);
+  return run.ok ? run.out.split("\0").filter((path) => path !== "") : [];
+}
+
+/** The line one start prints, and records for the other lead (D55). */
+function clashLine(other: CrewRecord, shared: FileOverlap): string {
+  const what =
+    shared.files.length === 0
+      ? `${shared.patterns?.[0] ?? ""} and ${shared.patterns?.[1] ?? ""} (no file matches them yet)`
+      : shared.files.length <= CLASH_FILES_SHOWN
+        ? shared.files.join(", ")
+        : `${shared.files.slice(0, CLASH_FILES_SHOWN).join(", ")} and ${shared.files.length - CLASH_FILES_SHOWN} more`;
+  return `clash: ${other.name} (${other.leadName}) may change the same files: ${what} — started anyway; two leads may mean to share a file`;
+}
+
+/**
+ * The crew sessions of **other** leads in this repository, running or queued, whose `--files`
+ * list shares a file with the new phase's list (D55). Nothing here stops a start.
+ */
+export function fileClashSessions(
+  repo: string,
+  env: Env,
+  leadSessionId: string,
+  files: readonly string[],
+  records: readonly CrewRecord[],
+): Array<{ other: CrewRecord; shared: FileOverlap }> {
+  if (files.length === 0) return [];
+  const tracked = trackedFiles(repo, env);
+  const clashes: Array<{ other: CrewRecord; shared: FileOverlap }> = [];
+  for (const other of records) {
+    if (other.repo !== repo || other.leadSessionId === leadSessionId) continue;
+    if (!CLASH_STATES.includes(other.state) || other.files.length === 0) continue;
+    const shared = filesOverlap(files, other.files, tracked);
+    if (shared !== null) clashes.push({ other, shared });
+  }
+  return clashes;
+}
+
+/**
+ * Says a new crew session's file clashes, and records each as an event for the other lead's
+ * watch (D55). A store that cannot be read, or an event that cannot be written, costs one line
+ * at most: the start goes on.
+ */
+async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[]> {
+  let records: CrewRecord[];
+  try {
+    records = listCrew(ctx.paths.stateDir, record.repo).records;
+  } catch {
+    // No store, no warning: a clash is never worth failing a start.
+    return [];
+  }
+  const lines: string[] = [];
+  for (const { other, shared } of fileClashSessions(
+    record.repo,
+    ctx.env,
+    record.leadSessionId,
+    record.files,
+    records,
+  )) {
+    const line = clashLine(other, shared);
+    lines.push(line);
+    try {
+      await appendCrewEvent(
+        ctx.paths.stateDir,
+        record.repo,
+        {
+          crew: other.id,
+          lead: other.leadSessionId,
+          name: other.name,
+          state: other.state,
+          text: line,
+          type: "clash",
+        },
+        ctx.now(),
+      );
+    } catch (error) {
+      ctx.error(`crew start: the file clash could not be recorded: ${reasonOf(error)}`);
+    }
+  }
+  return lines;
+}
+
 /** The start itself: the decision, the record, the files, and the launch. */
 async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const { caller, chosen, lead } = planned;
@@ -884,6 +1039,8 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   }
   if (why !== null) {
     ctx.print(`queued ${record.name}: ${why}`);
+    // A queued phase holds its files all the same, so the clash is said now (D55).
+    for (const line of await sayClashes(record, ctx)) ctx.print(line);
     return 0;
   }
   const code = await launch(specOf(planned), record, ctx);
@@ -897,6 +1054,11 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
     !usage.opusFallback
   ) {
     ctx.print(usageUnreadLine());
+  }
+  // The files this phase holds are the other lead's too (D55): one line each, and the other
+  // lead's watch says it without a message. Never a refusal: two leads may mean to share.
+  if (code === 0) {
+    for (const line of await sayClashes(record, ctx)) ctx.print(line);
   }
   return code;
 }

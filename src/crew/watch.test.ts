@@ -26,7 +26,7 @@ import {
   writeLead,
 } from "./store";
 import type { GatewayNow } from "./wait";
-import { type WatchScope, watchPass } from "./watch";
+import { eventLine, type WatchScope, watchPass } from "./watch";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
@@ -135,6 +135,47 @@ function agentRowOf(over: Record<string, unknown> = {}): Record<string, unknown>
 }
 
 describe("crew watch", () => {
+  test("D55: a note from another lead, a file clash and a merge are one line each", () => {
+    const base = {
+      at: "2026-10-21T10:00:00.000Z",
+      crew: "x",
+      lead: null,
+      name: "LEAD my-app alpha",
+      state: "working" as const,
+      version: 1,
+    };
+    expect(
+      eventLine(
+        {
+          ...base,
+          tell: { kind: "question", to: ["LEAD my-app beta"] },
+          text: "does your branch take the merge?",
+          type: "lead-tell",
+        },
+        null,
+        [],
+        false,
+      ),
+    ).toBe("LEAD my-app alpha: question from another lead · does your branch take the merge?");
+    // A clash and a merge carry their whole line, written where it happened.
+    expect(
+      eventLine(
+        { ...base, text: "clash: C a (LEAD b) may change src/a.ts — started anyway", type: "clash" },
+        null,
+        [],
+        false,
+      ),
+    ).toBe("clash: C a (LEAD b) may change src/a.ts — started anyway");
+    expect(
+      eventLine(
+        { ...base, text: "LEAD b merged #7 into main", type: "merge" },
+        null,
+        [],
+        false,
+      ),
+    ).toBe("LEAD b merged #7 into main");
+  });
+
   test("D25: one line per change, from the store's events log", async () => {
     const world = await leadWorld();
     await addCrew(world, "working");

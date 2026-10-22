@@ -96,12 +96,14 @@ export function outsideBrief(paths: readonly string[], patterns: readonly string
   const globs = patterns.map((pattern) => new Bun.Glob(pattern));
   return paths.filter(
     (path) =>
-      !patterns.some((pattern, index) => matchesPattern(path, pattern, globs[index] as Bun.Glob)),
+      !patterns.some((pattern, index) =>
+        matchesFilePattern(path, pattern, globs[index] as Bun.Glob),
+      ),
   );
 }
 
-/** True when `path` is the file or is under the folder `pattern` names. */
-function matchesPattern(path: string, pattern: string, glob: Bun.Glob): boolean {
+/** True when `path` is the file or is under the folder `pattern` names (a glob included). */
+export function matchesFilePattern(path: string, pattern: string, glob: Bun.Glob): boolean {
   if (path === pattern) return true;
   if (pattern.endsWith("/")) return path.startsWith(pattern);
   if (!/[*?[\]{}]/.test(pattern)) return path.startsWith(`${pattern}/`);
