@@ -12,6 +12,9 @@
   "sessionNames": false,
   "workflow": {
     "reviewBeforePush": true,
-    "autoMerge": false
+    "autoMerge": false,
+    "crew": {
+      "enabled": true
+    }
   }
 }
