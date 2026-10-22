@@ -111,6 +111,25 @@ export function parseRequiredChecks(json: string): RequiredCheck[] | null {
  */
 export const PASSING_BUCKETS: ReadonlySet<string> = new Set(["pass", "skipping"]);
 
+/**
+ * The review gate's own numbers behind a verdict (D17, D22), for the portal's crew page:
+ * which review covers the head, the change made after it and the change it reviewed, and the
+ * gate's `fixesAfterReview` limits those are judged against. A generated file is listed, not
+ * counted, and a binary file changed after the review is never covered (`review-cover.ts`).
+ * `limits` is null only in a caller that has no gate to read; the check fills it whenever it
+ * read the gate, whether or not a review is required.
+ */
+export interface MergeDetail {
+  /** The change after the review; null when it is the reviewed commit itself, or none was measured. */
+  delta: null | { files: number; lines: number };
+  /** The gate's limits (`workflow.fixesAfterReview`); null when no gate was read. */
+  limits: null | { files: number; lines: number; percent: number };
+  /** The reviewed commit the verdict is about; null when no review candidate exists. */
+  review: null | string;
+  /** The reviewed change's own size; null unless both it and the change after it were measured. */
+  reviewed: null | { files: number; lines: number };
+}
+
 /** What one merge check decided. */
 export type MergeVerdict =
   | {
