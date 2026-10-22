@@ -81,3 +81,28 @@ Counts are transcript records, not unique events. Names are left out on purpose.
   - After rate-limit cut-offs, builders had to be told to check `git diff` before going on.
   - The message guard refused 35 sends to other projects, correctly.
 - **What worked:** one broadcast with exact git steps; labels by role (lead, slice, builder letter); the wave table with owned files and dependencies; "do not touch" in briefs; the plan file and the to-do list as the truth; a resume prompt for a fresh session.
+
+## 3. The proposed design (the lead, from § 1 and § 2)
+
+**Hub-and-spoke, with the kit's store as the board.** Status flows through the lead. A crew session talks to another only when one's contract touches the other's.
+
+1. **Channels.**
+   - **Crew session → lead:** `crew report` (done, blocked, handoff, a question with options, a note). It is recorded in the store, survives a restart, and the lead's `crew watch` monitor turns it into one line that wakes the lead.
+   - **Lead → crew session:** `crew answer` (a message to a running session, or a resume of a stopped one).
+   - **Crew session ↔ crew session:** `crew tell <name…> --kind contract|question "<text>"`. It records the note, so the lead sees it in the watch, and prints the `SendMessage` lines the session then sends.
+   - **Only two kinds:** a contract change ("I changed X you use: file:symbol, commit sha; no reply needed") and a contract question ("does your Y accept Z?").
+   - **Never between crew sessions:** status, "done", or chatter.
+2. **Finding a peer.** `crew list` shows each session's name, phase, owned files and state. That makes it the address book and the ownership map in one.
+3. **The format.** The first line is self-contained (it is the preview and the summary): `[<phase>] CONTRACT: <what> — no reply needed`, or `[<phase>] QUESTION: <ask>`. One message per receiver, related facts batched. The facts live in files and commits; messages point at them.
+4. **The lead's loop.**
+   - Plan contracts first. Give each phase disjoint owned files, sized 30–90 minutes.
+   - **Start the whole plan at once** with `--waits-for`. The queue and the watch start each phase when what it waits for is merged and a place is free, so the lead never has to remember what is ready.
+   - On each watch line: a hand-back → check it and merge it, and the watch starts the dependants. A technical question → answer it. The person's question → `AskUserQuestion`. "Needs you" → `claude attach`.
+   - Between lines: integration work, and stay free for the person. Never poll, wait or sleep. A turn that ends with ready work not started is a fault, and an eval case catches it.
+5. **Limits.**
+   - The caps are already built (6 sessions, 2 on Opus).
+   - Claude Code throttles bursts, drops repeated messages, and queues at most 50.
+   - Every session runs in auto mode: a lead in another permission mode holds the crew's messages for approval. § 2 saw 218 such holds, with their outcome never shown.
+   - One merge notice per merge, from the after-merge hook.
+6. **Enforcement (proposed).** The message guard refuses a crew session's `SendMessage` to another crew session unless it carries a kind tag, and points to `crew tell`.
+7. **Not chosen:** Claude Code's shared task list (`CLAUDE_CODE_TASK_LIST_ID`). It is built in, but its retention and claiming are not documented, and it would be a second home for crew state beside the store. Agent teams are still experimental, with no worktree isolation.
