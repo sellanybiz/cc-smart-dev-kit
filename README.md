@@ -1657,10 +1657,14 @@ names such a missing import.
 | `crew` | Inside a crew session: build the phase end to end, mark each step, ask the lead, hand back the report. |
 | `audit` | A sweep of an area for one class of defect, not a diff: scope, tracks and budget, the `audit-run` workflow, then every finding proved in the code. |
 
-The `audit` skill starts the workflow the plugin ships, `audit-run` (`plugin/workflows/audit-run.js`):
-one read-only `auditor` per track, a second one to refute each finding, and a `builder` to write the
-report. Its agents' models and efforts are fixed in the script, and `agent-guard` reads them before
-the run starts.
+The plugin ships two workflows. The `audit` skill starts `audit-run`
+(`plugin/workflows/audit-run.js`): one read-only `auditor` per track, a second one to refute each
+finding, and a `builder` to write the report. For a big change set, the `review` skill takes its
+second opinion from `review-split` (`plugin/workflows/review-split.js`) instead of one reviewer:
+one read-only `reviewer` per track, a second one to refute each finding, and the verified findings
+merged and ranked. Each script fixes its agents' models and efforts — `review-split`'s on `opus` at
+`xhigh` for a risky change set and `sonnet` at `max` for any other — and `agent-guard` reads them
+before the run starts.
 
 **5 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
 none is pinned in their files). Each loads the `impact-analysis` skill at start, through its

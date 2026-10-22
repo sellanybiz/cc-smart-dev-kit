@@ -96,6 +96,33 @@ person asks, with the line `Fable reason: review - <why>`; `agent-guard` then as
   a record a session writes is the session's own word, which is what the hook above exists to
   replace. The command is for the person's own terminal, to record one by hand.
 
+### A big change set: split it instead
+
+One reviewer's focused pass cannot cover a diff that spans many layers — a whole release's
+integration, a change across most of the tree. There the second opinion may be the `review-split`
+Workflow: one read-only reviewer per track you name, a second reviewer to refute every finding,
+and one ranked report back. It is the same second opinion, so never run it beside the single
+reviewer, and a small fix or an ordinary change set stays with the single reviewer, whose read
+is cheaper.
+
+```
+Workflow({ name: "cc-smart-dev-kit:review-split",
+  args: { base: "main", head: "HEAD", intent: "what this change does",
+          tracks: ["state and timing", "access and money"], risky: false } })
+```
+
+- `base` and `head` name the change (`git merge-base <base branch> HEAD`, then the branch
+  head), and `intent` says what it is meant to do — the reviewers hold no context of their own.
+- `tracks` are two to four review dimensions or edge-case axes from `references/axes.md` that
+  this diff touches.
+- `risky: true` only for a change set the core instructions' Review calls risky; the run holds
+  their model rule for it, on every launch. The reviewers are the type the review-record hook
+  knows, so the run records the review as the single reviewer does: commit first, and commit
+  nothing while it runs.
+- Claude Code starts a Workflow only on the person's request, or from a skill that says to call
+  one. A split you decided on yourself asks once first, naming the tracks and what the run
+  spends — as the audit skill does for a sweep it starts.
+
 ## Then
 
 Fix what you found and tell the person in plain words what you found — including "nothing

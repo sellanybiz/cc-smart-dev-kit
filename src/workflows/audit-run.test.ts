@@ -48,7 +48,7 @@ describe("the audit-run workflow", () => {
     expect(audits.map(labelOf)).toEqual(["audit: access", "audit: state"]);
     for (const call of audits) {
       expect(call.options).toMatchObject({
-        agentType: "auditor",
+        agentType: "cc-smart-dev-kit:auditor",
         effort: "max",
         model: "sonnet",
       });
@@ -71,7 +71,7 @@ describe("the audit-run workflow", () => {
     });
     const verify = run.calls.find(isVerify);
     expect(verify?.options).toMatchObject({
-      agentType: "auditor",
+      agentType: "cc-smart-dev-kit:auditor",
       effort: "xhigh",
       label: "verify",
       model: "opus",
@@ -132,7 +132,7 @@ describe("the audit-run workflow", () => {
     });
     const report = run.calls.find(isReport);
     expect(report?.options).toEqual({
-      agentType: "builder",
+      agentType: "cc-smart-dev-kit:builder",
       effort: "max",
       label: "report",
       model: "sonnet",

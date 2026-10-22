@@ -66,7 +66,7 @@ log(
 const audits = await pipeline(tracks, (track) =>
   agent(
     `Audit ${target} for ${question}.\n\nYour track: ${track}. Other auditors take the other tracks; stay on yours.\n\nThe project's own rules, skills and docs are the spec: read the ones your area touches before you judge the code. Prove every finding in the code: the concrete trigger, the real path as file:line, the real outcome, and the missing guard. Try to refute it first; what you cannot prove goes in \`hunches\`, never in \`findings\`. Say in \`coverage\` what you read and what you did not reach.`,
-    { label: `audit: ${track}`, model: 'sonnet', effort: 'max', agentType: 'auditor', schema: FINDINGS },
+    { label: `audit: ${track}`, model: 'sonnet', effort: 'max', agentType: 'cc-smart-dev-kit:auditor', schema: FINDINGS },
   ),
 )
 
@@ -85,7 +85,7 @@ log(`${findings.length} finding(s) reported; ${checked.length} checked against t
 const verdicts = await pipeline(checked, (finding) =>
   agent(
     `Try to refute this audit finding in the code. Read the file and line it names, then the code path around it, then look for the guard that would already stop it. Answer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when a guard or a constraint already stops it; \`unproven\` when the code does not settle it. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`,
-    { label: 'verify', model: 'opus', effort: 'xhigh', agentType: 'auditor', schema: VERDICT },
+    { label: 'verify', model: 'opus', effort: 'xhigh', agentType: 'cc-smart-dev-kit:auditor', schema: VERDICT },
   ),
 )
 
@@ -117,7 +117,7 @@ const where =
       '` (create the folder, change no other file), then return the same text as your answer.'
 const report = await agent(
   `Write the audit report for ${target}, audited for: ${question}.\n\nOne section per confirmed finding, most severe first: the title, \`file:line\`, the trigger, the outcome, the missing guard, and the fix. Then one coverage line per track: what was audited and what was not reached. Then the hunches, under their own heading, marked as unproven. Report nothing that the code does not support.\n\n${where}\n\nConfirmed findings:\n${JSON.stringify(confirmed, null, 2)}\n\nHunches:\n${JSON.stringify(hunches, null, 2)}\n\nCoverage:\n${coverage.join('\n')}`,
-  { label: 'report', model: 'sonnet', effort: 'max', agentType: 'builder' },
+  { label: 'report', model: 'sonnet', effort: 'max', agentType: 'cc-smart-dev-kit:builder' },
 )
 
 return report

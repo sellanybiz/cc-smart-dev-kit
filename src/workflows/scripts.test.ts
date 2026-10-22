@@ -1,7 +1,7 @@
 /**
  * The workflow scripts the plugin ships (`plugin/workflows/*.js`) — the rules every one of them
- * follows, whatever it orchestrates. The audit skill starts `audit-run`; its own behaviour is
- * `audit-run.test.ts`.
+ * follows, whatever it orchestrates. The `audit` skill starts `audit-run` and the `review` skill
+ * starts `review-split`; each script's own behaviour is its own test file beside this one.
  *
  * **The guard judges every launch** (`.claude/rules/hooks.md`, `docs/design.md` § The agent
  * guard): a workflow's `agent(...)` calls run inside the tool and fire no hook, so the guard

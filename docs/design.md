@@ -1201,8 +1201,8 @@ its own repo.
 
 ## Instructions, skills and agents
 
-The plugin carries general working instructions for Claude, 19 skills, 5 agents and one
-Workflow, all written for any project (`README.md` § Instructions, skills and agents lists
+The plugin carries general working instructions for Claude, 19 skills, 5 agents and two
+Workflows, all written for any project (`README.md` § Instructions, skills and agents lists
 them).
 
 **The always-on instructions reach Claude through the user's `CLAUDE.md`.** A plugin cannot
@@ -1267,9 +1267,22 @@ because a rule written into a prompt is a rule an agent follows. A deliberate re
 `scripts/check-duplicates.allow.json` with its reason. It cannot see the same rule said in
 other words; that stays a review job.
 
-**The one shipped Workflow** (`plugin/workflows/audit-run.js`) is the run the `audit` skill
-starts: one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at
-`xhigh` to refute every finding (the judgment, D46), one `builder` on `sonnet` at `max` to write the findings file. Claude Code loads a
+**The shipped Workflows.** `plugin/workflows/audit-run.js` is the run the `audit` skill starts:
+one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at `xhigh` to
+refute every finding (the judgment, D46), one `builder` on `sonnet` at `max` to write the
+findings file. `plugin/workflows/review-split.js` is the second opinion the `review` skill takes
+on a big change set instead of its single reviewer: one read-only `reviewer` per track, a second
+one to refute every finding, and the verified findings merged and ranked. Its launches follow
+D46's tier for the change set the caller names with `risky` — `opus` at `xhigh` for a risky one,
+`sonnet` at `max` otherwise — and the refuters run on that same tier, because they make the
+review's judgment; the audit's verifier is `opus` because the auditors are only the breadth.
+Because a literal cannot depend on the change set, the script writes both fixed launch sets and
+the caller picks one: a second script would repeat every prompt, which `check:duplicates` fails.
+`sonnet` at `max` is the one ordinary-tier literal an affordable worker slot also allows (its
+effort must be `max`), so on Claude it runs at the higher of the two efforts the core
+instructions name. The reviewers carry `cc-smart-dev-kit:reviewer`, the type `reviewAgents`
+lists by default, so the run's return records the review for the merge guard
+(`src/workflows/review-split.test.ts` fails when that link breaks). Claude Code loads a
 plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every
 `agent(...)` launch in the script before the run starts (§ The agent guard); so every launch
 names a literal `model`, `effort` and `agentType`, and `src/workflows/scripts.test.ts` runs each
