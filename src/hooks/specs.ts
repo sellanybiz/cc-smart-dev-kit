@@ -37,11 +37,13 @@
  * (`src/hooks/settings-hooks.ts`).
  *
  * Three guards — `git-guard`, `merge-guard` and `message-guard` — also carry a **crew part**
- * (`HookSpec.crewLimits`): a crew session never pushes, opens no pull request, and its peer
- * messages carry the `crew tell` tag (D24, D47). The frame runs that part **before `ownHooks`
- * and before the project's file is read**, so a project with no `cc-smart-dev-kit.json`, and
- * one whose `ownHooks` lists its own copy of the guard, cannot lose it. Each part is the
- * guard's own detector (`crewPushAnswer`, `crewPrAnswer`, `crewMessageAnswer`), never a copy.
+ * (`HookSpec.crewLimits`): a crew session never pushes, never runs a git command that would
+ * throw work away without reading the step that replaces it, opens no pull request, and its
+ * peer messages carry the `crew tell` tag (D24, D47). The frame runs that part **before
+ * `ownHooks` and before the project's file is read**, so a project with no
+ * `cc-smart-dev-kit.json`, and one whose `ownHooks` lists its own copy of the guard, cannot
+ * lose it. Each part is the guard's own detector (`crewGitAnswer`, `crewPrAnswer`,
+ * `crewMessageAnswer`), never a copy.
  */
 
 import { crewIdOf } from "../crew/session";
@@ -55,7 +57,7 @@ import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
 import {
-  crewPushAnswer,
+  crewGitAnswer,
   DEFAULT_PROTECTED_BRANCHES,
   guardVerdict,
   pushRulesFor,
@@ -160,10 +162,11 @@ export const gitGuardHook: HookSpec = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
-  // A crew session's push is denied whatever the project's file says, and with no file
-  // (`crewPushAnswer`: the same detector as `run`, with only the crew rule on).
+  // A crew session's push is denied, and so is every work-destroying ask, with the step that
+  // replaces it — whatever the project's file says, and with no file (`crewGitAnswer`: the
+  // same detector as `run`, with only the crew rule on).
   crewLimits: (input, _checkout, { env }) =>
-    crewPushAnswer(input, env, stringField(input.cwd) ?? ""),
+    crewGitAnswer(input, env, stringField(input.cwd) ?? ""),
   run: (context): HookResult => {
     const { project, input, cwd, env } = context;
     const config = project.config;

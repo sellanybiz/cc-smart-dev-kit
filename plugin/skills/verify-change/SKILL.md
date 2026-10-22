@@ -30,8 +30,9 @@ proves only what it covers: know where the project has no tests, and say so.
 
 A bug: write the test that reproduces it first and watch it fail, then fix the code. A test
 that fails: fix the cause (the core instructions' root-cause list). A new test must be able to
-fail: break the code once on purpose and watch it go red. Never lower a coverage floor to go
-green.
+fail: break the code once on purpose and watch it go red, keeping a copy first (`cp path
+path.bak`) and copying it back after (`cp path.bak path`) — never `git checkout -- path`, which
+a crew session's guard denies. Never lower a coverage floor to go green.
 
 ## 3. Blast radius — only when you changed shared code
 
