@@ -632,7 +632,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
 | `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
-| `cc-smart-dev-kit portal [--port <port>] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It binds `127.0.0.1` only, prints a link with a one-time token, and stops after 30 minutes with no request. It refuses to run inside a Claude Code session: the portal is for you, not for Claude. |
+| `cc-smart-dev-kit portal [status\|stop] [--no-open]` | The local portal (below): a page on this machine to see and change the gateway's settings, the updates, the heavy-job queue, the companions and the OmniRoute. It starts with Claude Code, like claude-mem's worker: a new session starts it when it is not running, and a plugin update restarts it onto the new version. It binds `127.0.0.1` only and stays up until you stop it. `portal` opens it (starting it when needed), `status` says whether it runs and on which version, `stop` ends it, and `--no-open` prints the address instead of opening your browser. There is no sign-in: any program or account on this machine can open it (below). |
 | `cc-smart-dev-kit job <command>` | The machine-wide queue for heavy jobs (below). |
 | `cc-smart-dev-kit crew lead [--plan <slug>] [--tag <tag>]` | Records the Claude Code session that runs it (from its own Bash tool) as the lead of a plan in this repository, named `LEAD <tag> <plan>`. The tag is `--tag`, else [`crew.tag`](#the-workflow), else the main checkout's folder name; the plan is `--plan`, else the plan this session already leads, else the branch. It prints the `/rename` line that shows the name now. Refused outside a Claude Code session, in a crew session, in a session in bypass mode, and while crew sessions are off ([`crew.enabled`](#the-workflow)). |
 | `cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file\|-> [--base <ref>] [--files <glob,…>] [--model <model>] [--effort <effort>] [--waits-for <phase,…>]` | Starts one crew session for a lead: a background Claude Code session named `C <tag> <phase> <slug>`, in its own worktree `.claude/worktrees/crew-<phase>-<slug>` on the branch `crew/<phase>-<slug>`, cut from `--base` or the lead's branch. **It returns at once** with one line: `started` (with the session's short id, the model and effort, the branch and its base commit), `queued` (and why: the phases it waits for, [`crew.max`](#the-workflow) or `crew.maxOpus` reached, or too little free memory — the lead's watch starts it later), or `failed` (and why). The kind gives the model and effort (`build`, `docs`, `tests`, `security`, `money`, `permissions`, `schema`, `deploy` on sonnet; `architecture` on opus at `xhigh`; `ui` on opus at `high`, never an affordable model — UI/UX design is not affordable work); `--model`/`--effort` override them, judged by the agent guard's rules — a `ui` session's override that would put it below `high` or on an affordable model is refused with one line naming the allowed models — and one the guard would ask you about (opus at `max`, Fable) is refused: start that session yourself. The brief (`-`: stdin) is saved with a fixed frame: commit on your branch and never push (the lead handles git), how to hand back, and how to ask the lead a question — a crew session never asks you. Run `crew lead` in the session first. A repository you never opened with `claude` is refused ("Workspace not trusted"): open it once and accept the trust prompt. `--waits-for` counts a phase as finished only when the lead **merged** it (or the crew session was removed), so a dependent phase never branches before the merge. |
@@ -855,6 +855,11 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   `tmux set -g allow-passthrough all`): tmux is optional. When neither is wrong — the line
   is in the file, and you are outside tmux, or inside one whose passthrough is `all` —
   doctor prints no tmux line at all;
+- the portal: ✓ while it runs, with its address, version and process; `·` when it is not
+  running (it starts with the next Claude Code session, or now with `cc-smart-dev-kit
+  portal`); `!` when it runs an older version, which the next session start restarts onto
+  this one; ✗ when another program holds its port, so it cannot start
+  ([The portal](#the-portal));
 - agent view's notification hook: the user-level `Notification` hook setup writes into
   `~/.claude/settings.json` (matcher `agent_needs_input|agent_completed`). A ✗ says it is
   missing or runs something else, with "Run: cc-smart-dev-kit setup" (§ Notifications);
@@ -1295,33 +1300,46 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
 
 ## The portal
 
-`cc-smart-dev-kit portal` starts a small web page on this machine: the same facts as the
+`cc-smart-dev-kit portal` opens a small web page on this machine: the same facts as the
 commands above, and the same actions, with a form instead of a command line.
+
+**It starts with Claude Code and stays up** — like claude-mem's worker. A new session starts
+it when it is not running, and a plugin update hands it over to the new version at the next
+session start (never back to an older one). It is always on one fixed local port, so
+`http://127.0.0.1:20150/` is the address whenever a session is running:
 
 ```
 $ cc-smart-dev-kit portal
-cc-smart-dev-kit portal 0.3.0 — for you, not for Claude.
-Running from ~/.local/share/cc-smart-dev-kit/portal.js.
-
-  http://127.0.0.1:20150/?t=…
-
-It binds 127.0.0.1:20150 only, and stops after 30 minutes with no request.
-Stop it now with Ctrl+C here.
+The portal was not running: started it (version 1.1.0).
+  http://127.0.0.1:20150/
 ```
 
-Your default browser opens that link — unless Chrome's `claude-code` profile is on this
-machine, the one Claude drives: then nothing is opened for you, and the line under the link
-says where to open it instead (below). `--port <n>` changes the port (0 takes a free one);
-`--no-open` only prints it.
+Your default browser opens that address — unless Chrome's `claude-code` profile is on this
+machine, the one Claude Code drives: then nothing is opened for you, and the line under the
+address says where to open it instead. `--no-open` only prints it.
 
-**It refuses to run inside a Claude Code session** (`CLAUDECODE`): "the portal is for you,
-not for Claude". The portal changes this machine's model path and the safety judge, and a
-session must never do that for itself. Run it in your own terminal — and open the link in a
-browser window that is not Chrome's `claude-code` profile, the one Claude drives: it would put
-the portal's session cookie inside that profile, where Claude could reach the page's buttons.
-(When that profile is on this machine, `portal` opens no browser by itself for exactly that
-reason: it prints the link and says where to open it. Without that profile it opens your
-default browser, as always.)
+```
+$ cc-smart-dev-kit portal status
+The portal is running at http://127.0.0.1:20150 (version 1.1.0, process 48211).
+
+$ cc-smart-dev-kit portal stop
+The portal stopped.
+```
+
+`status` exits 1 when the portal is not running, or when another program holds its port. A
+crash is brought back by the next session start; two sessions that start together start it
+once. If another program holds port 20150, nothing is started and the portal's log
+(`~/.claude/cc-smart-dev-kit/portal.log`) says so once. `doctor` has one line about it.
+
+**There is no sign-in.** Any program and any user account on this machine can open the page —
+a Claude session running `curl` included — and can change the slots, the judge, the updates
+and the workflow settings. That is a deliberate trade-off: the alternative was pairing every
+browser once. What still holds: the page binds `127.0.0.1` and nothing else, refuses another
+website and DNS rebinding, and every change needs the CSRF token that came with the page. And
+the session-escape guard asks you before a session's shell command reaches this port, so a
+session cannot switch the review gate off through it unseen. Never open the portal in the
+Chrome profile Claude Code drives (its own, `claude-code`): Claude could then reach its
+buttons.
 
 Six screens, each following the design the owner approved (2026-10-16):
 
@@ -1329,7 +1347,7 @@ Six screens, each following the design the owner approved (2026-10-16):
 |---|---|
 | **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable slots); the latest warnings. |
 | **Slots** | A chain per slot, built from the backends' live model lists, and a Fallback switch per slot — rows after the first read "kept, not used" while it is off. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. Save is held off for the **judge** slot until every backend target has blocked the force-push test; the command line's own rule, said in the judge note. |
-| **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all); a look of its own does not count as activity, so an open Health tab cannot hold the portal up. |
+| **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all). |
 | **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, the **Browser card** (the browser's own `doctor` lines, the five steps as one numbered list — each step's sentence, then the address or command it needs in a box of its own with a Copy button — a button that runs `browser setup`, which opens the extension's page in your `claude-code` profile and names that profile in Chrome's own settings file while Chrome is closed, and a masked field that saves the token: the stored value is never on the page), `doctor` (run again, without the browser's lines, which are on that card), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
 | **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
@@ -1386,31 +1404,27 @@ read. With nothing to change, the card says so and offers no button.
 exactly `127.0.0.1:<port>` or `localhost:<port>` (that is where a DNS-rebinding page stops);
 a foreign `Origin` is refused; anything but a page load needs the browser's `Sec-Fetch-Site`
 to say `same-origin` or `none`, so another page — even one on another `127.0.0.1` port, which
-a browser counts as the same site — cannot load the portal's pages or files into its own; the
-one-time token in the link is exchanged on the first load
-for an `HttpOnly`, `SameSite=Strict` session cookie whose name carries the portal's own port
-(`ccsdk_portal_<port>` — a cookie has no port, and a browser sends every `127.0.0.1` cookie to
-every port on it, so two portals on two ports hold their own sessions), and the URL is cleaned;
-a change (a POST) must carry an `Origin` of ours **and** the CSRF token that came with the
-page. A GET that is the person's own but holds no session (a link already used, a cookie from
-a portal that stopped) gets the page that says so, in 403, and it holds no fact about the
-machine; a `Host` or `Origin` that is not ours stays the one word, "Forbidden". A strict
-`Content-Security-Policy` allows no inline script and nothing from the internet — no web
-font, no CDN. A backend key never reaches the page: it shows as `••••a1b2`, its last four
-characters and nothing else (`maskKey`); a backend's address is shown, and linked, without a
-user name, password, query or fragment; and a backend's own error text is masked before a page
-or an answer holds it (a backend can echo the key it was sent). And the portal
-stops itself after 30 minutes with no request, so a page left open on an unlocked screen does
-not stay a way in.
+a browser counts as the same site — cannot load the portal's pages or files into its own;
+and a change (a POST) must carry an `Origin` of ours **and** the CSRF token that came with
+the page. There is no token in the address and no session cookie any more (D9): the trade-off
+is that every program and account on this machine can open the page, above. A `Host` or
+`Origin` that is not ours stays the one word, "Forbidden". A strict `Content-Security-Policy`
+allows no inline script and nothing from the internet — no web font, no CDN. A backend key
+never reaches the page: it shows as `••••a1b2`, its last four characters and nothing else
+(`maskKey`); a backend's address is shown, and linked, without a user name, password, query or
+fragment; and a backend's own error text is masked before a page or an answer holds it (a
+backend can echo the key it was sent). And the portal stays up until you stop it — `portal
+stop` — so it is there whenever you open it.
 
 It runs from a copy in `~/.local/share/cc-smart-dev-kit/portal.js`, never from the plugin's
 version folder: Claude Code deletes an old version folder some time after an update, even
-under a running process. The copy is a managed file, so `cc-smart-dev-kit restore` removes it.
-Because the copy sits outside the plugin, the parent tells it where the plugin is
+under a running process, and the portal now outlives many of them. The copy is a managed
+file, so `cc-smart-dev-kit restore` removes it. The session-start part copies the installed
+version's bundle there before it starts it; the running server is told where the plugin is
 (`--plugin-dir`), and every file it needs — the router bundle a restart installs, the
 instructions, `hooks/hooks.json` — is resolved from the version Claude Code records as
 installed **at the moment it is needed**; a folder a later update deleted is named in words
-instead of failing, and a version folder that vanished during a long run is not used again.
+instead of failing.
 
 ## Instructions, skills and agents
 

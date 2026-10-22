@@ -543,9 +543,10 @@ export const PORTAL_JS = `(function () {
       return response.json().catch(function () { return { ok: false, lines: ["The portal answered something it should not have."] }; })
         .then(function (data) { data.status = response.status; return data; });
     }).catch(function () {
-      // The portal stopped (its 30 minutes ran out, or someone pressed Ctrl+C): every caller
-      // then draws this as a failure, and a button left on "Working…" goes back to its label.
-      return { ok: false, lines: ["The portal is not running. Run cc-smart-dev-kit portal again."], status: 0 };
+      // The portal is not answering: it was stopped, or it is restarting onto a new version.
+      // Every caller then draws this as a failure, and a button left on "Working…" goes back
+      // to its label.
+      return { ok: false, lines: ["The portal is not answering. Check cc-smart-dev-kit portal status."], status: 0 };
     });
   }
 
@@ -597,11 +598,6 @@ export const PORTAL_JS = `(function () {
       show();
     });
     show();
-  }
-
-  // ── The URL is cleaned once the token was exchanged ─────────────────────
-  if (location.search.indexOf("t=") !== -1 && window.history && window.history.replaceState) {
-    window.history.replaceState(null, "", location.pathname);
   }
 
   // ── Meters: a width the policy keeps out of the markup ──────────────────
@@ -665,13 +661,11 @@ export const PORTAL_JS = `(function () {
   var live = document.querySelector("[data-live]");
   if (live) {
     var paused = false;
-    // The auto=1 query marks this reload as the page's own, not the person asking: the
-    // portal serves the page and does NOT count it as activity, so a Health tab left open
-    // cannot hold the portal (and its 30-minute idle clock) open forever. A hidden tab is not
-    // reloaded at all; it looks once more when it comes back.
+    // The reload is the page's own, not the person asking; a hidden tab is not reloaded at
+    // all, and it looks once more when it comes back.
     var again = function () {
       if (paused || document.hidden) return;
-      location.replace(location.pathname + "?auto=1");
+      location.replace(location.pathname);
     };
     var timer = setInterval(again, 5000);
     document.addEventListener("visibilitychange", function () {

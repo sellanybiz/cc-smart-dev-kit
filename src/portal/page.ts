@@ -7,6 +7,7 @@
  * `escapeHtml` — a model id, a unit name or a path is text, never markup.
  */
 
+import { COMMAND } from "../build-info";
 import type { PortalFacts } from "./facts";
 
 /** A value as HTML text. Everything from the machine goes through here. */
@@ -66,8 +67,8 @@ function header(shell: Shell, active: PageId): string {
 </header>
 <div class="privatebar">
 <div class="wrap">
-<span>${LOCK_ICON}Private session on this computer only. It ends when the portal stops.</span>
-<span>For you, not for Claude: never open this page in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>).</span>
+<span>${LOCK_ICON}On this computer only. Any program or account on this machine can open it.</span>
+<span>Never open this page in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>): Claude could reach its buttons.</span>
 </div>
 </div>`;
 }
@@ -75,8 +76,8 @@ function header(shell: Shell, active: PageId): string {
 function footer(shell: Shell): string {
   return `<footer class="bottom">
 <div class="wrap">
-<span>Portal on <span class="mono">127.0.0.1:${shell.facts.portalPort}</span>. It stops after 30 minutes with no activity.</span>
-<span>To stop it now: Ctrl+C in the terminal that started it.</span>
+<span>Portal on <span class="mono">127.0.0.1:${shell.facts.portalPort}</span>. It stays up while Claude Code runs.</span>
+<span>To stop it: <span class="mono">${COMMAND} portal stop</span></span>
 <span>Keys are never shown in full.</span>
 <a href="/privacy">How this page stays private</a>
 </div>

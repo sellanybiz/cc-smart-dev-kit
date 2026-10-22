@@ -55,6 +55,8 @@ import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
+import { probePortal, realPortalProbe, testPortalState } from "../portal/health";
+import { DEFAULT_PORTAL_PORT } from "../ports";
 import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { runSessions } from "../sessions/command";
@@ -372,6 +374,8 @@ async function main(argv: string[]): Promise<number> {
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
         mcp: realMcpDoctorDeps(),
+        portal: () =>
+          testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
         project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live")
           ? {
@@ -729,36 +733,18 @@ async function main(argv: string[]): Promise<number> {
     case "omniroute":
       return runOmniroute(rest, omnirouteContext(paths));
     case "portal":
-      return runPortal(
+      return await runPortal(
         {
           bunPath: process.execPath,
           env: process.env,
           error: (line) => console.error(line),
+          kill: (pid) => process.kill(pid, "SIGTERM"),
+          machine: realMachine(process.env, null),
           paths,
-          // The child runs from a copy, where none of the plugin's other files are: it is told
-          // this folder (`--plugin-dir`), and resolves each file from the installed version.
+          // The portal's bundle is copied from this command's own plugin folder, which is the
+          // version Claude Code installed (the launcher runs this CLI from it).
           pluginDir: pluginDir(),
-          runChild: (argv, options) => {
-            // The child owns the terminal while it runs: the link is printed where the person
-            // is looking, and Ctrl+C reaches both through the same process group. Its exit
-            // code is this command's — 130 when Ctrl+C ended it.
-            try {
-              return (
-                Bun.spawnSync(argv, {
-                  cwd: options.cwd,
-                  env: options.env,
-                  stderr: "inherit",
-                  stdin: "inherit",
-                  stdout: "inherit",
-                }).exitCode ?? 1
-              );
-            } catch (error) {
-              console.error(
-                `cc-smart-dev-kit portal: ${error instanceof Error ? error.message : String(error)}`,
-              );
-              return 1;
-            }
-          },
+          print: (line) => console.log(line),
         },
         rest,
       );

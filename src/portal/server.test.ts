@@ -13,6 +13,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { dirname, join } from "node:path";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
+import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
 import type { Machine } from "../machine/machine";
@@ -27,7 +28,6 @@ import { omnirouteRow } from "./facts";
 import { switchButton } from "./page";
 import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
-import { IDLE_MS } from "./session";
 import { autoModeCard } from "./views";
 import { type ProjectInitAnswers, type WorkflowAdapter, workflowAdapter } from "./workflow-adapter";
 
@@ -108,7 +108,6 @@ async function open(options: {
   backendUserinfo?: string;
   /** A doctor source of this test's own, for the cases a real folder cannot produce. */
   doctor?: DoctorSource;
-  idleMs?: number;
   omniroute?: string;
   /** True: a systemd user unit runs that OmniRoute, the way the gateway's setup leaves one. */
   omnirouteUnit?: boolean;
@@ -301,37 +300,27 @@ async function open(options: {
         local: { cwd, instructionsSource: join(pluginFolder, "instructions") },
         project: null,
       })),
-    ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
     port: 0,
     workflow: options.workflow ?? fakeWorkflow(),
   });
 
-  let cookie = "";
-  let token = new URL(portal.url).searchParams.get("t") ?? "";
   const call = async (
     path: string,
     init: {
       body?: unknown;
       headers?: Record<string, string>;
       method?: string;
-      /** Never send the session cookie: what a browser that never held one sends. */
-      noCookie?: boolean;
     } = {},
   ): Promise<{ body: string; headers: Headers; status: number }> => {
     const headers: Record<string, string> = { ...init.headers };
-    if (!init.noCookie && cookie !== "" && headers.cookie === undefined) headers.cookie = cookie;
     if (init.body !== undefined) headers["content-type"] = "application/json";
     const response = await fetch(`http://127.0.0.1:${portal.port}${path}`, {
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       headers,
       method: init.method ?? (init.body === undefined ? "GET" : "POST"),
     });
-    const set = response.headers.get("set-cookie");
-    if (set !== null) cookie = set.split(";")[0] ?? "";
     return { body: await response.text(), headers: response.headers, status: response.status };
   };
-  /** The first load: the link's token becomes the session cookie. */
-  const enter = async () => call(`/?t=${token}`);
   /** The page's own tokens, read out of the HTML the way the browser script does. */
   const csrfOf = async (): Promise<string> => {
     const page = await call("/");
@@ -344,72 +333,53 @@ async function open(options: {
     });
   return {
     call,
-    cookieNow: () => cookie,
     csrfOf,
     ctx,
     /** The folder the portal was started in: the project its Project card is about. */
     cwd,
-    enter,
     home,
     /** The context the server's actions use for OmniRoute (`portalOmnirouteContext`). */
     omnirouteCtx: () => portalOmnirouteContext(ctx),
     paths,
     portal,
     post,
-    setToken: (value: string) => {
-      token = value;
-    },
-    token: () => token,
   };
 }
 
 // ── The door ────────────────────────────────────────────────────────────────────
 
 describe("the door", () => {
-  test("the one-time link works once, and hands out the session cookie", async () => {
+  test("there is no sign-in (D9): a page load from this machine is served, and it hands out no cookie", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      const first = await world.enter();
+      const first = await world.call("/");
       expect(first.status).toBe(200);
-      const set = first.headers.get("set-cookie") ?? "";
-      // HttpOnly: a script on the page cannot read it. SameSite=Strict: no other site's
-      // request carries it. Path=/: this origin only. Not Secure: this is http on 127.0.0.1,
-      // and a Secure cookie would never be stored. The port is in the name, because a cookie
-      // has none and the browser sends every 127.0.0.1 cookie to every port on 127.0.0.1.
-      expect(set).toContain(`ccsdk_portal_${world.portal.port}=`);
-      expect(set).toContain("HttpOnly");
-      expect(set).toContain("SameSite=Strict");
-      expect(set).toContain("Path=/");
-      expect(set).not.toContain("Secure");
-      // The token worked once. The same link, opened in a browser that never held the session
-      // (a second browser, a shared link), is dead — and says so, on the page that holds no
-      // fact about this machine.
-      const again = await world.call(`/?t=${world.token()}`, { noCookie: true });
-      expect(again.status).toBe(403);
-      expect(again.body).toContain("This link has expired.");
-      expect(again.body).toContain("cc-smart-dev-kit portal");
-      expect(again.body).not.toContain("ccsdk-csrf");
-      expect(again.body).not.toContain("Router");
-      // And the session the first load handed out still works.
+      // No token, no session, no cookie: the door is the network rules and the CSRF token.
+      expect(first.headers.get("set-cookie")).toBe(null);
+      expect(first.body).toContain('name="ccsdk-csrf"');
+      expect(first.body).not.toContain("ccsdk_portal");
+      // The second load is served too: nothing is one-time any more.
       expect((await world.call("/")).status).toBe(200);
+      // And the address carries no secret.
+      expect(world.portal.url).toBe(`http://127.0.0.1:${world.portal.port}/`);
     } finally {
       world.portal.stop();
       backend.stop();
     }
   });
 
-  test("a page with no session is refused, and only the assets are free", async () => {
+  test("every page is served to this machine, and the assets with them", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
       for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
-        expect((await world.call(path)).status).toBe(403);
+        expect((await world.call(path)).status).toBe(200);
       }
-      // The page cannot draw without these, so they need no session — and only these.
       expect((await world.call("/assets/portal.css")).status).toBe(200);
       expect((await world.call("/assets/portal.js")).status).toBe(200);
       expect((await world.call("/assets/theme.js")).status).toBe(200);
+      // Only the files the page needs: an invented asset is refused like a stranger.
       expect((await world.call("/assets/anything.js")).status).toBe(403);
     } finally {
       world.portal.stop();
@@ -418,18 +388,11 @@ describe("the door", () => {
   });
 
   test("PB-9: another page cannot load anything of the portal's", async () => {
-    // A cookie has no port, so a page on another 127.0.0.1 port is the SAME site, and its
-    // `<img src>` carried the portal's cookie past `SameSite=Strict` and was served. A browser
-    // says where a request comes from in `Sec-Fetch-Site`.
+    // A page on another 127.0.0.1 port is the SAME site, so without `Sec-Fetch-Site` its
+    // `<img src>` was served. A browser says where a request comes from in that header.
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      // The first load may come from anywhere the person clicked (another site's link,
-      // `cross-site`; a terminal, `none`). It is a navigation.
-      const first = await world.call(`/?t=${world.token()}`, {
-        headers: { "sec-fetch-mode": "navigate", "sec-fetch-site": "cross-site" },
-      });
-      expect(first.status).toBe(200);
       const sub = (site: string) => ({ "sec-fetch-mode": "no-cors", "sec-fetch-site": site });
       for (const site of ["same-site", "cross-site"]) {
         expect((await world.call("/", { headers: sub(site) })).status).toBe(403);
@@ -460,7 +423,6 @@ describe("the door", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
       expect((await world.call("/", { headers: { host: "evil.example" } })).status).toBe(403);
       expect(
         (await world.call("/", { headers: { host: `evil.example:${world.portal.port}` } })).status,
@@ -481,7 +443,6 @@ describe("the door", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
       expect((await world.call("/", { headers: { origin: "http://evil.example" } })).status).toBe(
         403,
       );
@@ -502,7 +463,6 @@ describe("the door", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
       const noToken = await world.call("/api/switch", {
         body: { name: "hold", on: true },
         headers: { origin: `http://127.0.0.1:${world.portal.port}` },
@@ -517,11 +477,10 @@ describe("the door", () => {
     }
   });
 
-  test("a POST with the cookie and the token but no Origin is refused", async () => {
+  test("a POST with the token but no Origin is refused", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
       const csrf = await world.csrfOf();
       // A browser sends `Origin` on every POST, same-origin or not, so a POST without one did
       // not come from a page of this portal: a command line or another program sent it.
@@ -541,7 +500,6 @@ describe("the door", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
       const response = await world.call("/api/switch");
       expect(response.status).toBe(405);
       expect(response.body).toContain("An action is a POST");
@@ -551,73 +509,50 @@ describe("the door", () => {
     }
   });
 
-  test("a route that is not ours, with a live session, is the expired page", async () => {
+  test("a route that is not ours is a 404 page, and holds nothing of the machine", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
       const response = await world.call("/nowhere");
       expect(response.status).toBe(404);
-      expect(response.body).toContain("This link has expired.");
+      expect(response.body).toContain("This page is not here.");
       expect(response.body).toContain("cc-smart-dev-kit portal");
+      expect(response.body).not.toContain("ccsdk-csrf");
     } finally {
       world.portal.stop();
       backend.stop();
     }
   });
 
-  test("the five-second reload does not count as activity: the portal still stops", async () => {
-    // An open Health tab reloaded itself every five seconds, and every reload was an admitted
-    // GET that touched the idle clock — so the portal never stopped while the tab was open.
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port, idleMs: 200 });
-    try {
-      await world.enter();
-      // The tab keeps reloading itself for well over twice the idle window. The polling runs
-      // for as long as the watch below: if a reload counted as activity, `finished` would
-      // never resolve while the polls keep coming, and the watch would end on "never".
-      const until = Date.now() + 1_200;
-      const polling = (async () => {
-        while (Date.now() < until) {
-          try {
-            await world.call("/?auto=1");
-          } catch {
-            // The portal stopped mid-poll: that is what this test wants to see.
-            return;
-          }
-          await Bun.sleep(30);
-        }
-      })();
-      const outcome = await Promise.race([
-        world.portal.finished,
-        Bun.sleep(1_300).then(() => "never" as const),
-      ]);
-      await polling;
-      expect(outcome).toBe("idle");
-      // And the page's own script asks with the marker, and only while the tab is visible.
-      expect(PORTAL_JS).toContain('location.pathname + "?auto=1"');
-      expect(PORTAL_JS).toContain("document.hidden");
-      expect(PORTAL_JS).toContain("visibilitychange");
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("the expired page is served to the person, and a stranger still gets one word", async () => {
+  test("the health answer names the portal, its pid and its version; a POST to it changes nothing", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      // A cookie from a portal that stopped: the person's own browser, no session.
-      const stale = await world.call("/", { headers: { cookie: "ccsdk_portal_1=stale" } });
-      expect(stale.status).toBe(403);
-      expect(stale.body).toContain("This link has expired.");
-      expect(stale.body).toContain("Run this in your own terminal");
-      // No fact about this machine may be on it: no version, no port, no token.
-      expect(stale.body).not.toContain("ccsdk-csrf");
-      expect(stale.body).not.toContain("Router running");
-      expect(stale.body).not.toContain("Bun 1.4.3");
-      // A Host or Origin that is not ours stays the plain word: that request is not the person.
+      const answer = await world.call("/healthz");
+      expect(answer.status).toBe(200);
+      expect(answer.headers.get("content-type")).toContain("application/json");
+      expect(JSON.parse(answer.body)).toEqual({
+        app: "cc-smart-dev-kit-portal",
+        ok: true,
+        pid: process.pid,
+        version: VERSION,
+      });
+      // It is a read: no method but GET is answered, and it carries no page.
+      expect((await world.call("/healthz", { method: "POST" })).status).toBe(403);
+      // The same network rules judge it: a foreign Host never reaches it.
+      expect((await world.call("/healthz", { headers: { host: "evil.example" } })).status).toBe(
+        403,
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a Host or Origin that is not ours stays the plain word, never a page", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
       const foreign = await world.call("/", { headers: { host: "evil.example" } });
       expect(foreign.status).toBe(403);
       expect(foreign.body).toBe("Forbidden");
@@ -639,22 +574,8 @@ describe("the door", () => {
       expect(icon.body).toContain("<svg");
       // The policy that covers it, and the link in every page's head.
       expect(icon.headers.get("content-security-policy")).toContain("img-src 'self' data:");
-      const page = await world.enter();
+      const page = await world.call("/");
       expect(page.body).toContain('<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">');
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("thirty minutes with no request and the portal stops: the cookie dies with it", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port, idleMs: 200 });
-    try {
-      await world.enter();
-      expect(IDLE_MS).toBe(30 * 60_000);
-      expect(await world.portal.finished).toBe("idle");
-      await expect(world.call("/")).rejects.toThrow();
     } finally {
       world.portal.stop();
       backend.stop();
@@ -669,7 +590,7 @@ describe("every answer", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      const first = await world.enter();
+      const first = await world.call("/");
       const csp = first.headers.get("content-security-policy") ?? "";
       expect(csp).toContain("default-src 'none'");
       expect(csp).toContain("script-src 'self'");
@@ -705,7 +626,7 @@ describe("every answer", () => {
       omniroute: "3.8.51",
     });
     try {
-      const first = await world.enter();
+      const first = await world.call("/");
       for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
         const page = await world.call(path);
         expect(page.body).not.toContain(KEY);
@@ -754,7 +675,7 @@ describe("every answer", () => {
     });
     const world = await open({ backendPort: server.port ?? 0 });
     try {
-      await world.enter();
+      await world.call("/");
       for (const path of ["/slots", "/health"]) {
         const page = await world.call(path);
         // The reason is still there for the person to act on, without the key in it.
@@ -806,14 +727,19 @@ describe("every answer", () => {
       "for (var i = 0; i < rest.length; i += 1) more.appendChild(rest[i]);",
     );
     expect(PORTAL_JS).not.toContain("more.appendChild(lines(");
-    expect(PORTAL_JS).toContain("The portal is not running. Run cc-smart-dev-kit portal again.");
+    expect(PORTAL_JS).toContain(
+      "The portal is not answering. Check cc-smart-dev-kit portal status.",
+    );
+    // Nothing cleans a token out of the URL any more: there is no token (D9).
+    expect(PORTAL_JS).not.toContain("replaceState");
+    expect(PORTAL_JS).not.toContain("?t=");
   });
 
   test("each page renders its own heading, and the header says the router is up", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const headings: [string, string][] = [
         ["/", "Overview"],
         ["/slots", "Slots"],
@@ -826,8 +752,8 @@ describe("every answer", () => {
         const page = await world.call(path);
         expect(page.status).toBe(200);
         expect(page.body).toContain(`<h1>${heading}</h1>`);
-        expect(page.body).toContain("For you, not for Claude");
-        expect(page.body).toContain("It stops after 30 minutes with no activity");
+        expect(page.body).toContain("Any program or account on this machine can open it");
+        expect(page.body).toContain("It stays up while Claude Code runs");
         expect(page.body).toContain(`Bun 1.4.3`);
       }
       expect((await world.call("/")).body).toContain("Router running");
@@ -852,7 +778,7 @@ describe("every answer", () => {
       systemd: true,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const health = await world.call("/health");
       expect(health.status).toBe(200);
       const log = health.body.slice(health.body.indexOf('id="log-h"'));
@@ -894,7 +820,7 @@ describe("every answer", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/");
       expect(page.status).toBe(200);
       expect(page.body).toContain("The gateway is not set up.");
@@ -917,7 +843,7 @@ describe("every answer", () => {
     // the part of that card the config decides.
     const world = await open({ backendPort: backend.port, omniroute: "3.9.9", withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
 
       // Machine is the page that must work exactly when there is no gateway: doctor first.
       const machine = await world.call("/machine");
@@ -974,7 +900,7 @@ describe("every answer", () => {
       // A `gateway.json` a hand edit left broken (mode 600: the mode is not the problem here).
       mkdirSync(dirname(world.paths.gatewayConfigFile), { recursive: true });
       writeFileSync(world.paths.gatewayConfigFile, "{ broken\n", { mode: 0o600 });
-      await world.enter();
+      await world.call("/");
 
       const machine = await world.call("/machine");
       expect(machine.status).toBe(200);
@@ -1004,7 +930,7 @@ describe("every answer", () => {
       },
     });
     try {
-      await world.enter();
+      await world.call("/");
       arm = true;
       const page = await world.call("/");
       expect(page.status).toBe(200);
@@ -1028,7 +954,7 @@ describe("every answer", () => {
         mkdirSync(dirname(world.paths.gatewayConfigFile), { recursive: true });
         writeFileSync(world.paths.gatewayConfigFile, "{}\\n");
         chmodSync(world.paths.gatewayConfigFile, 0o000);
-        await world.enter();
+        await world.call("/");
 
         const machine = await world.call("/machine");
         expect(machine.status).toBe(200);
@@ -1051,7 +977,7 @@ describe("every answer", () => {
     const world = await open({ backendPort: backend.port, withConfig: false });
     try {
       mkdirSync(world.paths.gatewayConfigFile, { recursive: true });
-      await world.enter();
+      await world.call("/");
 
       const machine = await world.call("/machine");
       expect(machine.status).toBe(200);
@@ -1067,7 +993,7 @@ describe("every answer", () => {
     const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const slots = await world.call("/slots");
       expect(slots.body).toContain("omniroute:glm-5.3-flash");
       expect(slots.body).toContain("omniroute:deepseek-v4.1-flash");
@@ -1113,7 +1039,7 @@ describe("every answer", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const slots = await world.call("/slots");
       for (const hook of [
         "data-slots",
@@ -1163,7 +1089,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const on = await world.post("switch", { name: "hold", on: true }, csrf);
       expect(on.status).toBe(200);
@@ -1198,7 +1124,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const on = await world.post("switch", { name: "gateway", on: true }, csrf);
       const answer = JSON.parse(on.body) as { lines: string[]; ok: boolean };
@@ -1227,7 +1153,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const saved = await world.post(
         "slot.save",
@@ -1271,7 +1197,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["ollama-cloud/glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const saved = await world.post(
         "slot.save",
@@ -1310,7 +1236,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const saved = await world.post(
         "slot.save",
@@ -1350,7 +1276,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const tested = await world.post(
         "slot.test",
@@ -1395,7 +1321,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const refused = await world.post("switch", { name: "judge", on: true }, csrf);
       expect(refused.status).toBe(400);
@@ -1430,7 +1356,7 @@ describe("the actions", () => {
       systemd: true,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const restarted = await world.post("router.restart", {}, csrf);
       expect(restarted.status).toBe(200);
@@ -1453,7 +1379,7 @@ describe("the actions", () => {
       systemd: true,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const restarted = await world.post("router.restart", {}, csrf);
       expect(restarted.status).toBe(400);
@@ -1471,7 +1397,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const unknown = await world.post("nope", {}, csrf);
       expect(unknown.status).toBe(400);
@@ -1511,7 +1437,7 @@ describe("the actions", () => {
       },
     });
     try {
-      await world.enter();
+      await world.call("/");
       const failed = await world.call("/machine");
       expect(failed.status).toBe(500);
       expect(failed.body).toContain("Internal Server Error");
@@ -1535,7 +1461,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const ran = await world.post("doctor.run", {}, csrf);
       expect(ran.status).toBe(200);
@@ -1554,7 +1480,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const no = await world.post("automode.apply", {}, csrf);
       expect(JSON.parse(no.body).lines).toEqual([
@@ -1571,7 +1497,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port, omniroute: "3.8.51" });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.status).toBe(200);
       expect(page.body).toContain("The same checks as");
@@ -1605,7 +1531,7 @@ describe("the actions", () => {
       omnirouteUnit: true,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.body).toContain("The update restarts omniroute.service");
       expect(page.body).not.toContain("No user unit runs OmniRoute here");
@@ -1619,7 +1545,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.body).toContain("Not installed here");
       expect(page.body).toContain("bun add -g omniroute");
@@ -1636,7 +1562,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const saved = await world.post(
         "slot.save",
@@ -1680,7 +1606,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const answer = await world.post("switch", { name: "models", on: true }, csrf);
       expect(answer.status).toBe(400);
@@ -1698,7 +1624,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const off = await world.post(
         "slot.save",
@@ -1728,7 +1654,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const saved = await world.post(
         "slot.save",
@@ -1769,7 +1695,7 @@ describe("the actions", () => {
     });
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const saved = await world.post(
         "slot.save",
@@ -1810,7 +1736,7 @@ describe("the actions", () => {
       writeFileSync(world.paths.gatewayConfigFile, JSON.stringify(config, null, 2), {
         mode: 0o600,
       });
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const off = await world.post("switch", { name: "judge", on: false }, csrf);
       expect(JSON.parse(off.body).ok).toBe(true);
@@ -1837,7 +1763,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"], { chat: "<block>yes</block>" });
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const tested = await world.post(
         "slot.test",
@@ -1882,7 +1808,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const refused = await world.post("companion.enable", { id: "evil@somewhere" }, csrf);
       expect(refused.status).toBe(400);
@@ -1927,7 +1853,7 @@ describe("the actions", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.status).toBe(200);
       expect(page.body).toContain("Warp terminal");
@@ -1960,7 +1886,7 @@ describe("the actions", () => {
       return JSON.parse(found.replaceAll("&quot;", '"'));
     };
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const first = await world.call("/machine");
       // The CLI's own lines: `+` for a rule that goes in.
@@ -2044,7 +1970,7 @@ describe("the actions", () => {
     try {
       // A project that asks for one rule, in the folder the portal was started in.
       mkdirSync(join(world.paths.stateDir, "..", "..", "unused"), { recursive: true });
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const applied = await world.post("automode.apply", { confirm: true }, csrf);
       // The temp project is not a git checkout, so there is nothing to copy — and the answer
@@ -2087,7 +2013,7 @@ describe("the settings page", () => {
       }),
     });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/settings");
       expect(page.status).toBe(200);
       // The three cards, in the design's words and order.
@@ -2128,7 +2054,7 @@ describe("the settings page", () => {
       workflow: fakeWorkflow({ resolved: { deleteBranch: { source: "project", value: true } } }),
     });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/settings");
       // The switch is drawn with its value and its label, and nothing invites a change.
       expect(page.body).toContain('aria-labelledby="set-del" class="switch" disabled');
@@ -2150,7 +2076,7 @@ describe("the settings page", () => {
     const workflow = fakeWorkflow();
     const world = await open({ backendPort: backend.port, workflow });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const answer = await world.post("workflow.set", { key: "openPr", value: "draft" }, csrf);
       expect(answer.status).toBe(200);
@@ -2169,7 +2095,7 @@ describe("the settings page", () => {
     const workflow = fakeWorkflow();
     const world = await open({ backendPort: backend.port, workflow });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const cases: [string, unknown, string][] = [
         ["openPr", "whenever", "openPr is one of off, draft, ready"],
@@ -2207,7 +2133,7 @@ describe("the settings page", () => {
       workflow,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       // No confirmation: nothing is written, and the answer says so.
       const no = await world.post("workflow.set", { key: "switches.jobRoute", value: true }, csrf);
@@ -2238,7 +2164,7 @@ describe("the settings page", () => {
     const workflow = fakeWorkflow();
     const world = await open({ backendPort: backend.port, workflow });
     try {
-      await world.enter();
+      await world.call("/");
       const answer = await world.post(
         "workflow.set",
         { confirm: true, key: "switches.sessionNames", value: true },
@@ -2266,7 +2192,6 @@ describe("the settings page", () => {
       workflow,
     });
     try {
-      await world.enter();
       const page = await world.call("/settings");
       expect(page.status).toBe(200);
       expect(page.body).toContain(
@@ -2290,7 +2215,7 @@ describe("the settings page", () => {
       workflow,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/settings");
       expect(page.body).toContain(
         "Only into the project's integration branch (integration here), after CI is green and the review is done. Never main, a release branch or production: those always ask you.",
@@ -2323,7 +2248,7 @@ describe("the settings page", () => {
       },
     });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/settings");
       expect(page.status).toBe(200);
       expect(page.body).toContain("The workflow settings cannot be read:");
@@ -2344,7 +2269,7 @@ describe("the settings page", () => {
       workflow: fakeWorkflow(),
     });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/settings");
       expect(page.status).toBe(200);
       // The rows draw from the person's own defaults — with the reason said out loud, so no
@@ -2361,7 +2286,7 @@ describe("the settings page", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/settings");
       expect(page.status).toBe(200);
       expect(page.body).toContain("Gateway not set up");
@@ -2381,7 +2306,7 @@ describe("the shape of the pages", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      await world.enter();
+      await world.call("/");
       for (const route of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
         const page = await world.call(route);
         expect(page.status).toBe(200);
@@ -2435,7 +2360,7 @@ describe("the shape of the pages", () => {
     // a person's.
     const world = await open({ backendPort: 0, withConfig: false, noGit: true });
     try {
-      await world.enter();
+      await world.call("/");
       const settings = await world.call("/settings");
       expect(settings.status).toBe(200);
       expect(settings.body).toContain(
@@ -2480,7 +2405,7 @@ describe("the project card", () => {
     const workflow = fakeWorkflow();
     const world = await open({ backendPort: backend.port, projectFiles: {}, workflow });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.status).toBe(200);
       expect(page.body).toContain('<span class="muted bold">not set up</span>');
@@ -2512,7 +2437,7 @@ describe("the project card", () => {
       workflow,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.body).not.toContain("not set up");
       // The base field, the base rows, the protected chips and the guards.
@@ -2549,7 +2474,7 @@ describe("the project card", () => {
       workflow,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const cases: [Record<string, unknown>, string][] = [
         [{ base: "" }, "The base branch is needed: it is the branch a new worktree starts from."],
@@ -2587,7 +2512,7 @@ describe("the project card", () => {
       workflow,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const answer = await world.post(
         "project.preview",
         { answers: formAnswers() },
@@ -2646,7 +2571,7 @@ describe("the project card", () => {
     const workflow = fakeWorkflow();
     const world = await open({ backendPort: backend.port, projectFiles: {}, workflow });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       // Without the page's own yes, nothing is written.
       const no = await world.post("project.write", { answers: formAnswers() }, csrf);
@@ -2700,7 +2625,7 @@ describe("the project card", () => {
     });
     const configFile = join(world.cwd, ".claude", "cc-smart-dev-kit.json");
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const preview = JSON.parse(
         (await world.post("project.preview", { answers: formAnswers() }, csrf)).body,
@@ -2779,7 +2704,7 @@ describe("the project card", () => {
     const workflow = fakeWorkflow();
     const world = await open({ backendPort: backend.port, workflow });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.status).toBe(200);
       expect(page.body).toContain("The project cannot be read:");
@@ -2801,7 +2726,7 @@ describe("the project card", () => {
       workflow,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const bodies: [string, unknown][] = [
         ["workflow.set", { key: "openPr", value: "draft" }],
@@ -2809,14 +2734,7 @@ describe("the project card", () => {
         ["project.write", { answers: formAnswers(), confirm: true }],
       ];
       for (const [action, body] of bodies) {
-        // A browser that never held the session.
-        const fresh = await world.call(`/api/${action}`, {
-          body,
-          headers: { origin: `http://127.0.0.1:${world.portal.port}`, "x-ccsdk-csrf": csrf },
-          noCookie: true,
-        });
-        expect(fresh.status).toBe(403);
-        // A page that is not ours, with a session that is.
+        // A page that is not ours.
         const foreign = await world.call(`/api/${action}`, {
           body,
           headers: { origin: "http://evil.example", "x-ccsdk-csrf": csrf },
@@ -2873,7 +2791,7 @@ describe("the real workflow module", () => {
       workflow: workflowAdapter,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const settings = await world.call("/settings");
       expect(settings.status).toBe(200);
       // The project's file parsed, so there is no "no project's own values" line.
@@ -2939,7 +2857,7 @@ describe("the real workflow module", () => {
       workflow: workflowAdapter,
     });
     try {
-      await world.enter();
+      await world.call("/");
       const machine = await world.call("/machine");
       expect(machine.status).toBe(200);
       expect(machine.body).not.toContain("cannot be read");
@@ -2980,7 +2898,7 @@ describe("the browser card", () => {
   test("it carries the guide, the setup button, a masked token field, and doctor's own lines", async () => {
     const world = await open({ backendPort: 0, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       expect(page.status).toBe(200);
       expect(page.body).toContain('id="browser"');
@@ -3008,7 +2926,7 @@ describe("the browser card", () => {
   test("saving a token writes the same file the command writes, and never echoes it", async () => {
     const world = await open({ backendPort: 0, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const token = `${"A".repeat(40)}_-b`;
       const saved = await world.post(
@@ -3040,7 +2958,7 @@ describe("the browser card", () => {
   test("a token that is not the extension's is refused, and nothing is written", async () => {
     const world = await open({ backendPort: 0, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const refused = await world.post("browser.token", { token: "half-a-token" }, csrf);
       // A refused action answers 400, with its own lines — the same shape as every action.
@@ -3058,7 +2976,7 @@ describe("the browser card", () => {
   test("the setup button runs browser setup in the profile, and prints the steps that are left", async () => {
     const world = await open({ backendPort: 0, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       const ran = await world.post("browser.setup", {}, csrf);
       const answer = JSON.parse(ran.body) as { lines: string[]; ok: boolean };
@@ -3077,7 +2995,7 @@ describe("the browser card", () => {
   test("the five steps are one numbered list, each address in a copy box of its own", async () => {
     const world = await open({ backendPort: 0, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const page = await world.call("/machine");
       // One column, numbered: never the doctor's two-column `.checks` grid, which read the
       // steps left, right, left, right, numbered none of them, and squeezed the last one
@@ -3114,7 +3032,7 @@ describe("the browser card", () => {
   test("a step this machine can check says so, after its sentence", async () => {
     const world = await open({ backendPort: 0, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       // The profile with the extension in it, file URLs on, and a token saved: the three steps
       // the machine can answer for are done, and the guide says so where the step is read.
       const profile = join(world.home, ".config", "google-chrome", CLAUDE_CODE_PROFILE);
@@ -3157,7 +3075,7 @@ describe("the browser card", () => {
       projectFiles: { config: PROJECT_CONFIG },
     });
     try {
-      await world.enter();
+      await world.call("/");
       const pages = await Promise.all([world.call("/machine"), world.call("/settings")]);
       let copies = 0;
       for (const page of pages) {
@@ -3182,7 +3100,7 @@ describe("the browser card", () => {
   test("the token file's protection is said in words true on this platform", async () => {
     const linux = await open({ backendPort: 0, withConfig: false });
     try {
-      await linux.enter();
+      await linux.call("/");
       const page = await linux.call("/machine");
       expect(page.body).toContain("mode 600: readable only by you");
     } finally {
@@ -3192,7 +3110,7 @@ describe("the browser card", () => {
     // folder it sits in, and the same paragraph must not claim a mode there.
     const windows = await open({ backendPort: 0, withConfig: false, platform: "win32" });
     try {
-      await windows.enter();
+      await windows.call("/");
       const page = await windows.call("/machine");
       expect(page.body).toContain("in your own user profile, where only you can read it");
       expect(page.body).not.toContain("(mode 600)");
@@ -3204,7 +3122,7 @@ describe("the browser card", () => {
   test("an empty paste with a token saved is not an alarm: the token is unchanged", async () => {
     const world = await open({ backendPort: 0, withConfig: false });
     try {
-      await world.enter();
+      await world.call("/");
       const csrf = await world.csrfOf();
       // No token yet: nothing was saved and the browser does not work, so it stays a refusal.
       const none = await world.post("browser.token", { token: "" }, csrf);

@@ -31,6 +31,8 @@ import { warpCheck } from "../machine/warp";
 import { type McpDoctorDeps, mcpChecks } from "../mcp/doctor";
 import { omnirouteDoctorLine } from "../omniroute/commands";
 import type { RegistryFetch } from "../omniroute/registry";
+import type { PortalState } from "../portal/health";
+import { DEFAULT_PORTAL_PORT } from "../ports";
 import { AUTO_UPDATE_KEY, type AutoUpdateState, autoUpdateState } from "../setup/auto-update";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
@@ -1051,6 +1053,37 @@ function checkBun(bun: DoctorBun, paths: CliPaths): Check {
     : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
 }
 
+/** The portal's line: what runs, its address, and what to do when it cannot. */
+export function checkPortal(state: PortalState, port: number = DEFAULT_PORTAL_PORT): Check {
+  const address = `http://127.0.0.1:${port}/`;
+  if (state.kind === "free") {
+    return {
+      info: true,
+      ok: true,
+      text: `the portal is not running; it starts with the next Claude Code session, or now: ${COMMAND} portal`,
+    };
+  }
+  if (state.kind === "other") {
+    return {
+      ok: false,
+      text: `Another program holds 127.0.0.1:${port}, so the portal cannot start. Stop that program, then run: ${COMMAND} portal`,
+    };
+  }
+  const running = `the portal is running at ${address} (version ${state.version}, process ${state.pid})`;
+  if (state.version === VERSION) return { ok: true, text: running };
+  if (isOlder(state.version, VERSION)) {
+    return {
+      ok: true,
+      text: `${running}; the next Claude Code session restarts it onto ${VERSION}`,
+      warn: true,
+    };
+  }
+  return {
+    ok: true,
+    text: `${running}, newer than this install (${VERSION}); it is left as it is`,
+  };
+}
+
 /** The project `doctor` checks: the folder it runs in, and the plugin's hooks.json. */
 export interface DoctorProject {
   cwd: string;
@@ -1071,6 +1104,12 @@ export interface DoctorOptions {
   local: DoctorLocal;
   /** Check the MCP servers setup registers (`mcp/doctor.ts`); null or left out: no MCP checks. */
   mcp?: McpDoctorDeps | null;
+  /**
+   * Asks the portal's health route (`probePortal`): whether it runs, on which version, and
+   * whether another program holds its port. Null or left out: no portal line (a test about
+   * another part, or a machine where the portal is not this code's business).
+   */
+  portal?: null | (() => PortalState | Promise<PortalState>);
   /** Check the project of this folder (`project-checks.ts`); null: no project checks. */
   project: DoctorProject | null;
   /** Also run the live check (`doctor --live`), which starts real Claude Code sessions. */
@@ -1087,7 +1126,7 @@ export interface DoctorOptions {
 export async function doctorChecks(
   paths: CliPaths,
   env: Env,
-  { browser, bun, gateway, local, mcp, project, live }: DoctorOptions,
+  { browser, bun, gateway, local, mcp, portal, project, live }: DoctorOptions,
 ): Promise<Check[]> {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
@@ -1102,6 +1141,7 @@ export async function doctorChecks(
     runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
+    ...(portal == null ? [] : [checkPortal(await portal())]),
     ...checkLauncher(paths, gateway.machine.platform),
     gitBash,
     checkInstructions(paths, local.instructionsSource),

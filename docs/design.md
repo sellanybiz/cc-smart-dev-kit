@@ -585,9 +585,41 @@ not a network read.
 - **A bug in a page is never shown.** `Bun.serve` has an `error` handler (`development:
   false`) that answers the one line `Internal Server Error` with the usual security headers: a
   stack names the source file and the line, and holds this machine's paths.
-- **It refuses inside a Claude Code session** (`CLAUDECODE`), in the command and again in the
-  bundle the child runs: the portal changes this machine's model path and the safety judge,
-  and a session must never do that for itself.
+- **There is no sign-in (D9).** The portal starts with Claude Code and stays up; a page load
+  from this machine is served, so any program and any user account on this machine — a Claude
+  session using `curl` included — can read and change what it shows. The owner chose that
+  trade-off against pairing the browser once. What replaces the refusal: the door below, and
+  the session-escape guard, which asks the person before a session's shell command reaches the
+  portal's port.
+
+### How it starts (D10)
+
+- **A SessionStart part starts it**, like claude-mem's worker: the update-check hook resolves
+  the portal bundle of the version Claude Code records as installed and starts it detached
+  with `--ensure` (`src/portal/session-start.ts`, `src/portal/lifecycle.ts`). The hook waits
+  for nothing and prints nothing; the starter does the probe, the copy and the start.
+- **Never in `claude -p`** (`CLAUDE_CODE_SESSION_ATTENDED=0`), and never on a `clear` or a
+  `compact` of a session that is already going: only `startup`, `resume` and an input that
+  does not say.
+- **The decisions, by the health answer on the one fixed port** (`GET /healthz`: the
+  portal's name, pid and version):
+  - nothing answers → the copy is refreshed from the installed version through
+    `writeManagedFile`, and the server is started detached, with no terminal and its own
+    process group, its lines going to `<stateDir>/portal.log`;
+  - our own version answers → nothing;
+  - an older version answers → that pid (the one that answered) gets SIGTERM, the starter
+    waits for the port, and starts this version;
+  - a newer version answers → it is left alone: an older install never replaces it (a
+    rollback, or an old session's hook after an update);
+  - another program holds the port → nothing starts, and one line goes to the log — once,
+    not at every session start (`noteHeldPortOnce`).
+- **Two sessions at once** each start a starter; one wins the port, and the other finds it
+  answering. **A crash** is brought back by the next session start: the probe finds nothing.
+- **`cc-smart-dev-kit portal`** makes the same decision in the command itself, then opens
+  the page (never in Chrome's `claude-code` profile). `portal status` says what runs and on
+  which version (exit 1 when it does not), and `portal stop` signals the pid that answered
+  and waits for the port to be free. `doctor` has one line: running (its address and
+  version), not running (`·`), another program's port (`✗`).
 
 ### The door
 
@@ -601,30 +633,21 @@ not a network read.
    without it did not come from a page of this portal. **And no other page's load**
    (`fetchSiteAllowed`): anything that is not a navigation (`Sec-Fetch-Mode: navigate`) must
    carry `Sec-Fetch-Site: same-origin` (our own page) or `none` (typed, a bookmark). A page on
-   another `127.0.0.1` port is the SAME site — a cookie has no port — so its `<img src>` carried
-   the session cookie past `SameSite=Strict` and was served. A request with no `Sec-Fetch-Site`
-   at all is not from a browser that sends it (every current one does); the other rules judge
-   it. The stylesheet and the scripts are behind this rule too.
-3. **A session, or the one-time token**: `GET /?t=<token>` with the token made at start
-   exchanges it for the cookie; every other request needs the cookie.
-4. **A POST carries the CSRF token** that came with a page of ours (`x-ccsdk-csrf`), compared
-   in constant time. The cookie alone never changes anything.
+   another `127.0.0.1` port is the SAME site, so its `<img src>` was served before this rule
+   existed. A request with no `Sec-Fetch-Site` at all is not from a browser that sends it
+   (every current one does); the other rules judge it. The stylesheet and the scripts are
+   behind this rule too.
+3. **A POST carries the CSRF token** that came with a page of ours (`x-ccsdk-csrf`), compared
+   in constant time. Nothing else changes anything. The token is made once when the server
+   starts and lives in its memory: stopping the portal makes every page's copy dead.
 
-The cookie is `HttpOnly; SameSite=Strict; Path=/` and **not** `Secure` (this is http on
-`127.0.0.1`, and a `Secure` cookie would never be stored). **Its name carries the portal's own
-port**: `ccsdk_portal_<port>` (`cookieName`). A cookie has no port, and a browser sends every
-`127.0.0.1` cookie to every port on `127.0.0.1`, so without the port the second portal would
-overwrite the first one's session (and its own), and neither page could hold one while the
-other ran.
+There is **no session and no one-time token** (D9): a GET that passes the rules above is
+served, and the address carries no secret. A `Host` or `Origin` refusal, and every refused
+POST, are the plain one word, `Forbidden`.
 
-The token works once. A GET that passes the `Host` and `Origin` checks but holds **no valid
-session** — a link already used, or a cookie from a portal that stopped — gets the page that
-says so (`expiredPage`) with **403**, and that page holds no fact about the machine: no
-version, no port, no token. Running `cc-smart-dev-kit portal` again is what it offers. A
-`Host` or `Origin` refusal, and every refused POST, stay the plain one word, `Forbidden`: that
-request is not the person's browser. (A portal that has **stopped** is a connection error, not
-a 403: nothing listens on the port any more.) `history.replaceState` cleans the token out of
-the URL on the first load, so it does not sit in the address bar or in the back button.
+`GET /healthz` is answered through the network rules alone (a read that changes nothing):
+the portal's own name, its pid and its version, which is what tells this portal apart from
+any other program on the port.
 
 Every answer carries a strict `Content-Security-Policy`: `default-src 'none'`, `script-src
 'self'` with no `unsafe-inline`, `style-src 'self'`, `connect-src 'self'`, `form-action
@@ -633,8 +656,8 @@ handler is `data-*` and an `addEventListener`, no markup carries a `style` attri
 number that must be a value — a meter's width — travels as `data-percent` and the browser
 script applies it; `[hidden] { display: none !important }` keeps that working where a class
 says `display: flex`), and nothing comes from the internet: no web font, no CDN, a local font
-stack. The stylesheet and the two scripts are served by the portal itself and need no session
-(a page cannot draw without them); everything else does.
+stack. The stylesheet and the two scripts are served by the portal itself (a page cannot draw
+without them).
 
 **Keys never reach the page.** Every backend's key goes through `maskKey`, which shows its last
 four characters and nothing else (`••••a1b2`; a key shorter than 12 characters shows `••••`), and
@@ -653,15 +676,14 @@ checkout's. Its button carries the hash of that change, and `automode.apply` pla
 under setup's lock and writes nothing when the hash differs: the portal runs in a folder a
 session can write, and a rule added after the page was drawn would otherwise be trusted unread.
 
-**It stops after 30 minutes with no request** (`session.ts`): the link and the cookie are
-dead, and the process exits. A portal left open on an unlocked screen is a way into every
-Claude session on the machine, so it does not stay open by itself.
+**It stays up until it is stopped** (D10): no idle clock, so it is there whenever the person
+opens it. `cc-smart-dev-kit portal stop` ends it, and a plugin update replaces it at the next
+session start. The trade-off is D9's: the page is open to every program and account on this
+machine, which is why the door above and the session-escape guard matter.
 
 **A page's own reload is not a request of the person's.** The Health page asks for itself
-every five seconds with `?auto=1`; the server serves the page and does **not** touch the idle
-clock for it, so an open Health tab cannot hold the portal (and its door) open for ever. The
-page's script also stops reloading while the tab is hidden (`document.hidden`,
-`visibilitychange`) and looks once more when it comes back.
+every five seconds; the page's script stops reloading while the tab is hidden
+(`document.hidden`, `visibilitychange`) and looks once more when it comes back.
 
 **The log is newest first, on both pages** (the owner, 2026-10-17: a log read top down the way
 `journalctl` prints it puts the line a person opens the page for at the bottom). `routerLog`
@@ -675,12 +697,13 @@ there is nothing else to keep in order.
 
 A copy in `~/.local/share/cc-smart-dev-kit/portal.js`, never the plugin's version folder:
 Claude Code deletes an old version folder some time after an update, even under a running
-process. `cc-smart-dev-kit portal` writes the copy through `writeManagedFile` (so `restore`
-removes it) and starts it as a **child with this terminal's own stdio** — the link is printed
-where the person is looking, and Ctrl+C reaches both through the same process group (the
-child exits **130** on Ctrl+C, the code for "ended by SIGINT", and the parent returns it). It
-is a bundle of its own (`src/entries/portal.ts` → `plugin/dist/portal.js`), so nothing about
-it changes `router.js` (a changed router bundle restarts every machine's router).
+process. The starter and `cc-smart-dev-kit portal` write the copy through `writeManagedFile`
+(so `restore` removes it), and the server always runs from it, detached: no terminal, no
+pipe, and its lines go to its own log (`<stateDir>/portal.log`). A person who runs the copy
+by hand gets the same server in their terminal, with the address printed and Ctrl+C (exit
+130, "ended by SIGINT") to stop it. It is a bundle of its own (`src/entries/portal.ts` →
+`plugin/dist/portal.js`), so nothing about it changes `router.js` (a changed router bundle
+restarts every machine's router).
 
 **The copy sits outside the plugin, so it is told where the plugin is.** The parent passes its
 own folder (`--plugin-dir`, and `portal --plugin-dir` is refused as an unknown option: a
@@ -691,10 +714,10 @@ Claude Code records as installed **at the moment it is needed** (`resolvePluginF
 `src/portal/plugin-folder.ts`), falling back to `--plugin-dir` while that still exists. Two
 reasons, both found live: a path made from the copy's own folder resolves
 `~/.local/plugin`, where none of those files are (the restart threw ENOENT, and the Machine
-page's doctor skipped its router-copy check without saying so); and a 30-minute run can
-outlive the version folder it started in, so a path made at startup goes stale. With neither
-folder there, the action says so in words and stops — the doctor pass reports it as one failed
-check — rather than reading a path that is gone.
+page's doctor skipped its router-copy check without saying so); and a run that outlives the
+version folder it started in (the portal now stays up for days) makes a path made at startup
+go stale. With neither folder there, the action says so in words and stops — the doctor pass
+reports it as one failed check — rather than reading a path that is gone.
 
 ### What a page cannot know
 

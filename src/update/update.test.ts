@@ -304,6 +304,48 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect(m.read("notify.log")).toBe("");
   }, 30_000);
 
+  test("D10: the session start starts the portal's own starter, detached and never waited for", async () => {
+    const m = machine();
+    // The installed version's bundle, as a real one would be: this one only says it ran.
+    const install = JSON.parse(readFileSync(m.paths.installedPluginsFile, "utf8")) as {
+      plugins: Record<string, { installPath: string }[]>;
+    };
+    const folder = install.plugins["cc-smart-dev-kit@cc-smart-dev-kit"]?.[0]?.installPath ?? "";
+    mkdirSync(join(folder, "dist"), { recursive: true });
+    writeFileSync(join(folder, "bunfig.toml"), "");
+    const marker = join(m.home, "portal-starter.txt");
+    writeFileSync(
+      join(folder, "dist", "portal.js"),
+      `require("node:fs").writeFileSync(${JSON.stringify(marker)}, process.argv.join(" "));\n`,
+    );
+    const run = await m.hook();
+    expect(run.stdout).toBe("");
+    expect(run.ms).toBeLessThan(2_000);
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(marker) && Date.now() < deadline) await Bun.sleep(25);
+    // The last of the argv: the bundle was run with `--ensure`, which does the work; the
+    // hook returned without waiting for it.
+    expect(readFileSync(marker, "utf8").endsWith("--ensure")).toBe(true);
+  }, 30_000);
+
+  test("D10: a `claude -p` session starts no portal", async () => {
+    const m = machine({ env: { CLAUDE_CODE_SESSION_ATTENDED: "0" } });
+    const install = JSON.parse(readFileSync(m.paths.installedPluginsFile, "utf8")) as {
+      plugins: Record<string, { installPath: string }[]>;
+    };
+    const folder = install.plugins["cc-smart-dev-kit@cc-smart-dev-kit"]?.[0]?.installPath ?? "";
+    mkdirSync(join(folder, "dist"), { recursive: true });
+    writeFileSync(join(folder, "bunfig.toml"), "");
+    const marker = join(m.home, "portal-starter.txt");
+    writeFileSync(
+      join(folder, "dist", "portal.js"),
+      `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`,
+    );
+    await m.hook();
+    await Bun.sleep(400);
+    expect(existsSync(marker)).toBe(false);
+  }, 30_000);
+
   test("the copy was refreshed but the update not installed (the auto-update bug): only the update installs it", async () => {
     const m = machine({ inCopy: "1.1.0" });
     await m.hook();

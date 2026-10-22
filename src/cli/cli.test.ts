@@ -18,6 +18,7 @@ import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { recordMcpServer } from "../mcp/records";
 import { serenaLeftoverPaths } from "../mcp/retired";
 import { MCP_VERSIONS } from "../mcp/versions";
+import { TEST_PORTAL_VAR } from "../portal/health";
 import { versionStampFile } from "../setup/instructions";
 import { installLauncher } from "../setup/launcher";
 import { installLauncherCmd } from "../setup/launcher-cmd";
@@ -255,6 +256,8 @@ function setup(options: SetupOptions = {}) {
     HOME: home,
     CLAUDE_CONFIG_DIR: configDir,
     PATH: `${fakeBin}:${join(home, ".local", "bin")}:${bunBin}`,
+    // The portal's own line, without a port: no test may read a real portal on the machine.
+    [TEST_PORTAL_VAR]: "free",
     [TEST_HOST_VAR]: JSON.stringify({
       existing: [...(options.existing ?? []), ...browserFiles],
       platform: "linux",
@@ -920,6 +923,7 @@ describe("cc-smart-dev-kit doctor", () => {
         `✓ Bun ${Bun.version} at ${process.execPath} (cc-smart-dev-kit needs ≥ 1.4.3)`,
         `✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
         `✓ the installed version ${VERSION} is not behind the marketplace`,
+        "· the portal is not running; it starts with the next Claude Code session, or now: cc-smart-dev-kit portal",
         `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}`,
         INSTRUCTIONS_OK,
         "✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git",

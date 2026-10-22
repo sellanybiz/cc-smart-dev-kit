@@ -61,9 +61,10 @@ export async function routerHealth(
 
 /**
  * True when nothing listens on the port: the connection was refused. Bun's `fetch` says so
- * with `code: "ConnectionRefused"`; Node's with `ECONNREFUSED`.
+ * with `code: "ConnectionRefused"`; Node's with `ECONNREFUSED`. One home, also read by the
+ * portal's probe (`src/portal/health.ts`).
  */
-function isConnectionRefused(error: unknown): boolean {
+export function isConnectionRefused(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("code" in error)) return false;
   return error.code === "ConnectionRefused" || error.code === "ECONNREFUSED";
 }

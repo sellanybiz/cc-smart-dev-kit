@@ -1102,6 +1102,8 @@ function cliPaths(env = process.env) {
     routerTaskFile: join6(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join6(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join6(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalLogFile: join6(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
+    portalHeldFile: join6(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join6(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
     routerUnitFile: join6(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join6(claudeMemDataDir(env, router.home), "settings.json"),
@@ -17281,6 +17283,12 @@ async function omnirouteDoctorLine(ctx) {
   };
 }
 
+// src/ports.ts
+var LOCK_PORTS = {
+  worktreesClean: 27641
+};
+var DEFAULT_PORTAL_PORT = 20150;
+
 // src/setup/auto-update.ts
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 var AUTO_UPDATE_VALUE = false;
@@ -18564,6 +18572,19 @@ function checkRunning(files) {
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
+}
+function appendLogLine(logFile, line, nowMs) {
+  ensureDir(join29(logFile, ".."));
+  try {
+    if (statSync8(logFile).size > LOG_MAX_BYTES) {
+      const text = readFileSync35(logFile, "utf8");
+      const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
+      writeFileSync5(logFile, keep.slice(keep.indexOf(`
+`) + 1), { mode: 384 });
+    }
+  } catch {}
+  appendFileSync(logFile, `${isoSeconds(nowMs)} ${line}
+`, { mode: 384 });
 }
 function readHeldMajor(files) {
   try {
@@ -26268,6 +26289,18 @@ function openUrlCandidates(on, url) {
     ["gio", "open", url]
   ];
 }
+function openUrlOnDesktop(on, url, deps) {
+  for (const argv of openUrlCandidates(on, url)) {
+    const program = argv[0];
+    if (deps.which(program) === null)
+      continue;
+    try {
+      deps.spawn(argv);
+      return program;
+    } catch {}
+  }
+  return null;
+}
 
 // src/sessions/saved-sessions.ts
 import { join as join50 } from "path";
@@ -30406,14 +30439,6 @@ async function reviewRecord(context) {
 
 // src/hooks/session-escape-guard.ts
 import { dirname as dirname20, isAbsolute as isAbsolute6, relative as relative3, resolve as resolve11 } from "path";
-
-// src/ports.ts
-var LOCK_PORTS = {
-  worktreesClean: 27641
-};
-var DEFAULT_PORTAL_PORT = 20150;
-
-// src/hooks/session-escape-guard.ts
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -32677,7 +32702,37 @@ function checkBun(bun, paths) {
   const tooOld = bunTooOld(bun.version, where);
   return tooOld === null ? { ok: true, text: `Bun ${bun.version} at ${where} (cc-smart-dev-kit needs \u2265 ${MIN_BUN})` } : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
 }
-async function doctorChecks(paths, env, { browser, bun, gateway, local, mcp, project, live }) {
+function checkPortal(state, port = DEFAULT_PORTAL_PORT) {
+  const address = `http://127.0.0.1:${port}/`;
+  if (state.kind === "free") {
+    return {
+      info: true,
+      ok: true,
+      text: `the portal is not running; it starts with the next Claude Code session, or now: ${COMMAND} portal`
+    };
+  }
+  if (state.kind === "other") {
+    return {
+      ok: false,
+      text: `Another program holds 127.0.0.1:${port}, so the portal cannot start. Stop that program, then run: ${COMMAND} portal`
+    };
+  }
+  const running = `the portal is running at ${address} (version ${state.version}, process ${state.pid})`;
+  if (state.version === VERSION)
+    return { ok: true, text: running };
+  if (isOlder(state.version, VERSION)) {
+    return {
+      ok: true,
+      text: `${running}; the next Claude Code session restarts it onto ${VERSION}`,
+      warn: true
+    };
+  }
+  return {
+    ok: true,
+    text: `${running}, newer than this install (${VERSION}); it is left as it is`
+  };
+}
+async function doctorChecks(paths, env, { browser, bun, gateway, local, mcp, portal, project, live }) {
   const settings = readSettings2(paths.settingsFile);
   const runtime = checkBun(bun, paths);
   const mcpDeps = mcp ?? null;
@@ -32691,6 +32746,7 @@ async function doctorChecks(paths, env, { browser, bun, gateway, local, mcp, pro
     runtime,
     checkPlugin(paths),
     checkInstalledVersion(paths),
+    ...portal == null ? [] : [checkPortal(await portal())],
     ...checkLauncher(paths, gateway.machine.platform),
     gitBash,
     checkInstructions(paths, local.instructionsSource),
@@ -35578,66 +35634,273 @@ ${USAGE3}`);
   }
 }
 
-// src/portal/command.ts
-import { existsSync as existsSync62, readFileSync as readFileSync62 } from "fs";
+// src/portal/health.ts
+var PORTAL_APP = "cc-smart-dev-kit-portal";
+var PORTAL_HEALTH_PATH = "/healthz";
+var PORTAL_PROBE_TIMEOUT_MS = 1000;
+var PORTAL_POLL_MS = 100;
+var PORTAL_START_WAIT_MS = 5000;
+var PORTAL_STOP_WAIT_MS = 5000;
+function readHealth(body) {
+  if (typeof body !== "object" || body === null || Array.isArray(body))
+    return null;
+  const value = body;
+  if (value.app !== PORTAL_APP || value.ok !== true)
+    return null;
+  if (typeof value.pid !== "number" || !Number.isInteger(value.pid) || value.pid < 1)
+    return null;
+  if (typeof value.version !== "string" || value.version === "")
+    return null;
+  return { pid: value.pid, version: value.version };
+}
+function realPortalProbe() {
+  return {
+    fetch: (url, init) => fetch(url, init),
+    now: () => Date.now(),
+    sleep: (ms) => Bun.sleep(ms)
+  };
+}
+var TEST_PORTAL_VAR = "CC_SMART_DEV_KIT_TEST_PORTAL";
+function testPortalState(env) {
+  const text = env[TEST_PORTAL_VAR];
+  if (text === undefined)
+    return null;
+  if (text === "free")
+    return { kind: "free" };
+  if (text === "other")
+    return { kind: "other" };
+  const ours = /^ours:([^:]+):(\d+)$/.exec(text);
+  if (ours === null)
+    return null;
+  return { kind: "ours", pid: Number(ours[2]), version: ours[1] ?? "" };
+}
+function portalHealthUrl(port) {
+  return `http://127.0.0.1:${port}${PORTAL_HEALTH_PATH}`;
+}
+async function probePortal(port, probe, timeoutMs = PORTAL_PROBE_TIMEOUT_MS) {
+  let body;
+  try {
+    const response = await probe.fetch(portalHealthUrl(port), {
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { kind: "other" };
+    }
+    body = await response.json();
+  } catch (error) {
+    return isConnectionRefused(error) ? { kind: "free" } : { kind: "other" };
+  }
+  const ours = readHealth(body);
+  return ours === null ? { kind: "other" } : { kind: "ours", ...ours };
+}
+async function waitForPortal(port, probe, wanted, waitMs) {
+  const until = probe.now() + waitMs;
+  let state = await probePortal(port, probe);
+  while (state.kind !== wanted && probe.now() < until) {
+    await probe.sleep(PORTAL_POLL_MS);
+    state = await probePortal(port, probe);
+  }
+  return state;
+}
+
+// src/portal/lifecycle.ts
+import { existsSync as existsSync62, readFileSync as readFileSync62, rmSync as rmSync13 } from "fs";
 import { join as join65 } from "path";
-var PORTAL_USAGE = `Usage: ${COMMAND} portal [--port <port>] [--no-open]
-
-Starts the local portal: a page on this machine to see and change the gateway's settings,
-the updates, the heavy-job queue and the companions. It binds 127.0.0.1 only.
-
-  --port <port>   the port to bind (default ${DEFAULT_PORTAL_PORT}; 0 takes a free one)
-  --no-open       do not open your browser; print the link instead
-
-It prints a link with a one-time token, and stops after 30 minutes with no request. It
-refuses to run inside a Claude Code session: run it in your own terminal. When Chrome's
-"claude-code" profile is on this machine \u2014 the one Claude Code drives \u2014 it does not open a
-browser by itself: open the link in a window that is NOT that profile.`;
-function parseArgs(args, allowPluginDir) {
-  let noOpen = false;
-  let pluginDir = null;
-  let port = DEFAULT_PORTAL_PORT;
-  for (let index = 0;index < args.length; index += 1) {
-    const arg = args[index] ?? "";
-    if (arg === "--no-open")
-      noOpen = true;
-    else if (arg === "--plugin-dir" && allowPluginDir) {
-      const value = args[index + 1];
-      if (value === undefined || value.startsWith("--")) {
-        return { error: "--plugin-dir needs a folder" };
-      }
-      pluginDir = value;
-      index += 1;
-    } else if (arg === "--port") {
-      const value = args[index + 1];
-      if (value === undefined || value.startsWith("--"))
-        return { error: "--port needs a port" };
-      if (!/^\d{1,5}$/.test(value) || Number(value) > 65535) {
-        return { error: `not a port: ${value}` };
-      }
-      port = Number(value);
-      index += 1;
-    } else
-      return { error: `Unknown option: ${arg}` };
-  }
-  return { noOpen, pluginDir, port };
+function portalServerArgv(bunPath, copy, pluginDir) {
+  return [
+    bunPath,
+    "--no-env-file",
+    bunConfigArg(pluginDir),
+    copy,
+    "--serve",
+    "--plugin-dir",
+    pluginDir
+  ];
 }
+function refreshPortalCopy(paths, pluginFolder) {
+  const bundle = join65(pluginFolder, "dist", "portal.js");
+  if (!existsSync62(bundle)) {
+    return {
+      error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
+    };
+  }
+  writeManagedFile(paths.portalCopy, readFileSync62(bundle, "utf8"), {
+    kind: "whole-file",
+    stateDir: paths.stateDir
+  });
+  return { copy: paths.portalCopy };
+}
+function portalOutdated(installed, running) {
+  return running !== installed && isOlder(running, installed);
+}
+async function ensurePortal(deps) {
+  const copy = refreshPortalCopy(deps.paths, deps.pluginFolder);
+  if ("error" in copy) {
+    deps.log(`failed: ${copy.error}`);
+    return { kind: "failed", reason: copy.error };
+  }
+  const state = await probePortal(deps.port, deps.probe);
+  if (state.kind === "free") {
+    clearHeldPort(deps.paths);
+    return startServer(deps, copy.copy, null);
+  }
+  if (state.kind === "other") {
+    if (noteHeldPortOnce(deps.paths, deps.port, deps.probe.now())) {
+      deps.log(`port ${deps.port} is held by another program: nothing was started. Stop that program, or find it with the tool this system has for open ports.`);
+    }
+    return { kind: "other" };
+  }
+  if (!portalOutdated(deps.version, state.version)) {
+    if (state.version !== deps.version) {
+      deps.log(`left alone: the portal runs ${state.version}, newer than the installed ${deps.version}`);
+    }
+    return { kind: "running", pid: state.pid, version: state.version };
+  }
+  deps.log(`restart: the portal runs ${state.version}; the installed version is ${deps.version}`);
+  try {
+    deps.kill(state.pid);
+  } catch (error) {
+    const reason = `the portal (pid ${state.pid}) could not be stopped: ${messageOf4(error)}`;
+    deps.log(`failed: ${reason}`);
+    return { kind: "failed", reason };
+  }
+  const after = await waitForPortal(deps.port, deps.probe, "free", PORTAL_STOP_WAIT_MS);
+  if (after.kind === "ours") {
+    const reason = `the portal (pid ${after.pid}) did not stop within ${PORTAL_STOP_WAIT_MS / 1000} s; it was left running`;
+    deps.log(`failed: ${reason}`);
+    return { kind: "failed", reason };
+  }
+  return startServer(deps, copy.copy, state.version);
+}
+async function startServer(deps, copy, restartFrom) {
+  deps.spawn(portalServerArgv(deps.bunPath, copy, deps.pluginFolder));
+  const state = await waitForPortal(deps.port, deps.probe, "ours", PORTAL_START_WAIT_MS);
+  if (state.kind !== "ours") {
+    const reason = state.kind === "other" ? `another program took 127.0.0.1:${deps.port} before the portal started` : `the portal did not answer on 127.0.0.1:${deps.port} within ${PORTAL_START_WAIT_MS / 1000} s`;
+    deps.log(`failed: ${reason}`);
+    return { kind: "failed", reason };
+  }
+  deps.log(`started: version ${state.version}, pid ${state.pid}, on 127.0.0.1:${deps.port}`);
+  return restartFrom === null ? { kind: "started", pid: state.pid, version: state.version } : { kind: "restarted", from: restartFrom, pid: state.pid, to: state.version };
+}
+async function stopPortal(deps) {
+  const state = await probePortal(deps.port, deps.probe);
+  if (state.kind === "free")
+    return { kind: "not-running" };
+  if (state.kind === "other")
+    return { kind: "other" };
+  try {
+    deps.kill(state.pid);
+  } catch (error) {
+    const reason = `the portal (pid ${state.pid}) could not be stopped: ${messageOf4(error)}`;
+    deps.log(`failed: ${reason}`);
+    return { kind: "failed", reason };
+  }
+  const after = await waitForPortal(deps.port, deps.probe, "free", PORTAL_STOP_WAIT_MS);
+  if (after.kind === "free") {
+    deps.log(`stopped: version ${state.version}, pid ${state.pid}`);
+    return { kind: "stopped" };
+  }
+  const reason = `the portal (pid ${state.pid}) did not stop within ${PORTAL_STOP_WAIT_MS / 1000} s`;
+  deps.log(`failed: ${reason}`);
+  return { kind: "failed", reason };
+}
+function portalStatusLine(state, installed, port = DEFAULT_PORTAL_PORT) {
+  const address = `http://127.0.0.1:${port}`;
+  if (state.kind === "free") {
+    return `The portal is not running. It starts with your next Claude Code session; to open it now: ${COMMAND} portal`;
+  }
+  if (state.kind === "other") {
+    return `Another program holds 127.0.0.1:${port}, so the portal cannot start there. Stop that program, then run ${COMMAND} portal`;
+  }
+  const running = `The portal is running at ${address} (version ${state.version}, process ${state.pid})`;
+  if (state.version === installed)
+    return `${running}.`;
+  if (portalOutdated(installed, state.version)) {
+    return `${running}, but this install is ${installed}: the next Claude Code session restarts it onto ${installed}.`;
+  }
+  return `${running}, newer than the installed ${installed}: it is left as it is.`;
+}
+function portalLog(paths, line, nowMs = Date.now()) {
+  try {
+    appendLogLine(paths.portalLogFile, line, nowMs);
+  } catch {}
+}
+function noteHeldPortOnce(paths, port, nowMs) {
+  try {
+    const text = readFileSync62(paths.portalHeldFile, "utf8");
+    const held = JSON.parse(text);
+    if (held.port === port)
+      return false;
+  } catch {}
+  try {
+    atomicWrite(paths.portalHeldFile, `${JSON.stringify({ at: isoSeconds(nowMs), port })}
+`, 384);
+  } catch {}
+  return true;
+}
+function clearHeldPort(paths) {
+  try {
+    rmSync13(paths.portalHeldFile, { force: true });
+  } catch {}
+}
+function messageOf4(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// src/portal/command.ts
+var PORTAL_USAGE = `Usage: ${COMMAND} portal [status|stop] [--no-open]
+
+Opens the portal in your browser: a page on this machine to see and change the gateway's
+settings, the updates, the heavy-job queue and the companions.
+
+  status      whether it runs, on which version, and its address
+  stop        stop it now
+  --no-open   print the address instead of opening your browser
+
+It binds 127.0.0.1:${DEFAULT_PORTAL_PORT} only. It starts with Claude Code (a new session starts it;
+a plugin update hands it over to the new version) and stays up until you stop it. There is no
+sign-in: any program or account on this machine can open it. Never open it in the Chrome
+profile Claude Code drives (its own, "claude-code"): Claude could reach its buttons.`;
 function parsePortalArgs(args) {
-  const parsed = parseArgs(args, false);
-  return "error" in parsed ? parsed : { noOpen: parsed.noOpen, port: parsed.port };
-}
-function portalCopy(paths) {
-  return paths.portalCopy;
-}
-function claudeCodeRefusal(env) {
-  return env.CLAUDECODE === undefined ? null : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal, and open the link in a browser window that is not Chrome's "${CLAUDE_CODE_PROFILE}" profile (the one Claude Code drives).`;
-}
-function runPortal(ctx, args) {
-  const refusal = claudeCodeRefusal(ctx.env);
-  if (refusal !== null) {
-    ctx.error(refusal);
-    return 1;
+  let command = "open";
+  let named = false;
+  let noOpen = false;
+  for (const arg of args) {
+    if (arg === "--no-open") {
+      noOpen = true;
+      continue;
+    }
+    if (arg === "status" || arg === "stop") {
+      if (named)
+        return { error: "one command at a time: status or stop" };
+      command = arg;
+      named = true;
+      continue;
+    }
+    return { error: `Unknown option: ${arg}` };
   }
+  return { command, noOpen };
+}
+function mayAutoOpen(options) {
+  return !options.noOpen && !options.claudeCodeProfile;
+}
+function openYourselfLine() {
+  return `Chrome's "claude-code" profile is on this machine, and Claude Code drives it: no browser was opened for you. Open the address above in a browser window that is NOT that profile \u2014 another Chrome profile, or another browser \u2014 and never in the window Claude works in.`;
+}
+function claudeCodeProfileHere(machine, home) {
+  return claudeCodeProfileOn(realBrowserDoctorDeps(machine, home)) !== null;
+}
+function startEnv(env) {
+  const kept = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined)
+      kept[key] = value;
+  }
+  return kept;
+}
+async function runPortal(ctx, args) {
   const options = parsePortalArgs(args);
   if ("error" in options) {
     ctx.error(`${options.error}
@@ -35645,29 +35908,77 @@ function runPortal(ctx, args) {
 ${PORTAL_USAGE}`);
     return 2;
   }
-  const bundle = join65(ctx.pluginDir, "dist", "portal.js");
-  if (!existsSync62(bundle)) {
-    ctx.error(`the portal bundle is missing (${bundle}). This install is incomplete: run ${COMMAND} doctor, then reinstall the plugin.`);
+  const port = ctx.port ?? DEFAULT_PORTAL_PORT;
+  const probe = ctx.probe ?? realPortalProbe();
+  const log = (line) => portalLog(ctx.paths, line);
+  if (options.command === "status") {
+    const state = await probePortal(port, probe);
+    ctx.print(portalStatusLine(state, VERSION, port));
+    return state.kind === "ours" ? 0 : 1;
+  }
+  if (options.command === "stop") {
+    const outcome = await stopPortal({
+      kill: ctx.kill,
+      log,
+      paths: ctx.paths,
+      port,
+      probe
+    });
+    if (outcome.kind === "other") {
+      ctx.error(`Another program holds 127.0.0.1:${port}; it is not this portal, so nothing was stopped.`);
+      return 1;
+    }
+    if (outcome.kind === "failed") {
+      ctx.error(`${COMMAND} portal: ${outcome.reason}.`);
+      return 1;
+    }
+    ctx.print(outcome.kind === "stopped" ? "The portal stopped." : "The portal is not running.");
+    return 0;
+  }
+  const spawn = (argv) => {
+    if (ctx.spawn !== undefined) {
+      ctx.spawn(argv, { cwd: ctx.paths.home, env: startEnv(ctx.env) });
+      return;
+    }
+    startDetached(ctx.machine.platform, argv, {
+      cwd: ctx.paths.home,
+      env: startEnv(ctx.env),
+      onError: (message) => ctx.error(`${COMMAND} portal: ${message}`)
+    });
+  };
+  const outcome = await ensurePortal({
+    bunPath: ctx.bunPath,
+    kill: ctx.kill,
+    log,
+    paths: ctx.paths,
+    pluginFolder: ctx.pluginDir,
+    port,
+    probe,
+    spawn,
+    version: VERSION
+  });
+  if (outcome.kind === "other") {
+    ctx.error(`Another program holds 127.0.0.1:${port}, so the portal cannot start. Stop that program, then run ${COMMAND} portal.`);
     return 1;
   }
-  const copy = portalCopy(ctx.paths);
-  writeManagedFile(copy, readFileSync62(bundle, "utf8"), {
-    kind: "whole-file",
-    stateDir: ctx.paths.stateDir
-  });
-  const argv = [
-    ctx.bunPath,
-    "--no-env-file",
-    bunConfigArg(ctx.pluginDir),
-    copy,
-    "--plugin-dir",
-    ctx.pluginDir,
-    "--port",
-    String(options.port)
-  ];
-  if (options.noOpen)
-    argv.push("--no-open");
-  return ctx.runChild(argv, { cwd: process.cwd(), env: ctx.env });
+  if (outcome.kind === "failed") {
+    ctx.error(`${COMMAND} portal: ${outcome.reason}. The portal's log is ${ctx.paths.portalLogFile}.`);
+    return 1;
+  }
+  ctx.print(outcome.kind === "started" ? `The portal was not running: started it (version ${outcome.version}).` : outcome.kind === "restarted" ? `The portal was running ${outcome.from}: restarted it onto ${outcome.to}.` : `The portal is running (version ${outcome.version}).`);
+  const url = `http://127.0.0.1:${port}/`;
+  ctx.print(`  ${url}`);
+  const profileHere = claudeCodeProfileHere(ctx.machine, ctx.paths.home);
+  if (mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })) {
+    openUrlOnDesktop(ctx.machine.platform, url, {
+      which: ctx.machine.which,
+      spawn: ctx.machine.spawnDetached
+    });
+  } else if (!options.noOpen) {
+    ctx.print("");
+    ctx.print(openYourselfLine());
+  }
+  return 0;
 }
 
 // src/workflow/write.ts
@@ -38033,7 +38344,7 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync64, readdirSync as readdirSync23, readFileSync as readFileSync65, renameSync as renameSync4, rmSync as rmSync13, statSync as statSync22 } from "fs";
+import { existsSync as existsSync64, readdirSync as readdirSync23, readFileSync as readFileSync65, renameSync as renameSync4, rmSync as rmSync14, statSync as statSync22 } from "fs";
 import { basename as basename11, dirname as dirname24, join as join68 } from "path";
 var OLD = {
   name: "anymodel",
@@ -38305,14 +38616,14 @@ function absorbStateFolder(from, to, dryRun) {
     if (statSync22(source).isDirectory() && statSync22(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
-        rmSync13(source, { recursive: true, force: true });
+        rmSync14(source, { recursive: true, force: true });
       continue;
     }
     if (!dryRun)
-      rmSync13(source, { recursive: true, force: true });
+      rmSync14(source, { recursive: true, force: true });
   }
   if (!dryRun && readdirSync23(from).length === 0)
-    rmSync13(from, { recursive: true, force: true });
+    rmSync14(from, { recursive: true, force: true });
   return moved;
 }
 function rewriteStateFolder(stateDir, renamer, dryRun) {
@@ -38374,7 +38685,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     if (existsSync64(target)) {
       for (const name of readdirSync23(folderPath))
         renameSync4(join68(folderPath, name), join68(target, name));
-      rmSync13(folderPath, { recursive: true, force: true });
+      rmSync14(folderPath, { recursive: true, force: true });
     } else {
       renameSync4(folderPath, target);
     }
@@ -38673,7 +38984,7 @@ async function runMigrate(paths, options) {
 Dry run: nothing was written, run or stopped.`);
       return 0;
     }
-    rmSync13(progressFile(paths.stateDir), { force: true });
+    rmSync14(progressFile(paths.stateDir), { force: true });
     return 0;
   }
   console.log(`${options.dryRun ? "A real run would do these steps" : "Steps"}: ${steps.join(", ")}.
@@ -38828,7 +39139,7 @@ ${parsed.error}`);
         confirm: null
       });
       for (const unit of existing)
-        rmSync13(unit.file, { force: true });
+        rmSync14(unit.file, { force: true });
       say3("-", existing.map((unit) => short(unit.file)).join(", "), "removed (this version's units are in their place)");
     },
     "old-plugin": () => {
@@ -38869,7 +39180,7 @@ The judge test does not carry over: its proof names the old command. Test the ju
 Dry run: nothing was written, run or stopped.`);
     return 0;
   }
-  rmSync13(progressFile(paths.stateDir), { force: true });
+  rmSync14(progressFile(paths.stateDir), { force: true });
   console.log(`
 Done. Restart every running Claude session: until then they still hold the old names (the router's aliases keep them working).`);
   if (instructionsToSetup(paths, options)) {
@@ -38885,7 +39196,7 @@ function instructionsToSetup(paths, options) {
 }
 
 // src/cli/restore.ts
-import { existsSync as existsSync65, rmSync as rmSync14 } from "fs";
+import { existsSync as existsSync65, rmSync as rmSync15 } from "fs";
 import { dirname as dirname25, join as join69 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
@@ -38948,7 +39259,7 @@ function removeMcp(paths, options, short) {
   const lines = [...removal.removed, ...removal.notes];
   const ok = !removal.recordsUnreadable && removal.kept.length === 0;
   if (ok && existsSync65(mcpRecordsFile(paths.stateDir))) {
-    rmSync14(mcpRecordsFile(paths.stateDir), { force: true });
+    rmSync15(mcpRecordsFile(paths.stateDir), { force: true });
     lines.push(`- ${short(mcpRecordsFile(paths.stateDir))}: removed (the record of the MCP servers)`);
   }
   return { lines, ok };
@@ -39048,10 +39359,10 @@ async function runRestore(paths, options) {
       service.forget(options.runner);
     const mcp = removeMcp(paths, options, short);
     const browser = removeBrowser(paths, browserRecord, options.runner);
-    rmSync14(restartPendingFile(paths.stateDir), { force: true });
+    rmSync15(restartPendingFile(paths.stateDir), { force: true });
     const stateGone = routerTracked && existsSync65(paths.gatewayStateFile);
     if (stateGone)
-      rmSync14(paths.gatewayStateFile, { force: true });
+      rmSync15(paths.gatewayStateFile, { force: true });
     print(results, short);
     if (stateGone) {
       console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
@@ -39188,7 +39499,7 @@ function gatewayContext(options) {
 }
 
 // src/hooks/notify.ts
-import { readFileSync as readFileSync67, rmSync as rmSync15, statSync as statSync23, writeFileSync as writeFileSync13 } from "fs";
+import { readFileSync as readFileSync67, rmSync as rmSync16, statSync as statSync23, writeFileSync as writeFileSync13 } from "fs";
 import { tmpdir as tmpdir8 } from "os";
 import { basename as basename12, join as join71 } from "path";
 
@@ -39258,7 +39569,7 @@ function runtimeDir(env) {
 }
 function forget(file) {
   try {
-    rmSync15(file, { force: true });
+    rmSync16(file, { force: true });
   } catch {}
 }
 function markedWaiting(file, nowMs) {
@@ -40301,6 +40612,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
         mcp: realMcpDoctorDeps(),
+        portal: () => testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
         project: { cwd: process.cwd(), pluginHooksFile: join74(pluginDir(), "hooks", "hooks.json") },
         live: rest.includes("--live") ? {
           pluginDir: pluginDir(),
@@ -40574,26 +40886,15 @@ ${String(result.failed)} of ${String(result.total)} checks failed.`);
     case "omniroute":
       return runOmniroute(rest, omnirouteContext(paths));
     case "portal":
-      return runPortal({
+      return await runPortal({
         bunPath: process.execPath,
         env: process.env,
         error: (line) => console.error(line),
+        kill: (pid) => process.kill(pid, "SIGTERM"),
+        machine: realMachine(process.env, null),
         paths,
         pluginDir: pluginDir(),
-        runChild: (argv, options) => {
-          try {
-            return Bun.spawnSync(argv, {
-              cwd: options.cwd,
-              env: options.env,
-              stderr: "inherit",
-              stdin: "inherit",
-              stdout: "inherit"
-            }).exitCode ?? 1;
-          } catch (error) {
-            console.error(`cc-smart-dev-kit portal: ${error instanceof Error ? error.message : String(error)}`);
-            return 1;
-          }
-        }
+        print: (line) => console.log(line)
       }, rest);
     case "crew":
       return await runCrew(rest, realCrewContext(paths));

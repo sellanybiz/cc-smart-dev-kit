@@ -1,107 +1,128 @@
 /**
- * `cc-smart-dev-kit portal`: the local page, in the person's own browser.
+ * `cc-smart-dev-kit portal`: the page, `portal status` and `portal stop`.
  *
- * It refuses inside a Claude Code session (`CLAUDECODE`). The portal changes this machine's
- * model path and the safety judge, so a session must never open one for itself: the person
- * runs it in their own terminal, and opens the link in a browser window that is not the one
- * Claude drives.
+ * The portal starts with Claude Code and stays up (D10): a new session starts it when it is
+ * not running, and a plugin update hands it over to the new version
+ * (`src/portal/session-start.ts`, `src/portal/lifecycle.ts`). So this command does not run the
+ * server in the foreground any more: it makes sure the portal runs and opens it, or says
+ * whether it runs, or stops it. The server itself is the copy in
+ * `~/.local/share/cc-smart-dev-kit/portal.js`, never the plugin's version folder, which Claude
+ * Code deletes after an update.
  *
- * **It never opens the browser Claude drives.** In 0.4.0 Claude Code drives the `claude-code`
- * profile of the person's own Chrome, and Chrome opens an outside link in the last window it
- * used — which may be that very profile. So when that profile is on this machine the portal
- * does not open a browser at all; it prints the link and says where to open it
- * (`mayAutoOpen`, `openYourselfLine`). Without that profile it opens the default browser, as
- * it always did.
+ * There is no sign-in any more (D9): the door is the `Host`, `Origin` and `Sec-Fetch-Site`
+ * checks plus the CSRF token (`guard.ts`), and nothing here refuses inside a Claude Code
+ * session. The session-escape guard asks the person before a session's shell command reaches
+ * this port, which is the seatbelt that replaced the refusal.
  *
- * It runs from a **copy** in `~/.local/share/cc-smart-dev-kit/portal.js`, never from the
- * plugin's version folder: Claude Code deletes an old version folder some time after an
- * update, even under a running process (`docs/design.md`). The copy is a managed file, so
- * `restore` removes it. The running process is a child, with this terminal's own stdio, so
- * the link is printed where the person is looking and Ctrl+C reaches it.
+ * **It never opens the browser Claude drives.** When Chrome's `claude-code` profile — the one
+ * Claude Code drives — is on this machine, `portal` opens no browser at all: Chrome opens an
+ * outside link in the last window it used, which may be that very profile, where Claude could
+ * reach the page's buttons. It prints the address and says where to open it
+ * (`mayAutoOpen`, `openYourselfLine`); `--no-open` refuses the browser in every case.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { CLAUDE_CODE_PROFILE } from "../browser/chrome";
-import { COMMAND } from "../build-info";
+import { claudeCodeProfileOn } from "../browser/chrome";
+import { realBrowserDoctorDeps } from "../browser/doctor";
+import { COMMAND, VERSION } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { startDetached } from "../hooks/detached";
+import type { Machine } from "../machine/machine";
+import { openUrlOnDesktop } from "../machine/open-url";
 import { DEFAULT_PORTAL_PORT } from "../ports";
-import { bunConfigArg } from "../setup/bun-config";
-import { writeManagedFile } from "../setup/write";
+import { findUserInstall } from "../setup/installed-plugins";
+import { type PortalProbe, type PortalState, probePortal, realPortalProbe } from "./health";
+import {
+  type EnsureOutcome,
+  ensurePortal,
+  portalLog,
+  portalStatusLine,
+  type StopOutcome,
+  stopPortal,
+} from "./lifecycle";
 
-export const PORTAL_USAGE = `Usage: ${COMMAND} portal [--port <port>] [--no-open]
+export const PORTAL_USAGE = `Usage: ${COMMAND} portal [status|stop] [--no-open]
 
-Starts the local portal: a page on this machine to see and change the gateway's settings,
-the updates, the heavy-job queue and the companions. It binds 127.0.0.1 only.
+Opens the portal in your browser: a page on this machine to see and change the gateway's
+settings, the updates, the heavy-job queue and the companions.
 
-  --port <port>   the port to bind (default ${DEFAULT_PORTAL_PORT}; 0 takes a free one)
-  --no-open       do not open your browser; print the link instead
+  status      whether it runs, on which version, and its address
+  stop        stop it now
+  --no-open   print the address instead of opening your browser
 
-It prints a link with a one-time token, and stops after 30 minutes with no request. It
-refuses to run inside a Claude Code session: run it in your own terminal. When Chrome's
-"claude-code" profile is on this machine — the one Claude Code drives — it does not open a
-browser by itself: open the link in a window that is NOT that profile.`;
+It binds 127.0.0.1:${DEFAULT_PORTAL_PORT} only. It starts with Claude Code (a new session starts it;
+a plugin update hands it over to the new version) and stays up until you stop it. There is no
+sign-in: any program or account on this machine can open it. Never open it in the Chrome
+profile Claude Code drives (its own, "claude-code"): Claude could reach its buttons.`;
 
-/** What the portal's own options are, parsed: `pluginDir` only for the child (below). */
-interface PortalArgs {
+/** What the command does, once its options are read. */
+export interface PortalArgs {
+  command: "open" | "status" | "stop";
   noOpen: boolean;
-  /** The plugin folder the parent passed; null when a person ran the copy by hand. */
-  pluginDir: null | string;
-  port: number;
 }
 
 /**
- * Parses the options, one loop for the parent and the child. `--plugin-dir` is the parent's own:
- * a person typing it at `cc-smart-dev-kit portal` gets "Unknown option", because pointing the
- * portal at another folder would let it install that folder's router bundle.
+ * Reads `[status|stop] [--no-open]`. `--port` is gone with the fixed port (D10): every
+ * session and the session-start part must find the portal on the same number.
  */
-function parseArgs(
-  args: readonly string[],
-  allowPluginDir: boolean,
-): PortalArgs | { error: string } {
+export function parsePortalArgs(args: readonly string[]): PortalArgs | { error: string } {
+  let command: PortalArgs["command"] = "open";
+  let named = false;
+  let noOpen = false;
+  for (const arg of args) {
+    if (arg === "--no-open") {
+      noOpen = true;
+      continue;
+    }
+    if (arg === "status" || arg === "stop") {
+      if (named) return { error: "one command at a time: status or stop" };
+      command = arg;
+      named = true;
+      continue;
+    }
+    return { error: `Unknown option: ${arg}` };
+  }
+  return { command, noOpen };
+}
+
+/** What the bundle's own run reads: the starter, the server, or a person's own terminal. */
+export interface PortalChildArgs {
+  /** The detached starter the SessionStart hook runs: probe, copy, start or restart. */
+  ensure: boolean;
+  noOpen: boolean;
+  /** The parent's own folder, the fallback for every plugin file the server reads. */
+  pluginDir: null | string;
+  /** The detached server: no browser, and its lines go to the portal's log. */
+  serve: boolean;
+}
+
+/**
+ * Reads the bundle's options: `--ensure`, `--serve`, `--no-open`, and `--plugin-dir <folder>`
+ * (the parent's own, never a person's: pointing the portal at another folder would let it
+ * install that folder's router bundle).
+ */
+export function parsePortalChildArgs(args: readonly string[]): PortalChildArgs | { error: string } {
+  let ensure = false;
   let noOpen = false;
   let pluginDir: null | string = null;
-  let port = DEFAULT_PORTAL_PORT;
+  let serve = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
-    if (arg === "--no-open") noOpen = true;
-    else if (arg === "--plugin-dir" && allowPluginDir) {
+    if (arg === "--ensure") ensure = true;
+    else if (arg === "--serve") serve = true;
+    else if (arg === "--no-open") noOpen = true;
+    else if (arg === "--plugin-dir") {
       const value = args[index + 1];
       if (value === undefined || value.startsWith("--")) {
         return { error: "--plugin-dir needs a folder" };
       }
       pluginDir = value;
       index += 1;
-    } else if (arg === "--port") {
-      const value = args[index + 1];
-      if (value === undefined || value.startsWith("--")) return { error: "--port needs a port" };
-      if (!/^\d{1,5}$/.test(value) || Number(value) > 65_535) {
-        return { error: `not a port: ${value}` };
-      }
-      port = Number(value);
-      index += 1;
     } else return { error: `Unknown option: ${arg}` };
   }
-  return { noOpen, pluginDir, port };
-}
-
-/** Parses the command's own options; the wrong one in words, so the line can name it. */
-export function parsePortalArgs(
-  args: readonly string[],
-): { noOpen: boolean; port: number } | { error: string } {
-  const parsed = parseArgs(args, false);
-  return "error" in parsed ? parsed : { noOpen: parsed.noOpen, port: parsed.port };
-}
-
-/**
- * Parses the child's options: the person's own, plus `--plugin-dir <folder>`, which the parent
- * passes so the child can resolve the plugin's files (it runs from a copy, where none of them
- * are). Run by hand with no `--plugin-dir`, the child falls back to the folder it sits in.
- */
-export function parsePortalChildArgs(
-  args: readonly string[],
-): { noOpen: boolean; pluginDir: null | string; port: number } | { error: string } {
-  return parseArgs(args, true);
+  if (ensure && serve) return { error: "--ensure and --serve are two different runs" };
+  return { ensure, noOpen, pluginDir, serve };
 }
 
 /** The copy the portal runs from: the plugin deletes the version folder it was built in. */
@@ -112,9 +133,9 @@ export function portalCopy(paths: CliPaths): string {
 /**
  * Whether the portal may open a browser by itself. It may not when Chrome's `claude-code`
  * profile — the one Claude Code drives — is on this machine: Chrome opens an outside link in
- * the window it last used, that window may be Claude's own profile, and the portal's session
- * cookie would then sit inside the profile Claude drives, whose buttons Claude could reach.
- * `--no-open` refuses it in any case; without that profile it opens, as it always did.
+ * the window it last used, that window may be Claude's own profile, and Claude could then
+ * reach the portal's buttons. `--no-open` refuses it in any case; without that profile it
+ * opens, as it always did.
  */
 export function mayAutoOpen(options: { claudeCodeProfile: boolean; noOpen: boolean }): boolean {
   return !options.noOpen && !options.claudeCodeProfile;
@@ -122,87 +143,180 @@ export function mayAutoOpen(options: { claudeCodeProfile: boolean; noOpen: boole
 
 /** What the portal prints instead of opening a browser, when it must not open one. */
 export function openYourselfLine(): string {
-  return `Chrome's "${CLAUDE_CODE_PROFILE}" profile is on this machine, and Claude Code drives it: no browser was opened for you. Open the link above in a browser window that is NOT that profile — another Chrome profile, or another browser — and never in the window Claude works in.`;
+  return `Chrome's "claude-code" profile is on this machine, and Claude Code drives it: no browser was opened for you. Open the address above in a browser window that is NOT that profile — another Chrome profile, or another browser — and never in the window Claude works in.`;
 }
 
 /**
- * The refusal inside a Claude Code session, in the words the design uses. Null when the
- * person is in their own terminal.
+ * True when Chrome's `claude-code` profile — the one Claude Code drives — is on this machine.
+ * A read of the profile folders only (`chrome.ts`): nothing is started, and a machine whose
+ * Chrome folder cannot be read answers "not here", which is the safe answer for opening a
+ * browser (that machine has no profile for Claude to drive).
  */
-export function claudeCodeRefusal(env: Record<string, string | undefined>): null | string {
-  return env.CLAUDECODE === undefined
-    ? null
-    : `${COMMAND} portal cannot run inside a Claude Code session: the portal is for you, not for Claude. It changes this machine's model path and the safety judge, and a session must never do that for itself. Run it in your own terminal, and open the link in a browser window that is not Chrome's "${CLAUDE_CODE_PROFILE}" profile (the one Claude Code drives).`;
+export function claudeCodeProfileHere(machine: Machine, home: string): boolean {
+  return claudeCodeProfileOn(realBrowserDoctorDeps(machine, home)) !== null;
 }
 
 /** What `runPortal` needs from outside; a test passes its own. */
 export interface PortalCommandContext {
-  /** The plugin's own folder: `plugin/` beside `dist/`, or the repo's when run from source. */
-  pluginDir: string;
-  env: Record<string, string | undefined>;
-  /** Where a refusal goes: `console.error` in use, a collector in a test. */
-  error: (line: string) => void;
-  paths: CliPaths;
-  /** Runs the child and waits for its exit code. */
-  runChild: (
-    argv: string[],
-    options: { cwd: string; env: Record<string, string | undefined> },
-  ) => number;
-  /** `process.execPath`: the bun the child runs on. */
+  /** `process.execPath`: the bun a detached server runs on. */
   bunPath: string;
+  /** This process's environment. */
+  env: Record<string, string | undefined>;
+  /** Where a refusal or a failure goes: `console.error` in use, a collector in a test. */
+  error: (line: string) => void;
+  /** Sends SIGTERM to the portal that answered: `process.kill` in use, a recorder in a test. */
+  kill: (pid: number) => void;
+  /** The system: which program opens a browser, and on which platform. */
+  machine: Machine;
+  paths: CliPaths;
+  /**
+   * The plugin's own folder: the portal bundle is copied from it, and it is the fallback
+   * `--plugin-dir` the copy is told. The CLI runs from the version Claude Code installed, so
+   * this is that version's folder.
+   */
+  pluginDir: string;
+  /** The port; a test passes a free one. Default: the portal's one fixed port. */
+  port?: number;
+  /** Where the answer goes: `console.log` in use, a collector in a test. */
+  print: (line: string) => void;
+  /** Asks the portal's health route; `realPortalProbe()` in use, fakes in a test. */
+  probe?: PortalProbe;
+  /** Starts a detached argv, never waited for; a recorder in a test. */
+  spawn?: (argv: string[], options: { cwd: string; env: Record<string, string> }) => void;
+}
+
+/** The environment a detached server gets: this process's, without the `undefined` values. */
+function startEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const kept: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) kept[key] = value;
+  }
+  return kept;
 }
 
 /**
- * `cc-smart-dev-kit portal [--port] [--no-open]`; the exit code. It copies the portal bundle,
- * starts it in a child, and waits — the child owns the terminal while it runs.
+ * `cc-smart-dev-kit portal [status|stop] [--no-open]`; the exit code.
  *
- * The child runs from `~/.local/share/cc-smart-dev-kit/portal.js`, where none of the plugin's
- * other files are, so it is told this command's own plugin folder (`--plugin-dir`): the child
- * resolves each file from the *current* installed version and falls back to that folder.
+ * `portal` opens the page, starting the server when nothing answers, restarting an older
+ * version, and leaving another program's port alone. `status` says what runs and exits 0
+ * only when this portal does. `stop` ends it and waits for the port to be free.
  */
-export function runPortal(ctx: PortalCommandContext, args: readonly string[]): number {
-  const refusal = claudeCodeRefusal(ctx.env);
-  if (refusal !== null) {
-    ctx.error(refusal);
-    return 1;
-  }
+export async function runPortal(
+  ctx: PortalCommandContext,
+  args: readonly string[],
+): Promise<number> {
   const options = parsePortalArgs(args);
   if ("error" in options) {
     ctx.error(`${options.error}\n\n${PORTAL_USAGE}`);
     return 2;
   }
-  const bundle = join(ctx.pluginDir, "dist", "portal.js");
-  if (!existsSync(bundle)) {
+  const port = ctx.port ?? DEFAULT_PORTAL_PORT;
+  const probe = ctx.probe ?? realPortalProbe();
+  const log = (line: string) => portalLog(ctx.paths, line);
+  if (options.command === "status") {
+    const state: PortalState = await probePortal(port, probe);
+    ctx.print(portalStatusLine(state, VERSION, port));
+    return state.kind === "ours" ? 0 : 1;
+  }
+  if (options.command === "stop") {
+    const outcome: StopOutcome = await stopPortal({
+      kill: ctx.kill,
+      log,
+      paths: ctx.paths,
+      port,
+      probe,
+    });
+    if (outcome.kind === "other") {
+      ctx.error(
+        `Another program holds 127.0.0.1:${port}; it is not this portal, so nothing was stopped.`,
+      );
+      return 1;
+    }
+    if (outcome.kind === "failed") {
+      ctx.error(`${COMMAND} portal: ${outcome.reason}.`);
+      return 1;
+    }
+    ctx.print(outcome.kind === "stopped" ? "The portal stopped." : "The portal is not running.");
+    return 0;
+  }
+  const spawn = (argv: string[]) => {
+    if (ctx.spawn !== undefined) {
+      ctx.spawn(argv, { cwd: ctx.paths.home, env: startEnv(ctx.env) });
+      return;
+    }
+    startDetached(ctx.machine.platform, argv, {
+      cwd: ctx.paths.home,
+      env: startEnv(ctx.env),
+      onError: (message) => ctx.error(`${COMMAND} portal: ${message}`),
+    });
+  };
+  const outcome: EnsureOutcome = await ensurePortal({
+    bunPath: ctx.bunPath,
+    kill: ctx.kill,
+    log,
+    paths: ctx.paths,
+    pluginFolder: ctx.pluginDir,
+    port,
+    probe,
+    spawn,
+    version: VERSION,
+  });
+  if (outcome.kind === "other") {
     ctx.error(
-      `the portal bundle is missing (${bundle}). This install is incomplete: run ${COMMAND} doctor, then reinstall the plugin.`,
+      `Another program holds 127.0.0.1:${port}, so the portal cannot start. Stop that program, then run ${COMMAND} portal.`,
     );
     return 1;
   }
-  // The copy goes through `src/setup/`, so `restore` removes it like the router's own copy.
-  // It is written only when it differs, so a second start writes nothing.
-  const copy = portalCopy(ctx.paths);
-  writeManagedFile(copy, readFileSync(bundle, "utf8"), {
-    kind: "whole-file",
-    stateDir: ctx.paths.stateDir,
-  });
-  // The child holds this terminal's environment, so it reads the same paths this command did.
-  // `--no-env-file`: bun would add the .env files of the folder it was started in (the
-  // project) to the child, and the portal must read this terminal's environment, not a
-  // project's file — a `.env.local` naming HOME or CLAUDE_CONFIG_DIR would point it at other
-  // paths than the command that started it.
-  // `--config`: bun would also read the working folder's bunfig.toml, and a project's
-  // `preload` would run its own code inside the portal. This points it at the plugin's own
-  // empty config, beside the bundle this command copies.
-  const argv = [
-    ctx.bunPath,
-    "--no-env-file",
-    bunConfigArg(ctx.pluginDir),
-    copy,
-    "--plugin-dir",
-    ctx.pluginDir,
-    "--port",
-    String(options.port),
-  ];
-  if (options.noOpen) argv.push("--no-open");
-  return ctx.runChild(argv, { cwd: process.cwd(), env: ctx.env });
+  if (outcome.kind === "failed") {
+    ctx.error(
+      `${COMMAND} portal: ${outcome.reason}. The portal's log is ${ctx.paths.portalLogFile}.`,
+    );
+    return 1;
+  }
+  ctx.print(
+    outcome.kind === "started"
+      ? `The portal was not running: started it (version ${outcome.version}).`
+      : outcome.kind === "restarted"
+        ? `The portal was running ${outcome.from}: restarted it onto ${outcome.to}.`
+        : `The portal is running (version ${outcome.version}).`,
+  );
+  const url = `http://127.0.0.1:${port}/`;
+  ctx.print(`  ${url}`);
+  const profileHere = claudeCodeProfileHere(ctx.machine, ctx.paths.home);
+  if (mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })) {
+    openUrlOnDesktop(ctx.machine.platform, url, {
+      which: ctx.machine.which,
+      spawn: ctx.machine.spawnDetached,
+    });
+  } else if (!options.noOpen) {
+    ctx.print("");
+    ctx.print(openYourselfLine());
+  }
+  return 0;
+}
+
+/** Where a start copies the portal bundle from, and the version Claude Code records. */
+export interface PortalBundleSource {
+  folder: string;
+  /**
+   * `installed`: the folder Claude Code records, with a portal bundle in it; `fallback`: the
+   * folder the starter sits in (the installed bundle is missing, or no version is recorded).
+   */
+  source: "fallback" | "installed";
+  /** The installed version, or null when Claude Code records none. */
+  version: null | string;
+}
+
+/**
+ * The plugin folder a start copies the portal bundle from: the version Claude Code records as
+ * installed, else the fallback folder while it exists. `version` is the **record's**, even
+ * when the fallback is used, so a caller can still tell that a newer version is installed and
+ * refuse to start an older bundle (D10's one-way rule).
+ */
+export function installedPluginFolder(paths: CliPaths, fallback: string): PortalBundleSource {
+  const installed = findUserInstall(paths.installedPluginsFile);
+  if (installed !== null && existsSync(join(installed.installPath, "dist", "portal.js"))) {
+    return { folder: installed.installPath, source: "installed", version: installed.version };
+  }
+  return { folder: fallback, source: "fallback", version: installed?.version ?? null };
 }

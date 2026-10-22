@@ -353,6 +353,12 @@ let a call through. Each hook's answer to its own failure, in one table (the sam
 | The bundle file is gone (an update removed the version folder) | the shim **asks** | bun's own error, exit 1 | not applicable: the launcher runs the installed version |
 | The hook cannot start, times out, or fails (an exit code other than 0 and 2) | `"onFailure": "block"` in `hooks.json`: Claude Code **blocks** the call | Claude Code goes on | Claude Code goes on |
 
+**The portal's start part is inside the `update-check` hook, and its failures never reach that
+hook's answer.** A port held by another program, a bundle that is missing, a server that does
+not answer: each is one line in `<stateDir>/portal.log` by the detached starter, and the hook
+still exits 0 with nothing on stdout. The next session start tries again, and `doctor`'s
+portal line says what is wrong (`src/portal/lifecycle.ts`).
+
 `"onFailure": "block"` sits on a guard's **PreToolUse** entry and on nothing else: Claude Code
 ignores it on `Stop` and `SubagentStop` (and two other events), and on PostToolUse the call
 already ran (`docs/claude-code-contract.md` § Hooks). `plugin/bin/cc-smart-dev-kit`, the command, runs
@@ -396,9 +402,17 @@ lock. It never restarts a service, never changes a permission, and never asks a 
 Those happen only in a manual `cc-smart-dev-kit setup` run that shows the change first. A start
 must stay quick: no fetch.
 
+**The one exception is the portal (D10, the owner's):** the SessionStart part starts the
+portal when it does not answer, and restarts it onto a newer version when an older one does
+(`src/portal/session-start.ts`). It is not a service that changes sessions: it is a page on
+this machine, it starts nothing when another program holds its port, it never asks, and it
+never waits — the hook starts a detached starter and returns (`src/portal/lifecycle.ts`). It
+never runs in `claude -p`, never on a `clear` or a `compact`, and its lines go to
+`<stateDir>/portal.log`, never to the session.
+
 The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the Fable-session note
 (`fable-session`, machine-wide), the crew session's role card (`crew-role`, machine-wide), the
-lead's notes (`lead-notes`, machine-wide) and the
+lead's notes (`lead-notes`, machine-wide), the portal's start (D10) and the
 background self-update (`src/update/`, the owner's decision of 2026-10-15). `update-check`
 also brings the managed instructions copy up to this version when it is behind
 (`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the
@@ -437,6 +451,12 @@ piece, so it has no `cc-smart-dev-kit.json` and no `ownHooks` step. Its rules:
   a person), never a restart of the router or a session. They and the detached process
   run in the home folder with `gitEnv` (`commandContext`), and their output reaches a
   record only through `redactUrlsIn`.
+- **The same entry starts the portal (D10).** `startPortalAtSessionStart` resolves the
+  *installed* version's `dist/portal.js` (never this hook's own folder: an old session's hook
+  after an update must not start an older portal), starts it detached with `--ensure`, and
+  returns at once — nothing on stdout, nothing waited for. It does nothing in `claude -p`, on
+  a `clear` or a `compact`, or when the install has no portal bundle (`doctor` says so). A
+  failure is the starter's own line in `<stateDir>/portal.log`; the hook never fails on it.
 
 ## Tests
 

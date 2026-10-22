@@ -2,12 +2,18 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { PLUGIN_ID } from "../build-info";
+import { PLUGIN_ID, VERSION } from "../build-info";
 import { applyClaudeMem, claudeMemPlan, TODO_TOOLS_KEY } from "../machine/claude-mem";
 import { applyManagedJson } from "../setup/managed-json";
 import { hookEnv } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
-import { checkLine, checkPlugin, checkUserNotifyHook, claudeMemChecks } from "./doctor";
+import {
+  checkLine,
+  checkPlugin,
+  checkPortal,
+  checkUserNotifyHook,
+  claudeMemChecks,
+} from "./doctor";
 import { type CliPaths, cliPaths } from "./paths";
 
 const COMMAND = '"$HOME/.local/bin/cc-smart-dev-kit" hook notify';
@@ -64,6 +70,38 @@ describe("doctor: agent view's notification hook", () => {
         ],
       }),
     ).toBe(`✓ agent view's notification hook is set in ${SETTINGS}: ${COMMAND}`);
+  });
+});
+
+describe("doctor: the portal (D10)", () => {
+  test("running this version: ✓, with its address, its version and its pid", () => {
+    expect(checkLine(checkPortal({ kind: "ours", pid: 3, version: VERSION }))).toBe(
+      `✓ the portal is running at http://127.0.0.1:20150/ (version ${VERSION}, process 3)`,
+    );
+  });
+
+  test("an older version: !, and what brings it forward", () => {
+    expect(checkLine(checkPortal({ kind: "ours", pid: 3, version: "0.6.0" }))).toBe(
+      `! the portal is running at http://127.0.0.1:20150/ (version 0.6.0, process 3); the next Claude Code session restarts it onto ${VERSION}`,
+    );
+  });
+
+  test("a newer version than this install: ✓, and it is left as it is", () => {
+    expect(checkLine(checkPortal({ kind: "ours", pid: 3, version: "9.9.9" }))).toBe(
+      `✓ the portal is running at http://127.0.0.1:20150/ (version 9.9.9, process 3), newer than this install (${VERSION}); it is left as it is`,
+    );
+  });
+
+  test("not running: · information, never a failure", () => {
+    expect(checkLine(checkPortal({ kind: "free" }))).toBe(
+      "· the portal is not running; it starts with the next Claude Code session, or now: cc-smart-dev-kit portal",
+    );
+  });
+
+  test("another program holds the port: ✗, because the portal cannot start there", () => {
+    expect(checkLine(checkPortal({ kind: "other" }))).toBe(
+      "✗ Another program holds 127.0.0.1:20150, so the portal cannot start. Stop that program, then run: cc-smart-dev-kit portal",
+    );
   });
 });
 

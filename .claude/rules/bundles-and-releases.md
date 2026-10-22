@@ -39,7 +39,9 @@ Claude Code copies only `plugin/` into
   `docs/claude-code-contract.md`). A long-running part runs from a copy in
   `~/.local/share/cc-smart-dev-kit/`: the router (`src/entries/router.ts` → `dist/router.js`,
   copied by `gateway setup`) and the portal (`src/entries/portal.ts` → `dist/portal.js`,
-  copied by `portal` through `writeManagedFile`, so `restore` removes it).
+  copied by the session-start part's starter and by `portal` through `writeManagedFile`, so
+  `restore` removes it). The portal stays up from session start to session start (D10), so
+  this is not a rule about a short run: its process outlives many version folders.
 
 ## Bundles are committed
 

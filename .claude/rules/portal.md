@@ -17,23 +17,28 @@ OmniRoute is the program those sessions' affordable answers come from. How they 
 the owner asked for (2026-10-16); a change that loosens one needs the owner's yes, in words,
 in this turn.
 
+- **There is no sign-in** (D9, 2026-10-17): no one-time token, no session cookie, no idle
+  clock. A page load from this machine is served. **The trade-off, the owner's:** every
+  program and every user account on this machine — a Claude session using `curl` included —
+  can read and change the slots, the judge, the updates and the workflow settings. The
+  session-escape guard asks the person before a session's shell command reaches the port;
+  that seatbelt is why a session cannot switch the review gate off unseen. Never add a check
+  back that makes a browser pairing necessary without the owner's word.
 - **`Host` exactly ours** (`127.0.0.1:<port>`, `localhost:<port>`), or 403. That is where DNS
   rebinding stops.
 - **A foreign `Origin` is 403**, on any method; **a POST without one is 403 too** (a browser
   always sends one for a POST).
 - **No other page's load** (`fetchSiteAllowed`): anything but a navigation needs
-  `Sec-Fetch-Site` `same-origin` or `none`, the assets too. A page on another `127.0.0.1` port
-  is the same site (a cookie has no port), so `SameSite=Strict` alone let its `<img>` in.
-- **The one-time token works once**, on a GET, and becomes the session cookie. Nothing else
-  hands out a session. A GET that passes the `Host` and `Origin` checks but holds no session
-  gets `expiredPage()` (403, and it holds no machine fact); a `Host` or `Origin` refusal stays
-  the plain `Forbidden`.
+  `Sec-Fetch-Site` `same-origin` or `none`, the assets and `/healthz` too. A page on another
+  `127.0.0.1` port is the same site, so this header is what stops its `<img>` from loading
+  our pages and files.
 - **A POST carries the CSRF token** that came with a page of ours, compared in constant time
-  (`secretsMatch`). The cookie alone never changes anything.
-- **The cookie** stays `HttpOnly; SameSite=Strict; Path=/`, and its name carries the port
-  (`ccsdk_portal_<port>`): a cookie has no port, and the browser sends every `127.0.0.1`
-  cookie to every port on it. Never `Secure`: this is http on 127.0.0.1, and a `Secure` cookie
-  would never be stored.
+  (`secretsMatch`). The token is made once at start (`createCsrf`) and lives in the server's
+  memory; every page embeds it. Nothing else changes anything.
+- **`GET /healthz` is a read through the network rules alone**: the portal's own name, its
+  pid and its version (`src/portal/health.ts`). Every start, stop, status line and version
+  hand-over reads it, so it must keep that shape and must never hold a fact about the
+  machine. Any method but GET is refused.
 - **The policy stays strict**: `script-src 'self'` with no `unsafe-inline`, `style-src 'self'`,
   and `default-src 'none'`. So:
   - **no inline script, and no `on*=` attribute** — every handler is a `data-*` and an
@@ -48,10 +53,29 @@ in this turn.
   (no userinfo, query or fragment), and a backend's own error text through `shownDetail`. The
   test `src/portal/server.test.ts` › "a key is never sent to a page" runs every page with a
   planted key and a password in the backend's address; add a new page to it.
-- **It stops after 30 minutes with no request**, and the process exits. A portal that stays up
-  is a way into every session on the machine. A page's own reload is not the person asking:
-  the Health page asks with `?auto=1`, and the server serves it without touching the idle
-  clock. Anything else that reloads itself must not touch the clock either.
+- **It stays up until it is stopped** (D10, 2026-10-17): no idle stop, so it is there when
+  the person opens it. `cc-smart-dev-kit portal stop` ends it; a plugin update replaces it at
+  the next session start. The page's own reload (the Health page's five seconds) never counts
+  as anything.
+
+## It starts with Claude Code (D10)
+
+- **The SessionStart part never waits and never blocks**: the update-check hook resolves the
+  installed version's `dist/portal.js` and starts it detached with `--ensure`
+  (`src/portal/session-start.ts`); the starter does the probe, the copy and the start
+  (`src/portal/lifecycle.ts`). Nothing on stdout, one stderr line at most on a failure.
+- **Never in `claude -p`** (`CLAUDE_CODE_SESSION_ATTENDED=0`), and never on a `clear` or a
+  `compact`, only `startup`/`resume`/an input that does not say.
+- **Never from the version folder**: the copy in `~/.local/share/` is refreshed from the
+  installed version through `writeManagedFile` before the server starts from it.
+- **Never start an older version**: an answer with `isOlder(installed, running)` true is left
+  alone; only a newer installed version restarts the running portal, and the pid that
+  answered (never a pid from a state file) gets SIGTERM, then the port is waited for.
+- **Never take another program's port**: the probe says `other`, nothing starts, and the line
+  goes to the log once (`noteHeldPortOnce`), not at every session start.
+- **A crash is brought back** by the next session start; **two sessions at once** each start
+  a starter, and one of them finds the other's portal answering.
+- The running portal's lines go to `<stateDir>/portal.log`; nothing else logs anything of it.
 
 ## The portal runs the command line's own code
 
@@ -76,8 +100,10 @@ in this turn.
   rules needs an explicit confirmation on the page, and is written only as shown: the card is
   `setup`'s own `+` / `-` dry run, its button carries that change's hash (`autoModeChange`), and
   the write plans again under the lock and refuses a different one.
-- **It refuses inside a Claude Code session** (`CLAUDECODE`), in the command and again in the
-  bundle the child runs. Never remove either.
+- **No command refuses inside a Claude Code session any more** (D9 removed the token, so there
+  is nothing to leak). The session-escape guard is the seatbelt: it asks the person before a
+  session's shell command reaches the portal's port. Never remove that guard's portal rule
+  while the portal has no sign-in.
 - **Never a number the machine cannot give.** Claude Code's usage percentages are not written
   down anywhere and OmniRoute's prices are in its own catalog: a page says so and shows what it
   does know. Never invent one to match a mockup.
@@ -90,14 +116,20 @@ in this turn.
   machine's router).
 - The portal runs from `~/.local/share/cc-smart-dev-kit/portal.js`, written through
   `writeManagedFile` (so `restore` removes it), never from the plugin's version folder:
-  Claude Code deletes an old one after an update, even under a running process. It is a child
-  with this terminal's stdio, so the link is printed where the person is looking.
+  Claude Code deletes an old one after an update, even under a running process. It is
+  **detached**, with no terminal and no pipe, and its lines go to `<stateDir>/portal.log`:
+  the session-start part must never wait for it (`src/hooks/detached.ts`).
 - **The copy is told where the plugin is** (`--plugin-dir`; refused as a person's own option).
   Every plugin file — the router bundle, `instructions/`, `hooks/hooks.json` — is resolved
   **when it is needed** from the version Claude Code records as installed, falling back to
   `--plugin-dir` while it exists (`src/portal/plugin-folder.ts`), and the action says so in
   words when neither is there. A path made at startup goes stale: the run outlives the version
   folder, and a path beside the copy resolves `~/.local/plugin`, where nothing is.
+- **The starter (`--ensure`) is the only reader of `installed_plugins.json` for a start**:
+  it copies the installed version's bundle, and re-runs the installed bundle when its own
+  version is older. An old session's hook after an update must never start an older portal.
+- **The port is one fixed number** (`DEFAULT_PORTAL_PORT`, below 32768). `--port` is gone:
+  every session, the starter and `doctor` must find the portal on the same one.
 
 ## OmniRoute
 

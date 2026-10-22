@@ -39,6 +39,13 @@ export interface CliPaths extends RouterPaths {
   portalCopy: string;
   /** What the portal remembers between pages: `<stateDir>/portal.json`. */
   portalStateFile: string;
+  /** The running portal's own log: `<stateDir>/portal.log` (start, restart, stop, failures). */
+  portalLogFile: string;
+  /**
+   * The port another program held when the portal last tried to start:
+   * `<stateDir>/portal-held.json`, so that line is said once, not at every session start.
+   */
+  portalHeldFile: string;
   /** What the last OmniRoute update replaced: `<stateDir>/omniroute.json`. */
   omnirouteStateFile: string;
   /** The router's systemd user unit: `~/.config/systemd/user/cc-smart-dev-kit-router.service`. */
@@ -114,6 +121,8 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalLogFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
+    portalHeldFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
     routerUnitFile: join(
       router.home,

@@ -75,17 +75,18 @@ ${command(`${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`, "
   return layout({ active: null, body, shell, title: "The gateway is not set up" });
 }
 
-/** The link is dead: used once already, or the portal stopped. */
-export function expiredPage(): string {
+/** A path the portal does not serve: a mistyped address, and nothing is lost. */
+export function notFoundPage(): string {
   const body = `<div class="grid two">
 <section class="card pad">
-<h1 class="h1sm">This link has expired.</h1>
-<p class="muted">It was already used, or the portal stopped. Each link works once. Run this in your own terminal for a new one:</p>
+<h1 class="h1sm">This page is not here.</h1>
+<p class="muted">The address is not one the portal serves. Open it again:</p>
 ${command(`${COMMAND} portal`, "Copy the portal command")}
-<p class="small muted">Not inside Claude Code: there the command refuses to print a link. Never open the portal in the Chrome profile Claude drives: its own, named <span class="mono">claude-code</span>.</p>
+<p class="small muted">Never open the portal in the Chrome profile Claude drives: its own, named <span class="mono">claude-code</span>.</p>
+<a class="btn" href="/">Open Overview</a>
 </section>
 </div>`;
-  return barePage({ body, title: "Link expired" });
+  return barePage({ body, title: "Page not found" });
 }
 
 // ── Overview ────────────────────────────────────────────────────────────────────
@@ -1149,17 +1150,19 @@ export function privacyPage(shell: Shell): string {
 </div>
 </div>
 
-${privacyStep(1, "Starting the portal: for the person, not for Claude", [
-  { text: `You run <span class="mono">${COMMAND} portal</span> in your own terminal.` },
+${privacyStep(1, "Who can open it", [
   {
-    text: 'Run inside a Claude Code session? <b>✗ Refused, no link.</b> "Run it in your own terminal."',
+    text: `It starts with Claude Code, in the background, and stays up: a new session starts it when it is not running, and a plugin update hands it over to the new version. <span class="mono">${COMMAND} portal</span> opens it, <span class="mono">${COMMAND} portal stop</span> stops it.`,
+  },
+  {
+    text: `There is no sign-in: <b>every program and every account on this machine can open it</b> — a Claude session's own <span class="mono">curl</span> included — and can change the slots, the judge, the updates and the settings. That is a deliberate trade-off. The session-escape guard asks you before a session's shell command reaches this port.`,
     tone: "warn",
   },
   {
-    text: `It prints a one-time link <span class="mono">127.0.0.1:${port}/?t=…</span>, and your default browser opens it.`,
+    text: "It still never answers another computer, and it still refuses another website. That is what the rules below are for.",
   },
   {
-    text: 'The portal changes the session\'s own model path and the safety judge. Claude must never do that for itself, and you should never open the portal in the Chrome profile Claude drives (its own, <span class="mono">claude-code</span>): Claude could then reach its buttons.',
+    text: 'Never open it in the Chrome profile Claude drives (its own, named <span class="mono">claude-code</span>): Claude could then reach its buttons.',
     tone: "warn",
   },
 ])}
@@ -1176,19 +1179,13 @@ ${privacyStep(2, "Every request to the portal", [
     text: 'A request that carries a foreign <span class="mono">Origin</span> is <b>✗ 403</b> as well.',
   },
   {
-    text: 'The first load exchanges the one-time token for a session cookie (<span class="mono">HttpOnly</span>, <span class="mono">SameSite=Strict</span>) and the URL is cleaned. A token cannot be used twice.',
+    text: 'Anything but a page load must say it comes from this page (<span class="mono">Sec-Fetch-Site: same-origin</span>) or from no page at all: another page — even one on another <span class="mono">127.0.0.1</span> port — cannot load the portal into its own.',
   },
   {
-    text: `The cookie's name carries this portal's port (<span class="mono">ccsdk_portal_${port}</span>), because a cookie has no port and a browser sends every <span class="mono">127.0.0.1</span> cookie to every port on it. Two portals on two ports therefore hold their own sessions. Either way it is sent only to this machine: it is never <span class="mono">Secure</span>, because this is http on <span class="mono">127.0.0.1</span>.`,
-  },
-  {
-    text: 'A change (a POST) must carry the CSRF token that came with the page, and an <span class="mono">Origin</span> of ours. Otherwise <b>✗ 403</b> and nothing changes.',
+    text: 'A change (a POST) must carry the CSRF token that came with the page, and an <span class="mono">Origin</span> of ours. Otherwise <b>✗ 403</b> and nothing changes. The token is made when the portal starts and lives in its memory only.',
     tone: "warn",
   },
   { text: "A change runs through the same functions as the CLI, with the same checks." },
-  {
-    text: "Thirty minutes with no request and the portal stops by itself: the link and the cookie are dead after that.",
-  },
 ])}
 
 ${privacyStep(3, "Always true", [
@@ -1201,6 +1198,9 @@ ${privacyStep(3, "Always true", [
   },
   {
     text: "<b>You confirm first.</b> A saved slot or a switch changes every running Claude session.",
+  },
+  {
+    text: `It runs from a copy of its own and stays up until it is stopped; <span class="mono">${COMMAND} doctor</span> says whether it is running and on which version.`,
   },
 ])}`;
   return layout({ active: null, body, shell, title: "How the portal stays private" });

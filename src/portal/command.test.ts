@@ -1,230 +1,426 @@
 /**
- * `cc-smart-dev-kit portal`: the refusal inside a Claude Code session, the options, and the
- * copy the portal runs from. No child is really started: the runner is a recorder.
+ * `cc-smart-dev-kit portal`, `portal status` and `portal stop`: the options, the words, the
+ * exit codes, and the copy the portal runs from. No server starts and no port is touched: the
+ * probe, the detached start and the kill are recorders.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { COMMAND, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
+import type { Machine } from "../machine/machine";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { readChanged } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import {
-  claudeCodeRefusal,
+  installedPluginFolder,
   mayAutoOpen,
   openYourselfLine,
   PORTAL_USAGE,
   parsePortalArgs,
+  parsePortalChildArgs,
   portalCopy,
   runPortal,
 } from "./command";
+import { PORTAL_APP, PORTAL_HEALTH_PATH, type PortalProbe, type PortalState } from "./health";
+import { portalServerArgv, portalStarterArgv } from "./lifecycle";
 
-/** A temp machine with a plugin folder to copy from, and a runner that records what it was given. */
-function world(options: { bundle?: boolean } = {}) {
+const PORT = DEFAULT_PORTAL_PORT;
+
+/** A portal state the fakes move through, as a real start or stop would. */
+interface Life {
+  state: PortalState;
+}
+
+/** The probe's fakes: the fetch answers the state the world is in, and the clock moves along. */
+function fakeProbe(life: Life): PortalProbe {
+  let clock = 0;
+  return {
+    fetch: async (url) => {
+      expect(String(url)).toBe(`http://127.0.0.1:${PORT}${PORTAL_HEALTH_PATH}`);
+      const state = life.state;
+      if (state.kind === "free") {
+        const error = new Error("connect ECONNREFUSED") as Error & { code?: string };
+        error.code = "ConnectionRefused";
+        throw error;
+      }
+      if (state.kind === "other") return new Response("no", { status: 404 });
+      return Response.json({
+        app: PORTAL_APP,
+        ok: true,
+        pid: state.pid,
+        version: state.version,
+      });
+    },
+    now: () => (clock += 100),
+    sleep: async () => undefined,
+  };
+}
+
+/** A temp home, a plugin folder with a bundle, and recorders for everything the command does. */
+function world(options: { bundle?: boolean; startGives?: PortalState; state?: PortalState } = {}) {
   const home = tempDir("portal-command");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
-  const pluginDir = join(home, "build", "plugin");
-  const source = join(pluginDir, "dist", "portal.js");
+  const pluginDir = join(home, "plugin");
   mkdirSync(join(pluginDir, "dist"), { recursive: true });
-  if (options.bundle !== false) writeFileSync(source, "// the portal bundle\n");
-  const spawned: { argv: string[]; cwd: string }[] = [];
+  if (options.bundle !== false) {
+    writeFileSync(join(pluginDir, "dist", "portal.js"), "// the portal bundle\n");
+  }
+  const life: Life = { state: options.state ?? { kind: "free" } };
+  const spawned: string[][] = [];
+  const opened: string[][] = [];
+  const killed: number[] = [];
+  const printed: string[] = [];
   const errors: string[] = [];
+  const machine: Machine = {
+    arch: "x64",
+    confirm: null,
+    exists: () => false,
+    fetchText: async () => "",
+    macApp: "/Applications/Warp.app",
+    osRelease: () => null,
+    platform: "linux",
+    run: () => ({ exitCode: 0, output: "" }),
+    runOnTerminal: () => 0,
+    spawnDetached: (argv) => opened.push(argv),
+    which: (name) => (name === "xdg-open" || name === "open" ? `/usr/bin/${name}` : null),
+  };
   return {
-    copy: portalCopy(paths),
     errors,
     home,
+    killed,
+    life,
+    machine,
+    opened,
     paths,
     pluginDir,
-    run: (args: readonly string[], env: Record<string, string | undefined> = { HOME: home }) =>
+    printed,
+    run: (args: readonly string[] = []) =>
       runPortal(
         {
           bunPath: "/opt/bun/bin/bun",
-          env,
+          env: { HOME: home },
           error: (line) => errors.push(line),
+          kill: (pid) => {
+            killed.push(pid);
+            life.state = { kind: "free" };
+          },
+          machine,
           paths,
           pluginDir,
-          runChild: (argv, options2) => {
-            spawned.push({ argv, cwd: options2.cwd });
-            return 7;
+          port: PORT,
+          print: (line) => printed.push(line),
+          probe: fakeProbe(life),
+          spawn: (argv) => {
+            spawned.push(argv);
+            life.state = options.startGives ?? { kind: "ours", pid: 4321, version: VERSION };
           },
         },
         args,
       ),
-    source,
     spawned,
   };
 }
 
-describe("the portal command", () => {
-  test("it refuses inside a Claude Code session: the portal is for the person", () => {
-    expect(claudeCodeRefusal({})).toBe(null);
-    const refusal = claudeCodeRefusal({ CLAUDECODE: "1" });
-    expect(refusal).toContain("cannot run inside a Claude Code session");
-    expect(refusal).toContain("the portal is for you, not for Claude");
-    expect(refusal).toContain("Run it in your own terminal");
+describe("the options", () => {
+  test("the default is open; status and stop are the two commands; --no-open is a switch", () => {
+    expect(parsePortalArgs([])).toEqual({ command: "open", noOpen: false });
+    expect(parsePortalArgs(["status"])).toEqual({ command: "status", noOpen: false });
+    expect(parsePortalArgs(["stop", "--no-open"])).toEqual({ command: "stop", noOpen: true });
+    expect(parsePortalArgs(["status", "stop"])).toEqual({
+      error: "one command at a time: status or stop",
+    });
+    // The fixed port (D10): neither the person nor an old link can move it.
+    expect(parsePortalArgs(["--port", "9999"])).toEqual({ error: "Unknown option: --port" });
+    expect(parsePortalArgs(["--plugin-dir", "/tmp/elsewhere"])).toEqual({
+      error: "Unknown option: --plugin-dir",
+    });
   });
 
-  test("inside a Claude Code session nothing is copied and no child starts", () => {
-    const machine = world();
-    expect(machine.run([], { CLAUDECODE: "1", HOME: machine.home })).toBe(1);
-    expect(machine.spawned).toEqual([]);
-    expect(() => readFileSync(machine.copy, "utf8")).toThrow();
+  test("the bundle's own options: the starter, the server, and the parent's folder", () => {
+    expect(parsePortalChildArgs([])).toEqual({
+      ensure: false,
+      noOpen: false,
+      pluginDir: null,
+      serve: false,
+    });
+    expect(parsePortalChildArgs(["--serve", "--plugin-dir", "/p"])).toEqual({
+      ensure: false,
+      noOpen: false,
+      pluginDir: "/p",
+      serve: true,
+    });
+    expect(parsePortalChildArgs(["--ensure"])).toEqual({
+      ensure: true,
+      noOpen: false,
+      pluginDir: null,
+      serve: false,
+    });
+    expect(parsePortalChildArgs(["--ensure", "--serve"])).toEqual({
+      error: "--ensure and --serve are two different runs",
+    });
+    expect(parsePortalChildArgs(["--plugin-dir"])).toEqual({
+      error: "--plugin-dir needs a folder",
+    });
+    expect(parsePortalChildArgs(["--port", "1"])).toEqual({ error: "Unknown option: --port" });
   });
 
-  test("the options: the default port, a chosen one, --no-open, and the wrong ones", () => {
-    expect(parsePortalArgs([])).toEqual({ noOpen: false, port: DEFAULT_PORTAL_PORT });
-    expect(DEFAULT_PORTAL_PORT).toBe(20_150);
-    expect(parsePortalArgs(["--port", "0"])).toEqual({ noOpen: false, port: 0 });
-    expect(parsePortalArgs(["--no-open", "--port", "9999"])).toEqual({ noOpen: true, port: 9999 });
-    expect(parsePortalArgs(["--port"])).toEqual({ error: "--port needs a port" });
-    expect(parsePortalArgs(["--port", "70000"])).toEqual({ error: "not a port: 70000" });
-    expect(parsePortalArgs(["--port", "abc"])).toEqual({ error: "not a port: abc" });
-    expect(parsePortalArgs(["--open"])).toEqual({ error: "Unknown option: --open" });
+  test("a wrong option is exit 2 with the usage, and nothing is copied or started", async () => {
     const machine = world();
-    expect(machine.run(["--nope"])).toBe(2);
+    expect(await machine.run(["--nope"])).toBe(2);
     expect(machine.errors.join("\n")).toContain("Unknown option: --nope");
-    expect(machine.errors.join("\n")).toContain("Usage: cc-smart-dev-kit portal");
+    expect(machine.errors.join("\n")).toContain(`Usage: ${COMMAND} portal`);
     expect(machine.spawned).toEqual([]);
+    expect(existsSync(portalCopy(machine.paths))).toBe(false);
+    expect(PORTAL_USAGE).toContain("status");
+    expect(PORTAL_USAGE).toContain("stays up until you stop it");
   });
+});
 
-  test("it copies the bundle and starts the copy, with its own plugin folder and the port", () => {
+describe("portal", () => {
+  test("nothing answers: the copy is written and the server started from it, then the page opens", async () => {
     const machine = world();
-    expect(machine.run(["--port", "20150"])).toBe(7);
-    expect(readFileSync(machine.copy, "utf8")).toBe("// the portal bundle\n");
-    // `--plugin-dir` is the whole point: the child runs from this copy, so a plugin path made
-    // in it would resolve to `~/.local/share/…`, where the router bundle and the instructions
-    // are not. The child hears where the plugin really is. `--no-env-file`: the copy reads
-    // this terminal's environment, never the project folder's `.env` files.
+    expect(await machine.run()).toBe(0);
+    expect(readFileSync(portalCopy(machine.paths), "utf8")).toBe("// the portal bundle\n");
+    // It is a managed file: `restore` finds it and removes it.
+    expect(readChanged(machine.paths.stateDir)[portalCopy(machine.paths)]?.kinds).toEqual([
+      "whole-file",
+    ]);
     expect(machine.spawned).toEqual([
-      {
-        argv: [
-          "/opt/bun/bin/bun",
-          "--no-env-file",
-          `--config=${join(machine.pluginDir, "bunfig.toml")}`,
-          machine.copy,
-          "--plugin-dir",
-          machine.pluginDir,
-          "--port",
-          "20150",
-        ],
-        cwd: process.cwd(),
-      },
+      portalServerArgv("/opt/bun/bin/bun", portalCopy(machine.paths), machine.pluginDir),
     ]);
+    expect(machine.printed).toEqual([
+      `The portal was not running: started it (version ${VERSION}).`,
+      `  http://127.0.0.1:${PORT}/`,
+    ]);
+    // The person's own browser, through the one home for that (`open-url.ts`).
+    expect(machine.opened).toEqual([["xdg-open", `http://127.0.0.1:${PORT}/`]]);
   });
 
-  test("--plugin-dir is the parent's own option: a person cannot point the portal elsewhere", () => {
-    const machine = world();
-    expect(machine.run(["--plugin-dir", "/tmp/elsewhere"])).toBe(2);
-    expect(machine.errors.join("\n")).toContain("Unknown option: --plugin-dir");
+  test("it already runs this version: nothing starts, and the page opens", async () => {
+    const machine = world({ state: { kind: "ours", pid: 99, version: VERSION } });
+    expect(await machine.run()).toBe(0);
     expect(machine.spawned).toEqual([]);
+    expect(machine.killed).toEqual([]);
+    expect(machine.printed[0]).toBe(`The portal is running (version ${VERSION}).`);
   });
 
-  test("--no-open reaches the child, which is what opens the browser", () => {
+  test("an older version answers: it is stopped and restarted onto this one", async () => {
+    const machine = world({ state: { kind: "ours", pid: 41, version: "0.6.0" } });
+    expect(await machine.run()).toBe(0);
+    expect(machine.killed).toEqual([41]);
+    expect(machine.spawned).toHaveLength(1);
+    expect(machine.printed[0]).toContain(
+      `The portal was running 0.6.0: restarted it onto ${VERSION}`,
+    );
+  });
+
+  test("a newer version answers: an older install leaves it alone", async () => {
+    const machine = world({ state: { kind: "ours", pid: 5, version: "9.9.9" } });
+    expect(await machine.run()).toBe(0);
+    expect(machine.spawned).toEqual([]);
+    expect(machine.killed).toEqual([]);
+    expect(machine.printed[0]).toContain("The portal is running (version 9.9.9).");
+  });
+
+  test("another program holds the port: one line, nothing started, exit 1", async () => {
+    const machine = world({ state: { kind: "other" } });
+    expect(await machine.run()).toBe(1);
+    expect(machine.spawned).toEqual([]);
+    expect(machine.errors.join("\n")).toContain(
+      `Another program holds 127.0.0.1:${PORT}, so the portal cannot start`,
+    );
+  });
+
+  test("a missing bundle stops before anything starts, and names the install", async () => {
+    const machine = world({ bundle: false });
+    expect(await machine.run()).toBe(1);
+    expect(machine.spawned).toEqual([]);
+    expect(machine.errors.join("\n")).toContain("the portal bundle is missing");
+    expect(existsSync(portalCopy(machine.paths))).toBe(false);
+  });
+
+  test("a start that never answers is a failure, and the log is named", async () => {
+    const machine = world({ startGives: { kind: "free" } });
+    expect(await machine.run()).toBe(1);
+    expect(machine.errors.join("\n")).toContain("did not answer");
+    expect(machine.errors.join("\n")).toContain(machine.paths.portalLogFile);
+    // The log holds the same reason, for a start the person never saw.
+    expect(readFileSync(machine.paths.portalLogFile, "utf8")).toContain(
+      "failed: the portal did not answer",
+    );
+  });
+
+  test("--no-open prints the address and opens nothing", async () => {
     const machine = world();
-    machine.run(["--no-open"]);
-    expect(machine.spawned[0]?.argv).toEqual([
-      "/opt/bun/bin/bun",
-      "--no-env-file",
-      `--config=${join(machine.pluginDir, "bunfig.toml")}`,
-      machine.copy,
-      "--plugin-dir",
-      machine.pluginDir,
-      "--port",
-      String(DEFAULT_PORTAL_PORT),
-      "--no-open",
-    ]);
+    expect(await machine.run(["--no-open"])).toBe(0);
+    expect(machine.opened).toEqual([]);
+    expect(machine.printed).toContain(`  http://127.0.0.1:${PORT}/`);
   });
 
-  test("a second run copies nothing: the file it owns is compared first", () => {
-    const machine = world();
-    machine.run([]);
-    const first = readFileSync(machine.copy, "utf8");
-    const before = statSync(machine.copy);
-    machine.run([]);
-    expect(readFileSync(machine.copy, "utf8")).toBe(first);
-    // The write is judged by its outcome, not by the text alone: an identical write would
-    // leave the same bytes behind. "unchanged" is what `writeManagedFile` returns for it, and
-    // the file's own mtime is how that shows from outside.
-    const after = statSync(machine.copy);
-    expect(after.mtimeMs).toBe(before.mtimeMs);
-    expect(after.ino).toBe(before.ino);
-    // It is a managed file: `restore` finds it in `changed.json` and removes it.
-    const changed = readChanged(machine.paths.stateDir);
-    expect(Object.keys(changed)).toContain(machine.copy);
-    expect(changed[machine.copy]?.kinds).toEqual(["whole-file"]);
-  });
-
-  test("the entry's own console output: the copy it runs from, and Ctrl+C's code", () => {
-    // The entry (`src/entries/portal.ts`) cannot be imported by a test: it starts a server and
-    // waits. So this reads it, for the two things a person reading that terminal depends on —
-    // the file named in "Running from", which is the copy that is really running, and the exit
-    // code Ctrl+C leaves behind (130, "ended by SIGINT", and the parent returns it).
-    const source = readFileSync(join(import.meta.dir, "..", "entries", "portal.ts"), "utf8");
-    expect(source).toContain("tildify(import.meta.path, paths.home)");
-    // The path it used to print, made by hand, is gone: it named a file the version folder
-    // holds, not the copy.
-    expect(source).not.toContain(".local/share/cc-smart-dev-kit/portal.js");
-    expect(source).toContain("const SIGINT_EXIT = 130;");
-    expect(source).toContain('process.on("SIGINT", () => process.exit(SIGINT_EXIT));');
-  });
-
-  test("the portal opens a browser only when Chrome's claude-code profile is not there", () => {
-    // Claude Code drives Chrome's `claude-code` profile, and Chrome opens an outside link in
-    // the window it last used — which may be that very profile, where the session cookie would
-    // put the portal's buttons within Claude's reach. So with that profile on the machine the
-    // portal opens nothing and says where to open the link itself; without it, it opens.
+  test("the browser decision: never in the profile Claude Code drives", () => {
     expect(mayAutoOpen({ claudeCodeProfile: false, noOpen: false })).toBe(true);
     expect(mayAutoOpen({ claudeCodeProfile: true, noOpen: false })).toBe(false);
-    // `--no-open` refuses it in every case.
     expect(mayAutoOpen({ claudeCodeProfile: false, noOpen: true })).toBe(false);
     expect(mayAutoOpen({ claudeCodeProfile: true, noOpen: true })).toBe(false);
-    // The line it prints instead names the profile, and says what to do.
     expect(openYourselfLine()).toContain('"claude-code"');
-    expect(openYourselfLine()).toContain("Claude Code drives it");
     expect(openYourselfLine()).toContain("NOT that profile");
   });
 
-  test("the child asks that decision, with the profile it really has, before opening", () => {
-    // The entry (`src/entries/portal.ts`) starts a server and waits, so it cannot be imported
-    // here: this reads it, for the three pieces the decision is made of — the profile read
-    // (`chrome.ts`, read-only), the decision itself, and the line printed instead.
+  test("the entry asks that decision, with the profile it really has, before opening", () => {
+    // The entry starts a server and waits, so it cannot be imported here: this reads it, for
+    // the three pieces the decision is made of — the profile read, the decision, the line.
     const source = readFileSync(join(import.meta.dir, "..", "entries", "portal.ts"), "utf8");
     expect(source).toContain("claudeCodeProfileHere(machine, paths.home)");
-    // The one profile lookup `doctor` and the browser's launcher use too.
-    expect(source).toContain("claudeCodeProfileOn(realBrowserDoctorDeps(machine, home))");
     expect(source).toContain(
       "mayAutoOpen({ claudeCodeProfile: profileHere, noOpen: options.noOpen })",
     );
     expect(source).toContain("console.log(openYourselfLine());");
-    // And the old promise — an unconditional open — is gone.
-    expect(source).not.toContain("if (!options.noOpen) ctx.openBrowser(portal.url);");
-  });
-
-  test("PB hunch 1: the browser is opened detached, so Ctrl+C on the portal never closes it", () => {
-    // `xdg-open` may start the browser as its own child. Started in this terminal's process
-    // group, the Ctrl+C that stops the portal reached that browser too.
-    const source = readFileSync(join(import.meta.dir, "..", "entries", "portal.ts"), "utf8");
     expect(source).toContain("spawn: machine.spawnDetached,");
-    expect(source).not.toContain("Bun.spawn(");
+    // The starter and the server are the two shapes the bundle runs.
+    expect(source).toContain("options.ensure");
+    expect(source).toContain("runEnsure(paths, options.pluginDir)");
+    expect(source).toContain("portalStarterArgv(");
   });
 
-  test("every word about it says which profile, and what the portal itself does", () => {
-    // The portal cannot stop a person from pasting the link into the window Claude drives, so
-    // the wording tells them which window to use instead of promising something it cannot
-    // control. The pages that show these lines are checked in `server.test.ts`.
-    const views = readFileSync(join(import.meta.dir, "views.ts"), "utf8");
-    const page = readFileSync(join(import.meta.dir, "page.ts"), "utf8");
-    expect(views).toContain("never open the portal in the Chrome profile Claude drives");
-    expect(views).toContain("Claude could then reach its buttons");
-    expect(page).toContain("never open this page in the Chrome profile Claude drives");
-    expect(claudeCodeRefusal({ CLAUDECODE: "1" })).toContain(`Chrome's "claude-code" profile`);
-    expect(PORTAL_USAGE).toContain("it does not open a\nbrowser by itself");
+  test("the old refusal inside Claude Code is gone: there is no token to leak (D9)", () => {
+    const source = readFileSync(join(import.meta.dir, "command.ts"), "utf8");
+    expect(source).not.toContain("CLAUDECODE");
+    expect(source).not.toContain("claudeCodeRefusal");
+    expect(PORTAL_USAGE).not.toContain("refuses");
+    // And what replaced it: the session-escape guard asks before a shell reaches the port.
+    const guard = readFileSync(
+      join(import.meta.dir, "..", "hooks", "session-escape-guard.ts"),
+      "utf8",
+    );
+    expect(guard).toContain("DEFAULT_PORTAL_PORT");
   });
+});
 
-  test("a missing bundle stops with a clear line, and starts nothing", () => {
-    const machine = world({ bundle: false });
-    expect(machine.run([])).toBe(1);
+describe("portal status", () => {
+  test("running: the address, the version and the pid, and exit 0", async () => {
+    const machine = world({ state: { kind: "ours", pid: 12, version: VERSION } });
+    expect(await machine.run(["status"])).toBe(0);
+    expect(machine.printed).toEqual([
+      `The portal is running at http://127.0.0.1:${PORT} (version ${VERSION}, process 12).`,
+    ]);
     expect(machine.spawned).toEqual([]);
-    expect(() => readFileSync(machine.copy, "utf8")).toThrow();
+    expect(machine.opened).toEqual([]);
+  });
+
+  test("not running: one line with what starts it, and exit 1", async () => {
+    const machine = world();
+    expect(await machine.run(["status"])).toBe(1);
+    expect(machine.printed.join("\n")).toContain("is not running");
+    expect(machine.printed.join("\n")).toContain(`${COMMAND} portal`);
+  });
+
+  test("another program's port: said as such, and exit 1", async () => {
+    const machine = world({ state: { kind: "other" } });
+    expect(await machine.run(["status"])).toBe(1);
+    expect(machine.printed.join("\n")).toContain("Another program holds");
+  });
+});
+
+describe("portal stop", () => {
+  test("running: its pid is signalled, and the line says it stopped", async () => {
+    const machine = world({ state: { kind: "ours", pid: 8, version: VERSION } });
+    expect(await machine.run(["stop"])).toBe(0);
+    expect(machine.killed).toEqual([8]);
+    expect(machine.printed).toEqual(["The portal stopped."]);
+  });
+
+  test("not running: nothing is signalled, and that is not an error", async () => {
+    const machine = world();
+    expect(await machine.run(["stop"])).toBe(0);
+    expect(machine.killed).toEqual([]);
+    expect(machine.printed).toEqual(["The portal is not running."]);
+  });
+
+  test("another program's port: never signalled", async () => {
+    const machine = world({ state: { kind: "other" } });
+    expect(await machine.run(["stop"])).toBe(1);
+    expect(machine.killed).toEqual([]);
+    expect(machine.errors.join("\n")).toContain("it is not this portal, so nothing was stopped");
+  });
+});
+
+describe("the Windows start", () => {
+  test("the server argv has no port: the one fixed port is the bundle's own (D10)", () => {
+    expect(portalServerArgv("bun", "/d/portal.js", "/p")).toEqual([
+      "bun",
+      "--no-env-file",
+      "--config=/p/bunfig.toml",
+      "/d/portal.js",
+      "--serve",
+      "--plugin-dir",
+      "/p",
+    ]);
+    expect(portalStarterArgv("bun", "/p/dist/portal.js", "/p")).toEqual([
+      "bun",
+      "--no-env-file",
+      "--config=/p/bunfig.toml",
+      "/p/dist/portal.js",
+      "--ensure",
+    ]);
+  });
+});
+
+describe("the starter's source of the bundle (D10)", () => {
+  /** A temp home whose installed_plugins.json records `version` at `install`, with a bundle or not. */
+  function home(version: string, bundle: boolean) {
+    const root = tempDir("portal-source");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(root, ".claude"), HOME: root });
+    const install = join(root, "cache", version);
+    mkdirSync(join(install, "dist"), { recursive: true });
+    if (bundle) writeFileSync(join(install, "dist", "portal.js"), "// the bundle\n");
+    mkdirSync(join(paths.claudeConfigDir, "plugins"), { recursive: true });
+    writeFileSync(
+      paths.installedPluginsFile,
+      `${JSON.stringify({
+        plugins: {
+          "cc-smart-dev-kit@cc-smart-dev-kit": [{ installPath: install, scope: "user", version }],
+        },
+        version: 2,
+      })}\n`,
+    );
+    return { install, paths };
+  }
+
+  test("the installed version with its bundle is the source, with its version", () => {
+    const world = home("1.1.0", true);
+    expect(installedPluginFolder(world.paths, "/fallback")).toEqual({
+      folder: world.install,
+      source: "installed",
+      version: "1.1.0",
+    });
+  });
+
+  test("an installed version whose bundle is missing: the record's version still shows, so the starter can refuse", () => {
+    // A half install: starting the old bundle here would be D10's forbidden downgrade.
+    const world = home("1.1.0", false);
+    expect(installedPluginFolder(world.paths, "/fallback")).toEqual({
+      folder: "/fallback",
+      source: "fallback",
+      version: "1.1.0",
+    });
+  });
+
+  test("no record at all: the fallback, and no version to compare", () => {
+    const world = home("1.1.0", true);
+    writeFileSync(world.paths.installedPluginsFile, '{"plugins":{},"version":2}\n');
+    expect(installedPluginFolder(world.paths, "/fallback")).toEqual({
+      folder: "/fallback",
+      source: "fallback",
+      version: null,
+    });
+  });
+
+  test("the entry refuses to start a bundle older than the installed version", () => {
+    // The starter reads it from the entry, which cannot be imported (it starts a server).
+    const source = readFileSync(join(import.meta.dir, "..", "entries", "portal.ts"), "utf8");
+    expect(source).toContain("isOlder(VERSION, installed.version)");
+    expect(source).toContain('installed.source === "fallback"');
+    expect(source).toContain("nothing was started");
   });
 });

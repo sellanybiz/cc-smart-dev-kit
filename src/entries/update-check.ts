@@ -1,11 +1,14 @@
 // The SessionStart hook that keeps cc-smart-dev-kit up to date (plugin/hooks/hooks.json), and,
 // with `--background`, the detached check it starts. The hook returns at once: it only
-// records the session, brings the instructions copy up to this version when it is behind
-// (the copy only, quietly), and starts the check when one is due (src/update/background.ts).
+// records the session, starts the portal's own detached starter when this session should
+// have one (D10), brings the instructions copy up to this version when it is behind (the copy
+// only, quietly), and starts the check when one is due (src/update/background.ts).
 import { PLUGIN, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
 import { startDetached } from "../hooks/detached";
+import { startPortalAtSessionStart } from "../portal/session-start";
 import { pluginFolderBeside } from "../setup/bun-config";
+import { findUserInstall } from "../setup/installed-plugins";
 import { instructionsFolder, instructionsPaths } from "../setup/instructions";
 import { capturingRunner, commandContext, notifyCommand } from "../update/apply";
 import {
@@ -43,12 +46,13 @@ if (process.argv.includes("--background")) {
   try {
     // The input says why the hook runs: a held major's line is for a session start only.
     const input = process.stdin.isTTY ? "" : await Bun.stdin.text();
+    const source = sessionSourceOf(input);
     const answer = sessionStart({
       paths,
       env,
       nowMs: Date.now(),
       sessionPid: sessionPid(),
-      source: sessionSourceOf(input),
+      source,
       version: VERSION,
       spawnBackground: () => {
         // Detached with no pipe to this hook: it outlives the hook, and Claude Code never
@@ -74,6 +78,22 @@ if (process.argv.includes("--background")) {
       },
     });
     if (answer !== "") process.stdout.write(`${answer}\n`);
+    // The portal (D10): its own detached starter, started and never waited for, and nothing
+    // on stdout. The starter resolves the version Claude Code installed, so an old session's
+    // hook after an update never starts an older portal (`src/portal/session-start.ts`).
+    const installed = findUserInstall(paths.installedPluginsFile);
+    startPortalAtSessionStart({
+      bunPath: process.execPath,
+      env,
+      installed: installed === null ? null : { folder: installed.installPath },
+      runIn: commandContext(env, paths.home),
+      source,
+      spawn: (argv, options) =>
+        startDetached(process.platform, argv, {
+          ...options,
+          onError: (message) => console.error(`${PLUGIN} portal: ${message}`),
+        }),
+    });
     // The new version's first session start refreshes the instructions copy it ships
     // (`instructionsNeedRefresh`): the copy only, quietly, and never in the way of the
     // session. Nothing on stdout — a session start's text goes into Claude's context.

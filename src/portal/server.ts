@@ -1,20 +1,23 @@
 /**
- * The portal's HTTP server: the door, the pages, the actions, and the clock that closes it.
+ * The portal's HTTP server: the door, the pages, the actions, and the health answer.
  *
  * Every request is checked before anything is read (`guard.ts`), and the shape of the answer
  * is fixed here:
  *
- *   - the page routes answer HTML, and only with a live session;
- *   - `/assets/…` answers the stylesheet and the two scripts — the only things that reach a
- *     browser without a session, because a page needs them to draw at all;
+ *   - the page routes answer HTML (there is no session: a page load from this machine is
+ *     served, D9);
+ *   - `/assets/…` answers the stylesheet and the two scripts;
+ *   - `/healthz` answers the portal's own name, pid and version, so a start or a stop can tell
+ *     this portal apart from every other program on the port;
  *   - `/api/<action>` answers JSON, and only to a POST (a state change is never a GET);
  *   - anything else is 403 or 404, with one word and never a page.
  *
- * The server binds `127.0.0.1` and nothing else, and stops itself after `idleMs` with no
- * request (`session.ts`). Nothing about the machine — a key, a session cookie, a CSRF token —
- * is ever logged.
+ * The server binds `127.0.0.1` and nothing else, and stays up until it is stopped (D10): no
+ * idle clock, so it is there whenever the person opens it. Nothing about the machine — a key,
+ * the CSRF token — is ever logged.
  */
 
+import { VERSION } from "../build-info";
 import type { Check } from "../cli/doctor";
 import { backendAddress } from "../gateway/settings";
 import { isOlder } from "../update/check";
@@ -57,29 +60,19 @@ import {
 import {
   admit,
   CSRF_HEADER,
-  cookieName,
-  cookieValue,
+  createCsrf,
   type FetchMetadata,
   networkAllowed,
-  secretsMatch,
+  type Random,
   securityHeaders,
-  sessionCookie,
 } from "./guard";
+import { healthAnswer, PORTAL_HEALTH_PATH } from "./health";
 import type { Shell } from "./page";
 import {
-  createSession,
-  exchangeToken,
-  IDLE_MS,
-  isIdle,
-  type PortalSession,
-  type Random,
-  touch,
-} from "./session";
-import {
-  expiredPage,
   healthPage,
   type MachineData,
   machinePage,
+  notFoundPage,
   notSetUpPage,
   overviewPage,
   privacyPage,
@@ -96,11 +89,6 @@ import {
 /** The page routes, and which screen each one draws. */
 const PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 
-/** How often the idle clock is looked at. Never longer than a quarter of the idle window. */
-export function idleCheckMs(idleMs: number): number {
-  return Math.max(50, Math.min(5_000, Math.floor(idleMs / 4)));
-}
-
 /** What a test needs to build a portal with fakes; the real values come from the entry. */
 export interface PortalOptions {
   /** The folder the portal was started in: the project its auto-mode rules come from. */
@@ -110,11 +98,9 @@ export interface PortalOptions {
    * so the plugin's own files are read from the folder that is installed *now*.
    */
   doctor: DoctorSource;
-  /** Thirty minutes in use; a test passes something short. */
-  idleMs?: number;
   /** The port to bind; 0 takes a free one (what a test does). */
   port: number;
-  /** The secrets; a test passes a fixed one. */
+  /** The CSRF token's bytes; a test passes a fixed one. */
   random?: Random;
   /**
    * The workflow module, behind `workflow-adapter.ts`: the Settings page's values, the
@@ -126,23 +112,24 @@ export interface PortalOptions {
 
 /** The portal, running. */
 export interface PortalServer {
-  /** Resolves when it stops: `idle` when nothing asked it anything for long enough. */
-  finished: Promise<"idle" | "stopped">;
-  /** The port it really bound (the one the link names). */
+  /** Resolves when it stops: `portal stop`, or Ctrl+C in a terminal that ran it by hand. */
+  finished: Promise<void>;
+  /** The port it really bound (the address every page and the health answer name). */
   port: number;
-  /** Stops it now: Ctrl+C in the terminal that started it. */
+  /** Stops it now. */
   stop: () => void;
-  /** The link with its one-time token, exactly as printed. */
+  /** Its address, with nothing secret in it: there is no token any more (D9). */
   url: string;
 }
 
-/** What the server keeps between requests. The session lives here and nowhere else. */
+/** What the server keeps between requests. The CSRF token lives here and nowhere else. */
 interface ServerState {
+  /** The token a POST must carry, made once when the server starts and in every page. */
+  csrf: string;
   /** The last doctor pass: the Machine page shows it instead of running one per load. */
   doctor: { at: number; checks: Check[] } | null;
   doctorRun: null | Promise<void>;
   memory: PortalMemory;
-  session: PortalSession;
 }
 
 function respond(body: string, headers: Record<string, string>, status: number): Response {
@@ -160,15 +147,6 @@ function html(body: string, extra: Record<string, string> = {}): Response {
 /** The one-word body of a refusal: nothing for a stranger to read, and no page. */
 function refused(): Response {
   return respond("Forbidden", { "content-type": "text/plain; charset=utf-8" }, 403);
-}
-
-/**
- * The page for a request of the person's own that holds no session: a link already used, or a
- * cookie from a portal that stopped. It says what to run for a new one, and holds no fact
- * about this machine — no version, no port, no token — so it is safe without a session.
- */
-function expiredLinkResponse(): Response {
-  return respond(expiredPage(), { "content-type": "text/html; charset=utf-8" }, 403);
 }
 
 /** The action's body, parsed; `{}` when it is not JSON, so the action refuses its own inputs. */
@@ -208,7 +186,7 @@ export function summaryOf(last: ReturnType<typeof updateState>["last"]): string 
 
 /**
  * Starts the portal. It binds `127.0.0.1:<port>` (0 takes a free one), answers the pages and
- * the actions, and stops itself after `idleMs` with no request.
+ * the actions, and stays up until `stop()` (D10: no idle clock).
  */
 export async function startPortal(
   ctx: PortalContext,
@@ -216,13 +194,12 @@ export async function startPortal(
 ): Promise<PortalServer> {
   const random: Random =
     options.random ?? ((bytes) => Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))));
-  const idleMs = options.idleMs ?? IDLE_MS;
   const workflow = options.workflow ?? workflowAdapter;
   const state: ServerState = {
+    csrf: createCsrf(random),
     doctor: null,
     doctorRun: null,
     memory: readMemory(ctx.paths),
-    session: createSession(random, ctx.now()),
   };
   const server = Bun.serve({
     fetch: (request) => handle(request),
@@ -239,16 +216,10 @@ export async function startPortal(
   });
   const port = server.port ?? options.port;
 
-  let settle: (how: "idle" | "stopped") => void = () => undefined;
-  const finished = new Promise<"idle" | "stopped">((resolve) => {
+  let settle: () => void = () => undefined;
+  const finished = new Promise<void>((resolve) => {
     settle = resolve;
   });
-  const idleTimer = setInterval(() => {
-    if (!isIdle(state.session, ctx.now(), idleMs)) return;
-    clearInterval(idleTimer);
-    server.stop(true);
-    settle("idle");
-  }, idleCheckMs(idleMs));
 
   /**
    * The project's own defaults, remembered for this run. Reading them runs git and, when `gh`
@@ -452,7 +423,6 @@ export async function startPortal(
   async function handle(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
-    const token = url.searchParams.get("t");
     const fetchMeta: FetchMetadata = {
       mode: request.headers.get("sec-fetch-mode"),
       site: request.headers.get("sec-fetch-site"),
@@ -486,51 +456,23 @@ export async function startPortal(
       }
     }
 
+    // The portal's own name, pid and version: what `portal status`, `portal stop` and a
+    // version hand-over read to tell this portal apart from every other program on the port.
+    // It holds nothing of the machine, so the network rules alone judge it.
+    if (url.pathname === PORTAL_HEALTH_PATH) {
+      return method === "GET" ? json(healthAnswer(VERSION, process.pid), 200) : refused();
+    }
+
     const gate = admit({
-      cookie: cookieValue(request.headers.get("cookie"), cookieName(port)),
       csrf: request.headers.get(CSRF_HEADER),
-      expectedCsrf: state.session.csrf,
+      expectedCsrf: state.csrf,
       fetchMeta,
       host: request.headers.get("host"),
       method,
       origin: request.headers.get("origin"),
       port,
-      session: state.session.cookie,
-      // Compared without leaking where they differ, like the session and the CSRF token.
-      tokenValid: secretsMatch(state.session.token, token),
     });
-    if (gate.kind === "refused") {
-      // A GET that passed the Host and Origin checks but holds no session is the person's own
-      // browser with a dead link or an old cookie: it gets the page that says so. A Host or
-      // Origin refusal stays the one word for a stranger, and so does a refused POST.
-      if (method === "GET" && gate.reason === "session") return expiredLinkResponse();
-      return refused();
-    }
-
-    // The Health page's five-second reload asks with `?auto=1`: it draws the page again and
-    // is not the person doing anything, so it must not hold the idle clock open — a tab left
-    // open would otherwise keep this portal alive forever.
-    if (url.searchParams.get("auto") !== "1") touch(state.session, ctx.now());
-
-    if (gate.kind === "exchange") {
-      // The first load: the one-time token becomes the session cookie, and the page is
-      // served in the same answer, so the URL can be cleaned by the page's own script.
-      const value = exchangeToken(state.session, token, random, ctx.now());
-      if (value === null) return refused();
-      const found = readConfig(ctx);
-      const shell: Shell = {
-        bun: ctx.bunVersion,
-        csrf: state.session.csrf,
-        facts: await shellFacts(ctx, port, found),
-      };
-      const path = PAGES.has(url.pathname) ? url.pathname : "/";
-      return pageResponse(
-        path,
-        shell,
-        { "set-cookie": sessionCookie(cookieName(port), value) },
-        found,
-      );
-    }
+    if (gate.kind === "refused") return refused();
 
     if (url.pathname.startsWith("/api/")) {
       if (method !== "POST") return json({ lines: ["An action is a POST."], ok: false }, 405);
@@ -568,29 +510,25 @@ export async function startPortal(
     const found = readConfig(ctx);
     const shell: Shell = {
       bun: ctx.bunVersion,
-      csrf: state.session.csrf,
+      csrf: state.csrf,
       facts: await shellFacts(ctx, port, found),
     };
     if (url.pathname === "/privacy") {
       return html(privacyPage(shell), {});
     }
-    if (!PAGES.has(url.pathname)) return expiredPageResponse();
+    if (!PAGES.has(url.pathname)) {
+      return respond(notFoundPage(), { "content-type": "text/html; charset=utf-8" }, 404);
+    }
     return pageResponse(url.pathname, shell, {}, found);
-  }
-
-  /** A route that is not one of ours, with no session: the link is dead. */
-  function expiredPageResponse(): Response {
-    return respond(expiredPage(), { "content-type": "text/html; charset=utf-8" }, 404);
   }
 
   return {
     finished,
     port,
     stop: () => {
-      clearInterval(idleTimer);
       server.stop(true);
-      settle("stopped");
+      settle();
     },
-    url: `http://127.0.0.1:${port}/?t=${state.session.token ?? ""}`,
+    url: `http://127.0.0.1:${port}/`,
   };
 }
