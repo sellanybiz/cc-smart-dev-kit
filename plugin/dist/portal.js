@@ -7068,6 +7068,8 @@ function cooldownSeconds(status, retryAfter) {
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
+var BREAKER_HOLD_CEILING_MS = 240000;
+var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
 var NO_CONFIG_MEANS = "every slot is off: each Claude model goes to Anthropic as Claude Code sent it (your own Claude login) until it is fixed";
 var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
 var backendSchema = looseObject({
@@ -7080,10 +7082,14 @@ var gatewayConfigSchema = looseObject({
   backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
   judgeTested: record(string2(), string2()).optional(),
   fallback: record(string2(), boolean2()).optional(),
+  breaker: record(string2(), boolean2()).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
-  timeouts: looseObject({ firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS) }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
+  timeouts: looseObject({
+    breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
+    firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
+  }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
   for (const [slot, targets] of Object.entries(config.slots)) {
@@ -7126,6 +7132,21 @@ var gatewayConfigSchema = looseObject({
       });
     }
   }
+  for (const slot of Object.keys(config.breaker ?? {})) {
+    if (slot === JUDGE_SLOT) {
+      ctx.addIssue({
+        code: "custom",
+        message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+        path: ["breaker", slot]
+      });
+    } else if (!Object.hasOwn(config.slots, slot)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `breaker names slot "${slot}", which is not in slots (a slot with no chain has no request to hold)`,
+        path: ["breaker", slot]
+      });
+    }
+  }
 });
 function modelSlotError(model, slot, slots) {
   if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
@@ -7151,6 +7172,19 @@ function fallbackOn(config, slot) {
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
   return !FALLBACK_OFF_BY_DEFAULT.includes(slot);
+}
+function breakerOn(config, slot) {
+  if (slot === JUDGE_SLOT)
+    return false;
+  const set = config.breaker;
+  if (set !== undefined && Object.hasOwn(set, slot))
+    return set[slot] === true;
+  return true;
+}
+function breakerWords(config, slot) {
+  if (slot === JUDGE_SLOT)
+    return null;
+  return breakerOn(config, slot) ? "breaker on" : "breaker off";
 }
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
@@ -7725,7 +7759,19 @@ var fallbackSchema = object({
   since: number2(),
   target: string2()
 });
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
 var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
   version: literal(1)
@@ -12620,6 +12666,10 @@ Commands:
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
                          On by default for scout and worker; off for opus, fable, judge.
+  breaker <slot> on|off  When every target of a slot is limited or down, may the router hold
+                         the request for a while and then ask Claude Code to retry? Off: the
+                         last answer goes back at once. On by default for scout, worker,
+                         opus and fable. The judge never holds, so it has no switch.
   setup [--yes] [--backend-key-stdin <backend> | --omniroute-password-stdin
         | --omniroute-password | --no-backend-key] [--save-unchecked]
                          Make the config (the key on stdin), install the router copy and
@@ -12738,12 +12788,24 @@ function withoutModelSlot(config, slot) {
   const kept = Object.entries(modelSlots ?? {}).filter(([, named]) => named !== slot);
   return kept.length > 0 ? { ...rest, modelSlots: Object.fromEntries(kept) } : rest;
 }
-function withFallback(config, slot, value) {
-  const { fallback, ...rest } = config;
-  const kept = Object.entries(fallback ?? {}).filter(([named]) => named !== slot);
+var SWITCH_FIELDS = ["breaker", "fallback"];
+function withSwitch(config, field, slot, value) {
+  const kept = Object.entries(config[field] ?? {}).filter(([named]) => named !== slot);
   if (value !== null)
     kept.push([slot, value]);
-  return kept.length > 0 ? { ...rest, fallback: Object.fromEntries(kept) } : rest;
+  const next = { ...config };
+  if (kept.length > 0)
+    next[field] = Object.fromEntries(kept);
+  else
+    delete next[field];
+  return next;
+}
+function withoutSwitches(config, slot) {
+  return SWITCH_FIELDS.reduce((next, field) => withSwitch(next, field, slot, null), config);
+}
+function setSwitch(current, field, isOn, slot, now) {
+  const unset = withSwitch(current, field, slot, null);
+  return parseConfig(isOn(unset, slot) === now ? unset : withSwitch(unset, field, slot, now));
 }
 var RETIRED_DEFAULT_CHAIN = [
   "omniroute:ollama-cloud/deepseek-v4.1-flash",
@@ -12789,7 +12851,7 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
     if (!Object.hasOwn(config.slots, key))
       return { error: `${key} is already off` };
     const slots = Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== key));
-    const checked = parseConfig(withFallback({ ...base, slots }, key, null));
+    const checked = parseConfig(withoutSwitches({ ...base, slots }, key));
     if ("error" in checked)
       return { error: checked.error };
     return { config: checked.config, key, next: [], old };
@@ -12840,8 +12902,30 @@ function planFallbackChange(current, slotArg, value) {
   }
   const now = value === "on";
   const was = fallbackOn(current, key);
-  const unset = withFallback(current, key, null);
-  const checked = parseConfig(fallbackOn(unset, key) === now ? unset : withFallback(unset, key, now));
+  const checked = setSwitch(current, "fallback", fallbackOn, key, now);
+  if ("error" in checked)
+    return { error: checked.error };
+  return { config: checked.config, key, now, was };
+}
+function planBreakerChange(current, slotArg, value) {
+  const key = slotKeyFromArg(slotArg);
+  if (key === null) {
+    return {
+      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, or cc-smart-dev-kit-<name>)`
+    };
+  }
+  if (key === JUDGE_SLOT)
+    return { error: `${key}: ${JUDGE_NEVER_HOLDS}` };
+  if (value !== "on" && value !== "off")
+    return { error: `say on or off, not "${value}"` };
+  if (!Object.hasOwn(current.slots, key)) {
+    return {
+      error: `${key} has no chain, so there is no request for the breaker to hold. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`
+    };
+  }
+  const now = value === "on";
+  const was = breakerOn(current, key);
+  const checked = setSwitch(current, "breaker", breakerOn, key, now);
   if ("error" in checked)
     return { error: checked.error };
   return { config: checked.config, key, now, was };
@@ -12877,6 +12961,9 @@ Slots (the first target answers; the next one only while fallback is on):`);
       continue;
     }
     const notes = [fallbackWords(config, key)];
+    const breaker = breakerWords(config, key);
+    if (breaker !== null)
+      notes.push(breaker);
     if (key === JUDGE_SLOT) {
       const untested = targets.filter((target) => !judgeTargetTested(config, target));
       notes.push(untested.length > 0 ? `NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>` : "judges every safety check in Claude's place");
@@ -13011,6 +13098,27 @@ async function commandFallback(ctx, args) {
   ctx.print(`${plan.key}: fallback ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}
   ${targets.join(" \u2192 ")}  (${fallbackWords(plan.config, plan.key)})`);
   ctx.print(plan.now ? "  The next target answers when the one before it fails or rests." : "  Only the first target answers; when it fails, its error goes back to Claude Code.");
+  ctx.print("The router uses it from its next request.");
+  return 0;
+}
+async function commandBreaker(ctx, args) {
+  const [slotArg, value, ...extra] = args;
+  if (slotArg === undefined || value === undefined || extra.length > 0) {
+    ctx.error(USAGE);
+    return 2;
+  }
+  const configPath = ctx.paths.gatewayConfigFile;
+  const plan = await withLock(ctx.paths.stateDir, () => {
+    const planned = planBreakerChange(loadConfigFile(configPath), slotArg, value);
+    if ("error" in planned)
+      throw new Error(planned.error);
+    saveConfig(configPath, planned.config);
+    return planned;
+  }, { waitMs: 1e4 });
+  const targets = plan.config.slots[plan.key] ?? [];
+  ctx.print(`${plan.key}: breaker ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}
+  ${targets.join(" \u2192 ")}  (${breakerWords(plan.config, plan.key) ?? ""})`);
+  ctx.print(plan.now ? "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry." : "  While every target is limited or down, the last answer goes back to Claude Code at once.");
   ctx.print("The router uses it from its next request.");
   return 0;
 }
@@ -13380,6 +13488,8 @@ async function runGateway(args, ctx) {
       return commandSlot(ctx, rest);
     case "fallback":
       return commandFallback(ctx, rest);
+    case "breaker":
+      return commandBreaker(ctx, rest);
     case "status":
       return noArgs(() => commandStatus(ctx));
     case "setup":

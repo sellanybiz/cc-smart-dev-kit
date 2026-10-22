@@ -82,6 +82,13 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   on at far more than the plan limit it was set up for. `gateway setup` drops 0.4.x's hidden
   `claude-sonnet-5-5` from a scout or worker chain only while that chain is still 0.4.x's
   exact default (`withoutRetiredDefaultClaude`); a chain the person changed is theirs.
+- **The breaker switch** (`breaker` in the config, `breakerOn`, `gateway breaker <slot> on|off`)
+  is set the same way, and is on by default for every slot but the judge (below). How long a
+  hold may last is `timeouts.breakerHoldMs`, which a person can only shorten (0: none): never
+  above `BREAKER_HOLD_CEILING_MS`, because Claude Code gives up on a request held too long.
+  A slot's switch goes when the slot is turned off (`slot <slot> off`) and stays when its chain
+  is only changed. The contract, with the state file's `breakers`: `docs/gateway.md` § The
+  breaker switch and its hold.
 - **A safety check on a backend has a deadline on every target, the last too** (a lone judge
   that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.
@@ -112,6 +119,9 @@ Claude judges auto mode's safety checks unless the person gives the judge slot a
   on it. Raise `JUDGE_TEST_VERSION` when the test changes, or what passing it lets a target
   do (3 since 0.5.0, when a judge started judging first).
 - The judge takes no `claude-…` target.
+- **The judge never holds a request** (the breaker): a held safety check would freeze every
+  action in auto mode, so it has no breaker switch, `breakerOn` is false for it, and the schema
+  refuses a `breaker` entry for it (`JUDGE_NEVER_HOLDS`).
 - **Say the trade-off** wherever a judge is set or shown (`JUDGE_WARNING`): a weaker judge
   can block good work or let a risky command through, and it reads the conversation.
 
@@ -262,8 +272,8 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
 ## Names
 
 Slots `cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`, `cc-smart-dev-kit-judge`, and the model slots
-`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`; the CLI's `gateway slot` and `gateway fallback`;
-the limit state `~/.local/state/cc-smart-dev-kit/gateway-state.json`; config
+`cc-smart-dev-kit-opus`, `cc-smart-dev-kit-fable`; the CLI's `gateway slot`, `gateway fallback`
+and `gateway breaker`; the limit state `~/.local/state/cc-smart-dev-kit/gateway-state.json`; config
 `~/.config/cc-smart-dev-kit/gateway.json`; unit and log name `cc-smart-dev-kit-router`; health path
 `/__cc-smart-dev-kit/health`. A project's old names reach the new ones through the config's
 `aliases` map, which its own migration writes; the plugin ships none, and writes them on

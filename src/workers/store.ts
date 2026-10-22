@@ -66,7 +66,8 @@ export const STORE_LOCK_WAIT_MS = 3_000;
  * - `starting` — its worktree and session are being made;
  * - `working` — its session is running a turn;
  * - `blocked` — it waits on the lead or the person (a question, a permission);
- * - `paused` — it waits for a usage limit to reset;
+ * - `paused` — it waits for a usage limit to reset, or for its gateway slot to answer again
+ *   (`waitingFor` says which);
  * - `quiet` — agent view says working, but its transcript has not moved for a while (an alert);
  * - `done` / `failed` — its turn ended with that report;
  * - `stopped` — its session was stopped (`claude stop`); the conversation stays on disk;
@@ -226,6 +227,32 @@ export type WorkerQuestion = z.infer<typeof workerQuestionFields>;
 /** What a worker gives when it asks: the store adds when, and the answer comes later. */
 export type NewWorkerQuestion = Pick<WorkerQuestion, "options" | "question" | "recommended">;
 
+/**
+ * What a worker waits for while it is `paused`: the slot whose every target is limited or
+ * down (the router holds its requests), or Claude's own plan limit (no target can answer).
+ * The times are ISO 8601, like every other time in a record. Loose, like every nested object
+ * here: a field a newer kit adds is kept when this kit writes the record again.
+ */
+const waitingForSchema = z.discriminatedUnion("kind", [
+  z.looseObject({
+    kind: z.literal("slot"),
+    /** When the wait began (ISO 8601). */
+    since: text,
+    /** The slot's key (`cc-smart-dev-kit-worker`). */
+    slot: text,
+  }),
+  z.looseObject({
+    kind: z.literal("claude-limit"),
+    /** The Claude model at its limit (`claude-opus-5-5`). */
+    model: text,
+    /** When the limit resets (ISO 8601); null when Anthropic named no reset. */
+    resetsAt: text.nullable(),
+  }),
+]);
+
+/** What a paused worker waits for (`waitingFor` on its record). */
+export type WaitingFor = z.output<typeof waitingForSchema>;
+
 /** The fields of a worker record. */
 const workerFields = z.object({
   /** The schema version it was written with. */
@@ -288,6 +315,13 @@ const workerFields = z.object({
   pr: z.number().int().positive().nullable(),
   /** The memory its session's process holds, in MB, when last read; null before that. */
   memoryMb: z.number().min(0).nullable(),
+  /**
+   * What it waits for while `paused`, taken from the router's state file (`limit-state.ts`)
+   * when it pauses. Absent on a record an older kit wrote, and cleared again when the worker
+   * goes on (`updateWorker` with `waitingFor: undefined`). Read it only while the state is
+   * `paused`: a kit that does not know the field changes the state and leaves it behind.
+   */
+  waitingFor: waitingForSchema.optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
@@ -318,6 +352,12 @@ const leadFields = z.object({
   tag: text,
   /** The folder the lead works in. */
   cwd: text,
+  /**
+   * The lead's own subagents that stopped on an API error and wait to be woken again
+   * (session ids, oldest first); absent on a record an older kit wrote. The lead's notes
+   * hook records them, and the lead resumes each with a message (never a new session).
+   */
+  pausedAgents: z.array(text).optional(),
   createdAt: text,
   updatedAt: text,
 });

@@ -2201,10 +2201,14 @@ repository, under the state folder:
   (`answeringSlot`), the effort, the permission mode, the worktree, the branch, the ref it starts
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
   and where it is: its state, its last line, its report, its pull request, its memory, its
-  questions, and when it was recorded and changed. The states are `queued`, `starting`,
+  questions, what it waits for while `paused` (`waitingFor`: a gateway slot, or Claude's own
+  limit), and when it was recorded and changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`WORKER_STATES`, each one's meaning in the file). **A lead record** holds its session
-  id, name, repository, plan, the tag its workers' names carry, and folder.
+  id, name, repository, plan, the tag its workers' names carry, and folder, and may hold
+  `pausedAgents`: the ids of its own subagents that stopped on an API error and wait to be woken.
+  Both new fields are optional (`waitingFor` and `pausedAgents`), and a record an older kit wrote
+  reads as it was.
 - **A worker's questions** (D36): a worker never asks the person. A question to its lead — the
   question, two or more options, the one it recommends (counted from 1), when it was asked — goes
   at the end of its `questions` with a `question` event (`addWorkerQuestion`), and the worker goes

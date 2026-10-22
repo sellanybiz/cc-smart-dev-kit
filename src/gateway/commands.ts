@@ -25,12 +25,15 @@ import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import {
+  breakerOn,
+  breakerWords,
   ConfigError,
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_FIRST_BYTE_MS,
   DEFAULT_PORT,
   fallbackOn,
   type GatewayConfig,
+  JUDGE_NEVER_HOLDS,
   judgeTargetTested,
   judgeTestProof,
   loadConfigFile,
@@ -90,6 +93,10 @@ Commands:
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
                          On by default for scout and worker; off for opus, fable, judge.
+  breaker <slot> on|off  When every target of a slot is limited or down, may the router hold
+                         the request for a while and then ask Claude Code to retry? Off: the
+                         last answer goes back at once. On by default for scout, worker,
+                         opus and fable. The judge never holds, so it has no switch.
   setup [--yes] [--backend-key-stdin <backend> | --omniroute-password-stdin
         | --omniroute-password | --no-backend-key] [--save-unchecked]
                          Make the config (the key on stdin), install the router copy and
@@ -345,12 +352,50 @@ function withoutModelSlot(config: GatewayConfig, slot: string): GatewayConfig {
   return kept.length > 0 ? { ...rest, modelSlots: Object.fromEntries(kept) } : rest;
 }
 
-/** The config with `slot`'s fallback switch set (`value`), or left to its default (null). */
-function withFallback(config: GatewayConfig, slot: string, value: boolean | null): GatewayConfig {
-  const { fallback, ...rest } = config;
-  const kept = Object.entries(fallback ?? {}).filter(([named]) => named !== slot);
+/**
+ * The per-slot switches a person sets, each a `{"<slot>": true | false}` record in the config
+ * (`fallback`, `breaker`). A switch with no entry for a slot means the slot's default.
+ */
+const SWITCH_FIELDS = ["breaker", "fallback"] as const;
+type SwitchField = (typeof SWITCH_FIELDS)[number];
+
+/**
+ * The config with `slot`'s `field` switch set (`value`), or left to its default (null). The
+ * field itself goes when no slot has an entry left.
+ */
+function withSwitch(
+  config: GatewayConfig,
+  field: SwitchField,
+  slot: string,
+  value: boolean | null,
+): GatewayConfig {
+  const kept = Object.entries(config[field] ?? {}).filter(([named]) => named !== slot);
   if (value !== null) kept.push([slot, value]);
-  return kept.length > 0 ? { ...rest, fallback: Object.fromEntries(kept) } : rest;
+  const next = { ...config };
+  if (kept.length > 0) next[field] = Object.fromEntries(kept);
+  else delete next[field];
+  return next;
+}
+
+/** The config with every switch of `slot` back at its default: a slot with no chain has none. */
+function withoutSwitches(config: GatewayConfig, slot: string): GatewayConfig {
+  return SWITCH_FIELDS.reduce((next, field) => withSwitch(next, field, slot, null), config);
+}
+
+/**
+ * The config checked after `slot`'s `field` switch is set to `now`. A value equal to what the
+ * slot's default already means (`isOn`) is written as no entry, so a config stays free of
+ * entries that say nothing.
+ */
+function setSwitch(
+  current: GatewayConfig,
+  field: SwitchField,
+  isOn: (config: GatewayConfig, slot: string) => boolean,
+  slot: string,
+  now: boolean,
+): { config: GatewayConfig } | { error: string } {
+  const unset = withSwitch(current, field, slot, null);
+  return parseConfig(isOn(unset, slot) === now ? unset : withSwitch(unset, field, slot, now));
 }
 
 /**
@@ -442,8 +487,9 @@ export function planSlotChange(
   if (targetsText.trim() === "off") {
     if (!Object.hasOwn(config.slots, key)) return { error: `${key} is already off` };
     const slots = Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== key));
-    // An alias may still point at the slot: the check says so.
-    const checked = parseConfig(withFallback({ ...base, slots }, key, null));
+    // An alias may still point at the slot: the check says so. The slot's switches go with
+    // its chain: an entry for a slot that is not in `slots` is a config error.
+    const checked = parseConfig(withoutSwitches({ ...base, slots }, key));
     if ("error" in checked) return { error: checked.error };
     return { config: checked.config, key, next: [], old };
   }
@@ -503,10 +549,39 @@ export function planFallbackChange(
   }
   const now = value === "on";
   const was = fallbackOn(current, key);
-  const unset = withFallback(current, key, null);
-  const checked = parseConfig(
-    fallbackOn(unset, key) === now ? unset : withFallback(unset, key, now),
-  );
+  const checked = setSwitch(current, "fallback", fallbackOn, key, now);
+  if ("error" in checked) return { error: checked.error };
+  return { config: checked.config, key, now, was };
+}
+
+/**
+ * The config with one slot's breaker switch set: on, the router may hold a request while
+ * every target the slot uses is limited or down, then ask Claude Code to retry; off, the
+ * last answer goes back at once. The judge has no switch (`JUDGE_NEVER_HOLDS`), and a slot
+ * with no chain has no request to hold. A value equal to the default (on) is written as no
+ * entry (`breakerOn`).
+ */
+export function planBreakerChange(
+  current: GatewayConfig,
+  slotArg: string,
+  value: string,
+): { config: GatewayConfig; key: string; now: boolean; was: boolean } | { error: string } {
+  const key = slotKeyFromArg(slotArg);
+  if (key === null) {
+    return {
+      error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, or cc-smart-dev-kit-<name>)`,
+    };
+  }
+  if (key === JUDGE_SLOT) return { error: `${key}: ${JUDGE_NEVER_HOLDS}` };
+  if (value !== "on" && value !== "off") return { error: `say on or off, not "${value}"` };
+  if (!Object.hasOwn(current.slots, key)) {
+    return {
+      error: `${key} has no chain, so there is no request for the breaker to hold. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`,
+    };
+  }
+  const now = value === "on";
+  const was = breakerOn(current, key);
+  const checked = setSwitch(current, "breaker", breakerOn, key, now);
   if ("error" in checked) return { error: checked.error };
   return { config: checked.config, key, now, was };
 }
@@ -554,6 +629,8 @@ function printSlots(config: GatewayConfig, print: (line: string) => void): void 
       continue;
     }
     const notes = [fallbackWords(config, key)];
+    const breaker = breakerWords(config, key);
+    if (breaker !== null) notes.push(breaker);
     if (key === JUDGE_SLOT) {
       const untested = targets.filter((target) => !judgeTargetTested(config, target));
       notes.push(
@@ -730,6 +807,37 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
     plan.now
       ? "  The next target answers when the one before it fails or rests."
       : "  Only the first target answers; when it fails, its error goes back to Claude Code.",
+  );
+  ctx.print("The router uses it from its next request.");
+  return 0;
+}
+
+async function commandBreaker(ctx: GatewayContext, args: string[]): Promise<number> {
+  const [slotArg, value, ...extra] = args;
+  if (slotArg === undefined || value === undefined || extra.length > 0) {
+    ctx.error(USAGE);
+    return 2;
+  }
+  const configPath = ctx.paths.gatewayConfigFile;
+  // Read again and save inside the lock, as `slot` does: another command's change stays.
+  const plan = await withLock(
+    ctx.paths.stateDir,
+    () => {
+      const planned = planBreakerChange(loadConfigFile(configPath), slotArg, value);
+      if ("error" in planned) throw new Error(planned.error);
+      saveConfig(configPath, planned.config);
+      return planned;
+    },
+    { waitMs: 10_000 },
+  );
+  const targets = plan.config.slots[plan.key] ?? [];
+  ctx.print(
+    `${plan.key}: breaker ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}\n  ${targets.join(" → ")}  (${breakerWords(plan.config, plan.key) ?? ""})`,
+  );
+  ctx.print(
+    plan.now
+      ? "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry."
+      : "  While every target is limited or down, the last answer goes back to Claude Code at once.",
   );
   ctx.print("The router uses it from its next request.");
   return 0;
@@ -1233,6 +1341,8 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return commandSlot(ctx, rest);
     case "fallback":
       return commandFallback(ctx, rest);
+    case "breaker":
+      return commandBreaker(ctx, rest);
     case "status":
       return noArgs(() => commandStatus(ctx));
     case "setup":

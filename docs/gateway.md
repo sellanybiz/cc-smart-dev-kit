@@ -122,6 +122,50 @@ machine adds; off for opus, fable and the judge.
 - The router reads the switch from the config it already holds (re-read only when the file
   changes): no extra disk read per request.
 
+## The breaker switch and its hold
+
+A slot whose every target is limited or down can hold a request for a while and then ask
+Claude Code to retry, instead of handing back the last failure at once. Two keys in
+`gateway.json` and one command decide that; a config written before they existed is read as it
+was (`config.ts`, tested in `config.test.ts`).
+
+- **`"breaker": {"<slot>": true | false}`**, shaped like `fallback`. Absent, the slot's default
+  applies (`breakerOn`): **on** for scout, worker, opus, fable and any slot a machine adds.
+  `cc-smart-dev-kit gateway breaker <slot> on|off` writes it, with the same write path as
+  `gateway fallback`: read again and saved inside the state lock, atomically, mode 600, every
+  field it does not know kept. A value equal to the default is written as no entry. The command
+  changes `gateway.json` only: not Claude Code's settings, not the router's service. The router
+  reads the file when it changes, so the switch is live from the next request.
+- **The judge never holds.** A held safety check would freeze every action in auto mode. The
+  schema refuses a `breaker` entry for `cc-smart-dev-kit-judge`
+  (`breaker names cc-smart-dev-kit-judge: the judge never holds a request …`), `breakerOn` is
+  false for it, and `gateway breaker judge …` says the same. The judge keeps its 504 on a miss
+  (§ The judge slot).
+- **A slot with no chain has no switch to set**, as with the fallback: the schema refuses an
+  entry for a slot that is not in `slots`, and `gateway slot <slot> off` drops the slot's
+  `breaker` and `fallback` entries with its chain. Changing a slot's chain keeps its switch.
+- **`"timeouts": {"breakerHoldMs": <ms>}`** is how long a request that streams is held, in whole
+  milliseconds. `0` holds none. Absent, it is the ceiling, **240000** (240 s,
+  `BREAKER_HOLD_CEILING_MS`); a bigger value is refused with a message that names the ceiling
+  (`too long: at most 240000 ms (240 s) …`), and the router then keeps the last good config like
+  after any bad edit (§ Where things live). A request that does not stream is held at most
+  **60 s** (`BREAKER_HOLD_NON_STREAMING_MS`): a constant, not a setting. One hold for the whole
+  gateway, not one per slot: a per-slot value would be a knob for no difference anyone has.
+- **`gateway status` and `gateway models` show the switch** beside the fallback switch:
+  `cc-smart-dev-kit-worker omniroute:a → omniroute:b  (fallback on; breaker on)`. The judge's row
+  has none. The portal has no breaker switch yet.
+- **In the state file** (§ The limit state, the status line, the alert) an optional `breakers`
+  record per slot says which breakers are open: `{since, lastAt, targets: [{target, status,
+  until}], held}`, times in milliseconds, `status` the HTTP status of a target's last failure or
+  null when it gave none. A file written before it reads as no breaker open, and a reader that
+  does not know the field ignores it. `currentBreakers` counts a record for 15 minutes after
+  `lastAt`, the way a limit without a reset time counts, so a record a stopped router left
+  behind goes stale.
+- **In a worker's record** (`src/workers/store.ts`, § Lead and workers in `docs/design.md`) a
+  `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` or `{kind:
+  "claude-limit", model, resetsAt}`, and a lead's record may carry `pausedAgents`, the ids of its
+  own subagents waiting to be woken. Both are optional.
+
 ## The judge slot
 
 In auto mode, Claude Code asks a model before each action that is not plainly safe:
@@ -373,13 +417,14 @@ cc-smart-dev-kit gateway slot opus off                            # Opus answers
 **The state file**, `~/.local/state/cc-smart-dev-kit/gateway-state.json` (mode 600), written by
 the router in the background (never before an answer goes out; at most once a minute for
 a running fallback): the Claude models it last saw at the plan's limit (the window and its
-reset) and the slots whose first target, a Claude model, is at that limit while a next
-target answers (§ Model slots). Never a key, a header value or a word of a request.
-`limit-state.ts` reads it. The router reads it once when it starts (`loadState`), so a
-restart (an update, a crash) keeps the limits and the fallbacks it saw, and its next write
-keeps them too; a file it cannot read or understand is said once in a WARN, and it starts
-from none. A judge record a 0.4.3 router wrote is not shown any more: the
-judge is no fallback since 0.5.0.
+reset), the slots whose first target, a Claude model, is at that limit while a next
+target answers (§ Model slots), and the slots whose every target is limited or down while
+their breaker holds requests (§ The breaker switch and its hold). Never a key, a header
+value or a word of a request. `limit-state.ts` reads it. The router reads it once when it
+starts (`loadState`), so a restart (an update, a crash) keeps the limits, the fallbacks and
+the breakers it saw, and its next write keeps them too; a file it cannot read or understand
+is said once in a WARN, and it starts from none. A judge record a 0.4.3 router wrote is not
+shown any more: the judge is no fallback since 0.5.0.
 
 **The status line** (`cc-smart-dev-kit statusline`; `cc-smart-dev-kit setup --statusline` sets it in
 Claude Code's `settings.json` as an owned key, or setup asks in a terminal when none is

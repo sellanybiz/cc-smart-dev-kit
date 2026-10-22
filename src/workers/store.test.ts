@@ -506,6 +506,183 @@ describe("reading the store", () => {
   });
 });
 
+describe("what a paused worker waits for", () => {
+  const SLOT_WAIT = {
+    kind: "slot",
+    since: "2026-10-21T21:05:00.000Z",
+    slot: "cc-smart-dev-kit-worker",
+  } as const;
+  const LIMIT_WAIT = {
+    kind: "claude-limit",
+    model: "claude-opus-5-5",
+    resetsAt: "2026-10-21T19:40:00.000Z",
+  } as const;
+
+  /** A record on disk as a kit wrote it, written by hand: `extra` is merged into it. */
+  function onDisk(state: string, extra: Record<string, unknown>, id = "wk-K-contracts") {
+    const file = workerFile(state, REPO, id);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...queued(id),
+        createdAt: "2026-10-21T10:00:00.000Z",
+        updatedAt: "2026-10-21T10:00:00.000Z",
+        version: 1,
+        ...extra,
+      }),
+    );
+    return file;
+  }
+
+  test("a record from before the field reads as it was: no waitingFor appears", () => {
+    const state = tempDir("state");
+    onDisk(state, { state: "paused" });
+    const read = readWorker(state, REPO, "wk-K-contracts");
+    expect(read?.state).toBe("paused");
+    expect(read).not.toHaveProperty("waitingFor");
+  });
+
+  test("a worker pauses on its slot: the state, the wait, and one state event", async () => {
+    const state = tempDir("state");
+    await createWorker(state, queued(), T0);
+    await updateWorker(
+      state,
+      REPO,
+      "wk-K-contracts",
+      { state: "paused", waitingFor: SLOT_WAIT },
+      T1,
+      "worker slot limited since 21:05",
+    );
+    const saved = JSON.parse(readFileSync(workerFile(state, REPO, "wk-K-contracts"), "utf8"));
+    expect(saved.state).toBe("paused");
+    expect(saved.waitingFor).toEqual({
+      kind: "slot",
+      since: "2026-10-21T21:05:00.000Z",
+      slot: "cc-smart-dev-kit-worker",
+    });
+    expect(readWorker(state, REPO, "wk-K-contracts")?.waitingFor).toEqual(SLOT_WAIT);
+    expect(
+      readWorkerEvents(state, REPO).events.map((one) => [one.type, one.state, one.text]),
+    ).toEqual([
+      ["created", "queued", null],
+      ["state", "paused", "worker slot limited since 21:05"],
+    ]);
+  });
+
+  test("or on Claude's own limit, with the reset time or with none", async () => {
+    const state = tempDir("state");
+    await createWorker(state, queued("wk-a"), T0);
+    await createWorker(state, queued("wk-b"), T0);
+    await updateWorker(state, REPO, "wk-a", { state: "paused", waitingFor: LIMIT_WAIT }, T1);
+    await updateWorker(
+      state,
+      REPO,
+      "wk-b",
+      {
+        state: "paused",
+        waitingFor: { kind: "claude-limit", model: "claude-fable-5-1", resetsAt: null },
+      },
+      T1,
+    );
+    expect(readWorker(state, REPO, "wk-a")?.waitingFor).toEqual({
+      kind: "claude-limit",
+      model: "claude-opus-5-5",
+      resetsAt: "2026-10-21T19:40:00.000Z",
+    });
+    expect(readWorker(state, REPO, "wk-b")?.waitingFor).toEqual({
+      kind: "claude-limit",
+      model: "claude-fable-5-1",
+      resetsAt: null,
+    });
+  });
+
+  test("when the worker goes on, the wait is cleared and leaves nothing in the file", async () => {
+    const state = tempDir("state");
+    await createWorker(state, queued(), T0);
+    await updateWorker(
+      state,
+      REPO,
+      "wk-K-contracts",
+      { state: "paused", waitingFor: SLOT_WAIT },
+      T0,
+    );
+    await updateWorker(
+      state,
+      REPO,
+      "wk-K-contracts",
+      { state: "working", waitingFor: undefined },
+      T1,
+      "slot answers again",
+    );
+    const saved = JSON.parse(readFileSync(workerFile(state, REPO, "wk-K-contracts"), "utf8"));
+    expect(saved.state).toBe("working");
+    expect(Object.keys(saved)).not.toContain("waitingFor");
+    expect(readWorker(state, REPO, "wk-K-contracts")).not.toHaveProperty("waitingFor");
+  });
+
+  test("a change that does not touch it leaves it as it was", async () => {
+    const state = tempDir("state");
+    await createWorker(state, queued(), T0);
+    await updateWorker(
+      state,
+      REPO,
+      "wk-K-contracts",
+      { state: "paused", waitingFor: SLOT_WAIT },
+      T0,
+    );
+    await updateWorker(state, REPO, "wk-K-contracts", { lastLine: "still waiting" }, T1);
+    expect(readWorker(state, REPO, "wk-K-contracts")?.waitingFor).toEqual(SLOT_WAIT);
+  });
+
+  test("a field a newer kit added inside the wait is kept when this kit writes the record", async () => {
+    const state = tempDir("state");
+    const newer = { ...SLOT_WAIT, targets: ["omniroute:glm-5.3-flash"] };
+    onDisk(state, { state: "paused", version: 2, waitingFor: newer });
+    await updateWorker(state, REPO, "wk-K-contracts", { lastLine: "x" }, T1);
+    const saved = JSON.parse(readFileSync(workerFile(state, REPO, "wk-K-contracts"), "utf8"));
+    expect(saved.waitingFor).toEqual(newer);
+    expect(saved.version).toBe(2);
+  });
+
+  test("a wait with a field missing, an empty text or a kind this kit does not know is a broken record, named", async () => {
+    const state = tempDir("state");
+    const fail = (extra: Record<string, unknown>, id: string) => {
+      const file = onDisk(state, extra, id);
+      return { file, read: () => readWorker(state, REPO, id) };
+    };
+    const noSlot = fail(
+      { waitingFor: { kind: "slot", since: "2026-10-21T21:05:00.000Z" } },
+      "wk-a",
+    );
+    expect(noSlot.read).toThrow(
+      `Invalid ${noSlot.file}: waitingFor.slot: Invalid input: expected string, received undefined`,
+    );
+    const noReset = fail(
+      { waitingFor: { kind: "claude-limit", model: "claude-opus-5-5" } },
+      "wk-b",
+    );
+    expect(noReset.read).toThrow(
+      `Invalid ${noReset.file}: waitingFor.resetsAt: Invalid input: expected string, received undefined`,
+    );
+    const empty = fail({ waitingFor: { kind: "slot", since: "t", slot: "" } }, "wk-c");
+    expect(empty.read).toThrow(
+      `Invalid ${empty.file}: waitingFor.slot: Too small: expected string to have >=1 characters`,
+    );
+    const unknown = fail({ waitingFor: { kind: "account-switch" } }, "wk-d");
+    expect(unknown.read).toThrow(
+      `Invalid ${unknown.file}: waitingFor.kind: Invalid discriminator value. Expected 'slot' | 'claude-limit'`,
+    );
+    // A list names each broken one and goes on with the good ones.
+    onDisk(state, { waitingFor: SLOT_WAIT, state: "paused" }, "wk-good");
+    const listed = listWorkers(state, REPO);
+    expect(listed.records.map((one) => one.id)).toEqual(["wk-good"]);
+    expect(listed.broken.map((one) => one.file).sort()).toEqual(
+      [noSlot.file, noReset.file, empty.file, unknown.file].sort(),
+    );
+  });
+});
+
 describe("the lead record", () => {
   test("a lead is recorded by its session id; recording it again keeps its start", async () => {
     const state = tempDir("state");
@@ -530,6 +707,62 @@ describe("the lead record", () => {
     expect(statSync(leadFile(state, REPO, LEAD)).mode & 0o777).toBe(0o600);
     expect(listLeads(state, REPO)).toEqual({ broken: [], records: [again] });
     expect(readLead(state, REPO, SESSION)).toBeNull();
+  });
+
+  test("the subagents it waits to wake are recorded, and recording the lead again keeps them", async () => {
+    const state = tempDir("state");
+    const lead = {
+      cwd: REPO,
+      name: "LEAD my-app master-plan",
+      plan: ".claude/plans/master-plan.md",
+      repo: REPO,
+      sessionId: LEAD,
+      tag: "my-app",
+    };
+    // A lead from before the field has no list.
+    const plain = await writeLead(state, lead, T0);
+    expect(plain).not.toHaveProperty("pausedAgents");
+    expect(JSON.parse(readFileSync(leadFile(state, REPO, LEAD), "utf8"))).not.toHaveProperty(
+      "pausedAgents",
+    );
+    // The lead's notes record the ids of the subagents that stopped on an API error.
+    const paused = await writeLead(state, { ...lead, pausedAgents: ["a1b2c3d4", "e5f6a7b8"] }, T1);
+    expect(paused.pausedAgents).toEqual(["a1b2c3d4", "e5f6a7b8"]);
+    expect(JSON.parse(readFileSync(leadFile(state, REPO, LEAD), "utf8")).pausedAgents).toEqual([
+      "a1b2c3d4",
+      "e5f6a7b8",
+    ]);
+    // `worker lead` run again records the lead with no list of its own: the ids stay.
+    const again = await writeLead(state, { ...lead, plan: ".claude/plans/next.md" }, T1);
+    expect(again.pausedAgents).toEqual(["a1b2c3d4", "e5f6a7b8"]);
+    // An empty list is a list: the lead resumed every one.
+    const done = await writeLead(state, { ...lead, pausedAgents: [] }, T1);
+    expect(readLead(state, REPO, LEAD)?.pausedAgents).toEqual([]);
+    expect(done.createdAt).toBe("2026-10-21T10:00:00.000Z");
+  });
+
+  test("an id that is empty, or a list that is not a list, is refused and nothing is written", async () => {
+    const state = tempDir("state");
+    const lead = {
+      cwd: REPO,
+      name: "LEAD my-app master-plan",
+      plan: ".claude/plans/master-plan.md",
+      repo: REPO,
+      sessionId: LEAD,
+      tag: "my-app",
+    };
+    await writeLead(state, lead, T0);
+    const file = leadFile(state, REPO, LEAD);
+    const before = readFileSync(file, "utf8");
+    await expect(writeLead(state, { ...lead, pausedAgents: [""] }, T1)).rejects.toThrow(
+      `Invalid ${file}: pausedAgents.0: Too small: expected string to have >=1 characters`,
+    );
+    expect(readFileSync(file, "utf8")).toBe(before);
+    // Written by hand as something else, a read throws and names the field.
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(before), pausedAgents: "a1b2c3d4" }));
+    expect(() => readLead(state, REPO, LEAD)).toThrow(
+      `Invalid ${file}: pausedAgents: Invalid input: expected array, received string`,
+    );
   });
 
   test("a lead whose session id is not a plain file name is refused", async () => {
