@@ -17,7 +17,7 @@
  * Nothing here writes HTML or JSON: it returns lines, and the page shows them.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import {
@@ -28,6 +28,12 @@ import {
 } from "../browser/token";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import { runUpdate } from "../cli/update";
+import { runCrewAnswer } from "../crew/answer";
+import { realRunProgram } from "../crew/claude";
+import type { CrewContext } from "../crew/context";
+import { runCrewResume, runCrewStop } from "../crew/end";
+import { runCrewRm } from "../crew/remove";
+import { realProcessFacts } from "../crew/session";
 import { listModels, probeModel } from "../gateway/backends";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import {
@@ -39,8 +45,8 @@ import {
 } from "../gateway/config";
 import { testJudgeTarget } from "../gateway/judge-test";
 import { JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
-import { runJobCommand } from "../jobs/commands";
 import { realMemoryFacts } from "../jobs/memory";
+import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
 import { type AutoModeSource, applyAutoMode, autoModeSource } from "../setup/auto-mode";
@@ -49,7 +55,14 @@ import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
 import { isObject } from "../setup/managed-json";
 import { CLAUDE_TIMEOUT_MS, commandContext } from "../update/apply";
-import { heldSince, type LastCheck, readLastCheck, updateFiles } from "../update/state";
+import {
+  heldSince,
+  type LastCheck,
+  readHeldMajor,
+  readLastCheck,
+  updateFiles,
+} from "../update/state";
+import { runWorktrees } from "../worktrees/command";
 import type { PortalContext } from "./context";
 import {
   type ProjectDefaultsReader,
@@ -117,6 +130,12 @@ export interface ActionContext {
   omniroute: OmnirouteContext;
   portal: PortalContext;
   /**
+   * The live stream's publisher, when the server has one: a long action's progress and its
+   * result go out to every open page while it runs (B6b). Absent in a test that only calls
+   * the actions.
+   */
+  publish?: (event: string, data: unknown) => void;
+  /**
    * The project's own defaults, remembered for this run: reading them runs git and, when `gh`
    * is there, GitHub itself, so one file's answers are computed once (`server.ts`).
    */
@@ -126,14 +145,18 @@ export interface ActionContext {
 }
 
 /** Every line a command printed, collected. A failure's line is kept too: the page shows it. */
-function collector(): {
+function collector(onLine?: (line: string) => void): {
   lines: string[];
   print: (line: string) => void;
   error: (line: string) => void;
 } {
   const lines: string[] = [];
   const push = (line: string): void => {
-    for (const one of line.split("\n")) if (one.trim() !== "") lines.push(one);
+    for (const one of line.split("\n")) {
+      if (one.trim() === "") continue;
+      lines.push(one);
+      onLine?.(one);
+    }
   };
   return { error: push, lines, print: push };
 }
@@ -462,26 +485,50 @@ async function switchHold(action: ActionContext, on: boolean): Promise<ActionRes
  * A runner that captures a `claude plugin …` step's output instead of printing it on the
  * terminal: the person is looking at the page, not at the terminal that started the portal.
  * It runs in the home folder and without git's repo variables, as the CLI's own does.
+ *
+ * **It spawns asynchronously (B6b).** `Bun.spawnSync` here blocked the whole server — every
+ * page, every action and the live stream — for as long as `claude plugin` took (up to 300 s),
+ * which is the owner's "lag" bug. Each step's last line also goes out on the live stream, so
+ * the page shows the install as it happens.
  */
-function stepRunner(action: ActionContext, lines: string[]) {
+function stepRunner(action: ActionContext, lines: string[], name: string) {
   const context = commandContext(action.portal.env, action.portal.paths.home);
-  return (argv: string[]): { exitCode: number; output: string } => {
+  const publish = (line: string): void => {
+    action.publish?.("action", { action: name, line });
+  };
+  return async (argv: string[]): Promise<{ exitCode: number; output: string }> => {
     try {
-      const result = Bun.spawnSync(argv, {
+      const child = Bun.spawn(argv, {
         ...context,
         stdin: "ignore",
         stderr: "pipe",
         stdout: "pipe",
         timeout: CLAUDE_TIMEOUT_MS,
       });
-      const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
+      const [stdout, stderr, exitCode] = await Promise.all([
+        readStream(child.stdout),
+        readStream(child.stderr),
+        child.exited,
+      ]);
+      const output = `${stdout}${stderr}`.trim();
       const last = output.split("\n").at(-1) ?? "";
-      if (last !== "") lines.push(`  ${last}`);
-      return { exitCode: result.exitCode ?? 1, output };
+      if (last !== "") {
+        lines.push(`  ${last}`);
+        publish(`  ${last}`);
+      }
+      return { exitCode, output };
     } catch (error) {
       return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
     }
   };
+}
+
+/** A child's piped output as text; an empty string when it was not piped. */
+async function readStream(
+  stream: ReadableStream<Uint8Array> | number | undefined,
+): Promise<string> {
+  if (stream === undefined || typeof stream === "number") return "";
+  return await new Response(stream).text();
 }
 
 async function updateCheck(action: ActionContext): Promise<ActionResult> {
@@ -497,10 +544,10 @@ async function updateCheck(action: ActionContext): Promise<ActionResult> {
 }
 
 async function updateInstall(action: ActionContext): Promise<ActionResult> {
-  const sinks = collector();
+  const sinks = collector((line) => action.publish?.("action", { action: "update.install", line }));
   const code = await runUpdate(action.portal.paths, action.portal.env, [], action.portal.now, {
     ...sinks,
-    run: stepRunner(action, sinks.lines),
+    run: stepRunner(action, sinks.lines, "update.install"),
   });
   return { lines: sinks.lines, ok: code === 0 };
 }
@@ -969,6 +1016,91 @@ function browserTokenAction(action: ActionContext, body: Record<string, unknown>
   }
 }
 
+// ── The crew, and the worktrees (D52) ───────────────────────────────────────────
+
+/** The longest answer a page may send to a crew session: a message, not a document. */
+const CREW_ANSWER_MAX = 2_000;
+
+/**
+ * The crew commands' context, built from the portal's own: the same paths, environment and
+ * clock, with the lines collected for the page and sent on the live stream. `asPerson` says
+ * the caller is the person at the portal, not a Claude Code session (D52): a crew session
+ * never answers or ends another, and the portal's process may carry the crew env of the
+ * session that started it — the person's click is the caller here.
+ */
+function crewContext(action: ActionContext, say: (line: string) => void): CrewContext {
+  const { portal } = action;
+  return {
+    asPerson: true,
+    cwd: action.cwd,
+    env: portal.env,
+    error: say,
+    freeMemoryGb: async () => null,
+    now: portal.now,
+    paths: portal.paths,
+    pid: process.pid,
+    platform: portal.machine.platform,
+    print: say,
+    processes: realProcessFacts(portal.machine.platform),
+    randomSuffix: () => randomBytes(3).toString("hex"),
+    readStdin: () => Promise.resolve(""),
+    runProgram: realRunProgram,
+    sleep: (ms) => portal.probe.sleep(ms),
+    which: portal.which,
+  };
+}
+
+/** Runs one crew command with its lines collected, and its progress on the live stream. */
+async function crewAction(
+  action: ActionContext,
+  name: string,
+  run: (ctx: CrewContext) => Promise<number>,
+): Promise<ActionResult> {
+  const lines: string[] = [];
+  const say = (line: string): void => {
+    for (const one of line.split("\n")) {
+      if (one.trim() === "") continue;
+      lines.push(one);
+      action.publish?.("action", { action: name, line: one });
+    }
+  };
+  try {
+    const code = await run(crewContext(action, say));
+    return { lines, ok: code === 0 };
+  } catch (error) {
+    lines.push(messageOf(error));
+    return { lines, ok: false };
+  }
+}
+
+/** The crew session's name or id, from the page's body; "" when it named none. */
+function crewRef(body: Record<string, unknown>): string {
+  return typeof body.crew === "string" ? body.crew.trim() : "";
+}
+
+/**
+ * `worktrees.clean`: the command line's own `worktrees --clean`, in the main checkout, with
+ * its lines collected. The page asks first (`confirm`): every finished worktree goes, and a
+ * worktree that is not finished is kept with its reason.
+ */
+async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
+  const sinks = collector((line) =>
+    action.publish?.("action", { action: "worktrees.clean", line }),
+  );
+  try {
+    const code = await runWorktrees(
+      action.portal.paths,
+      { clean: true, noFetch: false, remove: null },
+      action.portal.env,
+      action.cwd,
+      sinks,
+    );
+    return { lines: sinks.lines, ok: code === 0 };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
 // ── The door ────────────────────────────────────────────────────────────────────
 /**
  * Runs one action. `body` is the page's JSON, already parsed; nothing here trusts it — every
@@ -1033,25 +1165,71 @@ export async function runAction(
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "crew.answer": {
+      const crew = crewRef(body);
+      const answer = typeof body.answer === "string" ? body.answer.trim() : "";
+      if (crew === "" || answer === "") {
+        return { lines: ["Pick the crew session and write an answer."], ok: false };
+      }
+      if (answer.length > CREW_ANSWER_MAX) {
+        return {
+          lines: [`An answer is at most ${CREW_ANSWER_MAX} characters.`],
+          ok: false,
+        };
+      }
+      return crewAction(action, "crew.answer", (ctx) =>
+        runCrewAnswer({ asPerson: true, crew, text: answer }, ctx),
+      );
+    }
+    case "crew.stop": {
+      const crew = crewRef(body);
+      if (crew === "") return { lines: ["Pick the crew session to stop."], ok: false };
+      return crewAction(action, "crew.stop", (ctx) => runCrewStop(crew, ctx));
+    }
+    case "crew.resume": {
+      const crew = crewRef(body);
+      if (crew === "") return { lines: ["Pick the crew session to resume."], ok: false };
+      return crewAction(action, "crew.resume", (ctx) => runCrewResume(crew, ctx));
+    }
+    case "crew.rm": {
+      const crew = crewRef(body);
+      if (crew === "") return { lines: ["Pick the crew session to remove."], ok: false };
+      return crewAction(action, "crew.rm", (ctx) => runCrewRm(crew, ctx));
+    }
+    case "worktrees.clean":
+      // The page asks first (`data-confirm`): this removes folders that hold no work.
+      if (body.confirm !== true) {
+        return {
+          lines: ["Nothing was removed: the page's confirmation did not come with the request."],
+          ok: false,
+        };
+      }
+      return cleanWorktrees(action);
     default:
       return { lines: [`"${name}" is not an action.`], ok: false };
   }
 }
 
-/** The heavy-job queue's own lines, for the Machine page. */
+/** What the heavy-job queue reads through: this machine's memory, the portal's paths. */
+export function jobContext(action: ActionContext): JobContext {
+  return {
+    cwd: action.cwd,
+    execArgv: process.execArgv,
+    memory: realMemoryFacts(),
+    paths: action.portal.paths,
+    print: () => undefined,
+    say: () => undefined,
+  };
+}
+
+/** The heavy-job queue's own lines, for the Machine page (the same reader as `/api/jobs`). */
 export async function jobLines(action: ActionContext): Promise<{ error: string; lines: string[] }> {
-  const lines: string[] = [];
-  const say: string[] = [];
   try {
-    const code = await runJobCommand(["status"], {
-      cwd: action.cwd,
-      execArgv: process.execArgv,
-      memory: realMemoryFacts(),
-      paths: action.portal.paths,
-      print: (line) => lines.push(line),
-      say: (line) => say.push(line),
-    });
-    return { error: code === 0 ? "" : say.join("\n"), lines };
+    const state = await readJobs(jobContext(action));
+    return {
+      error: "",
+      lines: statusLines(state, action.portal.paths.home, action.portal.now()),
+    };
   } catch (error) {
     return { error: messageOf(error), lines: [] };
   }
@@ -1059,12 +1237,14 @@ export async function jobLines(action: ActionContext): Promise<{ error: string; 
 
 /** The self-update's own state, read through the same files `doctor` reads. */
 export function updateState(action: ActionContext): {
+  held: null | { at: string; from: null | string; notes: string[]; version: string };
   heldSince: null | string;
   installed: null | string;
   last: LastCheck | null;
 } {
   const files = updateFiles(action.portal.paths.stateDir);
   return {
+    held: readHeldMajor(files),
     heldSince: heldSince(files),
     installed: findUserInstall(action.portal.paths.installedPluginsFile)?.version ?? null,
     last: readLastCheck(files),

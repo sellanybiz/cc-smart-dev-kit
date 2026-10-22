@@ -39,8 +39,18 @@ in this turn.
   pid and its version (`src/portal/health.ts`). Every start, stop, status line and version
   hand-over reads it, so it must keep that shape and must never hold a fact about the
   machine. Any method but GET is refused.
+- **The live stream and the JSON API are reads through the same door** (B6b): `GET /events`
+  and every `GET /api/…` pass the network rules alone, change nothing, and hold nothing
+  secret. The stream is capped (`MAX_STREAMS`, 429 past it), pings, resumes by
+  `Last-Event-ID`, and says `closing` before it ends; its facts are metadata and short lines,
+  never a key or a prompt. A new read route goes through `answerApi`
+  (`src/portal/api/routes.ts`) and is built from `page-data.ts` — the same readers the
+  server-rendered pages use, never a second copy.
 - **The policy stays strict**: `script-src 'self'` with no `unsafe-inline`, `style-src 'self'`,
-  and `default-src 'none'`. So:
+  and `default-src 'none'`. The Next.js export's policy (`src/portal/static.ts`, D49) adds
+  only its build-time style hashes and `style-src-attr 'unsafe-hashes'` — the owner's yes for
+  the exact values the export writes, read from its `csp.json`; `script-src` never changes.
+  So:
   - **no inline script, and no `on*=` attribute** — every handler is a `data-*` and an
     `addEventListener` in `assets.ts`;
   - **no `style` attribute in the markup** — a value the CSS needs (a meter's width) travels
@@ -81,9 +91,14 @@ in this turn.
 
 - **An action is the same function the command line runs**, never a second copy: slots, the
   switches, the router restart and the OmniRoute update go through `runGateway` /
-  `runOmniroute`; `update`, `doctor`, the heavy-job queue and the companions call the modules
-  the CLI calls. So a page can never do something the CLI would refuse, and the two can never
-  agree differently about a machine.
+  `runOmniroute`; `update`, `doctor`, the heavy-job queue, the worktrees and the crew
+  commands call the modules the CLI calls. So a page can never do something the CLI would
+  refuse, and the two can never agree differently about a machine.
+- **An action never blocks the server.** Every command it starts with a child is spawned
+  asynchronously (`Bun.spawn`), never `Bun.spawnSync`: the pages, every other action and the
+  live stream stay live while a 300-second `claude plugin …` runs, and the action's lines and
+  result go out on the stream. `CommandRunner` (`src/update/apply.ts`) takes a promise for
+  exactly this. Never put a blocking spawn back into a path an action runs.
 - **The portal keeps no slot state of its own.** Every chain lives in `gateway.json` — in use
   in `slots`, saved in `kept` while the slot answers as Claude (`.claude/rules/gateway.md`) —
   and every slot has the same switch: one `slot.mode` action runs `gateway slot <slot>

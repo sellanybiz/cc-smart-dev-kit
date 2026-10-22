@@ -1,61 +1,50 @@
 /**
- * The portal's HTTP server: the door, the pages, the actions, and the health answer.
+ * The portal's HTTP server: the door, the pages, the JSON API, the live stream, and the
+ * actions.
  *
  * Every request is checked before anything is read (`guard.ts`), and the shape of the answer
  * is fixed here:
  *
- *   - the page routes answer HTML (there is no session: a page load from this machine is
- *     served, D9);
- *   - `/assets/…` answers the stylesheet and the two scripts;
+ *   - the page routes answer HTML: the Next.js export when its folder is there (D49), else
+ *     the server-rendered pages (they keep working until the switch-over);
+ *   - `/assets/…` answers the server-rendered pages' stylesheet and scripts;
+ *   - `/_next/static/…` answers the export's own files, like the assets: no machine facts in
+ *     them;
  *   - `/healthz` answers the portal's own name, pid and version, so a start or a stop can tell
  *     this portal apart from every other program on the port;
- *   - `/api/<action>` answers JSON, and only to a POST (a state change is never a GET);
+ *   - `GET /events` is the live stream (Server-Sent Events, D51): pings, `Last-Event-ID`, at
+ *     most 8 at once, and a `closing` event when the server stops for a new version;
+ *   - `GET /api/…` answers JSON, read-only (`src/portal/api/`), and `POST /api/<action>`
+ *     changes something (a state change is never a GET);
  *   - anything else is 403 or 404, with one word and never a page.
  *
  * The server binds `127.0.0.1` and nothing else, and stays up until it is stopped (D10): no
  * idle clock, so it is there whenever the person opens it. Nothing about the machine — a key,
  * the CSRF token — is ever logged.
+ *
+ * **One action never blocks the server.** An action runs the CLI's own code; every command it
+ * starts with a child process is spawned asynchronously (`actions.ts`), so a page load, another
+ * action and the live stream answer while a 300-second `claude plugin …` install runs.
  */
 
+import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import type { Check } from "../cli/doctor";
-import { backendAddress } from "../gateway/settings";
-import { isOlder } from "../update/check";
+import { jobsAnswer, readJobs } from "../jobs/status";
 import {
   type ActionContext,
   type ActionResult,
-  autoModeChange,
   type DoctorSource,
-  jobLines,
+  jobContext,
   portalOmnirouteContext,
   runAction,
   runDoctorPass,
   updateState,
 } from "./actions";
+import { answerApi } from "./api/routes";
 import { PORTAL_CSS, PORTAL_ICON, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
-import {
-  backendRows,
-  browserCardData,
-  type ConfigRead,
-  claudeModels,
-  companionRows,
-  configExists,
-  limitFacts,
-  type ModelRow,
-  omnirouteRow,
-  projectCardData,
-  projectFileTexts,
-  readConfig,
-  routerFacts,
-  routerLog,
-  seenClaudeModels,
-  settingsData,
-  shellFacts,
-  slotRows,
-  switchFacts,
-  warpRow,
-} from "./facts";
+import { configExists, projectFileTexts, readConfig, shellFacts } from "./facts";
 import {
   admit,
   CSRF_HEADER,
@@ -66,10 +55,20 @@ import {
   securityHeaders,
 } from "./guard";
 import { healthAnswer, PORTAL_HEALTH_PATH } from "./health";
+import { LiveHub } from "./live/hub";
+import { createLiveSources, type LiveSources } from "./live/sources";
 import type { Shell } from "./page";
 import {
+  healthData,
+  machineData,
+  overviewData,
+  type PageDataDeps,
+  settingsPageData,
+  slotsData,
+} from "./page-data";
+import { type ExportServer, exportResponse, exportServer, readExport } from "./static";
+import {
   healthPage,
-  type MachineData,
   machinePage,
   notFoundPage,
   notSetUpPage,
@@ -85,8 +84,8 @@ import {
   workflowAdapter,
 } from "./workflow-adapter";
 
-/** The page routes, and which screen each one draws. */
-const PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
+/** The page routes the server itself draws, and which screen each one is. */
+const SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 
 /** What a test needs to build a portal with fakes; the real values come from the entry. */
 export interface PortalOptions {
@@ -102,6 +101,13 @@ export interface PortalOptions {
   /** The CSRF token's bytes; a test passes a fixed one. */
   random?: Random;
   /**
+   * The Next.js export's folder (D49), when it is there. Left out: the copy's `portal-ui/`
+   * beside `portal.js`. With no export, the server-rendered pages answer.
+   */
+  staticFolder?: null | string;
+  /** How often the live stream polls its sources; a test makes it long or drives `pollOnce`. */
+  livePollMs?: number;
+  /**
    * The workflow module, behind `workflow-adapter.ts`: the Settings page's values, the
    * personal writes, and the Project card's plan. A test passes a fake and never reads a real
    * workflow file, runs git, or writes anything.
@@ -113,6 +119,8 @@ export interface PortalOptions {
 export interface PortalServer {
   /** Resolves when it stops: `portal stop`, or Ctrl+C in a terminal that ran it by hand. */
   finished: Promise<void>;
+  /** The live stream's hub: a test reads its count and publishes. */
+  live: LiveHub;
   /** The port it really bound (the address every page and the health answer name). */
   port: number;
   /** Stops it now. */
@@ -128,6 +136,11 @@ interface ServerState {
   /** The last doctor pass: the Machine page shows it instead of running one per load. */
   doctor: { at: number; checks: Check[] } | null;
   doctorRun: null | Promise<void>;
+}
+
+/** The export beside the running bundle: the portal copy's `portal-ui/` (`lifecycle.ts`). */
+function defaultExportFolder(): string {
+  return join(dirname(import.meta.path), "portal-ui");
 }
 
 function respond(body: string, headers: Record<string, string>, status: number): Response {
@@ -161,30 +174,9 @@ async function readBody(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
-/** One line saying what the last background update check found, in `doctor`'s own words. */
-export function summaryOf(last: ReturnType<typeof updateState>["last"]): string {
-  if (last === null) {
-    return "A new Claude session checks for a newer version by itself, at most once an hour.";
-  }
-  switch (last.result) {
-    case "updated":
-      return `The last check installed ${last.detail}. Restart the sessions to load it.`;
-    case "up-to-date":
-      return `${last.detail} is the newest version.`;
-    case "failed":
-      return `The last check failed: ${last.detail}.`;
-    case "unreachable":
-      return `The marketplace could not be read (${last.detail}). It counts as a failure only after 24 hours in a row.`;
-    case "skipped":
-      return `The last check was skipped: ${last.detail}`;
-    default:
-      return "A check is running now; it finishes.";
-  }
-}
-
 /**
- * Starts the portal. It binds `127.0.0.1:<port>` (0 takes a free one), answers the pages and
- * the actions, and stays up until `stop()` (D10: no idle clock).
+ * Starts the portal. It binds `127.0.0.1:<port>` (0 takes a free one), answers the pages, the
+ * API, the stream and the actions, and stays up until `stop()` (D10: no idle clock).
  */
 export async function startPortal(
   ctx: PortalContext,
@@ -198,8 +190,13 @@ export async function startPortal(
     doctor: null,
     doctorRun: null,
   };
+  const hub = new LiveHub({ now: ctx.now });
+  const exported = readExport(
+    options.staticFolder === undefined ? defaultExportFolder() : options.staticFolder,
+  );
+  const source: ExportServer | null = exported === null ? null : exportServer(exported);
   const server = Bun.serve({
-    fetch: (request) => handle(request),
+    fetch: (request, bunServer) => handle(request, bunServer),
     /**
      * A bug that throws inside a page (a page must never show a stack, and a machine's own
      * paths are in one), and `development: false` with it: the default error page names the
@@ -239,6 +236,9 @@ export async function startPortal(
       omniroute: portalOmnirouteContext(ctx),
       portal: ctx,
       projectDefaults,
+      // A long action's lines go to every open page while it runs (B6b: never a blocked
+      // server, and its progress on the stream).
+      publish: (event, data) => hub.publish(event, data),
       workflow,
     };
   }
@@ -246,7 +246,7 @@ export async function startPortal(
   /**
    * One doctor pass, kept. Two requests at once wait for the same one. A pass that throws
    * clears the in-flight marker, so the next load tries again instead of waiting forever on a
-   * rejected promise.
+   * rejected promise. The result goes out on the live stream too.
    */
   async function doctorOnce(): Promise<void> {
     if (state.doctor !== null) return;
@@ -254,6 +254,7 @@ export async function startPortal(
       state.doctorRun = runDoctorPass(actionContext(), options.doctor)
         .then((pass) => {
           state.doctor = { at: ctx.now(), checks: pass.checks };
+          hub.publish("doctor", state.doctor);
         })
         .finally(() => {
           state.doctorRun = null;
@@ -262,55 +263,42 @@ export async function startPortal(
     await state.doctorRun;
   }
 
-  /**
-   * The project's auto-mode change, for the Machine page: the `+` / `-` lines and the hash the
-   * write sends back (`autoModeChange`). Null outside a project, and for a project that asks
-   * for none and never did.
-   */
-  function autoMode(): MachineData["autoMode"] {
+  /** What the pages and the API build from: this request's config read, and the server's memory. */
+  function pageDeps(found: ReturnType<typeof readConfig>): PageDataDeps {
+    return {
+      action: actionContext(),
+      doctor: async () => {
+        await doctorOnce();
+        return state.doctor;
+      },
+      found,
+      projectDefaults,
+      workflow,
+    };
+  }
+
+  /** The queue's answer, for the `jobs` event: the same reader `/api/jobs` uses. */
+  async function liveJobs(): Promise<unknown> {
     try {
-      const change = autoModeChange(actionContext());
-      if (change === null) return null;
-      if (change.wanted.entries.length === 0 && change.removed.length === 0) return null;
-      return {
-        added: change.added,
-        differsFrom: change.differsFrom,
-        from: change.from,
-        hash: change.hash,
-        removed: change.removed,
-        settings: change.settings,
-      };
-    } catch {
-      // A project setup cannot read (a broken or too-new cc-smart-dev-kit.json) is `doctor`'s
-      // to report; the Machine page simply offers nothing to write.
-      return null;
+      return jobsAnswer(await readJobs(jobContext(actionContext())));
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
     }
   }
 
-  /** The Machine page's data. **No gateway config is needed for any of it**: updates, the
-   *  doctor pass, the heavy-job queue, the companions, OmniRoute and Warp all work without
-   *  one, and doctor matters most exactly then. */
-  async function machineData(): Promise<MachineData> {
-    await doctorOnce();
-    const updates = updateState(actionContext());
-    return {
-      autoMode: autoMode(),
-      browser: browserCardData(ctx),
-      companions: companionRows(ctx),
-      doctor: state.doctor,
-      jobs: await jobLines(actionContext()),
-      omniroute: await omnirouteRow(actionContext().omniroute, isOlder),
-      project: projectCardData(ctx, options.cwd, projectDefaults, workflow),
-      updates: {
-        heldSince: updates.heldSince,
-        installed: updates.installed,
-        last: updates.last,
-        newest: updates.last?.result === "up-to-date" ? updates.last.detail : null,
-        summary: summaryOf(updates.last),
-      },
-      warp: warpRow(ctx),
-    };
-  }
+  const sources: LiveSources = createLiveSources({
+    cwd: options.cwd,
+    fetch: ctx.probe.fetch,
+    jobs: liveJobs,
+    now: ctx.now,
+    paths: ctx.paths,
+    pollMs: options.livePollMs,
+    publish: (event, data) => hub.publish(event, data),
+    routerPort: () => {
+      const found = readConfig(ctx);
+      return "config" in found ? found.config.port : null;
+    },
+  });
 
   /**
    * The page route a path names, or null when no page lives there. `found` is the request's
@@ -321,102 +309,32 @@ export async function startPortal(
     path: string,
     shell: Shell,
     extra: Record<string, string>,
-    found: ConfigRead,
+    found: ReturnType<typeof readConfig>,
   ): Promise<Response> {
+    const deps = pageDeps(found);
     if ("error" in found) {
       // No config, or one that cannot be read. The Machine page draws anyway: every card on
       // it works without the gateway, and `doctor` matters most on a machine that has none.
-      // A config file that is there but unusable names its own problem; a missing one is
-      // simply "not set up". Overview, Slots and Health need the config, so they keep the
-      // page that says so and points at Machine.
       const error = configExists(ctx) ? { configError: found.error } : {};
       if (path === "/machine") {
-        return html(machinePage(shell, { ...(await machineData()), ...error }), extra);
+        return html(machinePage(shell, { ...(await machineData(deps)), ...error }), extra);
       }
       // The Settings page needs no gateway either: the workflow is a file of the person's
       // own and the project's, so it draws with the header's "Gateway not set up" line.
       if (path === "/settings") {
-        return html(settingsPage(shell, settingsData(ctx, options.cwd, workflow)), extra);
+        return html(settingsPage(shell, settingsPageData(deps)), extra);
       }
       return html(notSetUpPage(shell, { backends: [], ...error }), extra);
     }
     const config = found.config;
-    const router = await routerFacts(ctx, config.port);
-    if (path === "/slots") {
-      const backends = await backendRows(ctx, config);
-      const models: ModelRow[] = [
-        ...backends.flatMap((backend) => backend.models),
-        ...claudeModels(config, seenClaudeModels(ctx)).map((id) => ({
-          backend: "Claude login",
-          context: "the plan's",
-          id,
-          plan: true,
-        })),
-      ];
-      const rows = slotRows(config, router);
-      const tested: Record<string, string> = {};
-      for (const row of rows) {
-        for (const target of row.targets) {
-          if (target.tested) tested[`${row.name}\u0000${target.target}`] = "blocked";
-        }
-      }
-      return html(
-        slotsPage(shell, {
-          backendNotes: backends
-            .filter((backend) => backend.state !== "answers")
-            .map(
-              (backend) =>
-                `${backend.name} could not be listed (${backend.why}). Its models are missing from the table; ${backend.url} is what the config names.`,
-            ),
-          chains: Object.fromEntries(
-            rows.map((row) => [row.name, row.targets.map((t) => t.target)]),
-          ),
-          fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
-          models,
-          slots: rows,
-          tested,
-        }),
-        extra,
-      );
-    }
-    if (path === "/health") {
-      const limits = limitFacts(ctx);
-      return html(
-        healthPage(shell, {
-          backends: await backendRows(ctx, config),
-          fallbacks: limits.fallbacks,
-          limits: limits.limits,
-          log: routerLog(ctx, 200),
-          router,
-        }),
-        extra,
-      );
-    }
-    if (path === "/machine") return html(machinePage(shell, await machineData()), extra);
-    if (path === "/settings") {
-      return html(settingsPage(shell, settingsData(ctx, options.cwd, workflow)), extra);
-    }
-    const limits = limitFacts(ctx);
-    // The address with no credential in it: a `user:pass@` or a `?key=` would be in the page.
-    const omniroute = config.backends.omniroute;
-    const dashboard = omniroute === undefined ? null : backendAddress(omniroute.baseUrl);
-    return html(
-      overviewPage(shell, {
-        backends: await backendRows(ctx, config),
-        dashboardUrl: dashboard === null ? null : `${dashboard}/`,
-        fallbacks: limits.fallbacks,
-        limits: limits.limits,
-        limitsRead: limits.read,
-        router,
-        slots: slotRows(config, router),
-        switches: switchFacts(ctx, config),
-        warnings: routerLog(ctx, 200).lines.filter((line) => line.level !== "INFO"),
-      }),
-      extra,
-    );
+    if (path === "/slots") return html(slotsPage(shell, await slotsData(deps, config)), extra);
+    if (path === "/health") return html(healthPage(shell, await healthData(deps, config)), extra);
+    if (path === "/machine") return html(machinePage(shell, await machineData(deps)), extra);
+    if (path === "/settings") return html(settingsPage(shell, settingsPageData(deps)), extra);
+    return html(overviewPage(shell, await overviewData(deps, config)), extra);
   }
 
-  async function handle(request: Request): Promise<Response> {
+  async function handle(request: Request, bunServer: Bun.Server<undefined>): Promise<Response> {
     const url = new URL(request.url);
     const method = request.method.toUpperCase();
     const fetchMeta: FetchMetadata = {
@@ -424,7 +342,7 @@ export async function startPortal(
       site: request.headers.get("sec-fetch-site"),
     };
 
-    // The rules that hold for every request. Then the stylesheet and the two scripts, which
+    // The rules that hold for every request. Then the stylesheet and the scripts, which
     // carry nothing of the machine and are what a page needs to draw at all — a browser asks
     // for them in the same breath as the page, and one of them sets the theme before the
     // first paint.
@@ -451,6 +369,15 @@ export async function startPortal(
           return refused();
       }
     }
+    // The export's own build output: no machine facts in it, like the assets, so the network
+    // rules alone judge it. Next's client navigation fetches its data here too.
+    if (method === "GET" && source !== null) {
+      const build = source.staticFile(url.pathname);
+      if (build !== null) {
+        const answer = exportResponse(source, build, state.csrf);
+        if (answer !== null) return answer;
+      }
+    }
 
     // The portal's own name, pid and version: what `portal status`, `portal stop` and a
     // version hand-over read to tell this portal apart from every other program on the port.
@@ -470,7 +397,29 @@ export async function startPortal(
     });
     if (gate.kind === "refused") return refused();
 
+    // The live stream: a GET, admitted by the network rules alone (D9: no sign-in, and this
+    // changes nothing). `timeout(request, 0)` keeps Bun's own idle clock from closing a stream
+    // that is quiet between pings.
+    if (url.pathname === "/events") {
+      if (method !== "GET") return refused();
+      bunServer.timeout(request, 0);
+      const opened = hub.open(request);
+      if (opened.kind === "refused") {
+        return json(
+          { error: `the portal serves ${hub.streamsOpen} streams at once; close another tab` },
+          429,
+        );
+      }
+      return opened.response;
+    }
+
     if (url.pathname.startsWith("/api/")) {
+      if (method === "GET") {
+        const answer = await answerApi(pageDeps(readConfig(ctx)), url);
+        return answer === null
+          ? json({ lines: ["An action is a POST."], ok: false }, 405)
+          : json(answer.body, answer.status);
+      }
       if (method !== "POST") return json({ lines: ["An action is a POST."], ok: false }, 405);
       const name = url.pathname.slice("/api/".length);
       try {
@@ -480,6 +429,7 @@ export async function startPortal(
             return pass;
           });
           const checks = state.doctor?.checks ?? [];
+          hub.publish("doctor", state.doctor);
           return json(
             { lines: checks.map((check) => `${check.ok ? "✓" : "✗"} ${check.text}`), ok: true },
             200,
@@ -490,6 +440,14 @@ export async function startPortal(
           await readBody(request),
           actionContext(),
         );
+        // The action's own result goes out on the stream, for every open page (B6b), and an
+        // action that changed the update or the queue says so at once, so a page repaints
+        // without waiting for the next poll.
+        hub.publish("action", { action: name, ...result });
+        if (name === "update.check" || name === "update.install" || name === "switch") {
+          hub.publish("update", { last: updateState(actionContext()).last });
+        }
+        if (name === "worktrees.clean") hub.publish("jobs", await liveJobs());
         return json(result, result.ok ? 200 : 400);
       } catch (error) {
         // The message goes to the page that asked; it never leaves this machine.
@@ -512,18 +470,37 @@ export async function startPortal(
     if (url.pathname === "/privacy") {
       return html(privacyPage(shell), {});
     }
-    if (!PAGES.has(url.pathname)) {
+    // The export's pages, when the folder is there. A route it does not have falls back to
+    // the server-rendered page, so the switch-over costs nothing.
+    if (source !== null) {
+      const file = source.page(url.pathname);
+      if (file !== null) {
+        const answer = exportResponse(source, file, state.csrf);
+        if (answer !== null) return answer;
+      }
+    }
+    if (!SERVED_PAGES.has(url.pathname)) {
       return respond(notFoundPage(), { "content-type": "text/html; charset=utf-8" }, 404);
     }
     return pageResponse(url.pathname, shell, {}, found);
   }
 
+  // The live sources start with the server and stop with it. A test drives `pollOnce`.
+  if (options.livePollMs !== 0) sources.start();
+
+  let stopping = false;
   return {
     finished,
+    live: hub,
     port,
     stop: () => {
-      server.stop(true);
-      settle();
+      if (stopping) return;
+      stopping = true;
+      // Every open stream is told the portal is going (a new version), then closed; the
+      // server stops once those responses end, so the event reaches the page.
+      hub.closing();
+      sources.stop();
+      void server.stop(false).then(settle);
     },
     url: `http://127.0.0.1:${port}/`,
   };

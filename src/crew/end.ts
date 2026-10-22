@@ -68,6 +68,8 @@ export function relative(repo: string, path: string): string {
 
 /** The refusal of a session that is a crew session's own: it never ends a crew session. */
 function crewSessionRefusal(command: string, ctx: CrewContext): null | Refusal {
+  // The person through the portal is not a crew session, whatever started the portal (D52).
+  if (ctx.asPerson === true) return null;
   const crew = crewIdOf(ctx.env);
   if (crew === null) return null;
   return failure(

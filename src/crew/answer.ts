@@ -30,6 +30,8 @@ import { answerCrewQuestion, type CrewRecord, listCrew, readReport } from "./sto
 export interface AnswerArgs {
   /** The crew session's name (or its id). */
   crew: string;
+  /** The person acted through the portal (D52): no Claude Code session runs this command. */
+  asPerson?: boolean;
   /** The answer. */
   text: string;
 }
@@ -91,7 +93,11 @@ function endedItsPhase(record: CrewRecord): boolean {
 
 /** `crew answer`; the exit code. */
 export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise<number> {
-  const read = readCaller("answer", ctx);
+  const read = readCaller(
+    "answer",
+    ctx,
+    args.asPerson === true ? { asPerson: true, session: "optional" } : { session: "required" },
+  );
   if (!read.ok) {
     for (const line of read.lines) ctx.error(line);
     return 1;

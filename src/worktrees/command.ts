@@ -80,14 +80,28 @@ function describe(worktree: ScannedWorktree): string {
   return state.finished ? "FINISHED" : `kept: ${state.why}`;
 }
 
-function show(scanned: ScannedWorktree[]): void {
+/**
+ * Where a command's lines go: the terminal in use, a collector in the portal. One home for the
+ * rule every command the portal shows follows (`.claude/rules/portal.md`).
+ */
+export interface WorktreesSinks {
+  error: (line: string) => void;
+  print: (line: string) => void;
+}
+
+const CONSOLE_SINKS: WorktreesSinks = {
+  error: (line) => console.error(line),
+  print: (line) => console.log(line),
+};
+
+function show(scanned: ScannedWorktree[], print: (line: string) => void): void {
   for (const worktree of scanned) {
     const { branch, head, path } = worktree.listed;
     const name = basename(path).padEnd(30);
     const on = (branch ?? `detached at ${head.slice(0, 9)}`).padEnd(42);
-    console.log(`  ${name} ${on} ${describe(worktree)}`);
+    print(`  ${name} ${on} ${describe(worktree)}`);
   }
-  console.log();
+  print("");
 }
 
 export async function runWorktrees(
@@ -95,41 +109,39 @@ export async function runWorktrees(
   options: WorktreesOptions,
   env: Env,
   cwd: string = process.cwd(),
+  sinks: WorktreesSinks = CONSOLE_SINKS,
 ): Promise<number> {
+  const { error, print } = sinks;
   const checkout = locateCheckout(cwd, { env });
   const repo = checkout?.mainCheckout ?? resolve(cwd);
   const { base, from } = baseBranch(checkout, env, repo);
   if (from !== "config") {
-    console.log(
-      `No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.\n`,
-    );
+    print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.\n`);
   }
 
   if (options.remove !== null && options.remove === "") {
-    console.error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
+    error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
     return 1;
   }
 
   let lock: null | Server = null;
   if (options.clean || options.remove !== null) {
     if (!samePath(cwd, repo)) {
-      console.error(
+      error(
         `Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`,
       );
       return 1;
     }
     lock = await holdCleanLock();
     if (lock === null) {
-      console.log(
-        "Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.",
-      );
+      print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
       return 0;
     }
   }
 
   try {
     if (!options.noFetch && !fetchBase(repo, base, env)) {
-      console.log(`Could not fetch origin/${base}; judging against the copy of it here.\n`);
+      print(`Could not fetch origin/${base}; judging against the copy of it here.\n`);
     }
 
     if (options.remove !== null) {
@@ -147,39 +159,39 @@ export async function runWorktrees(
         (worktree) => worktree.state !== "main" && samePath(worktree.listed.path, target),
       );
       if (found === undefined) {
-        console.error(
+        error(
           `${target} is not a worktree of this repo. \`cc-smart-dev-kit worktrees\` lists them.`,
         );
         return 1;
       }
       if (found.state === "gone") {
         pruneWorktrees(repo, env);
-        console.log(forgottenLine(found.listed.path));
+        print(forgottenLine(found.listed.path));
         if (found.listed.branch !== null) {
-          console.log(deleteMergedBranch(repo, base, found.listed.branch, env));
+          print(deleteMergedBranch(repo, base, found.listed.branch, env));
         }
         return 0;
       }
       if (typeof found.state === "object" && found.state.finished) {
-        console.log(`removing ${found.listed.path} …`);
+        print(`removing ${found.listed.path} …`);
         const removal = removeWorktree(repo, found.listed, judged);
-        for (const said of removal.said) console.log(said);
+        for (const said of removal.said) print(said);
         // Exit 1 unless it really went: "held" (something uses it), "kept" (something in it
         // is changed) and "failed" (git could not finish) all leave it a worktree still.
         return removal.status === "removed" ? 0 : 1;
       }
-      console.log(`Kept ${found.listed.path}: ${describe(found).replace(/^kept: /, "")}.`);
+      print(`Kept ${found.listed.path}: ${describe(found).replace(/^kept: /, "")}.`);
       return 1;
     }
 
     const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
     const scanned = scanWorktrees(repo, judged);
-    console.log(`Worktrees of ${repo}\n`);
-    show(scanned);
+    print(`Worktrees of ${repo}\n`);
+    show(scanned, print);
 
     const going = scanned.filter(canGo);
     if (!options.clean) {
-      console.log(
+      print(
         going.length === 0
           ? "Nothing finished to clear."
           : `${String(going.length)} can go. \`cc-smart-dev-kit worktrees --clean\` in the main checkout removes them.`,
@@ -187,8 +199,8 @@ export async function runWorktrees(
       return 0;
     }
 
-    cleanFinished(repo, scanned, judged, (line) => console.log(line));
-    if (going.length === 0) console.log("Nothing finished to clear.");
+    cleanFinished(repo, scanned, judged, (line) => print(line));
+    if (going.length === 0) print("Nothing finished to clear.");
     return 0;
   } finally {
     lock?.close();

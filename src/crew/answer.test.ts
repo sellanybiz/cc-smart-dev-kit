@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
+import { runCrewAnswer } from "./answer";
 import { runCrew } from "./command";
 import {
   addCrewQuestion,
@@ -274,5 +275,30 @@ describe("crew answer", () => {
     const code = await runCrew(["answer", NAME], world.ctx());
     expect(code).toBe(2);
     expect(world.err[0]).toContain("Say the answer");
+  });
+
+  test("D52: the person through the portal answers with no Claude Code session, even from a crew session's own env", async () => {
+    const world = await askedWorld("blocked");
+    // The portal is not a Claude Code session, and the session that started it may have been
+    // a crew session: `asPerson` is the caller, and neither refusal applies.
+    const ctx = world.ctx(
+      { asPerson: true, processes: { commandLineOf: () => null, parentOf: () => null } },
+      { CC_SMART_DEV_KIT_CREW: ID },
+    );
+    const code = await runCrewAnswer({ asPerson: true, crew: NAME, text: "the port is 3210" }, ctx);
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBe("the port is 3210");
+  });
+
+  test("D52: without asPerson, no Claude Code session still refuses the answer", async () => {
+    const world = await askedWorld("blocked");
+    const ctx = world.ctx({
+      processes: { commandLineOf: () => null, parentOf: () => null },
+    });
+    const code = await runCrewAnswer({ crew: NAME, text: "the port is 3210" }, ctx);
+    expect(code).toBe(1);
+    expect(world.err[0]).toContain("no Claude Code session runs this command");
   });
 });

@@ -400,7 +400,7 @@ Optional. Unknown fields are an error that names the file and the field.
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit job run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command…>` | Waits, runs, passes the job's stdio, exit code and signals through. `--kind`, `--exclusive`, or both. |
-| `cc-smart-dev-kit job status` | The memory, this machine's budget, who holds and who waits here and on each shared folder. Stale files it finds are removed. A store it cannot read is one line saying so. |
+| `cc-smart-dev-kit job status` | The memory, this machine's budget, who holds and who waits here and on each shared folder. Stale files it finds are removed. A store it cannot read is one line saying so. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
 | `cc-smart-dev-kit job kinds` | Every kind: its sizes, where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
 
 ## The classifier

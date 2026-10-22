@@ -15,22 +15,31 @@ import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome"
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
+import { addCrewQuestion, createCrew, type NewCrew, readCrew } from "../crew/store";
 import { upgradeConfig } from "../gateway/commands";
 import { loadConfigFile, saveConfig } from "../gateway/config";
+import { askLogFile } from "../hooks/ask-log";
+import { currentFileHolder } from "../jobs/store";
 import type { Machine } from "../machine/machine";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
+import { updateFiles, writeHeldMajor } from "../update/state";
 import { type DoctorSource, portalOmnirouteContext } from "./actions";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
+import { LiveHub, PING_MS } from "./live/hub";
 import { switchButton } from "./page";
 import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
 import { autoModeCard } from "./views";
 import { type ProjectInitAnswers, type WorkflowAdapter, workflowAdapter } from "./workflow-adapter";
+
+/** Real SHA-256 values in base64 (of "", "foo"), written by hand: `csp.json` takes only hashes. */
+const ATTR_HASH = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+const ELEM_HASH = "LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564=";
 
 /** The key planted in the config: no page may ever hold it. */
 const KEY = "omni_PLANTED_SECRET_a1b2";
@@ -136,6 +145,13 @@ async function open(options: {
   systemd?: boolean;
   /** True: the portal finds git on its PATH (the real one), and nothing else. */
   gitOnPath?: boolean;
+  /** More environment for the portal (a fake `claude` and its PATH, a config folder). */
+  env?: Record<string, string>;
+  /**
+   * The Next.js export's folder (D49). Left out: none is served, and the server-rendered
+   * pages answer as they always did; `null` says the same in words.
+   */
+  staticFolder?: null | string;
   /**
    * The router's journal lines this machine's `journalctl --user -u cc-smart-dev-kit-router -o
    * json` answers, OLDEST FIRST as the real one prints them. One minute apart, from 09:00 UTC.
@@ -225,7 +241,11 @@ async function open(options: {
     bunVersion: "1.4.3",
     // A PATH that is not there, so `git` really cannot be found: without a PATH at all the
     // spawner falls back to its own and finds it.
-    env: { HOME: home, ...(options.noGit === true ? { PATH: "/nonexistent" } : {}) },
+    env: {
+      HOME: home,
+      ...(options.noGit === true ? { PATH: "/nonexistent" } : {}),
+      ...options.env,
+    },
     fetch: async (url, init) => {
       if (String(url).includes("registry.npmjs.org")) return registry();
       // The fake backend on a free port of this test; never the live router's port.
@@ -302,6 +322,12 @@ async function open(options: {
         project: null,
       })),
     port: 0,
+    // No poller in a test: the live stream's sources are driven by their own test
+    // (`src/portal/live/sources.test.ts`), so no timer runs beside an assertion here.
+    livePollMs: 0,
+    ...(options.staticFolder === undefined
+      ? { staticFolder: null }
+      : { staticFolder: options.staticFolder }),
     workflow: options.workflow ?? fakeWorkflow(),
   });
 
@@ -3340,6 +3366,945 @@ describe("the browser card", () => {
       expect(existsSync(world.paths.browserTokenFile)).toBe(false);
     } finally {
       world.portal.stop();
+    }
+  });
+});
+
+// ── The JSON API and the live stream (B6b) ─────────────────────────────────────
+
+/** A queued crew session of this test's project, as the store writes one. */
+function crewFixture(repo: string): NewCrew {
+  return {
+    base: null,
+    baseRef: "main",
+    branch: "crew/K-contracts",
+    effort: "xhigh",
+    files: ["src/crew/store.ts"],
+    id: "crew-K-contracts",
+    kind: "schema",
+    lastLine: null,
+    leadName: "LEAD my-app master-plan",
+    leadSessionId: "11111111-1111-4111-8111-111111111111",
+    memoryMb: null,
+    model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
+    name: "C my-app K contracts",
+    permissionMode: "auto",
+    phase: "K",
+    plan: ".claude/plans/master-plan.md",
+    pr: null,
+    questions: [],
+    reportPath: null,
+    repo,
+    sessionId: null,
+    shortId: null,
+    slug: "contracts",
+    state: "queued",
+    waitsFor: [],
+    worktree: `${repo}/.claude/worktrees/crew-K-contracts`,
+  };
+}
+
+/** One job record file, as the heavy-job store writes one: its own holder, and the queue's
+ *  record inside. The holder is this test's own process, so the lease is alive. */
+function holderRecord(gb: number, what: string): string {
+  return JSON.stringify({
+    gb,
+    holder: currentFileHolder(),
+    record: JSON.stringify({
+      checkout: "/home/user/my-app",
+      gb,
+      kind: "build",
+      person: "my-host",
+      pid: process.pid,
+      since: Date.UTC(2026, 9, 22, 10, 0, 0),
+      v: 1,
+      what,
+    }),
+    store: 1,
+  });
+}
+
+describe("the JSON API", () => {
+  test("every read is a GET behind the door: a foreign Origin, a wrong Host and cross-site are refused", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      // Every read route this version has, with a query each one accepts.
+      const paths = [
+        "/api/overview",
+        "/api/slots",
+        "/api/health",
+        "/api/machine",
+        "/api/settings",
+        "/api/projects",
+        "/api/work",
+        "/api/crew/crew-K-contracts",
+        "/api/flow?range=1d",
+        "/api/needs",
+        "/api/guard-asks?hook=git-guard",
+        "/api/worktrees",
+        "/api/update",
+        "/api/jobs",
+        "/api/history?range=1h&by=slot",
+        "/api/requests?cursor=x",
+        "/events",
+      ];
+      for (const path of paths) {
+        expect(
+          (await world.call(path, { headers: { origin: "http://evil.example" } })).status,
+        ).toBe(403);
+        expect((await world.call(path, { headers: { host: "evil.example" } })).status).toBe(403);
+        expect(
+          (await world.call(path, { headers: { "sec-fetch-site": "cross-site" } })).status,
+        ).toBe(403);
+      }
+      // Same-origin, as the portal's own page sends: served.
+      const page = await world.call("/api/overview", {
+        headers: { "sec-fetch-site": "same-origin" },
+      });
+      expect(page.status).toBe(200);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("an action is still a POST: a GET on a write path is 405, on an unknown API path too", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      expect((await world.call("/api/switch")).status).toBe(405);
+      expect((await world.call("/api/not-a-read")).status).toBe(405);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("overview: the page's own facts, the queue at a glance, and never a key", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const response = await world.call("/api/overview");
+      expect(response.status).toBe(200);
+      const body = JSON.parse(response.body) as Record<string, unknown>;
+      expect(body.configured).toBe(true);
+      expect(body.error).toBe(null);
+      expect((body.slots as unknown[]).length).toBe(5);
+      expect(body.switches).toMatchObject({ gateway: false, judge: false, models: false });
+      expect(body.jobs).toEqual({
+        budgetGb: expect.any(Number),
+        heldGb: expect.any(Number),
+        waiting: expect.any(Number),
+      });
+      expect((body.router as { up: boolean }).up).toBe(true);
+      // The planted key never reaches any answer.
+      expect(response.body).not.toContain(KEY);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("slots: the chains, the live models and the switches", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const body = JSON.parse((await world.call("/api/slots")).body) as {
+        chains: Record<string, string[]>;
+        models: { id: string }[];
+        switches: { models: boolean };
+      };
+      expect(body.chains.scout).toEqual(["omniroute:glm-5.3-flash", "claude-sonnet-5-5"]);
+      expect(body.models.map((one) => one.id)).toContain("omniroute:glm-5.3-flash");
+      expect(body.switches.models).toBe(false);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("health: the router and the log's own note where there is no journal", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const body = JSON.parse((await world.call("/api/health")).body) as {
+        log: { note: null | string };
+        router: { up: boolean };
+      };
+      expect(body.router.up).toBe(true);
+      expect(body.log.note).toBe("no systemd here, so there is no journal to read");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("machine, settings, projects and update answer without a gateway too", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      const machine = JSON.parse((await world.call("/api/machine")).body) as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(machine).sort()).toEqual([
+        "autoMode",
+        "browser",
+        "companions",
+        "doctor",
+        "jobs",
+        "omniroute",
+        "project",
+        "updates",
+        "warp",
+      ]);
+      const settings = JSON.parse((await world.call("/api/settings")).body) as {
+        error: null | string;
+        rows: unknown[];
+      };
+      expect(settings.error).toBe(null);
+      expect(Array.isArray(settings.rows)).toBe(true);
+      const projects = JSON.parse((await world.call("/api/projects")).body) as {
+        note: string;
+        projects: unknown[];
+      };
+      expect(projects.projects).toHaveLength(1);
+      expect(typeof projects.note).toBe("string");
+      const update = JSON.parse((await world.call("/api/update")).body) as {
+        held: null;
+        installed: null;
+        summary: string;
+      };
+      expect(update.held).toBe(null);
+      expect(update.installed).toBe(null);
+      expect(typeof update.summary).toBe("string");
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("a page that needs the gateway says it is not set up, in a typed answer", async () => {
+    const world = await open({ backendPort: 0, withConfig: false });
+    try {
+      for (const path of ["/api/overview", "/api/slots", "/api/health"]) {
+        const body = JSON.parse((await world.call(path)).body) as {
+          configured: boolean;
+          error: string;
+          router?: { up: boolean };
+        };
+        expect(body.configured).toBe(false);
+        expect(body.error).toBe("the gateway is not set up");
+        // The pages that draw a router pill say it is down; Slots has no pill.
+        if (path !== "/api/slots") expect(body.router?.up).toBe(false);
+      }
+    } finally {
+      world.portal.stop();
+    }
+  });
+
+  test("jobs: the queue's exact shape, one held and one waiting", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      mkdirSync(join(world.home, ".config", "cc-smart-dev-kit"), { recursive: true });
+      writeFileSync(
+        join(world.home, ".config", "cc-smart-dev-kit", "jobs.json"),
+        `${JSON.stringify({ budgetGb: 10 })}\n`,
+      );
+      const jobs = join(world.home, ".local", "share", "cc-smart-dev-kit", "jobs");
+      mkdirSync(join(jobs, "leases"), { recursive: true });
+      mkdirSync(join(jobs, "tickets"), { recursive: true });
+      writeFileSync(join(jobs, "leases", "job-1.json"), holderRecord(4, "bunx tsc --noEmit"));
+      writeFileSync(join(jobs, "tickets", "job-2.json"), holderRecord(3, "next build"));
+      const body = JSON.parse((await world.call("/api/jobs")).body) as {
+        budgetGb: number;
+        freeGb: null | number;
+        keptGb: number;
+        memoryGb: number;
+        stores: {
+          budgetGb: number;
+          freeGb: number;
+          held: Record<string, unknown>[];
+          waiting: Record<string, unknown>[];
+          where: string;
+        }[];
+      };
+      expect(body.budgetGb).toBe(10);
+      expect(body.keptGb).toBe(22);
+      expect(typeof body.memoryGb).toBe("number");
+      expect(body.stores).toHaveLength(1);
+      expect(body.stores[0]?.where).toBe("machine");
+      expect(body.stores[0]?.budgetGb).toBe(10);
+      expect(body.stores[0]?.freeGb).toBe(6);
+      expect(body.stores[0]?.held).toEqual([
+        {
+          command: "bunx tsc --noEmit",
+          folder: "/home/user/my-app",
+          gb: 4,
+          kind: "build",
+          pid: process.pid,
+          since: "2026-10-22T10:00:00.000Z",
+          user: "my-host",
+        },
+      ]);
+      expect(body.stores[0]?.waiting).toEqual([
+        {
+          command: "next build",
+          folder: "/home/user/my-app",
+          gb: 3,
+          kind: "build",
+          pid: process.pid,
+          since: "2026-10-22T10:00:00.000Z",
+          user: "my-host",
+        },
+      ]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("work and a crew page: the lead's crew, its question, and the page's own fields", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port, projectFiles: {} });
+    try {
+      await createCrew(world.paths.stateDir, crewFixture(world.cwd), Date.now());
+      await addCrewQuestion(
+        world.paths.stateDir,
+        world.cwd,
+        "crew-K-contracts",
+        {
+          options: ["Use SQLite", "Use a file"],
+          question: "Where should the history live?",
+          recommended: 1,
+        },
+        Date.now(),
+      );
+      const work = JSON.parse((await world.call("/api/work")).body) as {
+        crew: { id: string; question: { options: string[]; recommended: number } | null }[];
+        lead: null;
+        sessions: unknown[];
+      };
+      expect(work.crew).toHaveLength(1);
+      expect(work.crew[0]?.id).toBe("crew-K-contracts");
+      expect(work.crew[0]?.question).toMatchObject({
+        options: ["Use SQLite", "Use a file"],
+        recommended: 1,
+      });
+
+      const page = await world.call("/api/crew/crew-K-contracts");
+      expect(page.status).toBe(200);
+      const crew = JSON.parse(page.body) as {
+        brief: null;
+        crew: { id: string };
+        diff: { error: null | string };
+        events: { type: string }[];
+        mergeCheck: { kind: string };
+        report: null;
+        reviews: unknown[];
+      };
+      expect(crew.crew.id).toBe("crew-K-contracts");
+      expect(crew.brief).toBe(null);
+      // The record's creation and the question it asked: its log, newest last.
+      expect(crew.events.map((one) => one.type)).toEqual(["created", "question"]);
+      expect(crew.diff.error).toContain("no base");
+      expect(crew.mergeCheck.kind).toBe("refused");
+      expect(crew.report).toBe(null);
+      expect(crew.reviews).toEqual([]);
+
+      // A crew session the store does not know is a typed 404.
+      const missing = await world.call("/api/crew/nobody");
+      expect(missing.status).toBe(404);
+      expect(JSON.parse(missing.body).error).toContain("no crew session");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("needs: a crew question, doctor's failures, an open breaker and a held major", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      doctor: () => ({
+        browser: realBrowserDoctorDeps(worldMachine(), tempDir("home")),
+        bun: { path: process.execPath, version: Bun.version },
+        gateway: {
+          bundle: join(worldPluginFolder(), "dist", "router.js"),
+          machine: worldMachine(),
+          runner: () => ({ exitCode: 0, output: "" }),
+          service: "none",
+        },
+        live: null,
+        local: {
+          cwd: tempDir("cwd"),
+          instructionsSource: join(worldPluginFolder(), "instructions"),
+        },
+        project: null,
+      }),
+      projectFiles: {},
+    });
+    try {
+      await createCrew(world.paths.stateDir, crewFixture(world.cwd), Date.now());
+      await addCrewQuestion(
+        world.paths.stateDir,
+        world.cwd,
+        "crew-K-contracts",
+        { options: ["Yes", "No"], question: "Merge it?", recommended: 1 },
+        Date.now(),
+      );
+      mkdirSync(dirname(world.paths.gatewayStateFile), { recursive: true });
+      writeFileSync(
+        world.paths.gatewayStateFile,
+        JSON.stringify({
+          breakers: {
+            "cc-smart-dev-kit-worker": {
+              held: 3,
+              lastAt: Date.now(),
+              since: Date.now() - 60_000,
+              targets: [{ status: 429, target: "omniroute:x", until: Date.now() + 30_000 }],
+            },
+          },
+          fallbacks: {},
+          limits: {},
+          version: 1,
+        }),
+      );
+      writeHeldMajor(updateFiles(world.paths.stateDir), {
+        at: "2026-10-20T09:00:00.000Z",
+        from: "1.0.0",
+        notes: ["it refuses old fields"],
+        version: "2.0.0",
+      });
+      const body = JSON.parse((await world.call("/api/needs")).body) as {
+        breaker: { held: number; slot: string } | null;
+        crew: { question: string }[];
+        doctor: { failures: unknown[] };
+        permissions: unknown[];
+        update: { notes: string[]; version: string } | null;
+      };
+      expect(body.crew[0]?.question).toBe("Merge it?");
+      expect(body.breaker?.slot).toBe("cc-smart-dev-kit-worker");
+      expect(body.breaker?.held).toBe(3);
+      expect(body.update).toMatchObject({ notes: ["it refuses old fields"], version: "2.0.0" });
+      expect(Array.isArray(body.doctor.failures)).toBe(true);
+      expect(Array.isArray(body.permissions)).toBe(true);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the guard log: masked, filtered and with its totals", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      mkdirSync(world.paths.stateDir, { recursive: true });
+      const ask = (hook: string, reason: string, at: number) =>
+        JSON.stringify({ at, hook, reason, session: "s1", tool: "Bash" });
+      writeFileSync(
+        askLogFile(world.paths.stateDir),
+        `${[ask("git-guard", "push to main", 1), ask("merge-guard", "merge without review token=omni_PLANTED_SECRET_a1b2", 2), ask("git-guard", "force push", 3)].join("\n")}\n`,
+      );
+      const all = JSON.parse((await world.call("/api/guard-asks")).body) as {
+        asks: { hook: string; reason: string }[];
+        byHook: Record<string, number>;
+        kept: number;
+      };
+      expect(all.byHook).toEqual({ "git-guard": 2, "merge-guard": 1 });
+      // Newest first, and the key a reason quoted is masked before a page sees it (its last
+      // four characters stay, as `maskedLine` masks: enough to tell keys apart, never a key).
+      expect(all.asks.map((one) => one.reason)).toEqual([
+        "force push",
+        "merge without review token=****a1b2",
+        "push to main",
+      ]);
+      expect(JSON.stringify(all)).not.toContain(KEY);
+      expect(all.kept).toBe(3);
+      const filtered = JSON.parse(
+        (await world.call("/api/guard-asks?hook=git-guard&limit=1")).body,
+      ) as { asks: { reason: string }[]; kept: number };
+      expect(filtered.asks.map((one) => one.reason)).toEqual(["force push"]);
+      expect(filtered.kept).toBe(1);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("worktrees: every worktree's verdict against the base", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      env: { PATH: process.env.PATH ?? "" },
+      projectFiles: {},
+    });
+    try {
+      // A commit, so git has a HEAD and the worktree can be judged.
+      writeFileSync(join(world.cwd, "README.md"), "readme\n");
+      git(world.cwd, "add", "README.md");
+      git(world.cwd, "commit", "-q", "-m", "init");
+      const body = JSON.parse((await world.call("/api/worktrees")).body) as {
+        base: string;
+        note: null | string;
+        worktrees: { kind: string; path: string }[];
+      };
+      expect(body.base).toBe("main");
+      // The temp repo has no origin: the answer says it judged against the local base.
+      expect(body.note).toContain("judges against the local main");
+      expect(body.worktrees[0]?.kind).toBe("main");
+      expect(body.worktrees[0]?.path).toBe(world.cwd);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("flow: the report for the range, and the kept window said when the range is longer", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const oneDay = JSON.parse((await world.call("/api/flow?range=1d")).body) as {
+        note: null | string;
+        range: string;
+        report: { sessions: unknown[] };
+      };
+      expect(oneDay.range).toBe("1d");
+      expect(oneDay.report.sessions).toEqual([]);
+      expect(oneDay.note).toBe(null);
+      const long = JSON.parse((await world.call("/api/flow?range=30d")).body) as {
+        note: null | string;
+      };
+      expect(long.note).toContain("keeps 8 days");
+      expect((await world.call("/api/flow?range=nope")).status).toBe(400);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("history and requests: empty and typed until phase H1", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const history = JSON.parse((await world.call("/api/history?range=1h&by=slot")).body) as {
+        available: boolean;
+        bucketMs: number;
+        buckets: unknown[];
+        by: string;
+        note: string;
+      };
+      expect(history).toMatchObject({
+        available: false,
+        bucketMs: 60_000,
+        buckets: [],
+        by: "slot",
+      });
+      expect(history.note).toContain("phase H1");
+      expect((await world.call("/api/history?range=nope")).status).toBe(400);
+      expect((await world.call("/api/history?by=nope")).status).toBe(400);
+      const requests = JSON.parse((await world.call("/api/requests?cursor=abc")).body) as {
+        available: boolean;
+        cursor: null;
+        requests: unknown[];
+      };
+      expect(requests).toMatchObject({ available: false, cursor: null, requests: [] });
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+});
+
+/** A stream reader as these tests use it: `read` and `cancel` (Bun's own reader has more). */
+interface StreamReader {
+  cancel: () => Promise<void>;
+  read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+}
+
+/** Reads a stream until `needle` appears, or the time runs out. */
+async function readStreamUntil(
+  reader: StreamReader,
+  needle: string,
+  timeoutMs = 1_000,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  const until = Date.now() + timeoutMs;
+  while (!text.includes(needle) && Date.now() < until) {
+    const read = await Promise.race([
+      reader.read(),
+      Bun.sleep(Math.max(1, until - Date.now())).then(() => ({ done: true, value: undefined })),
+    ]);
+    if (read.done) break;
+    if (read.value !== undefined) text += decoder.decode(read.value, { stream: true });
+  }
+  return text;
+}
+
+/** Reads a stream to its end, or until the time runs out. */
+async function readToEnd(reader: StreamReader, timeoutMs = 1_000): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = "";
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    const read = await Promise.race([
+      reader.read(),
+      Bun.sleep(Math.max(1, until - Date.now())).then(() => ({ done: true, value: undefined })),
+    ]);
+    if (read.done) break;
+    if (read.value !== undefined) text += decoder.decode(read.value, { stream: true });
+  }
+  return text;
+}
+
+describe("the live stream", () => {
+  test("eight streams, then 429; a closed one gives its place back", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    const base = `http://127.0.0.1:${world.portal.port}`;
+    const stream = () => fetch(`${base}/events`, { headers: { "sec-fetch-site": "same-origin" } });
+    const responses: Response[] = [];
+    try {
+      for (let index = 0; index < 8; index += 1) responses.push(await stream());
+      expect(responses.every((one) => one.status === 200)).toBe(true);
+      const refused = await stream();
+      expect(refused.status).toBe(429);
+      expect(JSON.parse(await refused.text()).error).toContain("8 streams");
+      await responses[0]?.body?.cancel();
+      // The server drops a cancelled stream; the next connection is served.
+      await Bun.sleep(20);
+      const again = await stream();
+      expect(again.status).toBe(200);
+      await again.body?.cancel();
+    } finally {
+      for (const response of responses) await response.body?.cancel().catch(() => undefined);
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("Last-Event-ID replays through the server, and closing tells the page the portal is going", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    const base = `http://127.0.0.1:${world.portal.port}`;
+    try {
+      const first = await fetch(`${base}/events`, {
+        headers: { "sec-fetch-site": "same-origin" },
+      });
+      expect(first.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
+      const reader = first.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      const hello = await readStreamUntil(reader, "event: hello");
+      const id = /id: ([^\n]+)/.exec(hello)?.[1] ?? "";
+      expect(id.startsWith(`${world.portal.live.runId}:`)).toBe(true);
+      await reader.cancel();
+      world.portal.live.publish("jobs", { heldGb: 4 });
+      const again = await fetch(`${base}/events`, {
+        headers: { "last-event-id": id, "sec-fetch-site": "same-origin" },
+      });
+      const next = again.body?.getReader();
+      if (next === undefined) throw new Error("no body");
+      const text = await readStreamUntil(next, "event: hello");
+      expect(text).toContain("event: jobs");
+      expect(text).toContain('"heldGb":4');
+      // The portal stops for a new version: every stream is told before it ends.
+      world.portal.stop();
+      const rest = await readToEnd(next);
+      expect(rest).toContain("event: closing");
+    } finally {
+      backend.stop();
+    }
+  });
+
+  test("a ping is sent on a stream with nothing else to say", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    const base = `http://127.0.0.1:${world.portal.port}`;
+    try {
+      // The server's own interval is the hub's (15 s); its hub test drives it at 10 ms. Here
+      // the same hub, at 5 ms, proves the format the page reads.
+      expect(PING_MS).toBe(15_000);
+      const local = new LiveHub({ now: () => 1, pingMs: 5 });
+      const opened = local.open(new Request(`${base}/events`));
+      if (opened.kind !== "opened") throw new Error("refused");
+      const pingReader = opened.response.body?.getReader();
+      if (pingReader === undefined) throw new Error("no body");
+      expect(await readStreamUntil(pingReader, "event: ping", 1_000)).toContain("event: ping");
+      await pingReader.cancel();
+      local.stop();
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a doctor pass, an update check and an action's result go out on the stream", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    const base = `http://127.0.0.1:${world.portal.port}`;
+    try {
+      const stream = await fetch(`${base}/events`, {
+        headers: { "sec-fetch-site": "same-origin" },
+      });
+      const reader = stream.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      await readStreamUntil(reader, "event: hello");
+      // The Machine page runs the doctor pass (once) and the server publishes it.
+      expect((await world.call("/machine")).status).toBe(200);
+      expect(await readStreamUntil(reader, "event: doctor")).toContain('"checks"');
+      // An action publishes its own result, and the update check its new state.
+      const csrf = await world.csrfOf();
+      const checked = await world.post("update.check", {}, csrf);
+      // No plugin is installed in this test's temp home, so the check's own answer may be a
+      // refusal; the point is that its result reaches the stream either way.
+      expect([200, 400]).toContain(checked.status);
+      const after = await readStreamUntil(reader, "event: update");
+      expect(after).toContain('"action":"update.check"');
+      expect(after).toContain('"last"');
+      await reader.cancel();
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+});
+
+describe("the Next.js export, served", () => {
+  /** A small export folder: one page with a head, one under a folder, a chunk, and hashes. */
+  function exportFixture(): string {
+    const folder = tempDir("export");
+    writeFileSync(
+      join(folder, "index.html"),
+      '<!doctype html><html><head><meta charset="utf-8"><title>Portal</title></head><body><div id="root"></div></body></html>',
+    );
+    mkdirSync(join(folder, "work"));
+    writeFileSync(
+      join(folder, "work", "index.html"),
+      "<html><head></head><body>work</body></html>",
+    );
+    mkdirSync(join(folder, "_next", "static", "chunks"), { recursive: true });
+    writeFileSync(join(folder, "_next", "static", "chunks", "app.js"), "console.log(1);\n");
+    writeFileSync(
+      join(folder, "csp.json"),
+      JSON.stringify({ styleAttr: [ATTR_HASH], styleElem: [ELEM_HASH] }),
+    );
+    return folder;
+  }
+
+  test("the pages, the trailing slash, the chunk, and the CSRF meta with the export's policy", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port, staticFolder: exportFixture() });
+    try {
+      const root = await world.call("/");
+      expect(root.status).toBe(200);
+      expect(root.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(root.body).toContain('<meta name="ccsdk-csrf"');
+      expect(root.headers.get("content-security-policy")).toContain(
+        `style-src 'self' 'sha256-${ELEM_HASH}'`,
+      );
+      expect(root.headers.get("content-security-policy")).toContain(
+        `style-src-attr 'unsafe-hashes' 'sha256-${ATTR_HASH}'`,
+      );
+      expect(root.body).toContain('<div id="root">');
+      // A page under a folder answers with and without the trailing slash.
+      expect((await world.call("/work")).body).toContain("work");
+      expect((await world.call("/work/")).body).toContain("work");
+      // The build output is served like the assets: no CSRF meta in it.
+      const chunk = await world.call("/_next/static/chunks/app.js");
+      expect(chunk.status).toBe(200);
+      expect(chunk.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+      expect(chunk.body).not.toContain("ccsdk-csrf");
+      // A route the export does not have falls back to the server-rendered page; an unknown
+      // one is the portal's 404 page.
+      expect((await world.call("/health")).body).toContain("cc-smart-dev-kit");
+      expect((await world.call("/nowhere")).status).toBe(404);
+      // The door still holds on the export's files.
+      expect((await world.call("/", { headers: { host: "evil.example" } })).status).toBe(403);
+      expect(
+        (
+          await world.call("/_next/static/chunks/app.js", {
+            headers: { "sec-fetch-site": "cross-site" },
+          })
+        ).status,
+      ).toBe(403);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+});
+
+describe("owner bug: lag", () => {
+  test("a slow action never blocks the server: a page answers while it runs, and the stream shows its steps", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const fake = tempDir("slow-claude");
+    const bin = join(fake, "bin");
+    mkdirSync(bin, { recursive: true });
+    const log = join(fake, "claude.log");
+    writeFileSync(
+      join(bin, "claude"),
+      [
+        "#!/bin/sh",
+        `echo "$*" >> '${log}'`,
+        'case "$*" in',
+        '  "plugin marketplace update cc-smart-dev-kit") sleep 1; echo refreshed ;;',
+        "  *) echo updated ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const world = await open({
+      backendPort: backend.port,
+      env: { PATH: `${bin}:/usr/bin:/bin` },
+    });
+    try {
+      // A machine with 1.0.0 installed and 1.1.0 in the marketplace's copy: `update.install`
+      // runs two `claude plugin` commands, the first taking a second.
+      const plugins = join(world.home, ".claude", "plugins");
+      const copy = join(plugins, "marketplaces", "cc-smart-dev-kit");
+      mkdirSync(join(copy, "plugin", ".claude-plugin"), { recursive: true });
+      writeFileSync(
+        join(copy, "plugin", ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "cc-smart-dev-kit", version: "1.1.0" }),
+      );
+      writeFileSync(
+        join(plugins, "installed_plugins.json"),
+        JSON.stringify({
+          plugins: {
+            "cc-smart-dev-kit@cc-smart-dev-kit": [
+              { installPath: join(plugins, "cache", "v1.0.0"), scope: "user", version: "1.0.0" },
+            ],
+          },
+          version: 2,
+        }),
+      );
+      writeFileSync(
+        join(plugins, "known_marketplaces.json"),
+        JSON.stringify({
+          "cc-smart-dev-kit": {
+            installLocation: copy,
+            source: { path: copy, source: "directory" },
+          },
+        }),
+      );
+      const csrf = await world.csrfOf();
+      // A page that is open while the action runs: its stream shows the action's steps.
+      const base = `http://127.0.0.1:${world.portal.port}`;
+      const stream = await fetch(`${base}/events`, {
+        headers: { "sec-fetch-site": "same-origin" },
+      });
+      const reader = stream.body?.getReader();
+      if (reader === undefined) throw new Error("no body");
+      await readStreamUntil(reader, "event: hello");
+
+      let settled = false;
+      const started = performance.now();
+      const action = world.post("update.install", {}, csrf).finally(() => {
+        settled = true;
+      });
+      // A short pause inside a one-second action: a wide margin, so the page request below
+      // lands while the action is really in flight. With the old `Bun.spawnSync` the loop was
+      // blocked here, and this sleep could not even finish until the action had.
+      await Bun.sleep(100);
+      expect(existsSync(log)).toBe(true);
+      expect(settled).toBe(false);
+      // A page request answers at once, while the action waits on the child.
+      const pageStarted = performance.now();
+      const page = await world.call("/");
+      const pageMs = performance.now() - pageStarted;
+      expect(page.status).toBe(200);
+      expect(pageMs).toBeLessThan(500);
+      expect(settled).toBe(false);
+      // The action's progress is on the stream, not only in its answer.
+      const progress = await readStreamUntil(reader, "event: action");
+      expect(progress).toContain('"action":"update.install"');
+      const result = await action;
+      expect(result.status).toBe(200);
+      expect(JSON.parse(result.body).ok).toBe(true);
+      // The action really took its second: the page above answered in a fraction of it.
+      expect(performance.now() - started).toBeGreaterThanOrEqual(900);
+      await reader.cancel();
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+});
+
+describe("the new actions (D52)", () => {
+  test("each refuses an input it cannot act on, and says what is missing", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const csrf = await world.csrfOf();
+      const answer = await world.post("crew.answer", { crew: "", answer: "" }, csrf);
+      expect(answer.status).toBe(400);
+      expect(JSON.parse(answer.body).lines).toEqual(["Pick the crew session and write an answer."]);
+      for (const action of ["crew.stop", "crew.resume", "crew.rm"]) {
+        const refused = await world.post(action, {}, csrf);
+        expect(refused.status).toBe(400);
+        expect(JSON.parse(refused.body).ok).toBe(false);
+      }
+      const clean = await world.post("worktrees.clean", {}, csrf);
+      expect(clean.status).toBe(400);
+      expect(JSON.parse(clean.body).lines[0]).toContain("confirmation");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a crew command runs the CLI's own code: an unknown crew session is its refusal", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port, projectFiles: {} });
+    try {
+      const csrf = await world.csrfOf();
+      const stopped = await world.post("crew.stop", { crew: "nobody" }, csrf);
+      expect(stopped.status).toBe(400);
+      expect(JSON.parse(stopped.body).lines.join(" ")).toContain(
+        'no crew session of this repository is "nobody"',
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("crew.answer records the answer as the person, with no Claude Code session", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: JSON.stringify({ workflow: { crew: { enabled: true } } }) },
+    });
+    try {
+      const record = { ...crewFixture(world.cwd), state: "blocked" };
+      await createCrew(world.paths.stateDir, record, Date.now());
+      await addCrewQuestion(
+        world.paths.stateDir,
+        world.cwd,
+        "crew-K-contracts",
+        { options: ["Use SQLite", "Use a file"], question: "Where?", recommended: 1 },
+        Date.now(),
+      );
+      const csrf = await world.csrfOf();
+      const answered = await world.post(
+        "crew.answer",
+        { answer: "Use SQLite", crew: "crew-K-contracts" },
+        csrf,
+      );
+      expect(answered.status).toBe(200);
+      const body = JSON.parse(answered.body) as { lines: string[]; ok: boolean };
+      expect(body.ok).toBe(true);
+      // The CLI's own line, with the message the lead sends the crew session.
+      expect(body.lines.join("\n")).toContain("answered C my-app K contracts");
+      expect(body.lines.join("\n")).toContain("SendMessage");
+      const after = readCrew(world.paths.stateDir, world.cwd, "crew-K-contracts");
+      expect(after?.questions[0]?.answer).toBe("Use SQLite");
+    } finally {
+      world.portal.stop();
+      backend.stop();
     }
   });
 });

@@ -1373,6 +1373,14 @@ session cannot switch the review gate off through it unseen. Never open the port
 Chrome profile Claude Code drives (its own, `claude-code`): Claude could then reach its
 buttons.
 
+**It updates as things happen.** While a page is open, the portal keeps one live connection
+(`/events`, Server-Sent Events) and shows a routed request, a crew step, a plan limit, a guard's
+question, an update check or a change in the heavy-job queue as it lands. Several tabs share it;
+more than eight open tabs are refused with a short line instead of holding the server open. The
+pages fetch their facts from read-only `/api/…` answers (the portal's own interface, not a
+public API), and an action that runs a command no longer freezes anything: installing an update
+shows each step while it runs, and the pages and the stream stay live.
+
 Six screens, each following the design the owner approved (2026-10-16):
 
 | Screen | What it shows |

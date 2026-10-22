@@ -148,7 +148,7 @@ async function updateNow(
   const files = updateFiles(paths.stateDir);
   return withLock(
     files.lockDir,
-    () => {
+    async () => {
       const at = isoSeconds(now());
       const previous = readLastCheck(files);
       const record = (result: CheckResult, detail: string) =>
@@ -173,7 +173,7 @@ async function updateNow(
         const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
         // The major version this run was asked to install, when there is one.
         const seen: { major: MajorStep | null } = { major: null };
-        const result = applyUpdate(
+        const result = await applyUpdate(
           paths,
           claude,
           sinks.run ?? terminalRunner(env, paths.home),

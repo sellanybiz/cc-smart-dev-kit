@@ -698,8 +698,71 @@ every five seconds; the page's script stops reloading while the tab is hidden
 (`facts.ts`) keeps the journal's own order — oldest first, which the caller of a page shares —
 and the pages reverse it in ONE place: `newestFirst` (`views.ts`), used by the Health page's Log
 (newest 120) and by the Overview's "Latest warnings" (the newest three that are not INFO). The
-times are the journal's own, unchanged. The page is a full reload, never a live insertion, so
-there is nothing else to keep in order.
+times are the journal's own, unchanged. The server-rendered pages are a full reload, never a
+live insertion; the Next.js pages read the stream below.
+
+### Live: the stream, the JSON API and the export (B6b)
+
+**`GET /events` is the live stream** (D51): Server-Sent Events, one-way, through the door's
+network rules alone (it changes nothing, and reads need no token under D9). `src/portal/live/`
+holds it: `hub.ts` the streams and their format, `sources.ts` what changes. The hub keeps:
+
+- **at most `MAX_STREAMS` (8) at once**, and answers the next connection 429: a page left open
+  in every tab must not hold the server's memory without end;
+- **a ping every `PING_MS` (15 s)** on every stream, so a closed window or a sleeping laptop is
+  noticed and a page can say "reconnecting" rather than show stale values;
+- **`Last-Event-ID`**: every event carries `<boot>:<sequence>`, the last `BUFFER_MAX` (512) are
+  kept, and a reconnect replays what it missed. An id from another run of the portal, or older
+  than the buffer, gets one `reset` event, and the page fetches its answers again;
+- **`closing`** when the portal stops for a new version: every stream is told, then closed, and
+  the page reloads onto the new portal.
+
+The sources are polled on one timer (`LIVE_POLL_MS`, 2 s): the router's `recent` list from its
+health answer (metadata only), the crew store's `events.jsonl` by byte offset per repository,
+`gateway-state.json` (limits, fallbacks, an open breaker, `seenClaude`), `guard-asks.jsonl` by
+byte offset, the last update-check record, and the heavy-job queue (its lease and ticket
+folders' fingerprint, with the queue read only when it changes). The doctor pass and an
+action's lines are not polled: the server publishes them when it has them.
+
+**`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
+`health`, `machine`, `settings`, `projects`, `work`, `crew/<id>`, `flow`, `needs`,
+`guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
+through the door. Each answer is built from the same readers the server-rendered pages use
+(`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
+can never disagree. `work` is the lead and its crew nested plus the other sessions; a crew page
+carries its brief, its log, the diff against its base, its report, the reviews recorded on its
+branch and the merge check's verdict; `needs` is everything waiting on the person (a crew
+question with its options, an open permission prompt, doctor's failures, an open breaker, a
+held major version). `history` and `requests` answer empty, with a note, until phase H1 writes
+the request log. Nothing carries a key or a prompt.
+
+**The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
+`statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its
+shape (`{ memoryGb, freeGb, budgetGb, keptGb, stores: [{ where, freeGb, budgetGb, held,
+waiting, note? }] }`), the Machine page shows the same lines, and the `jobs` event carries the
+same shape. There is no parser of printed lines anywhere.
+
+**The Next.js export is served by this server** (D49, `src/portal/static.ts`): the folder beside
+the running bundle (`portal-ui/` next to `portal.js`), one `index.html` per route
+(`trailingSlash`), and `_next/static/*` served like `/assets/*` (build output, no machine
+facts). Each HTML page gets `<meta name="ccsdk-csrf" content="…">` inserted after its charset at
+serve time; the content policy is built from the export's `csp.json`
+(`{ styleAttr, styleElem }`, hashes written at build time): `style-src 'self'` plus the
+`styleElem` hashes, and `style-src-attr 'unsafe-hashes'` plus the `styleAttr` hashes — the
+owner's yes to D49's one loosening, for the exact values the export writes. `script-src` stays
+`'self'`. A path never leaves the folder. A route the export does not have falls back to the
+server-rendered page, and with no export folder at all the server-rendered pages answer as
+before: the switch-over costs nothing.
+
+**An action never blocks the server.** Every command an action starts with a child is spawned
+asynchronously (`Bun.spawn`, with its timeout), not with `Bun.spawnSync`: `claude plugin …` can
+take up to 300 s, and the synchronous version froze every page, every action and the stream for
+that long — the owner's "lag" bug. The runner's type (`src/update/apply.ts`'s `CommandRunner`)
+accepts a promise, so `update.install` awaits the same `applyUpdate` the command line runs; each
+step's last line and the action's result go out on the stream (`action` events), so a page shows
+the install as it happens. The new actions for D52 — `crew.answer`, `crew.stop`, `crew.resume`,
+`crew.rm`, `worktrees.clean` — call the CLI's own functions (`src/crew/`, `runWorktrees` with
+its own sinks), not a copy; `worktrees.clean` needs the page's confirmation.
 
 ### What it runs from
 

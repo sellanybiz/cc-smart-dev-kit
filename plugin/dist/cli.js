@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync68, statSync as statSync25 } from "fs";
+import { existsSync as existsSync68, statSync as statSync26 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join75, resolve as resolve14 } from "path";
 
@@ -14703,14 +14703,14 @@ var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
 var BUSY_DETAIL = "Claude Code was refreshing the same marketplace (git's index.lock was taken); the next check tries again";
-function applyUpdate(paths, claude, run, say, onMajor) {
+async function applyUpdate(paths, claude, run, say, onMajor) {
   const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   const fail = (detail) => ({ after: before, before, detail, ok: false });
   if (claude === null)
     return fail("the claude command is not on PATH");
-  const step = (args) => {
+  const step = async (args) => {
     say(`claude ${args.join(" ")}`);
-    const result = run([claude, ...args]);
+    const result = await run([claude, ...args]);
     if (result.exitCode === 0)
       return null;
     if (result.output.includes("index.lock")) {
@@ -14720,7 +14720,7 @@ function applyUpdate(paths, claude, run, say, onMajor) {
 `).at(-1)?.trim() ?? "");
     return fail(`claude ${args.join(" ")} failed (exit ${result.exitCode})${last ? `: ${last}` : ""}`);
   };
-  const refreshed = step(MARKETPLACE_REFRESH);
+  const refreshed = await step(MARKETPLACE_REFRESH);
   if (refreshed !== null)
     return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
@@ -14735,7 +14735,7 @@ function applyUpdate(paths, claude, run, say, onMajor) {
       if (!onMajor(major))
         return { after: before, before, detail: "", held: major, ok: true };
     }
-    const updated = step(PLUGIN_UPDATE);
+    const updated = await step(PLUGIN_UPDATE);
     if (updated !== null)
       return updated;
   }
@@ -29882,7 +29882,7 @@ function readCaller(command, ctx, options = { session: "required" }) {
     lines: fix === undefined ? [`crew ${command}: ${line}`] : [`crew ${command}: ${line}`, `Fix: ${fix}`],
     ok: false
   });
-  const crew = crewIdOf(ctx.env);
+  const crew = options.asPerson === true ? null : crewIdOf(ctx.env);
   if (crew !== null) {
     return refuse(`this session is the crew session ${crew}, and a crew session never ${NEVER_DOES[command]}`, `hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`);
   }
@@ -29908,7 +29908,7 @@ function readCaller(command, ctx, options = { session: "required" }) {
   }
   let session;
   try {
-    session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
+    session = options.asPerson === true ? null : callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
   } catch (error) {
     return refuse(reasonOf3(error));
   }
@@ -30006,7 +30006,7 @@ function endedItsPhase(record) {
   }
 }
 async function runCrewAnswer(args, ctx) {
-  const read = readCaller("answer", ctx);
+  const read = readCaller("answer", ctx, args.asPerson === true ? { asPerson: true, session: "optional" } : { session: "required" });
   if (!read.ok) {
     for (const line of read.lines)
       ctx.error(line);
@@ -34713,6 +34713,8 @@ function relative4(repo, path) {
   return isInside(path, repo) ? path.slice(repo.replace(/\/+$/, "").length + 1) : path;
 }
 function crewSessionRefusal(command, ctx) {
+  if (ctx.asPerson === true)
+    return null;
   const crew = crewIdOf(ctx.env);
   if (crew === null)
     return null;
@@ -36533,7 +36535,7 @@ function runAlert(alert, platform, launcher, run) {
 }
 
 // src/jobs/commands.ts
-import { mkdirSync as mkdirSync24, readdirSync as readdirSync21, statSync as statSync19 } from "fs";
+import { readdirSync as readdirSync22, statSync as statSync20 } from "fs";
 import { availableParallelism, hostname as hostname4 } from "os";
 
 // src/jobs/launch.ts
@@ -36863,20 +36865,8 @@ async function runJob(request, deps) {
   }
 }
 
-// src/jobs/commands.ts
-var USAGE3 = `Usage: ${COMMAND} job <command>
-
-Commands:
-  run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command...>
-                 Wait until this machine has the memory for the job, then run it.
-                 Its output, exit code and signals pass through. --exclusive: at
-                 most one job with that name at a time, in order. --kind, or
-                 --exclusive, or both.
-  status         Who holds memory, who waits, and how much is free.
-  kinds          The kinds of heavy job, and what each reserves.
-
-How it works: docs/jobs.md in the plugin's repo.`;
-var PREFIX = "[cc-smart-dev-kit job]";
+// src/jobs/status.ts
+import { mkdirSync as mkdirSync24, readdirSync as readdirSync21, statSync as statSync19 } from "fs";
 function machineBudget(config, memory) {
   if (config.budgetGb !== undefined)
     return { gb: config.budgetGb, why: "set in jobs.json" };
@@ -36894,7 +36884,7 @@ function openStores(ctx, config, onNote) {
     mkdirSync24(dir, { recursive: true, mode: 448 });
   } catch (error) {
     const code = error.code ?? String(error);
-    throw new JobsConfigError(`The state folder ${dir} cannot be made (${code}).`);
+    throw new Error(`The state folder ${dir} cannot be made (${code}).`);
   }
   const budget = machineBudget(config, ctx.memory);
   const uid = process.getuid?.();
@@ -36907,12 +36897,12 @@ function openStores(ctx, config, onNote) {
     return { availableBytes: memory.availableBytes, sliceBytes: used };
   };
   const machine = leaseStore({
+    capacityGb: () => machineBudget(config, ctx.memory).gb,
     dir,
     label: "this machine",
-    shared: false,
-    capacityGb: () => machineBudget(config, ctx.memory).gb,
     live,
-    onNote
+    onNote,
+    shared: false
   });
   const shared = [];
   const notes = [];
@@ -36923,11 +36913,108 @@ function openStores(ctx, config, onNote) {
     else
       notes.push(opened.note);
   }
-  return { machine, shared, notes, budget };
+  return { budget, machine, notes, shared };
 }
+async function readStore(store) {
+  const base = {
+    budgetGb: 0,
+    dir: store.dir,
+    freeGb: 0,
+    held: [],
+    label: store.label,
+    waiting: []
+  };
+  let capacity;
+  let held;
+  let waiting;
+  try {
+    capacity = await store.capacityGb();
+    held = (await store.held()).map((unit) => ({ gb: unit.gb, holder: parseHolder(unit.text) }));
+    waiting = (await store.waiting()).map((unit) => ({ gb: unit.gb, holder: parseHolder(unit.text) })).sort((a, b) => (a.holder?.since ?? Number.POSITIVE_INFINITY) - (b.holder?.since ?? Number.POSITIVE_INFINITY));
+  } catch (error) {
+    return {
+      ...base,
+      note: `cannot be read (${error instanceof Error ? error.message : String(error)})`
+    };
+  }
+  const heldGb = held.reduce((sum, unit) => sum + unit.gb, 0);
+  return {
+    ...base,
+    budgetGb: capacity,
+    freeGb: Math.max(0, capacity - heldGb),
+    held,
+    waiting
+  };
+}
+async function readJobs(ctx) {
+  const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
+  const notes = [];
+  const opened = openStores(ctx, config, (line) => notes.push(line));
+  const memory = machineMemory(ctx.memory);
+  const stores = [];
+  for (const store of [opened.machine, ...opened.shared])
+    stores.push(await readStore(store));
+  return {
+    budget: {
+      gb: opened.budget.gb,
+      keptGb: config.reserveGb ?? DEFAULT_RESERVE_GB,
+      why: opened.budget.why
+    },
+    memory: {
+      freeGb: memory.availableBytes === null ? null : memory.availableBytes / GIB,
+      limitDir: memory.limit?.dir ?? null,
+      platform: ctx.memory.platform,
+      totalGb: memory.totalBytes / GIB
+    },
+    notes: [...notes, ...opened.notes],
+    stores
+  };
+}
+var WINDOWS_NO_CEILING = "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
+function statusLines2(read, home, now) {
+  const lines = [];
+  const limit = read.memory.limitDir === null ? "" : ` (a memory limit of its group: ${tildify(read.memory.limitDir, home)})`;
+  const free = read.memory.freeGb === null ? "free memory cannot be read on this system (no live check)" : `${oneDecimal(read.memory.freeGb)} GB free now`;
+  lines.push(`Memory: ${oneDecimal(read.memory.totalGb)} GB${limit}, ${free}.`);
+  lines.push(`Budget for heavy jobs here: ${read.budget.gb} GB (${read.budget.why}).`);
+  if (read.memory.platform === "win32")
+    lines.push(WINDOWS_NO_CEILING);
+  for (const store of read.stores) {
+    const title = store.label === "this machine" ? `This machine (${tildify(store.dir, home)})` : `Shared folder ${store.dir}`;
+    if (store.note !== undefined) {
+      lines.push(`${title}: ${store.note}`);
+      continue;
+    }
+    lines.push(`${title}: ${store.freeGb} of ${store.budgetGb} GB free`);
+    lines.push(...holderLines(store.held, store.label, now));
+    for (const record of store.waiting) {
+      lines.push(record.holder === null ? `  ${store.label}: an unknown job waits` : `  ${store.label}: waits for ${record.holder.gb} GB: ${shownHolder(record.holder)}, since ${formatSince(record.holder.since, now)} (pid ${record.holder.pid})`);
+    }
+    if (store.held.length === 0 && store.waiting.length === 0) {
+      lines.push("  nothing held, nobody waits");
+    }
+  }
+  lines.push(...read.notes);
+  return lines;
+}
+
+// src/jobs/commands.ts
+var USAGE3 = `Usage: ${COMMAND} job <command>
+
+Commands:
+  run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command...>
+                 Wait until this machine has the memory for the job, then run it.
+                 Its output, exit code and signals pass through. --exclusive: at
+                 most one job with that name at a time, in order. --kind, or
+                 --exclusive, or both.
+  status         Who holds memory, who waits, and how much is free.
+  kinds          The kinds of heavy job, and what each reserves.
+
+How it works: docs/jobs.md in the plugin's repo.`;
+var PREFIX = "[cc-smart-dev-kit job]";
 function envFilesIn(dir) {
   try {
-    return readdirSync21(dir).filter((name) => /^\.env(\..+)?$/.test(name));
+    return readdirSync22(dir).filter((name) => /^\.env(\..+)?$/.test(name));
   } catch {
     return [];
   }
@@ -36935,7 +37022,7 @@ function envFilesIn(dir) {
 function isFileIn(cwd) {
   return (path) => {
     try {
-      return statSync19(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
+      return statSync20(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
     } catch {
       return false;
     }
@@ -37097,50 +37184,10 @@ ${USAGE3}`);
     process.off("exit", releaseOnExit);
   }
 }
-async function storeLines(store, title, now) {
-  const lines = [];
-  let capacity;
-  let held;
-  let waiting;
-  try {
-    capacity = await store.capacityGb();
-    held = (await store.held()).map((unit) => ({ gb: unit.gb, holder: parseHolder(unit.text) }));
-    waiting = (await store.waiting()).map((unit) => parseHolder(unit.text)).sort((a, b) => (a?.since ?? Number.POSITIVE_INFINITY) - (b?.since ?? Number.POSITIVE_INFINITY));
-  } catch (error) {
-    return [`${title}: cannot be read (${error instanceof Error ? error.message : String(error)})`];
-  }
-  const heldGb = held.reduce((sum, unit) => sum + unit.gb, 0);
-  lines.push(`${title}: ${Math.max(0, capacity - heldGb)} of ${capacity} GB free`);
-  lines.push(...holderLines(held, store.label, now));
-  for (const record of waiting) {
-    lines.push(record === null ? `  ${store.label}: an unknown job waits` : `  ${store.label}: waits for ${record.gb} GB: ${shownHolder(record)}, since ${formatSince(record.since, now)} (pid ${record.pid})`);
-  }
-  if (held.length === 0 && waiting.length === 0)
-    lines.push("  nothing held, nobody waits");
-  return lines;
-}
-var WINDOWS_NO_CEILING = "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
 async function jobStatus(ctx) {
-  const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
-  const opened = openStores(ctx, config, ctx.print);
   const now = (ctx.now ?? Date.now)();
-  const home = ctx.paths.home;
-  const memory = machineMemory(ctx.memory);
-  const free = memory.availableBytes === null ? "free memory cannot be read on this system (no live check)" : `${oneDecimal(memory.availableBytes / GIB)} GB free now`;
-  const limit = memory.limit === null ? "" : ` (a memory limit of its group: ${tildify(memory.limit.dir, home)})`;
-  ctx.print(`Memory: ${oneDecimal(memory.totalBytes / GIB)} GB${limit}, ${free}.`);
-  ctx.print(`Budget for heavy jobs here: ${opened.budget.gb} GB (${opened.budget.why}).`);
-  if (ctx.memory.platform === "win32")
-    ctx.print(WINDOWS_NO_CEILING);
-  for (const line of await storeLines(opened.machine, `This machine (${tildify(opened.machine.dir, home)})`, now)) {
+  for (const line of statusLines2(await readJobs(ctx), ctx.paths.home, now))
     ctx.print(line);
-  }
-  for (const store of opened.shared) {
-    for (const line of await storeLines(store, `Shared folder ${store.dir}`, now))
-      ctx.print(line);
-  }
-  for (const note of opened.notes)
-    ctx.print(note);
   return 0;
 }
 function jobKinds(ctx) {
@@ -38054,18 +38101,18 @@ ${WORKFLOW_USAGE}`);
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync9, mkdirSync as mkdirSync26, openSync as openSync9, readFileSync as readFileSync66, readSync as readSync6, statSync as statSync21 } from "fs";
+import { closeSync as closeSync9, mkdirSync as mkdirSync26, openSync as openSync9, readFileSync as readFileSync66, readSync as readSync6, statSync as statSync22 } from "fs";
 import { dirname as dirname23, join as join68 } from "path";
 
 // src/cli/usage.ts
-import { existsSync as existsSync63, readdirSync as readdirSync22, readFileSync as readFileSync65, statSync as statSync20 } from "fs";
+import { existsSync as existsSync63, readdirSync as readdirSync23, readFileSync as readFileSync65, statSync as statSync21 } from "fs";
 import { basename as basename10, join as join67, resolve as resolve12 } from "path";
 function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entries(path) {
   try {
-    const all = readdirSync22(path, { withFileTypes: true });
+    const all = readdirSync23(path, { withFileTypes: true });
     return {
       dirs: all.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort(),
       files: all.filter((entry) => entry.isFile()).map((entry) => entry.name).sort()
@@ -38076,7 +38123,7 @@ function entries(path) {
 }
 function changedAt2(path) {
   try {
-    return statSync20(path).mtimeMs;
+    return statSync21(path).mtimeMs;
   } catch {
     return Number.NEGATIVE_INFINITY;
   }
@@ -38841,7 +38888,7 @@ function replaced(file, transcript) {
     return false;
   let stat;
   try {
-    stat = statSync21(file);
+    stat = statSync22(file);
   } catch {
     return false;
   }
@@ -38850,7 +38897,7 @@ function replaced(file, transcript) {
 function readTranscriptFile(file, session, transcript, subagent, context) {
   let stat;
   try {
-    stat = statSync21(file);
+    stat = statSync22(file);
   } catch {
     return false;
   }
@@ -39610,7 +39657,7 @@ async function check(paths, env, sinks) {
 async function updateNow(paths, env, now, sinks) {
   const { error, print } = sinks;
   const files = updateFiles(paths.stateDir);
-  return withLock(files.lockDir, () => {
+  return withLock(files.lockDir, async () => {
     const at = isoSeconds(now());
     const previous = readLastCheck(files);
     const record = (result, detail) => writeLastCheck(files, { at, detail, result });
@@ -39632,7 +39679,7 @@ async function updateNow(paths, env, now, sinks) {
     } else {
       const claude = Bun.which("claude", { PATH: env.PATH ?? "" });
       const seen = { major: null };
-      const result = applyUpdate(paths, claude, sinks.run ?? terminalRunner(env, paths.home), (line) => print(`$ ${line}`), (major) => {
+      const result = await applyUpdate(paths, claude, sinks.run ?? terminalRunner(env, paths.home), (line) => print(`$ ${line}`), (major) => {
         seen.major = major;
         print(majorInstallLine(major.to, major.notes));
         for (const line of retiredRepoLines(paths, env))
@@ -40005,7 +40052,7 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync64, readdirSync as readdirSync23, readFileSync as readFileSync67, renameSync as renameSync4, rmSync as rmSync15, statSync as statSync22 } from "fs";
+import { existsSync as existsSync64, readdirSync as readdirSync24, readFileSync as readFileSync67, renameSync as renameSync4, rmSync as rmSync15, statSync as statSync23 } from "fs";
 import { basename as basename11, dirname as dirname24, join as join69 } from "path";
 var OLD = {
   name: "anymodel",
@@ -40164,7 +40211,7 @@ var BOOKKEEPING_NAMES = [
 function foreignStateEntries(old) {
   if (!existsSync64(old.stateDir))
     return [];
-  return readdirSync23(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
+  return readdirSync24(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
 }
 function oldPiecesPresent(paths, old, renamer) {
   if ([
@@ -40232,7 +40279,7 @@ function recordsNameOldPaths(stateDir, renamer) {
   }
   const backups = join69(stateDir, "backups");
   if (existsSync64(backups)) {
-    for (const folder of readdirSync23(backups)) {
+    for (const folder of readdirSync24(backups)) {
       if (renamer.path(decodeURIComponent(folder)) !== decodeURIComponent(folder))
         return true;
     }
@@ -40265,7 +40312,7 @@ function absorbStateFolder(from, to, dryRun) {
   if (!existsSync64(from))
     return 0;
   let moved = 0;
-  for (const name of readdirSync23(from)) {
+  for (const name of readdirSync24(from)) {
     const source = join69(from, name);
     const target = join69(to, name);
     if (!existsSync64(target)) {
@@ -40274,7 +40321,7 @@ function absorbStateFolder(from, to, dryRun) {
         renameSync4(source, target);
       continue;
     }
-    if (statSync22(source).isDirectory() && statSync22(target).isDirectory()) {
+    if (statSync23(source).isDirectory() && statSync23(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
         rmSync15(source, { recursive: true, force: true });
@@ -40283,7 +40330,7 @@ function absorbStateFolder(from, to, dryRun) {
     if (!dryRun)
       rmSync15(source, { recursive: true, force: true });
   }
-  if (!dryRun && readdirSync23(from).length === 0)
+  if (!dryRun && readdirSync24(from).length === 0)
     rmSync15(from, { recursive: true, force: true });
   return moved;
 }
@@ -40325,10 +40372,10 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
   const backupsDir = join69(stateDir, "backups");
   if (!existsSync64(backupsDir))
     return { files, backups };
-  const folders = readdirSync23(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const folders = readdirSync24(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   for (const folder of folders) {
     const folderPath = join69(backupsDir, folder);
-    for (const name of readdirSync23(folderPath)) {
+    for (const name of readdirSync24(folderPath)) {
       const renamed = renamer.backupName(name);
       if (renamed === name)
         continue;
@@ -40344,7 +40391,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
       continue;
     const target = join69(backupsDir, renamedFolder);
     if (existsSync64(target)) {
-      for (const name of readdirSync23(folderPath))
+      for (const name of readdirSync24(folderPath))
         renameSync4(join69(folderPath, name), join69(target, name));
       rmSync15(folderPath, { recursive: true, force: true });
     } else {
@@ -40384,7 +40431,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   return { set, remove, kept };
 }
 function readOldConfig(file, platform = hostPlatform()) {
-  const mode = statSync22(file).mode;
+  const mode = statSync23(file).mode;
   if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
@@ -40452,7 +40499,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (changed === 0)
     return 0;
   if (!dryRun) {
-    const mode = statSync22(file).mode & 4095;
+    const mode = statSync23(file).mode & 4095;
     backupFile(stateDir, file);
     atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
 `, mode);
@@ -41160,7 +41207,7 @@ function gatewayContext(options) {
 }
 
 // src/hooks/notify.ts
-import { readFileSync as readFileSync69, rmSync as rmSync17, statSync as statSync23, writeFileSync as writeFileSync13 } from "fs";
+import { readFileSync as readFileSync69, rmSync as rmSync17, statSync as statSync24, writeFileSync as writeFileSync13 } from "fs";
 import { tmpdir as tmpdir9 } from "os";
 import { basename as basename12, join as join72 } from "path";
 
@@ -41235,7 +41282,7 @@ function forget(file) {
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync23(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync24(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
@@ -41632,7 +41679,7 @@ import { existsSync as existsSync66 } from "fs";
 import { join as join74 } from "path";
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync10, constants as constants4, openSync as openSync10, readlinkSync as readlinkSync6, statSync as statSync24, writeSync as writeSync2 } from "fs";
+import { closeSync as closeSync10, constants as constants4, openSync as openSync10, readlinkSync as readlinkSync6, statSync as statSync25, writeSync as writeSync2 } from "fs";
 import { join as join73 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
@@ -41689,7 +41736,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync24(path).uid;
+        return statSync25(path).uid;
       } catch {
         return null;
       }
@@ -41952,42 +41999,47 @@ function describe3(worktree) {
     return "GONE \u2014 its folder no longer exists";
   return state.finished ? "FINISHED" : `kept: ${state.why}`;
 }
-function show4(scanned) {
+var CONSOLE_SINKS2 = {
+  error: (line) => console.error(line),
+  print: (line) => console.log(line)
+};
+function show4(scanned, print) {
   for (const worktree of scanned) {
     const { branch, head, path } = worktree.listed;
     const name = basename14(path).padEnd(30);
     const on = (branch ?? `detached at ${head.slice(0, 9)}`).padEnd(42);
-    console.log(`  ${name} ${on} ${describe3(worktree)}`);
+    print(`  ${name} ${on} ${describe3(worktree)}`);
   }
-  console.log();
+  print("");
 }
-async function runWorktrees(paths, options, env, cwd = process.cwd()) {
+async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CONSOLE_SINKS2) {
+  const { error, print } = sinks;
   const checkout = locateCheckout(cwd, { env });
   const repo = checkout?.mainCheckout ?? resolve13(cwd);
   const { base, from } = baseBranch(checkout, env, repo);
   if (from !== "config") {
-    console.log(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.
+    print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.
 `);
   }
   if (options.remove !== null && options.remove === "") {
-    console.error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
+    error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
     return 1;
   }
   let lock = null;
   if (options.clean || options.remove !== null) {
     if (!samePath3(cwd, repo)) {
-      console.error(`Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`);
+      error(`Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`);
       return 1;
     }
     lock = await holdCleanLock();
     if (lock === null) {
-      console.log("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
+      print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
       return 0;
     }
   }
   try {
     if (!options.noFetch && !fetchBase(repo, base, env)) {
-      console.log(`Could not fetch origin/${base}; judging against the copy of it here.
+      print(`Could not fetch origin/${base}; judging against the copy of it here.
 `);
     }
     if (options.remove !== null) {
@@ -42001,40 +42053,40 @@ async function runWorktrees(paths, options, env, cwd = process.cwd()) {
       const scanned = scanWorktrees(repo, judged);
       const found = scanned.find((worktree) => worktree.state !== "main" && samePath3(worktree.listed.path, target));
       if (found === undefined) {
-        console.error(`${target} is not a worktree of this repo. \`cc-smart-dev-kit worktrees\` lists them.`);
+        error(`${target} is not a worktree of this repo. \`cc-smart-dev-kit worktrees\` lists them.`);
         return 1;
       }
       if (found.state === "gone") {
         pruneWorktrees(repo, env);
-        console.log(forgottenLine(found.listed.path));
+        print(forgottenLine(found.listed.path));
         if (found.listed.branch !== null) {
-          console.log(deleteMergedBranch(repo, base, found.listed.branch, env));
+          print(deleteMergedBranch(repo, base, found.listed.branch, env));
         }
         return 0;
       }
       if (typeof found.state === "object" && found.state.finished) {
-        console.log(`removing ${found.listed.path} \u2026`);
+        print(`removing ${found.listed.path} \u2026`);
         const removal = removeWorktree(repo, found.listed, judged);
         for (const said of removal.said)
-          console.log(said);
+          print(said);
         return removal.status === "removed" ? 0 : 1;
       }
-      console.log(`Kept ${found.listed.path}: ${describe3(found).replace(/^kept: /, "")}.`);
+      print(`Kept ${found.listed.path}: ${describe3(found).replace(/^kept: /, "")}.`);
       return 1;
     }
     const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
     const scanned = scanWorktrees(repo, judged);
-    console.log(`Worktrees of ${repo}
+    print(`Worktrees of ${repo}
 `);
-    show4(scanned);
+    show4(scanned, print);
     const going = scanned.filter(canGo);
     if (!options.clean) {
-      console.log(going.length === 0 ? "Nothing finished to clear." : `${String(going.length)} can go. \`cc-smart-dev-kit worktrees --clean\` in the main checkout removes them.`);
+      print(going.length === 0 ? "Nothing finished to clear." : `${String(going.length)} can go. \`cc-smart-dev-kit worktrees --clean\` in the main checkout removes them.`);
       return 0;
     }
-    cleanFinished(repo, scanned, judged, (line) => console.log(line));
+    cleanFinished(repo, scanned, judged, (line) => print(line));
     if (going.length === 0)
-      console.log("Nothing finished to clear.");
+      print("Nothing finished to clear.");
     return 0;
   } finally {
     lock?.close();
@@ -42192,7 +42244,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync68(project) || !statSync25(project).isDirectory()) {
+      if (!existsSync68(project) || !statSync26(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;

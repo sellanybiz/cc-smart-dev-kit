@@ -2244,14 +2244,14 @@ var CLAUDE_TIMEOUT_MS = 180000;
 var MARKETPLACE_REFRESH = ["plugin", "marketplace", "update", MARKETPLACE];
 var PLUGIN_UPDATE = ["plugin", "update", PLUGIN_ID, "--scope", "user"];
 var BUSY_DETAIL = "Claude Code was refreshing the same marketplace (git's index.lock was taken); the next check tries again";
-function applyUpdate(paths, claude, run, say, onMajor) {
+async function applyUpdate(paths, claude, run, say, onMajor) {
   const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   const fail = (detail) => ({ after: before, before, detail, ok: false });
   if (claude === null)
     return fail("the claude command is not on PATH");
-  const step = (args) => {
+  const step = async (args) => {
     say(`claude ${args.join(" ")}`);
-    const result = run([claude, ...args]);
+    const result = await run([claude, ...args]);
     if (result.exitCode === 0)
       return null;
     if (result.output.includes("index.lock")) {
@@ -2261,7 +2261,7 @@ function applyUpdate(paths, claude, run, say, onMajor) {
 `).at(-1)?.trim() ?? "");
     return fail(`claude ${args.join(" ")} failed (exit ${result.exitCode})${last ? `: ${last}` : ""}`);
   };
-  const refreshed = step(MARKETPLACE_REFRESH);
+  const refreshed = await step(MARKETPLACE_REFRESH);
   if (refreshed !== null)
     return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
@@ -2276,7 +2276,7 @@ function applyUpdate(paths, claude, run, say, onMajor) {
       if (!onMajor(major))
         return { after: before, before, detail: "", held: major, ok: true };
     }
-    const updated = step(PLUGIN_UPDATE);
+    const updated = await step(PLUGIN_UPDATE);
     if (updated !== null)
       return updated;
   }
@@ -2673,7 +2673,7 @@ async function backgroundCheck(deps) {
           return;
         case "behind": {
           log(`newer: installed ${status.installed ?? "(no version)"}, the marketplace copy ${status.inCopy ?? "(unreadable)"}${status.catalogBehind ? ", and the copy is behind the remote" : ""}`);
-          const result = applyUpdate(deps.paths, deps.claude, deps.run, (line) => log(`run: ${line}`), () => false);
+          const result = await applyUpdate(deps.paths, deps.claude, deps.run, (line) => log(`run: ${line}`), () => false);
           if (result.held !== undefined) {
             const { from, notes, to } = result.held;
             const known = readHeldMajor(files);

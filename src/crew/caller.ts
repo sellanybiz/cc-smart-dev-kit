@@ -52,6 +52,12 @@ const NEVER_DOES = CREW_NEVER_DOES;
 /** How the command reads the session that runs it. */
 export interface CallerOptions {
   /**
+   * True: the person acted through the portal (D52). The portal is not a Claude Code session,
+   * and its environment may carry the crew session that happened to start it, so neither
+   * check applies; the workflow and project checks stay.
+   */
+  asPerson?: boolean;
+  /**
    * What the command does when no Claude Code session runs it. `required` (the default) refuses
    * it; `optional` goes on with no session — for the commands a plugin's monitor runs, which the
    * host arms as a process of its own, not of the session.
@@ -72,7 +78,7 @@ export function readCaller(
         : [`crew ${command}: ${line}`, `Fix: ${fix}`],
     ok: false,
   });
-  const crew = crewIdOf(ctx.env);
+  const crew = options.asPerson === true ? null : crewIdOf(ctx.env);
   if (crew !== null) {
     return refuse(
       `this session is the crew session ${crew}, and a crew session never ${NEVER_DOES[command]}`,
@@ -104,7 +110,10 @@ export function readCaller(
   }
   let session: SessionRecord | null;
   try {
-    session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
+    session =
+      options.asPerson === true
+        ? null
+        : callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
   } catch (error) {
     return refuse(reasonOf(error));
   }
