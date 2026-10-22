@@ -56,7 +56,7 @@ const GUARD_CASES: { spec: HookSpec; what: string; input: Record<string, unknown
   },
   {
     spec: jobRouteHook,
-    what: "whether this project routes heavy commands through its job queue",
+    what: "whether this launch or heavy command may run",
     input: { tool_name: "Bash", tool_input: { command: "bunx tsc --noEmit" } },
   },
   {

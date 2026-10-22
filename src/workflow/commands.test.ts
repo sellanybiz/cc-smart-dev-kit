@@ -1,11 +1,19 @@
 /** `cc-smart-dev-kit workflow`: what `show` prints, and where `set` and `unset` write. */
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cliPaths, tildify } from "../cli/paths";
-import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
+import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { runWorkflow, type WorkflowContext } from "./commands";
@@ -710,6 +718,7 @@ describe("the review gate (CM-1)", () => {
       "gate fixesAfterReview.lines = 50 (project, committed on origin/main)",
       "gate fixesAfterReview.files = 10 (default)",
       "gate fixesAfterReview.percent = 20 (default)",
+      "gate fixesAfterReview in force: 50 lines in 10 files, or 20% of the reviewed change, whichever is more",
     ]);
   });
 
@@ -766,5 +775,170 @@ describe("the review gate (CM-1)", () => {
       `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
     );
     expect(JSON.parse(readFileSync(record, "utf8"))[head].by).toEqual(["workflow review-done"]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D17/D22: `workflow merge-check --branch` prints the merge guard's own review verdict.
+// The cases run in a real clone of a bare origin, so `readCover` really measures the fixes.
+// ---------------------------------------------------------------------------------------
+
+/** `n` lines `<tag> 1` … `<tag> n`, each ending in a newline. */
+function numbered(n: number, tag: string): string {
+  return Array.from({ length: n }, (_, index) => `${tag} ${index + 1}\n`).join("");
+}
+
+/** Writes each file, commits everything, and returns the new commit. */
+function commitFiles(repo: string, files: Record<string, string>, message: string): string {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), content);
+  }
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", message);
+  return git(repo, "rev-parse", "HEAD").trim();
+}
+
+/** The review record of `repo` in `env`: `sha` reviewed by the plugin's reviewer on `branch`. */
+function recordReview(
+  env: Record<string, string>,
+  repo: string,
+  sha: string,
+  branch: string,
+): void {
+  const file = join(
+    cliPaths(env).stateDir,
+    "reviews",
+    `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
+  );
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(
+    file,
+    `${JSON.stringify(
+      {
+        [sha]: {
+          at: "2026-10-21T10:00:00.000Z",
+          by: ["cc-smart-dev-kit:reviewer"],
+          branches: [branch],
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+/** A clone whose `main` carries the policy, on a `feat` branch with 100 reviewed lines. */
+function branchWorld(): { repo: string; env: Record<string, string>; reviewed: string } {
+  const { repo } = makeClone();
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+  git(repo, "add", ".claude/cc-smart-dev-kit.json");
+  git(repo, "commit", "-q", "-m", "the project's policy");
+  git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(repo, "checkout", "-q", "-b", "feat");
+  const reviewed = commitFiles(
+    repo,
+    { "src/a.txt": numbered(60, "a"), "src/b.txt": numbered(40, "b") },
+    "reviewed",
+  );
+  return { repo, env: hookEnv(), reviewed };
+}
+
+/** `env` with only git on PATH: a test reaches no real gh, and so no network. */
+function envWithoutGh(env: Record<string, string>): Record<string, string> {
+  const bin = tempDir("no-gh");
+  const realGit = Bun.which("git");
+  if (realGit === null) throw new Error("this test needs git");
+  symlinkSync(realGit, join(bin, "git"));
+  return { ...env, PATH: bin };
+}
+
+describe("workflow merge-check", () => {
+  test("D17: --branch allows a reviewed branch with its small fixes", async () => {
+    const { repo, env, reviewed } = branchWorld();
+    recordReview(env, repo, reviewed, "feat");
+    const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
+    const run = context(repo, env);
+    expect(
+      await runWorkflow(["merge-check", "--branch", "feat", "--base", "main"], run.context),
+    ).toBe(0);
+    expect(run.errors).toEqual([]);
+    expect(run.lines).toEqual([
+      `branch feat: allowed — the review of ${reviewed.slice(0, 7)} covers ${head.slice(0, 7)}, with the fixes after it within the limits`,
+    ]);
+  });
+
+  test("D17: --branch asks about a rewrite, naming the counts and the limit (the guard's words)", async () => {
+    const { repo, env, reviewed } = branchWorld();
+    recordReview(env, repo, reviewed, "feat");
+    rmSync(join(repo, "src/a.txt"));
+    rmSync(join(repo, "src/b.txt"));
+    commitFiles(repo, { "src/c.txt": numbered(500, "c") }, "rewrite");
+    const run = context(repo, env);
+    expect(
+      await runWorkflow(["merge-check", "--branch", "feat", "--base", "main"], run.context),
+    ).toBe(1);
+    expect(run.lines).toEqual([
+      `branch feat: asks — 600 lines in 3 files changed after the review of ${reviewed.slice(0, 7)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
+    ]);
+  });
+
+  test("D17: a review of the exact head is allowed, and says so", async () => {
+    const { repo, env, reviewed } = branchWorld();
+    recordReview(env, repo, reviewed, "feat");
+    const run = context(repo, env);
+    expect(
+      await runWorkflow(["merge-check", "--branch", "feat", "--base", "main"], run.context),
+    ).toBe(0);
+    expect(run.lines).toEqual([
+      `branch feat: allowed — the review of ${reviewed.slice(0, 7)} is of ${reviewed.slice(0, 7)} itself`,
+    ]);
+  });
+
+  test("a branch that is not in this checkout asks with the reason", async () => {
+    const { repo, env } = branchWorld();
+    const run = context(repo, env);
+    expect(
+      await runWorkflow(["merge-check", "--branch", "nowhere", "--base", "main"], run.context),
+    ).toBe(1);
+    expect(run.lines).toEqual(["branch nowhere: asks — branch nowhere is not in this checkout"]);
+  });
+
+  test("a pull request with no gh on PATH asks, and says gh is not installed", async () => {
+    const { repo, env } = branchWorld();
+    const run = context(repo, envWithoutGh(env));
+    expect(await runWorkflow(["merge-check", "7"], run.context)).toBe(1);
+    expect(run.lines).toEqual([
+      "#7: asks — cc-smart-dev-kit could not check this merge: gh is not installed. Approve the merge yourself if it is right.",
+    ]);
+  });
+
+  test("the usage mistakes: a pair of flags, numbers, or both refused", async () => {
+    const { repo, env } = branchWorld();
+    for (const [argv, why] of [
+      [["merge-check"], "merge-check needs a pull request number, or --branch with --base"],
+      [["merge-check", "--branch", "feat"], "merge-check needs both --branch and --base"],
+      [
+        ["merge-check", "--branch", "feat", "--base", "main", "7"],
+        "merge-check takes pull request numbers, or --branch with --base, not both",
+      ],
+      [["merge-check", "fix/login"], "Not a pull request number: fix/login"],
+      [["merge-check", "7", "--since", "yesterday"], "Unknown option: --since"],
+    ]) {
+      const run = context(repo, env);
+      expect(await runWorkflow(argv as string[], run.context)).toBe(2);
+      expect(run.errors[0]).toStartWith(`${why}\n\n`);
+      expect(run.lines).toEqual([]);
+    }
+  });
+
+  test("a project without the file: exit 1, and says there is no policy", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const run = context(repo, env);
+    expect(await runWorkflow(["merge-check", "7"], run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `cc-smart-dev-kit workflow merge-check: ${repo} has no .claude/cc-smart-dev-kit.json, so there is no merge policy to check`,
+    ]);
   });
 });

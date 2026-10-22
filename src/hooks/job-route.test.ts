@@ -184,11 +184,23 @@ describe("the two answers", () => {
 
   it("the rewrite: the same tool input, its command replaced, no permission decision", () => {
     const answer = JSON.parse(
-      rewriteAnswer({ command: "bunx tsc --noEmit", timeout: 120000 }, routed).stdout ?? "{}",
+      rewriteAnswer({ command: "bunx tsc --noEmit", timeout: 120000 }, routed.command).stdout ??
+        "{}",
     ).hookSpecificOutput;
     expect(answer).toEqual({
       hookEventName: "PreToolUse",
       updatedInput: { command: routed.command, timeout: 120000 },
+    });
+  });
+
+  it("a lead's rewrite adds `run_in_background: true` beside the command", () => {
+    const answer = JSON.parse(
+      rewriteAnswer({ command: "gh pr checks 7 --watch" }, "gh pr checks 7 --watch", true).stdout ??
+        "{}",
+    ).hookSpecificOutput;
+    expect(answer).toEqual({
+      hookEventName: "PreToolUse",
+      updatedInput: { command: "gh pr checks 7 --watch", run_in_background: true },
     });
   });
 

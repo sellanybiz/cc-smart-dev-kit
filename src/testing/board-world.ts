@@ -63,6 +63,8 @@ export interface AddCrew {
   files?: string[];
   kind?: CrewKind;
   lastLine?: null | string;
+  /** The pause the record carries (D42), and its last pause before it. */
+  lastPause?: CrewRecord["lastPause"];
   leadSessionId?: string;
   memoryMb?: null | number;
   model?: CrewRecord["model"];
@@ -76,6 +78,7 @@ export interface AddCrew {
   state?: string;
   /** The end of its id (`<phase>-<slug>-<suffix>`). Default `1a2b3c`. */
   suffix?: string;
+  waitingFor?: CrewRecord["waitingFor"];
   waitsFor?: string[];
   /** False: no branch and no worktree on disk (a queued crew session has none). Default true. */
   worktree?: boolean;
@@ -144,6 +147,8 @@ export async function boardWorld(): Promise<BoardWorld> {
         state: change.state ?? "working",
         waitsFor: change.waitsFor ?? [],
         worktree,
+        ...(change.waitingFor === undefined ? {} : { waitingFor: change.waitingFor }),
+        ...(change.lastPause === undefined ? {} : { lastPause: change.lastPause }),
       },
       change.atMs ?? NOW - 12 * MINUTE,
     );

@@ -6,10 +6,10 @@ import { workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
- * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may
- * list. A test keeps it the same as `HOOKS` in `src/hooks/specs.ts`, except the hooks marked
- * `alwaysOn` (today `session-escape-guard`): a project cannot switch those off, so `ownHooks`
- * does not accept their names.
+ * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may list
+ * to switch a plugin hook off. A test keeps it the same as `HOOKS` in `src/hooks/specs.ts`,
+ * except the hooks marked `alwaysOn` (`session-escape-guard`, `job-route`): a project cannot
+ * switch those off, so their names are not here.
  */
 export const PLUGIN_HOOK_NAMES = [
   "git-guard",
@@ -18,7 +18,6 @@ export const PLUGIN_HOOK_NAMES = [
   "message-guard",
   "agent-guard",
   "fable-session",
-  "job-route",
   "after-merge",
   "review-record",
   "worktree-leftovers",
@@ -28,13 +27,21 @@ export const PLUGIN_HOOK_NAMES = [
 ] as const;
 
 /**
- * The plugin hooks a later version took out, by name: `ownHooks` still ACCEPTS them, and they
- * silence nothing (no hook of that name runs any more). Refusing one would fail the strict
- * parse of a project file written for an older plugin, and then every guard would ask on
- * every call. `doctor` says the name can go (`src/cli/project-checks.ts`). `serena-root`
- * went with Serena in 0.6.0.
+ * The plugin hooks a project's `ownHooks` still ACCEPTS although listing them silences
+ * nothing: a hook a later version took out (`RETIRED_HOOK_NAMES`), and one a project can no
+ * longer switch off (`UNSWITCHABLE_HOOK_NAMES`). Refusing the name would fail the strict parse
+ * of a project file written for an older plugin, and then every guard would ask on every call.
+ * `doctor` says the name can go (`src/cli/project-checks.ts`).
  */
 export const RETIRED_HOOK_NAMES = ["serena-root"] as const;
+
+/**
+ * The plugin hooks a project can no longer switch off (`HookSpec.alwaysOn`) whose name a
+ * project file may still list from before: `job-route` became the machine-wide Bash judge in
+ * 1.0.0 (its launch judge must hold in every session, so the frame skips the `ownHooks` step),
+ * and a file that listed it must keep parsing. It silences nothing now.
+ */
+export const UNSWITCHABLE_HOOK_NAMES = ["job-route"] as const;
 
 /**
  * The plugin version that made `worktrees.prefix` optional. A project file written without
@@ -149,9 +156,12 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    * The plugin hooks this project still runs as its own copy (["git-guard"]): exactly
    * those stay silent here, so the two copies never both answer. Emptied once the project
    * removed its copies (`docs/design.md` § The safe switch). A retired name
-   * (`RETIRED_HOOK_NAMES`) is accepted and silences nothing.
+   * (`RETIRED_HOOK_NAMES`), and one a project can no longer switch off
+   * (`UNSWITCHABLE_HOOK_NAMES`), is accepted and silences nothing.
    */
-  ownHooks: z.array(z.enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES])).optional(),
+  ownHooks: z
+    .array(z.enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES]))
+    .optional(),
 });
 
 export type CcSmartDevKitConfig = z.infer<typeof ccSmartDevKitConfigSchema>;

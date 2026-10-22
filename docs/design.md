@@ -1223,10 +1223,13 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    project, prints one `·` line per listed hook, and warns (`!`) when a listed hook has no
    project hook left to answer, or when a project hook runs next to a plugin hook the list
    does not name. A hook the project wires itself skips this step: that wiring is its
-   opt-in. **One hook skips the step itself:** `session-escape-guard` is `alwaysOn`
-   (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for it and `ownHooks` does not
-   accept its name — the project's file is one of the things it guards (§ The session-escape
-   guard).
+   opt-in. **Two hooks skip the step themselves:** `session-escape-guard` and `job-route`
+   are `alwaysOn` (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for them — the
+   project's file is one of the things the first guards, and the second limits what the session
+   itself may launch (§ The session-escape guard, § The Bash judge and the job route).
+   `ownHooks` does not accept `session-escape-guard`'s name; it still accepts `job-route`'s,
+   because a project file written before 1.0.0 may carry it, and the name silences nothing
+   (`UNSWITCHABLE_HOOK_NAMES`).
 3. **Read `cc-smart-dev-kit.json`.** When it is broken or needs a newer plugin, the hook
    **fails closed**, each in the way that suits its event: a guard asks the person (it cannot
    know whether the project turned it on), an informational hook says one line. "Closed"
@@ -1362,19 +1365,22 @@ that, so the plugin ships no worktree hook at all.
 | `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port and before an edit of the kit's own settings. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
-| `job-route` | PreToolUse (Bash) | `jobs.route` | A line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). § The job route. |
+| `job-route` | PreToolUse (Bash) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one Bash judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's `crew start` is denied; a polling loop over `crew list|status` or `claude agents --json` (a `while`/`until`/`for` loop or a `watch`, or a `sleep` beside a read) is denied. **The route** is the project's `jobs.route`: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). § The Bash judge and the job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send the other sessions when it went into `worktrees.base`, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
-| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. § Lead and the crew › The crew session's and the lead's hooks. |
+| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
 | `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
 
-Without `cc-smart-dev-kit.json` every one of them is silent — except the six machine-wide
-ones: `agent-guard` (§ The Agent guard), `session-escape-guard` (§ The session-escape guard),
+Without `cc-smart-dev-kit.json` every one of them is silent — except the seven machine-wide
+ones: `agent-guard` (§ The Agent guard), `job-route` (§ The Bash judge and the job route),
+`session-escape-guard` (§ The session-escape guard),
 `fable-session` (§ The Fable-session note), `crew-role` and `lead-notes` (§ Lead and the crew), and
 `playwright-output`, which reads no project file at all — so a project that never opted in
-sees only Claude Code's own worktrees and the limits a session may not get around. The machine-wide `notify` hook needs no project file
+sees only Claude Code's own worktrees and the limits a session may not get around. `job-route`
+and `session-escape-guard` are also `alwaysOn`: `ownHooks` cannot switch them off, because they
+limit what the session itself may do. The machine-wide `notify` hook needs no project file
 and acts without one; the
 `workflow.alerts` settings are the one thing it reads from a project that has them (§ The
 notifier).
@@ -1834,24 +1840,67 @@ and `restore` takes the line out through the same `file-line` record (`managed-l
 keeps every line the person wrote. `doctor` reports, as information, a missing line and a
 running server that does not pass alerts through.
 
-### The job route
+### The Bash judge and the job route
 
-`job-route` (PreToolUse on Bash) is the heavy-job queue's door: with `"jobs": { "route": true }`
-in the project's `.claude/cc-smart-dev-kit.json`, a command its kinds classify as heavy is sent
-through the queue instead of running raw (`docs/jobs.md` § The route). It answers with
-Claude Code's `updatedInput` — the same tool input, its `command` replaced by
-`"$HOME/.local/bin/cc-smart-dev-kit" job run --kind <kind> -- <command>` — proved live on 2.1.301
-(`claude-code-contract.md`). It gives no `permissionDecision`: the rewrite replaces the input
-and the permission system still decides about the new command, so a person's own rule for
-Bash keeps working. **Only a line whose every command is heavy, a `cd` or an assignment is
-queued** (`classifyRoutableLine`); any other line runs raw. Why: Claude Code matches a
-person's `Bash(…)` rules against the command it is about to run and does not look inside
-`bash -c '…'`, so a rewritten `tsc && rm -f x` would hide its `rm` from a `Bash(rm:*)`
-rule (proved on 2.1.308, `claude-code-contract.md`). `REWRITE_SUPPORTED` in the hook is the
-one switch, and with it false the same command line is denied instead, never silently left
-raw. A command already inside `cc-smart-dev-kit job run` is left alone, and `ownHooks` can
-silence the hook where a project keeps its own. It is the one guard that changes the call
-rather than asking about it, which is why it is opt-in per project.
+`job-route` (PreToolUse on Bash) is the kit's one Bash judge, and it keeps its public name:
+`hooks.json`, project files and `ownHooks` values stay valid. It is **machine-wide** and
+**`alwaysOn`** — the frame skips the `ownHooks` step and `ownHooks` cannot switch it off — and it
+runs outside git, and with a broken or too new `cc-smart-dev-kit.json`: a session must not be
+able to switch off the limits on its own launches by editing a file it owns (the reason
+`session-escape-guard` is always on too). A project file that still lists `"job-route"` keeps
+parsing (`UNSWITCHABLE_HOOK_NAMES`), it silences nothing, and `doctor` prints one `·` line that
+it can go. Two parts sit in it, and only one reads the project.
+
+**The judge** (`src/hooks/bash-judge.ts`, the rules; `job-route.ts`, the answer) reads the line
+with the one shell reader and answers four things:
+
+- **a raw background session**, `claude --bg` / `--background`: an **ask** in an attended
+  session, a **denial** in `claude -p` (nobody answers there) and in a crew session (a crew
+  session never starts crew sessions). The ask shows the `crew start` line — that session is
+  recorded in the store, gets its own worktree, a lead and a report (D25) — and the line for a
+  session that leads nothing yet (`crew lead --plan`). The crew launcher picks the kind's
+  model and effort; for another one the person starts the session themselves (the launcher
+  refuses an override the Agent guard would ask about, W1a), so the judge never asks a second
+  time about an override.
+- **a print run**, `claude -p` / `--print`: the launch policy every Agent launch meets
+  (`judgeLaunch`, § The Agent guard) on its `--model` and `--effort`, after Claude Code's own
+  overrides; the prompt is read for a `Fable reason:` line. No model or no effort is refused, the
+  `fable` tier asks, the `opus` tier at `max` asks — and in an outer `claude -p`, every ask is a
+  refusal. A `claude` subcommand (`claude agents`, `claude stop`, …) is not a launch and is left
+  alone.
+- **a crew session's `crew start`**: denied, in the launcher's own words (`CREW_NEVER_DOES`,
+  `src/crew/brief.ts`): the need goes to the lead with `crew report --question`.
+- **polling**: a `crew list` / `crew status` read or a `claude agents --json` read inside a
+  `while` / `until` / `for` loop or a `watch`, or beside a `sleep`, is denied — a crew session's
+  news arrives by itself, through the lead's watch and the monitors. One read, and `crew watch`
+  itself, pass.
+
+**The route** is the heavy-job queue's door, and the project's opt-in: with
+`"jobs": { "route": true }` in its `.claude/cc-smart-dev-kit.json` (the `switches.jobRoute`
+switch), a command its kinds classify as heavy is sent through the queue instead of running raw
+(`docs/jobs.md` § The route). It answers with Claude Code's `updatedInput` — the same tool input,
+its `command` replaced by `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind <kind> --
+<command>` — proved live on 2.1.301 (`claude-code-contract.md`). It gives no
+`permissionDecision`: the rewrite replaces the input and the permission system still decides
+about the new command, so a person's own rule for Bash keeps working. **Only a line whose every
+command is heavy, a `cd` or an assignment is queued** (`classifyRoutableLine`); any other line
+runs raw. Why: Claude Code matches a person's `Bash(…)` rules against the command it is about
+to run and does not look inside `bash -c '…'`, so a rewritten `tsc && rm -f x` would hide its
+`rm` from a `Bash(rm:*)` rule (proved on 2.1.308, `claude-code-contract.md`).
+`REWRITE_SUPPORTED` in the hook is the one switch, and with it false the same command line is
+denied instead, never silently left raw. A command already inside `cc-smart-dev-kit job run` is
+left alone. It is the one guard that changes the call rather than asking about it.
+
+**A lead never waits on what it started** (D22): in a session recorded as a lead (`crew lead`,
+`readLead`), a CI watch (`gh pr checks --watch`, `gh run watch`), a queued job and the project's
+full check (`bun run check`, `npm run check`, … — its package manager's `check` script) are
+moved to the background with `run_in_background: true`, proved honoured on 2.1.308 (offline:
+a fake Anthropic server, a throwaway `HOME`, the `job-route` bundle as the project's hook — the
+tool result read `Command running in background with ID: …`; L1a.1 proved the same on 2.1.306).
+A routed heavy job gets the queue
+and the background in one rewrite. The whole line must be that thing (and `cd`s and
+assignments), so a compound line is left as the model wrote it, and a call already asking for
+the background keeps its own input.
 
 **Left in the project that had them** (project values or project tools, not general): a ban
 on one package manager, the local database wipe guard, the heavy-job guard, a pull request
@@ -1958,7 +2007,7 @@ place (`auto-merge.ts`).
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:reviewer` by default). |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
-| `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source, and written by `workflow set`; the merge guard judges with them once its call site moves onto `readCover` (D17b). |
+| `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
 | `crew.enabled`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, the two caps (D37) and the free memory a start is queued by, and the tag in the names. |
 | the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts (the watch, the crew session's own hooks) will read them. |
 
@@ -1970,7 +2019,29 @@ says yes for the pull request's base; the merge names **this project's own repos
 git — the policy is about the repository the work is in, so another one always asks); every
 required check `gh pr checks --required --json name,bucket` reports is green (a `skipping` check
 counts as passed, which is GitHub's own rule for a merge); and — with `reviewBeforePush` on —
-the head commit from `gh pr view` has a recorded review that counts.
+the head from `gh pr view` is covered by a review (D17, § The review record).
+
+**The judgment is one home**, `src/workflow/merge-check.ts`: `checkPullRequest` reads those
+facts and decides, `checkBranch` does the same for a local branch against a base (the review gate
+only: a local merge has no pull request's checks or `autoMerge`), and
+`cc-smart-dev-kit workflow merge-check [<pr>… | --branch <b> --base <base>]` prints each verdict
+(`allowed`, or the reason it asks; exit 0 when every one is allowed, 1 when any asks) — the
+guard's own words, without making a merge. The hook keeps the rules about the command line: what
+is a merge, `--admin`, and another repository; it reads `ownHooks` from the integration base
+before any gh call, so a project that runs its own merge guard answers alone, and a crew session
+never opens a pull request (D24).
+
+**D31: the exact merge is answered `allow`.** Auto mode's built-in "Merge Without Review" rule
+blocks every merge no person approved; a hook's `allow` skips the classifier for that call
+(proved live, L1a.5). So `merge-guard` answers `allow`, with a short reason, only when the WHOLE
+line is exactly `gh pr merge <n>` with flags gh 2.102.0 has (`exactMergeOf` in `after-merge.ts`:
+one reading, one command, no wrapper or assignment before gh, no pipe, no writing redirection, no
+alias, a number rather than a branch or URL) and the whole policy above passed. Any other
+passing form — `timeout 60 gh pr merge 7`, `gh pr merge 5 && gh pr merge 6`, an alias, an
+unknown flag, an armed `--auto` merge (it lands later, so a commit pushed after the check would
+merge unread) — stays silent, so auto mode's own rule still applies to it; an unknown
+`gh pr merge` flag asks. **A crew session never gets `allow`** (D24: it never merges; the
+lead does), so silence is all it can get, and auto mode's rule still applies there.
 
 **It also governs opening a pull request** (D16, `openPr`): it reads `gh pr create`, `gh pr
 new` and `gh pr ready` — a `-R`, a `gh alias`, a `gh api` POST to the repository's pulls
@@ -1994,7 +2065,8 @@ and `autoMerge` on with `openPr: draft` (a draft is never merged). Each line say
 **The review gate is read as committed on the pull request's base**, never from a checkout's
 working copy. Every value the guard judges with — `autoMerge`, `reviewBeforePush`,
 `reviewAgents`, `fixesAfterReview.*` (the limits a fix after a review may reach and still count,
-D17, § The review record — read and shown with the gate; the guard judges with them from D17b), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
+D17, § The review record — read and shown with the gate, and the guard judges with them through
+`merge-check.ts`), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
 hands the merge to the project's own guard — comes from the built-in default, the person's
 `workflow.json`, and `.claude/cc-smart-dev-kit.json` as `git` holds it at `origin/<base>`
 (`resolveGate` in `src/workflow/resolve.ts`, over `readCommittedConfig` in
@@ -2083,8 +2155,13 @@ review of H itself covers H on any branch, as before. The one home is
 
 The limits come from this repo's own fix rounds: 10% of the reviewed change is covered, 105% and
 160% ask. A limit is a trade: up to 200 lines written after the review merge unread, which is the
-point of not paying a second review for a small fix. The merge guard still asks for a record of
-the exact head (`hasReview`) until its call site moves onto `readCover` (D17b).
+point of not paying a second review for a small fix. **The merge guard judges with this rule**
+(D17b): `checkPullRequest` in `src/workflow/merge-check.ts` reads the cover for the pull request's
+head on its head branch, and asks with the counts and the limit when the fixes are over it; a
+record of the exact head still covers at once, on any branch, with no git run.
+`cc-smart-dev-kit workflow merge-check --branch <branch> --base <base>` prints the same verdict
+for a local merge — the lead's hand-back gate (D22) — and `workflow show` prints the limits in
+force on one `gate fixesAfterReview in force:` line.
 
 **Every write holds the record's own lock** (`withLock` on the
 `reviews/` folder, a 3 s wait): two reviewers that finish at once both land. It is not the
@@ -2435,8 +2512,10 @@ repository, under the state folder:
   (`answeringSlot`), the effort, the permission mode, the worktree, the branch, the ref it starts
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
   and where it is: its state, its last line, its report, its pull request, its memory, its
-  questions, what it waits for while `paused` (`waitingFor`: a gateway slot, or Claude's own
-  limit), when its session started (`startedAt`, optional: the crew session's own time caps count
+  questions, what it waits for while `paused` (`waitingFor`: a gateway slot whose breaker is
+  open, Claude's own plan limit, or `unknown` when the router's state explains nothing; with the
+  pause before it, `lastPause`: when it began and the hold-off a re-pause doubles —
+  § Waiting out a limit), when its session started (`startedAt`, optional: the crew session's own time caps count
   from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
   of the old crew session, set by a hand-off and by nothing else), and when it was recorded and
   changed. The states are `queued`, `starting`,
@@ -2526,7 +2605,11 @@ polls or retries. In order:
    (`crew report --status done|failed`), and D36's rule: never ask the person or call
    AskUserQuestion; a question goes to the lead with `crew report --question … --option …
    --recommend <n>`, the crew session goes on with what it does not block, and `--status blocked` only
-   when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":"<id>"}}`.
+   when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":"<id>",
+   "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`:
+   the two watchdog keys are CC1's (`src/setup/retry-watchdog.ts`), and there is **no wait
+   limit** on purpose (D42: keep waiting), so no `…_MAX_WAIT_MS` and no
+   `…_MAX_USAGE_LIMIT_WAIT_MS`. A crew session is unattended, which is what the watchdog is for.
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
    a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
@@ -2691,6 +2774,10 @@ the store records — a session the kit does not know is the person's own:
   launcher). A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
   another starts from the merged result, and the folder `claude -w` opens is the record's own
   worktree, so a hand-off's numbered folder is the right one;
+- it **resumes the paused crew sessions** of this lead once the gateway answers again (D42): one
+  first (the canary), the others `RESUME_SPACING_MS` (30 s) apart and only after the router
+  answered a request since, and never while a slot's breaker is open or a Claude limit is
+  current (§ Waiting out a limit);
 - it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
   the conversation stays; a session that crashed has nothing to stop), and a `blocked` one that
   has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A stop that fails
@@ -2713,6 +2800,39 @@ list` and the portal read it, and into the event the watch writes when it ends t
 `run_in_background: true`, re-armed per event, and the end of the run starts the lead's next
 turn); a pass with nothing to say waits for the next, so it never wakes the lead with no news.
 `--timeout <seconds>` bounds the wait.
+
+#### Waiting out a limit
+
+A model limit ends a turn the retry watchdog did not outlast — the plan's usage limit, an
+overloaded model, a server error. The kit waits it out, with no time limit (D42: the owner chose
+"keep waiting"; no `limitWaitHours`, no `…_MAX_WAIT_MS`), in three parts (`src/crew/wait.ts`):
+
+- **Each crew session's own settings turn the watchdog on** (the keys CC1 writes for a machine,
+  `src/setup/retry-watchdog.ts`), so most limits are waited out inside the turn.
+- **The pause** (`crew-role`, StopFailure): a stop with `rate_limit`, `overloaded` or
+  `server_error` marks the record `paused` and takes `waitingFor` from the router's limit state,
+  in this order: `slot` — the slot the crew session's model reaches has a current breaker record,
+  with the time it opened; `claude-limit` — a current plan limit, the session's own model first,
+  else the freshest of a model whose family has a slot, with its reset time; `unknown` —
+  nothing the state file explains. One `state` event carries the line the watch shows
+  (`C kit B6b portal-live: paused — worker slot limited since 21:05; goes on by itself when it
+  answers`), and `lastPause` records when the wait began and the hold-off it carries: 0 on a
+  first pause, then 5, 10 and 20 minutes while pauses come within 15 minutes of each other.
+  A crew session that ended its phase, was stopped, or still waits in the queue pauses nothing.
+- **The resume** (the lead's watch): never while the slot's breaker is open (its first target in
+  use is not one the record says rests) or the model's limit is current. A slot wait is over when
+  the breaker record closed (the router recorded an answer — only an answer closes it) or the
+  chain's first target changed; a Claude limit's when the reset time passed, plus
+  `LIMIT_RESET_JITTER_MS` (90 s), and the router dropped the record; an `unknown` wait's after
+  its hold-off, with no breaker or limit that would explain it now. One crew session goes first
+  (the canary); the next no sooner than 30 s after it, and only once the router answered a
+  request since — its health page's count grew, and the state file's closed breaker or dropped
+  limit is that answer when the page is not there. The transport is `crew answer`'s: a message
+  for a session whose process lives (the watch prints the `SendMessage` line, because only a
+  session holds that tool), `claude --bg --resume <id> "<text>"` for one whose session has no
+  process; the text names what changed and the phase. The record is `working` with its wait
+  cleared, in the same act. `crew resume --paused` is the person's way at once — after `/login`
+  on another account — for every paused crew session of a lead.
 
 **The hand-off** — `crew start <phase> --continue <old crew session>` — starts the next crew session of a
 phase that ran out of room: the same phase and slug, cut from the **old crew session's head** (not
@@ -2847,7 +2967,11 @@ each is silent unless its own session is the one it is about, and neither reads
   line as its reason (`{"decision":"block","reason":…}`), and never again while `stop_hook_active`
   is true. Claude Code shows each block as a `stop-hook-error` notification and caps consecutive
   blocks at 9; this hook blocks at most once per turn. Nothing runs while `background_tasks` is not
-  empty: that turn is not over, and Claude Code wakes the session when the work lands. A store that
+  empty: that turn is not over, and Claude Code wakes the session when the work lands. At
+  **StopFailure** on `rate_limit`, `overloaded` or `server_error` it marks the crew session
+  **paused**, with what it waits for taken from the router's state file (D42, § Waiting out a
+  limit), and answers nothing: Claude Code ignores that hook's output, so the pause is the
+  record and its event, and the lead's watch is what resumes it. A store that
   cannot be read is one line on stderr and no block.
 - **`lead-notes`** (`src/hooks/lead-notes.ts`) is silent unless the input's `session_id` is a lead
   recorded in this repository. Each turn a lead starts — `UserPromptSubmit` (which also fires on a

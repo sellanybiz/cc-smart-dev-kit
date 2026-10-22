@@ -13,12 +13,12 @@
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
  * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
- * | job-route | PreToolUse (Bash) | asking about a heavy command, classified with the default kinds |
+ * | job-route | PreToolUse (Bash) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` (`bash-judge.ts`, `job-route.ts`) |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop | machine-wide: the card, the ask refused, the report block (`crew-role.ts`) |
+ * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
  * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once (`lead-notes.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
@@ -36,8 +36,6 @@
  */
 
 import { crewIdOf } from "../crew/session";
-import { classifyHeavyCommand } from "../jobs/classify";
-import { mergeKinds } from "../jobs/kinds";
 import { programsOf } from "../shell/command";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
@@ -56,7 +54,13 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
-import { jobRoute, routeFacts } from "./job-route";
+import {
+  jobRoute,
+  jobRouteConfigAnswer,
+  jobRouteDomain,
+  jobRouteOutsideGit,
+  routeFacts,
+} from "./job-route";
 import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
@@ -276,16 +280,19 @@ export const sessionNameHook: HookSpec = {
 /**
  * The crew session's own hook (`crew-role.ts`): the role card at a start, a resume or a compaction;
  * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); the last line recorded at
- * a stop, and one block when the turn ended on a step with no report. **Machine-wide**: it is silent
+ * a stop, and one block when the turn ended on a step with no report; the crew session marked
+ * `paused` when a model limit ended its turn (D42). **Machine-wide**: it is silent
  * unless `CC_SMART_DEV_KIT_CREW` names a crew session, and its answer never depends on the project's
  * file — the PreToolUse deny reads no store at all, so a broken or too new file, and a folder
  * outside git, are judged the same way. It is in `PLUGIN_HOOK_NAMES`, so a project that runs its own
  * copy silences it through `ownHooks`. A crash asks about the calls in its domain (the two tools),
  * and is silent outside a crew session: a plain session must never be asked because of this hook.
+ * A StopFailure pauses the record and answers nothing: Claude Code ignores that hook's output, so
+ * the pause is fail-open like the Stop block.
  */
 export const crewRoleHook: HookSpec = {
   name: "crew-role",
-  events: ["SessionStart", "PreToolUse", "Stop"],
+  events: ["SessionStart", "PreToolUse", "Stop", "StopFailure"],
   onConfigProblem: (_message, input, event, checkout, context) =>
     crewRoleAnswer(
       input,
@@ -412,33 +419,33 @@ export const fableSessionHook: HookSpec = {
 };
 
 /**
- * The job queue's door: PreToolUse on Bash, for a project that turned it on
- * (`"jobs": { "route": true }`). A heavy command is rewritten to run through
- * `cc-smart-dev-kit job run` (or refused with that command line, `job-route.ts`). Off by default,
- * and silent when it is off: this is the one guard that changes the call rather than
- * asking about it.
+ * The job queue's door and the kit's one Bash judge: PreToolUse on Bash, **machine-wide**, and
+ * `alwaysOn` (`ownHooks` cannot switch it off). Two parts, and only one reads the project:
+ *
+ * - **The launch judge** (`bash-judge.ts`) ignores the project's file, broken or not, and runs
+ *   outside git: a raw `claude --bg` asks the person (and is refused in `claude -p`) showing the
+ *   `crew start` line, `claude -p` is judged by the launch policy every Agent launch meets, a crew
+ *   session's `crew start` is denied, and a polling loop over `crew list|status` or
+ *   `claude agents --json` is denied. It is always on because it limits what the session itself
+ *   may launch: a session must not switch it off by editing a file it owns.
+ * - **The route** is the project's opt-in (`"jobs": { "route": true }`, the `switches.jobRoute`
+ *   switch): a heavy command is rewritten to run through `cc-smart-dev-kit job run` (or refused
+ *   with that command line). Off, a heavy command runs raw. In a session recorded as a lead, a CI
+ *   watch, a queued job and the full check are moved to the background instead.
+ *
+ * It is the one guard that changes the call rather than asking about it.
  */
 export const jobRouteHook: HookSpec = {
   name: "job-route",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
-    // Broken file: whether this project routes heavy commands cannot be read. The guard asks
-    // about the commands in its domain, the way the other guards do, and about no others.
-    const command = stringField(toolInput(input).command);
-    return command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null
-      ? SILENT
-      : toolDecision(
-          "ask",
-          cannotCheck("whether this project routes heavy commands through its job queue", message),
-        );
-  },
+  alwaysOn: true,
+  onConfigProblem: (message, input, _event, _checkout, context) =>
+    jobRouteConfigAnswer(message, input, context),
+  outsideGit: (input, _event, _why, context) => jobRouteOutsideGit(input, context),
   logFacts: routeFacts,
-  // A crash must not let a heavy command through unrouted: the guard asks about the command
-  // it was asked to judge, the same domain `onConfigProblem` asks about.
-  onCrash: guardCrash(
-    "whether this project routes heavy commands through its job queue",
-    (input) => classifyHeavyCommand(commandOf(input), mergeKinds(undefined)) !== null,
-  ),
+  // A crash must not let a launch or a poll through unjudged, nor a heavy command run raw: the
+  // guard asks about the calls in that domain, the same one its answers cover.
+  onCrash: guardCrash("whether this launch or heavy command may run", jobRouteDomain),
   run: jobRoute,
 };
 

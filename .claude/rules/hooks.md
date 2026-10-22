@@ -154,8 +154,10 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 ## A machine-wide hook
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on), `fable-session` (the model the session itself runs on), `crew-role` (a crew session's own
-card, ask and report), `lead-notes` (a lead's missed crew news) and `notify` (the alerts).
+on), `job-route` (the Bash judge: a raw `--bg` launch, a `-p` run's model and effort, a crew
+session's `crew start`, a polling loop), `fable-session` (the model the session itself runs on),
+`crew-role` (a crew session's own card, ask and report), `lead-notes` (a lead's missed crew
+news) and `notify` (the alerts).
 `playwright-output` is machine-wide too — it puts a file the
 CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),
@@ -218,16 +220,23 @@ own, before the file.
 
 `session-escape-guard` is machine-wide in the same way, and **`alwaysOn`** (`HookSpec.alwaysOn`):
 the frame skips its `ownHooks` step and `PLUGIN_HOOK_NAMES` leaves its name out, because the
-project's file is one of the things it guards (a session could list the guard there first). A
-guard that guards the project's own settings is `alwaysOn`; any other machine-wide guard may be
-silenced by a project that runs its own copy. `matrix.test.ts` checks both halves.
+project's file is one of the things it guards (a session could list the guard there first).
+**`job-route` is `alwaysOn` too**, for the same reason one step out: it limits what the session
+itself may launch and run, and a session could otherwise switch the judge off by listing it in
+the project's file. A guard whose answer limits what the session itself may do is `alwaysOn`;
+any other machine-wide guard may be silenced by a project that runs its own copy. A name a
+project file may already list for an `alwaysOn` hook that used to be switchable
+(`UNSWITCHABLE_HOOK_NAMES`, today `job-route`) still parses, it silences nothing, and `doctor`
+says it can go. `matrix.test.ts` checks both halves.
 
 ```json
 { "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": { "command": "…" } } }
 ```
 
 `updatedInput` (PreToolUse only, proved live on 2.1.301) replaces the tool's input for that
-call: `job-route` uses it to send a heavy command through `cc-smart-dev-kit job run`. The rewritten
+call: `job-route` uses it to send a heavy command through `cc-smart-dev-kit job run`, and — in a
+lead — to add `run_in_background: true` to a CI watch, a queued job or the full check (proved
+honoured on 2.1.308, and in L1a.1 on 2.1.306). The rewritten
 command runs in the Bash tool's own shell, so it keeps the folder that shell is in (proved
 live: after a `cd`, the rewritten command ran in the new folder, not in the hook's `cwd`).
 
@@ -259,9 +268,12 @@ Where both exist, **the project says which plugin hooks to keep quiet**: `ownHoo
   `src/project/config.ts`; a test keeps them equal to `HOOKS`): a typo fails the strict parse.
 - **A retired plugin hook keeps its name** (`RETIRED_HOOK_NAMES` in the same file; today
   `serena-root`, 0.6.0): a project file that lists it still parses, the name silences
-  nothing, and `doctor` prints one `·` line that it can go. Dropping the name from the schema
+  nothing, and `doctor` prints one `·` line that it can go. **A hook a project can no longer
+  switch off keeps its name the same way** (`UNSWITCHABLE_HOOK_NAMES`; today `job-route`, which
+  became `alwaysOn` in 1.0.0): the file still parses, the name silences nothing, and `doctor`
+  says it can go. Dropping a name from the schema
   would fail the strict parse, and every guard would then ask on every call. A hook you
-  retire goes there.
+  retire, or make `alwaysOn`, goes there.
 - `cc-smart-dev-kit doctor`, run in a project, prints one `·` line per listed hook, **warns** (`!`)
   when a listed hook's event has no project hook left to answer, and warns when a project
   hook runs next to a plugin hook the list does not name (both may answer).
@@ -331,7 +343,10 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
   its own limit and the time left, and when too little is left for the next call the guard
   asks instead of overrunning — a PreToolUse hook Claude Code has to kill blocks nothing, so
   an overrun would be fail-open. Every git call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s)
-  or less, against the hook's own 10 s. **`after-merge` shares one budget the same way**
+  or less, against the hook's own 10 s. The merge guard's review check adds a few git calls
+  (`merge-tree`, `diff --numstat`, `check-attr`, `rev-parse` in `review-cover.ts`), each with
+  the same limit and from the same budget: when the measurement does not fit, the guard asks
+  with that reason instead of overrunning. **`after-merge` shares one budget the same way**
   (`src/hooks/budget.ts`, 25 s of its 30 s), so its children (the alias list, the worktree
   list, `gh pr view`, the origin) cannot add up past the hook; a note that would not fit is
   skipped whole. A hook that starts a child with the time left gives it no call at zero or
@@ -374,6 +389,14 @@ a command must never report success when it did not run.
   through `maskedLine`), kept small by the same rule as `update.log`. A write that fails is one
   stderr line and never changes the answer.
 - A guard decides with a PreToolUse answer (`ask` or `deny`), never exit code 2.
+- **Only the merge guard answers `allow`, and only for D31's exact form:** a command line that
+  is nothing but `gh pr merge <n>` with flags gh 2.102.0 has, when the whole policy passed
+  (`autoMerge` on, the base plain, the checks green, a review covering the fixes after it). An
+  `allow` skips auto mode's own "Merge Without Review" rule for that call (proved live, L1a.5),
+  so the guard's checks are what protect it; every other passing form — a wrapper, a second
+  command, an alias, an unknown flag, an armed `--auto` merge — stays silent (so auto mode
+  still applies), an unknown `gh pr merge` flag asks, and a crew session never gets it.
+  The judgment itself is `src/workflow/merge-check.ts`, shared with `workflow merge-check`.
 - A guard asks rather than denies when the person may mean it (a force-push); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
   to another project's session, a crew session's push or pull request — D24: the lead

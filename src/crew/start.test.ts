@@ -187,9 +187,11 @@ describe("D25: crew start returns at once", () => {
     // The worktree is the launcher's own, on its branch, at the lead's HEAD.
     expect(git(worktree, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("crew/B6b-portal-live");
     expect(git(worktree, "rev-parse", "HEAD").trim()).toBe(head);
-    // The settings file names the crew session to its own session; both files are the kit's, 0600.
+    // The settings file names the crew session to its own session, and turns Claude Code's retry
+    // watchdog on with no wait limit (D42): exactly these three keys, and nothing else; both
+    // files are the kit's, 0600.
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}"\n  }\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  }\n}\n`,
     );
     expect(statSync(settingsFile).mode & 0o777).toBe(0o600);
     const brief = readFileSync(briefFile, "utf8");

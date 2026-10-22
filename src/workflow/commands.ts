@@ -1,6 +1,6 @@
 /**
  * `cc-smart-dev-kit workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
- * | review-done [--sha <commit>]`.
+ * | review-done [--sha <commit>] | merge-check [<pr>… | --branch <b> --base <base>]`.
  *
  * `show` prints every value with where it came from, so a person can see whether it is the
  * project's policy, their own, or the built-in default — and, for a switch, that it is the
@@ -17,8 +17,12 @@
  * the `review-record` hook writes the record from the review agent's own end: a record a
  * session writes for itself is only its own word.
  *
+ * `merge-check` judges a merge without making one, with the merge guard's own judgment
+ * (`merge-check.ts`): each pull request number, or a local branch against a base. It prints one
+ * line per verdict and exits 0 when every merge is allowed, 1 when any asks.
+ *
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
- * written, 2 a setting or a value that is not one of the settings there are.
+ * written (or a merge that asks), 2 a setting or a value that is not one of the settings there are.
  */
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
@@ -26,6 +30,14 @@ import { runGit } from "../hooks/git";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { clashesOf, clashLines } from "./clashes";
+import {
+  checkBranch,
+  checkPullRequest,
+  type MergeVerdict,
+  type MergeWorld,
+  notChecked,
+  notInTime,
+} from "./merge-check";
 import {
   type Gate,
   type ResolvedWorkflow,
@@ -56,7 +68,7 @@ export interface WorkflowContext {
   error: (line: string) => void;
 }
 
-export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | review-done [--sha <commit>]
+export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | review-done [--sha <commit>] | merge-check [<pr>… | --branch <b> --base <base>]
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
 show (the default) prints each value and where it came from: the project's
@@ -68,13 +80,20 @@ switches.sessionNames and switches.jobRoute need --project, and switches.statusL
 switches.updateHold refuse it.
 The review gate (${REVIEW_GATE_KEYS.join(", ")}) is what the merge guard judges with: its
 project part is read from ${CONFIG_PATH} as committed on the base (origin/<base>), and
-show prints it on its gate lines. Inside Claude Code, set and unset of those refuse: change
-them in your own terminal, and commit and push the project's file to the base.
+show prints it on its gate lines, with the fixesAfterReview limits in force. Inside Claude
+Code, set and unset of those refuse: change them in your own terminal, and commit and push
+the project's file to the base.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
 hook writes it, when a review agent (the reviewAgents setting) returns, so review-done
-refuses there: it is for your own terminal.`;
+refuses there: it is for your own terminal.
+merge-check judges a merge without making it, with the merge guard's own judgment: each
+pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
+request is allowed when the committed policy passes: autoMerge on, its base the project's
+integration base, every required check green, and a review covering its head under
+fixesAfterReview. A branch is allowed when the review record covers its head. One line per
+verdict; exit 0 when every merge is allowed, 1 when any asks.`;
 
 /** One git call a `workflow` run makes (a `rev-parse`): milliseconds, never a hang. */
 const WORKFLOW_GIT_TIMEOUT_MS = 5_000;
@@ -192,7 +211,20 @@ function gateLines(
     const value = resolvedValueOf(gate.resolved, key);
     lines.push(`gate ${key} = ${showValue(key, value.value)} (${sourceLabel(value, gate.branch)})`);
   }
+  lines.push(`gate fixesAfterReview in force: ${fixesInForce(gate.resolved)}`);
   return { lines, gate };
+}
+
+/**
+ * The D17 limits as one sentence: what a fix after a review may reach. `0`/`0`/`0` is the
+ * exact reviewed commit only.
+ */
+function fixesInForce(resolved: ResolvedWorkflow): string {
+  const { lines, files, percent } = resolved.fixesAfterReview;
+  if (lines.value === 0 && files.value === 0 && percent.value === 0) {
+    return "0/0/0: only a review of the exact commit counts";
+  }
+  return `${lines.value} lines in ${files.value} files, or ${percent.value}% of the reviewed change, whichever is more`;
 }
 
 function show(context: WorkflowContext): number {
@@ -295,6 +327,105 @@ async function reviewDone(context: WorkflowContext, argv: string[]): Promise<num
   return 0;
 }
 
+/** How long one child a `merge-check` run starts may take: no hook deadline, and a person waits. */
+const MERGE_CHECK_TIMEOUT_MS = 30_000;
+
+/** The world one `merge-check` run judges in: this checkout, gh in this folder, no hook deadline. */
+function checkWorld(paths: CliPaths, checkout: Checkout, cwd: string, env: Env): MergeWorld {
+  return { paths, checkout, folder: cwd, env, timeFor: () => MERGE_CHECK_TIMEOUT_MS };
+}
+
+/** One verdict as a person reads it: what was checked, then allowed, or the reason it asks. */
+function verdictLine(verdict: MergeVerdict, subject: string, env: Env): string {
+  if (verdict.kind === "allowed") return `${subject}: allowed — ${verdict.reason}`;
+  if (verdict.kind === "silent") {
+    return `${subject}: no verdict — this project runs its own merge guard (ownHooks in the committed policy), so its answer decides`;
+  }
+  if (verdict.kind === "refused") return `${subject}: asks — ${verdict.reason}`;
+  if (verdict.kind === "unread") return `${subject}: asks — ${notChecked(verdict.what, env)}`;
+  return `${subject}: asks — ${notInTime(verdict.what)}`;
+}
+
+/** `merge-check`'s arguments: pull request numbers, or a branch with its base. */
+type MergeCheckArgs =
+  | { ok: true; prs: number[]; branch: string | null; base: string | null }
+  | { ok: false; why: string };
+
+function mergeCheckArgs(argv: string[]): MergeCheckArgs {
+  const prs: number[] = [];
+  let branch: string | null = null;
+  let base: string | null = null;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index] ?? "";
+    if (arg === "--branch" || arg === "--base") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        return { ok: false, why: `${arg} needs a branch name` };
+      }
+      if (arg === "--branch") branch = value;
+      else base = value;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) return { ok: false, why: `Unknown option: ${arg}` };
+    if (!/^\d+$/.test(arg)) return { ok: false, why: `Not a pull request number: ${arg}` };
+    prs.push(Number(arg));
+  }
+  if (branch !== null || base !== null) {
+    if (branch === null || base === null) {
+      return { ok: false, why: "merge-check needs both --branch and --base" };
+    }
+    if (prs.length > 0) {
+      return {
+        ok: false,
+        why: "merge-check takes pull request numbers, or --branch with --base, not both",
+      };
+    }
+    return { ok: true, prs, branch, base };
+  }
+  if (prs.length === 0) {
+    return { ok: false, why: "merge-check needs a pull request number, or --branch with --base" };
+  }
+  return { ok: true, prs, branch: null, base: null };
+}
+
+/**
+ * `workflow merge-check [<pr>… | --branch <b> --base <base>]`: the merge guard's judgment,
+ * printed and not made. Exit 0 when every verdict is allowed, 1 when any asks.
+ */
+function mergeCheck(context: WorkflowContext, argv: string[]): number {
+  const parsed = mergeCheckArgs(argv);
+  if (!parsed.ok) {
+    context.error(`${parsed.why}\n\n${WORKFLOW_USAGE}`);
+    return 2;
+  }
+  const here = project(context.cwd, context.env);
+  if (here.checkout === null) {
+    context.error(`${COMMAND} workflow merge-check: ${here.why}`);
+    return 1;
+  }
+  if (here.config === null) {
+    context.error(
+      `${COMMAND} workflow merge-check: ${here.why}, so there is no merge policy to check`,
+    );
+    return 1;
+  }
+  const world = checkWorld(context.paths, here.checkout, context.cwd, context.env);
+  if (parsed.branch !== null && parsed.base !== null) {
+    const verdict = checkBranch(world, { branch: parsed.branch, base: parsed.base });
+    context.print(verdictLine(verdict, `branch ${parsed.branch}`, context.env));
+    return verdict.kind === "allowed" ? 0 : 1;
+  }
+  let everyAllowed = true;
+  const defaultBranches = new Map<string, string | null>();
+  for (const pr of parsed.prs) {
+    const verdict = checkPullRequest(world, { ref: String(pr), repo: null }, defaultBranches);
+    if (verdict.kind !== "allowed") everyAllowed = false;
+    context.print(verdictLine(verdict, `#${pr}`, context.env));
+  }
+  return everyAllowed ? 0 : 1;
+}
+
 function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): number {
   const [key, ...rest] = argv;
   const projectFlag = rest.includes("--project");
@@ -367,6 +498,7 @@ export async function runWorkflow(argv: string[], context: WorkflowContext): Pro
   if (sub === undefined || sub === "show") return show(context);
   if (sub === "set" || sub === "unset") return setOrUnset(context, sub, rest);
   if (sub === "review-done") return await reviewDone(context, rest);
+  if (sub === "merge-check") return mergeCheck(context, rest);
   context.error(`Unknown workflow command: ${sub}\n\n${WORKFLOW_USAGE}`);
   return 2;
 }

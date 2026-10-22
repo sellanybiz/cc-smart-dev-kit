@@ -18,9 +18,9 @@ import { CREW_ENV } from "../crew/session";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
+import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { CREW_ASK_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
-import { GH_TIMEOUT_MS } from "./merge-guard";
 import { HOOK_LOG_ENV } from "./run";
 import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
 import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
@@ -315,7 +315,7 @@ describe("the entries, run as Claude Code runs them", () => {
     "agent-guard": "the model this launch runs on",
     "crew-role": "whether this crew session asks the person itself",
     "git-guard": "this git command",
-    "job-route": "whether this project routes heavy commands through its job queue",
+    "job-route": "whether this launch or heavy command may run",
     "main-folder-guard": "whether this edit belongs in a worktree",
     "merge-guard": "whether this merge may happen by itself",
     "message-guard": "whether this message may go to that session",

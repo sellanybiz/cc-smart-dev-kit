@@ -31,6 +31,22 @@ export interface BriefFacts {
 export const REPORT_COMMAND = `${COMMAND} crew report`;
 
 /**
+ * The commands a lead runs, and what a crew session never does with each (D45): one home for
+ * the words the launcher's refusal (`readCaller`) and the Bash judge (`src/hooks/bash-judge.ts`)
+ * both use. The keys are the commands; the values complete "a crew session never …".
+ */
+export const CREW_NEVER_DOES = {
+  answer: "answers its lead's questions",
+  lead: "leads",
+  resume: "stops, removes or resumes crew sessions",
+  start: "starts crew sessions",
+  watch: "watches its lead's crew sessions",
+} as const;
+
+/** One command a lead runs: `crew <this>`. */
+export type LeadCommand = keyof typeof CREW_NEVER_DOES;
+
+/**
  * The mark between the lead's own brief and the frame every crew session gets. A brief that
  * continues another crew session's carries the old brief and the old crew session's report, and the frame
  * is written again at its end — so the two parts are told apart by this mark.

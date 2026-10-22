@@ -234,10 +234,11 @@ export type CrewQuestion = z.infer<typeof crewQuestionFields>;
 export type NewCrewQuestion = Pick<CrewQuestion, "options" | "question" | "recommended">;
 
 /**
- * What a crew session waits for while it is `paused`: the slot whose every target is limited or
- * down (the router holds its requests), or Claude's own plan limit (no target can answer).
- * The times are ISO 8601, like every other time in a record. Loose, like every nested object
- * here: a field a newer kit adds is kept when this kit writes the record again.
+ * What a crew session waits for while it is `paused` (D42): the slot whose every target is
+ * limited or down (the router holds its requests), Claude's own plan limit (no target can
+ * answer), or nothing the router's state explains (a server error, an overloaded backend the
+ * router does not hold). The times are ISO 8601, like every other time in a record. Loose, like
+ * every nested object here: a field a newer kit adds is kept when this kit writes the record again.
  */
 const waitingForSchema = z.discriminatedUnion("kind", [
   z.looseObject({
@@ -253,6 +254,11 @@ const waitingForSchema = z.discriminatedUnion("kind", [
     model: text,
     /** When the limit resets (ISO 8601); null when Anthropic named no reset. */
     resetsAt: text.nullable(),
+  }),
+  z.looseObject({
+    kind: z.literal("unknown"),
+    /** When the wait began (ISO 8601). */
+    since: text,
   }),
 ]);
 
@@ -323,11 +329,18 @@ const crewFields = z.object({
   memoryMb: z.number().min(0).nullable(),
   /**
    * What it waits for while `paused`, taken from the router's state file (`limit-state.ts`)
-   * when it pauses. Absent on a record an older kit wrote, and cleared again when the crew session
-   * goes on (`updateCrew` with `waitingFor: undefined`). Read it only while the state is
-   * `paused`: a kit that does not know the field changes the state and leaves it behind.
+   * when it pauses. **Only a `paused` record carries it**: any change of state away from
+   * `paused` drops it (`changeCrew`), so a crew session that runs again never looks paused.
+   * Absent on a record an older kit wrote.
    */
   waitingFor: waitingForSchema.optional(),
+  /**
+   * The last pause of the crew session (D42), kept when it goes on: when the wait began, and
+   * how long the watch had to hold off before resuming it (`backoffMs`, 0 on a first pause).
+   * A pause within 15 minutes of this one doubles that hold-off (`src/crew/wait.ts`).
+   * Absent on a record a kit wrote before the field.
+   */
+  lastPause: z.looseObject({ backoffMs: count, since: text }).optional(),
   /**
    * When its session started (ISO 8601), not when it was recorded: a crew session that waited in the
    * queue for hours has not run for hours (the crew session's own time caps count from here). Absent on
@@ -757,20 +770,21 @@ async function changeCrew(
     }
     const at = iso(atMs);
     const { change, event } = plan(before, at);
-    const after = checked(
-      crewRecordSchema,
-      {
-        ...before,
-        ...change,
-        // Who the crew session is never moves: its file is named after its id, its folder after its repo.
-        createdAt: before.createdAt,
-        id: before.id,
-        repo: before.repo,
-        updatedAt: at,
-        version: Math.max(before.version, CREW_STORE_VERSION),
-      },
-      file,
-    );
+    const merged = {
+      ...before,
+      ...change,
+      // Who the crew session is never moves: its file is named after its id, its folder after its repo.
+      createdAt: before.createdAt,
+      id: before.id,
+      repo: before.repo,
+      updatedAt: at,
+      version: Math.max(before.version, CREW_STORE_VERSION),
+    };
+    // `waitingFor` says what a `paused` crew session waits for, and nothing else: any state it
+    // goes on in clears it here, so no path — an answer, a resume, a report — can leave a wait
+    // behind on a crew session that is running again (D42). `lastPause` stays: a re-pause reads it.
+    if (merged.state !== "paused") delete merged.waitingFor;
+    const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
     if (line !== null) appendEvent(stateDir, repo, line);
@@ -1007,12 +1021,21 @@ export interface WatchState {
   said: Record<string, string>;
   /** True when the watch already told the lead that the monitors do not run here. */
   noted: boolean;
+  /**
+   * When the watch last resumed a paused crew session (ms), and the router's request count
+   * then: the next one waits 30 s and for the router to answer since (D42,
+   * `src/crew/wait.ts`). Absent on a state a kit wrote before the fields.
+   */
+  resumedAt?: number | undefined;
+  routerRequests?: null | number | undefined;
 }
 
 const watchStateFields = z.object({
   noted: z.boolean().default(false),
   offset: count,
   said: z.record(z.string(), z.string()),
+  resumedAt: z.number().int().min(0).optional(),
+  routerRequests: z.number().int().min(0).nullable().optional(),
 });
 
 /**

@@ -44,6 +44,11 @@ export interface HookInput {
   last_assistant_message?: unknown;
   /** Stop: the background work still running or waiting to wake this session (an array). */
   background_tasks?: unknown;
+  /**
+   * StopFailure: why the turn ended (`rate_limit` for the plan limit and a short rate limit,
+   * `server_error`, …). The crew session's pause reads it (`src/hooks/crew-role.ts`, D42).
+   */
+  error?: unknown;
   /** The session's transcript: every event carries it (StopFailure, PreToolUse, …). */
   transcript_path?: unknown;
 }
@@ -86,9 +91,11 @@ export function toolInput(input: HookInput): Record<string, unknown> {
 
 /**
  * A PreToolUse decision. "deny": the reason goes to Claude. "ask": the person is asked, and
- * the reason is shown to them (Claude Code labels it `[plugin:cc-smart-dev-kit]`).
+ * the reason is shown to them (Claude Code labels it `[plugin:cc-smart-dev-kit]`). "allow":
+ * the call runs with no question — and with no auto-mode classification either, which is why
+ * only the merge guard's exact `gh pr merge <n>` uses it after its whole policy passed (D31).
  */
-export function toolDecision(decision: "ask" | "deny", reason: string): HookResult {
+export function toolDecision(decision: "allow" | "ask" | "deny", reason: string): HookResult {
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {

@@ -1,10 +1,10 @@
 /**
  * The crew session's own hook (`crew-role.ts`): the card at a start, the ask refused, the report
- * block at a stop, and silence everywhere else.
+ * block at a stop, the pause at a model limit, and silence everywhere else.
  */
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
 import {
@@ -15,10 +15,12 @@ import {
   crewFile,
   type NewCrew,
   readCrew,
+  readCrewEvents,
 } from "../crew/store";
+import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
-import { questionStep, roleCard } from "./crew-role";
+import { crewRoleAnswer, questionStep, roleCard } from "./crew-role";
 import type { HookResult } from "./io";
 import { addContext, toolDecision } from "./io";
 import { crewRoleHook } from "./specs";
@@ -399,6 +401,245 @@ describe("Stop: the last line, one block, never context", () => {
     await step(world.stateDir, world.repo);
     writeFileSync(crewFile(world.stateDir, world.repo, CREW_ID), "{ not json");
     const result = await runHook(crewRoleHook, stopInput(world.repo), world.env);
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toStartWith(`cc-smart-dev-kit crew-role: Invalid `);
+  });
+});
+
+describe("D42: a model limit pauses the crew session", () => {
+  const NOW = Date.parse("2026-10-21T22:00:00.000Z");
+  const MINUTE = 60_000;
+
+  /** The state file the router writes, in the world's home. */
+  function writeState(env: Record<string, string>, state: LimitState): void {
+    const file = cliPaths(env).gatewayStateFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, formatLimitState(state));
+  }
+
+  /** A breaker record for the worker slot, open now, its one target resting. */
+  function breaker(): LimitState {
+    return {
+      breakers: {
+        "cc-smart-dev-kit-worker": {
+          held: 2,
+          lastAt: NOW,
+          since: Date.parse("2026-10-21T21:05:00.000Z"),
+          targets: [{ status: 429, target: "omniroute:glm-5.3-flash", until: NOW + 60 * MINUTE }],
+        },
+      },
+      fallbacks: {},
+      limits: {},
+      version: 1,
+    };
+  }
+
+  /** A current plan limit for the session's own model. */
+  function limit(): LimitState {
+    return {
+      fallbacks: {},
+      limits: {
+        "claude-sonnet-5-5": {
+          claim: "seven_day",
+          resetsAt: Date.parse("2026-10-21T22:30:00.000Z") / 1000,
+          seenAt: NOW,
+        },
+      },
+      version: 1,
+    };
+  }
+
+  /** A worker-slot crew session: its model reaches the worker slot, as `crew start` records it. */
+  function workerWorld(change: Partial<NewCrew> = {}) {
+    return crewWorld({
+      model: {
+        named: "sonnet",
+        resolved: "claude-sonnet-5-5",
+        slot: "cc-smart-dev-kit-worker",
+        tier: null,
+      },
+      ...change,
+    });
+  }
+
+  /** A StopFailure input for the crew session. */
+  function stopFailure(repo: string, change: Record<string, unknown> = {}) {
+    return {
+      hook_event_name: "StopFailure",
+      session_id: "s",
+      cwd: repo,
+      error: "rate_limit",
+      last_assistant_message: "You've hit your limit · resets 22:30",
+      ...change,
+    };
+  }
+
+  test("its slot's breaker: paused with the slot and when it opened, and one exact line", async () => {
+    const world = await workerWorld();
+    writeState(world.env, breaker());
+    const answer = await crewRoleAnswer(
+      stopFailure(world.repo),
+      "StopFailure",
+      world.env,
+      cliPaths(world.env),
+      world.repo,
+      { nowMs: NOW, timeZone: "UTC" },
+    );
+    // Claude Code ignores a StopFailure hook's output: nothing is printed.
+    expect(answer).toEqual({});
+    const record = readCrew(world.stateDir, world.repo, CREW_ID);
+    expect(record?.state).toBe("paused");
+    expect(record?.waitingFor).toEqual({
+      kind: "slot",
+      since: "2026-10-21T21:05:00.000Z",
+      slot: "cc-smart-dev-kit-worker",
+    });
+    expect(record?.lastPause).toEqual({ backoffMs: 0, since: "2026-10-21T22:00:00.000Z" });
+    expect(
+      readCrewEvents(world.stateDir, world.repo).events.map((one) => [
+        one.type,
+        one.state,
+        one.text,
+      ]),
+    ).toEqual([
+      ["created", "working", null],
+      ["state", "paused", "worker slot limited since 21:05; goes on by itself when it answers"],
+    ]);
+  });
+
+  test("Claude's own limit next: its model and reset time", async () => {
+    const world = await workerWorld();
+    writeState(world.env, limit());
+    expect(
+      await crewRoleAnswer(
+        stopFailure(world.repo),
+        "StopFailure",
+        world.env,
+        cliPaths(world.env),
+        world.repo,
+        { nowMs: NOW, timeZone: "UTC" },
+      ),
+    ).toEqual({});
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
+      kind: "claude-limit",
+      model: "claude-sonnet-5-5",
+      resetsAt: "2026-10-21T22:30:00.000Z",
+    });
+    expect(readCrewEvents(world.stateDir, world.repo).events.at(-1)?.text).toBe(
+      "claude-sonnet-5-5 is at its limit, resets 22:30; goes on by itself when it answers once the limit lifts",
+    );
+  });
+
+  test("nothing the router explains: an unknown wait, with the error in its line", async () => {
+    const world = await workerWorld();
+    writeState(world.env, { fallbacks: {}, limits: {}, version: 1 });
+    await crewRoleAnswer(
+      stopFailure(world.repo, { error: "server_error" }),
+      "StopFailure",
+      world.env,
+      cliPaths(world.env),
+      world.repo,
+      { nowMs: NOW, timeZone: "UTC" },
+    );
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
+      kind: "unknown",
+      since: "2026-10-21T22:00:00.000Z",
+    });
+    expect(readCrewEvents(world.stateDir, world.repo).events.at(-1)?.text).toBe(
+      "it stopped on server_error; the watch goes on with it once a model answers",
+    );
+  });
+
+  test("through the frame, as Claude Code runs it: an overloaded_error pauses too, and prints nothing", async () => {
+    const world = await workerWorld();
+    writeState(world.env, breaker());
+    const result = await runHook(
+      crewRoleHook,
+      stopFailure(world.repo, { error: "overloaded_error" }),
+      world.env,
+    );
+    expect(result).toEqual({});
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.state).toBe("paused");
+  });
+
+  test("a pause again within 15 minutes carries the doubled hold-off", async () => {
+    const world = await workerWorld();
+    writeState(world.env, breaker());
+    const options = { nowMs: NOW, timeZone: "UTC" };
+    await crewRoleAnswer(
+      stopFailure(world.repo),
+      "StopFailure",
+      world.env,
+      cliPaths(world.env),
+      world.repo,
+      options,
+    );
+    await crewRoleAnswer(
+      stopFailure(world.repo),
+      "StopFailure",
+      world.env,
+      cliPaths(world.env),
+      world.repo,
+      { nowMs: NOW + 10 * MINUTE, timeZone: "UTC" },
+    );
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.lastPause).toEqual({
+      backoffMs: 5 * MINUTE,
+      since: "2026-10-21T22:10:00.000Z",
+    });
+  });
+
+  test("outside a crew session: nothing moves, whatever the state file says", async () => {
+    const world = await workerWorld();
+    writeState(world.env, breaker());
+    const plain = plainEnv();
+    expect(await runHook(crewRoleHook, stopFailure(world.repo), plain)).toEqual({});
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.state).toBe("working");
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toBeUndefined();
+  });
+
+  test("an error that is no limit pauses nothing", async () => {
+    const world = await workerWorld();
+    writeState(world.env, breaker());
+    for (const error of ["authentication_failed", "billing_error", "invalid_request"]) {
+      expect(await runHook(crewRoleHook, stopFailure(world.repo, { error }), world.env)).toEqual(
+        {},
+      );
+    }
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.state).toBe("working");
+  });
+
+  test("a crew session whose phase ended or that waits in the queue pauses nothing", async () => {
+    for (const state of ["done", "failed", "handoff", "merged", "removed", "stopped", "queued"]) {
+      const world = await workerWorld({ state });
+      writeState(world.env, breaker());
+      expect(await runHook(crewRoleHook, stopFailure(world.repo), world.env)).toEqual({});
+      expect(readCrew(world.stateDir, world.repo, CREW_ID)?.state).toBe(state);
+    }
+  });
+
+  test("a record with no slot never takes the worker's breaker for its own", async () => {
+    const world = await crewWorld();
+    writeState(world.env, breaker());
+    await crewRoleAnswer(
+      stopFailure(world.repo),
+      "StopFailure",
+      world.env,
+      cliPaths(world.env),
+      world.repo,
+      { nowMs: NOW, timeZone: "UTC" },
+    );
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)?.waitingFor).toEqual({
+      kind: "unknown",
+      since: "2026-10-21T22:00:00.000Z",
+    });
+  });
+
+  test("a broken record is one stderr line and no pause", async () => {
+    const world = await workerWorld();
+    writeState(world.env, breaker());
+    writeFileSync(crewFile(world.stateDir, world.repo, CREW_ID), "{ not json");
+    const result = await runHook(crewRoleHook, stopFailure(world.repo), world.env);
     expect(result.exitCode ?? 0).toBe(0);
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toStartWith(`cc-smart-dev-kit crew-role: Invalid `);

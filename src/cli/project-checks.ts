@@ -45,6 +45,7 @@ import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
   RETIRED_HOOK_NAMES,
+  UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -281,6 +282,16 @@ function ownCopyLines(
   const own: string[] = config.ownHooks ?? [];
   const lines: ProjectLine[] = [];
   for (const name of own) {
+    if ((UNSWITCHABLE_HOOK_NAMES as readonly string[]).includes(name)) {
+      // The plugin cannot switch it off any more (it became `alwaysOn`): the entry keeps
+      // nothing quiet, and only costs a reader a question.
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: .claude/cc-smart-dev-kit.json lists ${name} in ownHooks, a plugin hook no project can switch off any more: it silences nothing. Take "${name}" out of ownHooks`,
+      });
+      continue;
+    }
     if ((RETIRED_HOOK_NAMES as readonly string[]).includes(name)) {
       // No hook of that name runs any more: the entry keeps nothing quiet, and only costs a
       // reader a question.
@@ -313,7 +324,14 @@ function ownCopyLines(
   }
   const found = new Map<string, { hook: PluginHook; handler: WiredHandler; subjects: string[] }>();
   for (const hook of pluginHooks) {
-    if (own.includes(hook.name)) continue;
+    // A name a project can no longer switch off (`alwaysOn`, `UNSWITCHABLE_HOOK_NAMES`) does
+    // not take the project's own copy off the warning: the plugin answers all the same.
+    if (
+      own.includes(hook.name) &&
+      !(UNSWITCHABLE_HOOK_NAMES as readonly string[]).includes(hook.name)
+    ) {
+      continue;
+    }
     // A machine-wide hook (stop-failure, update-check, notify, agent-guard, fable-session)
     // answers about the machine, not this project: a project hook on its event is the person's
     // own business, not a second copy of a plugin piece, so nothing warns about it.
@@ -332,10 +350,13 @@ function ownCopyLines(
     }
   }
   for (const { hook, handler, subjects } of found.values()) {
+    const advice = (UNSWITCHABLE_HOOK_NAMES as readonly string[]).includes(hook.name)
+      ? `The plugin's ${hook.name} cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer`
+      : `If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
     lines.push({
       ok: true,
       warn: true,
-      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`,
+      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. ${advice}`,
     });
   }
   return lines;

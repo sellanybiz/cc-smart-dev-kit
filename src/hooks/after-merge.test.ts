@@ -5,6 +5,7 @@ import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "
 import { git, tempDir } from "../testing/temp";
 import {
   clearWorktreeNote,
+  exactMergeOf,
   mergeOutcome,
   mergesPullRequest,
   mergeTargetOf,
@@ -120,6 +121,7 @@ describe("did the command merge a pull request?", () => {
         disarms: false,
         admin: false,
         unknown: null,
+        unknownFlag: null,
       },
     ]);
     expect(refusal("gh --admin=true pr merge 20")).toEqual([
@@ -202,6 +204,55 @@ describe("did the command merge a pull request?", () => {
       mergedAt: null,
     });
     expect(parsePullRequestView("nope")).toBeNull();
+  });
+});
+
+describe("the exact merge (D31)", () => {
+  test.each([
+    // The exact form: `gh pr merge <n>` alone, with flags gh 2.102.0 has.
+    "gh pr merge 7",
+    "gh pr merge 7 --squash --delete-branch",
+    "gh pr merge 7 --match-head-commit abc123 --merge",
+    "gh pr -R org/app merge 7",
+    "gh pr --repo=org/app merge 7",
+    "gh -R org/app pr merge 7",
+  ])("%j: the exact merge", (command) => {
+    expect(exactMergeOf(command, "bash")?.target?.ref).toBe("7");
+  });
+
+  test.each([
+    // Anything else on the line would skip auto mode's rule for work the guard never judged.
+    "timeout 60 gh pr merge 7",
+    "CI=1 gh pr merge 7",
+    "gh pr merge 5 && gh pr merge 6",
+    "gh pr merge 7 > merge.log",
+    'bash -c "gh pr merge 7"',
+    "gh m 7",
+    // Not the exact form: a branch, a URL, an unknown flag, `--admin`, `--disable-auto`, and
+    // an armed merge, which lands later without this check seeing a new commit.
+    "gh pr merge fix/login",
+    "gh pr merge https://github.com/example-org/app/pull/7",
+    "gh pr merge 7 --frobnicate",
+    "gh pr merge 7 -Z",
+    "gh pr merge 7 --admin",
+    "gh pr merge 7 --disable-auto",
+    "gh pr merge 7 --auto",
+  ])("%j: not the exact merge", (command) => {
+    expect(exactMergeOf(command, "bash")).toBeNull();
+  });
+
+  test("the tool's dialect decides: an unknown one is never exact", () => {
+    expect(exactMergeOf("gh pr merge 7", "powershell")?.target?.ref).toBe("7");
+    // The guard is not told which shell runs the line: both readings count, so no allow.
+    expect(exactMergeOf("gh pr merge 7")).toBeNull();
+  });
+
+  test("an unknown flag on a merge is a refusal, named, and never exact", () => {
+    const [call] = pullRequestMerges("gh pr merge 7 --frobnicate", null, "bash");
+    expect(call?.unknownFlag).toBe("--frobnicate");
+    expect(call?.refusal).toBe(
+      "the merge carries `--frobnicate`, a flag this guard does not know, so it cannot tell what it does",
+    );
   });
 });
 
