@@ -137,6 +137,11 @@ in this turn.
   which the router does not, so `plugin/dist/router.js` must not change: check
   `git diff --stat plugin/dist` after `bun run build` (a changed router.js restarts every
   machine's router).
+- The portal's export ships in the plugin (`plugin/portal-ui/`, built by
+  `scripts/portal-export.ts` and committed; `bun run check:portal` proves it current in CI)
+  and is copied beside the bundle into `~/.local/share/cc-smart-dev-kit/portal-ui/` through
+  `writeManagedFolder` (a folder the kit owns whole: `restore` removes it). Never edit the
+  built export by hand, and never run the Next build from `bun run build`.
 - The portal runs from `~/.local/share/cc-smart-dev-kit/portal.js`, written through
   `writeManagedFile` (so `restore` removes it), never from the plugin's version folder:
   Claude Code deletes an old one after an update, even under a running process. It is

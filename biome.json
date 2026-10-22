@@ -5,6 +5,7 @@
     "includes": [
       "**",
       "!plugin/dist",
+      "!plugin/portal-ui",
       "!plugin/workflows",
       "!portal/node_modules",
       "!portal/.next",

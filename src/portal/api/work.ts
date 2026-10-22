@@ -1,6 +1,6 @@
 /**
  * The JSON API's work answers: the Work view, one crew session's page, "Needs you", the guard
- * log, the worktrees, the flow report, and the (empty until phase H1) request history.
+ * log, the worktrees, the flow report, and the request history (H1's reader, read-only).
  *
  * Every fact comes from the plugin's own readers — the crew store, the flow report, the
  * worktree scan, the guard's ask log, the review record and the merge check — so a page can
@@ -21,6 +21,13 @@ import {
   readCrewEvents,
   readReport,
 } from "../../crew/store";
+import { historyDbExists } from "../../gateway/history";
+import {
+  type HistoryFilters,
+  historySeries,
+  type RecentRequestRow,
+  recentRequests,
+} from "../../gateway/history-read";
 import { currentBreakers, parseLimitState } from "../../gateway/limit-state";
 import { oneLine } from "../../gateway/plain-text";
 import { askLogFile } from "../../hooks/ask-log";
@@ -51,6 +58,7 @@ import {
   HISTORY_RANGES,
   type HistoryAnswer,
   type HistoryRange,
+  type HistoryRequest,
   type LeadSummary,
   type NeedsAnswer,
   type PermissionWait,
@@ -531,46 +539,80 @@ export function flowAnswer(deps: PageDataDeps, range: HistoryRange): FlowAnswer 
   };
 }
 
-/** The bucket each range is drawn in: 1 min, 5 min, 15 min, 1 h, 2 h, 6 h, 1 day (D51). */
-export const HISTORY_BUCKET_MS: Record<HistoryRange, number> = {
-  "1d": 15 * 60_000,
-  "1h": 60_000,
-  "4h": 5 * 60_000,
-  "7d": 3_600_000,
-  "14d": 2 * 3_600_000,
-  "30d": 6 * 3_600_000,
-  "90d": 86_400_000,
-};
+/** What an empty history says: a machine that never logged a request has no database. */
+const NO_HISTORY_YET =
+  "no request has been logged yet: the router writes one row per request, and this machine has none";
 
-/** Why the history answers empty today: phase H1 writes and reads the request log. */
-const HISTORY_NOT_YET =
-  "the request history arrives with phase H1: the router does not write its request log yet, so there is nothing to read";
+/**
+ * The filters `/api/history` and `/api/requests` take, from the query's own words. An empty
+ * value is no filter; `status=error` is the only status (a caller's other value is refused by
+ * the route before this runs).
+ */
+export function historyFilters(query: URLSearchParams): HistoryFilters {
+  const filters: HistoryFilters = {};
+  for (const column of ["slot", "target", "model", "session"] as const) {
+    const value = query.get(column);
+    if (value !== null && value.trim() !== "") filters[column] = value;
+  }
+  if (query.get("status") === "error") filters.status = "error";
+  return filters;
+}
 
-/** `/api/history`: requests over time, bucketed (empty until H1). */
+/** `/api/history`: requests over time, one series per key, from the history's own reader. */
 export function historyAnswer(
   deps: PageDataDeps,
   range: HistoryRange,
   by: HistoryAnswer["by"],
+  filters: HistoryFilters = {},
 ): HistoryAnswer {
   const now = deps.action.portal.now();
+  const file = deps.action.portal.paths.historyDbFile;
+  const answer = historySeries(file, { by, filters, now, range });
   return {
-    available: false,
-    bucketMs: HISTORY_BUCKET_MS[range],
-    buckets: [],
+    available: true,
     by,
+    bucketMs: answer.bucketMs,
     from: now - HISTORY_RANGES[range],
-    note: HISTORY_NOT_YET,
+    note: historyDbExists(file) ? null : NO_HISTORY_YET,
     range,
+    series: answer.series,
     to: now,
   };
 }
 
-/** `/api/requests`: the recent requests, paged (empty until H1). */
-export function requestsAnswer(): RequestsAnswer {
+/** One stored row as the recent-requests table shows it; metadata only, never a word. */
+function requestOf(row: RecentRequestRow): HistoryRequest {
   return {
-    available: false,
-    cursor: null,
-    note: HISTORY_NOT_YET,
-    requests: [],
+    at: row.at,
+    costUsd: row.costUsd,
+    held: row.breaker === "held",
+    latencyMs: row.ms,
+    model: row.model,
+    nextTarget: row.nextTarget,
+    session: row.session,
+    slot: row.slot,
+    status: row.status,
+    target: row.target,
+    tokens: {
+      cacheRead: row.cacheReadTokens ?? 0,
+      cacheWrite: row.cacheWriteTokens ?? 0,
+      input: row.inputTokens ?? 0,
+      output: row.outputTokens ?? 0,
+    },
+  };
+}
+
+/** `/api/requests`: the recent requests, newest first, paged by the cursor it answers. */
+export function requestsAnswer(
+  deps: PageDataDeps,
+  options: { cursor?: number; filters?: HistoryFilters; limit?: number } = {},
+): RequestsAnswer {
+  const file = deps.action.portal.paths.historyDbFile;
+  const page = recentRequests(file, options);
+  return {
+    available: true,
+    cursor: page.nextCursor === null ? null : String(page.nextCursor),
+    note: historyDbExists(file) ? null : NO_HISTORY_YET,
+    requests: page.rows.map(requestOf),
   };
 }

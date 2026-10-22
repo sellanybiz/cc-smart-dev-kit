@@ -7,6 +7,7 @@
  * (`src/portal/actions.ts`).
  */
 
+import { RECENT_PAGE_DEFAULT } from "../../gateway/history-read";
 import type { PageDataDeps } from "../page-data";
 import {
   healthAnswer,
@@ -18,13 +19,14 @@ import {
   slotsAnswer,
   updateAnswer,
 } from "./data";
-import { HISTORY_RANGES, type HistoryAnswer, type HistoryRange } from "./types";
+import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
   crewAnswerFor,
   flowAnswer,
   GUARD_ASKS_DEFAULT,
   guardAsksAnswer,
   historyAnswer,
+  historyFilters,
   needsAnswer,
   requestsAnswer,
   workAnswer,
@@ -38,12 +40,7 @@ export interface ApiAnswer {
 }
 
 /** The `by` values `/api/history` accepts. */
-const HISTORY_BY: ReadonlySet<HistoryAnswer["by"]> = new Set([
-  "target",
-  "slot",
-  "model",
-  "session",
-]);
+const HISTORY_BY: ReadonlySet<HistoryBy> = new Set(["target", "slot", "model", "session"]);
 
 /** A range this version knows, or null. */
 function rangeOf(value: null | string): HistoryRange | null {
@@ -62,6 +59,13 @@ function limitOf(value: null | string, fallback: number): number {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 1) return fallback;
   return Math.min(number, 5_000);
+}
+
+/** `/api/requests`' cursor: the id the page before ended at, or null for the newest page. */
+function cursorOf(value: null | string): "bad" | null | number {
+  if (value === null) return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 1 ? number : "bad";
 }
 
 /**
@@ -108,21 +112,50 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
     case "/api/history": {
       const range = rangeOf(query.get("range"));
       const by = query.get("by") ?? "target";
-      if (range === null || !HISTORY_BY.has(by as HistoryAnswer["by"])) {
+      const status = query.get("status");
+      if (
+        range === null ||
+        !HISTORY_BY.has(by as HistoryBy) ||
+        (status !== null && status !== "error")
+      ) {
         return {
           body: {
-            error: `history takes range=${Object.keys(HISTORY_RANGES).join("|")} and by=target|slot|model|session`,
+            error: `history takes range=${Object.keys(HISTORY_RANGES).join("|")}, by=target|slot|model|session, slot, target, model, session and status=error`,
           },
           status: 400,
         };
       }
-      // The filters (`slot`, `target`, `model`, `session`, `status=error`) are accepted now and
-      // used when phase H1's reader answers; today's answer is empty either way.
-      return ok(historyAnswer(deps, range, by as HistoryAnswer["by"]));
+      try {
+        return ok(historyAnswer(deps, range, by as HistoryBy, historyFilters(query)));
+      } catch {
+        // The database is there but cannot be read: a typed refusal, never the reader's own text.
+        return { body: { error: "the request history could not be read" }, status: 500 };
+      }
     }
-    case "/api/requests":
-      // `cursor` and the same filters are accepted; phase H1 answers with rows.
-      return ok(requestsAnswer());
+    case "/api/requests": {
+      const status = query.get("status");
+      const cursor = cursorOf(query.get("cursor"));
+      if ((status !== null && status !== "error") || cursor === "bad") {
+        return {
+          body: {
+            error:
+              "requests takes cursor=<the id the page before ended at>, limit=1..200, slot, target, model, session and status=error",
+          },
+          status: 400,
+        };
+      }
+      try {
+        return ok(
+          requestsAnswer(deps, {
+            filters: historyFilters(query),
+            limit: limitOf(query.get("limit"), RECENT_PAGE_DEFAULT),
+            ...(cursor === null ? {} : { cursor }),
+          }),
+        );
+      } catch {
+        return { body: { error: "the request history could not be read" }, status: 500 };
+      }
+    }
     case "/api/guard-asks": {
       const limit = limitOf(query.get("limit"), GUARD_ASKS_DEFAULT);
       return ok(

@@ -4,10 +4,12 @@
  * so nothing here starts a server, touches a real port or signals a real process.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { detachedArgv } from "../hooks/detached";
+import { readOwnedFolders } from "../setup/managed-folder";
+import { restore } from "../setup/restore";
 import { readChanged } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import {
@@ -34,12 +36,17 @@ import { portalStartsAtSessionStart, startPortalAtSessionStart } from "./session
 const INSTALLED = "1.1.0";
 
 /** A temp home, a plugin folder with a portal bundle in it, and its paths. */
-function world() {
+function world(options: { ui?: boolean } = {}) {
   const home = tempDir("portal-life");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const pluginFolder = join(home, "plugin");
   mkdirSync(join(pluginFolder, "dist"), { recursive: true });
   writeFileSync(join(pluginFolder, "dist", "portal.js"), "// the portal bundle\n");
+  if (options.ui === true) {
+    mkdirSync(join(pluginFolder, "portal-ui", "_next", "static"), { recursive: true });
+    writeFileSync(join(pluginFolder, "portal-ui", "index.html"), "<html>exported</html>\n");
+    writeFileSync(join(pluginFolder, "portal-ui", "_next", "static", "main.js"), "// js\n");
+  }
   return { home, paths, pluginFolder };
 }
 
@@ -218,6 +225,42 @@ describe("the copy", () => {
     const result = refreshPortalCopy(paths, empty);
     expect("error" in result && result.error).toContain("the portal bundle is missing");
     expect(existsSync(paths.portalCopy)).toBe(false);
+  });
+
+  test("the export beside the bundle is copied as an owned folder, and restore removes it", () => {
+    const { paths, pluginFolder } = world({ ui: true });
+    expect(refreshPortalCopy(paths, pluginFolder)).toEqual({ copy: paths.portalCopy });
+    expect(readFileSync(join(paths.portalUiFolder, "index.html"), "utf8")).toBe(
+      "<html>exported</html>\n",
+    );
+    expect(readFileSync(join(paths.portalUiFolder, "_next", "static", "main.js"), "utf8")).toBe(
+      "// js\n",
+    );
+    expect(readOwnedFolders(paths.stateDir)).toEqual([paths.portalUiFolder]);
+    // The export is build output: restore removes it whole, and the bundle copy with it.
+    const results = restore(paths.stateDir);
+    expect(existsSync(paths.portalUiFolder)).toBe(false);
+    expect(existsSync(paths.portalCopy)).toBe(false);
+    expect(results.map((result) => [result.file, result.action])).toEqual([
+      [paths.portalCopy, "removed"],
+      [paths.portalUiFolder, "removed"],
+    ]);
+  });
+
+  test("an export that changed replaces the copy; a version with no export removes it", () => {
+    const { paths, pluginFolder } = world({ ui: true });
+    refreshPortalCopy(paths, pluginFolder);
+    writeFileSync(join(pluginFolder, "portal-ui", "index.html"), "<html>next</html>\n");
+    refreshPortalCopy(paths, pluginFolder);
+    expect(readFileSync(join(paths.portalUiFolder, "index.html"), "utf8")).toBe(
+      "<html>next</html>\n",
+    );
+    // An older install ships no export: the copy's export goes, so new pages are never served
+    // with an older bundle.
+    rmSync(join(pluginFolder, "portal-ui"), { recursive: true, force: true });
+    expect(refreshPortalCopy(paths, pluginFolder)).toEqual({ copy: paths.portalCopy });
+    expect(existsSync(paths.portalUiFolder)).toBe(false);
+    expect(readOwnedFolders(paths.stateDir)).toEqual([]);
   });
 });
 

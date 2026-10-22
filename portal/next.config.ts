@@ -22,6 +22,10 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   poweredByHeader: false,
   reactStrictMode: true,
+  // A fixed build id, so the export is byte for byte the same on every build (checked by
+  // `scripts/portal-export.ts --check`). The id names `_next/static/<id>/` and appears in every
+  // page's `__NEXT_DATA__`; Next makes one at random otherwise.
+  generateBuildId: () => "cc-smart-dev-kit-portal",
 };
 
 export default nextConfig;

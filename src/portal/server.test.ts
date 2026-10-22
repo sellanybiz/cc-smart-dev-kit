@@ -18,6 +18,7 @@ import { cliPaths } from "../cli/paths";
 import { addCrewQuestion, createCrew, type NewCrew, readCrew } from "../crew/store";
 import { upgradeConfig } from "../gateway/commands";
 import { loadConfigFile, saveConfig } from "../gateway/config";
+import { createHistoryWriter, type HistoryRow } from "../gateway/history";
 import { askLogFile } from "../hooks/ask-log";
 import { currentFileHolder } from "../jobs/store";
 import type { Machine } from "../machine/machine";
@@ -160,6 +161,8 @@ async function open(options: {
   /** The workflow module behind the adapter; a fake by default, never a real file or repo. */
   workflow?: WorkflowAdapter;
   withConfig?: boolean;
+  /** The clock the portal reads; a test that asserts exact history buckets fixes it. */
+  now?: () => number;
 }) {
   const home = tempDir("portal");
   const cwd = tempDir("portal-project");
@@ -252,7 +255,7 @@ async function open(options: {
       return fetch(url, init);
     },
     machine,
-    now: () => Date.now(),
+    now: options.now ?? (() => Date.now()),
     openBrowser: () => undefined,
     paths,
     // The plugin's own folder, as the portal resolves it at each action: the real one in this
@@ -3883,32 +3886,254 @@ describe("the JSON API", () => {
     }
   });
 
-  test("history and requests: empty and typed until phase H1", async () => {
+  test("history: H1's own buckets, series, filters, and a missing database is empty", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    // A fixed clock on a bucket boundary, so every expected bucket is written by hand.
+    const NOW = Date.UTC(2026, 9, 22, 10, 0, 0);
+    const MIN = 60_000;
+    const world = await open({ backendPort: backend.port, now: () => NOW });
+    const writer = createHistoryWriter({
+      file: world.paths.historyDbFile,
+      flushAfterMs: 60_000,
+      log: () => {},
+      now: () => NOW,
+      retentionDays: () => 90,
+    });
+    const row = (overrides: Partial<HistoryRow>): HistoryRow => ({
+      at: NOW,
+      breaker: null,
+      cost: null,
+      model: "claude-haiku-5-5",
+      ms: 100,
+      nextTarget: null,
+      session: "s1",
+      slot: "cc-smart-dev-kit-worker",
+      status: 200,
+      target: "omniroute:glm",
+      tokens: null,
+      ...overrides,
+    });
+    // Four rows: two in one minute bucket one target shares, one scout row, one newest row.
+    const rows: HistoryRow[] = [
+      row({
+        at: NOW - 10 * MIN,
+        cost: { estimated: true, usd: 0.001 },
+        ms: 100,
+        tokens: { cacheRead: 1000, cacheWrite: 20, input: 10, output: 5 },
+      }),
+      row({ at: NOW - 10 * MIN + 30_000, ms: 300, status: 500 }),
+      row({
+        at: NOW - 9 * MIN,
+        cost: { estimated: false, usd: 0.0001 },
+        model: "claude-sonnet-5-5",
+        ms: 50,
+        session: "s2",
+        slot: "cc-smart-dev-kit-scout",
+        target: "claude-sonnet-5-5",
+        tokens: { cacheRead: 0, cacheWrite: 0, input: 7, output: 3 },
+      }),
+      row({
+        at: NOW - 5 * MIN,
+        breaker: "held",
+        model: "claude-opus-5-5",
+        ms: 200,
+        nextTarget: "claude-sonnet-5-5",
+        session: null,
+        tokens: { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 },
+      }),
+    ];
+    try {
+      for (const one of rows) writer.record(one);
+      writer.flush();
+
+      interface Bucket {
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        costUsd: number;
+        errors: number;
+        inputTokens: number;
+        outputTokens: number;
+        p50Ms: number;
+        p95Ms: number;
+        requests: number;
+        t: number;
+      }
+      const history = JSON.parse((await world.call("/api/history?range=1h&by=target")).body) as {
+        available: boolean;
+        bucketMs: number;
+        by: string;
+        note: null | string;
+        range: string;
+        series: { key: string; points: Bucket[] }[];
+      };
+      expect(history.available).toBe(true);
+      expect(history.bucketMs).toBe(MIN);
+      expect(history.by).toBe("target");
+      expect(history.range).toBe("1h");
+      expect(history.note).toBe(null);
+      expect(history.series.map((series) => series.key)).toEqual([
+        "claude-sonnet-5-5",
+        "omniroute:glm",
+      ]);
+      const glm = history.series.find((series) => series.key === "omniroute:glm");
+      // Every bucket of the hour is there, the empty ones as zeros.
+      expect(glm?.points).toHaveLength(61);
+      expect(glm?.points[0]?.t).toBe(NOW - 60 * MIN);
+      // Two requests in the same minute: 100 ms and 300 ms, one of them an error.
+      expect(glm?.points.find((point) => point.t === NOW - 10 * MIN)).toEqual({
+        cacheReadTokens: 1000,
+        cacheWriteTokens: 20,
+        costUsd: 0.001,
+        errors: 1,
+        inputTokens: 10,
+        outputTokens: 5,
+        p50Ms: 100,
+        p95Ms: 300,
+        requests: 2,
+        t: NOW - 10 * MIN,
+      });
+      expect(glm?.points.find((point) => point.t === NOW - 5 * MIN)).toMatchObject({
+        cacheReadTokens: 0,
+        costUsd: 0,
+        errors: 0,
+        inputTokens: 1,
+        outputTokens: 1,
+        p50Ms: 200,
+        p95Ms: 200,
+        requests: 1,
+        t: NOW - 5 * MIN,
+      });
+      expect(glm?.points.find((point) => point.t === NOW - 9 * MIN)).toMatchObject({
+        requests: 0,
+        errors: 0,
+      });
+
+      // One filter: the worker's own rows only (three of the four).
+      const filtered = JSON.parse(
+        (await world.call("/api/history?range=1h&by=target&slot=cc-smart-dev-kit-worker")).body,
+      ) as { series: { key: string; points: Bucket[] }[] };
+      expect(filtered.series.map((series) => series.key)).toEqual(["omniroute:glm"]);
+      expect(filtered.series[0]?.points.reduce((sum, point) => sum + point.requests, 0)).toBe(3);
+      // `status=error`: the one 500.
+      const errors = JSON.parse(
+        (await world.call("/api/history?range=1h&by=target&status=error")).body,
+      ) as { series: { points: Bucket[] }[] };
+      expect(errors.series[0]?.points.reduce((sum, point) => sum + point.requests, 0)).toBe(1);
+      // `by=slot`: the two slots, not the targets.
+      const bySlot = JSON.parse((await world.call("/api/history?range=1h&by=slot")).body) as {
+        series: { key: string }[];
+      };
+      expect(bySlot.series.map((series) => series.key)).toEqual([
+        "cc-smart-dev-kit-scout",
+        "cc-smart-dev-kit-worker",
+      ]);
+
+      // A bad range, grouping or status is a typed refusal.
+      expect((await world.call("/api/history?range=nope")).status).toBe(400);
+      expect((await world.call("/api/history?by=nope")).status).toBe(400);
+      expect((await world.call("/api/history?status=nope")).status).toBe(400);
+      expect((await world.call("/api/requests?cursor=abc")).status).toBe(400);
+
+      interface Request {
+        at: number;
+        costUsd: null | number;
+        held: boolean;
+        latencyMs: number;
+        model: string;
+        nextTarget: null | string;
+        session: null | string;
+        slot: null | string;
+        status: number;
+        target: string;
+        tokens: { cacheRead: number; cacheWrite: number; input: number; output: number };
+      }
+      // The newest first, two at a time; the cursor is the id of the page's last row.
+      const pageOne = JSON.parse((await world.call("/api/requests?limit=2")).body) as {
+        available: boolean;
+        cursor: null | string;
+        note: null | string;
+        requests: Request[];
+      };
+      expect(pageOne.available).toBe(true);
+      expect(pageOne.note).toBe(null);
+      expect(pageOne.requests.map((one) => one.at)).toEqual([NOW - 5 * MIN, NOW - 9 * MIN]);
+      expect(pageOne.cursor).toBe("3");
+      expect(pageOne.requests[0]).toEqual({
+        at: NOW - 5 * MIN,
+        costUsd: null,
+        held: true,
+        latencyMs: 200,
+        model: "claude-opus-5-5",
+        nextTarget: "claude-sonnet-5-5",
+        session: null,
+        slot: "cc-smart-dev-kit-worker",
+        status: 200,
+        target: "omniroute:glm",
+        tokens: { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 },
+      });
+      const pageTwo = JSON.parse((await world.call("/api/requests?limit=2&cursor=3")).body) as {
+        cursor: null | string;
+        requests: Request[];
+      };
+      expect(pageTwo.requests.map((one) => one.at)).toEqual([
+        NOW - 10 * MIN + 30_000,
+        NOW - 10 * MIN,
+      ]);
+      // A full page carries the cursor of its last row, even when nothing older is left: the
+      // page after it is the empty one, and says there is no more.
+      expect(pageTwo.cursor).toBe("1");
+      const pageThree = JSON.parse((await world.call("/api/requests?limit=2&cursor=1")).body) as {
+        cursor: null | string;
+        requests: Request[];
+      };
+      expect(pageThree.requests).toEqual([]);
+      expect(pageThree.cursor).toBe(null);
+      // The same filters as the chart, and the cost a row carries.
+      const worker = JSON.parse(
+        (await world.call("/api/requests?slot=cc-smart-dev-kit-worker")).body,
+      ) as { requests: Request[] };
+      expect(worker.requests.map((one) => one.at)).toEqual([
+        NOW - 5 * MIN,
+        NOW - 10 * MIN + 30_000,
+        NOW - 10 * MIN,
+      ]);
+      expect(worker.requests[2]?.costUsd).toBe(0.001);
+      const onlyErrors = JSON.parse((await world.call("/api/requests?status=error")).body) as {
+        requests: Request[];
+      };
+      expect(onlyErrors.requests.map((one) => one.status)).toEqual([500]);
+    } finally {
+      writer.close();
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("history: no database yet is the empty answer, never an error", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      const history = JSON.parse((await world.call("/api/history?range=1h&by=slot")).body) as {
+      const history = JSON.parse((await world.call("/api/history?range=1d&by=slot")).body) as {
         available: boolean;
-        bucketMs: number;
-        buckets: unknown[];
-        by: string;
-        note: string;
+        note: null | string;
+        series: unknown[];
       };
-      expect(history).toMatchObject({
-        available: false,
-        bucketMs: 60_000,
-        buckets: [],
-        by: "slot",
-      });
-      expect(history.note).toContain("phase H1");
-      expect((await world.call("/api/history?range=nope")).status).toBe(400);
-      expect((await world.call("/api/history?by=nope")).status).toBe(400);
-      const requests = JSON.parse((await world.call("/api/requests?cursor=abc")).body) as {
+      expect(history.available).toBe(true);
+      expect(history.series).toEqual([]);
+      expect(history.note).toContain("no request has been logged yet");
+      const requests = JSON.parse((await world.call("/api/requests")).body) as {
         available: boolean;
         cursor: null;
+        note: null | string;
         requests: unknown[];
       };
-      expect(requests).toMatchObject({ available: false, cursor: null, requests: [] });
+      expect(requests).toEqual({
+        available: true,
+        cursor: null,
+        note: "no request has been logged yet: the router writes one row per request, and this machine has none",
+        requests: [],
+      });
+      expect(existsSync(world.paths.historyDbFile)).toBe(false);
     } finally {
       world.portal.stop();
       backend.stop();

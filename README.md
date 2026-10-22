@@ -1473,6 +1473,22 @@ crash is brought back by the next session start; two sessions that start togethe
 once. If another program holds port 20150, nothing is started and the portal's log
 (`~/.claude/cc-smart-dev-kit/portal.log`) says so once. `doctor` has one line about it.
 
+### Open the portal from another computer (SSH)
+
+The portal binds `127.0.0.1` only, so another computer never reaches it directly — that is the
+point. To open it from a laptop, forward the port over SSH, with **the same port on both ends**:
+
+```sh
+ssh -L 20150:127.0.0.1:20150 <user>@<host>
+```
+
+Then open `http://127.0.0.1:20150/` on the laptop. `20150` is the portal's one fixed port
+(`DEFAULT_PORTAL_PORT` in `src/ports.ts`); use that number on both sides. The same port at both
+ends matters because the door checks the `Host` header exactly: with
+`-L 8080:127.0.0.1:20150` the browser would send `Host: 127.0.0.1:8080`, and the portal refuses
+it. The browser's own `Sec-Fetch-Site` header arrives as it always does — SSH forwards the bytes
+untouched — so the door's other rule holds through the tunnel too.
+
 **There is no sign-in.** Any program and any user account on this machine can open the page —
 a Claude session running `curl` included — and can change the slots, the judge, the updates
 and the workflow settings. That is a deliberate trade-off: the alternative was pairing every
@@ -1575,6 +1591,22 @@ version's bundle there before it starts it; the running server is told where the
 instructions, `hooks/hooks.json` — is resolved from the version Claude Code records as
 installed **at the moment it is needed**; a folder a later update deleted is named in words
 instead of failing.
+
+**The pages themselves ship inside the plugin.** They are a Next.js static export
+(`portal-ui/`, built from `portal/` by `bun run build:portal` and committed like the
+bundles), copied beside `portal.js` into `~/.local/share/cc-smart-dev-kit/portal-ui/` — a
+managed folder, so `restore` removes it too, and a version change replaces it. There is no
+Next server and no `node_modules` on a machine: the portal's own Bun server serves those
+files behind the same door as everything else. A version with no export (an older install)
+keeps the server-rendered pages, which answer exactly as before.
+
+**The history pages read the router's own request log** (never a prompt or an answer: the
+time, the session id, the model, the slot, the target, the status, the latency, the token
+counts and an estimated cost). `GET /api/history?range=1h|4h|1d|7d|14d|30d|90d&by=target|slot|model|session`
+answers one series per key, every bucket of the window included, and `GET /api/requests`
+pages the newest rows first; both take `slot`, `target`, `model`, `session` and
+`status=error`, and both answer empty — not an error — on a machine that has logged no
+request yet.
 
 ## Instructions, skills and agents
 

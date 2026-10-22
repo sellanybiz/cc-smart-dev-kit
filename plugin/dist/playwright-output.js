@@ -68,6 +68,7 @@ function cliPaths(env = process.env) {
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
+    portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),

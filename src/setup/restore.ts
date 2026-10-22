@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, rmdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { isStrictlyInside } from "../path-compare";
 import { removeAllOwnedEntries } from "./managed-entries";
+import { readOwnedFolders, removeManagedFolder } from "./managed-folder";
 import { removeAllManagedHooks } from "./managed-hook";
 import { applyManagedJson, createdObjects, formatKeyPath, ownedKeys } from "./managed-json";
 import { removeManagedLines } from "./managed-line";
@@ -122,6 +123,8 @@ function restorePartly(file: string, entry: ChangedEntry, stateDir: string): Res
  * - Markdown files: the cc-smart-dev-kit block is removed; the text around it stays.
  * - Files cc-smart-dev-kit owns whole (the launcher): back to the state before cc-smart-dev-kit's first
  *   change, or removed when cc-smart-dev-kit created them.
+ * - Folders cc-smart-dev-kit owns whole (the portal's export): removed. They are build output,
+ *   so there is no backup; the next start writes them again.
  * Each change makes a backup first. Afterwards the file is no longer tracked, so a second
  * restore changes nothing.
  *
@@ -165,6 +168,13 @@ export function restore(
     if (result.action === "removed") removeEmptyFolders(file, stateDir);
     return result;
   });
+  // A folder cc-smart-dev-kit owns whole (the portal's export): removed, never backed up —
+  // it is build output, and the next start writes it again (`managed-folder.ts`).
+  for (const folder of readOwnedFolders(stateDir)) {
+    if (except.has(folder) || (only !== null && !only.has(folder))) continue;
+    if (removeManagedFolder(folder, stateDir))
+      results.push({ file: folder, action: "removed", details: [] });
+  }
   // A file whose only managed change was the hook entry: its own line.
   for (const [file, hook] of hooks) {
     results.push({

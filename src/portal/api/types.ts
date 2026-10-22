@@ -13,6 +13,14 @@
  * (`.claude/rules/portal.md` § A key never reaches a page).
  */
 
+import {
+  HISTORY_RANGE_MS,
+  type HistoryBy,
+  type HistoryFilters,
+  type HistoryPoint,
+  type HistoryRange,
+  type HistorySeries,
+} from "../../gateway/history-read";
 import type { JobsAnswer } from "../../jobs/status";
 import type { FlowReport } from "../../sessions/flow";
 import type {
@@ -361,20 +369,12 @@ export interface WorktreesAnswer {
   worktrees: WorktreeItem[];
 }
 
-/** One bucket of the request history (D51, phase H1). */
-export interface HistoryBucket {
-  /** Milliseconds since the epoch: the bucket's start. */
-  at: number;
-  /** Estimated USD, from the price table; null when no price is known. */
-  costUsd: null | number;
-  /** The requests that ended in an error. */
-  errors: number;
-  /** p50 and p95 latency, milliseconds; null when the bucket holds none. */
-  p50Ms: null | number;
-  p95Ms: null | number;
-  requests: number;
-  tokens: { cacheRead: number; cacheWrite: number; input: number; output: number };
-}
+/**
+ * The history's own names come from its reader (`src/gateway/history-read.ts`): one home for
+ * the ranges, their milliseconds, the groupings, the filters and a bucket's fields.
+ */
+export type { HistoryBy, HistoryFilters, HistoryPoint, HistoryRange, HistorySeries };
+export { HISTORY_RANGE_MS as HISTORY_RANGES };
 
 /** One row of the recent-requests table (D51, phase H1). Metadata only. */
 export interface HistoryRequest {
@@ -393,31 +393,22 @@ export interface HistoryRequest {
   tokens: { cacheRead: number; cacheWrite: number; input: number; output: number };
 }
 
-/** The ranges `GET /api/history` takes, and their milliseconds. */
-export const HISTORY_RANGES = {
-  "1h": 3_600_000,
-  "1d": 86_400_000,
-  "4h": 14_400_000,
-  "7d": 604_800_000,
-  "14d": 1_209_600_000,
-  "30d": 2_592_000_000,
-  "90d": 7_776_000_000,
-} as const;
-
-/** A range `/api/history` and `/api/flow` take. */
-export type HistoryRange = keyof typeof HISTORY_RANGES;
-
-/** `GET /api/history?range=…&by=…`: requests over time, bucketed (D51, phase H1). */
+/**
+ * `GET /api/history?range=…&by=…&…`: requests over time, one series per key (D51, phase H1).
+ * A bucket is `HistoryPoint` from the reader, and every bucket of the window is there.
+ */
 export interface HistoryAnswer {
-  /** False until phase H1's reader is merged; the answer is then empty and `note` says why. */
+  /** True: the request reader answered (H1); every answer the route serves sets it. */
   available: boolean;
+  by: HistoryBy;
   /** One bucket per step: 1 min, 5 min, 15 min, 1 h, 2 h, 6 h, 1 day, by the range. */
   bucketMs: number;
-  buckets: HistoryBucket[];
-  by: "model" | "session" | "slot" | "target";
+  /** The window's start, milliseconds since the epoch. */
   from: number;
+  /** A line about an empty answer (no request logged yet), or null. */
   note: null | string;
   range: HistoryRange;
+  series: HistorySeries[];
   to: number;
 }
 

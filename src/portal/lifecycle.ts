@@ -26,6 +26,8 @@ import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { bunConfigArg } from "../setup/bun-config";
+import { LockBusyError, withLock } from "../setup/lock";
+import { removeManagedFolder, writeManagedFolder } from "../setup/managed-folder";
 import { atomicWrite, writeManagedFile } from "../setup/write";
 import { isOlder } from "../update/check";
 import { appendLogLine, isoSeconds } from "../update/state";
@@ -60,14 +62,21 @@ export function portalServerArgv(bunPath: string, copy: string, pluginDir: strin
   ];
 }
 
+/** How long a copy waits for another cc-smart-dev-kit run's lock: both writes are short. */
+export const PORTAL_COPY_LOCK_WAIT_MS = 10_000;
+
 /**
- * Brings the copy up to the installed bundle: the exact text is compared first, so a second
- * start writes nothing. `writeManagedFile` records it for `restore`, like the router's copy.
+ * Brings the copy up to the installed version: the bundle, and the Next.js export beside it
+ * (`portal-ui/`, D49). The exact text and the export's bytes are compared first, so a second
+ * start writes nothing. Both go through setup's writers, so `restore` removes them.
+ *
+ * The export is build output: when it fails to copy, the old folder (or none) stays and `note`
+ * says so — the portal still starts, and the server-rendered pages answer.
  */
 export function refreshPortalCopy(
   paths: CliPaths,
   pluginFolder: string,
-): { copy: string } | { error: string } {
+): { copy: string; note?: string } | { error: string } {
   const bundle = join(pluginFolder, "dist", "portal.js");
   if (!existsSync(bundle)) {
     return {
@@ -78,7 +87,54 @@ export function refreshPortalCopy(
     kind: "whole-file",
     stateDir: paths.stateDir,
   });
-  return { copy: paths.portalCopy };
+  return { copy: paths.portalCopy, ...refreshPortalExport(paths, pluginFolder) };
+}
+
+/**
+ * The export beside the copy. A version with no export (an older install) removes the copy's
+ * export, so new pages are never served with an older bundle; a copy that fails leaves the old
+ * folder as it was and says so, because the portal itself must still start.
+ */
+function refreshPortalExport(paths: CliPaths, pluginFolder: string): { note?: string } {
+  const source = join(pluginFolder, "portal-ui");
+  try {
+    if (existsSync(join(source, "index.html"))) {
+      writeManagedFolder(paths.portalUiFolder, source, { stateDir: paths.stateDir });
+    } else {
+      removeManagedFolder(paths.portalUiFolder, paths.stateDir);
+    }
+    return {};
+  } catch (error) {
+    return {
+      note: `the portal's export was not refreshed (${messageOf(error)}); the page that is there, or the server-rendered one, answers`,
+    };
+  }
+}
+
+/**
+ * The copy's refresh under setup's lock: two runs that start together (two sessions, a command
+ * and a session's hook) never swap the export under each other. A run that finds the lock held
+ * longer than the wait starts the copy that is already there; with no copy at all, it fails.
+ */
+async function refreshCopyLocked(
+  deps: PortalLifeDeps,
+): Promise<{ copy: string; note?: string } | { error: string }> {
+  try {
+    return await withLock(
+      deps.paths.stateDir,
+      () => refreshPortalCopy(deps.paths, deps.pluginFolder),
+      { waitMs: PORTAL_COPY_LOCK_WAIT_MS },
+    );
+  } catch (error) {
+    if (!(error instanceof LockBusyError)) throw error;
+    if (existsSync(deps.paths.portalCopy)) {
+      return {
+        copy: deps.paths.portalCopy,
+        note: "another cc-smart-dev-kit run holds the lock; the copy that is already there was used",
+      };
+    }
+    return { error: `the portal's copy could not be written: ${error.message}` };
+  }
 }
 
 /** Everything a start or a stop needs; a test passes fakes for the probe, the spawn and the kill. */
@@ -133,11 +189,12 @@ export function portalOutdated(installed: string, running: string): boolean {
  * nothing started.
  */
 export async function ensurePortal(deps: PortalLifeDeps): Promise<EnsureOutcome> {
-  const copy = refreshPortalCopy(deps.paths, deps.pluginFolder);
+  const copy = await refreshCopyLocked(deps);
   if ("error" in copy) {
     deps.log(`failed: ${copy.error}`);
     return { kind: "failed", reason: copy.error };
   }
+  if (copy.note !== undefined) deps.log(`note: ${copy.note}`);
   const state = await probePortal(deps.port, deps.probe);
   if (state.kind === "free") {
     clearHeldPort(deps.paths);

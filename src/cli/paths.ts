@@ -40,6 +40,12 @@ export interface CliPaths extends RouterPaths {
    * update), and `restore` removes it like the router's copy.
    */
   portalCopy: string;
+  /**
+   * The portal's Next.js export, beside its copy: `~/.local/share/cc-smart-dev-kit/portal-ui/`.
+   * It is a folder the kit owns whole (`src/setup/managed-folder.ts`), copied from the
+   * installed version's `plugin/portal-ui/` and removed by `restore`.
+   */
+  portalUiFolder: string;
   /** What the portal remembers between pages: `<stateDir>/portal.json`. */
   portalStateFile: string;
   /** The running portal's own log: `<stateDir>/portal.log` (start, restart, stop, failures). */
@@ -124,6 +130,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
+    portalUiFolder: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
     portalLogFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),

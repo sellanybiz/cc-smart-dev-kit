@@ -764,8 +764,12 @@ can never disagree. `work` is the lead and its crew nested plus the other sessio
 carries its brief, its log, the diff against its base, its report, the reviews recorded on its
 branch and the merge check's verdict; `needs` is everything waiting on the person (a crew
 question with its options, an open permission prompt, doctor's failures, an open breaker, a
-held major version). `history` and `requests` answer empty, with a note, until phase H1 writes
-the request log. Nothing carries a key or a prompt.
+held major version). `history` and `requests` read the router's request log through its own
+reader (`src/gateway/history-read.ts`, H1): `historySeries` answers one series per `by` key,
+every bucket of the range as zeros where nothing happened, and `recentRequests` pages the
+newest rows by id, both with the `slot`, `target`, `model`, `session` and `status=error`
+filters; a machine with no database yet answers empty with a note, never an error. Nothing
+carries a key or a prompt.
 
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its
@@ -773,8 +777,17 @@ shape (`{ memoryGb, freeGb, budgetGb, keptGb, stores: [{ where, freeGb, budgetGb
 waiting, note? }] }`), the Machine page shows the same lines, and the `jobs` event carries the
 same shape. There is no parser of printed lines anywhere.
 
-**The Next.js export is served by this server** (D49, `src/portal/static.ts`): the folder beside
-the running bundle (`portal-ui/` next to `portal.js`), one `index.html` per route
+**The Next.js export ships inside the plugin** (D49, `plugin/portal-ui/`): built from
+`portal/` by `scripts/portal-export.ts` (`bun run build:portal`) and committed like the
+bundles, because it is what a machine gets — never `node_modules`, never a Next server. It is
+not part of `bun run build`: that step must not need React's dependencies, and CI proves the
+export current in its own step (`bun run check:portal`, a byte-for-byte rebuild). The export
+is reproducible because `portal/next.config.ts` fixes Next's build id (`generateBuildId`);
+without it two builds differed in that id alone. The starter copies it beside the running
+bundle, into `~/.local/share/cc-smart-dev-kit/portal-ui/`, through `writeManagedFolder` (a
+folder the kit owns whole: a new folder, then a rename; no backup, and `restore` removes it),
+and a version whose plugin has no export removes that copy. The server is then given the path
+(`staticFolder`), and serves it (`src/portal/static.ts`): one `index.html` per route
 (`trailingSlash`), and `_next/static/*` served like `/assets/*` (build output, no machine
 facts). Each HTML page gets `<meta name="ccsdk-csrf" content="…">` inserted after its charset at
 serve time; the content policy is built from the export's `csp.json`
@@ -800,7 +813,8 @@ its own sinks), not a copy; `worktrees.clean` needs the page's confirmation.
 A copy in `~/.local/share/cc-smart-dev-kit/portal.js`, never the plugin's version folder:
 Claude Code deletes an old version folder some time after an update, even under a running
 process. The starter and `cc-smart-dev-kit portal` write the copy through `writeManagedFile`
-(so `restore` removes it), and the server always runs from it, detached: no terminal, no
+and the export beside it through `writeManagedFolder` (so `restore` removes both), and the
+server always runs from it, detached: no terminal, no
 pipe, and its lines go to its own log (`<stateDir>/portal.log`). A person who runs the copy
 by hand gets the same server in their terminal, with the address printed and Ctrl+C (exit
 130, "ended by SIGINT") to stop it. It is a bundle of its own (`src/entries/portal.ts` →

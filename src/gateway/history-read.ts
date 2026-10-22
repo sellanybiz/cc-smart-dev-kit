@@ -37,6 +37,9 @@ const RANGE_MS: Readonly<Record<HistoryRange, number>> = {
   "90d": 90 * 24 * 60 * 60 * 1000,
 };
 
+/** The same map for the portal's API, which builds its range list from it (one home). */
+export const HISTORY_RANGE_MS: Readonly<Record<HistoryRange, number>> = RANGE_MS;
+
 /** Each range's bucket: 1 min, 5 min, 15 min, 1 h, 2 h, 6 h, 1 day (D51). */
 const BUCKET_MS: Readonly<Record<HistoryRange, number>> = {
   "1h": 60 * 1000,

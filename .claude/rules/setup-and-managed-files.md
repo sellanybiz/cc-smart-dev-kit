@@ -25,6 +25,7 @@ So every change to a user's file goes through `src/setup/`, and nothing else wri
 | Markdown | `applyManagedMarkdown` | one block between `<!-- cc-smart-dev-kit:begin -->` and `<!-- cc-smart-dev-kit:end -->` |
 | Exact lines in a text file the person owns (`~/.tmux.conf`) | `applyManagedLine` / `removeManagedLines` (`managed-line.ts`) | the exact lines it added, listed as `lines` in `changed.json` (`file-line`) |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
+| A folder it owns whole (the portal's export) | `writeManagedFolder` (`managed-folder.ts`) | the whole folder, listed in `owned-folders.json` |
 
 Each of them:
 
@@ -108,6 +109,12 @@ Each of them:
   that user data folder — Chrome rewrites both files from memory. `restore` puts them back like
   any other key; nothing else of Chrome's is written, and no command deletes a profile or an
   extension (`.claude/rules/browser.md`).
+- **A folder owned whole is build output, so it has no backup.** `writeManagedFolder` writes a
+  complete new folder beside the old one, records its path in `owned-folders.json` before the
+  swap, then renames the new one into place and removes the old one. The record is its own
+  file, not a `changed.json` kind, because a running older CLI refuses a kind it does not
+  know (the same rule as the managed hook entries). `restore` removes the folder whole; the
+  next portal start writes it again. Today that is one folder: `~/.local/share/cc-smart-dev-kit/portal-ui/`.
 - **`gateway.json` backs itself up, in the state folder, beside the other backups.** A key that
   really replaces one already there makes `backupFile(stateDir, gatewayConfigFile)` run first —
   the one backup helper, `<stateDir>/backups/<the path, encoded>/`, never a copy beside a file

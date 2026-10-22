@@ -9,6 +9,8 @@
     "test": "\"$npm_execpath\" test",
     "build": "\"$npm_execpath\" scripts/build.ts",
     "build:check": "\"$npm_execpath\" scripts/build.ts --check",
+    "build:portal": "\"$npm_execpath\" scripts/portal-export.ts",
+    "check:portal": "\"$npm_execpath\" scripts/portal-export.ts --check",
     "check:neutral": "\"$npm_execpath\" scripts/check-neutral.ts",
     "check:duplicates": "\"$npm_execpath\" scripts/check-duplicates.ts",
     "check:core-lines": "\"$npm_execpath\" scripts/check-core-lines.ts",

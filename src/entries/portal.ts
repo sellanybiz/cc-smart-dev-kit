@@ -208,6 +208,10 @@ async function runServer(
     cwd: process.cwd(),
     doctor,
     port: DEFAULT_PORTAL_PORT,
+    // The export beside the copy in the state folder, never one the bundle's own folder holds:
+    // the server runs from `~/.local/share/cc-smart-dev-kit/portal.js`, and the copy is what
+    // `refreshPortalCopy` refreshed. No folder there: the server-rendered pages answer.
+    staticFolder: paths.portalUiFolder,
   });
   // `portal stop`, and the starter's version hand-over, end it with SIGTERM: stop the server
   // properly (the socket closes, the log says so) instead of killing the process where it is.

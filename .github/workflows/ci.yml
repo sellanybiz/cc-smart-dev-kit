@@ -58,6 +58,26 @@ jobs:
       - name: Bundles are up to date
         run: bun run build:check
 
+      - name: Install the portal's dependencies
+        # `portal/` is its own package, with its own lockfile: React and Next never reach a
+        # machine (the export is static files), so the kit's own install does not carry them.
+        working-directory: portal
+        run: bun install --frozen-lockfile
+
+      - name: Type check the portal
+        working-directory: portal
+        run: bun run typecheck
+
+      - name: The portal's tests
+        working-directory: portal
+        run: bun run test
+
+      - name: The portal's export ships in the plugin, and is up to date
+        # Builds the Next export and compares it byte for byte with plugin/portal-ui. A stale
+        # export means the page a machine serves is not the one this code draws; the build is
+        # reproducible (generateBuildId in portal/next.config.ts), so the compare is exact.
+        run: bun run check:portal
+
       - name: Install the tested Claude Code
         # The tested version is .claude-code-version at the repo root: raise it on purpose.
         # In its own folder, so it never touches this repo's package.json or lockfile.

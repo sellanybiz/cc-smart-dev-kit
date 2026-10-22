@@ -13,6 +13,11 @@ bun run typecheck
 bun run test       # the CSP hash script's tests
 ```
 
+The kit ships this app's build, not its source: at the repository root, `bun run build:portal`
+builds `out/` and copies it into `plugin/portal-ui/` (committed), and `bun run check:portal`
+rebuilds and fails when the two differ — CI runs it. The build is reproducible: `next.config.ts`
+fixes the build id (`generateBuildId`), so a second build is byte for byte the same.
+
 ## How it is put together
 
 - `src/views/` holds every page as a plain React component; it imports no router. Links and

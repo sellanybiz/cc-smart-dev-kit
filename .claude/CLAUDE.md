@@ -64,6 +64,8 @@ the first time you use it.
 | `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service (a socket unit and the router unit) and its doctor checks. |
 | `src/omniroute/` | OmniRoute, the program the affordable slots answer from: which release a machine may install (`registry.ts`), where it is installed and its unit (`install.ts`), and the `omniroute` command (`commands.ts`). |
 | `src/portal/` | The portal's server and its door (`guard.ts`), its health answer (`health.ts`), its life — the copy, the start, the restart, the stop (`lifecycle.ts`), the session-start part (`session-start.ts`) — the pages (`views.ts`, `assets.ts`), the actions that run the CLI's own code, and the `portal` command (`command.ts`; `.claude/rules/portal.md`). |
+| `src/portal/api/` | The portal's JSON API (B6b): `routes.ts` (one read-only GET per answer, through the door), `types.ts` (the shapes), and `data.ts` / `work.ts` (the builders, from `page-data.ts`'s readers, never a second copy). |
+| `src/portal/live/` | The portal's live stream (B6b): `hub.ts` (the SSE hub: capped, resumable by `Last-Event-ID`) and `sources.ts` (what it polls: the router's `recent`, the crew store, limits, guard asks, the job queue). |
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `cc-smart-dev-kit update`'s steps, and their state files. |
 | `src/browser/` | The browser: finding the person's Chrome and its `claude-code` profile, the token file, the Playwright MCP launcher (`browser mcp`, extension mode), `browser setup`/`token`/`check`, and `doctor`'s browser lines (`.claude/rules/browser.md`). |
 | `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`; the servers' names alone in `names.ts`, which the router bundle reads), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), what `mcp status` reports (`status.ts`), `doctor`'s lines (`doctor.ts`), and what setup takes back of a server it retired — Serena's registration, context file and records (`retired.ts`). |
@@ -73,12 +75,13 @@ the first time you use it.
 | `src/worktrees/` | The `cc-smart-dev-kit worktrees` command: the finished-worktree verdict (`verdict.ts`), the machine's facts (`machine-facts.ts`), the scan and removal (`scan.ts`), and the `.worktreeinclude` copy the crew launcher uses (`include.ts`). |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
 | `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the StopFailure usage-limit alert, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the shape of a subagent's worktree (`subagent-worktree.ts`); `specs.ts` lists them all. Each hook's entry is in `src/entries/`. |
-| `src/jobs/` | The heavy-job queue: kinds, memory readings, the lease store, the queue, the launch, `job <command>`, the classifier. |
+| `src/jobs/` | The heavy-job queue: kinds, memory readings, the lease store, the queue, the launch, `job <command>`, the classifier, and the queue as data (`status.ts`: one reader for `job status`, `/api/jobs` and the Machine page). |
 | `src/shell/` | The shell text: the lexer that reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`), and the PowerShell single-quoted literal. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
 | `install.sh`, `install.ps1` | The one-command installers for macOS/Linux (and Git Bash) and native Windows; `scripts/install*` proves them (`.claude/rules/installer.md`). |
-| `plugin/` | What users get: `dist/` (built, committed), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun.sh`, which the hooks run through), `hooks/hooks.json`, `monitors/monitors.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `workflows/` (the runs a skill starts, loaded as `<plugin>:<meta.name>`), `output-styles/`, `bunfig.toml` (empty, and it stays empty), the manifest. |
-| `scripts/` | `build.ts` (the bundle step), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`), `check-core-lines.ts` (the general instructions' line budget), `check-version-bump.ts` (CI: a `plugin/` change raises the version) and `windows-hook-smoke.sh` (the Windows CI job's hook proof, `docs/windows-hooks.md`). |
+| `portal/` | The portal's Next.js app (D49): its own package and lockfile, the views, the routing shell, the one data client, and `scripts/csp-hashes.ts`. `bun run build:portal` turns it into `plugin/portal-ui/`, the export a machine gets. |
+| `plugin/` | What users get: `dist/` (built, committed), `portal-ui/` (the portal's built export, committed; `scripts/portal-export.ts`), `bin/` (`cc-smart-dev-kit`, and `cc-smart-dev-kit-bun.sh`, which the hooks run through), `hooks/hooks.json`, `monitors/monitors.json`, `instructions/` (`setup` copies and imports them), `skills/`, `agents/`, `workflows/` (the runs a skill starts, loaded as `<plugin>:<meta.name>`), `output-styles/`, `bunfig.toml` (empty, and it stays empty), the manifest. |
+| `scripts/` | `build.ts` (the bundle step), `portal-export.ts` (the portal's export: `build:portal` and its `--check`), `check-neutral.ts` (the neutrality check), `check-duplicates.ts` (one home per rule in `plugin/`), `check-core-lines.ts` (the general instructions' line budget), `check-version-bump.ts` (CI: a `plugin/` change raises the version) and `windows-hook-smoke.sh` (the Windows CI job's hook proof, `docs/windows-hooks.md`). |
 | `docs/` | How the plugin is designed, the phases ahead, and the Claude Code behaviour it relies on. |
 
 Tests sit beside the code as `*.test.ts`.
@@ -95,6 +98,7 @@ Tests sit beside the code as `*.test.ts`.
 | `bun run check:core-lines` | Fails when `plugin/instructions/core.md` passes 200 lines, and warns above 190: every session on every machine loads that file. |
 | `bun test` | The tests. |
 | `bun run build` / `build:check` | Rebuild `plugin/dist`, or fail when it is stale. |
+| `bun run build:portal` / `check:portal` | Rebuild the portal's export into `plugin/portal-ui`, or build and fail when it differs. Needs `portal/node_modules`; CI proves it, `bun run check` does not. |
 | `claude plugin validate plugin --strict` | Checks the plugin manifest. |
 | `claude plugin validate . --strict` | Checks the marketplace manifest. |
 
