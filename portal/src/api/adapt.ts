@@ -9,15 +9,15 @@
  * hands both in.
  */
 
-import { rangeOf } from "@/lib/history";
+import { KIT_NAME, slotName } from "@/lib/format";
 import type {
   CrewDetail,
   CrewEvent,
   CrewRecord,
+  CrewRef,
   CrewState,
   FlowReport,
   GuardAsksPage,
-  GuardQuery,
   HealthData,
   HistoryKeys,
   JobsData,
@@ -318,34 +318,32 @@ export function workOf(answer: WorkAnswer): WorkData {
   };
 }
 
-/** The merge guard's verdict, in the crew page's words. */
-function mergeCheckOf(verdict: MergeVerdict): MergeCheck | null {
+/** The merge guard's verdict, in the crew page's words: its reason, its review and its counts. */
+export function mergeCheckOf(verdict: MergeVerdict): MergeCheck | null {
   switch (verdict.kind) {
     case "silent":
       return null;
     case "allowed":
+    case "refused": {
+      const detail = verdict.detail;
       return {
-        allowed: true,
-        delta: null,
-        limits: null,
+        allowed: verdict.kind === "allowed",
+        delta: detail?.delta ?? null,
+        kind: verdict.kind,
+        limits: detail?.limits ?? null,
+        pr: verdict.kind === "refused" ? verdict.number : null,
         reason: verdict.reason,
-        review: null,
-        reviewed: null,
+        review: detail?.review ?? null,
+        reviewed: detail?.reviewed ?? null,
       };
-    case "refused":
-      return {
-        allowed: false,
-        delta: null,
-        limits: null,
-        reason: verdict.reason,
-        review: null,
-        reviewed: null,
-      };
+    }
     default:
       return {
         allowed: false,
         delta: null,
+        kind: verdict.kind,
         limits: null,
+        pr: verdict.number,
         reason: verdict.what,
         review: null,
         reviewed: null,
@@ -378,7 +376,11 @@ export function crewOf(answer: CrewAnswer): CrewDetail {
   }));
   return {
     brief: answer.brief ?? "",
-    diff: [],
+    diff: answer.diff.byFile.map((file) => ({
+      added: file.added,
+      path: file.path,
+      removed: file.deleted,
+    })),
     diffTotals: {
       deletions: answer.diff.deletions,
       error: answer.diff.error,
@@ -387,7 +389,7 @@ export function crewOf(answer: CrewAnswer): CrewDetail {
     },
     events,
     lead,
-    memory: [],
+    memory: answer.memory.map((point) => ({ at: Date.parse(point.at), mb: point.mb })),
     mergeCheck: mergeCheckOf(answer.mergeCheck),
     questions:
       crew.question === null
@@ -404,13 +406,27 @@ export function crewOf(answer: CrewAnswer): CrewDetail {
           ],
     record: crewRecordOf(crew, ""),
     report: answer.report,
+    reviews: answer.reviews,
   };
+}
+
+/** The command that opens a waiting session in a terminal (`claude attach <id>`). */
+function attachCommand(id: string): string {
+  return `claude attach ${id}`;
+}
+
+/** The command that lets Claude answer a slot again while its targets rest. */
+function claudeSlotCommand(slot: string): string {
+  return `${KIT_NAME} gateway slot ${slotName(slot)} claude`;
 }
 
 /** "Needs you": everything the server lists, newest first. `installed` is the running version. */
 export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
   const items: NeedsItem[] = [];
+  const crews: CrewRef[] = [];
   for (const need of answer.crew) {
+    const crew = { id: need.crew.id, name: need.crew.name, shortId: need.crew.shortId };
+    crews.push(crew);
     items.push({
       ask: {
         answer: null,
@@ -420,16 +436,20 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
         question: need.question,
         recommended: need.recommended,
       },
-      crew: { id: need.crew.id, name: need.crew.name, shortId: need.crew.shortId },
+      crew,
       id: `question-${need.crew.id}`,
       kind: "question",
       since: need.askedAt,
     });
   }
   for (const wait of answer.permissions) {
+    // A crew session the answer names is known by its short id, the start of its session id.
+    const crew =
+      crews.find((one) => one.shortId !== null && wait.session.startsWith(one.shortId)) ?? null;
     items.push({
       asker: wait.asker,
-      crew: null,
+      attach: attachCommand(crew?.shortId ?? wait.session),
+      crew,
       detail: wait.kind ?? `asked by ${wait.asker}`,
       id: `permission-${wait.session}-${String(wait.at)}`,
       kind: "permission",
@@ -448,22 +468,23 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
       since: answer.update.at,
     });
   }
+  // A failure is as old as the doctor pass that found it; with no pass time, it is new.
+  const doctorAt = new Date(answer.doctor.at ?? Date.now()).toISOString();
   answer.doctor.failures.forEach((failure, index) => {
     items.push({
-      fix: null,
+      fix: failure.fix,
       id: `doctor-${String(index)}`,
       kind: "doctor",
-      section: "",
-      since: new Date(answer.doctor.at ?? Date.now()).toISOString(),
+      section: failure.section ?? "",
+      since: doctorAt,
       text: failure.text,
     });
   });
-  if (answer.breaker !== null) {
-    const breaker = answer.breaker;
+  for (const breaker of answer.breakers) {
     items.push({
       breaker: {
         held: breaker.held,
-        heldNow: null,
+        heldNow: breaker.heldNow,
         since: Date.parse(breaker.since),
         targets: breaker.targets.map((target) => ({
           status: target.status,
@@ -471,7 +492,7 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
           until: Date.parse(target.until),
         })),
       },
-      command: `gateway slot ${breaker.slot.replace(/^cc-smart-dev-kit-/, "")} <targets>`,
+      command: claudeSlotCommand(breaker.slot),
       id: `breaker-${breaker.slot}`,
       kind: "breaker",
       since: breaker.since,
@@ -482,51 +503,44 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
   return { items };
 }
 
-/** The guard log: the server filters by guard and session; the range and the chart are here. */
-export function guardAsksOf(
-  answer: GuardAsksAnswer,
-  query: GuardQuery,
-  now: number,
-): GuardAsksPage {
-  const range = rangeOf(query.range);
-  const from = now - range.spanMs;
-  const rows = answer.asks.filter((ask) => ask.at >= from).sort((a, b) => b.at - a.at);
-  const series = new Map<string, Map<number, number>>();
-  for (const ask of rows) {
-    const t = Math.floor(ask.at / range.bucketMs) * range.bucketMs;
-    const points = series.get(ask.hook) ?? new Map<number, number>();
-    points.set(t, (points.get(t) ?? 0) + 1);
-    series.set(ask.hook, points);
-  }
+/**
+ * The guard log: one page the server cut, newest first, and the asks per guard over the whole
+ * filtered range, from the server's buckets. A bucket that does not name a guard counts 0 for it,
+ * so every series has a point in every bucket.
+ */
+export function guardAsksOf(answer: GuardAsksAnswer): GuardAsksPage {
+  const hooks = [...new Set(answer.buckets.flatMap((bucket) => Object.keys(bucket.byHook)))].sort();
+  const buckets = [...answer.buckets].sort((a, b) => a.at - b.at);
   return {
     buckets: {
-      bucketMs: range.bucketMs,
-      series: [...series].map(([key, points]) => ({
+      bucketMs: answer.bucketMs,
+      series: hooks.map((key) => ({
         key,
-        points: [...points].sort(([a], [b]) => a - b).map(([t, count]) => ({ count, t })),
+        points: buckets.map((bucket) => ({ count: bucket.byHook[key] ?? 0, t: bucket.at })),
       })),
     },
-    guards: Object.keys(answer.byHook).sort(),
-    next: null,
-    rows,
-    sessions: [...new Set(rows.map((row) => row.session).filter((one) => one !== ""))].sort(),
+    guards: answer.guards,
+    kept: answer.kept,
+    next: answer.next,
+    rows: answer.asks,
+    sessions: answer.sessions,
   };
 }
 
-/** The worktrees, with each one's verdict; the main checkout is not one to clear. */
+/** The worktrees, with each one's verdict and idle time; the main checkout is not one to clear. */
 export function worktreesOf(answer: WorktreesAnswer, project: string): WorktreesData {
   return {
-    cleaned: [],
+    autoClean: answer.autoClean,
     rows: answer.worktrees
       .filter((item) => item.kind !== "main")
       .map((item) => ({
         branch: item.branch,
-        idleMinutes: null,
+        idleMinutes: item.idleMinutes,
         path: item.path,
         project,
         verdict:
           item.kind === "finished"
-            ? { finished: true as const, note: null }
+            ? { finished: true as const, note: item.why }
             : {
                 finished: false as const,
                 held: false,

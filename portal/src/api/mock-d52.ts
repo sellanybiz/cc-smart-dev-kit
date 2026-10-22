@@ -72,8 +72,21 @@ export function needsData(
         asker: "git-guard",
         session: "a1f04c2e-session",
         project: "my-app",
+        attach: "claude attach a1f04c2e",
         tool: "Bash",
         detail: "git push origin crew/b6b-live-stream: the git guard asks before a push",
+      },
+      {
+        kind: "permission",
+        id: "p-own-session",
+        since: iso(now - 14 * MINUTE),
+        crew: null,
+        asker: "claude",
+        session: "5c0e7d21-90ab-4cde-8f12-3456789abcde",
+        project: "docs-site",
+        attach: "claude attach 5c0e7d21-90ab-4cde-8f12-3456789abcde",
+        tool: "Write",
+        detail: "a write outside the project",
       },
       ...(breaker === undefined
         ? []
@@ -86,6 +99,22 @@ export function needsData(
               breaker,
               command: "cc-smart-dev-kit gateway slot fable claude",
             },
+            {
+              kind: "breaker" as const,
+              id: "b-scout",
+              since: iso(now - 50 * MINUTE),
+              slot: "cc-smart-dev-kit-scout",
+              breaker: {
+                held: 12,
+                // The router did not answer: how many wait right now is not known.
+                heldNow: null,
+                since: now - 50 * MINUTE,
+                targets: [
+                  { status: 503, target: "omniroute:qwen-4-coder", until: now + 4 * MINUTE },
+                ],
+              },
+              command: "cc-smart-dev-kit gateway slot scout claude",
+            },
           ]),
       {
         kind: "doctor",
@@ -94,6 +123,14 @@ export function needsData(
         section: "mcp",
         text: "tavily-websearch is not registered",
         fix: "cc-smart-dev-kit setup",
+      },
+      {
+        kind: "doctor",
+        id: "d-browser-token",
+        since: iso(now - 2 * HOUR),
+        section: "browser",
+        text: "The browser extension's token is not set",
+        fix: null,
       },
       {
         kind: "update",
@@ -222,9 +259,10 @@ export function crewDetail(
           open: ["The idle clock test is still to write"],
           question: null,
         },
-    diffTotals: { deletions: 38, error: null, files: 6, insertions: 412 },
+    diffTotals: { deletions: 88, error: null, files: 7, insertions: 612 },
     diff: [
       { path: "src/portal/live/hub.ts", added: 214, removed: 0 },
+      { path: "docs/images/live-stream.png", added: null, removed: null },
       { path: "src/portal/live/hub.test.ts", added: 188, removed: 0 },
       { path: "src/portal/live/sources.ts", added: 96, removed: 0 },
       { path: "src/portal/server.ts", added: 61, removed: 44 },
@@ -232,15 +270,23 @@ export function crewDetail(
       { path: "docs/design.md", added: 41, removed: 35 },
     ],
     mergeCheck: {
+      kind: "refused",
       allowed: false,
+      pr: 44,
       reason:
         "The change after the review is 74 lines in 2 files: more than the limit of 50 lines or 10 % of the reviewed change (612 lines). Review it again.",
       review: "4f2a9c1",
-      delta: { lines: 74, files: 2, generated: [], binary: [] },
-      reviewed: { lines: 612, files: 9, generated: [], binary: [] },
+      delta: { lines: 74, files: 2 },
+      reviewed: { lines: 612, files: 9 },
       limits: { lines: 50, files: 5, percent: 10 },
     },
     memory,
+    reviews: merged
+      ? []
+      : [
+          { at: iso(now - 30 * MINUTE), by: ["reviewer"], sha: "1c8e0b7" },
+          { at: iso(now - 6 * MINUTE), by: ["reviewer", "lead"], sha: "4f2a9c1" },
+        ],
   };
 }
 
@@ -306,6 +352,7 @@ export function guardAsks(
   for (let t = first; t <= now; t += bucketMs) buckets.push(t);
   return {
     rows: matching.slice(start, start + PAGE),
+    kept: matching.length,
     next: start + PAGE < matching.length ? String(start + PAGE) : null,
     guards: [...new Set(all.map((ask) => ask.hook))].sort(),
     sessions: [...new Set(all.map((ask) => ask.session))].sort(),
@@ -320,7 +367,7 @@ export function guardAsks(
 }
 
 export function worktreesData(now: number, empty: boolean): WorktreesData {
-  if (empty) return { rows: [], cleaned: [] };
+  if (empty) return { rows: [], autoClean: null };
   const wt = (name: string) => `/home/user/code/my-app/.claude/worktrees/${name}`;
   return {
     rows: [
@@ -375,26 +422,30 @@ export function worktreesData(now: number, empty: boolean): WorktreesData {
         verdict: { finished: false, held: true, why: "uncommitted changes" },
       },
     ],
-    cleaned: [
-      {
-        project: "my-app",
-        path: wt("wt-finished-cleanup"),
-        branch: "crew/wt-finished-cleanup",
-        at: iso(now - 3 * HOUR),
-      },
-      {
-        project: "my-app",
-        path: wt("br2-breaker-alert"),
-        branch: "crew/br2-breaker-alert",
-        at: iso(now - 7 * HOUR),
-      },
-      {
-        project: "docs-site",
-        path: "/home/user/code/docs-site/.claude/worktrees/typo",
-        branch: "fix/typo",
-        at: iso(now - 30 * HOUR),
-      },
-    ],
+    autoClean: {
+      lastRunAt: iso(now - 3 * HOUR),
+      base: "release-1.1.0",
+      removed: [
+        {
+          name: "wt-finished-cleanup",
+          path: wt("wt-finished-cleanup"),
+          branch: "crew/wt-finished-cleanup",
+          why: "its pull request is merged (squash)",
+        },
+        {
+          name: "br2-breaker-alert",
+          path: wt("br2-breaker-alert"),
+          branch: "crew/br2-breaker-alert",
+          why: "its branch is merged into release-1.1.0",
+        },
+        {
+          name: "detached-spike",
+          path: wt("detached-spike"),
+          branch: null,
+          why: "its commit is on release-1.1.0",
+        },
+      ],
+    },
   };
 }
 

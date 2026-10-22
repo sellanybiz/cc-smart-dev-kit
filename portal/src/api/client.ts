@@ -184,6 +184,18 @@ function historyQuery(query: HistoryQuery | RequestQuery): URLSearchParams {
   return params;
 }
 
+/** How many guard-log rows one page holds: the server cuts the page, never the client. */
+export const GUARD_PAGE_SIZE = 50;
+
+/** The guard log's query string: the range, the page's cursor and size, and each filter set. */
+export function guardQuery(query: GuardQuery): URLSearchParams {
+  const params = new URLSearchParams({ limit: String(GUARD_PAGE_SIZE), range: query.range });
+  if (query.cursor !== null) params.set("cursor", query.cursor);
+  if (query.guard !== undefined) params.set("hook", query.guard);
+  if (query.session !== undefined) params.set("session", query.session);
+  return params;
+}
+
 /** A page that needs the gateway, on a machine with none, says so instead of drawing zeros. */
 function needingGateway<T>(read: () => T): T {
   try {
@@ -257,16 +269,8 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     },
     crew: async (id) =>
       adapt.crewOf(await get<Wire.CrewAnswer>(`/api/crew/${encodeURIComponent(id)}`)),
-    guardAsks: async (query) => {
-      const params = new URLSearchParams({ limit: "5000" });
-      if (query.guard !== undefined) params.set("hook", query.guard);
-      if (query.session !== undefined) params.set("session", query.session);
-      return adapt.guardAsksOf(
-        await get<Wire.GuardAsksAnswer>(`/api/guard-asks?${params}`),
-        query,
-        Date.now(),
-      );
-    },
+    guardAsks: async (query) =>
+      adapt.guardAsksOf(await get<Wire.GuardAsksAnswer>(`/api/guard-asks?${guardQuery(query)}`)),
     worktrees: async () => {
       const [answer, projects] = await Promise.all([
         get<Wire.WorktreesAnswer>("/api/worktrees"),

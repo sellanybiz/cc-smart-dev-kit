@@ -1,12 +1,22 @@
 "use client";
 
 import { useId, useState } from "react";
+import type { ActionResult } from "@/api/client";
 import type { HeldMajor } from "@/api/types";
 import { ActionButton } from "@/components/action-button";
 import { Button } from "@/components/ui/button";
 
-/** A held major version's What's new, and its Install (D33). One home: Needs you and Machine. */
-export function HeldMajorActions({ held }: { held: HeldMajor }) {
+/**
+ * A held major version's What's new, and its Install (D33). One home: Needs you and Machine.
+ * `onDone` hears the install's result, so the page keeps it once the held version is gone.
+ */
+export function HeldMajorActions({
+  held,
+  onDone,
+}: {
+  held: HeldMajor;
+  onDone?: (result: ActionResult) => void;
+}) {
   const [open, setOpen] = useState(false);
   const notesId = useId();
   return (
@@ -31,6 +41,7 @@ export function HeldMajorActions({ held }: { held: HeldMajor }) {
         <ActionButton
           action="update.install"
           body={{}}
+          onDone={onDone}
           confirm={{
             title: `Install ${held.version}?`,
             body: "It is a major version: read What's new first. Running sessions keep their version until they start again.",

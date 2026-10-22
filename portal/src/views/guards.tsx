@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { type Resource, useResource } from "@/api/hooks";
 import { GUARDS_REFRESH } from "@/api/refresh";
 import type { ChartHistory, GuardAsk, GuardAsksPage, HistoryRange } from "@/api/types";
@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { clockSeconds, count } from "@/lib/format";
 import { DEFAULT_RANGE, isRange, rangeOf } from "@/lib/history";
+import { cn } from "@/lib/utils";
 
 const column = columnsFor<GuardAsk>();
 
@@ -151,7 +152,17 @@ export function GuardsView() {
     else next.set(name, value);
     setQuery(next);
   };
-  const ready = page.status === "ready" ? page.data : null;
+  // The last page this filter showed stays while the next one loads: a page turn keeps the chart
+  // and the table in place (no flash), and the pager says it is reading.
+  const lastRef = useRef<null | { key: string; data: GuardAsksPage }>(null);
+  if (page.status === "ready") lastRef.current = { key, data: page.data };
+  const ready =
+    page.status === "ready"
+      ? page.data
+      : page.status === "loading" && lastRef.current?.key === key
+        ? lastRef.current.data
+        : null;
+  const turning = page.status === "loading" && ready !== null;
   const history = useMemo(() => (ready === null ? null : asHistory(ready, range)), [ready, range]);
   // The chart reads the same answer as the table, in the history's shape.
   let chartResource: Resource<ChartHistory> = { status: "loading" };
@@ -169,7 +180,8 @@ export function GuardsView() {
     }
     return byGuard;
   }, [ready]);
-  const all = [...totals.values()].reduce((sum, n) => sum + n, 0);
+  // Every ask the filters kept in the range: the server's own count, not this page's rows.
+  const all = ready?.kept ?? 0;
   const top = [...totals.entries()].sort((a, b) => b[1] - a[1])[0];
   const refused = totals.get("auto-mode") ?? 0;
   const words = rangeOf(range).words;
@@ -235,48 +247,55 @@ export function GuardsView() {
           height={200}
           bars
         />
-        {page.status === "loading" ? (
-          <LoadingState label="the guard log" />
-        ) : page.status === "error" ? (
+        {page.status === "error" ? (
           <ErrorState message={page.message} onRetry={page.reload} />
+        ) : ready === null ? (
+          <LoadingState label="the guard log" />
         ) : (
-          <PortalTable
-            rows={page.data.rows}
-            columns={COLUMNS}
-            rowKey={(row) => `${row.at}-${row.hook}`}
-            label="Guard log, newest first"
-            empty={`No guard asked anything in ${words}.`}
-            pager={
-              page.data.rows.length > 0 && (
-                <div className="flex items-center justify-end gap-4 px-2">
-                  <p className="text-sm text-muted-foreground" aria-live="polite">
-                    Page {cursors.length}, newest first
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={cursors.length === 1}
-                    onClick={() => setPaging({ key, cursors: cursors.slice(0, -1) })}
-                  >
-                    <ChevronLeftIcon data-icon="inline-start" aria-hidden="true" />
-                    Newer
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page.data.next === null}
-                    onClick={() => {
-                      const next = page.data.next;
-                      if (next !== null) setPaging({ key, cursors: [...cursors, next] });
-                    }}
-                  >
-                    Older
-                    <ChevronRightIcon data-icon="inline-end" aria-hidden="true" />
-                  </Button>
-                </div>
-              )
-            }
-          />
+          <div aria-busy={turning} className={cn(turning && "opacity-60 transition-opacity")}>
+            <PortalTable
+              rows={ready.rows}
+              columns={COLUMNS}
+              // Two asks can share a millisecond: the place on the page keeps each key unique.
+              rowKey={(row, index) => `${cursor ?? "newest"}-${index}-${row.at}`}
+              label="Guard log, newest first"
+              empty={`No guard asked anything in ${words}.`}
+              pager={
+                (ready.rows.length > 0 || cursors.length > 1) && (
+                  <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 px-2">
+                    <p className="text-sm text-muted-foreground" aria-live="polite">
+                      {turning
+                        ? `Reading page ${cursors.length}…`
+                        : `Page ${cursors.length}: ${count(ready.rows.length)} of ${count(ready.kept)}, newest first`}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={turning || cursors.length === 1}
+                        onClick={() => setPaging({ key, cursors: cursors.slice(0, -1) })}
+                      >
+                        <ChevronLeftIcon data-icon="inline-start" aria-hidden="true" />
+                        Newer
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={turning || ready.next === null}
+                        onClick={() => {
+                          const next = ready.next;
+                          if (next !== null) setPaging({ key, cursors: [...cursors, next] });
+                        }}
+                      >
+                        Older
+                        <ChevronRightIcon data-icon="inline-end" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </div>
+                )
+              }
+            />
+          </div>
         )}
       </PagePad>
     </>

@@ -33,14 +33,14 @@ function NeedsPage({ data }: { data: NeedsData }) {
           value={prompts}
           badge={tone(prompts)}
           headline="A session waits in its terminal"
-          detail="Attach to it to answer"
+          detail="Copy its claude attach command"
         />
         <StatCard
           label="This machine"
           value={machine}
           badge={tone(machine)}
           headline="Doctor failures and open breakers"
-          detail="Each with the command that fixes it"
+          detail="Each with its fix to copy"
         />
         <StatCard
           label="Updates"
@@ -59,19 +59,19 @@ function NeedsPage({ data }: { data: NeedsData }) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {data.items.length === 0 ? (
-              <EmptyState
-                title="Nothing needs you"
-                icon={<CircleCheckIcon className="size-6 text-ok" aria-hidden="true" />}
-              >
-                Questions, prompts, failing checks and held updates show up here the moment they
-                happen.
-              </EmptyState>
-            ) : (
-              <NeedsList
-                items={[...data.items].sort((a, b) => Date.parse(b.since) - Date.parse(a.since))}
-              />
-            )}
+            {/* Always the list: an answer just sent stays in it after its item is gone. */}
+            <NeedsList
+              items={data.items}
+              empty={
+                <EmptyState
+                  title="Nothing needs you"
+                  icon={<CircleCheckIcon className="size-6 text-ok" aria-hidden="true" />}
+                >
+                  Questions, prompts, failing checks and held updates show up here the moment they
+                  happen.
+                </EmptyState>
+              }
+            />
           </CardContent>
         </Card>
       </PagePad>
