@@ -13134,6 +13134,49 @@ function fableSession(input, env, paths) {
 }
 
 // src/jobs/classify.ts
+import { isAbsolute as isAbsolute4, join as join21, normalize } from "path";
+function runOf(source) {
+  return { source, folder: source?.folder ?? null, cache: new Map };
+}
+function scriptsAt(run) {
+  if (run.source === undefined || run.folder === null)
+    return null;
+  const folder = run.folder;
+  if (!run.cache.has(folder)) {
+    let found = null;
+    try {
+      found = run.source.scriptsIn(folder);
+    } catch {
+      found = null;
+    }
+    run.cache.set(folder, found);
+  }
+  return run.cache.get(folder) ?? null;
+}
+function scriptOnly(call, run) {
+  if (call.script === undefined || call.name === "")
+    return;
+  const scripts = scriptsAt(run);
+  return scripts === null ? undefined : scripts.has(call.script);
+}
+var CD_OPTIONS = new Set(["-L", "-P", "-e", "-@", "--"]);
+var COMPUTED_FOLDER = /[$`*?[\]{}~]/;
+function folderWord(args) {
+  let index = 0;
+  while (CD_OPTIONS.has(args[index] ?? ""))
+    index++;
+  return args[index];
+}
+function folderAfter(program, args, folder) {
+  if (folder === null)
+    return null;
+  if (program !== "cd" && program !== "chdir" && program !== "pushd")
+    return null;
+  const target = folderWord(args);
+  if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target))
+    return null;
+  return isAbsolute4(target) ? normalize(target) : normalize(join21(folder, target));
+}
 var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
 var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
 var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
@@ -13315,9 +13358,11 @@ function printsOnly(kind, args) {
   const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
   return printOnly.size > 0 && args.length > 0 && args.every((arg) => printOnly.has(arg.toLowerCase()));
 }
-function ruleMatches(rule, call) {
+function ruleMatches(rule, call, scriptOnly = false) {
   if ("script" in rule)
     return call.script === rule.script;
+  if (scriptOnly)
+    return false;
   if (call.name !== rule.tool)
     return false;
   const valued = [...TOOL_VALUED[rule.tool] ?? [], ...rule.valued ?? []];
@@ -13329,16 +13374,16 @@ function ruleMatches(rule, call) {
   const text = rule.argIncludes?.toLowerCase();
   return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
 }
-function kindOfCall(call, kinds) {
+function kindOfCall(call, kinds, scriptOnly = false) {
   let best = null;
   for (const [name, kind] of Object.entries(kinds)) {
-    const heavy = (kind.match ?? []).some((rule) => ruleMatches(rule, call) && (("script" in rule) || !printsOnly(kind, call.args)));
+    const heavy = (kind.match ?? []).some((rule) => ruleMatches(rule, call, scriptOnly) && (("script" in rule) || !printsOnly(kind, call.args)));
     if (heavy && (best === null || kind.gb > best.gb))
       best = { name, gb: kind.gb };
   }
   return best;
 }
-function inspect2(command, kinds, dialect, depth) {
+function inspect2(command, kinds, dialect, depth, run) {
   const found = [];
   const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
   for (const step of steps) {
@@ -13346,26 +13391,31 @@ function inspect2(command, kinds, dialect, depth) {
     if (invocation === undefined)
       continue;
     const { program, args } = invocation;
-    const call = toolOf(program, withoutRedirections(args));
-    const kind = call === undefined ? null : kindOfCall(call, kinds);
+    const plain = withoutRedirections(args);
+    if (CHANGE_DIR.has(program)) {
+      run.folder = folderAfter(program, plain, run.folder);
+      continue;
+    }
+    const call = toolOf(program, plain);
+    const kind = call === undefined ? null : kindOfCall(call, kinds, scriptOnly(call, run) === true);
     if (kind !== null)
       found.push(kind);
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
-      found.push(...inspect2(inner, kinds, nestedDialect(program), depth + 1));
+      found.push(...inspect2(inner, kinds, nestedDialect(program), depth + 1, { ...run }));
     }
   }
   return found;
 }
-function classifyHeavyCommand(bashCommand, kinds) {
+function classifyHeavyCommand(bashCommand, kinds, source) {
   let best = null;
-  for (const kind of inspect2(bashCommand, kinds, "bash", 0)) {
+  for (const kind of inspect2(bashCommand, kinds, "bash", 0, runOf(source))) {
     if (best === null || kind.gb > best.gb)
       best = kind;
   }
   return best?.name ?? null;
 }
-function routableKinds(command, kinds, dialect, depth) {
+function routableKinds(command, kinds, dialect, depth, run) {
   const found = [];
   const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
   for (const step of steps) {
@@ -13376,28 +13426,33 @@ function routableKinds(command, kinds, dialect, depth) {
     if (invocation === undefined)
       return null;
     const { program, args } = invocation;
-    if (CHANGE_DIR.has(program))
+    const plain = withoutRedirections(args);
+    if (CHANGE_DIR.has(program)) {
+      run.folder = folderAfter(program, plain, run.folder);
       continue;
+    }
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined) {
       if (depth >= MAX_NESTING)
         return null;
-      const nested = routableKinds(inner, kinds, nestedDialect(program), depth + 1);
+      const nested = routableKinds(inner, kinds, nestedDialect(program), depth + 1, {
+        ...run
+      });
       if (nested === null)
         return null;
       found.push(...nested);
       continue;
     }
-    const call = toolOf(program, withoutRedirections(args));
-    const kind = call === undefined ? null : kindOfCall(call, kinds);
+    const call = toolOf(program, plain);
+    const kind = call === undefined ? null : kindOfCall(call, kinds, scriptOnly(call, run) === true);
     if (kind === null)
       return null;
     found.push(kind);
   }
   return found;
 }
-function classifyRoutableLine(bashCommand, kinds) {
-  const found = routableKinds(bashCommand, kinds, "bash", 0);
+function classifyRoutableLine(bashCommand, kinds, source) {
+  const found = routableKinds(bashCommand, kinds, "bash", 0, runOf(source));
   if (found === null)
     return null;
   let best = null;
@@ -13406,6 +13461,32 @@ function classifyRoutableLine(bashCommand, kinds) {
       best = kind;
   }
   return best?.name ?? null;
+}
+
+// src/jobs/package-scripts.ts
+import { readFileSync as readFileSync18 } from "fs";
+import { join as join22 } from "path";
+function packageScripts(folder) {
+  let text;
+  try {
+    text = readFileSync18(join22(folder, "package.json"), "utf8");
+  } catch {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object")
+    return null;
+  const scripts = parsed.scripts;
+  if (scripts === undefined)
+    return new Set;
+  if (scripts === null || typeof scripts !== "object" || Array.isArray(scripts))
+    return null;
+  return new Set(Object.keys(scripts));
 }
 
 // src/hooks/bash-judge.ts
@@ -13772,10 +13853,10 @@ function runsJobRun(command) {
     return deeper !== undefined && isJobRun(deeper.program, deeper.args);
   });
 }
-function routeHeavyCommand(command, kinds, shell) {
+function routeHeavyCommand(command, kinds, shell, source) {
   if (runsJobRun(command))
     return null;
-  const kind = classifyRoutableLine(command, kinds);
+  const kind = classifyRoutableLine(command, kinds, source);
   return kind === null ? null : { command: jobRunCommand(kind, command, shell), kind };
 }
 var REWRITE_SUPPORTED = true;
@@ -13842,7 +13923,7 @@ function jobRoute(context) {
   if (dialect !== "bash")
     return SILENT;
   const background = backgroundFor(reading.top);
-  const routed = routesHeavyCommands(context.project.config) ? routeHeavyCommand(command, mergeKinds(context.project.config?.jobs?.kinds), routedShell(context.env)) : null;
+  const routed = routesHeavyCommands(context.project.config) ? routeHeavyCommand(command, mergeKinds(context.project.config?.jobs?.kinds), routedShell(context.env), { folder: context.cwd, scriptsIn: packageScripts }) : null;
   const lead = routed !== null || background !== null ? isLead(context) : false;
   if (routed !== null) {
     return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed.command, lead) : routeDenial(routed);
@@ -13897,8 +13978,8 @@ function routeFacts(input, context) {
 }
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync18, readlinkSync as readlinkSync3 } from "fs";
-import { join as join21 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync19, readlinkSync as readlinkSync3 } from "fs";
+import { join as join23 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -13917,8 +13998,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join21(worktree, relative);
-    const there = join21(mainCheckout, relative);
+    const here = join23(worktree, relative);
+    const there = join23(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -13926,9 +14007,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync7(here).every((entry) => same(join21(relative, entry)));
+        return b.isDirectory() && readdirSync7(here).every((entry) => same(join23(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync18(here).equals(readFileSync18(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync19(here).equals(readFileSync19(there));
     } catch {
       return false;
     }
@@ -13950,22 +14031,22 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync19, statSync as statSync11 } from "fs";
-import { basename as basename5, isAbsolute as isAbsolute4, join as join22, resolve as resolve6 } from "path";
+import { readFileSync as readFileSync20, statSync as statSync11 } from "fs";
+import { basename as basename5, isAbsolute as isAbsolute5, join as join24, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync19(join22(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync20(join24(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
-  if (!isAbsolute4(admin))
+  if (!isAbsolute5(admin))
     admin = resolve6(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join22("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join24("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync11(join22(admin, file)).mtimeMs);
+      last = Math.max(last, statSync11(join24(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -14049,7 +14130,7 @@ function worktreeLeftovers(context) {
 // src/workflow/review-cover.ts
 import { mkdtempSync, rmSync as rmSync2 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { join as join23 } from "path";
+import { join as join25 } from "path";
 var MIN_COVER_GIT = "2.40.0";
 var PATHS_PER_CALL = 200;
 function short(sha) {
@@ -14145,7 +14226,7 @@ function readCover(checkout, target, records, limits, git) {
   }
   let objects = null;
   try {
-    objects = mkdtempSync(join23(tmpdir3(), `${COMMAND}-cover-`));
+    objects = mkdtempSync(join25(tmpdir3(), `${COMMAND}-cover-`));
     return measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
@@ -14165,7 +14246,7 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join23(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join25(checkout.commonDir, "objects"))
   };
   const run = (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
@@ -14305,12 +14386,12 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync14, readFileSync as readFileSync20 } from "fs";
+import { existsSync as existsSync14, readFileSync as readFileSync21 } from "fs";
 
 // src/setup/statusline.ts
-import { join as join24 } from "path";
+import { join as join26 } from "path";
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join24(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join26(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/workflow/resolve.ts
@@ -14325,7 +14406,7 @@ function loadWorkflow(file) {
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync20(file, "utf8"));
+    raw = JSON.parse(readFileSync21(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -14376,7 +14457,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync20(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync21(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -14592,13 +14673,13 @@ function leadNotesAnswer(input, event, paths, repo) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute5, resolve as resolve7 } from "path";
+import { isAbsolute as isAbsolute6, resolve as resolve7 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute5(path) ? resolve7(path) : resolve7(cwd, path));
+  return realPath(isAbsolute6(path) ? resolve7(path) : resolve7(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -15315,7 +15396,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname10, isAbsolute as isAbsolute6, relative, resolve as resolve8 } from "path";
+import { dirname as dirname10, isAbsolute as isAbsolute7, relative, resolve as resolve8 } from "path";
 
 // src/ports.ts
 var DEFAULT_PORTAL_PORT = 20150;
@@ -15569,14 +15650,14 @@ function movedTo2(invocation, folder, ctx) {
   const path = expanded(to, ctx.paths.home);
   if (COMPUTED_PATH.test(path) || path === "-")
     return null;
-  return isAbsolute6(path) ? resolve8(path) : folder === null ? null : resolve8(folder, path);
+  return isAbsolute7(path) ? resolve8(path) : folder === null ? null : resolve8(folder, path);
 }
 function protectedNeedles(paths) {
   const settings = dirname10(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative(paths.home, folder);
-    if (!underHome.startsWith("..") && !isAbsolute6(underHome))
+    if (!underHome.startsWith("..") && !isAbsolute7(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));
   }
@@ -15609,9 +15690,9 @@ function judgeWrites(raw, folder, ctx, found) {
       computed ??= target;
       continue;
     }
-    if (!isAbsolute6(path) && folder === null)
+    if (!isAbsolute7(path) && folder === null)
       computed ??= target;
-    const bases = isAbsolute6(path) ? [""] : [...new Set([folder, cwd, "/"].filter(isString))];
+    const bases = isAbsolute7(path) ? [""] : [...new Set([folder, cwd, "/"].filter(isString))];
     const files = bases.flatMap((base) => {
       const written = resolve8(base, path);
       return [written, realPath(written)];
@@ -15729,7 +15810,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute6(path) ? resolve8(path) : resolve8(cwd ?? "/", path);
+  const written = isAbsolute7(path) ? resolve8(path) : resolve8(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths) {
@@ -15758,7 +15839,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync21 } from "fs";
+import { readFileSync as readFileSync22 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -15856,7 +15937,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync21(transcript, "utf8");
+    text = readFileSync22(transcript, "utf8");
   } catch {
     return SILENT;
   }

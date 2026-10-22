@@ -23,7 +23,10 @@
  * `switches.jobRoute` in `src/workflow/resolve.ts`). A heavy command — one of the project's
  * heavy-job kinds (`classifyRoutableLine`, `src/jobs/`) — is sent through the machine's queue
  * instead of running raw: several sessions running builds, type checks and test runs at once
- * run the machine out of memory.
+ * run the machine out of memory. The classifier reads the project's `package.json` in the
+ * folder the line runs in (the `cwd` the hook was given, and after a `cd`, the folder it moves
+ * to), only to tell a script from the tool of the same name: a `tsc` script that already wraps
+ * the job is not wrapped a second time.
  *
  * Two ways to send it, and the hook uses the first its Claude Code supports:
  *   - **rewrite** (`updatedInput`, proved live on 2.1.301): the call runs
@@ -48,8 +51,9 @@
  * anything the hook cannot read lets the call through.
  */
 import { readLead } from "../crew/store";
-import { classifyHeavyCommand, classifyRoutableLine } from "../jobs/classify";
+import { classifyHeavyCommand, classifyRoutableLine, type ScriptSource } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
+import { packageScripts } from "../jobs/package-scripts";
 import { LAUNCHER_IN_SHELL, shellQuote } from "../setup/launcher";
 import {
   type Dialect,
@@ -162,10 +166,19 @@ export interface Routed {
   kind: string;
 }
 
-/** The route for a heavy command, or null when there is nothing to route. Pure. */
-export function routeHeavyCommand(command: string, kinds: Kinds, shell: string): null | Routed {
+/**
+ * The route for a heavy command, or null when there is nothing to route. Pure: `source` is the
+ * folder the line runs in and the reader of its `package.json`, so the classifier tells a
+ * project's script from a tool of the same name without reading a file itself.
+ */
+export function routeHeavyCommand(
+  command: string,
+  kinds: Kinds,
+  shell: string,
+  source?: ScriptSource,
+): null | Routed {
   if (runsJobRun(command)) return null;
-  const kind = classifyRoutableLine(command, kinds);
+  const kind = classifyRoutableLine(command, kinds, source);
   return kind === null ? null : { command: jobRunCommand(kind, command, shell), kind };
 }
 
@@ -288,6 +301,8 @@ export function jobRoute(context: HookContext): HookResult {
         command,
         mergeKinds(context.project.config?.jobs?.kinds),
         routedShell(context.env),
+        // The Bash tool's shell starts in the input's `cwd`; the classifier follows a `cd`.
+        { folder: context.cwd, scriptsIn: packageScripts },
       )
     : null;
   // The lead's record is one file read, so only a line it could move to the background asks for

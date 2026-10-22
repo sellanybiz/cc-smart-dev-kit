@@ -424,9 +424,21 @@ to a shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). A w
 keyword is read through, so the heavy command behind it is found and queued (§ The route),
 and a line of heavy commands, `cd`s and assignments together goes through the person's
 shell, since only the first word of argv words is run as the program. When a line runs
-several heavy steps, it names the one that reserves the most. It reads no file: a
-`package.json` script is found only through a kind's `{ "script": "<name>" }` rule. Every
-case is pinned in `src/jobs/shell-parity.test.ts`.
+several heavy steps, it names the one that reserves the most. The reader's cases are pinned
+in `src/jobs/shell-parity.test.ts`.
+
+**A script is a script, not the tool of the same name.** A `package.json` script is found
+only through a kind's `{ "script": "<name>" }` rule. To tell a script from a tool, the
+classifier reads the project's `package.json` in the folder the line runs in (after a `cd`,
+the folder it moves to), through an injected reader (`packageScripts` in
+`src/jobs/package-scripts.ts`), once per folder and run. A name that is a **script** there
+matches only a `script` rule, and no tool rule, so a project whose `tsc` script already
+wraps the type check is not queued a second time. A name that is **no script** there is the
+package manager's `node_modules/.bin/<name>`, so a tool rule matches it, as before. With no
+`package.json` there, or one the reader cannot use, the answer stays the old one — the tool
+— so a broken file is treated as no file, never as one whose scripts are all gone. These
+cases are in `src/jobs/classify.test.ts` and, through the hook, in
+`src/hooks/bash-judge.test.ts`.
 
 ## Limits
 

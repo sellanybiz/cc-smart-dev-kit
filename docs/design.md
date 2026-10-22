@@ -459,7 +459,9 @@ One queue for the whole machine (`src/jobs/`, design and limits in `jobs.md`):
 - **The state is per user** (`~/.local/share/cc-smart-dev-kit/jobs/`): nothing in it outlives
   its writers, and no service runs.
 - A pure classifier (`classifyHeavyCommand`) says which kind a Bash command runs; a later
-  hook routes heavy commands through `job run`.
+  hook routes heavy commands through `job run`. It reads a project's `package.json` through
+  an injected reader, only to tell a script from the tool of the same name (`docs/jobs.md`
+  § The classifier).
 
 ## How `setup` changes user files
 
@@ -2094,7 +2096,10 @@ to run and does not look inside `bash -c '…'`, so a rewritten `tsc && rm -f x`
 `rm` from a `Bash(rm:*)` rule (proved on 2.1.308, `claude-code-contract.md`).
 `REWRITE_SUPPORTED` in the hook is the one switch, and with it false the same command line is
 denied instead, never silently left raw. A command already inside `cc-smart-dev-kit job run` is
-left alone. It is the one guard that changes the call rather than asking about it.
+left alone. A name the project's `package.json` defines as a script is matched only by a
+`script` kind, never by a tool of the same name: a `tsc` script that already wraps the job is
+not wrapped again (`docs/jobs.md` § The classifier). It is the one guard that changes the call
+rather than asking about it.
 
 **A lead never waits on what it started** (D22): in a session recorded as a lead (`crew lead`,
 `readLead`), a CI watch (`gh pr checks --watch`, `gh run watch`), a queued job and the project's

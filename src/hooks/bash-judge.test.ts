@@ -13,6 +13,8 @@
  *   heavy job gets both in one rewrite.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { leadFile, writeStoreFile } from "../crew/store";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
@@ -403,6 +405,45 @@ describe("the judge reads the PowerShell tool too (native Windows)", () => {
     expect(
       output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit", "PowerShell"), env)),
     ).toEqual({});
+  });
+});
+
+describe("J1: a package script is a script, not the tool of the same name", () => {
+  test("`bun run tsc` in a project whose tsc script wraps the job is left as it is", async () => {
+    const { env, repo } = project({ jobs: { route: true } });
+    // The project's tsc script already goes through the queue: wrapping it again would nest
+    // two queues, and take them in the opposite order from a plain run.
+    writeFileSync(
+      join(repo, "package.json"),
+      `${JSON.stringify({ scripts: { tsc: "bun scripts/heavy-job.ts --kind=tsc -- tsgo" } })}\n`,
+    );
+    for (const command of ["bun run tsc --noEmit", "bun tsc", "bun tsc --noEmit"]) {
+      expect([command, output(await runHook(jobRouteHook, call(repo, command), env))]).toEqual([
+        command,
+        {},
+      ]);
+    }
+    // A real tool behind a package runner is no script, and is still routed.
+    expect(
+      output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit"), env)).updatedInput,
+    ).toEqual({ command: `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit` });
+  });
+
+  test("the folder after a cd decides: a script there is no tool, a tool there still is", async () => {
+    const { env, repo } = project({ jobs: { route: true } });
+    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: "tsgo" } })}\n`);
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "package.json"), `${JSON.stringify({ scripts: {} })}\n`);
+    // The root defines tsc as a script: no rewrite there.
+    expect(output(await runHook(jobRouteHook, call(repo, "bun run tsc --noEmit"), env))).toEqual(
+      {},
+    );
+    // `sub` defines no tsc, so there it is the package's tool, and the line is routed as before.
+    const routed = output(
+      await runHook(jobRouteHook, call(repo, "cd sub && bun run tsc --noEmit"), env),
+    ).updatedInput as { command: string };
+    expect(routed.command).toContain("job run --kind tsc");
+    expect(routed.command).toContain("cd sub && bun run tsc --noEmit");
   });
 });
 
