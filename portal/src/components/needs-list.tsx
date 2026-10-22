@@ -46,7 +46,9 @@ function CrewLink({ id, name }: { id: string; name: string }) {
 function CommandLine({ command, label }: { command: string; label: string }) {
   return (
     <span className="flex flex-wrap items-center gap-2">
-      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs break-all">{command}</code>
+      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs wrap-anywhere">
+        {command}
+      </code>
       <CopyButton text={command} label={label} />
     </span>
   );
@@ -188,11 +190,7 @@ function Body({ item, onSettled }: { item: NeedsItem; onSettled: OnSettled }): {
       };
     case "doctor":
       return {
-        who: (
-          <span className="font-medium">
-            doctor{item.section === "" ? "" : `, ${item.section}`}
-          </span>
-        ),
+        who: <span className="font-medium">{item.section === "" ? "doctor" : item.section}</span>,
         what: item.text,
         action:
           item.fix === null ? (

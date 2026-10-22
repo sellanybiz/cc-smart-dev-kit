@@ -23,6 +23,13 @@ import { ago, duration } from "@/lib/format";
 
 const column = columnsFor<WorktreeRow>();
 
+/** How long a worktree has been idle, to the minute: the verdict counts in minutes, not seconds. */
+function idleWords(minutes: null | number): string {
+  if (minutes === null) return "not known";
+  if (minutes < 1) return "under 1 min";
+  return duration(Math.round(minutes) * 60_000);
+}
+
 const WORKTREE_COLUMNS = column.columns([
   column.accessor("path", {
     header: "Worktree",
@@ -40,9 +47,7 @@ const WORKTREE_COLUMNS = column.columns([
   column.accessor("idleMinutes", {
     header: "Idle",
     cell: ({ row }) => (
-      <span className="tabular-nums whitespace-nowrap">
-        {row.original.idleMinutes === null ? "—" : duration(row.original.idleMinutes * 60_000)}
-      </span>
+      <span className="tabular-nums whitespace-nowrap">{idleWords(row.original.idleMinutes)}</span>
     ),
   }),
   column.display({
@@ -122,8 +127,11 @@ export function WorktreesCard() {
           Every worktree of this project, how long it has been idle, and its verdict. A finished one
           is cleared by itself after its merge; a kept one says why.
         </CardDescription>
-        <CardAction>
-          {/* Always there, so its result stays in place after the list reads again with none. */}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-6">
+        {/* Always there (above the list, so a phone keeps the description wide), and its result
+            stays in place after the list reads again with nothing finished. */}
+        <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
           <ActionButton
             action="worktrees.clean"
             body={{ confirm: true }}
@@ -138,9 +146,10 @@ export function WorktreesCard() {
           >
             Clean finished now{finished > 0 && ` (${finished})`}
           </ActionButton>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6">
+          {data !== null && finished === 0 && (
+            <p className="py-1.5 text-sm text-muted-foreground">Nothing is finished yet.</p>
+          )}
+        </div>
         {worktrees.status === "loading" ? (
           <Skeleton className="h-48 w-full" />
         ) : worktrees.status === "error" ? (

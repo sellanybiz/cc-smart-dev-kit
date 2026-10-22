@@ -251,7 +251,7 @@ function Reviews({ reviews, head }: { reviews: CrewDetail["reviews"]; head: null
           <span className="flex flex-wrap items-baseline gap-2">
             <code className="font-mono text-xs">{review.sha.slice(0, 7)}</code>
             {head !== null && review.sha.startsWith(head) && (
-              <TonePill tone="ok">the head of its report</TonePill>
+              <TonePill tone="ok">its reported head</TonePill>
             )}
             <time dateTime={review.at} className="text-xs text-muted-foreground">
               {ago(review.at)}
@@ -347,7 +347,11 @@ function CrewPage({ data }: { data: CrewDetail }) {
         />
         <StatCard
           label="Review"
-          value={report?.review == null ? "None yet" : `${report.review.findings.length} findings`}
+          value={
+            report?.review == null
+              ? "None yet"
+              : `${report.review.findings.length} finding${report.review.findings.length === 1 ? "" : "s"}`
+          }
           badge={
             report?.review == null ? (
               <TonePill tone="info">waits</TonePill>
@@ -363,7 +367,7 @@ function CrewPage({ data }: { data: CrewDetail }) {
           detail={
             report?.review == null
               ? "Before its first push"
-              : `At effort ${report.review.effort}, commit ${report.review.sha}`
+              : `At effort ${report.review.effort}, commit ${report.review.sha.slice(0, 7)}`
           }
         />
         <StatCard
