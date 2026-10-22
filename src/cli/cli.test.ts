@@ -3020,6 +3020,107 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     expect(wrong.stderr).toStartWith("Unknown option: --days");
   });
 
+  test("usage --json is the same report as one object, each subagent's record included", () => {
+    const { configDir, stateDir, run } = setup();
+    const folder = join(configDir, "projects", "-home-user-my-app", "session-1", "subagents");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "agent-a.meta.json"), JSON.stringify({ model: "sonnet" }));
+    writeFileSync(
+      join(folder, "agent-a.jsonl"),
+      `${JSON.stringify({
+        cwd: "/home/user/my-app",
+        message: {
+          content: [{ text: "secret words", type: "text" }],
+          id: "m1",
+          model: "glm-5.3-flash",
+        },
+        timestamp: new Date().toISOString(),
+        type: "assistant",
+      })}\n`,
+    );
+    // The subagent's own record, as `agent-usage` writes it at its stop (0.0149 USD by hand).
+    const at = Date.now() - 60_000;
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "agent-usage.jsonl"),
+      `${JSON.stringify({
+        agent: "a1",
+        agentType: "general-purpose",
+        at,
+        models: [
+          {
+            cacheRead: 2000,
+            cacheWrite: 100,
+            input: 1000,
+            model: "claude-opus-5-5",
+            output: 500,
+            replies: 2,
+            usd: 0.0149,
+          },
+        ],
+        session: "session-1",
+        unpriced: 0,
+        usd: 0.0149,
+      })}\n`,
+    );
+    const result = run(["usage", "--hours", "1", "--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("secret words");
+    const report = JSON.parse(result.stdout);
+    expect(report).toEqual({
+      agents: [
+        {
+          agent: "a1",
+          agentType: "general-purpose",
+          at,
+          cacheRead: 2000,
+          cacheWrite: 100,
+          input: 1000,
+          models: [
+            {
+              cacheRead: 2000,
+              cacheWrite: 100,
+              input: 1000,
+              model: "claude-opus-5-5",
+              output: 500,
+              replies: 2,
+              usd: 0.0149,
+            },
+          ],
+          output: 500,
+          replies: 2,
+          session: "session-1",
+          unpriced: 0,
+          usd: 0.0149,
+        },
+      ],
+      format: 1,
+      hours: 1,
+      sessions: [
+        {
+          cwd: "/home/user/my-app",
+          launched: { sonnet: 1 },
+          main: {},
+          project: "-home-user-my-app",
+          replies: { "glm-5.3-flash": 1 },
+          session: "session-1",
+          subagents: 1,
+        },
+      ],
+      totals: {
+        agentReplies: 2,
+        agents: 1,
+        agentTokens: { cacheRead: 2000, cacheWrite: 100, input: 1000, output: 500 },
+        agentUnpriced: 0,
+        agentUsd: 0.0149,
+        main: {},
+        replies: { "glm-5.3-flash": 1 },
+        sessions: 1,
+        subagents: 1,
+      },
+    });
+  });
+
   test("usage shows the safety checks the router counted, today first", () => {
     const { home, run } = setup();
     // The router's file, as it writes it. Its days are calendar days in the machine's own

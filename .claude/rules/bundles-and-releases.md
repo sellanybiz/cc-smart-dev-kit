@@ -25,7 +25,10 @@ Claude Code copies only `plugin/` into
   file, so `src/crew/monitors.test.ts` guards its shape), `instructions/`
   (plain Markdown that `setup` copies), `skills/`, `agents/`, `workflows/` (the scripts Claude
   Code loads as `<plugin>:<meta.name>`; a script body has a top-level `return`, which Biome's
-  parser refuses, so `biome.json` skips the folder), `output-styles/`, and
+  parser refuses, so `biome.json` skips the folder), `output-styles/`,
+  `settings.json` (the plugin's default settings — only `subagentStatusLine`, the agent
+  panel's per-subagent row; its command names the launcher, never `${CLAUDE_PLUGIN_ROOT}`,
+  which a plugin's settings file does not expand, `docs/claude-code-contract.md`), and
   `bunfig.toml` (**empty, and it stays empty**: every bun the plugin starts in a person's
   folder gets `--config=` pointing at it, so a project's own `bunfig.toml` — its `preload` —
   never runs inside the plugin; `docs/design.md` § The two flags on every bun run inside a

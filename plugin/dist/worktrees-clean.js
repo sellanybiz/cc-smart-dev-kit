@@ -6225,6 +6225,7 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "agent-usage",
   "worktree-leftovers",
   "session-name",
   "crew-role",

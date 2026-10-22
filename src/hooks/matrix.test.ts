@@ -41,6 +41,7 @@ import type { HookSpec } from "./run";
 import {
   afterMergeHook,
   agentGuardHook,
+  agentUsageHook,
   crewRoleHook,
   fableSessionHook,
   gitGuardHook,
@@ -452,6 +453,32 @@ const CASES: Case[] = [
       expect(result.exitCode ?? 0).toBe(0);
       expect(result.stdout).toBeUndefined();
       expect(result.stderr).toStartWith("cc-smart-dev-kit subagent-background: ");
+    },
+  },
+  {
+    spec: agentUsageHook,
+    own: { event: "SubagentStop" },
+    // Machine-wide: the person's spend is recorded with no file and with a broken one alike.
+    // A successful record is silence (SubagentStop carries no context), so the one answer this
+    // hook has is a failure: the agent's transcript cannot be read. That is also how the shared
+    // rows' "it speaks" is proved here.
+    machineWide: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "SubagentStop",
+        session_id: SESSION,
+        cwd: project(config),
+        agent_id: AGENT,
+        agent_type: "general-purpose",
+        agent_transcript_path: join(tempDir("agent-usage-transcript"), "agent.jsonl"),
+      },
+      env: hookEnv(),
+    }),
+    // One stderr line, exit 0: a subagent must always finish.
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      expect(result.stdout).toBeUndefined();
+      expect(result.stderr).toStartWith("cc-smart-dev-kit agent-usage: ");
     },
   },
   {

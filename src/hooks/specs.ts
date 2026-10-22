@@ -17,6 +17,7 @@
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
+ * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
@@ -49,6 +50,7 @@ import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
 import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
+import { recordAgentUsage } from "./agent-usage";
 import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
@@ -307,6 +309,26 @@ export const subagentBackgroundHook: HookSpec = {
   run: subagentBackground,
 };
 
+/**
+ * Each subagent's usage (`agent-usage.ts`): on its stop, one line in `agent-usage.jsonl` — the
+ * time, the session, the agent and its type, and per model the replies, the four token counts
+ * and the estimated USD — what `usage` shows and a portal can read. **Machine-wide**: the
+ * person's spend is the machine's, not a project's, so it records with no
+ * `cc-smart-dev-kit.json` and outside git, like the Agent guard's launch record. A project
+ * that runs its own copy lists the name in `ownHooks`. It touches no worktree, the one kind of
+ * plugin SubagentStop entry `hooks.md` allows, and it answers nothing on stdout: one stderr
+ * line when its record cannot be made, exit 0.
+ */
+export const agentUsageHook: HookSpec = {
+  name: "agent-usage",
+  events: ["SubagentStop"],
+  onConfigProblem: (_message, input, event, _checkout, context) =>
+    recordAgentUsage(input, event, context.paths, context.nowMs),
+  outsideGit: (input, event, _why, context) =>
+    recordAgentUsage(input, event, context.paths, context.nowMs),
+  run: ({ input, event, paths, nowMs }) => recordAgentUsage(input, event, paths, nowMs),
+};
+
 export const worktreeLeftoversHook: HookSpec = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
@@ -511,6 +533,7 @@ export const HOOKS: readonly HookSpec[] = [
   afterMergeHook,
   reviewRecordHook,
   subagentBackgroundHook,
+  agentUsageHook,
   worktreeLeftoversHook,
   sessionNameHook,
   crewRoleHook,
@@ -554,7 +577,8 @@ export const USER_HOOKS: readonly string[] = [
  * depend on the project's file either — `agent-guard` (the model a launch runs on),
  * `fable-session` (the model this session runs on), `session-escape-guard` (whether a call
  * goes around the limits set for the session), `crew-role` (a crew session's own card, ask and
- * report) and `lead-notes` (a lead's missed crew news). `doctor`'s project checks never warn
+ * report), `lead-notes` (a lead's missed crew news) and `agent-usage` (each subagent's cost on
+ * record: the person's spend, not a project's policy). `doctor`'s project checks never warn
  * about a project hook that runs beside one of these: it is the person's own business, not a
  * second copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
  */
@@ -565,4 +589,5 @@ export const MACHINE_WIDE_HOOKS: readonly string[] = [
   "session-escape-guard",
   "crew-role",
   "lead-notes",
+  "agent-usage",
 ];

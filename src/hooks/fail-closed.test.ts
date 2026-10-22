@@ -135,7 +135,7 @@ describe("a guard's own crash", () => {
     const answer = guardCrash("this call", () => {
       throw new Error("the check broke too");
     });
-    const context = { env: {}, paths: cliPaths({}) };
+    const context = { env: {}, nowMs: 0, paths: cliPaths({}) };
     const input = { hook_event_name: "PreToolUse", tool_name: "Bash" };
     expect(askOf(answer("boom", input, "PreToolUse", context))).toBe(
       "cc-smart-dev-kit cannot check this call: boom",

@@ -16,9 +16,9 @@
  *   (information); a listed one with no project hook on its event left to answer is a
  *   warning. A project hook on the same event and tool as a plugin hook the list does NOT
  *   name is a warning too: both run, so both may answer. The machine-wide hooks
- *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, and `agent-guard`,
- *   `fable-session`, `session-escape-guard`, `crew-role` and `lead-notes`, which run with or
- *   without the project's file) are never warned about: they
+ *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, playwright-output, and
+ *   `agent-guard`, `fable-session`, `session-escape-guard`, `crew-role`, `lead-notes` and
+ *   `agent-usage`, which run with or without the project's file) are never warned about: they
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
  *   nothing, and can be taken out.

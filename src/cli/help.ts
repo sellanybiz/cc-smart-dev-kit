@@ -212,16 +212,25 @@ container using it).
 
 --clean and --remove run in the main checkout only, one at a time.`;
 
-const USAGE_HELP = `Usage: ${COMMAND} usage [--hours <n>] [--project <folder or name>]
+const USAGE_HELP = `Usage: ${COMMAND} usage [--hours <n>] [--project <folder or name>] [--json]
 
 Which models answered on this machine, per session: the main session's replies and its
-subagents' apart (how each subagent was launched, and the share on Opus), from Claude Code's
-transcripts (default: the last 6 hours). Read only; no message text.`;
+subagents' apart (how each subagent was launched, the agents' types and models, their tokens,
+the share on Opus and their estimated cost), from Claude Code's transcripts and each
+subagent's own record (default: the last 6 hours). Read only; no message text.
+--json prints the same facts as one object.`;
 
 const SESSION_NAME_HELP = `Usage: ${COMMAND} session-name <session id> <name>
 
 Names a Claude session after its task. The session-name hook runs it; a project turns that on
 with "sessionNames" in its .claude/cc-smart-dev-kit.json.`;
+
+const SUBAGENT_STATUSLINE_HELP = `Usage: ${COMMAND} subagent-statusline
+
+One row body per subagent for Claude Code's agent panel: the slot, the model and the effort
+(slot → model → effort). The plugin's own settings.json names it as Claude Code's
+subagentStatusLine, so it runs by itself; its input comes on stdin, and it prints one JSON
+line per row. Not a command to run by hand.`;
 
 const STATUSLINE_HELP = `Usage: ${COMMAND} statusline
 
@@ -304,6 +313,9 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   // A crew session's note to another: its help sits beside the board's, so both read one text.
   { name: "crew tell", help: TELL_USAGE },
   { name: "session-name", help: SESSION_NAME_HELP },
+  // Claude Code runs it from the plugin's settings.json: a status line's row body, not a
+  // command for a person.
+  { name: "subagent-statusline", help: SUBAGENT_STATUSLINE_HELP },
   { name: ALERT_WORKER_COMMAND, help: ALERT_WORKER_HELP },
   // `help` prints the top-level help, which is built from this table (see `helpTextFor`).
   { name: HELP_COMMAND },

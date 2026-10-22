@@ -1548,15 +1548,17 @@ that, so the plugin ships no worktree hook at all.
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send the other sessions when it went into `worktrees.base`, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
+| `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
 | `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
 | `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
 
-Without `cc-smart-dev-kit.json` every one of them is silent — except the seven machine-wide
+Without `cc-smart-dev-kit.json` every one of them is silent — except the eight machine-wide
 ones: `agent-guard` (§ The Agent guard), `job-route` (§ The Bash judge and the job route),
 `session-escape-guard` (§ The session-escape guard),
-`fable-session` (§ The Fable-session note), `crew-role` and `lead-notes` (§ Lead and the crew), and
+`fable-session` (§ The Fable-session note), `crew-role` and `lead-notes` (§ Lead and the crew),
+`agent-usage` (§ Each subagent's usage on record), and
 `playwright-output`, which reads no project file at all — and the **crew part** of `git-guard`,
 `merge-guard` and `message-guard`, which answers only in a crew session (D24, D47; § The crew
 talks), so a project that never opted in
@@ -1765,6 +1767,39 @@ The Fable rules are the owner's of 2026-10-16, and each is the person's call:
   of the read-only words). A fork of a session whose own model is the `fable` tier is judged the
   same way, so such a session can fork with `Fable reason: build - …` and is not refused
   outright.
+
+### Each subagent's usage on record
+
+`agent-usage` (SubagentStop) is **machine-wide**, like the Agent guard's launch record and for
+the same reason: what a subagent's replies cost is the person's own spend, not a project's
+policy. At every subagent's stop it reads the agent's own transcript
+(`agent_transcript_path`) and appends one line to `<stateDir>/agent-usage.jsonl`
+(`src/hooks/agent-usage.ts`). The line holds the time, the session, the agent's id and type,
+and per model the replies, the four token sums (`input_tokens`, `output_tokens`,
+`cache_read_input_tokens`, `cache_creation_input_tokens`) and an estimated USD cost from the
+one price home (`src/gateway/prices.ts`, Claude's list price; a model with no row — an
+affordable backend's — is recorded with its tokens and no price, and `unpriced` counts those
+replies). **Never content**: a transcript's text, tool input and tool result are skipped. A
+reply is counted once by `message.id`, though Claude Code writes one `assistant` line per
+content block, each carrying the reply's whole usage. A second stop for one agent (a block
+made it continue) appends a newer line with the whole transcript, and `readAgentUsage` keeps
+the newest per session and agent, so a cost is never a sum of two halves. The record is kept
+small like the ask log (`src/hooks/jsonl-log.ts`: `LOG_MAX_BYTES`, the newer half kept). An
+unreadable transcript, and a record that cannot be written, are one stderr line and exit 0. A
+project that runs its own copy lists the name in `ownHooks`. `cc-smart-dev-kit usage` shows
+each session's agents by type and model, their tokens and their cost (`README.md` § The usage
+limit), and `usage --json` is the same facts as one object a portal can read.
+
+The **subagent status line** (MD-13) is the same fact on screen: `plugin/settings.json` sets
+Claude Code's `subagentStatusLine` to `cc-smart-dev-kit subagent-statusline`
+(`src/cli/subagent-statusline.ts`), and the agent panel's row body for each subagent becomes
+`<label> · <slot> → <model> → <effort>`, the slot taken from the model's Claude family with
+the router's own mapping (`familySlotFor`). It is a plugin setting, not a hook: Claude Code
+runs the command on each refresh tick with `columns` and one entry per visible subagent on
+stdin, and the command answers one `{"id","content"}` line per row (proved offline on
+2.1.308, `docs/claude-code-contract.md`). The command names the launcher, never
+`${CLAUDE_PLUGIN_ROOT}`: a plugin's settings file does not expand that variable (proved: the
+literal string ran, exit 127), and the launcher is the one path an update cannot break.
 
 ### The session-escape guard
 

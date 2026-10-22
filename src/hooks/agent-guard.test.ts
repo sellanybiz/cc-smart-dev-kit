@@ -1341,7 +1341,7 @@ describe("the hook's answer, and the record", () => {
       prompt: "Fable reason: hard - it is",
       subagent_type: "Plan",
     });
-    const facts = guardFacts(input, { env: NO_ENV, paths: where });
+    const facts = guardFacts(input, { env: NO_ENV, nowMs: 0, paths: where });
     expect(facts).toEqual({
       decision: "ask",
       effort: "max",
@@ -1357,6 +1357,7 @@ describe("the hook's answer, and the record", () => {
     // backend answers it is still the opus tier, allowed at `high` (D11).
     const overridden = guardFacts(agentCall({ effort: "high", model: "opus", prompt: "do it" }), {
       env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" },
+      nowMs: 0,
       paths: where,
     });
     expect(overridden).toEqual({
@@ -1814,7 +1815,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
   it("HK hunch 3: guardFacts logs no verdict for a PostToolUse run", () => {
     const where = paths();
     const call = agentCall({ effort: "max", model: "opus", prompt: "Opus reason: ui - x" });
-    expect(guardFacts(at("PostToolUse", call), { env: NO_ENV, paths: where })).toEqual({
+    expect(guardFacts(at("PostToolUse", call), { env: NO_ENV, nowMs: 0, paths: where })).toEqual({
       event: "PostToolUse",
     });
   });
@@ -2170,7 +2171,7 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
       CLAUDE_CODE_EFFORT_LEVEL: "high",
       CLAUDE_CODE_SUBAGENT_MODEL: "opus",
     };
-    expect(guardFacts(LIVE_FORCED_INPUT(), { env, paths: paths() })).toEqual({
+    expect(guardFacts(LIVE_FORCED_INPUT(), { env, nowMs: 0, paths: paths() })).toEqual({
       decision: "allow",
       effort: null,
       effort_override: "CLAUDE_CODE_EFFORT_LEVEL",
@@ -2515,10 +2516,16 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     const { repo, where } = world();
     put(join(repo, ".claude", "workflows", "probe.js"), script("probe", OPUS_HIGH));
     expect(
-      guardFacts({ ...call({ name: "probe" }), cwd: repo }, { env: NO_ENV, paths: where }),
+      guardFacts(
+        { ...call({ name: "probe" }), cwd: repo },
+        { env: NO_ENV, nowMs: 0, paths: where },
+      ),
     ).toEqual({ decision: "allow", launches: 1, tool: "Workflow" });
     expect(
-      guardFacts({ ...call({ name: "deep-research" }), cwd: repo }, { env: NO_ENV, paths: where }),
+      guardFacts(
+        { ...call({ name: "deep-research" }), cwd: repo },
+        { env: NO_ENV, nowMs: 0, paths: where },
+      ),
     ).toEqual({ decision: "ask", launches: 0, tool: "Workflow", why: "unreadable" });
   });
 });

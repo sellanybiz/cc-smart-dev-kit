@@ -71,6 +71,8 @@ export interface HookContext {
   project: Project;
   env: Env;
   paths: CliPaths;
+  /** The run's time (ms since the epoch), the one a record a hook writes carries. */
+  nowMs: number;
   /**
    * How a hook starts a background program. Left out, it is `startDetached`; a test hands in
    * a recorder, so no program runs in the test (`src/worktrees/auto-start.ts`).
@@ -87,6 +89,8 @@ export interface HookContext {
 export interface HookEnvContext {
   env: Env;
   paths: CliPaths;
+  /** The run's time (ms since the epoch), the same one its `HookContext` carries. */
+  nowMs: number;
   /** The starter a test hands in (`HookContext.start`). */
   start?: DetachedStarter;
 }
@@ -212,13 +216,12 @@ function recordAsk(
   input: HookInput | null,
   result: HookResult,
   context: HookEnvContext,
-  nowMs: number,
 ): HookResult {
   const reason = askReason(result);
   if (reason === null) return result;
   try {
     appendAsk(askLogFile(context.paths.stateDir), {
-      at: nowMs,
+      at: context.nowMs,
       hook: spec.name,
       session: stringField(input?.session_id) ?? "",
       tool: stringField(input?.tool_name) ?? "",
@@ -286,6 +289,7 @@ async function answer(
       project,
       env,
       paths: context.paths,
+      nowMs: context.nowMs,
       ...(context.start !== undefined && { start: context.start }),
     });
   } catch (error) {
@@ -308,23 +312,24 @@ export async function handleHook(
   const context: HookEnvContext = {
     env,
     paths: cliPaths(env),
+    nowMs,
     ...(start !== undefined && { start }),
   };
   const input = parseHookInput(text);
-  return recordAsk(spec, input, await answer(spec, input, context), context, nowMs);
+  return recordAsk(spec, input, await answer(spec, input, context), context);
 }
 
 /**
  * Appends one line to the hook log, when `CC_SMART_DEV_KIT_HOOK_LOG` names one. Never throws.
  * `facts`: what the spec's own parser read (`logFacts`), for `doctor --live`.
  */
-function logRun(spec: HookSpec, text: string, result: HookResult, env: Env): void {
+function logRun(spec: HookSpec, text: string, result: HookResult, env: Env, nowMs: number): void {
   const file = env[HOOK_LOG_ENV];
   if (file === undefined || file === "") return;
   try {
     const input = parseHookInput(text);
     const facts =
-      input === null ? {} : (spec.logFacts?.(input, { env, paths: cliPaths(env) }) ?? {});
+      input === null ? {} : (spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {});
     appendFileSync(
       file,
       `${JSON.stringify({
@@ -347,8 +352,9 @@ function logRun(spec: HookSpec, text: string, result: HookResult, env: Env): voi
  */
 export async function runHookEntry(spec: HookSpec): Promise<never> {
   const text = await Bun.stdin.text();
-  const result = await handleHook(spec, text, process.env);
-  logRun(spec, text, result, process.env);
+  const nowMs = Date.now();
+  const result = await handleHook(spec, text, process.env, nowMs);
+  logRun(spec, text, result, process.env, nowMs);
   // Bun.write waits until the bytes are written, so the exit below cuts nothing off.
   if (result.stdout !== undefined) await Bun.write(Bun.stdout, result.stdout);
   if (result.stderr !== undefined) await Bun.write(Bun.stderr, `${result.stderr}\n`);

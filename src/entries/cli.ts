@@ -28,6 +28,7 @@ import { runRestore } from "../cli/restore";
 import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
+import { runSubagentStatusline } from "../cli/subagent-statusline";
 import { createOut, dryRunEnding } from "../cli/ui/out";
 import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
@@ -321,6 +322,10 @@ async function main(argv: string[]): Promise<number> {
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
+    case "subagent-statusline":
+      // Claude Code runs it from the plugin's settings: its input on stdin, one JSON line
+      // per subagent row on stdout (`src/cli/subagent-statusline.ts`).
+      return runSubagentStatusline();
     case "report":
       // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
       return runReport(paths, rest, Date.now());
