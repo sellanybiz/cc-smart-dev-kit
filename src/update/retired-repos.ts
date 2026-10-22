@@ -7,8 +7,11 @@
  * `project init` before its hooks fail closed.
  *
  * Where the repos come from: the folders Claude Code's saved sessions name
- * (`sessionWorkFolders`), each taken to its main checkout. A folder that is gone, or not in
- * git, is skipped. Read-only: it never changes another repo; it names the command that does.
+ * (`sessionWorkFolders`), each taken to its own checkout root and, beside it, to the main
+ * checkout. A linked worktree reads its own cc-smart-dev-kit.json first (`loadProjectConfig`),
+ * so a long-lived worktree on an older branch is its own finding; a worktree's own settings
+ * files are read the same way. A folder that is gone, or not in git, is skipped. Read-only: it
+ * never changes another repo; it names the command that does.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -24,13 +27,19 @@ import { retiredFieldsOf, WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { sessionWorkFolders } from "../sessions/command";
 import { shellWord } from "../setup/launcher";
+import { parseUserJson } from "../setup/user-json";
 
 type Env = Record<string, string | undefined>;
 
 /** One repo that still carries a retired piece, and what it is, in words. */
 export interface RetiredRepo {
-  /** The main checkout. */
+  /**
+   * The checkout that carries the retired piece: the main checkout, or a linked worktree of it
+   * (whose own cc-smart-dev-kit.json wins over the main checkout's).
+   */
   repo: string;
+  /** The main checkout, when `repo` is a linked worktree of it; null when `repo` is the main one. */
+  mainCheckout: null | string;
   /** The retired fields its cc-smart-dev-kit.json sets (`worktrees.prefix`, …). */
   fields: string[];
   /** Its settings files that still run an engine hook, relative to the repo. */
@@ -43,26 +52,35 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The main checkout a folder is in; null when it is gone, not a folder, or not in git. */
-function mainCheckoutOf(folder: string, env: Env): null | string {
+/**
+ * The checkout a folder is in, with the main checkout of its repo; null when it is gone, not
+ * a folder, or not in git.
+ */
+function checkoutOf(folder: string, env: Env): null | { main: string; root: string } {
   if (!existsSync(folder)) return null;
   try {
     const checkout = locateCheckout(folder, { env });
-    return checkout === null ? null : (checkout.mainCheckout ?? checkout.root);
+    if (checkout === null) return null;
+    return { main: checkout.mainCheckout ?? checkout.root, root: checkout.root };
   } catch {
     // Not a folder, a main checkout git cannot find, git too old: nothing to read there.
     return null;
   }
 }
 
-/** What one repo still carries; null when it carries nothing retired. */
-export function retiredPartsOf(repo: string): null | RetiredRepo {
+/** What one checkout still carries; null when it carries nothing retired. */
+export function retiredPartsOf(
+  repo: string,
+  mainCheckout: null | string = null,
+): null | RetiredRepo {
   const config = join(repo, ".claude", "cc-smart-dev-kit.json");
   let fields: string[] = [];
   let error: null | string = null;
   if (existsSync(config)) {
     try {
-      fields = retiredFieldsOf(JSON.parse(readFileSync(config, "utf8"))).map(
+      // The one reader of a JSON file a person may have edited: it skips a Windows editor's
+      // byte order mark, which `JSON.parse` refuses (src/setup/user-json.ts).
+      fields = retiredFieldsOf(parseUserJson(readFileSync(config, "utf8"))).map(
         (field) => `worktrees.${field}`,
       );
     } catch (cause) {
@@ -75,26 +93,35 @@ export function retiredPartsOf(repo: string): null | RetiredRepo {
     )
     .map((file) => relative(repo, file));
   if (fields.length === 0 && engineFiles.length === 0 && error === null) return null;
-  return { engineFiles, error, fields, repo };
+  return { engineFiles, error, fields, mainCheckout, repo };
 }
 
-/** Every repo the saved sessions name that still carries a retired piece, by path. */
+/** Every checkout the saved sessions name that still carries a retired piece, by path. */
 export function reposWithRetiredParts(paths: CliPaths, env: Env): RetiredRepo[] {
-  const repos = new Set<string>();
+  // Each checkout a saved session worked in, not only its main checkout: a linked worktree's
+  // own cc-smart-dev-kit.json wins over the main checkout's (`loadProjectConfig`), so a
+  // long-lived worktree that still sets a retired field is its own finding. The main checkout
+  // is read too, for the sessions that work there.
+  const checkouts = new Map<string, string>();
   for (const folder of sessionWorkFolders(paths.projectsDir)) {
-    const repo = mainCheckoutOf(folder, env);
-    if (repo !== null) repos.add(repo);
+    const found = checkoutOf(folder, env);
+    if (found === null) continue;
+    checkouts.set(found.root, found.main);
+    if (!checkouts.has(found.main)) checkouts.set(found.main, found.main);
   }
-  return [...repos]
-    .sort()
-    .map(retiredPartsOf)
+  return [...checkouts]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([root, main]) => retiredPartsOf(root, main === root ? null : main))
     .filter((found): found is RetiredRepo => found !== null);
 }
 
 /** One `!` line for a repo: what it carries, and the command that takes it out. */
 export function retiredRepoLine(found: RetiredRepo, home: string): string {
   const fix = `cd ${shellWord(found.repo)} && ${COMMAND} project init`;
-  const where = tildify(found.repo, home);
+  const where =
+    found.mainCheckout === null
+      ? tildify(found.repo, home)
+      : `${tildify(found.repo, home)} (a worktree of ${tildify(found.mainCheckout, home)})`;
   const config = join(".claude", "cc-smart-dev-kit.json");
   if (found.error !== null) {
     return `! ${where}: ${config} cannot be read (${found.error}), so whether it still sets a field retired in ${WORKTREE_ENGINE_RETIRED_IN} is unknown. Fix it, then: ${fix}`;

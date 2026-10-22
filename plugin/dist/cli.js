@@ -28714,23 +28714,25 @@ ${tabDir}
 function messageOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
-function mainCheckoutOf(folder, env) {
+function checkoutOf(folder, env) {
   if (!existsSync47(folder))
     return null;
   try {
     const checkout = locateCheckout(folder, { env });
-    return checkout === null ? null : checkout.mainCheckout ?? checkout.root;
+    if (checkout === null)
+      return null;
+    return { main: checkout.mainCheckout ?? checkout.root, root: checkout.root };
   } catch {
     return null;
   }
 }
-function retiredPartsOf(repo) {
+function retiredPartsOf(repo, mainCheckout = null) {
   const config = join55(repo, ".claude", "cc-smart-dev-kit.json");
   let fields = [];
   let error = null;
   if (existsSync47(config)) {
     try {
-      fields = retiredFieldsOf(JSON.parse(readFileSync55(config, "utf8"))).map((field) => `worktrees.${field}`);
+      fields = retiredFieldsOf(parseUserJson(readFileSync55(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
       error = messageOf3(cause);
     }
@@ -28738,20 +28740,23 @@ function retiredPartsOf(repo) {
   const engineFiles = projectSettingsFiles(repo).filter((file) => allWiredHandlers(file).some((handler) => retiredEngineHookOf(handler.command) !== null)).map((file) => relative2(repo, file));
   if (fields.length === 0 && engineFiles.length === 0 && error === null)
     return null;
-  return { engineFiles, error, fields, repo };
+  return { engineFiles, error, fields, mainCheckout, repo };
 }
 function reposWithRetiredParts(paths, env) {
-  const repos = new Set;
+  const checkouts = new Map;
   for (const folder of sessionWorkFolders(paths.projectsDir)) {
-    const repo = mainCheckoutOf(folder, env);
-    if (repo !== null)
-      repos.add(repo);
+    const found = checkoutOf(folder, env);
+    if (found === null)
+      continue;
+    checkouts.set(found.root, found.main);
+    if (!checkouts.has(found.main))
+      checkouts.set(found.main, found.main);
   }
-  return [...repos].sort().map(retiredPartsOf).filter((found) => found !== null);
+  return [...checkouts].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([root, main]) => retiredPartsOf(root, main === root ? null : main)).filter((found) => found !== null);
 }
 function retiredRepoLine(found, home) {
   const fix = `cd ${shellWord(found.repo)} && ${COMMAND} project init`;
-  const where = tildify(found.repo, home);
+  const where = found.mainCheckout === null ? tildify(found.repo, home) : `${tildify(found.repo, home)} (a worktree of ${tildify(found.mainCheckout, home)})`;
   const config = join55(".claude", "cc-smart-dev-kit.json");
   if (found.error !== null) {
     return `! ${where}: ${config} cannot be read (${found.error}), so whether it still sets a field retired in ${WORKTREE_ENGINE_RETIRED_IN} is unknown. Fix it, then: ${fix}`;
@@ -33290,7 +33295,7 @@ function readSettings2(file) {
   if (!existsSync56(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync62(file, "utf8"));
+    const parsed = readUserJson(file);
     return typeof parsed === "object" && parsed !== null ? parsed : null;
   } catch {
     return null;
@@ -37148,7 +37153,7 @@ function project(cwd, env) {
     };
   }
 }
-function checkoutOf(cwd, env) {
+function checkoutOf2(cwd, env) {
   try {
     const checkout = locateCheckout(cwd, { env });
     return {
@@ -37269,7 +37274,7 @@ ${WORKFLOW_USAGE}`);
     rev = value;
     index += 1;
   }
-  const here = checkoutOf(context.cwd, context.env);
+  const here = checkoutOf2(context.cwd, context.env);
   if (here.checkout === null) {
     context.error(`${COMMAND} workflow review-done: ${here.why}`);
     return 1;
@@ -41697,7 +41702,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
       }
       if (RETIRED_ENGINE_HOOKS.some((retired) => retired === name)) {
         console.error(`${COMMAND} hook ${name}: this hook was retired in ${WORKTREE_ENGINE_RETIRED_IN}: remove its line from your settings \u2014 \`${COMMAND} project init\` does it`);
-        return 2;
+        return 1;
       }
       console.error(`Unknown hook: ${[name, ...extra].join(" ")}
 

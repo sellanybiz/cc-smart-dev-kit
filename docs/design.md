@@ -982,13 +982,15 @@ major version by itself the day it runs.
   - **The repo list** (1.0.0, `src/update/retired-repos.ts`), printed by `update` before a
     major and by every `setup` run (`--dry-run` too): the folders Claude Code's saved
     sessions name (`sessionWorkFolders` in `src/sessions/command.ts`, the same reader
-    `sessions` uses: one file per project folder, its newest), each taken to its main
-    checkout; a folder that is gone or not in git is skipped. A repo is listed, one `!` line
-    with `cd <repo> && cc-smart-dev-kit project init`, when its
-    `.claude/cc-smart-dev-kit.json` sets a retired field (`retiredFieldsOf`, over
-    `RETIRED_WORKTREE_FIELDS`), is not valid JSON (with the error), or one of its two settings
-    files runs an engine hook (`retiredEngineHookOf`). Read-only: no other repo is ever
-    written.
+    `sessions` uses: one file per project folder, its newest), each taken to its own checkout
+    root and, beside it, to the main checkout: a linked worktree's own file wins over the main
+    checkout's, as `loadProjectConfig` reads it, so a long-lived worktree on an older branch
+    is its own finding; a folder that is gone or not in git is skipped. A checkout is listed,
+    one `!` line with `cd <checkout> && cc-smart-dev-kit project init` (a worktree's line names
+    the main checkout too), when its `.claude/cc-smart-dev-kit.json` sets a retired field
+    (`retiredFieldsOf`, over `RETIRED_WORKTREE_FIELDS`), is not valid JSON (with the error), or
+    one of its two settings files runs an engine hook (`retiredEngineHookOf`). Read-only: no
+    other repo is ever written.
   - **An installed version that cannot be read is no major step.** `installed_plugins.json`
     may name no version (`findUserInstall` gives null), or one that is not a version: then
     `isNewMajor` is false, and the background check installs the newer version as before.
@@ -1057,7 +1059,10 @@ accepts: a project file that sets a retired field fails closed until `project in
 - **The retired engine's hook lines fail, and `project init` takes them out:** a line in the
   project's `.claude/settings.json` or `.claude/settings.local.json` that still runs
   `cc-smart-dev-kit hook worktree-create|worktree-remove|subagent-stop` gets the fix on stderr
-  and exit 2. `project init` removes exactly those handlers (found by their command text,
+  and exit 1 — never exit 2, which on `SubagentStop` blocks the stop, and the line reads no
+  `stop_hook_active`, so every subagent would loop for ever. Exit 1 is a non-blocking error
+  there and on `WorktreeRemove` (the session goes on), and any non-zero exit still fails
+  `WorktreeCreate` and shows the line. `project init` removes exactly those handlers (found by their command text,
   `retiredEngineHookOf` in `src/hooks/settings-hooks.ts`), shown as `-` lines first, through the
   same backup and atomic write as the rest of its plan; `doctor` names each file that still has
   one (§ The worktree engine).
@@ -1311,8 +1316,8 @@ runs by itself (owner's decision D48, 2026-10-22).
 ### The worktree engine (retired in 1.0.0)
 
 The engine retired in 1.0.0 (D20; owner, 2026-10-21) and its code is gone: the fields it
-read are refused, its three hook names print the fix and exit 2, and `project init` takes
-both out (§ Per-project opt-in).
+read are refused, its three hook names print the fix and exit 1 (a non-blocking error: exit 2
+would block every subagent's stop), and `project init` takes both out (§ Per-project opt-in).
 
 What it was, and why it went: a WorktreeCreate hook **replaced** Claude Code's own creation,
 for sessions and subagents, in every project where it was wired, and a hook that prints no

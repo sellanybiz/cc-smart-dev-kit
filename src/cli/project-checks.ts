@@ -135,8 +135,9 @@ function oldNameLines(projectDir: string, sources: string[], home: string): Proj
 /**
  * A settings line that still runs the retired worktree engine, found by its command text
  * (`retiredEngineHookOf`), never through the engine's own specs: one `✗` line per settings
- * file, because `cc-smart-dev-kit hook <name>` now exits 2 on every run, and a WorktreeCreate
- * that fails stops every worktree from being made. `project init` takes the lines out.
+ * file, because `cc-smart-dev-kit hook <name>` now exits 1 on every run (a non-blocking error,
+ * so the session goes on), and a WorktreeCreate that fails stops every worktree from being
+ * made. `project init` takes the lines out.
  */
 function engineLines(sources: string[], projectDir: string, home: string): ProjectLine[] {
   const lines: ProjectLine[] = [];

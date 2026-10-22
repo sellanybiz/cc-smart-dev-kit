@@ -131,7 +131,8 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 - `setup` writes the line into the person's own settings (`src/setup/user-notify-hook.ts`);
   what the hook does is in § The notifier.
 - The worktree engine's names are retired: `cc-smart-dev-kit hook worktree-create` and the
-  other two print the fix and exit 2 (`src/hooks/settings-hooks.ts`).
+  other two print the fix and exit 1 — never 2, which blocks a `SubagentStop` and would loop
+  every subagent (`src/hooks/settings-hooks.ts`).
 
 ## The frame: every hook runs through `run.ts`
 
