@@ -123,6 +123,20 @@ export function loadWorkflow(file: string): Workflow {
   return parsed.data;
 }
 
+/**
+ * The person's own workflow values, or `{}` when the file is not there or cannot be read.
+ * For a caller that judges the policy but must not fail on a broken file — D16's clash
+ * warning, in `project init`'s plan and the portal's preview. A broken file is `workflow
+ * show`'s and the guards' own question, in their own words; a plan must still be shown.
+ */
+export function personalWorkflowOrDefault(paths: CliPaths): Workflow {
+  try {
+    return loadWorkflow(personalWorkflowFile(paths));
+  } catch {
+    return {};
+  }
+}
+
 /** One group of both objects, the project's fields over the person's. */
 function mergedGroup<T extends object>(personal: T | undefined, project: T | undefined) {
   if (personal === undefined) return project;

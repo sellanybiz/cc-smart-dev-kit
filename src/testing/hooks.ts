@@ -4,7 +4,8 @@
  * `src/entries/<name>.ts` with the input on stdin).
  */
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { cliPaths } from "../cli/paths";
 import type { DetachedOptions } from "../hooks/detached";
 import type { HookResult } from "../hooks/io";
 import { type DetachedStarter, type HookSpec, handleHook } from "../hooks/run";
@@ -164,4 +165,23 @@ export function recordingStarter(): { start: DetachedStarter; started: StartedPr
       started.push({ argv, options, platform });
     },
   };
+}
+
+/**
+ * Commits the project's file in `repo` and points `origin/<branch>` at that commit for every
+ * branch named: the policy a guard judges with is the one committed on a base
+ * (`resolveGate`), never the working copy. A plain ref, no fetch: the guards fetch nothing.
+ */
+export function commitConfig(repo: string, config: unknown, branches: Iterable<string>): void {
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+  git(repo, "add", ".claude/cc-smart-dev-kit.json");
+  git(repo, "commit", "-q", "-m", "the project's policy");
+  for (const branch of branches) git(repo, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
+}
+
+/** Writes the person's own workflow settings (`workflow.json`) where the hook `env` reads them. */
+export function writePersonalWorkflow(env: Record<string, string>, workflow: unknown): void {
+  const file = cliPaths(env).workflowConfigFile;
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(workflow, null, 2)}\n`);
 }

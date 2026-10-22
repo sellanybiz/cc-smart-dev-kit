@@ -37,6 +37,7 @@ import {
   requiresFor,
 } from "../project/init";
 import { isObject } from "../setup/managed-json";
+import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   isSwitchKey,
   parseWorkflowValue,
@@ -44,7 +45,7 @@ import {
   type Workflow,
   type WorkflowKey,
 } from "../workflow/schema";
-import { tildify } from "./paths";
+import { cliPaths, tildify } from "./paths";
 
 type Env = Record<string, string | undefined>;
 
@@ -534,6 +535,14 @@ export function readExisting(file: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * The person's own workflow values, for D16's clash warning: `{}` when the file is not there
+ * or cannot be read (`personalWorkflowOrDefault`).
+ */
+function personalWorkflow(env: Env): Workflow {
+  return personalWorkflowOrDefault(cliPaths(env));
+}
+
 export const PROJECT_INIT_USAGE = `Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]
 
 Writes this project's .claude/cc-smart-dev-kit.json, and, when the base branch is not the
@@ -594,6 +603,10 @@ export function runProjectInit(
       existingLocalSettings: readText(join(context.root, ".claude", "settings.local.json")),
       defaultBranch: facts.defaultBranch,
       answers,
+      // D16's clash warning judges the policy the guards will see, so the person's own file
+      // comes with it. A file that cannot be read is no policy here (the guards ask about it
+      // themselves); the plan must still run.
+      personalWorkflow: personalWorkflow(context.env),
     });
   } catch (error) {
     context.error(error instanceof Error ? error.message : String(error));

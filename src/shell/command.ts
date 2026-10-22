@@ -748,6 +748,24 @@ export function wordsOf(segment: string, dialect: Dialect = "bash"): string[] {
 const KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
 const ASSIGNMENT = /^[A-Za-z_]\w*=/;
 
+/**
+ * True when every word is a `VAR=value` assignment: the step sets variables and runs nothing
+ * (`FOO=1 BAR=2`). `FOO=1 tsc` is not one: a program follows.
+ */
+export function isAssignmentOnly(words: readonly string[]): boolean {
+  return words.length > 0 && words.every((word) => ASSIGNMENT.test(word));
+}
+
+/** Commands that change the folder the rest of the line runs in (bash, cmd, PowerShell). */
+export const CHANGE_DIR: ReadonlySet<string> = new Set([
+  "cd",
+  "chdir",
+  "popd",
+  "pushd",
+  "set-location",
+  "sl",
+]);
+
 /** A redirection word: group 1 is the operator, group 2 its target when it is attached. */
 const REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
 

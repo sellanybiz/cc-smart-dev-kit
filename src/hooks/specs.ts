@@ -41,12 +41,12 @@ import { mergeKinds } from "../jobs/kinds";
 import { programsOf } from "../shell/command";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
-import { afterMerge, mergesPullRequest, requestsMerge } from "./after-merge";
+import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
 import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
 import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
-import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
+import { DEFAULT_PROTECTED_BRANCHES, guardVerdict, pushRulesFor, runsGit } from "./git-guard";
 import {
   addContext,
   type HookInput,
@@ -61,6 +61,7 @@ import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
 import { messageGuard } from "./message-guard";
+import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
 import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
@@ -138,22 +139,26 @@ export const gitGuardHook: HookSpec = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
-  run: ({ project, input, cwd, env }): HookResult => {
+  run: (context): HookResult => {
+    const { project, input, cwd, env } = context;
     const config = project.config;
     if (config === null) return SILENT;
     const command = stringField(toolInput(input).command);
     if (command === null) return SILENT;
-    const questions = guardQuestions(command, cwd, {
+    const verdict = guardVerdict(command, cwd, {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
+      pushRules: pushRulesFor(env, () => autoPushQuestion(context)),
       sharedStash: config.worktrees !== undefined,
       env,
     });
-    return questions.length === 0 ? SILENT : toolDecision("ask", questions.join("\n"));
+    // A crew session's push is denied (D24); everything else is a question.
+    if (verdict.refuse.length > 0) return toolDecision("deny", verdict.refuse.join("\n"));
+    return verdict.ask.length === 0 ? SILENT : toolDecision("ask", verdict.ask.join("\n"));
   },
 };
 
 /**
- * The merge guard: PreToolUse on Bash and PowerShell, before a command that merges a pull
+ * The merge guard: PreToolUse on Bash and PowerShell, before a command that merges, opens or readies a pull
  * request. It lets the merge through without a question only when the project's `autoMerge`
  * allows it, the required checks are green, and the head commit's review is recorded;
  * everything else is a question for the person (§ `merge-guard.ts`, `src/workflow/`).
@@ -163,7 +168,7 @@ export const mergeGuardHook: HookSpec = {
   events: ["PreToolUse"],
   onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
-    return command !== null && requestsMerge(command)
+    return command !== null && requestsPullRequestChange(command)
       ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message))
       : SILENT;
   },
@@ -177,7 +182,7 @@ export const mergeGuardHook: HookSpec = {
   // judge.
   onCrash: guardCrash("whether this merge may happen by itself", (input) => {
     const command = commandOf(input);
-    return command !== "" && requestsMerge(command);
+    return command !== "" && requestsPullRequestChange(command);
   }),
   run: mergeGuard,
 };

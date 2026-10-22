@@ -63,24 +63,12 @@ const ROWS: Row[] = [
   ["stdbuf -oL bunx vitest run", "test:run", viaShell("test:run", "stdbuf -oL bunx vitest run")],
   // was: not routed.
   ["xargs bunx tsc --noEmit", "tsc", viaShell("tsc", "xargs bunx tsc --noEmit")],
-  [
-    "ls | xargs -n 1 bunx vitest run",
-    "test:run",
-    // was: not routed.
-    viaShell("test:run", "ls | xargs -n 1 bunx vitest run"),
-  ],
-  [
-    "if bunx tsc --noEmit; then echo ok; fi",
-    "tsc",
-    // was: not routed (a shell keyword was read as the program).
-    viaShell("tsc", "if bunx tsc --noEmit; then echo ok; fi"),
-  ],
-  [
-    "while true; do bunx vitest run; done",
-    "test:run",
-    // was: not routed.
-    viaShell("test:run", "while true; do bunx vitest run; done"),
-  ],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["ls | xargs -n 1 bunx vitest run", "test:run", null],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["if bunx tsc --noEmit; then echo ok; fi", "tsc", null],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["while true; do bunx vitest run; done", "test:run", null],
   // was: not routed.
   ["! bunx tsc --noEmit", "tsc", viaShell("tsc", "! bunx tsc --noEmit")],
   ["{ bunx tsc --noEmit; }", "tsc", viaShell("tsc", "{ bunx tsc --noEmit; }")],
@@ -93,35 +81,20 @@ const ROWS: Row[] = [
     // was: not routed (HK-9).
     queued("tsc", `${SHELL} -c 'env -S '\\''bunx tsc --noEmit'\\'''`),
   ],
-  [
-    "cat <<EOF\n$(bunx tsc --noEmit)\nEOF",
-    "tsc",
-    // was: not routed (HK-2).
-    viaShell("tsc", "cat <<EOF\n$(bunx tsc --noEmit)\nEOF"),
-  ],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["cat <<EOF\n$(bunx tsc --noEmit)\nEOF", "tsc", null],
   ["cat <<'EOF'\nbunx tsc --noEmit\nEOF", null, null],
-  [
-    "sh <<'EOF'\nbunx tsc --noEmit\nEOF",
-    "tsc",
-    // was: not routed: the script a shell reads from a here-doc is now read.
-    queued("tsc", `${SHELL} -c 'sh <<'\\''EOF'\\''\nbunx tsc --noEmit\nEOF'`),
-  ],
-  [
-    "echo 'bunx tsc --noEmit' | sh",
-    "tsc",
-    // was: not routed: the text piped into a shell is now read.
-    queued("tsc", `${SHELL} -c 'echo '\\''bunx tsc --noEmit'\\'' | sh'`),
-  ],
-  // was: not routed (a backtick substitution).
-  ["echo `bunx tsc --noEmit`", "tsc", viaShell("tsc", "echo `bunx tsc --noEmit`")],
-  [
-    "echo $(( $(bunx tsc --noEmit) ))",
-    "tsc",
-    // was: not routed (a substitution inside arithmetic).
-    viaShell("tsc", "echo $(( $(bunx tsc --noEmit) ))"),
-  ],
-  // was: not routed (`\ #` read as a comment).
-  ["echo \\ #; bunx tsc --noEmit", "tsc", viaShell("tsc", "echo \\ #; bunx tsc --noEmit")],
+  // was: through the person's shell; now raw (HK hunch 1): a shell that reads a here-doc is no
+  // heavy command (the classifier still finds the kind for `job run`'s reservation).
+  ["sh <<'EOF'\nbunx tsc --noEmit\nEOF", "tsc", null],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["echo 'bunx tsc --noEmit' | sh", "tsc", null],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["echo `bunx tsc --noEmit`", "tsc", null],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["echo $(( $(bunx tsc --noEmit) ))", "tsc", null],
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  ["echo \\ #; bunx tsc --noEmit", "tsc", null],
   // was: routed: bash reads `\;` as a `;` character, so the line is one `cd` and runs no tsc.
   ["cd D:\\; bunx tsc --noEmit", null, null],
   [
@@ -138,7 +111,9 @@ const ROWS: Row[] = [
   // was: kind null: the command `job run` queues is read (HK hunch 6). Never routed again.
   [`${LAUNCHER} job run --kind tsc -- bunx tsc`, "tsc", null, true],
   ["bunx tsc --noEmit \\\n  --pretty", "tsc", viaShell("tsc", "bunx tsc --noEmit \\\n  --pretty")],
-  ["bunx tsc --noEmit `\n  --pretty", "tsc", viaShell("tsc", "bunx tsc --noEmit `\n  --pretty")],
+  // was: through the person's shell; now raw (HK hunch 1): the open backtick runs a command
+  // the reader cannot name.
+  ["bunx tsc --noEmit `\n  --pretty", "tsc", null],
   // was: not routed (HK-8). The argv words are the ones bash runs.
   ["b\\unx tsc --noEmit", "tsc", queued("tsc", "bunx tsc --noEmit")],
   // was: not routed (HK-8).

@@ -13,6 +13,11 @@
  *   `push.default=upstream`, a branch whose upstream is `main` pushes to `main`;
  *   `git push --all` / `--mirror`, and the matching refspec `:`;
  * - a branch deleted on the remote (`git push origin :x`, `git push -d origin x`);
+ * - any other `git push` while `autoPush` is off (D15; the default): a push leaves the machine.
+ *   `autoPush` is read as the merge guard reads its gate (`resolveGate`): the default, the
+ *   person's own `workflow.json`, and the project's file as committed on `origin/<base>`, never
+ *   this checkout's copy, so a session cannot switch it on in its own worktree. A policy that
+ *   cannot be read asks. A `--dry-run` sends nothing and asks nothing;
  * - `git reset --hard`; `git clean -f` (not a `-n` dry run); `git worktree remove -f`;
  * - a checkout that discards changes: `git checkout -- <path>`, `checkout .`,
  *   `checkout -f`, `git switch -f` / `--discard-changes`, `git restore <path>` without
@@ -22,7 +27,12 @@
  * - when the project works in worktrees (`worktrees` in cc-smart-dev-kit.json): a bare `git stash`
  *   or `git stash pop`, because every worktree shares one stash.
  *
- * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
+ * "ask", never "deny": the person may mean it, and a hook cannot tell. **One exception: a crew
+ * session never pushes** (D24). A session the crew launcher started (`CC_SMART_DEV_KIT_CREW`
+ * is set in its environment) commits on its own branch and the lead merges it locally, so any
+ * `git push` from it is denied, whatever `autoPush` says. Claude Code's background sessions
+ * push a worktree's branch on their own when the repository has a remote, which is the reason
+ * for the rule (`docs/claude-code-contract.md`). Every command of a
  * line is read on its own, through the one shell reader (`src/shell/command.ts`), in the
  * dialect of the tool that runs it (Bash or PowerShell; both when it is not told): quoted
  * text, quoted here-doc bodies and comments are data; a substitution (`$( … )`, a backtick,
@@ -39,7 +49,9 @@
  * asked about; `git checkout <name>` cannot tell a file from a branch, so it stays silent.
  */
 import { isAbsolute, resolve } from "node:path";
+import { crewIdOf } from "../crew/session";
 import {
+  CHANGE_DIR,
   type Dialect,
   invocationOf,
   isShort,
@@ -60,8 +72,38 @@ import type { Env } from "./run";
 /** The branches asked about when cc-smart-dev-kit.json names none. */
 export const DEFAULT_PROTECTED_BRANCHES = ["main"];
 
+/**
+ * What the guard does about a push besides the questions about force and protected branches:
+ * a crew session never pushes (D24), and `autoPush` off asks (D15).
+ */
+export interface PushRules {
+  /** The session is a crew session: any `git push` is denied. */
+  crew: boolean;
+  /**
+   * The question `autoPush` off puts to the person, or null when it is on. A function, so the
+   * policy is read (git, a file) only for a line that really pushes.
+   */
+  autoPushAsk: () => string | null;
+}
+
+/** Pushes need no question of this kind: `autoPush` is on, and the session is nobody's crew. */
+export const PUSH_FREE: PushRules = { crew: false, autoPushAsk: () => null };
+
+/** The rules of the session whose environment is `env`: the crew variable decides `crew`. */
+export function pushRulesFor(env: Env, autoPushAsk: () => string | null): PushRules {
+  return { crew: crewIdOf(env) !== null, autoPushAsk };
+}
+
+/** Why a crew session's push is denied: the one reason, in the words the session reads. */
+export const CREW_PUSH_REFUSAL =
+  "A crew session never pushes: it commits on its own branch, and the lead merges that branch " +
+  "locally (`git merge`). Only the lead's final push reaches the remote, and the person " +
+  "approves that one. Stop at your commit and say so in your report.";
+
 export interface GuardOptions {
   protectedBranches: string[];
+  /** What a push may do here (`PushRules`). */
+  pushRules: PushRules;
   /** Ask before a bare `git stash` / `stash pop`: the project works in worktrees. */
   sharedStash: boolean;
   env: Env;
@@ -72,6 +114,8 @@ export interface GuardOptions {
 /** One guard run: its options, and what it read from git once (a line may push many times). */
 interface GuardRun {
   options: GuardOptions;
+  /** What the guard denies (a crew session's push), each once; the questions are separate. */
+  refusals: Set<string>;
   branches: Map<string, string | undefined>;
   pushConfigs: Map<string, Map<string, string[]>>;
 }
@@ -89,9 +133,6 @@ const PUSH_VALUE_OPTIONS: Array<[string, number]> = [
   ["--receive-pack", 5],
   ["--repo", 6],
 ];
-
-/** Commands that change the folder the rest of the line runs in (bash, cmd, PowerShell). */
-const CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
 
 /**
  * True when `arg` is the long option `full`, or a prefix of it that git accepts (git takes
@@ -239,7 +280,12 @@ interface PushPlace {
   bare: (remote: string | null) => string[];
 }
 
-function pushQuestions(args: string[], place: PushPlace, protectedBranches: string[]): string[] {
+function pushQuestions(
+  args: string[],
+  place: PushPlace,
+  protectedBranches: string[],
+  autoPushAsk: () => string | null,
+): string[] {
   const found: string[] = [];
   const positional: string[] = [];
   let dryRun = false;
@@ -288,6 +334,9 @@ function pushQuestions(args: string[], place: PushPlace, protectedBranches: stri
   }
   // A dry run sends nothing, whatever it would have sent.
   if (dryRun) return found;
+  // Every push leaves the machine; `autoPush` off asks about each one (D15).
+  const autoPush = autoPushAsk();
+  if (autoPush !== null) found.push(autoPush);
   // The first word is the remote; the rest are refspecs (`[+]source[:destination]`). With
   // none, git sends what the config says for that remote (`bareRefspecs`).
   const given = repoGiven ? positional : positional.slice(1);
@@ -536,7 +585,12 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
         return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
       },
     };
-    return pushQuestions(rest, place, options.protectedBranches);
+    // A crew session's push is denied, whatever else it is (D24), and nothing else is asked.
+    if (options.pushRules.crew) {
+      run.refusals.add(CREW_PUSH_REFUSAL);
+      return [];
+    }
+    return pushQuestions(rest, place, options.protectedBranches, options.pushRules.autoPushAsk);
   }
   if (sub === "stash") return stashQuestions(rest, options.sharedStash);
   if (sub === "worktree" && rest[0] === "remove") {
@@ -633,11 +687,30 @@ function inspect(
  * joined to the next and not, since a trailing `\` may just end a Windows path.
  */
 export function guardQuestions(command: string, cwd: string, options: GuardOptions): string[] {
-  const run: GuardRun = { options, branches: new Map(), pushConfigs: new Map() };
+  return guardVerdict(command, cwd, options).ask;
+}
+
+/** What the guard says about a command line: what it denies, and what it asks the person. */
+export interface GuardVerdict {
+  /** Denied, each reason once: the session reads it and stops (a crew session's push). */
+  refuse: string[];
+  /** Asked, each question once; empty when `refuse` is not (a denied call asks nothing). */
+  ask: string[];
+}
+
+/** `guardQuestions`, and what the guard denies besides: a crew session's push (D24). */
+export function guardVerdict(command: string, cwd: string, options: GuardOptions): GuardVerdict {
+  const run: GuardRun = {
+    options,
+    refusals: new Set(),
+    branches: new Map(),
+    pushConfigs: new Map(),
+  };
   const found = readingsOf(command, options.dialect).flatMap((reading) =>
     inspect(command, cwd, reading, run),
   );
-  return [...new Set(found)];
+  const refuse = [...run.refusals];
+  return { refuse, ask: refuse.length > 0 ? [] : [...new Set(found)] };
 }
 
 /**

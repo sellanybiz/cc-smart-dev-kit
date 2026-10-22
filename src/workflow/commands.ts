@@ -7,7 +7,8 @@
  * value of the setting it maps onto right now (`resolve.ts`). Its `gate` lines are the review
  * gate exactly as the merge guard reads it — the policy committed on `origin/<worktrees.base>`
  * (`resolveGate`) — and it prints whether the commit this checkout is on has a recorded review
- * that gate trusts. `set` and `unset` write one value where
+ * that gate trusts. Both `show` and `set` end with the settings that cannot work together
+ * (`workflowClashes` in `clashes.ts`, D16): one `!` line each, with its fix. `set` and `unset` write one value where
  * it really lives (`write.ts`): without `--project`, the person's own defaults; with it, the
  * project's `.claude/cc-smart-dev-kit.json` in this checkout (the person commits it). Of a gate
  * key (`REVIEW_GATE_KEYS`) both refuse inside Claude Code. `review-done` records one commit in the
@@ -24,6 +25,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { clashesOf, clashLines } from "./clashes";
 import {
   type Gate,
   type ResolvedWorkflow,
@@ -213,6 +215,9 @@ function show(context: WorkflowContext): number {
     print(`${key} = ${showValue(key, value)} (${source})`);
   }
   for (const line of gate.lines) print(line);
+  for (const line of clashLines(clashesOf(resolved, here.config?.worktrees?.base ?? null))) {
+    print(line);
+  }
   const agents = (gate.gate?.resolved ?? resolved).reviewAgents.value;
   print(reviewLine(paths, here.checkout, agents, env));
   if (here.why !== null) print(`no project settings here: ${here.why}`);
@@ -341,6 +346,14 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
       ? writeProjectSetting(context.cwd, key, value, context.env)
       : writePersonalSetting(context.paths, key, value);
     context.print(line);
+    // D16: a write that leaves settings that cannot work together says so, with the fix. The
+    // policy after the write is read the same way `show` reads it.
+    const here = project(context.cwd, context.env);
+    for (const clash of clashLines(
+      clashesOf(resolveWorkflow(context.paths, here.config), here.config?.worktrees?.base ?? null),
+    )) {
+      context.print(clash);
+    }
     return 0;
   } catch (error) {
     context.error(error instanceof Error ? error.message : String(error));

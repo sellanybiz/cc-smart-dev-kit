@@ -14,7 +14,11 @@
  *   (`otherBaseCaution`): a session on such a branch must not merge the integration base in,
  *   because that would ship unreleased work.
  *
- * It looks the pull request up once with `gh pr view` (10 s at most). A `gh pr merge` that
+ * It looks the pull request up once with `gh pr view` (10 s at most). **The hook has 30 s,
+ * and its children (the alias list, `git worktree list`, `gh pr view`, `git remote get-url`)
+ * share one budget** (`budget.ts`, 25 s): each call gets the smaller of its own limit and the
+ * time left, and a note is skipped when too little is left, so the hook never runs into
+ * Claude Code's kill (HK hunch 9; the limits alone added up to 43 s). A `gh pr merge` that
  * only arms a merge (`--auto`) or disarms one is no merge, and neither are the words
  * `gh pr merge` in a quote, a quoted here-doc or a comment (`src/shell/command.ts`, in the
  * dialect of the tool that ran the line). When the shell
@@ -32,6 +36,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import {
+  CHANGE_DIR,
   type Dialect,
   dialectOfTool,
   invocationOf,
@@ -47,7 +52,8 @@ import {
   wordsOf,
 } from "../shell/command";
 import { startAutoClean } from "../worktrees/auto-start";
-import { innermostWorktree, listWorktrees, runGit } from "./git";
+import { startBudget } from "./budget";
+import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
 import { gitCalls } from "./git-guard";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
@@ -130,6 +136,34 @@ export interface MergeCall {
   admin: boolean;
   /** The word after `gh` that names no gh command: an alias to look up, or an extension. */
   unknown: string | null;
+  /**
+   * Not a merge but a pull request opened (`gh pr create`) or made ready (`gh pr ready`): what
+   * the project's `openPr` setting governs (D16). Absent on a merge. `pullRequestMerges` and
+   * `mergeCalls` never return such a call; `pullRequestOpenings` and `openingCalls` return
+   * only these.
+   */
+  opens?: "create" | "ready";
+  /** A `gh pr create --draft`, or a `draft` field the API call sets: it opens as a draft. */
+  draft?: boolean;
+}
+
+/**
+ * The words in a reason that name what the call does, by kind of call. A reason is written
+ * once, with these places marked, and filled in where the call is known: `the merge` or `the
+ * command`, `merges in` or `works in`, `merges from` or `acts on`.
+ */
+const WORDS: Readonly<Record<string, readonly [merge: string, opens: string]>> = {
+  the: ["the merge", "the command"],
+  acts: ["merges in", "works in"],
+  from: ["merges from", "acts on"],
+};
+
+/** `reason` with its marked words (`{the}`, `{acts}`, `{from}`) filled in for a merge or an opening. */
+function say(reason: string, opens: boolean): string {
+  return reason.replace(/\{(the|acts|from)\}/g, (_, key: string) => {
+    const words = WORDS[key];
+    return (opens ? words?.[1] : words?.[0]) ?? key;
+  });
 }
 
 /** A merge call with every field the caller did not set at its "no" value. */
@@ -145,9 +179,6 @@ function call(fields: Partial<MergeCall> = {}): MergeCall {
     ...fields,
   };
 }
-
-/** Commands that change the folder the rest of the line runs in (the git guard reads the same names). */
-const CHANGE_DIR = new Set(["cd", "chdir", "popd", "pushd", "set-location", "sl"]);
 
 /** The word `env` as a program (`env`, `/usr/bin/env`, `env.exe`). */
 const ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
@@ -181,6 +212,34 @@ export function pullRequestMerges(
   command: string,
   aliases: ReadonlyMap<string, string> | null = null,
   dialect?: Dialect,
+): MergeCall[] {
+  return pullRequestCalls(command, aliases, dialect).filter(isMerge);
+}
+
+/**
+ * Every pull request a command line opens or makes ready, in the order it runs them (`gh pr
+ * create`, `gh pr new`, `gh pr ready`, a `gh api` call to the pulls endpoint, the GraphQL
+ * `createPullRequest` / `markPullRequestReadyForReview`): what `openPr` governs (D16). Read
+ * exactly as `pullRequestMerges` reads a merge, by the same reader.
+ */
+export function pullRequestOpenings(
+  command: string,
+  aliases: ReadonlyMap<string, string> | null = null,
+  dialect?: Dialect,
+): MergeCall[] {
+  return pullRequestCalls(command, aliases, dialect).filter((one) => !isMerge(one));
+}
+
+/** A call that is not an opening: a merge, or a word that may expand to one. */
+export function isMerge(one: MergeCall): boolean {
+  return one.opens === undefined;
+}
+
+/** Every call the reader finds, merges and openings together, each once. */
+function pullRequestCalls(
+  command: string,
+  aliases: ReadonlyMap<string, string> | null,
+  dialect: Dialect | undefined,
 ): MergeCall[] {
   const seen = new Set<string>();
   const calls: MergeCall[] = [];
@@ -288,44 +347,44 @@ function suScript(program: string, args: string[]): string | undefined {
  * show. `feeds`: the arguments come from outside the line (a pipe, a file list), so the pull
  * request the words name is not the one that merges.
  */
-const RUNNERS: Record<string, { feeds: boolean; moved: string; reason: string }> = {
+const RUNNERS: Record<string, { feeds: boolean; moved: string; via: string }> = {
   doas: {
     feeds: false,
-    moved: "an earlier `doas` in the same command may run the merge as another user",
-    reason: "the merge runs under `doas`, with another user's login and gh config",
+    moved: "an earlier `doas` in the same command may run {the} as another user",
+    via: "under `doas`, with another user's login and gh config",
   },
   find: {
     feeds: false,
-    moved: "an earlier `find` in the same command may run the merge once for each match",
-    reason: "the merge runs from `find -exec`, once for each match",
+    moved: "an earlier `find` in the same command may run {the} once for each match",
+    via: "from `find -exec`, once for each match",
   },
   parallel: {
     feeds: true,
     moved:
-      "an earlier `parallel` in the same command may feed the merge its arguments from outside the line",
-    reason: "the merge runs from `parallel`, whose arguments come from outside the line",
+      "an earlier `parallel` in the same command may feed {the} its arguments from outside the line",
+    via: "from `parallel`, whose arguments come from outside the line",
   },
   su: {
     feeds: true,
     moved:
-      "an earlier `su` in the same command may run the merge in another shell, with its own environment",
-    reason: "the merge runs from `su`, whose command and environment come from outside the line",
+      "an earlier `su` in the same command may run {the} in another shell, with its own environment",
+    via: "from `su`, whose command and environment come from outside the line",
   },
   sudo: {
     feeds: false,
-    moved: "an earlier `sudo` in the same command may run the merge under another user",
-    reason: "the merge runs under `sudo`, with another user's login and gh config",
+    moved: "an earlier `sudo` in the same command may run {the} under another user",
+    via: "under `sudo`, with another user's login and gh config",
   },
   watch: {
     feeds: false,
-    moved: "an earlier `watch` in the same command may run the merge over and over",
-    reason: "the merge runs from `watch`, over and over",
+    moved: "an earlier `watch` in the same command may run {the} over and over",
+    via: "from `watch`, over and over",
   },
   xargs: {
     feeds: true,
     moved:
-      "an earlier `xargs` in the same command may feed the merge its arguments from outside the line",
-    reason: "the merge runs from `xargs`, whose arguments come from outside the line",
+      "an earlier `xargs` in the same command may feed {the} its arguments from outside the line",
+    via: "from `xargs`, whose arguments come from outside the line",
   },
 };
 
@@ -333,7 +392,7 @@ const RUNNERS: Record<string, { feeds: boolean; moved: string; reason: string }>
 const SU_RUNNER: Runner = {
   feeds: true,
   name: "su",
-  reason: "the merge runs from `su`, whose command and environment come from outside the line",
+  via: "from `su`, whose command and environment come from outside the line",
 };
 
 /** One runner and how it runs what follows it. */
@@ -341,7 +400,8 @@ interface Runner {
   /** The arguments come from outside the line (a pipe, a file list). */
   feeds: boolean;
   name: string;
-  reason: string;
+  /** How it runs the call, after `the merge runs` / `the command runs`. */
+  via: string;
 }
 
 /** The runner a step's words name (`sudo`, `xargs`, …), or null when it runs the merge itself. */
@@ -349,7 +409,7 @@ function runnerOf(program: string, before: string[]): Runner | null {
   for (const word of [program, ...before]) {
     const name = programName(word);
     const spec = RUNNERS[name];
-    if (spec !== undefined) return { feeds: spec.feeds, name, reason: spec.reason };
+    if (spec !== undefined) return { feeds: spec.feeds, name, via: spec.via };
   }
   return null;
 }
@@ -369,7 +429,9 @@ function runnerCalls(
   }
   // Or the whole merge is one word the runner runs: `parallel 'gh pr merge {}' ::: 5 6`, where
   // the quotes kept it whole. Reading it as a line of its own is the only way to see it.
-  const held = words.find((word) => /\bgh\b/i.test(word) && /\bmerge\b/i.test(word));
+  const held = words.find(
+    (word) => /\bgh\b/i.test(word) && /\b(merge|create|new|ready)\b/i.test(word),
+  );
   if (held === undefined) return [];
   return refuseRunner(lineMerges(held, dialect, aliases, depth + 1, null), runner);
 }
@@ -382,7 +444,13 @@ function runnerCalls(
 function refuseRunner(calls: MergeCall[], runner: Runner): MergeCall[] {
   return calls
     .filter((one) => !one.disarms)
-    .map((one) => call({ target: runner.feeds ? null : one.target, refusal: runner.reason }));
+    .map((one) =>
+      call({
+        ...(one.opens === undefined ? {} : { opens: one.opens }),
+        target: runner.feeds ? null : one.target,
+        refusal: say(`{the} runs ${runner.via}`, one.opens !== undefined),
+      }),
+    );
 }
 
 /** Why a `git` command in the line moves the checkout or the branch a later merge acts on. */
@@ -395,7 +463,7 @@ function gitMoved(args: string[]): string | null {
   }
   const switched = calls.find((one) => one.sub === "switch" || one.sub === "checkout");
   if (switched !== undefined) {
-    return `an earlier \`git ${switched.sub}\` in the same command may change the branch it merges from`;
+    return `an earlier \`git ${switched.sub}\` in the same command may change the branch it {from}`;
   }
   return null;
 }
@@ -406,10 +474,10 @@ function gitMoved(args: string[]): string | null {
  */
 function prefixMoved(before: readonly string[]): string | null {
   if (before.some((word) => GH_POINTING.test(word))) {
-    return "the merge sets `GH_REPO`/`GH_HOST` itself, so which repository it merges in is not certain";
+    return "{the} sets `GH_REPO`/`GH_HOST` itself, so which repository it {acts} is not certain";
   }
   if (before.some((word) => ENV_PROGRAM.test(word))) {
-    return "the merge runs through `env`, so which environment gh sees is not certain";
+    return "{the} runs through `env`, so which environment gh sees is not certain";
   }
   return null;
 }
@@ -451,13 +519,30 @@ function leadingFlags(words: string[]): Leading {
   return { rest: words.slice(index), repo, unknown: null, help: false };
 }
 
-/** Could these words be a merge, without reading them? (an alias may run one, `api` decides.) */
+/** `gh pr` subcommands the guard reads: a merge, and the two that open a pull request (D16). */
+const PR_OPENERS: ReadonlySet<string> = new Set(["create", "new", "ready"]);
+
+/**
+ * Could these words be a merge, or open a pull request, without reading them? (an alias may
+ * run one, `api` decides.)
+ */
 function couldBeMerge(rest: string[]): boolean {
   const command = rest[0]?.toLowerCase();
   if (command === undefined) return false;
   if (command === "api") return true;
-  if (command === "pr") return rest.slice(1).some((word) => word.toLowerCase() === "merge");
+  if (command === "pr") {
+    return rest
+      .slice(1)
+      .some((word) => word.toLowerCase() === "merge" || PR_OPENERS.has(word.toLowerCase()));
+  }
   return !GH_COMMANDS.has(command);
+}
+
+/** Do these words name a `gh pr` command that opens or readies a pull request, and none that merges? */
+function onlyOpens(rest: string[]): boolean {
+  if (rest[0]?.toLowerCase() !== "pr") return false;
+  const words = rest.slice(1).map((word) => word.toLowerCase());
+  return words.some((word) => PR_OPENERS.has(word)) && !words.includes("merge");
 }
 
 /**
@@ -480,6 +565,9 @@ function dispatch(
     return couldBeMerge(leading.rest)
       ? [
           call({
+            // Words that name a `gh pr create` / `ready` and no merge are an opening's: its
+            // question is `openPr`'s, not a merge's.
+            ...(onlyOpens(leading.rest) ? { opens: "create" as const } : {}),
             refusal: `the command carries \`${leading.unknown}\` before the gh command, which this guard does not know`,
           }),
         ]
@@ -572,22 +660,101 @@ function prCalls(rest: string[], moved: string | null, carried: string | null): 
     else {
       return [
         call({
-          refusal: `\`gh pr\` takes a flag this guard does not know (\`${word}\`), so it cannot tell whether this is a merge`,
+          refusal: `\`gh pr\` takes a flag this guard does not know (\`${word}\`), so it cannot tell whether this merges or opens a pull request`,
         }),
       ];
     }
   }
-  if (rest[index] !== "merge") return [];
+  const sub = rest[index];
   const args = rest.slice(index + 1);
+  if (sub !== undefined && PR_OPENERS.has(sub)) {
+    if (args.some((arg) => arg === "-h" || arg === "--help")) return [];
+    return openingCall(sub === "ready" ? "ready" : "create", args, moved, repo ?? carried);
+  }
+  if (sub !== "merge") return [];
   if (args.some((arg) => arg === "-h" || arg === "--help")) return [];
   const named = mergeArguments(args);
   return [
     call({
       target: { ref: named.ref, repo: repo ?? named.repo ?? carried },
-      refusal: moved,
+      refusal: moved === null ? null : say(moved, false),
       arms: args.some(isAutoFlag),
       disarms: args.some(isDisableAutoFlag),
       admin: named.admin,
+    }),
+  ];
+}
+
+/** `gh pr create` flags that take a value (gh 2.102.0, `gh pr create --help`). */
+const CREATE_FLAGS_WITH_VALUE = new Set([
+  "--assignee",
+  "--attach",
+  "--base",
+  "--body",
+  "--body-file",
+  "--head",
+  "--label",
+  "--milestone",
+  "--project",
+  "--recover",
+  "--repo",
+  "--reviewer",
+  "--template",
+  "--title",
+]);
+
+/** Those flags' short letters (`-R` is gh's own), which may carry their value attached. */
+const CREATE_SHORT_WITH_VALUE = "aBbFHlmprRTt";
+
+/**
+ * The call for a `gh pr create` / `gh pr ready` (D16). `create` reads its own flags the way
+ * gh does: a flag's value is never read as a flag (`--title --draft` is a title), nothing after
+ * `--` is a flag, and `--draft=false` is no draft. `ready --undo` makes a draft of a pull
+ * request, so it opens nothing.
+ */
+function openingCall(
+  kind: "create" | "ready",
+  args: string[],
+  moved: string | null,
+  carried: string | null,
+): MergeCall[] {
+  let repo: string | null = carried;
+  let draft = false;
+  let undo = false;
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") break;
+    if (word.startsWith("--")) {
+      const at = word.indexOf("=");
+      const name = at === -1 ? word : word.slice(0, at);
+      const value = at === -1 ? undefined : word.slice(at + 1);
+      if (name === "--repo") repo = value ?? args[index + 1] ?? repo;
+      if (name === "--draft") draft = value === undefined || value.toLowerCase() !== "false";
+      if (name === "--undo") undo = true;
+      if (value === undefined && CREATE_FLAGS_WITH_VALUE.has(name)) index += 1;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, CREATE_SHORT_WITH_VALUE);
+      // A group of letters: `-fd` is `--fill --draft`; the last letter may take the value.
+      const last = flags.slice(-1);
+      const own =
+        last !== "" && CREATE_SHORT_WITH_VALUE.includes(last) ? flags.slice(0, -1) : flags;
+      if (own.includes("d")) draft = true;
+      if (last !== "" && CREATE_SHORT_WITH_VALUE.includes(last)) {
+        const given = wantsNext ? (args[index + 1] ?? null) : word.slice(flags.length + 1);
+        if (last === "R") repo = given === "" ? repo : given;
+        if (wantsNext) index += 1;
+      }
+    }
+  }
+  if (kind === "ready" && undo) return [];
+  return [
+    call({
+      draft: kind === "create" && draft,
+      opens: kind,
+      refusal: moved === null ? null : say(moved, true),
+      target: { ref: null, repo },
     }),
   ];
 }
@@ -700,6 +867,7 @@ function apiCalls(rest: string[]): MergeCall[] {
   const fields: string[] = [];
   let endpoint: string | null = null;
   let body = false;
+  let method: string | null = null;
   for (let index = 0; index < rest.length; index++) {
     const word = rest[index] ?? "";
     if (word === "--") {
@@ -713,11 +881,12 @@ function apiCalls(rest: string[]): MergeCall[] {
       if (!API_VALUE_FLAGS.has(name) && !API_PLAIN_FLAGS.has(name)) {
         return [
           call({
-            refusal: `\`gh api\` takes a flag this guard does not know (\`${name}\`), so it cannot tell whether this is a merge`,
+            refusal: `\`gh api\` takes a flag this guard does not know (\`${name}\`), so it cannot tell whether this merges or opens a pull request`,
           }),
         ];
       }
       if (name === "--input") body = true;
+      if (name === "--method") method = at === -1 ? (rest[index + 1] ?? "") : word.slice(at + 1);
       if (name === "--field" || name === "--raw-field") {
         fields.push(at === -1 ? (rest[index + 1] ?? "") : word.slice(at + 1));
       }
@@ -732,7 +901,7 @@ function apiCalls(rest: string[]): MergeCall[] {
       if (unknown !== undefined) {
         return [
           call({
-            refusal: `\`gh api\` takes a flag this guard does not know (\`-${unknown}\`), so it cannot tell whether this is a merge`,
+            refusal: `\`gh api\` takes a flag this guard does not know (\`-${unknown}\`), so it cannot tell whether this merges or opens a pull request`,
           }),
         ];
       }
@@ -741,12 +910,15 @@ function apiCalls(rest: string[]): MergeCall[] {
       const value = wantsNext ? (rest[index + 1] ?? "") : word.slice(flags.length + 1);
       if (wantsNext) index += 1;
       if (letter === "f" || letter === "F") fields.push(value);
+      if (letter === "X") method = value;
       continue;
     }
     endpoint ??= word;
   }
   if (endpoint === null) return [];
   if (isGraphqlEndpoint(endpoint)) return graphqlCalls(fields, body);
+  // gh sends GET, and POST once a parameter or a body is added (`gh api --help`).
+  const posts = (method ?? (fields.length > 0 || body ? "POST" : "GET")).toUpperCase() === "POST";
   // A path cut short: in PowerShell every brace ends a command, so an unquoted
   // `repos/{owner}/{repo}/pulls/5/merge` reaches this point as `repos/`. A path the guard
   // cannot read whole must ask, never be guessed at.
@@ -759,7 +931,11 @@ function apiCalls(rest: string[]): MergeCall[] {
     ];
   }
   const merged = pullRequestMergePath(endpoint);
-  return merged === null ? [] : [call({ target: merged, refusal: API_MERGE_REFUSAL })];
+  if (merged !== null) return [call({ target: merged, refusal: API_MERGE_REFUSAL })];
+  const created = pullRequestsPath(endpoint);
+  if (created === null || !posts) return [];
+  const draft = fields.some((field) => /^draft=true$/i.test(field));
+  return [call({ draft, opens: "create", target: { ref: null, repo: created.repo } })];
 }
 
 /** Does the endpoint `gh api` names reach GitHub's GraphQL API (`graphql`, `/graphql`, a URL)? */
@@ -793,14 +969,20 @@ function graphqlCalls(fields: string[], body: boolean): MergeCall[] {
         }),
       ];
     }
+    const calls: MergeCall[] = [];
     if (/mergePullRequest|enablePullRequestAutoMerge/i.test(query)) {
-      return [
+      calls.push(
         call({
           refusal:
             "the GraphQL query it sends merges a pull request (`mergePullRequest`), which this guard does not judge",
         }),
-      ];
+      );
     }
+    if (/createPullRequest/i.test(query)) {
+      calls.push(call({ draft: /draft\s*:\s*true/i.test(query), opens: "create" }));
+    }
+    if (/markPullRequestReadyForReview/i.test(query)) calls.push(call({ opens: "ready" }));
+    if (calls.length > 0) return calls;
   }
   return [];
 }
@@ -824,6 +1006,19 @@ function pullRequestMergePath(
   };
 }
 
+/** The repository a `gh api` call to the pull request collection names (`repos/o/r/pulls`), or null. */
+function pullRequestsPath(endpoint: string): { repo: string | null } | null {
+  const path = endpoint
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/[?#].*$/, "")
+    .replace(/^\/+|\/+$/g, "");
+  const match = /^repos\/([^/]+)\/([^/]+)\/pulls$/.exec(path);
+  const [, owner, name] = match ?? [];
+  if (owner === undefined || name === undefined) return null;
+  const placeholder = (part: string) => part.includes("{");
+  return { repo: placeholder(owner) || placeholder(name) ? null : `${owner}/${name}` };
+}
+
 /**
  * Every merge a command line asks GitHub for, with the person's gh aliases read when a
  * `gh <word>` needs them — `gh m 5`, when `m` is their alias for `pr merge`: an alias that
@@ -841,13 +1036,29 @@ export function mergeCalls(
   timeoutMs = ALIAS_TIMEOUT_MS,
   dialect?: Dialect,
 ): MergeCall[] {
-  const unread = pullRequestMerges(command, null, dialect);
+  return pullRequestCallsWithAliases(command, folder, env, timeoutMs, dialect).filter(isMerge);
+}
+
+/**
+ * Merges and openings together (`MergeCall.opens` tells them apart), with the person's gh
+ * aliases read when a `gh <word>` needs them, exactly as `mergeCalls` does: one alias read
+ * serves both. An alias list that cannot be read leaves the `unread` call, which the merge
+ * guard asks about.
+ */
+export function pullRequestCallsWithAliases(
+  command: string,
+  folder: string,
+  env: Env,
+  timeoutMs: number = ALIAS_TIMEOUT_MS,
+  dialect?: Dialect,
+): MergeCall[] {
+  const unread = pullRequestCalls(command, null, dialect);
   if (!unread.some((one) => one.unknown !== null)) return unread;
   const aliases = readGhAliases(folder, env, timeoutMs);
   if (aliases === null) {
     return [...unread.filter((one) => one.unknown === null), call({ unread: "its aliases" })];
   }
-  return pullRequestMerges(command, aliases, dialect);
+  return pullRequestCalls(command, aliases, dialect);
 }
 
 /** How long one `gh` call in this hook may take: both hooks allow a gh call 10 s. */
@@ -947,6 +1158,15 @@ export function mergesPullRequest(command: string, dialect?: Dialect): boolean {
  */
 export function requestsMerge(command: string, dialect?: Dialect): boolean {
   return pullRequestMerges(command, null, dialect).some((one) => !one.disarms);
+}
+
+/**
+ * Did this shell command ask GitHub to merge a pull request, or open or ready one? What the
+ * merge guard watches (D16): one cheap read, so an ordinary Bash call finds nothing and pays
+ * nothing.
+ */
+export function requestsPullRequestChange(command: string, dialect?: Dialect): boolean {
+  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms);
 }
 
 /**
@@ -1135,13 +1355,19 @@ export function tellSessionsNote(
   ].join("\n");
 }
 
-/** The pull request `ref` names (or the current branch's), or null when gh cannot say. */
+/**
+ * The pull request `ref` names (or the current branch's), or null when gh cannot say.
+ * `timeoutMs`: the time this call may take (the caller's own limit or what is left).
+ */
 function viewPullRequest(
   ref: string | null,
   repo: string | null,
   folder: string,
   env: Env,
+  timeoutMs: number,
 ): PullRequestView | null {
+  // Nothing left: the call is not made at all (a spawn with `timeout: 0` has no limit).
+  if (timeoutMs <= 0) return null;
   try {
     const view = Bun.spawnSync(
       [
@@ -1153,7 +1379,7 @@ function viewPullRequest(
         "--json",
         PULL_REQUEST_FIELDS,
       ],
-      { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: GH_TIMEOUT_MS },
+      { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs },
     );
     return view.exitCode === 0 ? parsePullRequestView(view.stdout.toString()) : null;
   } catch {
@@ -1180,7 +1406,9 @@ export function afterMerge(context: HookContext): HookResult {
   // later, with nobody watching, so it is no merge here. The line is read in the dialect of
   // the tool that ran it.
   const dialect = dialectOfTool(input.tool_name);
-  const calls = mergeCalls(command, cwd, env, ALIAS_TIMEOUT_MS, dialect).filter(
+  // One budget for every child the hook starts (above): a call with no time left is not made.
+  const { timeFor } = startBudget(env);
+  const calls = mergeCalls(command, cwd, env, timeFor(ALIAS_TIMEOUT_MS), dialect).filter(
     (one) => !one.arms && !one.disarms,
   );
   const target = mergeTargetOf(calls);
@@ -1188,7 +1416,9 @@ export function afterMerge(context: HookContext): HookResult {
   const repo = project.mainCheckout ?? project.root;
 
   let worktree: { branch: string | null; path: string } | null = null;
-  const [, ...linked] = listWorktrees(repo, env);
+  const listLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (listLeft <= 0) return SILENT;
+  const [, ...linked] = listWorktrees(repo, env, listLeft);
   const mine = innermostWorktree(
     cwd,
     linked.map((listed) => listed.path),
@@ -1200,8 +1430,12 @@ export function afterMerge(context: HookContext): HookResult {
     };
   }
 
-  const pr = viewPullRequest(target.ref, target.repo, cwd, env);
-  const origin = runGit(repo, ["remote", "get-url", "origin"], env);
+  const viewLeft = timeFor(GH_TIMEOUT_MS);
+  if (viewLeft <= 0) return SILENT;
+  const pr = viewPullRequest(target.ref, target.repo, cwd, env, viewLeft);
+  const originLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (originLeft <= 0) return SILENT;
+  const origin = runGit(repo, ["remote", "get-url", "origin"], env, originLeft);
   const record = pr === null ? null : announcedFile(repo, pr.number, env);
   const outcome = mergeOutcome({
     announced: record !== null && existsSync(record),

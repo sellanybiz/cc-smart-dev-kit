@@ -32,7 +32,8 @@ import { z } from "zod";
 import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
 import { detectIndent, isObject } from "../setup/managed-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
-import type { Workflow } from "../workflow/schema";
+import { clashNote, workflowClashes } from "../workflow/clashes";
+import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   ccSmartDevKitConfigSchema,
   RETIRED_WORKTREE_FIELDS,
@@ -75,6 +76,13 @@ export interface ProjectInitInput {
   /** The repo's default branch, which `answers.base` is compared with. */
   defaultBranch: string;
   answers: ProjectInitAnswers;
+  /**
+   * The person's own workflow values (`workflow.json`), which the answers win over field by
+   * field, as `resolveWorkflow` resolves them. Read for D16's clash warning: the policy the
+   * guards will see is the person's file plus what this file writes. Left out, nothing is
+   * assumed about it.
+   */
+  personalWorkflow?: Workflow;
 }
 
 /** What the plan does to one of the project's Claude Code settings files. */
@@ -413,6 +421,19 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
     notes.push(
       `the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}: ${what} ${retired.length + engineLines === 1 ? "goes" : "go"}, because Claude Code's own worktrees need none`,
     );
+  }
+  // D16: the file this command is about to write must not leave settings that cannot work
+  // together, shown before anything is written. The values are the policy the guards will
+  // see: the person's own file, over the built-in defaults, and this file's answers over
+  // both — the same order `resolveWorkflow` merges them in. The base is the one being written.
+  const personal = input.personalWorkflow ?? {};
+  for (const clash of workflowClashes({
+    autoMerge: answers.workflow.autoMerge ?? personal.autoMerge ?? workflowDefaults.autoMerge,
+    autoPush: answers.workflow.autoPush ?? personal.autoPush ?? workflowDefaults.autoPush,
+    base: answers.base,
+    openPr: answers.workflow.openPr ?? personal.openPr ?? workflowDefaults.openPr,
+  })) {
+    notes.push(clashNote(clash));
   }
   return {
     file,

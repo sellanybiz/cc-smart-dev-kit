@@ -203,6 +203,8 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
       calls.planProjectInit.push(input);
       return options.unwired === true ? unwired() : fakePlan(input);
     },
+    // D16's clash warning in the plan: the fake has no person's file, so nothing is assumed.
+    personalWorkflowOrDefault: () => ({}),
     projectInitDefaults(input): ProjectInitDefaults {
       calls.projectInitDefaults.push({ root: input.root });
       if (options.unwired === true) unwired();

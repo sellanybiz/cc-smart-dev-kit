@@ -1,7 +1,7 @@
 /**
  * The `job-route` hook: PreToolUse on Bash, for a project that turned it on
  * (`"jobs": { "route": true }` in `.claude/cc-smart-dev-kit.json`). A heavy command — one of the
- * project's heavy-job kinds (`classifyHeavyCommand`, `src/jobs/`) — is sent through the
+ * project's heavy-job kinds (`classifyRoutableLine`, `src/jobs/`) — is sent through the
  * machine's queue instead of running raw: several sessions running builds, type checks and
  * test runs at once run the machine out of memory.
  *
@@ -24,7 +24,7 @@
  * anything the hook cannot read lets the call through.
  */
 import { COMMAND } from "../build-info/names";
-import { classifyHeavyCommand } from "../jobs/classify";
+import { classifyRoutableLine } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
 import { LAUNCHER_IN_SHELL, shellQuote } from "../setup/launcher";
 import { invocationOf, nestedCommand, shellSegments, wordsOf } from "../shell/command";
@@ -129,7 +129,7 @@ export interface Routed {
 /** The route for a heavy command, or null when there is nothing to route. Pure. */
 export function routeHeavyCommand(command: string, kinds: Kinds, shell: string): null | Routed {
   if (runsJobRun(command)) return null;
-  const kind = classifyHeavyCommand(command, kinds);
+  const kind = classifyRoutableLine(command, kinds);
   return kind === null ? null : { command: jobRunCommand(kind, command, shell), kind };
 }
 

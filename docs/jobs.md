@@ -129,6 +129,17 @@ syntax), so the shell reads exactly what was written, the way the person's termi
 have. A command already inside `cc-smart-dev-kit job run` is left alone. Off unless the project
 says so, because it changes the call; `ownHooks` silences it like any other plugin hook.
 
+**Only a line whose every command is heavy, a `cd` or an assignment is queued**
+(`classifyRoutableLine` in `src/jobs/classify.ts`); any other line runs raw. Claude Code
+matches a person's own Bash rules (`deny`, `ask`) against the words of the command it is
+about to run and does not look inside `bash -c '…'`, so a rewritten `tsc && rm -f x` would
+hide its `rm` from a `Bash(rm:*)` rule: the line would run what the person denied (proved on
+2.1.308, `claude-code-contract.md`). So a line that runs anything besides heavy commands, a
+`cd` and assignments (`echo`, `rm`, a shell keyword with a non-heavy body, a substitution)
+stays as written, and the person's rules see it. A line of heavy commands only — `cd app &&
+bunx tsc --noEmit && bunx vitest run`, `FOO=1 bunx tsc --noEmit` — is still queued, under
+the kind that reserves the most.
+
 **The folder.** The rewritten command runs in the Bash tool's own shell, so it starts in the
 folder that shell is in. A `cd` **inside** the command lives only for that command: it does
 not move the Bash tool's folder for the next call. Run `cd <folder>` as a call of its own
@@ -378,7 +389,10 @@ Optional. Unknown fields are an error that names the file and the field.
 ## The classifier
 
 `classifyHeavyCommand(bashCommand, kinds)` (`src/jobs/classify.ts`) says which kind a
-Bash command runs, or null: it is what the `job-route` hook routes by (§ The route).
+Bash command runs, or null: it is what `cc-smart-dev-kit job run` reserves by, and what the
+hook asks about a line it cannot judge. The route adds one rule on top
+(`classifyRoutableLine`): a line is queued only when every command in it is heavy, a `cd`
+or an assignment (§ The route).
 It reads the line with the one shell reader the guards use too (`src/shell/command.ts`), so
 the queue and the guards see the same commands: a tool inside quotes, an `echo`, a quoted
 here-doc, a comment or a commit message is text, not a run; a substitution (`$( … )`, a
@@ -389,12 +403,13 @@ backtick, the body of an unquoted here-doc) is a run. It finds the tool behind `
 `sudo`, `doas`, `exec`, `command`, `builtin` and `xargs`, **with their own options**
 (`time -p`, `env -i`, `env -u HOME`, `sudo -u x`, `timeout -s KILL 60`); inside
 `bash -c '…'` (`-c` among other options, `--` too), `env -S '…'`, a here-doc or a pipe fed
-to a shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). A line with a
-wrapper or a keyword goes through the person's shell (§ The route), since only the first
-word of argv words is run as the program. When a line runs several heavy steps, it names
-the one that reserves the most. It reads no file: a `package.json` script is found only
-through a kind's `{ "script": "<name>" }` rule. Every case is pinned in
-`src/jobs/shell-parity.test.ts`.
+to a shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). A wrapper or a
+keyword is read through, so the heavy command behind it is found and queued (§ The route),
+and a line of heavy commands, `cd`s and assignments together goes through the person's
+shell, since only the first word of argv words is run as the program. When a line runs
+several heavy steps, it names the one that reserves the most. It reads no file: a
+`package.json` script is found only through a kind's `{ "script": "<name>" }` rule. Every
+case is pinned in `src/jobs/shell-parity.test.ts`.
 
 ## Limits
 

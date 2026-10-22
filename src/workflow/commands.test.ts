@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { cliPaths, tildify } from "../cli/paths";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
@@ -36,6 +37,12 @@ const SETTINGS = {
   protectedBranches: ["main"],
   sessionNames: true,
 };
+
+/**
+ * The `!` line `openPr draft` gets while `autoPush` is off (D16): the clash every `set` of
+ * `openPr` prints after the write, in these tests' default settings.
+ */
+const OPEN_PR_DRAFT_CLASH = `! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`;
 
 describe("workflow show", () => {
   test("nothing set: every value with the built-in default as where it came from", async () => {
@@ -103,6 +110,22 @@ describe("workflow show", () => {
     );
   });
 
+  test("D16: settings that cannot work together are shown, each once, with its fix", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { autoMerge: true, openPr: "draft" },
+    });
+    const run = context(repo, env);
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    const clashes = run.lines.filter((line) => line.startsWith("! "));
+    expect(clashes).toEqual([
+      OPEN_PR_DRAFT_CLASH,
+      `! openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens. Fix: set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`).`,
+    ]);
+  });
+
   test("a broken personal file: one line on stderr, exit 1", async () => {
     const env = hookEnv();
     const paths = cliPaths(env);
@@ -128,6 +151,24 @@ describe("workflow set and unset", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
+  test("D16: a write that leaves a clash names it after the write, with the fix", async () => {
+    const env = hookEnv();
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ autoPush: true }, null, 2)}\n`);
+    // A setting that works with the others names no clash.
+    const fine = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "openPr", "ready"], fine.context)).toBe(0);
+    expect(fine.lines).toEqual(["~ ~/.config/cc-smart-dev-kit/workflow.json: openPr = ready"]);
+    // Taking autoPush away leaves openPr waiting for a person: the clash comes with the write.
+    const off = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "autoPush", "false"], off.context)).toBe(0);
+    expect(off.lines).toEqual([
+      "~ ~/.config/cc-smart-dev-kit/workflow.json: autoPush = false",
+      OPEN_PR_DRAFT_CLASH,
+    ]);
+  });
+
   test("a second value keeps the first, and the file's own indentation", async () => {
     const env = hookEnv();
     const file = cliPaths(env).workflowConfigFile;
@@ -149,6 +190,8 @@ describe("workflow set and unset", () => {
     expect(await runWorkflow(["set", "openPr", "draft"], again.context)).toBe(0);
     expect(again.lines).toEqual([
       "= ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft (already set)",
+      // The clash is still there: it is about the settings, not about this write (D16).
+      OPEN_PR_DRAFT_CLASH,
     ]);
   });
 
@@ -564,7 +607,7 @@ describe("the command itself, as Claude Code runs it", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe(
-      "+ ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft\n",
+      `+ ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft\n${OPEN_PR_DRAFT_CLASH}\n`,
     );
     expect(
       JSON.parse(readFileSync(join(home, ".config", "cc-smart-dev-kit", "workflow.json"), "utf8")),
@@ -616,7 +659,11 @@ describe("the review gate (CM-1)", () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), { ...env, CLAUDECODE: "1" });
     expect(await runWorkflow(["set", "openPr", "draft"], run.context)).toBe(0);
-    expect(run.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft"]);
+    expect(run.lines).toEqual([
+      "+ ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft",
+      // D16: the write leaves two settings that cannot work together, and says so.
+      OPEN_PR_DRAFT_CLASH,
+    ]);
   });
 
   test("D34: the crew sessions' switch is not part of the gate: set in both files, shown with its source", async () => {

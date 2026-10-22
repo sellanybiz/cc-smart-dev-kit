@@ -331,7 +331,11 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
   its own limit and the time left, and when too little is left for the next call the guard
   asks instead of overrunning — a PreToolUse hook Claude Code has to kill blocks nothing, so
   an overrun would be fail-open. Every git call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s)
-  or less, against the hook's own 10 s.
+  or less, against the hook's own 10 s. **`after-merge` shares one budget the same way**
+  (`src/hooks/budget.ts`, 25 s of its 30 s), so its children (the alias list, the worktree
+  list, `gh pr view`, the origin) cannot add up past the hook; a note that would not fit is
+  skipped whole. A hook that starts a child with the time left gives it no call at zero or
+  less (`Bun.spawnSync` reads a timeout of 0 as no limit at all).
 - A guard gets a short timeout; a hook that waits gets a long one.
 
 ## Fail safe
@@ -366,7 +370,8 @@ a command must never report success when it did not run.
 - A guard decides with a PreToolUse answer (`ask` or `deny`), never exit code 2.
 - A guard asks rather than denies when the person may mean it (a force-push); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
-  to another project's session).
+  to another project's session, a crew session's push or pull request — D24: the lead
+  merges locally).
 - **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching
   call: "Yes, don't ask again" leaves no rule a PreToolUse hook's answer respects (proved
   live 2026-10-19, on the main-folder guard's Serena branch, retired in 0.6.0). So a guard

@@ -2256,6 +2256,28 @@ describe("the settings page", () => {
     }
   });
 
+  test("D16: a setting that cannot work with another is a ! line under its row, with the fix", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    // `openPr: draft` with `autoPush` off (the default): the pull request waits for the push.
+    const workflow = fakeWorkflow({ resolved: { openPr: { source: "personal", value: "draft" } } });
+    const world = await open({
+      backendPort: backend.port,
+      projectFiles: { config: PROJECT_CONFIG },
+      workflow,
+    });
+    try {
+      await world.enter();
+      const page = await world.call("/settings");
+      expect(page.status).toBe(200);
+      expect(page.body).toContain(
+        "! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (`cc-smart-dev-kit workflow set autoPush true`), or set openPr off (`cc-smart-dev-kit workflow set openPr off`).",
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
   test("the auto-merge row carries the rule box, word for word, with the project's base", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const workflow = fakeWorkflow({

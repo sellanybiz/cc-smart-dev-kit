@@ -7,7 +7,7 @@
 import { describe, expect, it } from "bun:test";
 import { mergeKinds } from "../jobs/kinds";
 import { pullRequestMerges } from "./after-merge";
-import { guardQuestions } from "./git-guard";
+import { guardQuestions, PUSH_FREE } from "./git-guard";
 import {
   jobRunCommand,
   rewriteAnswer,
@@ -123,26 +123,59 @@ describe("which commands are routed", () => {
     expect(routeHeavyCommand('bash -c "npx next build"', KINDS, SHELL)?.kind).toBe("build");
   });
 
-  // HK hunch 1 (the fix is phase A4b's): the plugin's own readers see the inner command of a
-  // routed line, but the person's own Bash rules are matched against the rewritten line, which
-  // starts with the launcher and holds the person's line as one quoted word. Whether Claude
-  // Code's rule matcher reads into `job run -- <shell> -c '…'` is not proved here.
-  it("HK hunch 1: a `bash -c` line is routed byte for byte, and the guards still read inside it", () => {
+  // HK hunch 1, proved live on Claude Code 2.1.308 (`docs/claude-code-contract.md`): a person's
+  // own `Bash(rm:*)` deny rule is matched against the rewritten line, which starts with the
+  // launcher and holds the person's line as one quoted word, so a routed `echo start && rm -f x`
+  // ran the `rm`. So a line is routed only when every command in it is heavy, a `cd` or an
+  // assignment; any other line stays raw, as the person's rules see it.
+  it("HK hunch 1: a line with a command that is not heavy, a `cd` or an assignment stays raw", () => {
+    const raw = [
+      "bunx tsc --noEmit && rm -f marker.txt",
+      "rm -f marker.txt && bunx tsc --noEmit",
+      "bunx tsc --noEmit | tail -5",
+      "bunx tsc --noEmit; git push --force origin main",
+      "bash -c 'bunx tsc --noEmit && git push --force origin main'",
+      'sh -c "bunx tsc --noEmit; gh pr merge 5"',
+      "bunx tsc --noEmit && $(rm -f marker.txt)",
+      "bunx tsc --noEmit && echo `rm -f marker.txt`",
+      "bash -c 'rm -f marker.txt'",
+      "export FOO=1 && bunx tsc --noEmit",
+    ];
+    for (const line of raw) {
+      expect([line, routeHeavyCommand(line, KINDS, SHELL)]).toEqual([line, null]);
+    }
+  });
+
+  it("HK hunch 1: heavy commands, a `cd` and assignments together are still routed", () => {
+    const routed: Array<[string, string]> = [
+      ["bunx tsc --noEmit && bunx vitest run", "tsc"],
+      ["cd app && bunx tsc --noEmit", "tsc"],
+      ["FOO=1 bunx tsc --noEmit", "tsc"],
+      ["FOO=1 && bunx tsc --noEmit", "tsc"],
+      ["bash -c 'bunx tsc --noEmit && bunx vitest run'", "tsc"],
+    ];
+    for (const [line, kind] of routed) {
+      expect([line, routeHeavyCommand(line, KINDS, SHELL)?.kind]).toEqual([line, kind]);
+    }
     const plain = routeHeavyCommand("bash -c 'bunx tsc --noEmit'", KINDS, SHELL);
     // One quoted word with no shell meaning: the argv form, the person's `bash -c` kept.
     expect(plain?.command).toBe(`${LAUNCHER} job run --kind tsc -- bash -c 'bunx tsc --noEmit'`);
-    const risky = "bash -c 'bunx tsc --noEmit && git push --force origin main'";
-    const routed = routeHeavyCommand(risky, KINDS, SHELL);
-    // The `&&` inside the quote sends the whole line through the person's shell: two shells deep.
-    expect(routed?.command).toBe(
-      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bash -c '\\''bunx tsc --noEmit && git push --force origin main'\\'''`,
-    );
-    const options = { protectedBranches: ["main"], sharedStash: false, env: {} };
-    const asked = guardQuestions(risky, "/nowhere", options);
-    expect(asked.length).toBe(2);
-    expect(guardQuestions(routed?.command ?? "", "/nowhere", options)).toEqual(asked);
-    const merge = routeHeavyCommand('sh -c "bunx tsc --noEmit; gh pr merge 5"', KINDS, SHELL);
-    expect(pullRequestMerges(merge?.command ?? "").map((one) => one.target?.ref)).toEqual(["5"]);
+  });
+
+  it("HK hunch 1: the kit's own guards still read inside a routed line", () => {
+    const routed = routeHeavyCommand("cd app && bunx tsc --noEmit", KINDS, SHELL);
+    const options = {
+      protectedBranches: ["main"],
+      pushRules: PUSH_FREE,
+      sharedStash: false,
+      env: {},
+    };
+    expect(guardQuestions(routed?.command ?? "", "/nowhere", options)).toEqual([]);
+    // What a guard asks about is asked inside a routed line as well: a hand-built line that
+    // hides a push and a merge in its shell string.
+    const hidden = `${LAUNCHER} job run --kind tsc -- ${SHELL} -c 'bunx tsc --noEmit && git push --force origin main && gh pr merge 5'`;
+    expect(guardQuestions(hidden, "/nowhere", options).length).toBe(2);
+    expect(pullRequestMerges(hidden).map((one) => one.target?.ref)).toEqual(["5"]);
   });
 });
 

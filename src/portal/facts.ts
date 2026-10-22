@@ -56,6 +56,8 @@ import type { GlobalInstall } from "../omniroute/install";
 import { type CcSmartDevKitConfig, CcSmartDevKitRetiredFieldError } from "../project/config";
 import { locateCheckout, resolveProject } from "../project/resolve";
 import { redactUrlsIn } from "../setup/marketplace-access";
+// Pure, and about the resolved values alone: no seam of its own (`workflow-adapter.ts`).
+import { type Clash, clashesOf } from "../workflow/clashes";
 import type { PortalContext } from "./context";
 import { type SettingsRow, settingsRows } from "./settings";
 import type {
@@ -955,6 +957,10 @@ export function projectCardData(
         existingLocalSettings: texts.existingLocalSettings,
         existingSettings: texts.existingSettings,
         root: project.root,
+        // D16's clash warning judges the policy the guards will see: the person's own file
+        // is half of it. A file that cannot be read is `{}` (`personalWorkflowOrDefault`), so
+        // the plan still shows.
+        personalWorkflow: workflow.personalWorkflowOrDefault(ctx.paths),
       }),
     };
   } catch (error) {
@@ -975,6 +981,11 @@ export interface SettingsData {
   /** What to know about the project, when its own file cannot be read; null otherwise. */
   projectNote: null | string;
   rows: SettingsRow[];
+  /**
+   * The settings that cannot work together (D16, `src/workflow/clashes.ts`), each shown under
+   * its own row: the same words `workflow show` prints.
+   */
+  clashes: Clash[];
 }
 
 /**
@@ -989,6 +1000,7 @@ export function settingsData(
 ): SettingsData {
   const empty = (why: string | null): SettingsData => ({
     autoMerge: null,
+    clashes: [],
     error: why,
     projectNote: null,
     rows: [],
@@ -1019,7 +1031,13 @@ export function settingsData(
         base,
       }
     : null;
-  return { autoMerge, error: null, projectNote, rows };
+  return {
+    autoMerge,
+    clashes: clashesOf(resolved, base),
+    error: null,
+    projectNote,
+    rows,
+  };
 }
 
 export async function omnirouteRow(

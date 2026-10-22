@@ -3,7 +3,7 @@
  * merge a pull request (`gh pr merge`, `--auto` included — an armed merge lands once the
  * checks pass, with nobody watching). It lets the call through **without a question** only
  * when the project's own policy allows that merge; every other case is a question for the
- * person, never a refusal.
+ * person. The one refusal: a crew session opens no pull request (D24, below).
  *
  * Allowed without a question only when every one of these holds:
  *
@@ -42,6 +42,14 @@
  * purpose and the person's yes to the prompt is that decision. The flag is read with the
  * merge's other words (`after-merge.ts`), in every form below, aliases included.
  *
+ * **It also reads `gh pr create` and `gh pr ready`** (D16: `openPr`), the forms it reads for
+ * merges (`-R`, aliases, a `gh api` POST to the pulls endpoint, the GraphQL `createPullRequest`
+ * and `markPullRequestReadyForReview`): `openPr` off asks before any of them, `draft` asks for
+ * one that opens ready (no `--draft`) and for every `gh pr ready`, `ready` is silent. The
+ * policy is read as a merge's is (`resolveGate`, below). **And a crew session opens no pull
+ * request at all** (D24): `gh pr create` pushes the branch, so it is denied, whatever `openPr`
+ * says (`CC_SMART_DEV_KIT_CREW` is set in a crew session's environment).
+ *
  * Every merge in the command is judged, in the order it runs them — `gh pr merge 5 && gh pr
  * merge 6` checks both — and the first the policy does not allow asks, naming its pull
  * request. The forms it cannot judge ask too, with the reason: a `gh api` merge, a GraphQL
@@ -61,49 +69,31 @@
  * several reads three each, with the default branch read once per repository
  * (`.claude/rules/hooks.md` § Timeouts).
  */
+
+import { crewIdOf } from "../crew/session";
 import type { CcSmartDevKitConfig } from "../project/config";
 import type { Project } from "../project/resolve";
 import { dialectOfTool } from "../shell/command";
 import { autoMergeOff, autoMergeRefusal } from "../workflow/auto-merge";
+import { openPrRefusal } from "../workflow/pr-switches";
 import { type GateRead, resolveGate } from "../workflow/resolve";
 import { hasReview, reviewsFile } from "../workflow/reviews";
 import {
+  isMerge,
   type MergeCall,
-  mergeCalls,
+  pullRequestCallsWithAliases,
   pullRequestMerges,
+  pullRequestOpenings,
   repositoryKey,
-  requestsMerge,
+  requestsPullRequestChange,
 } from "./after-merge";
+import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField, toolDecision, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
 
 /** How long one `gh` call may take: it is a network call, and this hook has 30 s (above). */
 export const GH_TIMEOUT_MS = 10_000;
-
-/**
- * The guard's own budget: the hook has 30 s (`plugin/hooks/hooks.json`), and this leaves room
- * for the answer. A PreToolUse hook Claude Code has to kill blocks nothing — the call it
- * guards then runs unguarded — so the guard gives itself a deadline instead of overrunning,
- * and asks ("… in time") when too little of it is left for the next call.
- */
-export const GUARD_BUDGET_MS = 25_000;
-
-/** What is kept back when a call is handed its time: the answer itself, and Claude Code reading it. */
-export const BUDGET_MARGIN_MS = 2_000;
-
-/**
- * Where a test sets the budget: `CC_SMART_DEV_KIT_GUARD_BUDGET_MS`, in milliseconds, so the
- * deadline can be proved to bite without waiting 25 s. A hook never sets it, and a value that
- * is not a positive number leaves the default.
- */
-export const GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
-
-/** `GUARD_BUDGET_MS`, or what `env` overrides it with (a test's own budget, in milliseconds). */
-export function budgetMs(env: Env): number {
-  const given = Number(env[GUARD_BUDGET_ENV]);
-  return Number.isFinite(given) && given > 0 ? given : GUARD_BUDGET_MS;
-}
 
 /** How long the alias lookup may take inside the budget: the same cap it has on its own. */
 const ALIAS_LIMIT_MS = 3_000;
@@ -226,8 +216,22 @@ export function notByItself(reason: string, number: null | number = null): strin
  * file's content cannot be used. A policy counts once it is pushed and fetched — the guard
  * fetches nothing itself — so that is the way out the question names.
  */
-export function policyUnread(branch: string, why: string): string {
-  return `the merge policy committed on ${branch} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
+export function policyUnread(branch: string | null, why: string, policy = "merge policy"): string {
+  const where = branch === null ? "the workflow settings" : `the ${policy} committed on ${branch}`;
+  return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
+}
+
+/** Why a crew session's `gh pr create` / `gh pr ready` is denied (D24). */
+export const CREW_PR_REFUSAL =
+  "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " +
+  "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " +
+  "at your commit and say so in your report.";
+
+/** The question when `openPr` (or something unreadable) does not let this pull request be opened. */
+export function notOpenedByItself(opening: MergeCall, reason: string): string {
+  const what =
+    opening.opens === "ready" ? "marks a pull request ready for review" : "opens a pull request";
+  return `cc-smart-dev-kit asks before this ${what}: ${reason}. Approve it yourself if you meant it.`;
 }
 
 /** Why the guard cannot judge when the person's own workflow file cannot be read. */
@@ -410,11 +414,17 @@ export function mergeGuard(context: HookContext): HookResult {
   // The line in the dialect of the tool that runs it: Bash and PowerShell quote differently.
   const dialect = dialectOfTool(input.tool_name);
   // The cheap pure read first: an ordinary Bash call finds nothing here and pays nothing.
-  if (command === null || !requestsMerge(command, dialect)) return SILENT;
+  if (command === null || !requestsPullRequestChange(command, dialect)) return SILENT;
   const config: CcSmartDevKitConfig | null = project.config;
   // A project that never opted in must not notice the plugin (`.claude/rules/hooks.md`):
   // the policy it would judge with lives in the project's own file.
   if (config === null) return SILENT;
+  // A crew session opens no pull request (D24): denied before any policy is read. The aliases
+  // are read below, and an opening one expands to is denied there.
+  const crew = crewIdOf(env) !== null;
+  if (crew && pullRequestOpenings(command, null, dialect).length > 0) {
+    return toolDecision("deny", CREW_PR_REFUSAL);
+  }
   // `--admin` asks whatever the policy says, so it is read first, from the line alone: no
   // policy, no gh, and the question names the real risk even where the policy would ask anyway.
   // (A merge an alias runs is read below, once its expansion is known.)
@@ -423,18 +433,15 @@ export function mergeGuard(context: HookContext): HookResult {
     return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
   }
 
-  // One deadline for the whole run (fix: a killed hook blocks nothing, so an overrun is
-  // fail-open). Every call gets its own limit or what is left of the budget, whichever is
+  // One deadline for the whole run (`budget.ts`: a killed hook blocks nothing, so an overrun
+  // is fail-open). Every call gets its own limit or what is left of the budget, whichever is
   // smaller; when too little is left for the next one, the guard asks instead.
-  const startedAt = Date.now();
-  const budgetAt = startedAt + budgetMs(env);
-  const timeFor = (limitMs: number): number =>
-    Math.min(limitMs, budgetAt - Date.now() - BUDGET_MARGIN_MS);
+  const { timeFor } = startBudget(env);
 
   // The review gate, read as committed on a branch — never this checkout's own copy of the
   // file, which a session can edit (`resolveGate`). One read per branch per run.
-  const gates = new Map<string, GateRead>();
-  const gateOf = (branch: string): GateRead | "late" => {
+  const gates = new Map<string | null, GateRead>();
+  const gateOf = (branch: string | null): GateRead | "late" => {
     const known = gates.get(branch);
     if (known !== undefined) return known;
     const left = timeFor(GUARD_GIT_TIMEOUT_MS);
@@ -444,11 +451,20 @@ export function mergeGuard(context: HookContext): HookResult {
     return read;
   };
 
-  // The policy first, from the base this checkout names: it needs no gh, so a machine without
-  // gh hears the real reason — and a command the guard cannot judge at all costs no gh call
-  // either. The pull request's own base is read again below, once gh has named it.
+  // Every merge and every opening the command runs, in order, its aliases read when a `gh
+  // <word>` needs them (a local file read, no network). A `--disable-auto` takes an armed
+  // merge back: it merges nothing, so it is not judged.
+  const calls = pullRequestCallsWithAliases(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect);
+  const merges = calls.filter((one) => isMerge(one) && !one.disarms);
+  const openings = calls.filter((one) => !isMerge(one));
+  // An alias that expands to `gh pr create` is an opening a crew session may not run.
+  if (crew && openings.length > 0) return toolDecision("deny", CREW_PR_REFUSAL);
+
+  // The merge policy first, from the base this checkout names: it needs no gh, so a machine
+  // without gh hears the real reason — and a command the guard cannot judge at all costs no gh
+  // call either. The pull request's own base is read again below, once gh has named it.
   const integration = config.worktrees?.base ?? null;
-  if (integration !== null) {
+  if (integration !== null && merges.length > 0) {
     let early: GateRead | "late";
     try {
       early = gateOf(integration);
@@ -464,14 +480,19 @@ export function mergeGuard(context: HookContext): HookResult {
     if (off !== null) return toolDecision("ask", notByItself(off));
   }
 
-  // Every merge the command runs, in order, its aliases read when a `gh <word>` needs them.
-  // A `--disable-auto` takes an armed merge back: it merges nothing, so it is not judged.
-  const merges = mergeCalls(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect).filter(
-    (one) => !one.disarms,
-  );
   const defaultBranches = new Map<string, string | null>();
   let own: string | null = null;
   let ownRead = false;
+  /** Why a call naming `repo` is no call about this project's own repository: late, or why not. */
+  const foreignReason = (repo: string): { late: boolean; reason: string | null } => {
+    if (!ownRead) {
+      const left = timeFor(GUARD_GIT_TIMEOUT_MS);
+      if (left <= 0) return { late: true, reason: null };
+      own = ownRepository(project, env, left);
+      ownRead = true;
+    }
+    return { late: false, reason: foreignRepository(repo, own) };
+  };
   for (const merge of merges) {
     const number = numericRef(merge.target?.ref ?? null);
     if (merge.admin) {
@@ -484,14 +505,11 @@ export function mergeGuard(context: HookContext): HookResult {
     // The policy covers this project's own repository only: a merge that names another one
     // asks, whatever the facts say (and the origin is read once, only when one is named).
     if (target.repo !== null) {
-      if (!ownRead) {
-        const left = timeFor(GUARD_GIT_TIMEOUT_MS);
-        if (left <= 0) return toolDecision("ask", notInTime("this project's own repository"));
-        own = ownRepository(project, env, left);
-        ownRead = true;
+      const foreign = foreignReason(target.repo);
+      if (foreign.late) return toolDecision("ask", notInTime("this project's own repository"));
+      if (foreign.reason !== null) {
+        return toolDecision("ask", notByItself(foreign.reason, number));
       }
-      const foreign = foreignRepository(target.repo, own);
-      if (foreign !== null) return toolDecision("ask", notByItself(foreign, number));
     }
     const viewLeft = timeFor(GH_TIMEOUT_MS);
     if (viewLeft <= 0) {
@@ -556,6 +574,57 @@ export function mergeGuard(context: HookContext): HookResult {
       reviewed,
     });
     if (reason !== null) return toolDecision("ask", notByItself(reason, view.number));
+  }
+
+  // Then every pull request the command opens or readies (D16): `openPr` decides.
+  for (const opening of openings) {
+    if (opening.refusal !== null) {
+      return toolDecision("ask", notOpenedByItself(opening, opening.refusal));
+    }
+    const repo = opening.target?.repo ?? null;
+    if (repo !== null) {
+      const foreign = foreignReason(repo);
+      if (foreign.late) {
+        return toolDecision(
+          "ask",
+          notOpenedByItself(
+            opening,
+            "reading this project's own repository would have taken longer than the guard's own budget allows",
+          ),
+        );
+      }
+      if (foreign.reason !== null) {
+        return toolDecision("ask", notOpenedByItself(opening, foreign.reason));
+      }
+    }
+    let read: GateRead | "late";
+    try {
+      read = gateOf(integration);
+    } catch (error) {
+      return toolDecision("ask", notOpenedByItself(opening, workflowUnread(error)));
+    }
+    if (read === "late") {
+      return toolDecision(
+        "ask",
+        notOpenedByItself(
+          opening,
+          "reading the policy would have taken longer than the guard's own budget allows",
+        ),
+      );
+    }
+    if (!read.ok) {
+      return toolDecision(
+        "ask",
+        notOpenedByItself(opening, policyUnread(integration, read.why, "openPr policy")),
+      );
+    }
+    // The project runs its own merge guard, as its committed policy says: that one answers.
+    if (read.gate.config?.ownHooks?.includes("merge-guard") === true) return SILENT;
+    const why = openPrRefusal(read.gate.resolved, integration, {
+      draft: opening.draft === true,
+      kind: opening.opens ?? "create",
+    });
+    if (why !== null) return toolDecision("ask", notOpenedByItself(opening, why));
   }
   return SILENT;
 }

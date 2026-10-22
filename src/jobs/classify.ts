@@ -15,8 +15,10 @@
  */
 
 import {
+  CHANGE_DIR,
   type Dialect,
   invocationOf,
+  isAssignmentOnly,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
@@ -320,4 +322,60 @@ export function toolCallOfArgv(argv: readonly [string, ...string[]]): ToolCall {
       args: invocation.args,
     }
   );
+}
+
+/**
+ * The kinds a line runs, when every command in it is heavy, a `cd`, or an assignment: null
+ * as soon as one is anything else. The inner command of a shell (`bash -c "…"`) is read the
+ * same way, so `bash -c "tsc && rm x"` is no pure line.
+ */
+function routableKinds(
+  command: string,
+  kinds: Kinds,
+  dialect: Dialect,
+  depth: number,
+): { name: string; gb: number }[] | null {
+  const found: { name: string; gb: number }[] = [];
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  for (const step of steps) {
+    const words = wordsOf(step.text, dialect);
+    // The reader leaves an empty step where an operator (`&&`, `;`) sits.
+    if (words.length === 0 || isAssignmentOnly(words)) continue;
+    const invocation = invocationOf(words);
+    if (invocation === undefined) return null;
+    const { program, args } = invocation;
+    if (CHANGE_DIR.has(program)) continue;
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined) {
+      // A shell or wrapper that runs a line: that line must be pure too.
+      if (depth >= MAX_NESTING) return null;
+      const nested = routableKinds(inner, kinds, nestedDialect(program), depth + 1);
+      if (nested === null) return null;
+      found.push(...nested);
+      continue;
+    }
+    const call = toolOf(program, withoutRedirections(args));
+    const kind = call === undefined ? null : kindOfCall(call, kinds);
+    if (kind === null) return null;
+    found.push(kind);
+  }
+  return found;
+}
+
+/**
+ * The heavy-job kind to queue a Bash line under, or null when the line must run raw. A line
+ * is queued only when every command in it is heavy, a `cd`, or an assignment: Claude Code
+ * matches a person's own Bash rules (`deny`, `ask`) against the words of the command it runs
+ * and does not look inside `bash -c '…'`, so wrapping a line that also runs `rm` would hide
+ * that `rm` from a `Bash(rm:*)` deny rule (proved on 2.1.308, `docs/claude-code-contract.md`).
+ * Several heavy commands give the one that reserves the most, like `classifyHeavyCommand`.
+ */
+export function classifyRoutableLine(bashCommand: string, kinds: Kinds): string | null {
+  const found = routableKinds(bashCommand, kinds, "bash", 0);
+  if (found === null) return null;
+  let best: { name: string; gb: number } | null = null;
+  for (const kind of found) {
+    if (best === null || kind.gb > best.gb) best = kind;
+  }
+  return best?.name ?? null;
 }

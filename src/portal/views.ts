@@ -525,6 +525,19 @@ ${extra}
 </div>`;
 }
 
+/** The `!` line under a row whose setting cannot work with another (`D16`), or nothing. */
+function clashNote(data: SettingsData, key: string | undefined): string {
+  if (key === undefined) return "";
+  const lines = data.clashes.filter((one) => one.setting === key);
+  if (lines.length === 0) return "";
+  return lines
+    .map(
+      (one) =>
+        `<p class="small rulemore clash" role="note">! ${escapeHtml(one.line)}. Fix: ${escapeHtml(one.fix)}.</p>`,
+    )
+    .join("");
+}
+
 /** The auto-merge row's own rule box: the design's words, with the project's base named. */
 function autoMergeBox(data: SettingsData): string {
   const base = data.autoMerge?.base;
@@ -559,7 +572,10 @@ export function settingsPage(shell: Shell, data: SettingsData): string {
     return `<section aria-labelledby="${card}-h">
 <h2 id="${card}-h">${escapeHtml(title)}</h2>
 <div class="card list" data-scope>
-${rows.map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : "")).join("")}
+${rows
+  .map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : ""))
+  .map((html, index) => html + clashNote(data, rows[index]?.key))
+  .join("")}
 <div class="foot" data-out-for="workflow.set" role="status"></div>
 </div>
 </section>`;

@@ -19,9 +19,18 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
+import { CREW_ENV } from "../crew/session";
+import {
+  commitConfig,
+  hookEnv,
+  makeRepo,
+  runHook,
+  writeClaudeFile,
+  writePersonalWorkflow,
+} from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { GUARD_BUDGET_ENV } from "./merge-guard";
+import { GUARD_BUDGET_ENV } from "./budget";
+import { CREW_PR_REFUSAL } from "./merge-guard";
 import { mergeGuardHook } from "./specs";
 
 /** The commit the fake gh reports as the pull request's head. */
@@ -162,18 +171,6 @@ function recordReviewHere(
     file,
     `${JSON.stringify({ [sha]: { at: "2026-10-16T10:00:00.000Z", by: [by] } }, null, 2)}\n`,
   );
-}
-
-/**
- * Commits the project's file in `repo` and points `origin/<branch>` at that commit for every
- * branch named: the policy as committed on a pull request's base is what the guard reads
- * (`resolveGate`), never the working copy. A plain ref, no fetch: the guard fetches nothing.
- */
-function commitConfig(repo: string, config: unknown, branches: Iterable<string>): void {
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
-  git(repo, "add", ".claude/cc-smart-dev-kit.json");
-  git(repo, "commit", "-q", "-m", "the project's policy");
-  for (const branch of branches) git(repo, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
 }
 
 /** Every branch a fixture's policy and answers name: each gets an `origin/<branch>` ref. */
@@ -1430,5 +1427,243 @@ describe("the review gate is read as committed on the pull request's base (CM-1)
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({});
     expect(ghCalls(gh)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// D16: `openPr` is enforced. `gh pr create` and `gh pr ready` are read with the reader that
+// reads a merge, and a crew session opens no pull request at all (D24).
+// ---------------------------------------------------------------------------------------
+
+/** The project's file with `openPr` set, committed on `origin/dev` (the integration base). */
+const opening = (openPr: "off" | "draft" | "ready") => ({
+  ...CONFIG,
+  workflow: { openPr },
+});
+
+/** The guard's decision and reason for one command, or null when it was silent. */
+async function decide(
+  env: Record<string, string>,
+  repo: string,
+  command: string,
+): Promise<{ decision: string; reason: string } | null> {
+  const result = await runHook(mergeGuardHook, input(repo, command), env);
+  if (result.stdout === undefined) return null;
+  const output = JSON.parse(result.stdout).hookSpecificOutput;
+  return { decision: output.permissionDecision, reason: output.permissionDecisionReason };
+}
+
+describe("D16: openPr is enforced", () => {
+  test("D16: off (the default) asks before gh pr create, gh pr new and gh pr ready, naming the setting and the fix", async () => {
+    const { env, gh, repo } = ready(CONFIG);
+    const fix =
+      'turn it on for yourself with `cc-smart-dev-kit workflow set openPr draft`, or for the project in .claude/cc-smart-dev-kit.json ("workflow": {"openPr": "draft"}), committed to dev and pushed';
+    for (const [command, what] of [
+      ["gh pr create --title x --body y", "opens a pull request"],
+      ["gh pr new --fill", "opens a pull request"],
+      ["gh pr ready 5", "marks a pull request ready for review"],
+    ]) {
+      expect(await decide(env, repo, command as string)).toEqual({
+        decision: "ask",
+        reason: `cc-smart-dev-kit asks before this ${what}: openPr is off (default), so opening or readying a pull request is yours to approve: ${fix}. Approve it yourself if you meant it.`,
+      });
+    }
+    // Nothing is read with gh: the policy decides alone.
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("D16: draft is silent for a pull request that opens as a draft, in every spelling", async () => {
+    const { env, repo } = ready(opening("draft"));
+    for (const command of [
+      "gh pr create --draft --title x",
+      "gh pr create -d --fill",
+      "gh pr create -fd",
+      "gh pr create --draft=true",
+      "gh pr new --draft",
+      "gh pr create --title x --draft --body y",
+      "bash -c 'gh pr create --draft'",
+    ]) {
+      expect([command, await decide(env, repo, command)]).toEqual([command, null]);
+    }
+  });
+
+  test("D16: draft asks for one that opens ready, and for gh pr ready", async () => {
+    const { env, repo } = ready(opening("draft"));
+    const create = await decide(env, repo, "gh pr create --fill");
+    expect(create?.reason).toContain(
+      "openPr is draft (project, committed on origin/dev), and this pull request does not open as a draft (add `--draft`)",
+    );
+    const readied = await decide(env, repo, "gh pr ready");
+    expect(readied?.reason).toContain(
+      "openPr is draft (project, committed on origin/dev), so marking a pull request ready for review is yours to decide",
+    );
+    // A value is not a flag: a title of `--draft` is a title; `--draft=false` is no draft.
+    for (const command of [
+      "gh pr create --title --draft",
+      "gh pr create -t -d",
+      "gh pr create --draft=false",
+      "gh pr create -- --draft",
+    ]) {
+      expect([command, (await decide(env, repo, command))?.decision]).toEqual([command, "ask"]);
+    }
+  });
+
+  test("D16: ready is silent, and gh pr ready --undo (back to a draft) opens nothing", async () => {
+    const { env, gh, repo } = ready(opening("ready"));
+    for (const command of ["gh pr create --fill", "gh pr ready 5", "gh pr new"]) {
+      expect([command, await decide(env, repo, command)]).toEqual([command, null]);
+    }
+    const off = ready(CONFIG);
+    expect(await decide(off.env, off.repo, "gh pr ready --undo 5")).toBeNull();
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("D16: gh api POST to the pulls endpoint and the GraphQL forms are read too", async () => {
+    const { env, repo } = ready(CONFIG, {}, false, true);
+    for (const command of [
+      "gh api repos/example-org/app/pulls -f title=x -f head=a -f base=dev",
+      "gh api -X POST repos/example-org/app/pulls",
+      "gh api --method=POST repos/{owner}/{repo}/pulls",
+      "gh api graphql -f query='mutation { createPullRequest(input: {}) { pullRequest { id } } }'",
+      "gh api graphql -f query='mutation { markPullRequestReadyForReview(input: {}) { clientMutationId } }'",
+    ]) {
+      const answer = await decide(env, repo, command);
+      expect([command, answer?.decision, answer?.reason]).toEqual([
+        command,
+        "ask",
+        expect.stringContaining("openPr is off (default)"),
+      ]);
+    }
+    // A GET of the same endpoint lists pull requests: no question.
+    expect(await decide(env, repo, "gh api repos/example-org/app/pulls")).toBeNull();
+    expect(await decide(env, repo, "gh api -X GET repos/example-org/app/pulls")).toBeNull();
+    const draft = ready(opening("draft"), {}, false, true);
+    expect(
+      await decide(
+        draft.env,
+        draft.repo,
+        "gh api repos/example-org/app/pulls -F draft=true -f title=x",
+      ),
+    ).toBeNull();
+    // Under `ready` every form is silent.
+    const open = ready(opening("ready"), {}, false, true);
+    expect(
+      await decide(open.env, open.repo, "gh api repos/example-org/app/pulls -f title=x"),
+    ).toBeNull();
+  });
+
+  test("D16: -R, an alias, a runner and an unknown flag are read like a merge's", async () => {
+    const { env, repo } = ready(
+      opening("ready"),
+      { "alias list": "np: pr create --fill\n" },
+      false,
+      true,
+    );
+    // The project's own repository named with -R: the policy covers it.
+    expect(await decide(env, repo, "gh pr create -R example-org/app --fill")).toBeNull();
+    // Another repository: asks, whatever openPr says.
+    const foreign = await decide(env, repo, "gh pr create -R other-org/tool --fill");
+    expect(foreign?.reason).toContain("the command names the repository other-org/tool");
+    // The alias expands to `pr create`: judged like it (here `ready`: silent).
+    expect(await decide(env, repo, "gh np")).toBeNull();
+    const off = ready(CONFIG, { "alias list": "np: pr create --fill\n" });
+    expect((await decide(off.env, off.repo, "gh np"))?.reason).toContain("openPr is off");
+    // A runner or an earlier cd makes the call uncertain: asks, in the opening's words.
+    const sudo = await decide(env, repo, "sudo gh pr create --draft");
+    expect(sudo?.reason).toStartWith(
+      "cc-smart-dev-kit asks before this opens a pull request: the command runs under `sudo`, with another user's login and gh config",
+    );
+    const moved = await decide(env, repo, "cd app && gh pr create --draft");
+    expect(moved?.reason).toContain("changes the folder it runs in");
+    const unknown = await decide(env, repo, "gh --future-flag pr create --fill");
+    expect(unknown?.reason).toBe(
+      "cc-smart-dev-kit asks before this opens a pull request: the command carries `--future-flag` before the gh command, which this guard does not know. Approve it yourself if you meant it.",
+    );
+  });
+
+  test("D16: only a committed policy counts, and one that cannot be read asks", async () => {
+    const { env, repo } = ready(CONFIG);
+    // The working copy says `ready`; what is committed on origin/dev says nothing: still off.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", opening("ready"));
+    expect((await decide(env, repo, "gh pr create --fill"))?.reason).toContain(
+      "openPr is off (default)",
+    );
+    // No origin/dev to read the policy from.
+    const lost = ready({ ...CONFIG, worktrees: { base: "nowhere" } });
+    git(lost.repo, "update-ref", "-d", "refs/remotes/origin/nowhere");
+    expect((await decide(lost.env, lost.repo, "gh pr create --fill"))?.reason).toContain(
+      "the openPr policy committed on nowhere cannot be read",
+    );
+    // The person's own file is the other source of the value.
+    writePersonalWorkflow(env, { openPr: "ready" });
+    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+  });
+
+  test("D16: a project with no integration base reads the default and the person's own file", async () => {
+    const { env, repo } = ready({ requires: ">=0.4" });
+    expect((await decide(env, repo, "gh pr create --fill"))?.reason).toContain(
+      "committed to the integration base (worktrees.base) and pushed",
+    );
+    writePersonalWorkflow(env, { openPr: "draft" });
+    expect(await decide(env, repo, "gh pr create --draft")).toBeNull();
+  });
+
+  test("D16: the base's committed file lists merge-guard in ownHooks: the project's copy answers", async () => {
+    const { env, repo } = ready({ ...CONFIG, ownHooks: ["merge-guard"] });
+    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+  });
+
+  test("D16: merges are untouched: a merge line still asks about autoMerge, an opening line never does", async () => {
+    // `autoMerge` is off here and `openPr` is ready: opening a pull request has nothing to do
+    // with merging, so the question is never about a merge.
+    const { env, repo } = ready({ ...CONFIG, workflow: { openPr: "ready" } });
+    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+    expect((await decide(env, repo, "gh pr merge 7"))?.reason).toContain("autoMerge is off");
+    // Both on one line: the merge is asked about first.
+    expect((await decide(env, repo, "gh pr create --fill && gh pr merge 7"))?.reason).toContain(
+      "autoMerge is off",
+    );
+  });
+});
+
+describe("D24: a crew session opens no pull request", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  test("D24: gh pr create, new and ready are denied, whatever openPr says", async () => {
+    const { env, gh, repo } = ready(opening("ready"));
+    const crew = { ...env, ...CREW };
+    for (const command of [
+      "gh pr create --draft --fill",
+      "gh pr new",
+      "gh pr ready 5",
+      "gh -R example-org/app pr create --fill",
+      "cd app && gh pr create -d",
+      "bash -c 'gh pr create --draft'",
+      "gh api repos/example-org/app/pulls -f title=x",
+      "git push origin HEAD && gh pr create --fill",
+    ]) {
+      const answer = await decide(crew, repo, command);
+      expect([command, answer]).toEqual([command, { decision: "deny", reason: CREW_PR_REFUSAL }]);
+    }
+    expect(ghCalls(gh)).toEqual([]);
+    // The lead (no crew variable) is let through by openPr, as before.
+    expect(await decide(env, repo, "gh pr create --draft --fill")).toBeNull();
+  });
+
+  test("D24: an alias that expands to gh pr create is denied too", async () => {
+    const { env, repo } = ready(opening("ready"), { "alias list": "np: pr create --fill\n" });
+    expect(await decide({ ...env, ...CREW }, repo, "gh np")).toEqual({
+      decision: "deny",
+      reason: CREW_PR_REFUSAL,
+    });
+  });
+
+  test("D24: a merge or a pull request view is none of the opening rule", async () => {
+    const { env, repo } = ready(opening("ready"));
+    const crew = { ...env, ...CREW };
+    expect(await decide(crew, repo, "gh pr view 5")).toBeNull();
+    expect(await decide(crew, repo, "gh pr checks 5")).toBeNull();
+    // A merge keeps its own policy (here autoMerge is off: asks, not denies).
+    expect((await decide(crew, repo, "gh pr merge 7"))?.decision).toBe("ask");
   });
 });

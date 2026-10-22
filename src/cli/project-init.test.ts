@@ -1,11 +1,13 @@
 /** `cc-smart-dev-kit project init`: the flags, the defaults from the repo, and the run. */
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { cliPaths } from "./paths";
 import {
   askedAnswers,
   defaultAnswers,
@@ -34,7 +36,9 @@ function context(
     errors,
     context: {
       root,
-      env: {},
+      // A temp HOME and config folder: D16's clash warning reads the person's own
+      // `workflow.json` through them, never this machine's.
+      env: hookEnv(),
       stateDir: tempDir("project-init-state"),
       home: tempDir("project-init-home"),
       terminal: null,
@@ -377,6 +381,63 @@ describe("the run", () => {
     expect(run.lines.at(-1)).toBe(
       `The file asks for cc-smart-dev-kit ${written.requires}: every teammate needs that plugin version or newer.`,
     );
+  });
+
+  test("D16: a policy whose settings cannot work together is named before anything is written", () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(
+      runProjectInit(
+        ["--dry-run", "--base", "dev", "--workflow", "openPr=draft,autoMerge=true"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(0);
+    expect(run.lines).toContain(
+      `! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`,
+    );
+    expect(run.lines).toContain(
+      `! openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens. Fix: set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`).`,
+    );
+    // The plan ran and wrote nothing: the warning is part of the plan, not of a later step.
+    expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("D16: the person's own settings are part of the policy, so no clash is named wrongly", () => {
+    const repo = makeRepo();
+    const env = hookEnv();
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ autoPush: true }, null, 2)}\n`);
+    const run = context(repo, { env });
+    expect(
+      runProjectInit(
+        ["--dry-run", "--base", "dev", "--workflow", "openPr=draft"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(0);
+    // autoPush is on in the person's own file: the pull request needs no push they must approve.
+    expect(run.lines.filter((line) => line.includes("but autoPush is off"))).toEqual([]);
+  });
+
+  test("D16: a personal file that cannot be read does not stop the plan", () => {
+    const repo = makeRepo();
+    const env = hookEnv();
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "{ not json");
+    const run = context(repo, { env });
+    expect(
+      runProjectInit(
+        ["--dry-run", "--base", "dev", "--workflow", "openPr=draft"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(0);
+    expect(run.errors).toEqual([]);
+    // Nothing is known about autoPush there: the default (off) is judged, and says so.
+    expect(run.lines.some((line) => line.includes("but autoPush is off"))).toBe(true);
   });
 
   test("D20: a retired engine flag: exit 2, the reason and the usage, nothing written", () => {

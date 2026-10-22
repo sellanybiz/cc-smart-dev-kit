@@ -14,6 +14,7 @@ import {
   sameRepository,
   tellSessionsNote,
 } from "./after-merge";
+import { GUARD_BUDGET_ENV } from "./budget";
 import { afterMergeHook } from "./specs";
 
 describe("did the command merge a pull request?", () => {
@@ -464,6 +465,41 @@ describe("the hook", () => {
     expect(check).toBeGreaterThan(-1);
     expect(note.indexOf("discard_changes true")).toBeGreaterThan(check);
     expect(note).toContain('worktrees --remove "');
+  });
+
+  test("HK hunch 9: the hook's children share one budget, so their limits cannot add up", async () => {
+    const { worktree } = project();
+    // Room for every call: the whole note.
+    const env: Record<string, string> = { ...fakeGh(merged), [GUARD_BUDGET_ENV]: "10000" };
+    expect((await runHook(afterMergeHook, ran(worktree, "gh pr merge"), env)).stdout).toContain(
+      "Clear the worktree now",
+    );
+    // A small budget: the note is either written from a lookup that fit, or skipped whole,
+    // and gh is never given more time than the budget holds.
+    const small: Record<string, string> = { ...fakeGh(merged), [GUARD_BUDGET_ENV]: "1000" };
+    const answer = await runHook(afterMergeHook, ran(worktree, "gh pr merge"), small);
+    const called = () => {
+      try {
+        return readFileSync(small.GH_LOG ?? "", "utf8");
+      } catch {
+        return "";
+      }
+    };
+    expect(answer.stdout === undefined ? called() === "" : called() !== "").toBe(true);
+    // A budget with nothing left at all: no child runs, and no note names a pull request.
+    const none: Record<string, string> = { ...fakeGh(merged), [GUARD_BUDGET_ENV]: "200" };
+    expect(await runHook(afterMergeHook, ran(worktree, "gh pr merge"), none)).toEqual({});
+    expect(() => readFileSync(none.GH_LOG ?? "", "utf8")).toThrow();
+  });
+
+  test("HK hunch 9: an alias read that is given no time is never started", async () => {
+    const { worktree } = project();
+    const env: Record<string, string> = {
+      ...fakeGh(merged, "m: pr merge"),
+      [GUARD_BUDGET_ENV]: "500",
+    };
+    expect(await runHook(afterMergeHook, ran(worktree, "gh m 7"), env)).toEqual({});
+    expect(() => readFileSync(env.GH_LOG ?? "", "utf8")).toThrow();
   });
 
   test("a command that merges nothing never asks gh", async () => {
