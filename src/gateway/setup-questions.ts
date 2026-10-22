@@ -136,16 +136,25 @@ export async function askSetupQuestions(
     })
     .replace(/\/+$/, "");
 
-  if (prompts.secret === null) {
+  // A terminal that cannot hide what is typed is never asked for the key: a saved one stays.
+  if (prompts.secret === null && facts.saved === null) {
     return {
       error: `this terminal cannot hide what you type, so the key would be shown on screen. Give it on stdin instead: ${facts.keyFlags}`,
     };
   }
-  const typed = await prompts.secret(
-    facts.saved === null
-      ? `${facts.label}'s API key for the router`
-      : `${facts.label}'s API key for the router (Enter keeps the saved one)`,
-  );
+  if (prompts.secret === null) {
+    facts.print(
+      `· this terminal cannot hide what you type, so the key is not asked: the saved one stays (to change it: ${facts.keyFlags})`,
+    );
+  }
+  const typed =
+    prompts.secret === null
+      ? ""
+      : await prompts.secret(
+          facts.saved === null
+            ? `${facts.label}'s API key for the router`
+            : `${facts.label}'s API key for the router (Enter keeps the saved one)`,
+        );
   if (typed === null) return { stopped: true };
   const key = typed.trim() === "" ? null : typed.trim();
   const apiKey = key ?? facts.saved?.apiKey;

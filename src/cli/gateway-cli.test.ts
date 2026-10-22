@@ -31,6 +31,7 @@ import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
 import { runRestore, stageOneDone } from "./restore";
+import { createPrompts, INTERRUPTED_EXIT, type Prompts } from "./ui/prompt";
 
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
@@ -141,6 +142,8 @@ function machine(
     noCreatedKey?: boolean;
     /** `DELETE /api/keys/<id>` answers this instead of 200. */
     deleteStatus?: number;
+    /** The model ids `GET /v1/models` lists (`m1` alone, unless given). */
+    modelIds?: string[];
   } = {},
 ) {
   const home = tempDir("gateway-cli");
@@ -320,7 +323,7 @@ function machine(
     if (url.includes("/v1/models")) {
       const status = options.modelsStatus ?? 200;
       return status === 200
-        ? Response.json({ data: [{ id: "m1" }] })
+        ? Response.json({ data: (options.modelIds ?? ["m1"]).map((id) => ({ id })) })
         : new Response("no", { status });
     }
     if (url.includes("/api/auth/login")) {
@@ -405,7 +408,11 @@ function machine(
   const runHere = async (
     args: string[],
     input?: string,
-    how: { readSecret?: (question: string) => Promise<null | string> } = {},
+    how: {
+      readSecret?: (question: string) => Promise<null | string>;
+      /** A terminal's questions (`scriptedPrompts`); left out, nothing is asked. */
+      prompts?: Prompts;
+    } = {},
   ) => {
     if (args[0] !== "gateway" && args[0] !== "restore") {
       throw new Error("runHere runs `gateway …` and `restore …` commands only");
@@ -449,6 +456,7 @@ function machine(
               // builds this with `gatewayContext` (`src/gateway/context.ts`), whose own test
               // proves a terminal-shaped stdin gets it.
               ...(how.readSecret === undefined ? {} : { readSecret: how.readSecret }),
+              ...(how.prompts === undefined ? {} : { prompts: how.prompts }),
               confirm: null,
               service:
                 options.windows === true
@@ -724,6 +732,201 @@ describe("cc-smart-dev-kit gateway setup", () => {
   });
 });
 
+/**
+ * A terminal's questions, answered from a script: each typed line in turn (null is Enter), and
+ * `secret` for the secret read (null is Ctrl+C; `"cannot hide"`, a terminal with no secret
+ * read). `shown` is what the person sees of the questions; a question with no answer left fails
+ * the test.
+ */
+function scriptedPrompts(lines: (null | string)[], secret: null | string = "") {
+  const shown: string[] = [];
+  const queue = [...lines];
+  const prompts = createPrompts(
+    { color: false, rich: false, unicode: true, width: Number.POSITIVE_INFINITY },
+    {
+      write: (text) => {
+        shown.push(text);
+      },
+      readLine: (question) => {
+        shown.push(`${question}\n`);
+        if (queue.length === 0) throw new Error(`no answer left for: ${question}`);
+        return queue.shift() ?? null;
+      },
+      ...(secret === "cannot hide" ? {} : { readSecret: () => Promise.resolve(secret) }),
+    },
+  );
+  return { left: () => queue.length, prompts, shown: () => shown.join("") };
+}
+
+const slotQuestion = (name: string, family: string, now = "off") =>
+  `The ${name} slot (${family}'s work): numbers or targets, comma-separated, or "off" [${now}]\n`;
+const TURN_ON_QUESTION =
+  "Turn the gateway on now? Every Claude Code session on this machine then sends its requests through it [y/N]\n";
+
+describe("cc-smart-dev-kit gateway setup on a terminal: the questions", () => {
+  test("a new machine: address, key, a chain per slot from the live list, turn on", async () => {
+    const m = machine({ modelIds: ["m1", "m2"] });
+    const asked = scriptedPrompts([null, "2,1", null, null, null, "n"], PLANTED_KEY);
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(asked.shown()).toBe(
+      [
+        "OmniRoute's address [http://127.0.0.1:20128]\n",
+        "OmniRoute's API key for the router (it is not shown) \n",
+        slotQuestion("scout", "Haiku"),
+        slotQuestion("worker", "Sonnet"),
+        slotQuestion("fable", "Fable"),
+        slotQuestion("opus", "Opus"),
+        TURN_ON_QUESTION,
+      ].join(""),
+    );
+    expect(result.stdout).toStartWith(
+      [
+        "Enter keeps the answer in [brackets].",
+        "OmniRoute's models:",
+        "  1. omniroute:m1",
+        "  2. omniroute:m2",
+        "created ~/.config/cc-smart-dev-kit/gateway.json (mode 600)",
+        "cc-smart-dev-kit-scout: (new)",
+      ].join("\n"),
+    );
+    expect(result.stdout).toContain("  now: omniroute:m2 → omniroute:m1  (");
+    expect(result.stdout).toContain("Claude Code does not use the gateway yet.");
+    const config = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(config.backends.omniroute).toEqual({
+      apiKey: PLANTED_KEY,
+      baseUrl: "http://127.0.0.1:20128",
+    });
+    expect(config.slots).toEqual({ "cc-smart-dev-kit-scout": ["omniroute:m2", "omniroute:m1"] });
+    // The key went to OmniRoute only: the model list, then the key check.
+    expect(m.apiCalls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "GET http://127.0.0.1:20128/v1/models",
+      "GET http://127.0.0.1:20128/v1/models",
+    ]);
+    expect(`${result.stdout}${result.stderr}${asked.shown()}`).not.toContain(PLANTED_KEY);
+  });
+
+  test("another address is saved with the key, and every call goes to it", async () => {
+    const m = machine();
+    const asked = scriptedPrompts(
+      ["ftp://127.0.0.1", "http://127.0.0.1:20999/", null, null, null, null, null],
+      PLANTED_KEY,
+    );
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.exitCode).toBe(0);
+    expect(asked.shown()).toStartWith(
+      [
+        "OmniRoute's address [http://127.0.0.1:20128]",
+        "! Not understood: the address starts with http:// or https://.",
+        "OmniRoute's address [http://127.0.0.1:20128]",
+        "",
+      ].join("\n"),
+    );
+    const config = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(config.backends.omniroute.baseUrl).toBe("http://127.0.0.1:20999");
+    expect(config.slots).toEqual({});
+    expect(m.apiCalls.length).toBeGreaterThan(0);
+    for (const call of m.apiCalls) expect(call.url).toStartWith("http://127.0.0.1:20999/");
+  });
+
+  test("Ctrl+C at the key: stopped (130), nothing written, nothing called", async () => {
+    const m = machine();
+    const asked = scriptedPrompts([null], null);
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.exitCode).toBe(INTERRUPTED_EXIT);
+    expect(result.stderr).toBe("Stopped. Nothing was changed.\n");
+    expect(existsSync(m.paths.config)).toBe(false);
+    expect(m.apiCalls).toEqual([]);
+  });
+
+  test("a pick that is not on the list is asked again; Enter keeps a chain and the key", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const scout = slotQuestion("scout", "Haiku", "omniroute:m1,claude-sonnet-5-5");
+    // Enter at the key keeps the saved one; "9" is not on the list, then Enter keeps the chain.
+    const asked = scriptedPrompts([null, "9", null, null, null, "1", null], "");
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(asked.shown()).toContain(
+      `${scout}! Not understood: there is no model 9 on the list (1 to 1).\n${scout}`,
+    );
+    expect(asked.left()).toBe(0);
+    const config = JSON.parse(readFileSync(m.paths.config, "utf8"));
+    expect(config.backends.omniroute.apiKey).toBe(PLANTED_KEY);
+    expect(config.slots).toEqual({
+      "cc-smart-dev-kit-opus": ["omniroute:m1"],
+      "cc-smart-dev-kit-scout": ["omniroute:m1", "claude-sonnet-5-5"],
+    });
+    // The saved key at the saved address: nothing to check or save.
+    expect(result.stdout).toContain("kept ~/.config/cc-smart-dev-kit/gateway.json");
+  });
+
+  test("yes at the turn-on question: Claude Code's settings get the gateway", async () => {
+    const m = machine();
+    const asked = scriptedPrompts([null, null, null, null, null, "y"], PLANTED_KEY);
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("Claude Code does not use the gateway yet.");
+    const settings = JSON.parse(readFileSync(m.paths.settings, "utf8"));
+    expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:20100");
+  });
+
+  test("a model list that cannot be read: no slot question, then the key check refuses", async () => {
+    const m = machine({ modelsStatus: 401 });
+    const asked = scriptedPrompts([null, null], PLANTED_KEY);
+    const result = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(result.stdout).toContain(
+      "! OmniRoute's model list could not be read (HTTP 401), so every slot stays as it is. Pick them later: cc-smart-dev-kit gateway models, then cc-smart-dev-kit gateway slot <slot> <targets>.",
+    );
+    expect(asked.shown()).not.toContain("slot (");
+    expect(asked.left()).toBe(0);
+    expect(result.exitCode).toBe(1);
+    expect(existsSync(m.paths.config)).toBe(false);
+  });
+
+  test("a terminal that cannot hide what is typed: the key is never asked", async () => {
+    const m = machine();
+    const first = scriptedPrompts([null], "cannot hide");
+    const refused = await m.runHere(["gateway", "setup"], undefined, { prompts: first.prompts });
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain("this terminal cannot hide what you type");
+    expect(refused.stderr).toContain("gateway setup --backend-key-stdin omniroute < key-file");
+    expect(existsSync(m.paths.config)).toBe(false);
+    // With a key saved, it stays, and the other questions are asked.
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const asked = scriptedPrompts([null, null, null, null, null, null], "cannot hide");
+    const kept = await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts });
+    expect(kept.stderr).toBe("");
+    expect(kept.exitCode).toBe(0);
+    expect(kept.stdout).toContain(
+      "· this terminal cannot hide what you type, so the key is not asked: the saved one stays",
+    );
+    expect(asked.left()).toBe(0);
+    expect(JSON.parse(readFileSync(m.paths.config, "utf8")).backends.omniroute.apiKey).toBe(
+      PLANTED_KEY,
+    );
+  });
+
+  test("no terminal, or --yes: nothing is asked", async () => {
+    const m = machine();
+    const none = await m.runHere(["gateway", "setup"]);
+    expect(none.exitCode).toBe(1);
+    expect(none.stderr).toContain("no config at");
+    const asked = scriptedPrompts([]);
+    const yes = await m.runHere(["gateway", "setup", "--yes"], undefined, {
+      prompts: asked.prompts,
+    });
+    expect(asked.shown()).toBe("");
+    expect(yes.exitCode).toBe(1);
+    expect(yes.stderr).toContain("no config at");
+  });
+});
+
 describe("cc-smart-dev-kit gateway setup: the key is tested before it is saved", () => {
   // Live, 2026-10-17: a person pasted their Ollama Cloud key where the router's OmniRoute key
   // was asked for. It was saved without a check, the router's backend answered 401 to every
@@ -949,13 +1152,14 @@ describe("cc-smart-dev-kit gateway setup: OmniRoute's dashboard password", () =>
     expect(existsSync(m.paths.config)).toBe(false);
   });
 
-  test("--omniroute-password, Ctrl+C at the prompt: refused, and nothing was made", async () => {
+  test("--omniroute-password, Ctrl+C at the prompt: stopped (130), and nothing was made", async () => {
     const m = machine();
     const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
       readSecret: () => Promise.resolve(null),
     });
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("nothing was read (Ctrl+C)");
+    expect(result.exitCode).toBe(130);
+    expect(result.stderr).toBe("Stopped. Nothing was changed.\n");
+    expect(existsSync(m.paths.config)).toBe(false);
     expect(m.apiCalls).toEqual([]);
   });
 
@@ -2451,6 +2655,13 @@ describe("secrets", () => {
     });
     record(await m.run(["gateway", "setup", "--backend-key-stdin", "omniroute"], PLANTED_KEY));
     record(await m.run(["gateway", "setup", "--backend-key-stdin", "creds"], PLANTED_KEY));
+    // The questions on a terminal, the key typed at the secret read; Enter at every other one.
+    const asked = scriptedPrompts(
+      Array.from({ length: 6 }, () => null),
+      PLANTED_KEY,
+    );
+    record(await m.runHere(["gateway", "setup"], undefined, { prompts: asked.prompts }));
+    outputs.push(asked.shown());
     record(await m.run(["gateway", "status"]));
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:m1,claude-sonnet-5-5"]));

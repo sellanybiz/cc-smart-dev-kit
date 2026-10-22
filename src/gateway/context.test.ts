@@ -66,6 +66,8 @@ describe("the gateway context: the terminal for --omniroute-password", () => {
     const tty = fakeTty(["the-dashboard-password\r"]);
     const ctx = gatewayContext(options(tty.terminal));
     expect(typeof ctx.readSecret).toBe("function");
+    // The whole set of questions too, for `gateway setup` on a terminal.
+    expect(ctx.prompts?.secret).toBe(ctx.readSecret);
     // No echo while it is read (`setRawMode`), and the line comes back cleaned.
     expect(await ctx.readSecret?.("Password")).toBe("the-dashboard-password");
     expect(tty.modes).toEqual([true, false]);
@@ -75,11 +77,16 @@ describe("the gateway context: the terminal for --omniroute-password", () => {
     // `setRawMode` missing: a terminal would ECHO the password while it is typed.
     const ctx = gatewayContext(options({ isTTY: true }));
     expect(ctx.readSecret).toBeUndefined();
+    // Still a terminal: its typed questions are asked, and its secret read is null.
+    expect(ctx.prompts?.ask).toBeFunction();
+    expect(ctx.prompts?.secret).toBeNull();
   });
 
   test("a pipe gets none", () => {
     const ctx = gatewayContext(options({ isTTY: false, setRawMode: () => undefined }));
     expect(ctx.readSecret).toBeUndefined();
+    // No questions at all: setup takes its flags only.
+    expect(ctx.prompts).toBeUndefined();
   });
 
   test("everything else the commands need is there, whatever the terminal is", () => {
