@@ -91,9 +91,13 @@ export function addressProblem(text: string): null | string {
   } catch {
     return "give a full address, such as http://127.0.0.1:20128";
   }
-  return url.protocol === "http:" || url.protocol === "https:"
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return "the address starts with http:// or https://";
+  }
+  // Output never shows a credential in an address, and a question shows its answer.
+  return url.username === "" && url.password === ""
     ? null
-    : "the address starts with http:// or https://";
+    : "give the address with no user or password in it";
 }
 
 /**
@@ -129,12 +133,23 @@ export async function askSetupQuestions(
   facts: SetupFacts,
 ): Promise<SetupQuestions> {
   facts.print(SETUP_QUESTIONS_INTRO);
-  const baseUrl = prompts
-    .ask(`${facts.label}'s address`, {
-      default: facts.saved?.baseUrl ?? facts.defaultBaseUrl,
-      check: addressProblem,
-    })
-    .replace(/\/+$/, "");
+  const savedUrl = facts.saved?.baseUrl;
+  // A saved address with a user or password in it would be shown as the question's default:
+  // it is kept as it is, and not asked.
+  const keepsAddress = savedUrl !== undefined && addressProblem(savedUrl) !== null;
+  if (keepsAddress) {
+    facts.print(
+      `· ${facts.label}'s address is kept as it is: it holds a user or password, so it is not shown`,
+    );
+  }
+  const baseUrl = keepsAddress
+    ? savedUrl
+    : prompts
+        .ask(`${facts.label}'s address`, {
+          default: savedUrl ?? facts.defaultBaseUrl,
+          check: addressProblem,
+        })
+        .replace(/\/+$/, "");
 
   // A terminal that cannot hide what is typed is never asked for the key: a saved one stays.
   if (prompts.secret === null && facts.saved === null) {

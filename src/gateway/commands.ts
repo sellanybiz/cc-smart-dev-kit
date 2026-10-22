@@ -333,7 +333,9 @@ export function ensureConfig(
     });
   }
   const moved =
-    existing !== undefined && existing.baseUrl !== baseUrl ? ` and its address to ${baseUrl}` : "";
+    existing !== undefined && existing.baseUrl !== baseUrl
+      ? ` and its address to ${shownValue(baseUrl)}`
+      : "";
   return `set the key of backend "${key.backend}" (${maskKey(key.value)})${moved} in ${configPath}`;
 }
 
