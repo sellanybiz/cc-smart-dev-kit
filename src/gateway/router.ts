@@ -95,6 +95,8 @@ import { dirname } from "node:path";
 // From ./names, not the index: the index bakes in the version (bundles-and-releases.md).
 import { COMMAND } from "../build-info/names";
 import { atomicWrite } from "../setup/write";
+import type { ListedModel } from "./backends";
+import { listModels as listBackendModels } from "./backends";
 import {
   BREAKER_HEARTBEAT_WAIT_MS,
   BREAKER_MAX_HELD,
@@ -118,6 +120,7 @@ import {
   breakerOn,
   fallbackOn,
   type GatewayConfig,
+  historyRetentionDays,
   judgeTargetUsable,
   messageOf,
   watchConfig,
@@ -129,6 +132,7 @@ import {
   thinkingForBackend,
   withoutRouterThinking,
 } from "./fallback-answer";
+import { createHistoryWriter, type HistoryRecorder, type HistoryRow } from "./history";
 import { type BackendFetchOptions, backendFetch } from "./hosts";
 import {
   currentBreakers,
@@ -143,12 +147,13 @@ import {
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
 import type { RouterPaths } from "./paths";
 import { maskedLine, oneLine } from "./plain-text";
+import { backendCost, claudeCost, type ModelPrice, priceFromModels } from "./prices";
 import { backendRefusal, isRefusalStatus, REFUSAL_STATUS } from "./refusal";
 import {
+  AnswerUsageReader,
   addCheckTokens,
   type CheckSide,
   type CheckTokens,
-  checkUsageFromAnswer,
   emptySafetyChecks,
   formatSafetyCheckState,
   localDay,
@@ -178,6 +183,7 @@ import {
   isClaudeModelId,
   JUDGE_SLOT,
   type PlanLimit,
+  parseTarget,
   planUsageLimit,
   resolveAlias,
   resolveRequestRoute,
@@ -231,6 +237,18 @@ export interface RouterDeps {
   fallbackAnswersAsIs?: boolean;
   fetch: FetchLike;
   getConfig: () => GatewayConfig;
+  /**
+   * Where each routed `/v1/messages` request's row goes (D51): `history.ts`'s writer in use,
+   * a collector in a test. Absent: no history. `enabled()` false (the log is off) skips the
+   * row and the reading of the answer's usage.
+   */
+  history?: HistoryRecorder;
+  /**
+   * A backend's model list, asked once per backend and refreshed rarely, for the price its
+   * own list gives a history row (`prices.ts`). Called in the background, never on an
+   * answer's path; absent: no backend price.
+   */
+  listModels?: (backend: { apiKey: string; baseUrl: string }) => Promise<ListedModel[]>;
   /**
    * The safety-check counts already on disk (`safety-checks.ts`), read once when the router
    * starts so a restart goes on counting the same days. Absent, or null: none yet.
@@ -294,6 +312,22 @@ export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
 
 /** How many routed requests the health answer lists (`recent`), the last ones first in. */
 export const RECENT_MAX = 200;
+
+/** How long a backend's model list (for a history row's price) is used before it is asked again. */
+const PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * A Claude Code session id as its header carries one (`x-claude-code-session-id`): letters,
+ * digits, `.`, `_` and `-`, at most 128. Anything else is not stored: the history never
+ * writes an arbitrary client header into its database.
+ */
+const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
+
+/** The session id a request carried, or null. The one thing the history takes from a header. */
+export function sessionIdOf(headers: Headers): null | string {
+  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+  return SESSION_ID.test(value) ? value : null;
+}
 
 /**
  * One request the router routed, as its health answer lists it (the portal's activity feed).
@@ -1020,13 +1054,6 @@ function withoutEmptyBreakers(state: LimitState): void {
     delete state.breakers;
   }
 }
-
-/**
- * How much of a safety check's answer is kept to read its `usage`. The answer to a check
- * that judges one action is a few hundred bytes; past this the check is still counted and
- * its tokens are not, so a surprising answer cannot grow the router's memory.
- */
-const CHECK_USAGE_MAX_BYTES = 256 * 1024;
 
 /**
  * A state file the router writes in the background: one write for any number of changes in
@@ -2546,16 +2573,19 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
-   * An answer as Claude Code gets it: byte for byte, and counted on the way. Every chunk is
-   * handed to the client first and a copy is kept for the reader, so the client's own
-   * backpressure still holds the upstream, nothing is held back, and `note` runs only once
-   * the client has the last byte — in the background, never on the answer's path. A client
-   * that hangs up cancels the upstream exactly as it did before.
+   * An answer as Claude Code gets it: byte for byte, and its `usage` read on the way. Every
+   * chunk is handed to the client first, so the client's own backpressure still holds the
+   * upstream and nothing is held back; the reader sees the same bytes, decoded when the
+   * answer came compressed, and `note` runs once the last of them is through — in the
+   * background, never on the answer's path. A client that hangs up cancels the upstream
+   * exactly as it did before, and the reader reports what it had read.
    *
-   * An answer the reader cannot make sense of (an encoding the router does not decode, a
-   * body that is not JSON or a stream, more than `CHECK_USAGE_MAX_BYTES`) reports null: the
-   * check is counted, its tokens are not. That is what an answer with no `usage` says too,
-   * and guessing one would be worse than not knowing.
+   * The bytes are not kept (`AnswerUsageReader` reads each server-sent event as it ends), so
+   * a long answer is read without growing the router's memory. An answer the reader cannot
+   * make sense of (an encoding it cannot decode, a JSON body that is not JSON or is larger
+   * than `CHECK_USAGE_MAX_BYTES`) reports null: the check is counted or the history row is
+   * written, its tokens are not. That is what an answer with no `usage` says too, and
+   * guessing one would be worse than not knowing.
    */
   function observedAnswer(
     response: Response,
@@ -2567,43 +2597,57 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    const format =
+      encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
+    // An encoding the router cannot decode: the client may know it, the reader does not.
+    const undecodable = encoding !== "" && encoding !== "identity" && format === null;
+    const usage = new AnswerUsageReader(streaming);
+    // A compressed answer is decompressed on a second branch, for the reader only: the
+    // client still gets the compressed bytes exactly as they came.
+    let decode: null | {
+      done: Promise<void>;
+      writer: { close(): Promise<void>; write(chunk: Uint8Array<ArrayBuffer>): Promise<void> };
+    } = null;
+    if (format !== null) {
+      const decompressor = new DecompressionStream(format);
+      const writer = decompressor.writable.getWriter();
+      const done = (async () => {
+        const decoded = decompressor.readable.getReader();
+        for (;;) {
+          const step = await decoded.read();
+          if (step.done) return;
+          usage.push(step.value);
+        }
+      })().catch(() => {
+        // A compressed stream that cannot be decoded: what was read before it stands.
+      });
+      decode = { done, writer };
+    }
     const reader = body.getReader();
-    let chunks: Uint8Array[] = [];
-    let kept = 0;
-    let keep = true;
     let ended = false;
-    /** The bytes the client got, as text: decompressed when the answer came compressed,
-     * because the client decodes it and this reader must read what the client reads. Null
-     * when the encoding is one the router cannot decode. */
-    const answerText = async (): Promise<null | string> => {
-      if (!keep) return null;
-      const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
-      const format =
-        encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
-      if (format === null && encoding !== "" && encoding !== "identity") return null;
-      const bytes = new Uint8Array(kept);
-      let at = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, at);
-        at += chunk.byteLength;
-      }
-      if (format === null) return new TextDecoder().decode(bytes);
-      const decoded = new Response(bytes).body;
-      if (decoded === null) return null;
-      return await new Response(decoded.pipeThrough(new DecompressionStream(format))).text();
-    };
     const finish = (): void => {
       if (ended) return;
       ended = true;
-      const task = answerText().then(
-        (answer) => note(answer === null ? null : checkUsageFromAnswer(answer, streaming)),
-        // A decode that fails reads as an answer with no usage: the client got its bytes
-        // either way, and the check is counted.
-        () => note(null),
-      );
+      const task = (async () => {
+        if (undecodable) {
+          note(null);
+          return;
+        }
+        if (decode !== null) {
+          try {
+            await decode.writer.close();
+          } catch {
+            // The compressed stream was cut: what was decoded before it still counts.
+          }
+          // `done` never rejects: a decode that failed kept what it had read.
+          await decode.done;
+        }
+        note(usage.tokens());
+      })();
       deps.background?.(task);
     };
-    const counted = new ReadableStream<Uint8Array>({
+    const observed = new ReadableStream<Uint8Array>({
       cancel(reason) {
         finish();
         return reader.cancel(reason);
@@ -2624,18 +2668,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           return;
         }
         controller.enqueue(step.value);
-        if (!keep) return;
-        kept += step.value.byteLength;
-        if (kept > CHECK_USAGE_MAX_BYTES) {
-          // A surprising answer: the check is counted, its tokens are not.
-          keep = false;
-          chunks = [];
+        if (undecodable) return;
+        if (decode !== null) {
+          // The decoder reads alongside the client. A failed write ends its branch; the
+          // answer is already on its way, and the client never waits for the reader.
+          decode.writer.write(step.value as Uint8Array<ArrayBuffer>).catch(() => {});
           return;
         }
-        chunks.push(step.value);
+        usage.push(step.value);
       },
     });
-    return new Response(counted, {
+    return new Response(observed, {
       headers: response.headers,
       status: response.status,
       statusText: response.statusText,
@@ -2645,7 +2688,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   async function route(
     req: Request,
     url: URL,
-    model: { name: string; slot: null | string },
+    model: { guard: boolean; name: string; slot: null | string },
   ): Promise<Outcome> {
     const config = deps.getConfig();
     dropRemovedFallbacks(config);
@@ -2723,6 +2766,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     // The safety check is recognised on the request as it came, an old name included: an
     // alias may point at an affordable backend, and with the judge off the check stays on Claude.
     const guard = isAutoModeGuard(parsed, config.aliases);
+    model.guard = guard;
     // Then the old name, so the rest routes on the name it stands for; even the safety
     // check, whose newer form is sent under the sonnet name.
     const alias = resolveAlias(parsed.model, config.aliases);
@@ -2936,10 +2980,73 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
   }
 
+  /** Backend model lists, for the price a history row uses; asked in the background. */
+  const backendListings = new Map<string, { at: number; models: ListedModel[] }>();
+  const listingLoads = new Set<string>();
+  const listingErrors = new Set<string>();
+
+  /**
+   * The price an affordable backend's own model list gives for one of its models (D51), or
+   * null when it gives none. The list is asked once per backend and refreshed every few
+   * hours, in the background through `RouterDeps.background`, never on an answer's path; a
+   * failure is one WARN line and is not asked again until the next refresh.
+   */
+  function backendPrice(backend: string, model: string): ModelPrice | null {
+    const cached = backendListings.get(backend);
+    const stale = cached === undefined || deps.now() - cached.at >= PRICE_REFRESH_MS;
+    if (stale && deps.listModels !== undefined && !listingLoads.has(backend)) {
+      const entry = deps.getConfig().backends[backend];
+      if (entry !== undefined) {
+        listingLoads.add(backend);
+        const load = deps.listModels;
+        const task = load({ apiKey: entry.apiKey, baseUrl: entry.baseUrl })
+          .then((models) => {
+            backendListings.set(backend, { at: deps.now(), models });
+          })
+          .catch((error: unknown) => {
+            const message = messageOf(error);
+            if (!listingErrors.has(message)) {
+              listingErrors.add(message);
+              deps.log(`WARN cannot read ${backend}'s model list for history prices: ${message}`);
+            }
+            // The failure is remembered too: a backend that is down is not asked every row.
+            backendListings.set(backend, { at: deps.now(), models: [] });
+          })
+          .finally(() => {
+            listingLoads.delete(backend);
+          });
+        deps.background?.(task.then(() => {}));
+      }
+    }
+    return cached === undefined ? null : priceFromModels(cached.models, model);
+  }
+
+  /**
+   * What one history row's answer cost (D51): Claude's list price, estimated, for a Claude
+   * target (the model that answered, or the model asked when Anthropic answered as sent); a
+   * backend's own listed price for a backend target; null when neither has a price. Never a
+   * guess.
+   */
+  function costOf(target: string, asked: string, tokens: CheckTokens | null): HistoryRow["cost"] {
+    if (tokens === null) return null;
+    if (target.startsWith("claude-")) return claudeCost(target, tokens);
+    if (target === "anthropic" || target.startsWith("anthropic ")) return claudeCost(asked, tokens);
+    const parsed = parseTarget(target);
+    if ("target" in parsed && parsed.target.kind === "backend") {
+      const price = backendPrice(parsed.target.backend, parsed.target.model);
+      return price === null ? null : backendCost(price, tokens);
+    }
+    return null;
+  }
+
   return async function handle(req: Request): Promise<Response> {
     const startMs = deps.now();
     const url = new URL(req.url);
-    const model: { name: string; slot: null | string } = { name: "-", slot: null };
+    const model: { guard: boolean; name: string; slot: null | string } = {
+      guard: false,
+      name: "-",
+      slot: null,
+    };
     const line = (outcome: Outcome) =>
       `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
         outcome.breaker === undefined
@@ -2998,6 +3105,41 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       target: printable(outcome.target),
     });
     if (recent.length > RECENT_MAX) recent.shift();
+    // The request history (D51): one row per routed `/v1/messages` request, never a safety
+    // check (those are counted by day in `safety-checks.json`), never `count_tokens` or
+    // another path. The answer's `usage` is read from the bytes on their way to Claude Code,
+    // which are neither changed nor waited for; the row is written when they are through.
+    if (
+      req.method === "POST" &&
+      url.pathname === MESSAGES_PATH &&
+      !model.guard &&
+      deps.history?.enabled() === true
+    ) {
+      const answered = outcome;
+      const row: Omit<HistoryRow, "cost" | "tokens"> = {
+        at: startMs,
+        breaker:
+          answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
+        model: model.name,
+        ms: deps.now() - startMs,
+        nextTarget: answered.fallbacks > 0 ? printable(answered.target) : null,
+        session: sessionIdOf(req.headers),
+        slot: model.slot,
+        status: answered.response.status,
+        // As the log line names it: a target in the config, or a word of ours.
+        target: printable(answered.target),
+      };
+      outcome = {
+        ...answered,
+        response: observedAnswer(answered.response, (tokens) => {
+          deps.history?.record({
+            ...row,
+            cost: costOf(answered.target, model.name, tokens),
+            tokens,
+          });
+        }),
+      };
+    }
     return outcome.response;
   };
 }
@@ -3044,11 +3186,25 @@ export async function startRouter(
   // Aborted at SIGTERM: the requests the breaker holds are answered at once (retry-after 5),
   // so the drain below does not wait for their hold.
   const shutdown = new AbortController();
+  // The request history (D51): rows are batched in the background by `history.ts`, and the
+  // file is made only when a row is really written, so a log that is off leaves none.
+  const history = createHistoryWriter({
+    file: paths.historyDbFile,
+    log,
+    retentionDays: () => historyRetentionDays(source.get()),
+  });
   const handlerFor = (port: number) =>
     createRouter({
       configPath,
       fetch: (url, init) => fetch(url, init),
       getConfig: () => source.get(),
+      history,
+      // A backend's own price for the history's cost, from its model list (D51), asked in
+      // the background and only when its list gives one.
+      listModels: (backend) =>
+        listBackendModels(backend.baseUrl, backend.apiKey).then((listed) =>
+          "models" in listed ? listed.models : [],
+        ),
       // What the router counted and saw before it started, so a restart (an update, a crash)
       // goes on counting the same days, and keeps the plan limits and fallbacks it saw.
       loadSafetyChecks: () => readState(paths.safetyChecksFile),
@@ -3082,7 +3238,7 @@ export async function startRouter(
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
       shutdown.abort();
-      exitWhenDone(server.stop(false), log, () => {});
+      exitWhenDone(server.stop(false), log, () => history.close());
     });
     return;
   }
@@ -3118,7 +3274,10 @@ export async function startRouter(
     shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
-    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, () => {
+      inner.cleanup();
+      history.close();
+    });
   });
 }
 

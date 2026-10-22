@@ -34,7 +34,8 @@ function routerPaths(env = process.env) {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db")
   };
 }
 
@@ -6247,6 +6248,11 @@ function realTarget(file) {
   throw new Error(`${file}: too many symlinks (a loop?)`);
 }
 
+// src/gateway/history.ts
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
+
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
@@ -6270,6 +6276,9 @@ var gatewayConfigSchema = looseObject({
   kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
+  history: looseObject({
+    retentionDays: int().min(0, "0 turns the request history off, which is the smallest value").max(HISTORY_MAX_RETENTION_DAYS, `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`).optional()
+  }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),

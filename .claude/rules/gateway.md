@@ -51,6 +51,13 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   2 KB), through `maskSecrets` with the keys the router knows. **The log never delays an
   answer or stalls the router:** the line is written in the background, and every pattern
   in `maskSecrets` has bounded quantifiers (a test feeds it 64 KB of adversarial text).
+- **The request history is metadata only (D51).** A row holds exactly `history.ts`'s
+  `HistoryRow` fields: time, the session id header, model, slot, target, status, latency,
+  the next target on a fallback, the breaker's answer, the four token counts and the
+  estimate. Never a prompt, a system text, a tool, an answer, any other header value or a
+  key. `record` never writes on an answer's path, and a write error is one log line: a
+  history that cannot be written never fails a request. Its reader opens the database
+  read-only (`history-read.ts`), and the portal's routes never write it.
 
 ## The login only ever reaches Anthropic
 

@@ -365,7 +365,8 @@ function routerPaths(env = process.env) {
     home,
     gatewayConfigFile: join2(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join2(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join2(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
+    safetyChecksFile: join2(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join2(home, ".local", "state", "cc-smart-dev-kit", "history.db")
   };
 }
 
@@ -1019,8 +1020,8 @@ function legacyChecks(paths, deps) {
 
 // src/gateway/config.ts
 import { createHash } from "crypto";
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
-import { dirname as dirname3 } from "path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, statSync as statSync4 } from "fs";
+import { dirname as dirname4 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6957,6 +6958,203 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/gateway/history.ts
+import { Database } from "bun:sqlite";
+import { mkdirSync as mkdirSync3, statSync as statSync3 } from "fs";
+import { dirname as dirname3 } from "path";
+var HISTORY_RETENTION_DAYS = 90;
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_FLUSH_MS = 250;
+var HISTORY_BATCH_MAX = 200;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
+var HISTORY_SCHEMA_VERSION = 1;
+var CREATE_REQUESTS = `
+  CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    session TEXT,
+    model TEXT NOT NULL,
+    slot TEXT,
+    target TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    ms INTEGER NOT NULL,
+    next_target TEXT,
+    breaker TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    cost_usd REAL,
+    cost_estimated INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS requests_at ON requests(at);
+  CREATE INDEX IF NOT EXISTS requests_session_at ON requests(session, at);
+`;
+function openDatabase(file) {
+  mkdirSync3(dirname3(file), { mode: 448, recursive: true });
+  const db = new Database(file, { create: true });
+  db.run("PRAGMA auto_vacuum = INCREMENTAL");
+  const auto = db.query("PRAGMA auto_vacuum").get();
+  if (auto?.auto_vacuum !== 2)
+    db.run("VACUUM");
+  const mode = db.query("PRAGMA journal_mode = WAL").get();
+  if (mode?.journal_mode.toLowerCase() !== "wal") {
+    db.run("PRAGMA busy_timeout = 5000");
+  } else {
+    db.run("PRAGMA synchronous = NORMAL");
+    db.run("PRAGMA busy_timeout = 5000");
+  }
+  const version = db.query("PRAGMA user_version").get();
+  if ((version?.user_version ?? 0) > HISTORY_SCHEMA_VERSION) {
+    db.close();
+    throw new Error(`${file} was written by a newer cc-smart-dev-kit (schema ${String(version?.user_version)}, this one reads ${String(HISTORY_SCHEMA_VERSION)})`);
+  }
+  db.run(CREATE_REQUESTS);
+  if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
+    db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
+  }
+  setFileMode(file, 384);
+  return db;
+}
+function historyDbExists(file) {
+  try {
+    return statSync3(file).isFile();
+  } catch {
+    return false;
+  }
+}
+function historyDbBytes(file) {
+  let bytes = 0;
+  for (const path of [file, `${file}-wal`]) {
+    try {
+      bytes += statSync3(path).size;
+    } catch {}
+  }
+  return bytes;
+}
+function retentionWords(days) {
+  if (days <= 0)
+    return "off (history.retentionDays: 0)";
+  return days === 1 ? "1 day" : `${String(days)} days`;
+}
+var INSERT_ROW = `INSERT INTO requests
+  (at, session, model, slot, target, status, ms, next_target, breaker,
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+function insertValues(row) {
+  return [
+    row.at,
+    row.session,
+    row.model,
+    row.slot,
+    row.target,
+    row.status,
+    row.ms,
+    row.nextTarget,
+    row.breaker,
+    row.tokens?.input ?? null,
+    row.tokens?.output ?? null,
+    row.tokens?.cacheRead ?? null,
+    row.tokens?.cacheWrite ?? null,
+    row.cost?.usd ?? null,
+    row.cost?.estimated === true ? 1 : 0
+  ];
+}
+function createHistoryWriter(options) {
+  const flushAfterMs = options.flushAfterMs ?? HISTORY_FLUSH_MS;
+  const now = options.now ?? (() => Date.now());
+  let buffer = [];
+  let db = null;
+  let timer = null;
+  let closed = false;
+  let lastError = "";
+  let retryAt = 0;
+  let lastPurgeAt = 0;
+  const fail = (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== lastError)
+      options.log(`ERROR cannot write the request history: ${message}`);
+    lastError = message;
+    retryAt = now() + HISTORY_RETRY_MS;
+    buffer = buffer.slice(-HISTORY_BATCH_MAX);
+  };
+  const purge = (database, retentionDays) => {
+    const at = now();
+    if (at - lastPurgeAt < HISTORY_PURGE_EVERY_MS)
+      return;
+    lastPurgeAt = at;
+    if (retentionDays <= 0)
+      return;
+    const cutoff = at - retentionDays * 24 * 60 * 60 * 1000;
+    database.run("DELETE FROM requests WHERE at < ?", [cutoff]);
+    database.run("PRAGMA incremental_vacuum");
+  };
+  const flush = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (closed || buffer.length === 0)
+      return;
+    const rows = buffer;
+    buffer = [];
+    if (now() < retryAt) {
+      buffer = rows.slice(-HISTORY_BATCH_MAX);
+      return;
+    }
+    try {
+      if (db === null)
+        db = openDatabase(options.file);
+      const insert = db.prepare(INSERT_ROW);
+      const write = db.transaction((batch) => {
+        for (const row of batch)
+          insert.run(...insertValues(row));
+      });
+      write(rows);
+      lastError = "";
+      purge(db, options.retentionDays());
+    } catch (error) {
+      fail(error);
+    }
+  };
+  const schedule = () => {
+    if (timer !== null || closed)
+      return;
+    timer = setTimeout(() => {
+      timer = null;
+      flush();
+    }, flushAfterMs);
+    timer.unref?.();
+  };
+  return {
+    close() {
+      flush();
+      if (db !== null) {
+        db.close();
+        db = null;
+      }
+      closed = true;
+    },
+    enabled: () => !closed && options.retentionDays() > 0,
+    flush,
+    pending: () => buffer.length,
+    record(row) {
+      if (closed)
+        return;
+      const days = options.retentionDays();
+      if (days <= 0)
+        return;
+      buffer.push(row);
+      if (buffer.length >= HISTORY_BATCH_MAX)
+        flush();
+      else
+        schedule();
+    },
+    retentionDays: () => options.retentionDays()
+  };
+}
+
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_PREFIX = "cc-smart-dev-kit-";
@@ -7194,6 +7392,9 @@ var gatewayConfigSchema = looseObject({
   kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
+  history: looseObject({
+    retentionDays: int().min(0, "0 turns the request history off, which is the smallest value").max(HISTORY_MAX_RETENTION_DAYS, `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`).optional()
+  }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
@@ -7289,6 +7490,9 @@ function breakerOn(config, slot) {
 function breakerHoldMs(config) {
   return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
 }
+function historyRetentionDays(config) {
+  return config.history?.retentionDays ?? HISTORY_RETENTION_DAYS;
+}
 function breakerWords(config, slot) {
   if (slot === JUDGE_SLOT)
     return null;
@@ -7374,7 +7578,7 @@ function parseConfig(raw) {
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
-    mode = statSync3(path).mode;
+    mode = statSync4(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -7398,7 +7602,7 @@ function saveConfig(path, config) {
   if ("error" in parsed)
     throw new ConfigError(`refusing to save an invalid config:
 ${parsed.error}`);
-  mkdirSync3(dirname3(path), { mode: 448, recursive: true });
+  mkdirSync4(dirname4(path), { mode: 448, recursive: true });
   atomicWrite(path, `${JSON.stringify(parsed.config, null, 2)}
 `, 384);
 }
@@ -7413,7 +7617,7 @@ function emptyConfig() {
     version: 1
   };
 }
-var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync3 };
+var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync4 };
 function watchConfig(path, log, deps = REAL_WATCH_DEPS) {
   let current = emptyConfig();
   let good = false;
@@ -7455,8 +7659,438 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
 }
 
 // src/gateway/router.ts
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync7 } from "fs";
-import { dirname as dirname4 } from "path";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
+import { dirname as dirname5 } from "path";
+
+// src/gateway/hosts.ts
+function ipv4Parts(host) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (match === null)
+    return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every((part) => part <= 255) ? parts : null;
+}
+function ipv6Groups(host) {
+  if (!host.startsWith("[") || !host.endsWith("]"))
+    return null;
+  const halves = host.slice(1, -1).split("::");
+  if (halves.length > 2)
+    return null;
+  const groupsOf = (text) => {
+    if (text === "")
+      return [];
+    const parts = text.split(":");
+    if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part)))
+      return null;
+    return parts.map((part) => Number.parseInt(part, 16));
+  };
+  const head = groupsOf(halves[0] ?? "");
+  const tail = groupsOf(halves[1] ?? "");
+  if (head === null || tail === null)
+    return null;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1)
+    return null;
+  return [...head, ...Array(halves.length === 1 ? 0 : missing).fill(0), ...tail];
+}
+function mappedIpv4(groups) {
+  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 65535)
+    return null;
+  const high = groups[6] ?? 0;
+  const low = groups[7] ?? 0;
+  return [high >> 8, high & 255, low >> 8, low & 255];
+}
+function normalHost(hostname) {
+  const lower = hostname.toLowerCase();
+  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
+}
+function isLoopbackHost(hostname) {
+  const host = normalHost(hostname);
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return true;
+  const v4 = ipv4Parts(host);
+  if (v4 !== null)
+    return v4[0] === 127;
+  const v6 = ipv6Groups(host);
+  if (v6 === null)
+    return false;
+  const mapped = mappedIpv4(v6);
+  if (mapped !== null)
+    return mapped[0] === 127;
+  return v6.slice(0, 7).every((group) => group === 0) && v6[7] === 1;
+}
+function directIfLoopback(url) {
+  const parsed = URL.parse(url);
+  if (parsed === null || !isLoopbackHost(parsed.hostname))
+    return {};
+  return { proxy: false };
+}
+function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
+  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
+}
+
+// src/gateway/plain-text.ts
+var CONTROL2 = /[\p{Cc}\p{Cf}]/gu;
+var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
+function plainText(text, options = {}) {
+  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL2, " ");
+}
+function cutText(text, max) {
+  if (text.length <= max)
+    return text;
+  let end = Math.max(0, max);
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 55296 && last <= 56319)
+    end -= 1;
+  return text.slice(0, end);
+}
+function oneLine(text, max, options = {}) {
+  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
+  const line = flat.trim();
+  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
+}
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+var KNOWN_SECRET_MIN = 4;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function knownSecretForms(known) {
+  const forms = new Map;
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN)
+      continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice])
+      if (!forms.has(form))
+        forms.set(form, secret);
+  }
+  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
+}
+function maskSecrets(text, known = []) {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
+}
+function maskedLine(text, known, max, options = {}) {
+  return oneLine(maskSecrets(text, known), max, options);
+}
+
+// src/gateway/prices.ts
+var CLAUDE_PRICES = [
+  {
+    family: "fable",
+    major: 5,
+    minor: 1,
+    price: { cacheRead: 0.25, cacheWrite: 12.5, input: 10, output: 50 }
+  },
+  {
+    family: "fable",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 1, cacheWrite: 12.5, input: 10, output: 50 }
+  },
+  {
+    family: "opus",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.2, cacheWrite: 5, input: 4, output: 20 }
+  },
+  {
+    family: "opus",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 8,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 7,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 6,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 1,
+    price: { cacheRead: 1.5, cacheWrite: 18.75, input: 15, output: 75 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 0,
+    price: { cacheRead: 1.5, cacheWrite: 18.75, input: 15, output: 75 }
+  },
+  {
+    family: "sonnet",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+  },
+  {
+    family: "sonnet",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 6,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 0,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "haiku",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.01, cacheWrite: 0.125, input: 0.1, output: 0.5 },
+    overAfter: 1e5,
+    over: { cacheRead: 0.05, cacheWrite: 0.625, input: 0.5, output: 2.5 }
+  },
+  {
+    family: "haiku",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.1, cacheWrite: 1.25, input: 1, output: 5 }
+  },
+  {
+    family: "haiku",
+    major: 3,
+    minor: 5,
+    price: { cacheRead: 0.08, cacheWrite: 1, input: 0.8, output: 4 }
+  }
+];
+function promptTokens(tokens) {
+  return tokens.input + tokens.cacheRead + tokens.cacheWrite;
+}
+function priceRow(model) {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null)
+    return null;
+  return CLAUDE_PRICES.find((candidate) => candidate.family === family && candidate.major === version.major && candidate.minor === version.minor) ?? null;
+}
+function tierOf(row, tokens) {
+  return row.over !== undefined && row.overAfter !== undefined && promptTokens(tokens) > row.overAfter ? row.over : row.price;
+}
+function costUsd(price, tokens) {
+  const usd = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * price.cacheRead + tokens.cacheWrite * price.cacheWrite) / 1e6;
+  return Math.round(usd * 1e6) / 1e6;
+}
+function claudeCost(model, tokens) {
+  if (tokens === null)
+    return null;
+  const row = priceRow(model);
+  if (row === null)
+    return null;
+  return { estimated: true, usd: costUsd(tierOf(row, tokens), tokens) };
+}
+function backendCost(price, tokens) {
+  if (tokens === null)
+    return null;
+  return { estimated: false, usd: costUsd(price, tokens) };
+}
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function perToken(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+    return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0)
+      return parsed;
+  }
+  return null;
+}
+function perMillion(value) {
+  return Math.round(value * 1e6 * 1e6) / 1e6;
+}
+function listedPrice(entry) {
+  if (!isJsonObject(entry))
+    return null;
+  const pricing = entry.pricing;
+  if (isJsonObject(pricing)) {
+    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
+    const output = perToken(pricing.completion) ?? perToken(pricing.output);
+    if (input === null || output === null)
+      return null;
+    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
+    const cacheWrite = perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
+    return {
+      cacheRead: perMillion(cacheRead),
+      cacheWrite: perMillion(cacheWrite),
+      input: perMillion(input),
+      output: perMillion(output)
+    };
+  }
+  return null;
+}
+function priceFromModels(models, model) {
+  const entry = models.find((candidate) => candidate.id === model);
+  return entry?.price ?? null;
+}
+
+// src/gateway/backends.ts
+var REASON_CHARS = 120;
+function isJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseModelList(body) {
+  if (!isJsonObject2(body) || !Array.isArray(body.data))
+    return [];
+  const models = [];
+  for (const entry of body.data) {
+    if (!isJsonObject2(entry) || typeof entry.id !== "string")
+      continue;
+    const context = entry.context_length;
+    const price = listedPrice(entry);
+    models.push({
+      contextLength: typeof context === "number" ? context : null,
+      id: entry.id,
+      ...price === null ? {} : { price }
+    });
+  }
+  return models;
+}
+async function listModels(baseUrl, apiKey, timeoutMs = 1e4, fetchImpl = (url, init) => fetch(url, init)) {
+  try {
+    const url = `${baseUrl}/v1/models`;
+    const response = await backendFetch(url, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) }, fetchImpl);
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { models: [], status: response.status };
+    }
+    return { models: parseModelList(await response.json()), status: response.status };
+  } catch (error) {
+    return { error: maskedLine(messageOf(error), [apiKey], REASON_CHARS) };
+  }
+}
+var KEY_CHECK_TIMEOUT_MS = 5000;
+async function checkBackendKey(baseUrl, apiKey, options = {}) {
+  const listed = await listModels(baseUrl, apiKey, options.timeoutMs ?? KEY_CHECK_TIMEOUT_MS, options.fetch);
+  if ("error" in listed)
+    return { detail: listed.error, kind: "unchecked" };
+  if (listed.status >= 200 && listed.status < 300) {
+    return { kind: "accepted", status: listed.status };
+  }
+  if (listed.status === 401 || listed.status === 403) {
+    return {
+      detail: `/v1/models answered HTTP ${listed.status}: the backend does not accept this key`,
+      kind: "refused",
+      status: listed.status
+    };
+  }
+  return { detail: `/v1/models answered HTTP ${listed.status}`, kind: "unchecked" };
+}
+var PROBE_PROMPT = "Reply with one word: ready";
+var PROBE_TIMEOUT_MS = 20000;
+function modelIds(body) {
+  if (!isJsonObject2(body) || !Array.isArray(body.data))
+    return null;
+  return body.data.map((entry) => isJsonObject2(entry) && typeof entry.id === "string" ? entry.id : null).filter((id) => id !== null);
+}
+function answerText(body) {
+  if (!isJsonObject2(body) || !Array.isArray(body.choices))
+    return null;
+  const first = body.choices[0];
+  if (!isJsonObject2(first) || !isJsonObject2(first.message))
+    return null;
+  const content = first.message.content;
+  if (typeof content !== "string")
+    return null;
+  return oneLine(content, 60);
+}
+async function probeModel(options) {
+  const { apiKey, baseUrl, fetchImpl } = options;
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
+  const listing = `${baseUrl}/v1/models`;
+  let models;
+  const said = (text) => maskedLine(text, [apiKey], REASON_CHARS);
+  try {
+    const response = await backendFetch(listing, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) }, fetchImpl);
+    if (!response.ok) {
+      await response.body?.cancel();
+      return {
+        detail: response.status === 401 || response.status === 403 ? `/v1/models answered HTTP ${response.status}: it does not accept the key in the gateway config` : `/v1/models answered HTTP ${response.status}`,
+        ok: false
+      };
+    }
+    models = modelIds(await response.json());
+  } catch (error) {
+    return { detail: `/v1/models: ${said(messageOf(error))}`, ok: false };
+  }
+  if (models === null)
+    return { detail: "/v1/models answered something that is not a model list", ok: false };
+  const model = options.model;
+  if (model === null) {
+    return {
+      detail: `/v1/models answers, ${models.length} models (no model to try a chat with)`,
+      ok: true
+    };
+  }
+  if (!models.includes(model)) {
+    return {
+      detail: `/v1/models answers but lists no "${model}": the gateway's slot would fall to its next target`,
+      ok: false
+    };
+  }
+  const chat = `${baseUrl}/v1/chat/completions`;
+  try {
+    const response = await backendFetch(chat, {
+      body: JSON.stringify({
+        messages: [{ content: PROBE_PROMPT, role: "user" }],
+        model,
+        max_tokens: 8
+      }),
+      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+      method: "POST",
+      signal: AbortSignal.timeout(timeoutMs)
+    }, fetchImpl);
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      return { detail: `${model} answered HTTP ${response.status} (${said(body)})`, ok: false };
+    }
+    const answer = answerText(await response.json());
+    return {
+      detail: answer === null ? `${model} answered, in a shape this check does not read` : `${model} answered "${answer}"`,
+      ok: true
+    };
+  } catch (error) {
+    return { detail: `${model}: ${said(messageOf(error))}`, ok: false };
+  }
+}
 
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
@@ -7661,11 +8295,11 @@ function backendSignatureOf(signature) {
 var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
 var TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
 var EMPTY_ANSWER_TEXT = "(The fallback model answered with thinking only.)";
-function isJsonObject(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isRouterThinking(block) {
-  return isJsonObject(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
+  return isJsonObject3(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
 }
 function holdsRouterMark(bytes) {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).includes(ROUTER_THINKING_MARK);
@@ -7677,7 +8311,7 @@ function withoutRouterThinking(body) {
   let removed = 0;
   let filled = 0;
   const out = messages.map((message, at) => {
-    if (!isJsonObject(message) || message.role !== "assistant")
+    if (!isJsonObject3(message) || message.role !== "assistant")
       return message;
     if (!Array.isArray(message.content))
       return message;
@@ -7702,13 +8336,13 @@ function thinkingForBackend(body) {
   let restored = 0;
   let bare = 0;
   const out = messages.map((message) => {
-    if (!isJsonObject(message) || message.role !== "assistant")
+    if (!isJsonObject3(message) || message.role !== "assistant")
       return message;
     if (!Array.isArray(message.content))
       return message;
     let changed = false;
     const content = message.content.map((block) => {
-      if (!isJsonObject(block) || !isRouterThinking(block))
+      if (!isJsonObject3(block) || !isRouterThinking(block))
         return block;
       changed = true;
       const carried = backendSignatureOf(String(block.signature));
@@ -7747,11 +8381,11 @@ function withSafeId(block, changes) {
   return { ...block, id };
 }
 function isDropped(block) {
-  return isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
+  return isJsonObject3(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
 }
 function cleanFallbackMessage(message) {
   const changes = noChanges();
-  if (!isJsonObject(message) || !Array.isArray(message.content))
+  if (!isJsonObject3(message) || !Array.isArray(message.content))
     return { changes, message };
   const content = [];
   for (const block of message.content) {
@@ -7759,13 +8393,13 @@ function cleanFallbackMessage(message) {
       changes.redacted += 1;
       continue;
     }
-    if (isJsonObject(block) && block.type === "thinking") {
+    if (isJsonObject3(block) && block.type === "thinking") {
       changes.marked += 1;
       const own = typeof block.signature === "string" ? block.signature : undefined;
       content.push({ ...block, signature: routerSignature(own) });
       continue;
     }
-    content.push(isJsonObject(block) ? withSafeId(block, changes) : block);
+    content.push(isJsonObject3(block) ? withSafeId(block, changes) : block);
   }
   if (!changedAny(changes))
     return { changes, message };
@@ -7828,7 +8462,7 @@ function cleanFallbackStream(onDone = () => {
     } catch {
       return text;
     }
-    if (!isJsonObject(event) || typeof event.type !== "string")
+    if (!isJsonObject3(event) || typeof event.type !== "string")
       return text;
     const label = name ?? event.type;
     if (event.type === "message_delta" || event.type === "message_stop") {
@@ -7863,7 +8497,7 @@ function cleanFallbackStream(onDone = () => {
         return "";
       }
       kept += 1;
-      if (isJsonObject(block) && block.type === "thinking") {
+      if (isJsonObject3(block) && block.type === "thinking") {
         const mark = routerSignature();
         thinking.set(index, { mark, own: "" });
         changes.marked += 1;
@@ -7873,7 +8507,7 @@ function cleanFallbackStream(onDone = () => {
           index: next
         });
       }
-      const safe = isJsonObject(block) ? withSafeId(block, changes) : block;
+      const safe = isJsonObject3(block) ? withSafeId(block, changes) : block;
       if (next === index && safe === block)
         return text;
       return eventText(label, { ...event, content_block: safe, index: next });
@@ -7883,7 +8517,7 @@ function cleanFallbackStream(onDone = () => {
     const open = thinking.get(index);
     if (open !== undefined && event.type === "content_block_delta") {
       const delta = event.delta;
-      if (isJsonObject(delta) && delta.type === "signature_delta") {
+      if (isJsonObject3(delta) && delta.type === "signature_delta") {
         if (typeof delta.signature === "string")
           open.own = delta.signature;
         return "";
@@ -7990,73 +8624,6 @@ function cleanFallbackResponse(response, onChanged) {
     }
   });
   return { note: null, response: new Response(body, init) };
-}
-
-// src/gateway/hosts.ts
-function ipv4Parts(host) {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (match === null)
-    return null;
-  const parts = match.slice(1).map(Number);
-  return parts.every((part) => part <= 255) ? parts : null;
-}
-function ipv6Groups(host) {
-  if (!host.startsWith("[") || !host.endsWith("]"))
-    return null;
-  const halves = host.slice(1, -1).split("::");
-  if (halves.length > 2)
-    return null;
-  const groupsOf = (text) => {
-    if (text === "")
-      return [];
-    const parts = text.split(":");
-    if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part)))
-      return null;
-    return parts.map((part) => Number.parseInt(part, 16));
-  };
-  const head = groupsOf(halves[0] ?? "");
-  const tail = groupsOf(halves[1] ?? "");
-  if (head === null || tail === null)
-    return null;
-  const missing = 8 - head.length - tail.length;
-  if (halves.length === 1 ? missing !== 0 : missing < 1)
-    return null;
-  return [...head, ...Array(halves.length === 1 ? 0 : missing).fill(0), ...tail];
-}
-function mappedIpv4(groups) {
-  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 65535)
-    return null;
-  const high = groups[6] ?? 0;
-  const low = groups[7] ?? 0;
-  return [high >> 8, high & 255, low >> 8, low & 255];
-}
-function normalHost(hostname) {
-  const lower = hostname.toLowerCase();
-  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
-}
-function isLoopbackHost(hostname) {
-  const host = normalHost(hostname);
-  if (host === "localhost" || host.endsWith(".localhost"))
-    return true;
-  const v4 = ipv4Parts(host);
-  if (v4 !== null)
-    return v4[0] === 127;
-  const v6 = ipv6Groups(host);
-  if (v6 === null)
-    return false;
-  const mapped = mappedIpv4(v6);
-  if (mapped !== null)
-    return mapped[0] === 127;
-  return v6.slice(0, 7).every((group) => group === 0) && v6[7] === 1;
-}
-function directIfLoopback(url) {
-  const parsed = URL.parse(url);
-  if (parsed === null || !isLoopbackHost(parsed.hostname))
-    return {};
-  return { proxy: false };
-}
-function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
-  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
 
 // src/gateway/listen.ts
@@ -8202,55 +8769,6 @@ function serveUnix(path, fetch2) {
   return Bun.serve(options);
 }
 
-// src/gateway/plain-text.ts
-var CONTROL2 = /[\p{Cc}\p{Cf}]/gu;
-var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
-function plainText(text, options = {}) {
-  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL2, " ");
-}
-function cutText(text, max) {
-  if (text.length <= max)
-    return text;
-  let end = Math.max(0, max);
-  const last = text.charCodeAt(end - 1);
-  if (end > 0 && last >= 55296 && last <= 56319)
-    end -= 1;
-  return text.slice(0, end);
-}
-function oneLine(text, max, options = {}) {
-  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
-  const line = flat.trim();
-  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
-}
-function maskedTail(secret) {
-  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
-}
-var KNOWN_SECRET_MIN = 4;
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function knownSecretForms(known) {
-  const forms = new Map;
-  for (const secret of known) {
-    if (secret.length < KNOWN_SECRET_MIN)
-      continue;
-    const once = JSON.stringify(secret).slice(1, -1);
-    const twice = JSON.stringify(once).slice(1, -1);
-    for (const form of [secret, once, twice])
-      if (!forms.has(form))
-        forms.set(form, secret);
-  }
-  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
-}
-function maskSecrets(text, known = []) {
-  let out = text;
-  for (const { form, secret } of knownSecretForms(known)) {
-    out = out.split(form).join(maskedTail(secret));
-  }
-  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
-}
-function maskedLine(text, known, max, options = {}) {
-  return oneLine(maskSecrets(text, known), max, options);
-}
-
 // src/gateway/refusal.ts
 var REFUSAL_STATUS = 424;
 var LENGTH_REFUSAL = /too long|too large|too many tokens|token limit|exceeds? (?:the |this )?(?:model'?s? )?(?:maximum )?(?:context|token)|(?:maximum|max) context|context (?:length|window|limit)/i;
@@ -8346,7 +8864,7 @@ function addCheckTokens(state, day, side, tokens) {
   count.input += tokens.input;
   count.output += tokens.output;
 }
-function isJsonObject2(value) {
+function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tokenCount(value) {
@@ -8355,7 +8873,7 @@ function tokenCount(value) {
   return Math.round(value);
 }
 function tokensOf(usage) {
-  if (!isJsonObject2(usage))
+  if (!isJsonObject4(usage))
     return null;
   const input = tokenCount(usage.input_tokens);
   const output = tokenCount(usage.output_tokens);
@@ -8370,50 +8888,103 @@ function tokensOf(usage) {
     output: output ?? 0
   };
 }
-function eventData(text) {
-  const out = [];
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, ""));
-    if (data.length > 0)
-      out.push(data.join(`
-`));
-  }
-  return out;
+var CHECK_USAGE_MAX_BYTES = 256 * 1024;
+var EVENT_MAX_CHARS = 64 * 1024;
+var EMPTY_TOKENS = { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 };
+function nextEventEnd(text) {
+  const lf = text.indexOf(`
+
+`);
+  const crlf = text.indexOf(`\r
+\r
+`);
+  if (crlf !== -1 && (lf === -1 || crlf < lf))
+    return { at: crlf, length: 4 };
+  return lf === -1 ? null : { at: lf, length: 2 };
 }
-function checkUsageFromAnswer(text, streaming) {
-  if (!streaming) {
-    let body;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      return null;
-    }
-    return tokensOf(isJsonObject2(body) ? body.usage : undefined);
+
+class AnswerUsageReader {
+  decoder = new TextDecoder;
+  streaming;
+  partial = "";
+  body = "";
+  tooBig = false;
+  start = null;
+  output = null;
+  constructor(streaming) {
+    this.streaming = streaming;
   }
-  let start = null;
-  let output = null;
-  for (const data of eventData(text)) {
+  push(chunk) {
+    if (this.streaming) {
+      this.partial += this.decoder.decode(chunk, { stream: true });
+      this.scan();
+      return;
+    }
+    if (this.tooBig)
+      return;
+    this.body += this.decoder.decode(chunk, { stream: true });
+    if (this.body.length > CHECK_USAGE_MAX_BYTES) {
+      this.tooBig = true;
+      this.body = "";
+    }
+  }
+  tokens() {
+    if (!this.streaming) {
+      if (this.tooBig)
+        return null;
+      this.body += this.decoder.decode();
+      let parsed;
+      try {
+        parsed = JSON.parse(this.body);
+      } catch {
+        return null;
+      }
+      return tokensOf(isJsonObject4(parsed) ? parsed.usage : undefined);
+    }
+    this.partial += this.decoder.decode();
+    this.scan();
+    if (this.partial.trim() !== "")
+      this.readEvent(this.partial);
+    this.partial = "";
+    if (this.start === null && this.output === null)
+      return null;
+    return {
+      ...this.start ?? EMPTY_TOKENS,
+      output: this.output ?? this.start?.output ?? 0
+    };
+  }
+  scan() {
+    for (;; ) {
+      const end = nextEventEnd(this.partial);
+      if (end === null)
+        break;
+      const event = this.partial.slice(0, end.at);
+      this.partial = this.partial.slice(end.at + end.length);
+      this.readEvent(event);
+    }
+    if (this.partial.length > EVENT_MAX_CHARS)
+      this.partial = "";
+  }
+  readEvent(block) {
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, "")).join(`
+`);
+    if (data === "")
+      return;
     let event;
     try {
       event = JSON.parse(data);
     } catch {
-      continue;
+      return;
     }
-    if (!isJsonObject2(event))
-      continue;
-    if (event.type === "message_start" && isJsonObject2(event.message)) {
-      start = tokensOf(event.message.usage) ?? start;
+    if (!isJsonObject4(event))
+      return;
+    if (event.type === "message_start" && isJsonObject4(event.message)) {
+      this.start = tokensOf(event.message.usage) ?? this.start;
     }
     if (event.type === "message_delta") {
-      output = tokenCount(isJsonObject2(event.usage) ? event.usage.output_tokens : undefined) ?? output;
+      this.output = tokenCount(isJsonObject4(event.usage) ? event.usage.output_tokens : undefined) ?? this.output;
     }
   }
-  if (start === null && output === null)
-    return null;
-  return {
-    ...start ?? { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
-    output: output ?? start?.output ?? 0
-  };
 }
 
 // src/gateway/server-tools.ts
@@ -8511,6 +9082,12 @@ var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var RECENT_MAX = 200;
+var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
+var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
+function sessionIdOf(headers) {
+  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+  return SESSION_ID.test(value) ? value : null;
+}
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 var HOP_BY_HOP = new Set([
@@ -8697,10 +9274,10 @@ function toolSearchForBackend(body) {
   const messages = body.messages;
   if (Array.isArray(messages)) {
     out.messages = messages.map((message) => {
-      if (!isJsonObject3(message) || !Array.isArray(message.content))
+      if (!isJsonObject5(message) || !Array.isArray(message.content))
         return message;
       const content = message.content.map((block) => {
-        if (!isJsonObject3(block) || block.type !== "tool_result")
+        if (!isJsonObject5(block) || block.type !== "tool_result")
           return block;
         const inner = block.content;
         if (!Array.isArray(inner))
@@ -8708,7 +9285,7 @@ function toolSearchForBackend(body) {
         return {
           ...block,
           content: inner.map((part) => {
-            if (!isJsonObject3(part) || part.type !== "tool_reference")
+            if (!isJsonObject5(part) || part.type !== "tool_reference")
               return part;
             const name = part.tool_name;
             if (typeof name !== "string")
@@ -8724,7 +9301,7 @@ function toolSearchForBackend(body) {
   const tools = body.tools;
   if (Array.isArray(tools)) {
     out.tools = tools.flatMap((tool) => {
-      if (!isJsonObject3(tool) || tool.defer_loading !== true)
+      if (!isJsonObject5(tool) || tool.defer_loading !== true)
         return [tool];
       const name = tool.name;
       if (typeof name !== "string" || !referenced.has(name))
@@ -8738,10 +9315,10 @@ function toolSearchForBackend(body) {
 }
 function reasoningOffForBackend(body, options = {}) {
   const thinking = body.thinking;
-  const off = isJsonObject3(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
+  const off = isJsonObject5(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
   if (!off)
     return body;
-  const outputConfig = isJsonObject3(body.output_config) ? body.output_config : {};
+  const outputConfig = isJsonObject5(body.output_config) ? body.output_config : {};
   if (outputConfig.effort !== undefined)
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
@@ -8858,17 +9435,17 @@ function requestForClaudeFallback(body, model) {
   const changes = [];
   const capEffort = (why) => {
     const outputConfig = body.output_config;
-    if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+    if (isJsonObject5(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
       out.output_config = { ...outputConfig, effort: "high" };
       changes.push(`effort ${outputConfig.effort} -> high${why}`);
     }
   };
   const thinking = body.thinking;
-  if (isJsonObject3(thinking) && thinking.type === "disabled") {
+  if (isJsonObject5(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
       delete out.thinking;
       changes.push("thinking disabled -> left out (always on)");
-      const outputConfig = isJsonObject3(body.output_config) ? body.output_config : undefined;
+      const outputConfig = isJsonObject5(body.output_config) ? body.output_config : undefined;
       if (outputConfig?.effort === undefined) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
@@ -8880,12 +9457,12 @@ function requestForClaudeFallback(body, model) {
     } else if (rules.thinkingOff === "capped") {
       capEffort(" (thinking off)");
     }
-  } else if (isJsonObject3(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
+  } else if (isJsonObject5(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (rules.forcedToolChoice && isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (rules.forcedToolChoice && isJsonObject5(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
@@ -8904,7 +9481,7 @@ function requestForClaudeFallback(body, model) {
   return changes.length > 0 ? { body: out, changes } : { body, changes };
 }
 var encoder = new TextEncoder;
-function isJsonObject3(value) {
+function isJsonObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseBody(bytes) {
@@ -8914,7 +9491,7 @@ function parseBody(bytes) {
   } catch {
     return null;
   }
-  return isJsonObject3(parsed) ? parsed : null;
+  return isJsonObject5(parsed) ? parsed : null;
 }
 function deadline(ms) {
   let timer;
@@ -8931,7 +9508,6 @@ function withoutEmptyBreakers(state) {
     delete state.breakers;
   }
 }
-var CHECK_USAGE_MAX_BYTES = 256 * 1024;
 function stateWriter(deps, what, save) {
   if (save === undefined)
     return () => {};
@@ -9870,39 +10446,47 @@ function createRouter(deps) {
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
+    const undecodable = encoding !== "" && encoding !== "identity" && format === null;
+    const usage = new AnswerUsageReader(streaming);
+    let decode = null;
+    if (format !== null) {
+      const decompressor = new DecompressionStream(format);
+      const writer = decompressor.writable.getWriter();
+      const done = (async () => {
+        const decoded = decompressor.readable.getReader();
+        for (;; ) {
+          const step = await decoded.read();
+          if (step.done)
+            return;
+          usage.push(step.value);
+        }
+      })().catch(() => {});
+      decode = { done, writer };
+    }
     const reader = body.getReader();
-    let chunks = [];
-    let kept = 0;
-    let keep = true;
     let ended = false;
-    const answerText = async () => {
-      if (!keep)
-        return null;
-      const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
-      const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
-      if (format === null && encoding !== "" && encoding !== "identity")
-        return null;
-      const bytes = new Uint8Array(kept);
-      let at = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, at);
-        at += chunk.byteLength;
-      }
-      if (format === null)
-        return new TextDecoder().decode(bytes);
-      const decoded = new Response(bytes).body;
-      if (decoded === null)
-        return null;
-      return await new Response(decoded.pipeThrough(new DecompressionStream(format))).text();
-    };
     const finish = () => {
       if (ended)
         return;
       ended = true;
-      const task = answerText().then((answer) => note(answer === null ? null : checkUsageFromAnswer(answer, streaming)), () => note(null));
+      const task = (async () => {
+        if (undecodable) {
+          note(null);
+          return;
+        }
+        if (decode !== null) {
+          try {
+            await decode.writer.close();
+          } catch {}
+          await decode.done;
+        }
+        note(usage.tokens());
+      })();
       deps.background?.(task);
     };
-    const counted = new ReadableStream({
+    const observed = new ReadableStream({
       cancel(reason) {
         finish();
         return reader.cancel(reason);
@@ -9922,18 +10506,16 @@ function createRouter(deps) {
           return;
         }
         controller.enqueue(step.value);
-        if (!keep)
+        if (undecodable)
           return;
-        kept += step.value.byteLength;
-        if (kept > CHECK_USAGE_MAX_BYTES) {
-          keep = false;
-          chunks = [];
+        if (decode !== null) {
+          decode.writer.write(step.value).catch(() => {});
           return;
         }
-        chunks.push(step.value);
+        usage.push(step.value);
       }
     });
-    return new Response(counted, {
+    return new Response(observed, {
       headers: response.headers,
       status: response.status,
       statusText: response.statusText
@@ -9978,6 +10560,7 @@ function createRouter(deps) {
       noteSeenClaude(parsed.model);
     }
     const guard = isAutoModeGuard(parsed, config.aliases);
+    model.guard = guard;
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
     if (alias !== null) {
@@ -10100,10 +10683,56 @@ function createRouter(deps) {
       return chain(req, url, config, body, [target], model.name, guard);
     }
   }
+  const backendListings = new Map;
+  const listingLoads = new Set;
+  const listingErrors = new Set;
+  function backendPrice(backend, model) {
+    const cached = backendListings.get(backend);
+    const stale = cached === undefined || deps.now() - cached.at >= PRICE_REFRESH_MS;
+    if (stale && deps.listModels !== undefined && !listingLoads.has(backend)) {
+      const entry = deps.getConfig().backends[backend];
+      if (entry !== undefined) {
+        listingLoads.add(backend);
+        const load = deps.listModels;
+        const task = load({ apiKey: entry.apiKey, baseUrl: entry.baseUrl }).then((models) => {
+          backendListings.set(backend, { at: deps.now(), models });
+        }).catch((error) => {
+          const message = messageOf(error);
+          if (!listingErrors.has(message)) {
+            listingErrors.add(message);
+            deps.log(`WARN cannot read ${backend}'s model list for history prices: ${message}`);
+          }
+          backendListings.set(backend, { at: deps.now(), models: [] });
+        }).finally(() => {
+          listingLoads.delete(backend);
+        });
+        deps.background?.(task.then(() => {}));
+      }
+    }
+    return cached === undefined ? null : priceFromModels(cached.models, model);
+  }
+  function costOf(target, asked, tokens) {
+    if (tokens === null)
+      return null;
+    if (target.startsWith("claude-"))
+      return claudeCost(target, tokens);
+    if (target === "anthropic" || target.startsWith("anthropic "))
+      return claudeCost(asked, tokens);
+    const parsed = parseTarget(target);
+    if ("target" in parsed && parsed.target.kind === "backend") {
+      const price = backendPrice(parsed.target.backend, parsed.target.model);
+      return price === null ? null : backendCost(price, tokens);
+    }
+    return null;
+  }
   return async function handle(req) {
     const startMs = deps.now();
     const url = new URL(req.url);
-    const model = { name: "-", slot: null };
+    const model = {
+      guard: false,
+      name: "-",
+      slot: null
+    };
     const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -10150,6 +10779,30 @@ function createRouter(deps) {
     });
     if (recent.length > RECENT_MAX)
       recent.shift();
+    if (req.method === "POST" && url.pathname === MESSAGES_PATH && !model.guard && deps.history?.enabled() === true) {
+      const answered = outcome;
+      const row = {
+        at: startMs,
+        breaker: answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
+        model: model.name,
+        ms: deps.now() - startMs,
+        nextTarget: answered.fallbacks > 0 ? printable(answered.target) : null,
+        session: sessionIdOf(req.headers),
+        slot: model.slot,
+        status: answered.response.status,
+        target: printable(answered.target)
+      };
+      outcome = {
+        ...answered,
+        response: observedAnswer(answered.response, (tokens) => {
+          deps.history?.record({
+            ...row,
+            cost: costOf(answered.target, model.name, tokens),
+            tokens
+          });
+        })
+      };
+    }
     return outcome.response;
   };
 }
@@ -10160,7 +10813,7 @@ async function startRouter(paths, env = process.env) {
   const source = watchConfig(configPath, log);
   const configPort = source.get().port;
   const writeState = (file, text) => {
-    mkdirSync4(dirname4(file), { mode: 448, recursive: true });
+    mkdirSync5(dirname5(file), { mode: 448, recursive: true });
     atomicWrite(file, text, 384);
   };
   const readState = (file) => {
@@ -10173,10 +10826,17 @@ async function startRouter(paths, env = process.env) {
     }
   };
   const shutdown = new AbortController;
+  const history = createHistoryWriter({
+    file: paths.historyDbFile,
+    log,
+    retentionDays: () => historyRetentionDays(source.get())
+  });
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
+    history,
+    listModels: (backend) => listModels(backend.baseUrl, backend.apiKey).then((listed) => ("models" in listed) ? listed.models : []),
     loadSafetyChecks: () => readState(paths.safetyChecksFile),
     loadState: () => readState(statePath),
     log,
@@ -10200,7 +10860,7 @@ async function startRouter(paths, env = process.env) {
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
       shutdown.abort();
-      exitWhenDone(server.stop(false), log, () => {});
+      exitWhenDone(server.stop(false), log, () => history.close());
     });
     return;
   }
@@ -10221,7 +10881,10 @@ async function startRouter(paths, env = process.env) {
     shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
-    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, () => {
+      inner.cleanup();
+      history.close();
+    });
   });
 }
 function exitWhenDone(done, log, cleanup) {
@@ -10243,7 +10906,7 @@ function realProbe() {
     sleep: (ms) => Bun.sleep(ms)
   };
 }
-function isJsonObject4(value) {
+function isJsonObject6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function healthUrl(port, path = HEALTH_PATH) {
@@ -10285,7 +10948,7 @@ async function probeRouterPort(port, fetchImpl, timeoutMs = 2000, path = HEALTH_
   } catch (error) {
     return { detail: `not a health answer (${messageOf(error)})`, state: "other" };
   }
-  return isJsonObject4(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
+  return isJsonObject6(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
 }
 async function waitWhileRouterAnswers(port, probe, waitMs, path = HEALTH_PATH) {
   const deadline = probe.now() + waitMs;
@@ -10528,7 +11191,7 @@ function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
 
 // src/mcp/register.ts
 import { existsSync as existsSync7, readFileSync as readFileSync11 } from "fs";
-import { dirname as dirname5, join as join8, resolve as resolve2 } from "path";
+import { dirname as dirname6, join as join8, resolve as resolve2 } from "path";
 
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
@@ -10686,7 +11349,7 @@ function projectMcpFiles(cwd) {
   let folder = resolve2(cwd);
   for (let depth = 0;depth < 40; depth += 1) {
     files.push(join8(folder, ".mcp.json"));
-    const parent = dirname5(folder);
+    const parent = dirname6(folder);
     if (parent === folder || existsSync7(join8(folder, ".git")))
       break;
     folder = parent;
@@ -10702,7 +11365,7 @@ import {
   readFileSync as readFileSync13,
   rmdirSync,
   rmSync as rmSync2,
-  statSync as statSync4
+  statSync as statSync5
 } from "fs";
 import { join as join10 } from "path";
 
@@ -11048,7 +11711,7 @@ function emptyWithout(dir, gone) {
   });
 }
 function isFile(path) {
-  return existsSync9(path) && statSync4(path).isFile();
+  return existsSync9(path) && statSync5(path).isFile();
 }
 function isFolder(path) {
   return existsSync9(path) && lstatSync2(path).isDirectory();
@@ -11117,7 +11780,7 @@ function retiredChecks(paths) {
 }
 
 // src/mcp/tavily.ts
-import { existsSync as existsSync11, readFileSync as readFileSync15, statSync as statSync5 } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync15, statSync as statSync6 } from "fs";
 
 // src/setup/managed-json.ts
 import { createHash as createHash3 } from "crypto";
@@ -11465,7 +12128,7 @@ function readKeyFile(paths, platform) {
   let mode;
   let text;
   try {
-    mode = statSync5(paths.tavilyKeyFile).mode & 4095;
+    mode = statSync6(paths.tavilyKeyFile).mode & 4095;
     text = readFileSync15(paths.tavilyKeyFile, "utf8");
   } catch (error) {
     return {
@@ -11880,11 +12543,11 @@ function remotePluginVersion(url, ref, baseEnv) {
 import {
   appendFileSync,
   existsSync as existsSync13,
-  mkdirSync as mkdirSync6,
+  mkdirSync as mkdirSync7,
   readdirSync as readdirSync6,
   readFileSync as readFileSync18,
   rmSync as rmSync4,
-  statSync as statSync7,
+  statSync as statSync8,
   writeFileSync as writeFileSync2
 } from "fs";
 import { join as join15 } from "path";
@@ -11892,11 +12555,11 @@ import { join as join15 } from "path";
 // src/setup/lock.ts
 import {
   closeSync as closeSync3,
-  mkdirSync as mkdirSync5,
+  mkdirSync as mkdirSync6,
   openSync as openSync3,
   readFileSync as readFileSync17,
   readlinkSync as readlinkSync3,
-  statSync as statSync6,
+  statSync as statSync7,
   unlinkSync as unlinkSync3,
   writeSync
 } from "fs";
@@ -11982,7 +12645,7 @@ function parseLock(text) {
 function readHeld(file) {
   let stat;
   try {
-    stat = statSync6(file);
+    stat = statSync7(file);
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -12085,7 +12748,7 @@ function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
   }
 }
 async function withLock(stateDir, fn, options = {}) {
-  mkdirSync5(stateDir, { recursive: true });
+  mkdirSync6(stateDir, { recursive: true });
   const file = join14(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
@@ -12152,7 +12815,7 @@ function unreachableCheck(previous, at, nowMs, detail) {
   };
 }
 function ensureDir(dir) {
-  mkdirSync6(dir, { recursive: true, mode: 448 });
+  mkdirSync7(dir, { recursive: true, mode: 448 });
 }
 function readLastCheck(files) {
   try {
@@ -12212,7 +12875,7 @@ function isoSeconds(ms) {
 function appendLogLine(logFile, line, nowMs) {
   ensureDir(join15(logFile, ".."));
   try {
-    if (statSync7(logFile).size > LOG_MAX_BYTES) {
+    if (statSync8(logFile).size > LOG_MAX_BYTES) {
       const text = readFileSync18(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync2(logFile, keep.slice(keep.indexOf(`
@@ -12442,10 +13105,10 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname23, join as join65 } from "path";
+import { dirname as dirname24, join as join65 } from "path";
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync8, readdirSync as readdirSync8, statSync as statSync9 } from "fs";
+import { mkdirSync as mkdirSync9, readdirSync as readdirSync8, statSync as statSync10 } from "fs";
 import { join as join20 } from "path";
 
 // src/jobs/config.ts
@@ -12782,13 +13445,13 @@ function holderLines(held, store, now) {
 import {
   chmodSync as chmodSync2,
   existsSync as existsSync18,
-  mkdirSync as mkdirSync7,
+  mkdirSync as mkdirSync8,
   readdirSync as readdirSync7,
   readFileSync as readFileSync22,
   realpathSync as realpathSync2,
   renameSync as renameSync2,
   statfsSync,
-  statSync as statSync8,
+  statSync as statSync9,
   unlinkSync as unlinkSync4,
   utimesSync,
   writeFileSync as writeFileSync3
@@ -12953,7 +13616,7 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync8(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync9(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
@@ -12986,7 +13649,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync8(path).mtimeMs;
+        mtimeMs = statSync9(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -13033,7 +13696,7 @@ function leaseStore(options) {
       record
     });
     if (!options.shared)
-      mkdirSync7(folder, { recursive: true });
+      mkdirSync8(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -13209,7 +13872,7 @@ function openSharedStore(dir, options = {}) {
     const path = join19(dir, folder);
     let isFolder = false;
     try {
-      isFolder = statSync8(path).isDirectory();
+      isFolder = statSync9(path).isDirectory();
     } catch {}
     if (!isFolder) {
       return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
@@ -13255,7 +13918,7 @@ function machineBudget(config, memory) {
 function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
   try {
-    mkdirSync8(dir, { recursive: true, mode: 448 });
+    mkdirSync9(dir, { recursive: true, mode: 448 });
   } catch (error) {
     const code = error.code ?? String(error);
     throw new Error(`The state folder ${dir} cannot be made (${code}).`);
@@ -13436,7 +14099,7 @@ function jobsFingerprint(home) {
       }
       for (const name of names) {
         try {
-          const stat = statSync9(join20(folder, name));
+          const stat = statSync10(join20(folder, name));
           parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
         } catch {
           parts.push(`${folder}/${name}:gone`);
@@ -13452,7 +14115,7 @@ import { createHash as createHash8, randomBytes } from "crypto";
 import { join as join60 } from "path";
 
 // src/browser/setup.ts
-import { existsSync as existsSync19, mkdirSync as mkdirSync9, readdirSync as readdirSync9, readFileSync as readFileSync23 } from "fs";
+import { existsSync as existsSync19, mkdirSync as mkdirSync10, readdirSync as readdirSync9, readFileSync as readFileSync23 } from "fs";
 import { join as join21 } from "path";
 var MAC_EXTERNAL_EXTENSIONS = [
   "Library",
@@ -13467,7 +14130,7 @@ function browserSetupRecordFile(stateDir) {
   return join21(stateDir, "browser-setup.json");
 }
 function writeBrowserSetupRecord(stateDir) {
-  mkdirSync9(stateDir, { mode: 448, recursive: true });
+  mkdirSync10(stateDir, { mode: 448, recursive: true });
   writeManagedFile(browserSetupRecordFile(stateDir), `${JSON.stringify({ windowsExtensionKey: true }, null, 2)}
 `, { kind: "whole-file", stateDir });
 }
@@ -13708,138 +14371,210 @@ function legacyBrowserInfo(paths, deps) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync50, readFileSync as readFileSync56 } from "fs";
-import { dirname as dirname20, join as join57 } from "path";
+import { dirname as dirname21, join as join57 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync23, readFileSync as readFileSync27 } from "fs";
 
-// src/gateway/backends.ts
-var REASON_CHARS = 120;
-function isJsonObject5(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function parseModelList(body) {
-  if (!isJsonObject5(body) || !Array.isArray(body.data))
-    return [];
-  const models = [];
-  for (const entry of body.data) {
-    if (!isJsonObject5(entry) || typeof entry.id !== "string")
-      continue;
-    const context = entry.context_length;
-    models.push({ contextLength: typeof context === "number" ? context : null, id: entry.id });
-  }
-  return models;
-}
-async function listModels(baseUrl, apiKey, timeoutMs = 1e4, fetchImpl = (url, init) => fetch(url, init)) {
-  try {
-    const url = `${baseUrl}/v1/models`;
-    const response = await backendFetch(url, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) }, fetchImpl);
-    if (!response.ok) {
-      await response.body?.cancel();
-      return { models: [], status: response.status };
-    }
-    return { models: parseModelList(await response.json()), status: response.status };
-  } catch (error) {
-    return { error: maskedLine(messageOf(error), [apiKey], REASON_CHARS) };
-  }
-}
-var KEY_CHECK_TIMEOUT_MS = 5000;
-async function checkBackendKey(baseUrl, apiKey, options = {}) {
-  const listed = await listModels(baseUrl, apiKey, options.timeoutMs ?? KEY_CHECK_TIMEOUT_MS, options.fetch);
-  if ("error" in listed)
-    return { detail: listed.error, kind: "unchecked" };
-  if (listed.status >= 200 && listed.status < 300) {
-    return { kind: "accepted", status: listed.status };
-  }
-  if (listed.status === 401 || listed.status === 403) {
-    return {
-      detail: `/v1/models answered HTTP ${listed.status}: the backend does not accept this key`,
-      kind: "refused",
-      status: listed.status
-    };
-  }
-  return { detail: `/v1/models answered HTTP ${listed.status}`, kind: "unchecked" };
-}
-var PROBE_PROMPT = "Reply with one word: ready";
-var PROBE_TIMEOUT_MS = 20000;
-function modelIds(body) {
-  if (!isJsonObject5(body) || !Array.isArray(body.data))
-    return null;
-  return body.data.map((entry) => isJsonObject5(entry) && typeof entry.id === "string" ? entry.id : null).filter((id) => id !== null);
-}
-function answerText(body) {
-  if (!isJsonObject5(body) || !Array.isArray(body.choices))
-    return null;
-  const first = body.choices[0];
-  if (!isJsonObject5(first) || !isJsonObject5(first.message))
-    return null;
-  const content = first.message.content;
-  if (typeof content !== "string")
-    return null;
-  return oneLine(content, 60);
-}
-async function probeModel(options) {
-  const { apiKey, baseUrl, fetchImpl } = options;
-  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const listing = `${baseUrl}/v1/models`;
-  let models;
-  const said = (text) => maskedLine(text, [apiKey], REASON_CHARS);
-  try {
-    const response = await backendFetch(listing, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) }, fetchImpl);
-    if (!response.ok) {
-      await response.body?.cancel();
-      return {
-        detail: response.status === 401 || response.status === 403 ? `/v1/models answered HTTP ${response.status}: it does not accept the key in the gateway config` : `/v1/models answered HTTP ${response.status}`,
-        ok: false
-      };
-    }
-    models = modelIds(await response.json());
-  } catch (error) {
-    return { detail: `/v1/models: ${said(messageOf(error))}`, ok: false };
-  }
-  if (models === null)
-    return { detail: "/v1/models answered something that is not a model list", ok: false };
-  const model = options.model;
-  if (model === null) {
-    return {
-      detail: `/v1/models answers, ${models.length} models (no model to try a chat with)`,
-      ok: true
-    };
-  }
-  if (!models.includes(model)) {
-    return {
-      detail: `/v1/models answers but lists no "${model}": the gateway's slot would fall to its next target`,
-      ok: false
-    };
-  }
-  const chat = `${baseUrl}/v1/chat/completions`;
-  try {
-    const response = await backendFetch(chat, {
-      body: JSON.stringify({
-        messages: [{ content: PROBE_PROMPT, role: "user" }],
-        model,
-        max_tokens: 8
-      }),
-      headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      method: "POST",
-      signal: AbortSignal.timeout(timeoutMs)
-    }, fetchImpl);
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      return { detail: `${model} answered HTTP ${response.status} (${said(body)})`, ok: false };
-    }
-    const answer = answerText(await response.json());
-    return {
-      detail: answer === null ? `${model} answered, in a shape this check does not read` : `${model} answered "${answer}"`,
-      ok: true
-    };
-  } catch (error) {
-    return { detail: `${model}: ${said(messageOf(error))}`, ok: false };
-  }
-}
-
 // src/gateway/commands.ts
 import { existsSync as existsSync22, readdirSync as readdirSync10, readFileSync as readFileSync26 } from "fs";
+
+// src/gateway/history-read.ts
+import { Database as Database2 } from "bun:sqlite";
+var HISTORY_RANGES = ["1h", "4h", "1d", "7d", "14d", "30d", "90d"];
+var RANGE_MS = {
+  "1h": 60 * 60 * 1000,
+  "4h": 4 * 60 * 60 * 1000,
+  "1d": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "14d": 14 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+  "90d": 90 * 24 * 60 * 60 * 1000
+};
+var BUCKET_MS = {
+  "1h": 60 * 1000,
+  "4h": 5 * 60 * 1000,
+  "1d": 15 * 60 * 1000,
+  "7d": 60 * 60 * 1000,
+  "14d": 2 * 60 * 60 * 1000,
+  "30d": 6 * 60 * 60 * 1000,
+  "90d": 24 * 60 * 60 * 1000
+};
+var HISTORY_BY = ["target", "slot", "model", "session"];
+var DEFAULT_HISTORY_RANGE = "1d";
+var DEFAULT_HISTORY_BY = "target";
+var NO_SLOT_KEY = "(no slot)";
+var NO_SESSION_KEY = "(no session)";
+function groupExpression(by) {
+  switch (by) {
+    case "slot":
+      return `coalesce(slot, '${NO_SLOT_KEY}')`;
+    case "session":
+      return `coalesce(session, '${NO_SESSION_KEY}')`;
+    default:
+      return by;
+  }
+}
+function filterClause(filters) {
+  const parts = [];
+  const values = [];
+  for (const column of ["slot", "target", "model", "session"]) {
+    const value = filters[column];
+    if (value === undefined)
+      continue;
+    parts.push(`${column} = ?`);
+    values.push(value);
+  }
+  if (filters.status === "error")
+    parts.push("status >= 400");
+  return { sql: parts, values };
+}
+function whereClause(from, filters) {
+  const filter = filterClause(filters);
+  return { sql: ["at >= ?", ...filter.sql].join(" AND "), values: [from, ...filter.values] };
+}
+function openReadonly(file) {
+  if (!historyDbExists(file))
+    return null;
+  const db = new Database2(file, { readonly: true });
+  db.run("PRAGMA busy_timeout = 5000");
+  return db;
+}
+function percentiles(values) {
+  if (values.length === 0)
+    return { p50: 0, p95: 0 };
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (fraction) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1))] ?? 0;
+  return { p50: at(0.5), p95: at(0.95) };
+}
+function bucketStart(at, bucketMs) {
+  return Math.floor(at / bucketMs) * bucketMs;
+}
+function roundUsd(usd) {
+  return Math.round(usd * 1e6) / 1e6;
+}
+function emptyBucket() {
+  return {
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    durs: [],
+    errors: 0,
+    input: 0,
+    output: 0,
+    requests: 0
+  };
+}
+function historySeries(file, options) {
+  const now = options.now ?? Date.now();
+  const bucketMs = BUCKET_MS[options.range];
+  const first = bucketStart(now - RANGE_MS[options.range], bucketMs);
+  const last = bucketStart(now, bucketMs);
+  const db = openReadonly(file);
+  if (db === null) {
+    return { bucketMs, range: options.range, series: [] };
+  }
+  try {
+    const where = whereClause(now - RANGE_MS[options.range], options.filters ?? {});
+    const sql = `SELECT ${groupExpression(options.by)} AS key, CAST(at / ? AS INTEGER) * ? AS t,
+      status, ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
+      FROM requests WHERE ${where.sql}`;
+    const buckets = new Map;
+    const rows = db.query(sql).iterate(bucketMs, bucketMs, ...where.values);
+    for (const row of rows) {
+      const bucket = bucketOf(buckets, row.key, row.t);
+      bucket.requests += 1;
+      if (row.status >= 400)
+        bucket.errors += 1;
+      bucket.durs.push(row.ms);
+      bucket.input += row.input_tokens ?? 0;
+      bucket.output += row.output_tokens ?? 0;
+      bucket.cacheRead += row.cache_read_tokens ?? 0;
+      bucket.cacheWrite += row.cache_write_tokens ?? 0;
+      bucket.cost += row.cost_usd ?? 0;
+    }
+    const series = [...buckets.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, byBucket]) => ({
+      key,
+      points: pointsOf(byBucket, first, last, bucketMs)
+    }));
+    return { bucketMs, range: options.range, series };
+  } finally {
+    db.close();
+  }
+}
+function bucketOf(buckets, key, t) {
+  let series = buckets.get(key);
+  if (series === undefined) {
+    series = new Map;
+    buckets.set(key, series);
+  }
+  let bucket = series.get(t);
+  if (bucket === undefined) {
+    bucket = emptyBucket();
+    series.set(t, bucket);
+  }
+  return bucket;
+}
+function pointsOf(buckets, first, last, bucketMs) {
+  const points = [];
+  for (let t = first;t <= last; t += bucketMs) {
+    const bucket = buckets.get(t);
+    if (bucket === undefined) {
+      points.push({
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 0,
+        errors: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        p50Ms: 0,
+        p95Ms: 0,
+        requests: 0,
+        t
+      });
+      continue;
+    }
+    const { p50, p95 } = percentiles(bucket.durs);
+    points.push({
+      cacheReadTokens: bucket.cacheRead,
+      cacheWriteTokens: bucket.cacheWrite,
+      costUsd: roundUsd(bucket.cost),
+      errors: bucket.errors,
+      inputTokens: bucket.input,
+      outputTokens: bucket.output,
+      p50Ms: p50,
+      p95Ms: p95,
+      requests: bucket.requests,
+      t
+    });
+  }
+  return points;
+}
+function formatBytes(bytes) {
+  if (bytes < 1000)
+    return `${String(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1000;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit] ?? "TB"}`;
+}
+function bucketWords(bucketMs) {
+  if (bucketMs % 86400000 === 0)
+    return `${String(bucketMs / 86400000)}-day`;
+  if (bucketMs % 3600000 === 0)
+    return `${String(bucketMs / 3600000)}-hour`;
+  return `${String(bucketMs / 60000)}-minute`;
+}
+function historyWords(options) {
+  if (options.retentionDays <= 0)
+    return "off (history.retentionDays: 0)";
+  const keeping = `keeping ${retentionWords(options.retentionDays)}`;
+  return options.exists ? `${formatBytes(options.bytes)}, ${keeping}` : `no requests logged yet, ${keeping}`;
+}
 
 // src/gateway/judge-test.ts
 var JUDGE_TEST_ACTION = "git push --force origin main";
@@ -14064,7 +14799,7 @@ async function createOmnirouteKey(options) {
 
 // src/gateway/service.ts
 import { existsSync as existsSync20, readFileSync as readFileSync24, rmSync as rmSync6 } from "fs";
-import { basename as basename4, dirname as dirname6, join as join22 } from "path";
+import { basename as basename4, dirname as dirname7, join as join22 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
@@ -14320,7 +15055,7 @@ function systemdService(options) {
     async stop(runner, port, probe) {
       const state = port === null ? null : unitState(runner, unitName);
       const stop = stopUnits(runner, {
-        dir: dirname6(options.unitPath),
+        dir: dirname7(options.unitPath),
         names: [socketName, unitName]
       });
       const refused = stop.refused[0];
@@ -14677,7 +15412,7 @@ var REMOVED_ON_OFF = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 var envPath = (key) => ["env", key];
-function isJsonObject6(value) {
+function isJsonObject7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
@@ -14689,10 +15424,10 @@ function readSettings(path) {
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
-  if (!isJsonObject6(parsed))
+  if (!isJsonObject7(parsed))
     throw new Error(`${path} is not a JSON object; not touching it`);
   const env = parsed.env;
-  if (env !== undefined && !isJsonObject6(env))
+  if (env !== undefined && !isJsonObject7(env))
     throw new Error(`${path} has an "env" that is not an object`);
   return parsed;
 }
@@ -14724,7 +15459,7 @@ function shownValue(value) {
 }
 function assertNoForeignGatewayKeys(settingsFile, stateDir) {
   const env = readSettings(settingsFile).env;
-  if (!isJsonObject6(env))
+  if (!isJsonObject7(env))
     return;
   const owned = ownedKeys(stateDir, realTarget(settingsFile));
   const owns = (key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
@@ -14769,12 +15504,12 @@ function turnOff(options) {
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
-  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject6(env) && Object.hasOwn(env, key));
+  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject7(env) && Object.hasOwn(env, key));
   return { result, foreign };
 }
 function settingsReport(settingsPath) {
   const settings = readSettings(settingsPath);
-  const env = isJsonObject6(settings.env) ? settings.env : {};
+  const env = isJsonObject7(settings.env) ? settings.env : {};
   const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
   const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   if (Object.hasOwn(settings, "apiKeyHelper"))
@@ -14791,6 +15526,12 @@ Commands:
                          backend accepts? 0 yes, 1 no key yet (OmniRoute answers, so one can
                          be made), 3 the backend could not be judged, 4 the key is refused.
   status                 Router health, backends, slots, and the Claude Code settings.
+  history [range]        The request history: one row per routed request (never a prompt, a
+                         tool or an answer). Range: ${HISTORY_RANGES.join(", ")}
+                         (default ${DEFAULT_HISTORY_RANGE}). Requests, errors, tokens and the
+                         estimated cost per target (the default), slot, model or session.
+                         Filters: --slot <name>, --target <target>, --model <model>,
+                         --session <id>, --errors. --by ${HISTORY_BY.join("|")} picks the grouping.
   models                 Every model each backend offers, and the slots.
   slot <slot> <targets>  Custom: set a slot's chain and use it. Any targets, in order, each
                          <backend>:<model> (see "models") or claude-<model>. <slot>: scout
@@ -14845,7 +15586,7 @@ function routerService(ctx) {
     taskPath: paths.routerTaskFile
   }) : systemdService({ socketPath: paths.routerSocketFile, unitPath: paths.routerUnitFile });
 }
-function isJsonObject7(value) {
+function isJsonObject8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var KNOWN_BACKENDS = {
@@ -15566,11 +16307,11 @@ async function commandStatus(ctx) {
   if ("error" in health)
     ctx.print(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
   else {
-    const body = isJsonObject7(health.body) ? health.body : {};
+    const body = isJsonObject8(health.body) ? health.body : {};
     ctx.print(`router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`);
     if (body.port !== port)
       ctx.print(`  WARN the config says port ${port}; restart the router to move it`);
-    const cooling = isJsonObject7(body.cooling) ? Object.entries(body.cooling) : [];
+    const cooling = isJsonObject8(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
     for (const line of breakerStatusLines(body.breakers, ctx.probe.now()))
@@ -15588,6 +16329,129 @@ async function commandStatus(ctx) {
   ctx.print(`
 Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON \u2192 ${report.baseUrl}`}`);
   printOverrides(report, ctx.print);
+  ctx.print(`history: ${historyWords({
+    bytes: historyDbBytes(ctx.paths.historyDbFile),
+    exists: historyDbExists(ctx.paths.historyDbFile),
+    retentionDays: config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config)
+  })} in ${tildify(ctx.paths.historyDbFile, ctx.paths.home)}`);
+  return 0;
+}
+function historyOptions(args) {
+  let by = DEFAULT_HISTORY_BY;
+  let range = DEFAULT_HISTORY_RANGE;
+  let ranged = false;
+  const filters = {};
+  const columns = ["slot", "target", "model", "session"];
+  for (let index = 0;index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--by") {
+      const value = args[index + 1];
+      if (value === undefined || !HISTORY_BY.includes(value))
+        return null;
+      by = value;
+      index += 1;
+    } else if (arg.startsWith("--") && columns.includes(arg.slice(2))) {
+      const column = arg.slice(2);
+      const value = args[index + 1];
+      if (value === undefined || value === "")
+        return null;
+      filters[column] = value;
+      index += 1;
+    } else if (arg === "--errors") {
+      filters.status = "error";
+    } else if (arg.startsWith("--")) {
+      return null;
+    } else {
+      if (ranged || !HISTORY_RANGES.includes(arg))
+        return null;
+      range = arg;
+      ranged = true;
+    }
+  }
+  return { by, filters, range };
+}
+function formatUsd(usd) {
+  if (usd === 0)
+    return "$0";
+  if (usd >= 1)
+    return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+async function commandHistory(ctx, args) {
+  const options = historyOptions(args);
+  if (options === null) {
+    ctx.error(USAGE);
+    return 2;
+  }
+  let config = null;
+  try {
+    config = loadConfigFile(ctx.paths.gatewayConfigFile);
+  } catch {}
+  const retentionDays = config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config);
+  if (retentionDays <= 0) {
+    ctx.print(`The request history is off (history.retentionDays: 0 in ${tildify(ctx.paths.gatewayConfigFile, ctx.paths.home)}): nothing is logged.`);
+    return 0;
+  }
+  const answer = historySeries(ctx.paths.historyDbFile, {
+    by: options.by,
+    filters: options.filters,
+    range: options.range
+  });
+  if (answer.series.length === 0) {
+    ctx.print(historyDbExists(ctx.paths.historyDbFile) ? `No request in the last ${options.range} matched.` : `No request logged yet: ${tildify(ctx.paths.historyDbFile, ctx.paths.home)} is made by the router's first row.`);
+    return 0;
+  }
+  ctx.print(`History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}. Cost is estimated: Claude at its list price, a backend at the price its own list gives.`);
+  const header = [
+    options.by,
+    "requests",
+    "errors",
+    "input",
+    "output",
+    "cache read",
+    "cache write",
+    "cost",
+    "peak p95"
+  ];
+  const rows = answer.series.map((series) => {
+    const total = {
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      errors: 0,
+      input: 0,
+      output: 0,
+      requests: 0
+    };
+    let peakP95 = 0;
+    for (const point of series.points) {
+      total.requests += point.requests;
+      total.errors += point.errors;
+      total.input += point.inputTokens;
+      total.output += point.outputTokens;
+      total.cacheRead += point.cacheReadTokens;
+      total.cacheWrite += point.cacheWriteTokens;
+      total.cost += point.costUsd;
+      peakP95 = Math.max(peakP95, point.p95Ms);
+    }
+    const count = (value) => value.toLocaleString("en-US");
+    return [
+      series.key,
+      count(total.requests),
+      count(total.errors),
+      count(total.input),
+      count(total.output),
+      count(total.cacheRead),
+      count(total.cacheWrite),
+      formatUsd(total.cost),
+      `${count(peakP95)} ms`
+    ];
+  });
+  const widths = header.map((title, index) => Math.max(title.length, ...rows.map((cells) => (cells[index] ?? "").length)));
+  ctx.print(header.map((title, index) => index === 0 ? title.padEnd(widths[index] ?? 0) : title.padStart(widths[index] ?? 0)).join("  ").trimEnd());
+  for (const cells of rows) {
+    ctx.print(cells.map((cell, index) => index === 0 ? cell.padEnd(widths[index] ?? 0) : cell.padStart(widths[index] ?? 0)).join("  ").trimEnd());
+  }
   return 0;
 }
 function setupOptions(args) {
@@ -15952,6 +16816,8 @@ async function runGateway(args, ctx) {
       return commandBreaker(ctx, rest);
     case "status":
       return noArgs(() => commandStatus(ctx));
+    case "history":
+      return commandHistory(ctx, rest);
     case "setup":
       return commandSetup(ctx, rest);
     case "on":
@@ -16054,6 +16920,15 @@ async function gatewayChecks(options) {
     ok: false,
     text: notAnswering(options, service, config.port, health.error, holder.state)
   } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
+  checks.push({
+    ok: true,
+    info: true,
+    text: `history: ${historyWords({
+      bytes: historyDbBytes(paths.historyDbFile),
+      exists: historyDbExists(paths.historyDbFile),
+      retentionDays: historyRetentionDays(config)
+    })} in ${short(paths.historyDbFile)}`
+  });
   for (const [name, backend] of Object.entries(config.backends)) {
     const url = shownValue(backend.baseUrl);
     const listed = await listModels(backend.baseUrl, backend.apiKey, 5000);
@@ -16706,7 +17581,7 @@ import {
   readFileSync as readFileSync30,
   realpathSync as realpathSync3
 } from "fs";
-import { dirname as dirname7, join as join25 } from "path";
+import { dirname as dirname8, join as join25 } from "path";
 var PACKAGE2 = "omniroute";
 var NAME = "OmniRoute";
 function tokenize(text) {
@@ -16802,11 +17677,11 @@ function versionOf(folder, name) {
   }
 }
 function packageFolderOf(script, name) {
-  let dir = dirname7(script);
+  let dir = dirname8(script);
   for (let step = 0;step < 8; step += 1) {
     if (versionOf(dir, name) !== null)
       return dir;
-    const up = dirname7(dir);
+    const up = dirname8(dir);
     if (up === dir)
       break;
     dir = up;
@@ -16853,7 +17728,7 @@ function fromPath(which) {
 }
 function findOmniroute(options) {
   const { paths, env } = options;
-  const units = userUnits(dirname7(paths.routerUnitFile));
+  const units = userUnits(dirname8(paths.routerUnitFile));
   const unit = units.find((entry) => entry.argv.some(namesOmniroute)) ?? units.find((entry) => entry.argv.some((word) => word.includes(PACKAGE2))) ?? null;
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE2);
@@ -16918,18 +17793,18 @@ function writable(dir) {
   }
 }
 function installIsWritable(install) {
-  return writable(install.folder) && writable(dirname7(install.folder));
+  return writable(install.folder) && writable(dirname8(install.folder));
 }
 
 // src/omniroute/registry.ts
 var REGISTRY = "https://registry.npmjs.org";
 var MIN_RELEASE_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 var STABLE = /^\d+\.\d+\.\d+$/;
-function isJsonObject8(value) {
+function isJsonObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isDeprecated(entry) {
-  return isJsonObject8(entry) && typeof entry.deprecated === "string";
+  return isJsonObject9(entry) && typeof entry.deprecated === "string";
 }
 function parseReleases(text, nowMs) {
   let raw;
@@ -17984,7 +18859,7 @@ function checkGitBash(platform, env, facts) {
 // src/cli/live-check.ts
 import {
   existsSync as existsSync34,
-  mkdirSync as mkdirSync10,
+  mkdirSync as mkdirSync11,
   mkdtempSync as mkdtempSync3,
   readFileSync as readFileSync36,
   realpathSync as realpathSync5,
@@ -17992,7 +18867,7 @@ import {
   writeFileSync as writeFileSync4
 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { dirname as dirname9, join as join30 } from "path";
+import { dirname as dirname10, join as join30 } from "path";
 
 // src/project/config.ts
 import { existsSync as existsSync32, readFileSync as readFileSync35 } from "fs";
@@ -18348,7 +19223,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
 }
 
 // src/project/resolve.ts
-import { existsSync as existsSync33, realpathSync as realpathSync4, statSync as statSync10 } from "fs";
+import { existsSync as existsSync33, realpathSync as realpathSync4, statSync as statSync11 } from "fs";
 import { join as join28 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
@@ -18406,7 +19281,7 @@ function findMainCheckout(git, cwd) {
   return realpathSync4(path);
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync33(cwd) || !statSync10(cwd).isDirectory()) {
+  if (!existsSync33(cwd) || !statSync11(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env));
@@ -18477,7 +19352,7 @@ function resolveProject(cwd, options = {}) {
 }
 
 // src/hooks/ask-log.ts
-import { dirname as dirname8, join as join29 } from "path";
+import { dirname as dirname9, join as join29 } from "path";
 var ASK_LOG_FILE = "guard-asks.jsonl";
 function askLogFile(stateDir) {
   return join29(stateDir, ASK_LOG_FILE);
@@ -18564,7 +19439,7 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join30(dirname9(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const log = join30(dirname10(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
@@ -18632,7 +19507,7 @@ function runLiveCheck(paths, env, deps) {
         throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
     };
     const plain = join30(root, "plain");
-    mkdirSync10(plain);
+    mkdirSync11(plain);
     git(plain, "init", "-q", "-b", "main");
     writeFileSync4(join30(plain, "README.md"), `live check
 `);
@@ -18643,7 +19518,7 @@ function runLiveCheck(paths, env, deps) {
       branch: `worktree-${LIVE_NAME}`
     }, deps, env).map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
-      mkdirSync10(paths.stateDir, { recursive: true, mode: 448 });
+      mkdirSync11(paths.stateDir, { recursive: true, mode: 448 });
       const record = {
         claudeCode: version,
         plugin: VERSION,
@@ -18665,7 +19540,7 @@ import { join as join56 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync as realpathSync6 } from "fs";
-import { basename as basename5, dirname as dirname10, join as join31, resolve as resolve4 } from "path";
+import { basename as basename5, dirname as dirname11, join as join31, resolve as resolve4 } from "path";
 var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
   try {
@@ -18693,7 +19568,7 @@ function realPath(path) {
     try {
       return join31(realpathSync6(at), ...rest);
     } catch {
-      const parent = dirname10(at);
+      const parent = dirname11(at);
       if (parent === at)
         return resolve4(path);
       rest.unshift(basename5(at));
@@ -18823,7 +19698,7 @@ import { readFileSync as readFileSync40 } from "fs";
 import { join as join34 } from "path";
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync36, readdirSync as readdirSync13, readFileSync as readFileSync38, statSync as statSync11 } from "fs";
+import { existsSync as existsSync36, readdirSync as readdirSync13, readFileSync as readFileSync38, statSync as statSync12 } from "fs";
 import { uptime } from "os";
 import { join as join33 } from "path";
 function parseSessionRecord(json) {
@@ -18861,7 +19736,7 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync11(join33(dir, file)).mtimeMs < bootedAt)
+      if (statSync12(join33(dir, file)).mtimeMs < bootedAt)
         continue;
       text = readFileSync38(join33(dir, file), "utf8");
     } catch {
@@ -20087,8 +20962,8 @@ function programsIn(command, dialect) {
 
 // src/workflow/reviews.ts
 import { createHash as createHash4 } from "crypto";
-import { mkdirSync as mkdirSync11, readFileSync as readFileSync41 } from "fs";
-import { dirname as dirname11, join as join35 } from "path";
+import { mkdirSync as mkdirSync12, readFileSync as readFileSync41 } from "fs";
+import { dirname as dirname12, join as join35 } from "path";
 var REVIEWS_KEPT = 50;
 var REVIEWS_LOCK_WAIT_MS = 3000;
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
@@ -20143,8 +21018,8 @@ function reviewsOn(file, branch, agents) {
   return trustedReviews(file, agents).filter((review) => review.branches.includes(branch));
 }
 async function underRecordLock(file, write) {
-  const folder = dirname11(file);
-  mkdirSync11(folder, { mode: 448, recursive: true });
+  const folder = dirname12(file);
+  mkdirSync12(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
 }
 async function recordReview(file, sha, by, atMs, branch = null) {
@@ -20220,7 +21095,7 @@ async function takeReviewStart(file, agentId) {
 
 // src/hooks/after-merge.ts
 import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync37, mkdirSync as mkdirSync13, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync37, mkdirSync as mkdirSync14, writeFileSync as writeFileSync5 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
 import { join as join38 } from "path";
 
@@ -20234,8 +21109,8 @@ function isAttended(env) {
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash5 } from "crypto";
-import { mkdirSync as mkdirSync12, readFileSync as readFileSync42 } from "fs";
-import { dirname as dirname12, join as join36 } from "path";
+import { mkdirSync as mkdirSync13, readFileSync as readFileSync42 } from "fs";
+import { dirname as dirname13, join as join36 } from "path";
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var TOLD_NAMES_MAX = 8;
 var removedSchema = object({
@@ -20275,7 +21150,7 @@ function readJson2(file, schema) {
   }
 }
 function writeJson(file, value) {
-  mkdirSync12(dirname12(file), { recursive: true, mode: 448 });
+  mkdirSync13(dirname13(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -21717,7 +22592,7 @@ function afterMerge(context) {
     notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
     notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
-    mkdirSync13(join38(record, ".."), { recursive: true });
+    mkdirSync14(join38(record, ".."), { recursive: true });
     writeFileSync5(record, "");
   }
   if (outcome.announce !== null)
@@ -21927,8 +22802,8 @@ var CREW_KINDS = {
 var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 
 // src/hooks/agent-guard-workflows.ts
-import { existsSync as existsSync38, readdirSync as readdirSync15, readFileSync as readFileSync43, statSync as statSync12 } from "fs";
-import { dirname as dirname13, isAbsolute as isAbsolute3, join as join39, resolve as resolve6, sep as sep3 } from "path";
+import { existsSync as existsSync38, readdirSync as readdirSync15, readFileSync as readFileSync43, statSync as statSync13 } from "fs";
+import { dirname as dirname14, isAbsolute as isAbsolute3, join as join39, resolve as resolve6, sep as sep3 } from "path";
 var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
 function stringAt(text, from) {
   const quote = text[from];
@@ -22099,7 +22974,7 @@ function scriptAtPath(path, cwd) {
   const file = resolve6(cwd, path);
   let size;
   try {
-    const stat = statSync12(file);
+    const stat = statSync13(file);
     if (!stat.isFile())
       return { unreadable: `The workflow script \`${file}\` is not a file.` };
     size = stat.size;
@@ -22130,7 +23005,7 @@ function claiming(files, name) {
   const found = [];
   for (const file of files) {
     try {
-      const stat = statSync12(file);
+      const stat = statSync13(file);
       if (!stat.isFile() || stat.size > WORKFLOW_SCRIPT_MAX_BYTES)
         continue;
       const script = normalized(readFileSync43(file, "utf8"));
@@ -22159,7 +23034,7 @@ function savedFolders(place) {
     folders.push(join39(at, ".claude", "workflows"));
     if (existsSync38(join39(at, ".git")))
       break;
-    const up = dirname13(at);
+    const up = dirname14(at);
     if (up === at)
       break;
     at = up;
@@ -22199,7 +23074,7 @@ function pluginWorkflowFiles(root) {
   return paths.filter((one) => typeof one === "string").flatMap((one) => {
     const path = resolve6(root, one);
     try {
-      if (statSync12(path).isDirectory())
+      if (statSync13(path).isDirectory())
         return workflowFiles(path);
     } catch {
       return [];
@@ -22235,12 +23110,12 @@ import {
   appendFileSync as appendFileSync2,
   closeSync as closeSync4,
   fstatSync,
-  mkdirSync as mkdirSync14,
+  mkdirSync as mkdirSync15,
   openSync as openSync4,
   readFileSync as readFileSync44,
   readSync
 } from "fs";
-import { dirname as dirname14, join as join40 } from "path";
+import { dirname as dirname15, join as join40 } from "path";
 var SESSION_EFFORT = "session-effort";
 var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
 function reasonParts(reason) {
@@ -22295,12 +23170,12 @@ function appendAgentLaunches(file, launches) {
   if (fresh.length === 0)
     return;
   try {
-    mkdirSync14(dirname14(file), { recursive: true, mode: 448 });
+    mkdirSync15(dirname15(file), { recursive: true, mode: 448 });
     appendFileSync2(file, fresh.map((one) => `${JSON.stringify(one)}
 `).join(""));
   } catch {}
 }
-function isJsonObject9(value) {
+function isJsonObject10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function textOrNull(value) {
@@ -22313,7 +23188,7 @@ function parseAgentLaunch(line) {
   } catch {
     return null;
   }
-  if (!isJsonObject9(value))
+  if (!isJsonObject10(value))
     return null;
   const { at, family, model, project, reason, subagentType } = value;
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
@@ -22339,7 +23214,7 @@ function parseAgentLaunch(line) {
 // src/hooks/transcript.ts
 import { closeSync as closeSync5, fstatSync as fstatSync2, openSync as openSync5, readSync as readSync2 } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject10(value) {
+function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tailLines2(transcriptPath) {
@@ -22372,7 +23247,7 @@ function* entriesFromEnd(lines) {
     } catch {
       continue;
     }
-    if (isJsonObject10(entry))
+    if (isJsonObject11(entry))
       yield entry;
   }
 }
@@ -22383,7 +23258,7 @@ function lastClaudeModel(transcriptPath) {
   for (const entry of entriesFromEnd(lines)) {
     if (entry.isSidechain === true)
       continue;
-    if (entry.type !== "assistant" || !isJsonObject10(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject11(entry.message))
       continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
@@ -23271,14 +24146,14 @@ import {
   closeSync as closeSync6,
   existsSync as existsSync39,
   fstatSync as fstatSync3,
-  mkdirSync as mkdirSync15,
+  mkdirSync as mkdirSync16,
   openSync as openSync6,
   readdirSync as readdirSync16,
   readFileSync as readFileSync45,
   readSync as readSync3,
-  statSync as statSync13
+  statSync as statSync14
 } from "fs";
-import { dirname as dirname15, join as join41 } from "path";
+import { dirname as dirname16, join as join41 } from "path";
 
 // src/zod-issues.ts
 function describeIssues(issues) {
@@ -23526,7 +24401,7 @@ function listRecords(schema, folder) {
   return listed;
 }
 function writeStoreFile(file, text) {
-  mkdirSync15(dirname15(file), { mode: 448, recursive: true });
+  mkdirSync16(dirname16(file), { mode: 448, recursive: true });
   atomicWrite(file, text, 384);
 }
 function writeRecord(file, value) {
@@ -23536,13 +24411,13 @@ function writeRecord(file, value) {
 function appendEvent(stateDir, repo, event) {
   const file = crewEventsFile(stateDir, repo);
   const line = checked(crewEventSchema, event, file);
-  mkdirSync15(dirname15(file), { mode: 448, recursive: true });
+  mkdirSync16(dirname16(file), { mode: 448, recursive: true });
   appendFileSync3(file, `${JSON.stringify(line)}
 `, { mode: 384 });
 }
 async function underStoreLock(stateDir, repo, write) {
   const folder = crewStoreDir(stateDir, repo);
-  mkdirSync15(folder, { mode: 448, recursive: true });
+  mkdirSync16(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: STORE_LOCK_WAIT_MS });
 }
 function readCrew(stateDir, repo, id) {
@@ -23693,7 +24568,7 @@ var watchStateFields = object({
 });
 function eventsEndOffset(stateDir, repo) {
   try {
-    return statSync13(crewEventsFile(stateDir, repo)).size;
+    return statSync14(crewEventsFile(stateDir, repo)).size;
   } catch {
     return 0;
   }
@@ -23941,11 +24816,11 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync41, mkdirSync as mkdirSync17, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname16, join as join43 } from "path";
+import { existsSync as existsSync41, mkdirSync as mkdirSync18, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname17, join as join43 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync40, mkdirSync as mkdirSync16, readFileSync as readFileSync47, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { existsSync as existsSync40, mkdirSync as mkdirSync17, readFileSync as readFileSync47, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join42 } from "path";
 function isSessionId(value) {
@@ -23990,7 +24865,7 @@ function sessionName(context) {
   const appliedFile = join42(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
-    mkdirSync16(dir, { recursive: true });
+    mkdirSync17(dir, { recursive: true });
     writeAtomic(appliedFile, title);
     return {
       stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
@@ -24015,7 +24890,7 @@ function fableSessionMark(env, sessionId) {
 }
 function firstTime(mark) {
   try {
-    mkdirSync17(dirname16(mark), { recursive: true });
+    mkdirSync18(dirname17(mark), { recursive: true });
     writeFileSync7(mark, "", { flag: "wx" });
     return true;
   } catch {
@@ -24774,7 +25649,7 @@ function routeFacts(input, context) {
 }
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync42, mkdtempSync as mkdtempSync5, readdirSync as readdirSync18, rmSync as rmSync10, statSync as statSync15 } from "fs";
+import { existsSync as existsSync42, mkdtempSync as mkdtempSync5, readdirSync as readdirSync18, rmSync as rmSync10, statSync as statSync16 } from "fs";
 import { tmpdir as tmpdir7 } from "os";
 import { join as join47 } from "path";
 
@@ -24832,7 +25707,7 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync49, statSync as statSync14 } from "fs";
+import { readFileSync as readFileSync49, statSync as statSync15 } from "fs";
 import { basename as basename7, isAbsolute as isAbsolute4, join as join45, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
@@ -24847,7 +25722,7 @@ function idleMinutes(worktree, now) {
   let last = 0;
   for (const file of ["index", "HEAD", join45("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync14(join45(admin, file)).mtimeMs);
+      last = Math.max(last, statSync15(join45(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -24858,7 +25733,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync14(listed.path);
+    statSync15(listed.path);
   } catch {
     return "gone";
   }
@@ -25293,7 +26168,7 @@ function innerWorktreeOf(worktree, all) {
   for (const entry of entries) {
     const folder = join47(claudeOwn, entry);
     try {
-      if (statSync15(folder).isDirectory() && readdirSync18(folder).length > 0)
+      if (statSync16(folder).isDirectory() && readdirSync18(folder).length > 0)
         return folder;
     } catch {}
   }
@@ -25548,7 +26423,7 @@ function pruneWorktrees(repo, env) {
 }
 
 // src/crew/claude.ts
-import { statSync as statSync16 } from "fs";
+import { statSync as statSync17 } from "fs";
 import { join as join48 } from "path";
 var CLAUDE_TIMEOUT_MS2 = 30000;
 var realRunProgram = (argv, options) => {
@@ -25582,7 +26457,7 @@ var realRunProgram = (argv, options) => {
 };
 function isFile2(path) {
   try {
-    return statSync16(path).isFile();
+    return statSync17(path).isFile();
   } catch {
     return false;
   }
@@ -25693,7 +26568,7 @@ import { existsSync as existsSync46 } from "fs";
 import { existsSync as existsSync45, readFileSync as readFileSync52 } from "fs";
 
 // src/cli/setup.ts
-import { delimiter, dirname as dirname18, join as join53 } from "path";
+import { delimiter, dirname as dirname19, join as join53 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join49 } from "path";
@@ -25742,16 +26617,16 @@ import { join as join52, relative as relative2 } from "path";
 import {
   closeSync as closeSync7,
   existsSync as existsSync43,
-  mkdirSync as mkdirSync18,
+  mkdirSync as mkdirSync19,
   openSync as openSync7,
   readdirSync as readdirSync19,
   readFileSync as readFileSync50,
   readSync as readSync4,
   rmSync as rmSync11,
-  statSync as statSync17,
+  statSync as statSync18,
   writeFileSync as writeFileSync8
 } from "fs";
-import { dirname as dirname17, join as join51, resolve as resolve8 } from "path";
+import { dirname as dirname18, join as join51, resolve as resolve8 } from "path";
 
 // src/sessions/saved-sessions.ts
 import { join as join50 } from "path";
@@ -25843,7 +26718,7 @@ function sessionFiles(projectsDir, folder) {
     if (!name.endsWith(".jsonl"))
       continue;
     const path = join51(projectsDir, folder, name);
-    const stat = statSync17(path, { throwIfNoEntry: false });
+    const stat = statSync18(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
     files.push({
@@ -27222,7 +28097,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname19, isAbsolute as isAbsolute6, relative as relative3, resolve as resolve10 } from "path";
+import { dirname as dirname20, isAbsolute as isAbsolute6, relative as relative3, resolve as resolve10 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -27466,7 +28341,7 @@ function movedTo2(invocation, folder, ctx) {
   return isAbsolute6(path) ? resolve10(path) : folder === null ? null : resolve10(folder, path);
 }
 function protectedNeedles(paths) {
-  const settings = dirname19(paths.workflowConfigFile);
+  const settings = dirname20(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir];
   for (const folder of [settings, paths.stateDir]) {
     const underHome = relative3(paths.home, folder);
@@ -27590,7 +28465,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname19);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname20);
   if (settingsFolders.some((folder) => isInside(path, folder, true)))
     return SETTINGS_WHAT;
   return isInside(path, paths.stateDir, true) ? STATE_WHAT : null;
@@ -29003,16 +29878,16 @@ function checkNameClash(settings) {
 }
 var OLD_PLUGIN_ID = "cc@cc-agentic";
 var OLD_NAME2 = "cc-agentic";
-function isJsonObject11(value) {
+function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function hasEntry(data, field, key) {
   const node = field === null ? data : data?.[field];
-  return isJsonObject11(node) && Object.hasOwn(node, key);
+  return isJsonObject12(node) && Object.hasOwn(node, key);
 }
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
-  const enabled = isJsonObject11(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  const enabled = isJsonObject12(plugins) && plugins[OLD_PLUGIN_ID] === true;
   if (!existsSync50(join57(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
@@ -29121,7 +29996,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname20(dir)) {
+  for (let dir = cwd;; dir = dirname21(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join57(dir, name);
       if (from === join57(paths.claudeConfigDir, "CLAUDE.md") || !existsSync50(from))
@@ -29137,7 +30012,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname20(dir) === dir)
+    if (dirname21(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -30173,8 +31048,8 @@ import { basename as basename10, join as join59 } from "path";
 import { join as join58 } from "path";
 
 // src/workflow/write.ts
-import { mkdirSync as mkdirSync19 } from "fs";
-import { dirname as dirname21 } from "path";
+import { mkdirSync as mkdirSync20 } from "fs";
+import { dirname as dirname22 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -30250,7 +31125,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync19(dirname21(file), { mode: 448, recursive: true });
+  mkdirSync20(dirname22(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);
@@ -30604,11 +31479,11 @@ async function shellFacts(ctx, portalPort, found) {
   const health = await routerHealth(port, ctx.probe.fetch);
   return { platform, portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }
-function isJsonObject12(value) {
+function isJsonObject13(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entriesOf2(value) {
-  if (!isJsonObject12(value))
+  if (!isJsonObject13(value))
     return [];
   return Object.entries(value).filter((entry) => typeof entry[1] === "number").sort(([a], [b]) => a < b ? -1 : 1);
 }
@@ -30625,7 +31500,7 @@ async function routerFacts(ctx, port) {
       why: health.error
     };
   }
-  const body = isJsonObject12(health.body) ? health.body : {};
+  const body = isJsonObject13(health.body) ? health.body : {};
   const number = (key) => typeof body[key] === "number" ? body[key] : 0;
   return {
     cooling: entriesOf2(body.cooling),
@@ -30655,7 +31530,7 @@ function parseJournalLine(text, nowMs) {
     } catch {
       return null;
     }
-    if (!isJsonObject12(raw))
+    if (!isJsonObject13(raw))
       return null;
     const message = typeof raw.MESSAGE === "string" ? raw.MESSAGE : null;
     if (message === null)
@@ -32167,7 +33042,7 @@ async function jobsAnswerFor(deps) {
 }
 
 // src/portal/api/types.ts
-var HISTORY_RANGES = {
+var HISTORY_RANGES2 = {
   "1h": 3600000,
   "1d": 86400000,
   "4h": 14400000,
@@ -32235,11 +33110,11 @@ function matchesPattern(path, pattern, glob) {
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync8, mkdirSync as mkdirSync20, openSync as openSync8, readFileSync as readFileSync59, readSync as readSync5, statSync as statSync19 } from "fs";
-import { dirname as dirname22, join as join62 } from "path";
+import { closeSync as closeSync8, mkdirSync as mkdirSync21, openSync as openSync8, readFileSync as readFileSync59, readSync as readSync5, statSync as statSync20 } from "fs";
+import { dirname as dirname23, join as join62 } from "path";
 
 // src/cli/usage.ts
-import { existsSync as existsSync53, readdirSync as readdirSync20, readFileSync as readFileSync58, statSync as statSync18 } from "fs";
+import { existsSync as existsSync53, readdirSync as readdirSync20, readFileSync as readFileSync58, statSync as statSync19 } from "fs";
 import { basename as basename11, join as join61, resolve as resolve12 } from "path";
 function entries(path) {
   try {
@@ -32276,7 +33151,7 @@ var LAUNCH_TOOLS = new Set(["Agent", "Task"]);
 var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 var MERGE_COMMAND = /(^|[\s;&|()])gh\s+pr\s+merge\b/;
 var RULE_LABEL = /\[([A-Z][A-Za-z0-9'&.-]*(?: [A-Za-z0-9'&.-]+){0,4})\]/;
-function isJsonObject13(value) {
+function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringField2(value) {
@@ -32295,7 +33170,7 @@ function timeOf(record) {
 function hourKey(ms) {
   return String(Math.floor(ms / HOUR_MS));
 }
-function emptyBucket() {
+function emptyBucket2() {
   return {
     askUserQuestion: 0,
     autoMode: {},
@@ -32361,7 +33236,7 @@ function readCounts(record) {
 function readAskers(record) {
   const out = {};
   for (const [key, value] of Object.entries(record)) {
-    if (!isJsonObject13(value))
+    if (!isJsonObject14(value))
       continue;
     const count = numberField2(value.count);
     const ms = numberField2(value.ms);
@@ -32372,7 +33247,7 @@ function readAskers(record) {
   return out;
 }
 function readBucket(bucket) {
-  const out = emptyBucket();
+  const out = emptyBucket2();
   for (const key of Object.keys(out)) {
     if (typeof out[key] === "number") {
       const value = numberField2(bucket[key]);
@@ -32381,7 +33256,7 @@ function readBucket(bucket) {
     }
   }
   for (const [key, record] of Object.entries(bucket)) {
-    if (!isJsonObject13(record))
+    if (!isJsonObject14(record))
       continue;
     if (key === "byAsker")
       out.byAsker = readAskers(record);
@@ -32406,15 +33281,15 @@ function parseCache(text, project) {
   } catch {
     return fresh;
   }
-  if (!isJsonObject13(parsed) || parsed.version !== CACHE_VERSION)
+  if (!isJsonObject14(parsed) || parsed.version !== CACHE_VERSION)
     return fresh;
-  if (!isJsonObject13(parsed.sessions))
+  if (!isJsonObject14(parsed.sessions))
     return fresh;
   for (const [id, value] of Object.entries(parsed.sessions)) {
-    if (!isJsonObject13(value) || !isJsonObject13(value.hours) || !isJsonObject13(value.transcripts)) {
+    if (!isJsonObject14(value) || !isJsonObject14(value.hours) || !isJsonObject14(value.transcripts)) {
       continue;
     }
-    if (!isJsonObject13(value.seen))
+    if (!isJsonObject14(value.seen))
       continue;
     const session = emptySession();
     session.cwd = stringField2(value.cwd);
@@ -32429,11 +33304,11 @@ function parseCache(text, project) {
       turnMs: value.seen.turnMs === true
     };
     for (const [hour, bucket] of Object.entries(value.hours)) {
-      if (isJsonObject13(bucket))
+      if (isJsonObject14(bucket))
         session.hours[hour] = readBucket(bucket);
     }
     for (const [name, transcript] of Object.entries(value.transcripts)) {
-      if (!isJsonObject13(transcript))
+      if (!isJsonObject14(transcript))
         continue;
       const entry = emptyTranscript();
       entry.offset = numberField2(transcript.offset) ?? 0;
@@ -32444,13 +33319,13 @@ function parseCache(text, project) {
       entry.endAt = numberField2(transcript.endAt);
       entry.replyId = stringField2(transcript.replyId);
       entry.replyLaunches = numberField2(transcript.replyLaunches) ?? 0;
-      entry.turnEnd = isJsonObject13(transcript.turnEnd) ? {
+      entry.turnEnd = isJsonObject14(transcript.turnEnd) ? {
         at: numberField2(transcript.turnEnd.at) ?? 0,
         background: numberField2(transcript.turnEnd.background) ?? 0
       } : null;
-      if (isJsonObject13(transcript.pending)) {
+      if (isJsonObject14(transcript.pending)) {
         for (const [toolId, tool] of Object.entries(transcript.pending)) {
-          if (!isJsonObject13(tool) || numberField2(tool.at) === null)
+          if (!isJsonObject14(tool) || numberField2(tool.at) === null)
             continue;
           entry.pending[toolId] = {
             at: numberField2(tool.at) ?? 0,
@@ -32459,9 +33334,9 @@ function parseCache(text, project) {
           };
         }
       }
-      if (isJsonObject13(transcript.asks)) {
+      if (isJsonObject14(transcript.asks)) {
         for (const [toolId, ask] of Object.entries(transcript.asks)) {
-          if (!isJsonObject13(ask) || numberField2(ask.at) === null)
+          if (!isJsonObject14(ask) || numberField2(ask.at) === null)
             continue;
           entry.asks[toolId] = {
             at: numberField2(ask.at) ?? 0,
@@ -32514,7 +33389,7 @@ function readAskLog(file) {
       skipped += 1;
       continue;
     }
-    if (!isJsonObject13(entry)) {
+    if (!isJsonObject14(entry)) {
       skipped += 1;
       continue;
     }
@@ -32536,9 +33411,9 @@ function readAskLog(file) {
 }
 function blockLabel(result, record) {
   const decision = record.permissionDecision;
-  const reasonType = isJsonObject13(decision) ? stringField2(decision.reasonType) : null;
+  const reasonType = isJsonObject14(decision) ? stringField2(decision.reasonType) : null;
   const content = result.content;
-  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((block) => isJsonObject13(block) && block.type === "text").map((block) => isJsonObject13(block) ? String(block.text ?? "") : "").join(" ") : "";
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((block) => isJsonObject14(block) && block.type === "text").map((block) => isJsonObject14(block) ? String(block.text ?? "") : "").join(" ") : "";
   const label = RULE_LABEL.exec(text);
   if (label?.[1] !== undefined)
     return label[1];
@@ -32567,7 +33442,7 @@ function apply(record, session, transcript, subagent, context) {
     return;
   if (ts < context.nowMs - FLOW_DAYS_KEPT * DAY_MS || ts >= context.untilMs)
     return;
-  const bucket = session.hours[hourKey(ts)] ?? emptyBucket();
+  const bucket = session.hours[hourKey(ts)] ?? emptyBucket2();
   session.hours[hourKey(ts)] = bucket;
   const type = record.type;
   if (type === "assistant")
@@ -32583,7 +33458,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
   if (!subagent && record.isSidechain === true)
     return;
   const message = record.message;
-  if (!isJsonObject13(message)) {
+  if (!isJsonObject14(message)) {
     session.skipped += 1;
     return;
   }
@@ -32595,7 +33470,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
   const id = stringField2(message.id) ?? stringField2(record.uuid);
   let launches = 0;
   for (const block of content) {
-    if (!isJsonObject13(block) || block.type !== "tool_use")
+    if (!isJsonObject14(block) || block.type !== "tool_use")
       continue;
     const name = stringField2(block.name);
     if (name === null)
@@ -32608,7 +33483,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
       launches += 1;
     const toolId = stringField2(block.id);
     if (toolId !== null) {
-      const input = isJsonObject13(block.input) ? block.input : {};
+      const input = isJsonObject14(block.input) ? block.input : {};
       const command = stringField2(input.command);
       transcript.pending[toolId] = {
         at: ts,
@@ -32666,14 +33541,14 @@ function applyUser(record, session, transcript, bucket, context, ts) {
   if (origin !== null)
     closeTurn(transcript, bucket, ts, origin);
   const decision = record.permissionDecision;
-  const source = isJsonObject13(decision) ? stringField2(decision.source) : null;
-  if (isJsonObject13(decision))
+  const source = isJsonObject14(decision) ? stringField2(decision.source) : null;
+  if (isJsonObject14(decision))
     session.seen.permission = true;
-  const content = isJsonObject13(record.message) ? record.message.content : null;
+  const content = isJsonObject14(record.message) ? record.message.content : null;
   const blocks = Array.isArray(content) ? content : [];
   if (source?.startsWith("user")) {
     for (const block of blocks) {
-      if (!isJsonObject13(block) || block.type !== "tool_result")
+      if (!isJsonObject14(block) || block.type !== "tool_result")
         continue;
       const toolId = stringField2(block.tool_use_id);
       if (toolId === null) {
@@ -32704,13 +33579,13 @@ function applyUser(record, session, transcript, bucket, context, ts) {
       }
     }
   }
-  if (isJsonObject13(decision) && decision.decision === "reject" && source === "config") {
-    const result = blocks.find((block) => isJsonObject13(block) && block.type === "tool_result");
-    if (isJsonObject13(result))
+  if (isJsonObject14(decision) && decision.decision === "reject" && source === "config") {
+    const result = blocks.find((block) => isJsonObject14(block) && block.type === "tool_result");
+    if (isJsonObject14(result))
       addTo(bucket.autoMode, blockLabel(result, record));
   }
   for (const block of blocks) {
-    if (!isJsonObject13(block) || block.type !== "tool_result")
+    if (!isJsonObject14(block) || block.type !== "tool_result")
       continue;
     const toolId = stringField2(block.tool_use_id);
     if (toolId === null)
@@ -32737,7 +33612,7 @@ function applySystem(record, session, transcript, bucket, ts) {
   }
   if (record.subtype === "compact_boundary") {
     session.seen.compact = true;
-    const meta = isJsonObject13(record.compactMetadata) ? record.compactMetadata : {};
+    const meta = isJsonObject14(record.compactMetadata) ? record.compactMetadata : {};
     bucket.compactions += 1;
     addTo(bucket.compactByTrigger, stringField2(meta.trigger) ?? "unknown");
     bucket.compactPreTokens += numberField2(meta.preTokens) ?? 0;
@@ -32746,7 +33621,7 @@ function applySystem(record, session, transcript, bucket, ts) {
 }
 function applyAttachment(record, session, transcript, ts) {
   const attachment = record.attachment;
-  if (!isJsonObject13(attachment) || attachment.type !== "hook_success")
+  if (!isJsonObject14(attachment) || attachment.type !== "hook_success")
     return;
   const stdout = stringField2(attachment.stdout);
   if (stdout === null || !stdout.includes('"permissionDecision":"ask"'))
@@ -32793,7 +33668,7 @@ function replaced(file, transcript) {
     return false;
   let stat;
   try {
-    stat = statSync19(file);
+    stat = statSync20(file);
   } catch {
     return false;
   }
@@ -32802,7 +33677,7 @@ function replaced(file, transcript) {
 function readTranscriptFile(file, session, transcript, subagent, context) {
   let stat;
   try {
-    stat = statSync19(file);
+    stat = statSync20(file);
   } catch {
     return false;
   }
@@ -32844,7 +33719,7 @@ function readTranscriptFile(file, session, transcript, subagent, context) {
           session.skipped += 1;
           continue;
         }
-        if (!isJsonObject13(record)) {
+        if (!isJsonObject14(record)) {
           session.skipped += 1;
           continue;
         }
@@ -32957,7 +33832,7 @@ function addBucket(into, from) {
   }
 }
 function sessionFlow(project, id, session, context) {
-  const total = emptyBucket();
+  const total = emptyBucket2();
   for (const bucket of bucketsIn(session, context))
     addBucket(total, bucket);
   const spans = [];
@@ -33136,7 +34011,7 @@ function openWaitsOf(flow, session, context) {
 }
 function writeCache(file, cache) {
   try {
-    mkdirSync20(dirname22(file), { recursive: true, mode: 448 });
+    mkdirSync21(dirname23(file), { recursive: true, mode: 448 });
     atomicWrite(file, `${JSON.stringify(cache)}
 `, 384);
   } catch {}
@@ -33629,7 +34504,7 @@ function worktreesAnswer(deps) {
 }
 function flowAnswer(deps, range) {
   const now = deps.action.portal.now();
-  const wanted = HISTORY_RANGES[range];
+  const wanted = HISTORY_RANGES2[range];
   const kept = FLOW_DAYS_KEPT * 86400000;
   const window = Math.min(wanted, kept);
   const report = readFlow(deps.action.portal.paths, {
@@ -33663,7 +34538,7 @@ function historyAnswer(deps, range, by) {
     bucketMs: HISTORY_BUCKET_MS[range],
     buckets: [],
     by,
-    from: now - HISTORY_RANGES[range],
+    from: now - HISTORY_RANGES2[range],
     note: HISTORY_NOT_YET,
     range,
     to: now
@@ -33679,7 +34554,7 @@ function requestsAnswer() {
 }
 
 // src/portal/api/routes.ts
-var HISTORY_BY = new Set([
+var HISTORY_BY2 = new Set([
   "target",
   "slot",
   "model",
@@ -33688,7 +34563,7 @@ var HISTORY_BY = new Set([
 function rangeOf(value) {
   if (value === null)
     return "1d";
-  return Object.hasOwn(HISTORY_RANGES, value) ? value : null;
+  return Object.hasOwn(HISTORY_RANGES2, value) ? value : null;
 }
 function wordOf(value) {
   const trimmed = value?.trim() ?? "";
@@ -33731,7 +34606,7 @@ async function answerApi(deps, url) {
       const range = rangeOf(query.get("range"));
       if (range === null) {
         return {
-          body: { error: `range must be one of ${Object.keys(HISTORY_RANGES).join(", ")}` },
+          body: { error: `range must be one of ${Object.keys(HISTORY_RANGES2).join(", ")}` },
           status: 400
         };
       }
@@ -33740,10 +34615,10 @@ async function answerApi(deps, url) {
     case "/api/history": {
       const range = rangeOf(query.get("range"));
       const by = query.get("by") ?? "target";
-      if (range === null || !HISTORY_BY.has(by)) {
+      if (range === null || !HISTORY_BY2.has(by)) {
         return {
           body: {
-            error: `history takes range=${Object.keys(HISTORY_RANGES).join("|")} and by=target|slot|model|session`
+            error: `history takes range=${Object.keys(HISTORY_RANGES2).join("|")} and by=target|slot|model|session`
           },
           status: 400
         };
@@ -35268,7 +36143,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync54, readFileSync as readFileSync62, statSync as statSync20 } from "fs";
+import { existsSync as existsSync54, readFileSync as readFileSync62, statSync as statSync21 } from "fs";
 import { extname, join as join64, resolve as resolve13, sep as sep4 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -35302,7 +36177,7 @@ function fileInside(folder, pathname) {
   if (file !== folder && !file.startsWith(`${folder}${sep4}`))
     return null;
   try {
-    return statSync20(file).isFile() ? file : null;
+    return statSync21(file).isFile() ? file : null;
   } catch {
     return null;
   }
@@ -36277,7 +37152,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join65(dirname23(import.meta.path), "portal-ui");
+  return join65(dirname24(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });

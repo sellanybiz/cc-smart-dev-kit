@@ -36,7 +36,8 @@ function routerPaths(env = process.env) {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db")
   };
 }
 

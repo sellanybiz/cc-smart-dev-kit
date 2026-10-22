@@ -35,6 +35,7 @@ import {
   DEFAULT_PORT,
   fallbackOn,
   type GatewayConfig,
+  historyRetentionDays,
   JUDGE_NEVER_HOLDS,
   judgeTargetTested,
   judgeTargetUsable,
@@ -48,6 +49,19 @@ import {
   workerJudgeTargets,
 } from "./config";
 import { type HealthFetch, type HealthProbe, routerHealth } from "./health";
+import { HISTORY_RETENTION_DAYS, historyDbBytes, historyDbExists } from "./history";
+import {
+  bucketWords,
+  DEFAULT_HISTORY_BY,
+  DEFAULT_HISTORY_RANGE,
+  HISTORY_BY,
+  HISTORY_RANGES,
+  type HistoryBy,
+  type HistoryFilters,
+  type HistoryRange,
+  historySeries,
+  historyWords,
+} from "./history-read";
 import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
 import { formatLimitState, parseLimitState } from "./limit-state";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
@@ -88,6 +102,12 @@ Commands:
                          backend accepts? 0 yes, 1 no key yet (OmniRoute answers, so one can
                          be made), 3 the backend could not be judged, 4 the key is refused.
   status                 Router health, backends, slots, and the Claude Code settings.
+  history [range]        The request history: one row per routed request (never a prompt, a
+                         tool or an answer). Range: ${HISTORY_RANGES.join(", ")}
+                         (default ${DEFAULT_HISTORY_RANGE}). Requests, errors, tokens and the
+                         estimated cost per target (the default), slot, model or session.
+                         Filters: --slot <name>, --target <target>, --model <model>,
+                         --session <id>, --errors. --by ${HISTORY_BY.join("|")} picks the grouping.
   models                 Every model each backend offers, and the slots.
   slot <slot> <targets>  Custom: set a slot's chain and use it. Any targets, in order, each
                          <backend>:<model> (see "models") or claude-<model>. <slot>: scout
@@ -1411,6 +1431,167 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     `\nClaude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON → ${report.baseUrl}`}`,
   );
   printOverrides(report, ctx.print);
+  ctx.print(
+    `history: ${historyWords({
+      bytes: historyDbBytes(ctx.paths.historyDbFile),
+      exists: historyDbExists(ctx.paths.historyDbFile),
+      retentionDays: config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config),
+    })} in ${tildify(ctx.paths.historyDbFile, ctx.paths.home)}`,
+  );
+  return 0;
+}
+
+/** `gateway history`'s options; null on a wrong one. */
+function historyOptions(args: string[]): {
+  by: HistoryBy;
+  filters: HistoryFilters;
+  range: HistoryRange;
+} | null {
+  let by: HistoryBy = DEFAULT_HISTORY_BY;
+  let range: HistoryRange = DEFAULT_HISTORY_RANGE;
+  let ranged = false;
+  const filters: HistoryFilters = {};
+  const columns = ["slot", "target", "model", "session"] as const;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--by") {
+      const value = args[index + 1];
+      if (value === undefined || !(HISTORY_BY as readonly string[]).includes(value)) return null;
+      by = value as HistoryBy;
+      index += 1;
+    } else if (arg.startsWith("--") && (columns as readonly string[]).includes(arg.slice(2))) {
+      const column = arg.slice(2) as (typeof columns)[number];
+      const value = args[index + 1];
+      if (value === undefined || value === "") return null;
+      filters[column] = value;
+      index += 1;
+    } else if (arg === "--errors") {
+      filters.status = "error";
+    } else if (arg.startsWith("--")) {
+      return null;
+    } else {
+      if (ranged || !(HISTORY_RANGES as readonly string[]).includes(arg)) return null;
+      range = arg as HistoryRange;
+      ranged = true;
+    }
+  }
+  return { by, filters, range };
+}
+
+/** A cost in dollars: cents from a dollar up, micro-dollars below it, and $0 for none. */
+function formatUsd(usd: number): string {
+  if (usd === 0) return "$0";
+  if (usd >= 1) return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+
+/**
+ * `gateway history`: the request history's totals by target, slot, model or session (D51).
+ * The portal's history page reads the same module (`history-read.ts`) for its chart and its
+ * recent-requests table; this view is the terminal's.
+ */
+async function commandHistory(ctx: GatewayContext, args: string[]): Promise<number> {
+  const options = historyOptions(args);
+  if (options === null) {
+    ctx.error(USAGE);
+    return 2;
+  }
+  let config: GatewayConfig | null = null;
+  try {
+    config = loadConfigFile(ctx.paths.gatewayConfigFile);
+  } catch {
+    // The history reads without the config: its own retention is all it needs, and 90 days
+    // is the answer when there is no good config.
+  }
+  const retentionDays = config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config);
+  if (retentionDays <= 0) {
+    ctx.print(
+      `The request history is off (history.retentionDays: 0 in ${tildify(ctx.paths.gatewayConfigFile, ctx.paths.home)}): nothing is logged.`,
+    );
+    return 0;
+  }
+  const answer = historySeries(ctx.paths.historyDbFile, {
+    by: options.by,
+    filters: options.filters,
+    range: options.range,
+  });
+  if (answer.series.length === 0) {
+    ctx.print(
+      historyDbExists(ctx.paths.historyDbFile)
+        ? `No request in the last ${options.range} matched.`
+        : `No request logged yet: ${tildify(ctx.paths.historyDbFile, ctx.paths.home)} is made by the router's first row.`,
+    );
+    return 0;
+  }
+  ctx.print(
+    `History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}. Cost is estimated: Claude at its list price, a backend at the price its own list gives.`,
+  );
+  const header = [
+    options.by,
+    "requests",
+    "errors",
+    "input",
+    "output",
+    "cache read",
+    "cache write",
+    "cost",
+    "peak p95",
+  ];
+  const rows = answer.series.map((series) => {
+    const total = {
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      errors: 0,
+      input: 0,
+      output: 0,
+      requests: 0,
+    };
+    let peakP95 = 0;
+    for (const point of series.points) {
+      total.requests += point.requests;
+      total.errors += point.errors;
+      total.input += point.inputTokens;
+      total.output += point.outputTokens;
+      total.cacheRead += point.cacheReadTokens;
+      total.cacheWrite += point.cacheWriteTokens;
+      total.cost += point.costUsd;
+      peakP95 = Math.max(peakP95, point.p95Ms);
+    }
+    const count = (value: number) => value.toLocaleString("en-US");
+    return [
+      series.key,
+      count(total.requests),
+      count(total.errors),
+      count(total.input),
+      count(total.output),
+      count(total.cacheRead),
+      count(total.cacheWrite),
+      formatUsd(total.cost),
+      `${count(peakP95)} ms`,
+    ];
+  });
+  const widths = header.map((title, index) =>
+    Math.max(title.length, ...rows.map((cells) => (cells[index] ?? "").length)),
+  );
+  ctx.print(
+    header
+      .map((title, index) =>
+        index === 0 ? title.padEnd(widths[index] ?? 0) : title.padStart(widths[index] ?? 0),
+      )
+      .join("  ")
+      .trimEnd(),
+  );
+  for (const cells of rows) {
+    ctx.print(
+      cells
+        .map((cell, index) =>
+          index === 0 ? cell.padEnd(widths[index] ?? 0) : cell.padStart(widths[index] ?? 0),
+        )
+        .join("  ")
+        .trimEnd(),
+    );
+  }
   return 0;
 }
 
@@ -1914,6 +2095,8 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return commandBreaker(ctx, rest);
     case "status":
       return noArgs(() => commandStatus(ctx));
+    case "history":
+      return commandHistory(ctx, rest);
     case "setup":
       return commandSetup(ctx, rest);
     case "on":

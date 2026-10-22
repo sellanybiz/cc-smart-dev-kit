@@ -757,11 +757,12 @@ transcript holds it and no report showed it. So the router counts it
   the **last** `message_delta`'s final `output_tokens`; on an answer that did not stream,
   the body's `usage`. A field an answer does not report counts as 0, never as a guess.
 - **The answer itself is never touched.** The router hands each chunk to Claude Code first
-  and keeps a copy for the reader — same chunks, same order, nothing held back, and the copy
-  is read only once the client has the last byte, in the background. A client that hangs up
-  cancels the upstream as it always did. An answer the reader cannot make sense of (an
-  encoding the router does not decode, a body that is not JSON or a stream, more than
-  256 KB) is still counted as a check; only its tokens are missing.
+  and reads the answer's `usage` as the bytes go by (`AnswerUsageReader`: each server-sent
+  event as it ends, or a JSON body up to 256 KB), so a long answer is read without keeping
+  it — same chunks, same order, nothing held back. A client that hangs up cancels the
+  upstream as it always did, and the reader reports what it had read. An answer the reader
+  cannot make sense of (an encoding the router does not decode, a JSON body that is not
+  JSON or is larger than 256 KB) is still counted as a check; only its tokens are missing.
 - **The file**, `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written
   atomically in the background, the newest 30 days kept. Counts and four numbers per day:
   never a prompt, an answer, a model name or a key. The router reads it when it starts, so a
@@ -774,6 +775,60 @@ transcript holds it and no report showed it. So the router counts it
   (`README.md` § The usage limit).
 - Only a `/v1/messages` request is counted. A `count_tokens` for a check counts tokens, it
   judges nothing.
+- **This changed the router**, so a machine updates the copy it runs: after an update, run
+  `cc-smart-dev-kit gateway setup` (it asks before it restarts the router).
+
+## The request history
+
+Every model call the router routes is logged — **never the conversation** (owner D51).
+`cc-smart-dev-kit gateway history` shows the totals in the terminal; the portal's Flow page
+charts the same data and lists the recent requests (`src/gateway/history-read.ts`; its HTTP
+routes come with the portal's pages).
+
+- **One row per routed `/v1/messages` request**, in
+  `~/.local/state/cc-smart-dev-kit/history.db` (`bun:sqlite`, Bun's built-in SQLite: no
+  dependency; mode 600 in the owner-only state folder). A row holds the time; the Claude
+  Code session id the request carried (`x-claude-code-session-id`, the header Claude Code
+  sends on every request); the model asked; the slot; the target that answered; the status;
+  the latency (until the answer's headers); the target that answered next on a fallback;
+  whether the breaker held it; the input, output, cache-read and cache-write tokens the
+  answer's `usage` reported; and an estimated USD cost. **Never** a prompt, a system text, a
+  tool, an answer or a key.
+- **Not a safety check, not `count_tokens`, not another path.** Auto mode's checks are
+  counted by day in `safety-checks.json` (§ The safety-check counts); the history is the
+  model calls.
+- **The cost is an estimate.** Claude is priced at its list price (`src/gateway/prices.ts`,
+  keyed by family and version, cache writes at the 5-minute rate; USD per million tokens)
+  and the row is marked estimated. An affordable backend is priced at what its own
+  `/v1/models` lists for that model, when it lists one (the OpenRouter `pricing` shape): the
+  router asks for that list once per backend and at most every six hours, in the background,
+  and a list without a price means a row with no cost. A model with no row is never guessed.
+- **Written in the background and batched.** The answer's `usage` is read from the bytes on
+  their way to Claude Code (`AnswerUsageReader`, the reader the safety-check counts use);
+  `record` only puts the row in a buffer, and one transaction writes the batch after a short
+  wait or when it is full — never on the answer's path. A write error is one log line, and a
+  request never fails because its row did. WAL mode lets the portal read while the router
+  writes.
+- **Kept 90 days by default.** `history.retentionDays` in `gateway.json` changes it (0 to
+  3650); **0 turns the log off**: no row is written, and no database is made. A daily purge
+  deletes the older rows, and `auto_vacuum = INCREMENTAL` gives their pages back. Rows an
+  earlier setting kept stay when the log is turned off: a setting never deletes history.
+- **The read API** (`src/gateway/history-read.ts`: read-only, and an empty answer when no
+  request was ever logged):
+  - `historySeries(file, { range, by, filters, now })` →
+    `{ range, bucketMs, series: [{ key, points: [{ t, requests, errors, p50Ms, p95Ms,
+    inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd }] }] }`. Ranges
+    and buckets: `1h` 1 min, `4h` 5 min, `1d` 15 min, `7d` 1 h, `14d` 2 h, `30d` 6 h, `90d`
+    1 day. `by` is `target`, `slot`, `model` or `session`. Every bucket of the window is
+    there, empty ones as zeros; p50 and p95 are nearest-rank.
+  - `recentRequests(file, { filters, cursor, limit })` → `{ rows, nextCursor }`, newest
+    logged first, paged by the last row's id (1–200 rows, 50 by default).
+  - Filters: `slot`, `target`, `model` and `session` (exact), and `status: "error"` (an HTTP
+    status of 400 or more). A row with no slot or session is grouped under `(no slot)` /
+    `(no session)`.
+- **`doctor` and `gateway status`** show the database's size on disk (the file and its WAL)
+  and the retention. The line is information, never a failure, and says when the log is off
+  or has not logged a request yet.
 - **This changed the router**, so a machine updates the copy it runs: after an update, run
   `cc-smart-dev-kit gateway setup` (it asks before it restarts the router).
 
@@ -1018,7 +1073,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 
 | What | Where |
 |---|---|
-| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `safety-checks.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
+| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `safety-checks.ts`, `history.ts`, `history-read.ts`, `prices.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
 | Config: backend keys, slots, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused — off Windows, where the bits decide: on Windows a mode says nothing and the profile's ACL protects the file, so no config is refused there (`isOwnerOnly`). Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
 | A setup that did not finish | `~/.claude/cc-smart-dev-kit/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
 | The router that runs | `~/.local/share/cc-smart-dev-kit/router.js`, a copy of the plugin's `dist/router.js` |
@@ -1028,6 +1083,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets (a Claude model at its plan limit among them), slots (the chain in use — a slot absent from it answers as Claude), the last 200 routed requests (`recent`: time, slot, target, status, ms, whether a next target answered — metadata only, never a prompt or an answer), and the Claude model ids seen (`seenClaude`); never a key |
 | The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback, the breakers open, the Claude ids Claude Code sent. Read by `cc-smart-dev-kit statusline`, the StopFailure hook and the portal |
 | The safety-check counts | `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written by the router: auto mode's checks by local day, who answered each (Anthropic or the judge), and the tokens their answers reported. Read by `cc-smart-dev-kit usage`; the newest 30 days are kept (§ The safety-check counts) |
+| The request history | `~/.local/state/cc-smart-dev-kit/history.db` (with its `-wal`), mode 600, written by the router in the background: one row per routed `/v1/messages` request, never a prompt or an answer, kept 90 days by default (`history.retentionDays`, 0 turns it off). Read by `gateway history`, `doctor`, `gateway status` and the portal (§ The request history) |
 
 With no good config the router still starts with every slot off: each Claude model's request
 goes to Anthropic as Claude Code sent it, on the own login, and one error line names the

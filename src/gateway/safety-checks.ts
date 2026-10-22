@@ -215,17 +215,132 @@ function tokensOf(usage: unknown): CheckTokens | null {
   };
 }
 
-/** The `data` payload of every server-sent event in `text`. */
-function eventData(text: string): string[] {
-  const out: string[] = [];
-  for (const block of text.split(/\r?\n\r?\n/)) {
+/**
+ * How much of an answer's JSON body is kept to read its `usage`: a whole answer's usage is a
+ * few hundred bytes at its end. Past this, the answer's tokens are not read (a check is still
+ * counted, a history row says no usage): a surprising answer cannot grow the router's memory.
+ */
+export const CHECK_USAGE_MAX_BYTES = 256 * 1024;
+
+/**
+ * The most characters of one server-sent event the reader holds while it waits for the
+ * event's end. A usage event is far smaller; a content event past this is not one, and is
+ * dropped (the client still got its bytes).
+ */
+const EVENT_MAX_CHARS = 64 * 1024;
+
+const EMPTY_TOKENS: CheckTokens = { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 };
+
+/** Where the next complete server-sent event ends, and how long its separator is. */
+function nextEventEnd(text: string): { at: number; length: number } | null {
+  const lf = text.indexOf("\n\n");
+  const crlf = text.indexOf("\r\n\r\n");
+  if (crlf !== -1 && (lf === -1 || crlf < lf)) return { at: crlf, length: 4 };
+  return lf === -1 ? null : { at: lf, length: 2 };
+}
+
+/**
+ * An answer's `usage`, read from bytes as they go by, so an answer of any size is read
+ * without keeping it: this is how a history row gets the tokens of a long streamed answer
+ * (`router.ts`'s `observedAnswer`). Two shapes, as `checkUsageFromAnswer` describes:
+ *   - streaming: each server-sent event is read as it ends; `message_start` gives the input
+ *     and cache counts, the last `message_delta` the output count. An event larger than
+ *     `EVENT_MAX_CHARS` is not a usage event and is dropped; a stream cut inside an event
+ *     leaves that event unread, as the text parser does.
+ *   - not streaming: the JSON body is kept, up to `CHECK_USAGE_MAX_BYTES`; a larger body
+ *     reports no tokens.
+ */
+export class AnswerUsageReader {
+  private readonly decoder = new TextDecoder();
+  private readonly streaming: boolean;
+  private partial = "";
+  private body = "";
+  private tooBig = false;
+  private start: CheckTokens | null = null;
+  private output: number | null = null;
+
+  constructor(streaming: boolean) {
+    this.streaming = streaming;
+  }
+
+  /** One chunk of the answer's bytes, as the client got them (decoded here). */
+  push(chunk: Uint8Array): void {
+    if (this.streaming) {
+      this.partial += this.decoder.decode(chunk, { stream: true });
+      this.scan();
+      return;
+    }
+    if (this.tooBig) return;
+    this.body += this.decoder.decode(chunk, { stream: true });
+    if (this.body.length > CHECK_USAGE_MAX_BYTES) {
+      this.tooBig = true;
+      this.body = "";
+    }
+  }
+
+  /** The counts read so far; null when the answer reported none (or was too large). */
+  tokens(): CheckTokens | null {
+    if (!this.streaming) {
+      if (this.tooBig) return null;
+      this.body += this.decoder.decode();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(this.body);
+      } catch {
+        // Not JSON: an error page, a half-written body — no usage to read.
+        return null;
+      }
+      return tokensOf(isJsonObject(parsed) ? parsed.usage : undefined);
+    }
+    this.partial += this.decoder.decode();
+    this.scan();
+    // A last event with no blank line after it is an event too (the text parser reads it).
+    if (this.partial.trim() !== "") this.readEvent(this.partial);
+    this.partial = "";
+    if (this.start === null && this.output === null) return null;
+    return {
+      ...(this.start ?? EMPTY_TOKENS),
+      output: this.output ?? this.start?.output ?? 0,
+    };
+  }
+
+  /** Reads every complete event in `partial`, and drops one grown past a usage event's size. */
+  private scan(): void {
+    for (;;) {
+      const end = nextEventEnd(this.partial);
+      if (end === null) break;
+      const event = this.partial.slice(0, end.at);
+      this.partial = this.partial.slice(end.at + end.length);
+      this.readEvent(event);
+    }
+    if (this.partial.length > EVENT_MAX_CHARS) this.partial = "";
+  }
+
+  /** One event: its `data` lines, and the usage a `message_start` or `message_delta` holds. */
+  private readEvent(block: string): void {
     const data = block
       .split(/\r?\n/)
       .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice("data:".length).replace(/^ /, ""));
-    if (data.length > 0) out.push(data.join("\n"));
+      .map((line) => line.slice("data:".length).replace(/^ /, ""))
+      .join("\n");
+    if (data === "") return;
+    let event: unknown;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      // A half-written event (the stream was cut inside it): it decides nothing.
+      return;
+    }
+    if (!isJsonObject(event)) return;
+    if (event.type === "message_start" && isJsonObject(event.message)) {
+      this.start = tokensOf(event.message.usage) ?? this.start;
+    }
+    if (event.type === "message_delta") {
+      this.output =
+        tokenCount(isJsonObject(event.usage) ? event.usage.output_tokens : undefined) ??
+        this.output;
+    }
   }
-  return out;
 }
 
 /**
@@ -239,38 +354,7 @@ function eventData(text: string): string[] {
  * not there, or not a number, means the answer did not report it.
  */
 export function checkUsageFromAnswer(text: string, streaming: boolean): CheckTokens | null {
-  if (!streaming) {
-    let body: unknown;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      // Not JSON: an error page, a half-written body — no usage to read.
-      return null;
-    }
-    return tokensOf(isJsonObject(body) ? body.usage : undefined);
-  }
-  let start: CheckTokens | null = null;
-  let output: number | null = null;
-  for (const data of eventData(text)) {
-    let event: unknown;
-    try {
-      event = JSON.parse(data);
-    } catch {
-      // A half-written event (the stream was cut inside it): it decides nothing.
-      continue;
-    }
-    if (!isJsonObject(event)) continue;
-    if (event.type === "message_start" && isJsonObject(event.message)) {
-      start = tokensOf(event.message.usage) ?? start;
-    }
-    if (event.type === "message_delta") {
-      output =
-        tokenCount(isJsonObject(event.usage) ? event.usage.output_tokens : undefined) ?? output;
-    }
-  }
-  if (start === null && output === null) return null;
-  return {
-    ...(start ?? { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 }),
-    output: output ?? start?.output ?? 0,
-  };
+  const reader = new AnswerUsageReader(streaming);
+  reader.push(new TextEncoder().encode(text));
+  return reader.tokens();
 }

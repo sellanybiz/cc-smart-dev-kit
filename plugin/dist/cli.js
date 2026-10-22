@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync68, statSync as statSync26 } from "fs";
+import { existsSync as existsSync68, statSync as statSync27 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join75, resolve as resolve14 } from "path";
 
@@ -1073,7 +1073,8 @@ function routerPaths(env = process.env) {
     home,
     gatewayConfigFile: join5(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join5(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join5(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
+    safetyChecksFile: join5(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join5(home, ".local", "state", "cc-smart-dev-kit", "history.db")
   };
 }
 
@@ -2074,12 +2075,12 @@ function oldBunRefusal(command, version, path) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync56, readFileSync as readFileSync62 } from "fs";
-import { dirname as dirname21, join as join64 } from "path";
+import { dirname as dirname22, join as join64 } from "path";
 
 // src/gateway/config.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync9, statSync as statSync4 } from "fs";
-import { dirname as dirname3 } from "path";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync9, statSync as statSync5 } from "fs";
+import { dirname as dirname4 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -8016,6 +8017,203 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/gateway/history.ts
+import { Database } from "bun:sqlite";
+import { mkdirSync as mkdirSync5, statSync as statSync4 } from "fs";
+import { dirname as dirname3 } from "path";
+var HISTORY_RETENTION_DAYS = 90;
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_FLUSH_MS = 250;
+var HISTORY_BATCH_MAX = 200;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
+var HISTORY_SCHEMA_VERSION = 1;
+var CREATE_REQUESTS = `
+  CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    session TEXT,
+    model TEXT NOT NULL,
+    slot TEXT,
+    target TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    ms INTEGER NOT NULL,
+    next_target TEXT,
+    breaker TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    cost_usd REAL,
+    cost_estimated INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS requests_at ON requests(at);
+  CREATE INDEX IF NOT EXISTS requests_session_at ON requests(session, at);
+`;
+function openDatabase(file) {
+  mkdirSync5(dirname3(file), { mode: 448, recursive: true });
+  const db = new Database(file, { create: true });
+  db.run("PRAGMA auto_vacuum = INCREMENTAL");
+  const auto = db.query("PRAGMA auto_vacuum").get();
+  if (auto?.auto_vacuum !== 2)
+    db.run("VACUUM");
+  const mode = db.query("PRAGMA journal_mode = WAL").get();
+  if (mode?.journal_mode.toLowerCase() !== "wal") {
+    db.run("PRAGMA busy_timeout = 5000");
+  } else {
+    db.run("PRAGMA synchronous = NORMAL");
+    db.run("PRAGMA busy_timeout = 5000");
+  }
+  const version = db.query("PRAGMA user_version").get();
+  if ((version?.user_version ?? 0) > HISTORY_SCHEMA_VERSION) {
+    db.close();
+    throw new Error(`${file} was written by a newer cc-smart-dev-kit (schema ${String(version?.user_version)}, this one reads ${String(HISTORY_SCHEMA_VERSION)})`);
+  }
+  db.run(CREATE_REQUESTS);
+  if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
+    db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
+  }
+  setFileMode(file, 384);
+  return db;
+}
+function historyDbExists(file) {
+  try {
+    return statSync4(file).isFile();
+  } catch {
+    return false;
+  }
+}
+function historyDbBytes(file) {
+  let bytes = 0;
+  for (const path of [file, `${file}-wal`]) {
+    try {
+      bytes += statSync4(path).size;
+    } catch {}
+  }
+  return bytes;
+}
+function retentionWords(days) {
+  if (days <= 0)
+    return "off (history.retentionDays: 0)";
+  return days === 1 ? "1 day" : `${String(days)} days`;
+}
+var INSERT_ROW = `INSERT INTO requests
+  (at, session, model, slot, target, status, ms, next_target, breaker,
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+function insertValues(row) {
+  return [
+    row.at,
+    row.session,
+    row.model,
+    row.slot,
+    row.target,
+    row.status,
+    row.ms,
+    row.nextTarget,
+    row.breaker,
+    row.tokens?.input ?? null,
+    row.tokens?.output ?? null,
+    row.tokens?.cacheRead ?? null,
+    row.tokens?.cacheWrite ?? null,
+    row.cost?.usd ?? null,
+    row.cost?.estimated === true ? 1 : 0
+  ];
+}
+function createHistoryWriter(options) {
+  const flushAfterMs = options.flushAfterMs ?? HISTORY_FLUSH_MS;
+  const now = options.now ?? (() => Date.now());
+  let buffer = [];
+  let db = null;
+  let timer = null;
+  let closed = false;
+  let lastError = "";
+  let retryAt = 0;
+  let lastPurgeAt = 0;
+  const fail = (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== lastError)
+      options.log(`ERROR cannot write the request history: ${message}`);
+    lastError = message;
+    retryAt = now() + HISTORY_RETRY_MS;
+    buffer = buffer.slice(-HISTORY_BATCH_MAX);
+  };
+  const purge = (database, retentionDays) => {
+    const at = now();
+    if (at - lastPurgeAt < HISTORY_PURGE_EVERY_MS)
+      return;
+    lastPurgeAt = at;
+    if (retentionDays <= 0)
+      return;
+    const cutoff = at - retentionDays * 24 * 60 * 60 * 1000;
+    database.run("DELETE FROM requests WHERE at < ?", [cutoff]);
+    database.run("PRAGMA incremental_vacuum");
+  };
+  const flush = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (closed || buffer.length === 0)
+      return;
+    const rows = buffer;
+    buffer = [];
+    if (now() < retryAt) {
+      buffer = rows.slice(-HISTORY_BATCH_MAX);
+      return;
+    }
+    try {
+      if (db === null)
+        db = openDatabase(options.file);
+      const insert = db.prepare(INSERT_ROW);
+      const write = db.transaction((batch) => {
+        for (const row of batch)
+          insert.run(...insertValues(row));
+      });
+      write(rows);
+      lastError = "";
+      purge(db, options.retentionDays());
+    } catch (error) {
+      fail(error);
+    }
+  };
+  const schedule = () => {
+    if (timer !== null || closed)
+      return;
+    timer = setTimeout(() => {
+      timer = null;
+      flush();
+    }, flushAfterMs);
+    timer.unref?.();
+  };
+  return {
+    close() {
+      flush();
+      if (db !== null) {
+        db.close();
+        db = null;
+      }
+      closed = true;
+    },
+    enabled: () => !closed && options.retentionDays() > 0,
+    flush,
+    pending: () => buffer.length,
+    record(row) {
+      if (closed)
+        return;
+      const days = options.retentionDays();
+      if (days <= 0)
+        return;
+      buffer.push(row);
+      if (buffer.length >= HISTORY_BATCH_MAX)
+        flush();
+      else
+        schedule();
+    },
+    retentionDays: () => options.retentionDays()
+  };
+}
+
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_PREFIX = "cc-smart-dev-kit-";
@@ -8253,6 +8451,9 @@ var gatewayConfigSchema = looseObject({
   kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
+  history: looseObject({
+    retentionDays: int().min(0, "0 turns the request history off, which is the smallest value").max(HISTORY_MAX_RETENTION_DAYS, `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`).optional()
+  }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
@@ -8348,6 +8549,9 @@ function breakerOn(config, slot) {
 function breakerHoldMs(config) {
   return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
 }
+function historyRetentionDays(config) {
+  return config.history?.retentionDays ?? HISTORY_RETENTION_DAYS;
+}
 function breakerWords(config, slot) {
   if (slot === JUDGE_SLOT)
     return null;
@@ -8430,7 +8634,7 @@ function parseConfig(raw) {
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
-    mode = statSync4(path).mode;
+    mode = statSync5(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -8454,7 +8658,7 @@ function saveConfig(path, config) {
   if ("error" in parsed)
     throw new ConfigError(`refusing to save an invalid config:
 ${parsed.error}`);
-  mkdirSync5(dirname3(path), { mode: 448, recursive: true });
+  mkdirSync6(dirname4(path), { mode: 448, recursive: true });
   atomicWrite(path, `${JSON.stringify(parsed.config, null, 2)}
 `, 384);
 }
@@ -8469,7 +8673,7 @@ function emptyConfig() {
     version: 1
   };
 }
-var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync4 };
+var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync5 };
 function watchConfig(path, log, deps = REAL_WATCH_DEPS) {
   let current = emptyConfig();
   let good = false;
@@ -8629,20 +8833,209 @@ function maskedLine(text, known, max, options = {}) {
   return oneLine(maskSecrets(text, known), max, options);
 }
 
-// src/gateway/backends.ts
-var REASON_CHARS = 120;
+// src/gateway/prices.ts
+var CLAUDE_PRICES = [
+  {
+    family: "fable",
+    major: 5,
+    minor: 1,
+    price: { cacheRead: 0.25, cacheWrite: 12.5, input: 10, output: 50 }
+  },
+  {
+    family: "fable",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 1, cacheWrite: 12.5, input: 10, output: 50 }
+  },
+  {
+    family: "opus",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.2, cacheWrite: 5, input: 4, output: 20 }
+  },
+  {
+    family: "opus",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 8,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 7,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 6,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 1,
+    price: { cacheRead: 1.5, cacheWrite: 18.75, input: 15, output: 75 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 0,
+    price: { cacheRead: 1.5, cacheWrite: 18.75, input: 15, output: 75 }
+  },
+  {
+    family: "sonnet",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+  },
+  {
+    family: "sonnet",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 6,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 0,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "haiku",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.01, cacheWrite: 0.125, input: 0.1, output: 0.5 },
+    overAfter: 1e5,
+    over: { cacheRead: 0.05, cacheWrite: 0.625, input: 0.5, output: 2.5 }
+  },
+  {
+    family: "haiku",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.1, cacheWrite: 1.25, input: 1, output: 5 }
+  },
+  {
+    family: "haiku",
+    major: 3,
+    minor: 5,
+    price: { cacheRead: 0.08, cacheWrite: 1, input: 0.8, output: 4 }
+  }
+];
+function promptTokens(tokens) {
+  return tokens.input + tokens.cacheRead + tokens.cacheWrite;
+}
+function priceRow(model) {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null)
+    return null;
+  return CLAUDE_PRICES.find((candidate) => candidate.family === family && candidate.major === version.major && candidate.minor === version.minor) ?? null;
+}
+function tierOf(row, tokens) {
+  return row.over !== undefined && row.overAfter !== undefined && promptTokens(tokens) > row.overAfter ? row.over : row.price;
+}
+function costUsd(price, tokens) {
+  const usd = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * price.cacheRead + tokens.cacheWrite * price.cacheWrite) / 1e6;
+  return Math.round(usd * 1e6) / 1e6;
+}
+function claudeCost(model, tokens) {
+  if (tokens === null)
+    return null;
+  const row = priceRow(model);
+  if (row === null)
+    return null;
+  return { estimated: true, usd: costUsd(tierOf(row, tokens), tokens) };
+}
+function backendCost(price, tokens) {
+  if (tokens === null)
+    return null;
+  return { estimated: false, usd: costUsd(price, tokens) };
+}
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function perToken(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+    return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0)
+      return parsed;
+  }
+  return null;
+}
+function perMillion(value) {
+  return Math.round(value * 1e6 * 1e6) / 1e6;
+}
+function listedPrice(entry) {
+  if (!isJsonObject(entry))
+    return null;
+  const pricing = entry.pricing;
+  if (isJsonObject(pricing)) {
+    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
+    const output = perToken(pricing.completion) ?? perToken(pricing.output);
+    if (input === null || output === null)
+      return null;
+    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
+    const cacheWrite = perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
+    return {
+      cacheRead: perMillion(cacheRead),
+      cacheWrite: perMillion(cacheWrite),
+      input: perMillion(input),
+      output: perMillion(output)
+    };
+  }
+  return null;
+}
+function priceFromModels(models, model) {
+  const entry = models.find((candidate) => candidate.id === model);
+  return entry?.price ?? null;
+}
+
+// src/gateway/backends.ts
+var REASON_CHARS = 120;
+function isJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 function parseModelList(body) {
-  if (!isJsonObject(body) || !Array.isArray(body.data))
+  if (!isJsonObject2(body) || !Array.isArray(body.data))
     return [];
   const models = [];
   for (const entry of body.data) {
-    if (!isJsonObject(entry) || typeof entry.id !== "string")
+    if (!isJsonObject2(entry) || typeof entry.id !== "string")
       continue;
     const context = entry.context_length;
-    models.push({ contextLength: typeof context === "number" ? context : null, id: entry.id });
+    const price = listedPrice(entry);
+    models.push({
+      contextLength: typeof context === "number" ? context : null,
+      id: entry.id,
+      ...price === null ? {} : { price }
+    });
   }
   return models;
 }
@@ -8679,15 +9072,15 @@ async function checkBackendKey(baseUrl, apiKey, options = {}) {
 var PROBE_PROMPT = "Reply with one word: ready";
 var PROBE_TIMEOUT_MS = 20000;
 function modelIds(body) {
-  if (!isJsonObject(body) || !Array.isArray(body.data))
+  if (!isJsonObject2(body) || !Array.isArray(body.data))
     return null;
-  return body.data.map((entry) => isJsonObject(entry) && typeof entry.id === "string" ? entry.id : null).filter((id) => id !== null);
+  return body.data.map((entry) => isJsonObject2(entry) && typeof entry.id === "string" ? entry.id : null).filter((id) => id !== null);
 }
 function answerText(body) {
-  if (!isJsonObject(body) || !Array.isArray(body.choices))
+  if (!isJsonObject2(body) || !Array.isArray(body.choices))
     return null;
   const first = body.choices[0];
-  if (!isJsonObject(first) || !isJsonObject(first.message))
+  if (!isJsonObject2(first) || !isJsonObject2(first.message))
     return null;
   const content = first.message.content;
   if (typeof content !== "string")
@@ -8760,11 +9153,11 @@ import { existsSync as existsSync11, readdirSync as readdirSync7, readFileSync a
 // src/setup/lock.ts
 import {
   closeSync as closeSync3,
-  mkdirSync as mkdirSync6,
+  mkdirSync as mkdirSync7,
   openSync as openSync3,
   readFileSync as readFileSync10,
   readlinkSync as readlinkSync3,
-  statSync as statSync5,
+  statSync as statSync6,
   unlinkSync as unlinkSync3,
   writeSync
 } from "fs";
@@ -8850,7 +9243,7 @@ function parseLock(text) {
 function readHeld(file) {
   let stat;
   try {
-    stat = statSync5(file);
+    stat = statSync6(file);
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -8953,7 +9346,7 @@ function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
   }
 }
 async function withLock(stateDir, fn, options = {}) {
-  mkdirSync6(stateDir, { recursive: true });
+  mkdirSync7(stateDir, { recursive: true });
   const file = join10(stateDir, LOCK_FILE);
   const mine = newLockInfo();
   const deadline = Date.now() + (options.waitMs ?? 0);
@@ -9165,8 +9558,8 @@ function breakerStatusLines(value, nowMs) {
 }
 
 // src/gateway/router.ts
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync11 } from "fs";
-import { dirname as dirname4 } from "path";
+import { mkdirSync as mkdirSync8, readFileSync as readFileSync11 } from "fs";
+import { dirname as dirname5 } from "path";
 
 // src/gateway/fallback-answer.ts
 import { createHash as createHash3, randomUUID } from "crypto";
@@ -9192,11 +9585,11 @@ function backendSignatureOf(signature) {
 var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
 var TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
 var EMPTY_ANSWER_TEXT = "(The fallback model answered with thinking only.)";
-function isJsonObject2(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isRouterThinking(block) {
-  return isJsonObject2(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
+  return isJsonObject3(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
 }
 function holdsRouterMark(bytes) {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).includes(ROUTER_THINKING_MARK);
@@ -9208,7 +9601,7 @@ function withoutRouterThinking(body) {
   let removed = 0;
   let filled = 0;
   const out = messages.map((message, at) => {
-    if (!isJsonObject2(message) || message.role !== "assistant")
+    if (!isJsonObject3(message) || message.role !== "assistant")
       return message;
     if (!Array.isArray(message.content))
       return message;
@@ -9233,13 +9626,13 @@ function thinkingForBackend(body) {
   let restored = 0;
   let bare = 0;
   const out = messages.map((message) => {
-    if (!isJsonObject2(message) || message.role !== "assistant")
+    if (!isJsonObject3(message) || message.role !== "assistant")
       return message;
     if (!Array.isArray(message.content))
       return message;
     let changed = false;
     const content = message.content.map((block) => {
-      if (!isJsonObject2(block) || !isRouterThinking(block))
+      if (!isJsonObject3(block) || !isRouterThinking(block))
         return block;
       changed = true;
       const carried = backendSignatureOf(String(block.signature));
@@ -9278,11 +9671,11 @@ function withSafeId(block, changes) {
   return { ...block, id };
 }
 function isDropped(block) {
-  return isJsonObject2(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
+  return isJsonObject3(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
 }
 function cleanFallbackMessage(message) {
   const changes = noChanges();
-  if (!isJsonObject2(message) || !Array.isArray(message.content))
+  if (!isJsonObject3(message) || !Array.isArray(message.content))
     return { changes, message };
   const content = [];
   for (const block of message.content) {
@@ -9290,13 +9683,13 @@ function cleanFallbackMessage(message) {
       changes.redacted += 1;
       continue;
     }
-    if (isJsonObject2(block) && block.type === "thinking") {
+    if (isJsonObject3(block) && block.type === "thinking") {
       changes.marked += 1;
       const own = typeof block.signature === "string" ? block.signature : undefined;
       content.push({ ...block, signature: routerSignature(own) });
       continue;
     }
-    content.push(isJsonObject2(block) ? withSafeId(block, changes) : block);
+    content.push(isJsonObject3(block) ? withSafeId(block, changes) : block);
   }
   if (!changedAny(changes))
     return { changes, message };
@@ -9359,7 +9752,7 @@ function cleanFallbackStream(onDone = () => {
     } catch {
       return text;
     }
-    if (!isJsonObject2(event) || typeof event.type !== "string")
+    if (!isJsonObject3(event) || typeof event.type !== "string")
       return text;
     const label = name ?? event.type;
     if (event.type === "message_delta" || event.type === "message_stop") {
@@ -9394,7 +9787,7 @@ function cleanFallbackStream(onDone = () => {
         return "";
       }
       kept += 1;
-      if (isJsonObject2(block) && block.type === "thinking") {
+      if (isJsonObject3(block) && block.type === "thinking") {
         const mark = routerSignature();
         thinking.set(index, { mark, own: "" });
         changes.marked += 1;
@@ -9404,7 +9797,7 @@ function cleanFallbackStream(onDone = () => {
           index: next
         });
       }
-      const safe = isJsonObject2(block) ? withSafeId(block, changes) : block;
+      const safe = isJsonObject3(block) ? withSafeId(block, changes) : block;
       if (next === index && safe === block)
         return text;
       return eventText(label, { ...event, content_block: safe, index: next });
@@ -9414,7 +9807,7 @@ function cleanFallbackStream(onDone = () => {
     const open = thinking.get(index);
     if (open !== undefined && event.type === "content_block_delta") {
       const delta = event.delta;
-      if (isJsonObject2(delta) && delta.type === "signature_delta") {
+      if (isJsonObject3(delta) && delta.type === "signature_delta") {
         if (typeof delta.signature === "string")
           open.own = delta.signature;
         return "";
@@ -9771,7 +10164,7 @@ function addCheckTokens(state, day, side, tokens) {
   count.input += tokens.input;
   count.output += tokens.output;
 }
-function isJsonObject3(value) {
+function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tokenCount(value) {
@@ -9780,7 +10173,7 @@ function tokenCount(value) {
   return Math.round(value);
 }
 function tokensOf(usage) {
-  if (!isJsonObject3(usage))
+  if (!isJsonObject4(usage))
     return null;
   const input = tokenCount(usage.input_tokens);
   const output = tokenCount(usage.output_tokens);
@@ -9795,50 +10188,103 @@ function tokensOf(usage) {
     output: output ?? 0
   };
 }
-function eventData(text) {
-  const out = [];
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, ""));
-    if (data.length > 0)
-      out.push(data.join(`
-`));
-  }
-  return out;
+var CHECK_USAGE_MAX_BYTES = 256 * 1024;
+var EVENT_MAX_CHARS = 64 * 1024;
+var EMPTY_TOKENS = { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 };
+function nextEventEnd(text) {
+  const lf = text.indexOf(`
+
+`);
+  const crlf = text.indexOf(`\r
+\r
+`);
+  if (crlf !== -1 && (lf === -1 || crlf < lf))
+    return { at: crlf, length: 4 };
+  return lf === -1 ? null : { at: lf, length: 2 };
 }
-function checkUsageFromAnswer(text, streaming) {
-  if (!streaming) {
-    let body;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      return null;
-    }
-    return tokensOf(isJsonObject3(body) ? body.usage : undefined);
+
+class AnswerUsageReader {
+  decoder = new TextDecoder;
+  streaming;
+  partial = "";
+  body = "";
+  tooBig = false;
+  start = null;
+  output = null;
+  constructor(streaming) {
+    this.streaming = streaming;
   }
-  let start = null;
-  let output = null;
-  for (const data of eventData(text)) {
+  push(chunk) {
+    if (this.streaming) {
+      this.partial += this.decoder.decode(chunk, { stream: true });
+      this.scan();
+      return;
+    }
+    if (this.tooBig)
+      return;
+    this.body += this.decoder.decode(chunk, { stream: true });
+    if (this.body.length > CHECK_USAGE_MAX_BYTES) {
+      this.tooBig = true;
+      this.body = "";
+    }
+  }
+  tokens() {
+    if (!this.streaming) {
+      if (this.tooBig)
+        return null;
+      this.body += this.decoder.decode();
+      let parsed;
+      try {
+        parsed = JSON.parse(this.body);
+      } catch {
+        return null;
+      }
+      return tokensOf(isJsonObject4(parsed) ? parsed.usage : undefined);
+    }
+    this.partial += this.decoder.decode();
+    this.scan();
+    if (this.partial.trim() !== "")
+      this.readEvent(this.partial);
+    this.partial = "";
+    if (this.start === null && this.output === null)
+      return null;
+    return {
+      ...this.start ?? EMPTY_TOKENS,
+      output: this.output ?? this.start?.output ?? 0
+    };
+  }
+  scan() {
+    for (;; ) {
+      const end = nextEventEnd(this.partial);
+      if (end === null)
+        break;
+      const event = this.partial.slice(0, end.at);
+      this.partial = this.partial.slice(end.at + end.length);
+      this.readEvent(event);
+    }
+    if (this.partial.length > EVENT_MAX_CHARS)
+      this.partial = "";
+  }
+  readEvent(block) {
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, "")).join(`
+`);
+    if (data === "")
+      return;
     let event;
     try {
       event = JSON.parse(data);
     } catch {
-      continue;
+      return;
     }
-    if (!isJsonObject3(event))
-      continue;
-    if (event.type === "message_start" && isJsonObject3(event.message)) {
-      start = tokensOf(event.message.usage) ?? start;
+    if (!isJsonObject4(event))
+      return;
+    if (event.type === "message_start" && isJsonObject4(event.message)) {
+      this.start = tokensOf(event.message.usage) ?? this.start;
     }
     if (event.type === "message_delta") {
-      output = tokenCount(isJsonObject3(event.usage) ? event.usage.output_tokens : undefined) ?? output;
+      this.output = tokenCount(isJsonObject4(event.usage) ? event.usage.output_tokens : undefined) ?? this.output;
     }
   }
-  if (start === null && output === null)
-    return null;
-  return {
-    ...start ?? { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
-    output: output ?? start?.output ?? 0
-  };
 }
 
 // src/gateway/server-tools.ts
@@ -9936,6 +10382,12 @@ var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var RECENT_MAX = 200;
+var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
+var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
+function sessionIdOf(headers) {
+  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+  return SESSION_ID.test(value) ? value : null;
+}
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 var HOP_BY_HOP = new Set([
@@ -10122,10 +10574,10 @@ function toolSearchForBackend(body) {
   const messages = body.messages;
   if (Array.isArray(messages)) {
     out.messages = messages.map((message) => {
-      if (!isJsonObject4(message) || !Array.isArray(message.content))
+      if (!isJsonObject5(message) || !Array.isArray(message.content))
         return message;
       const content = message.content.map((block) => {
-        if (!isJsonObject4(block) || block.type !== "tool_result")
+        if (!isJsonObject5(block) || block.type !== "tool_result")
           return block;
         const inner = block.content;
         if (!Array.isArray(inner))
@@ -10133,7 +10585,7 @@ function toolSearchForBackend(body) {
         return {
           ...block,
           content: inner.map((part) => {
-            if (!isJsonObject4(part) || part.type !== "tool_reference")
+            if (!isJsonObject5(part) || part.type !== "tool_reference")
               return part;
             const name = part.tool_name;
             if (typeof name !== "string")
@@ -10149,7 +10601,7 @@ function toolSearchForBackend(body) {
   const tools = body.tools;
   if (Array.isArray(tools)) {
     out.tools = tools.flatMap((tool) => {
-      if (!isJsonObject4(tool) || tool.defer_loading !== true)
+      if (!isJsonObject5(tool) || tool.defer_loading !== true)
         return [tool];
       const name = tool.name;
       if (typeof name !== "string" || !referenced.has(name))
@@ -10163,10 +10615,10 @@ function toolSearchForBackend(body) {
 }
 function reasoningOffForBackend(body, options = {}) {
   const thinking = body.thinking;
-  const off = isJsonObject4(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
+  const off = isJsonObject5(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
   if (!off)
     return body;
-  const outputConfig = isJsonObject4(body.output_config) ? body.output_config : {};
+  const outputConfig = isJsonObject5(body.output_config) ? body.output_config : {};
   if (outputConfig.effort !== undefined)
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
@@ -10283,17 +10735,17 @@ function requestForClaudeFallback(body, model) {
   const changes = [];
   const capEffort = (why) => {
     const outputConfig = body.output_config;
-    if (isJsonObject4(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+    if (isJsonObject5(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
       out.output_config = { ...outputConfig, effort: "high" };
       changes.push(`effort ${outputConfig.effort} -> high${why}`);
     }
   };
   const thinking = body.thinking;
-  if (isJsonObject4(thinking) && thinking.type === "disabled") {
+  if (isJsonObject5(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
       delete out.thinking;
       changes.push("thinking disabled -> left out (always on)");
-      const outputConfig = isJsonObject4(body.output_config) ? body.output_config : undefined;
+      const outputConfig = isJsonObject5(body.output_config) ? body.output_config : undefined;
       if (outputConfig?.effort === undefined) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
@@ -10305,12 +10757,12 @@ function requestForClaudeFallback(body, model) {
     } else if (rules.thinkingOff === "capped") {
       capEffort(" (thinking off)");
     }
-  } else if (isJsonObject4(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
+  } else if (isJsonObject5(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (rules.forcedToolChoice && isJsonObject4(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (rules.forcedToolChoice && isJsonObject5(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
@@ -10329,7 +10781,7 @@ function requestForClaudeFallback(body, model) {
   return changes.length > 0 ? { body: out, changes } : { body, changes };
 }
 var encoder = new TextEncoder;
-function isJsonObject4(value) {
+function isJsonObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseBody(bytes) {
@@ -10339,7 +10791,7 @@ function parseBody(bytes) {
   } catch {
     return null;
   }
-  return isJsonObject4(parsed) ? parsed : null;
+  return isJsonObject5(parsed) ? parsed : null;
 }
 function deadline(ms) {
   let timer;
@@ -10356,7 +10808,6 @@ function withoutEmptyBreakers(state) {
     delete state.breakers;
   }
 }
-var CHECK_USAGE_MAX_BYTES = 256 * 1024;
 function stateWriter(deps, what, save) {
   if (save === undefined)
     return () => {};
@@ -11295,39 +11746,47 @@ function createRouter(deps) {
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
+    const undecodable = encoding !== "" && encoding !== "identity" && format === null;
+    const usage = new AnswerUsageReader(streaming);
+    let decode = null;
+    if (format !== null) {
+      const decompressor = new DecompressionStream(format);
+      const writer = decompressor.writable.getWriter();
+      const done = (async () => {
+        const decoded = decompressor.readable.getReader();
+        for (;; ) {
+          const step = await decoded.read();
+          if (step.done)
+            return;
+          usage.push(step.value);
+        }
+      })().catch(() => {});
+      decode = { done, writer };
+    }
     const reader = body.getReader();
-    let chunks = [];
-    let kept = 0;
-    let keep = true;
     let ended = false;
-    const answerText = async () => {
-      if (!keep)
-        return null;
-      const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
-      const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
-      if (format === null && encoding !== "" && encoding !== "identity")
-        return null;
-      const bytes = new Uint8Array(kept);
-      let at = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, at);
-        at += chunk.byteLength;
-      }
-      if (format === null)
-        return new TextDecoder().decode(bytes);
-      const decoded = new Response(bytes).body;
-      if (decoded === null)
-        return null;
-      return await new Response(decoded.pipeThrough(new DecompressionStream(format))).text();
-    };
     const finish = () => {
       if (ended)
         return;
       ended = true;
-      const task = answerText().then((answer) => note(answer === null ? null : checkUsageFromAnswer(answer, streaming)), () => note(null));
+      const task = (async () => {
+        if (undecodable) {
+          note(null);
+          return;
+        }
+        if (decode !== null) {
+          try {
+            await decode.writer.close();
+          } catch {}
+          await decode.done;
+        }
+        note(usage.tokens());
+      })();
       deps.background?.(task);
     };
-    const counted = new ReadableStream({
+    const observed = new ReadableStream({
       cancel(reason) {
         finish();
         return reader.cancel(reason);
@@ -11347,18 +11806,16 @@ function createRouter(deps) {
           return;
         }
         controller.enqueue(step.value);
-        if (!keep)
+        if (undecodable)
           return;
-        kept += step.value.byteLength;
-        if (kept > CHECK_USAGE_MAX_BYTES) {
-          keep = false;
-          chunks = [];
+        if (decode !== null) {
+          decode.writer.write(step.value).catch(() => {});
           return;
         }
-        chunks.push(step.value);
+        usage.push(step.value);
       }
     });
-    return new Response(counted, {
+    return new Response(observed, {
       headers: response.headers,
       status: response.status,
       statusText: response.statusText
@@ -11403,6 +11860,7 @@ function createRouter(deps) {
       noteSeenClaude(parsed.model);
     }
     const guard = isAutoModeGuard(parsed, config.aliases);
+    model.guard = guard;
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
     if (alias !== null) {
@@ -11525,10 +11983,56 @@ function createRouter(deps) {
       return chain(req, url, config, body, [target], model.name, guard);
     }
   }
+  const backendListings = new Map;
+  const listingLoads = new Set;
+  const listingErrors = new Set;
+  function backendPrice(backend, model) {
+    const cached = backendListings.get(backend);
+    const stale = cached === undefined || deps.now() - cached.at >= PRICE_REFRESH_MS;
+    if (stale && deps.listModels !== undefined && !listingLoads.has(backend)) {
+      const entry = deps.getConfig().backends[backend];
+      if (entry !== undefined) {
+        listingLoads.add(backend);
+        const load = deps.listModels;
+        const task = load({ apiKey: entry.apiKey, baseUrl: entry.baseUrl }).then((models) => {
+          backendListings.set(backend, { at: deps.now(), models });
+        }).catch((error) => {
+          const message = messageOf(error);
+          if (!listingErrors.has(message)) {
+            listingErrors.add(message);
+            deps.log(`WARN cannot read ${backend}'s model list for history prices: ${message}`);
+          }
+          backendListings.set(backend, { at: deps.now(), models: [] });
+        }).finally(() => {
+          listingLoads.delete(backend);
+        });
+        deps.background?.(task.then(() => {}));
+      }
+    }
+    return cached === undefined ? null : priceFromModels(cached.models, model);
+  }
+  function costOf(target, asked, tokens) {
+    if (tokens === null)
+      return null;
+    if (target.startsWith("claude-"))
+      return claudeCost(target, tokens);
+    if (target === "anthropic" || target.startsWith("anthropic "))
+      return claudeCost(asked, tokens);
+    const parsed = parseTarget(target);
+    if ("target" in parsed && parsed.target.kind === "backend") {
+      const price = backendPrice(parsed.target.backend, parsed.target.model);
+      return price === null ? null : backendCost(price, tokens);
+    }
+    return null;
+  }
   return async function handle(req) {
     const startMs = deps.now();
     const url = new URL(req.url);
-    const model = { name: "-", slot: null };
+    const model = {
+      guard: false,
+      name: "-",
+      slot: null
+    };
     const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -11575,6 +12079,30 @@ function createRouter(deps) {
     });
     if (recent.length > RECENT_MAX)
       recent.shift();
+    if (req.method === "POST" && url.pathname === MESSAGES_PATH && !model.guard && deps.history?.enabled() === true) {
+      const answered = outcome;
+      const row = {
+        at: startMs,
+        breaker: answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
+        model: model.name,
+        ms: deps.now() - startMs,
+        nextTarget: answered.fallbacks > 0 ? printable(answered.target) : null,
+        session: sessionIdOf(req.headers),
+        slot: model.slot,
+        status: answered.response.status,
+        target: printable(answered.target)
+      };
+      outcome = {
+        ...answered,
+        response: observedAnswer(answered.response, (tokens) => {
+          deps.history?.record({
+            ...row,
+            cost: costOf(answered.target, model.name, tokens),
+            tokens
+          });
+        })
+      };
+    }
     return outcome.response;
   };
 }
@@ -11585,7 +12113,7 @@ async function startRouter(paths, env = process.env) {
   const source = watchConfig(configPath, log);
   const configPort = source.get().port;
   const writeState = (file, text) => {
-    mkdirSync7(dirname4(file), { mode: 448, recursive: true });
+    mkdirSync8(dirname5(file), { mode: 448, recursive: true });
     atomicWrite(file, text, 384);
   };
   const readState = (file) => {
@@ -11598,10 +12126,17 @@ async function startRouter(paths, env = process.env) {
     }
   };
   const shutdown = new AbortController;
+  const history = createHistoryWriter({
+    file: paths.historyDbFile,
+    log,
+    retentionDays: () => historyRetentionDays(source.get())
+  });
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
+    history,
+    listModels: (backend) => listModels(backend.baseUrl, backend.apiKey).then((listed) => ("models" in listed) ? listed.models : []),
     loadSafetyChecks: () => readState(paths.safetyChecksFile),
     loadState: () => readState(statePath),
     log,
@@ -11625,7 +12160,7 @@ async function startRouter(paths, env = process.env) {
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
       shutdown.abort();
-      exitWhenDone(server.stop(false), log, () => {});
+      exitWhenDone(server.stop(false), log, () => history.close());
     });
     return;
   }
@@ -11646,7 +12181,10 @@ async function startRouter(paths, env = process.env) {
     shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
-    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, () => {
+      inner.cleanup();
+      history.close();
+    });
   });
 }
 function exitWhenDone(done, log, cleanup) {
@@ -11668,7 +12206,7 @@ function realProbe() {
     sleep: (ms) => Bun.sleep(ms)
   };
 }
-function isJsonObject5(value) {
+function isJsonObject6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function healthUrl(port, path = HEALTH_PATH) {
@@ -11710,7 +12248,7 @@ async function probeRouterPort(port, fetchImpl, timeoutMs = 2000, path = HEALTH_
   } catch (error) {
     return { detail: `not a health answer (${messageOf(error)})`, state: "other" };
   }
-  return isJsonObject5(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
+  return isJsonObject6(body) && body.ok === true ? { state: "ours" } : { detail: "not this router's health answer", state: "other" };
 }
 async function waitWhileRouterAnswers(port, probe, waitMs, path = HEALTH_PATH) {
   const deadline = probe.now() + waitMs;
@@ -11733,6 +12271,203 @@ async function waitForRouter(port, probe, waitMs = 5000) {
       return false;
     await probe.sleep(200);
   }
+}
+
+// src/gateway/history-read.ts
+import { Database as Database2 } from "bun:sqlite";
+var HISTORY_RANGES = ["1h", "4h", "1d", "7d", "14d", "30d", "90d"];
+var RANGE_MS = {
+  "1h": 60 * 60 * 1000,
+  "4h": 4 * 60 * 60 * 1000,
+  "1d": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "14d": 14 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+  "90d": 90 * 24 * 60 * 60 * 1000
+};
+var BUCKET_MS = {
+  "1h": 60 * 1000,
+  "4h": 5 * 60 * 1000,
+  "1d": 15 * 60 * 1000,
+  "7d": 60 * 60 * 1000,
+  "14d": 2 * 60 * 60 * 1000,
+  "30d": 6 * 60 * 60 * 1000,
+  "90d": 24 * 60 * 60 * 1000
+};
+var HISTORY_BY = ["target", "slot", "model", "session"];
+var DEFAULT_HISTORY_RANGE = "1d";
+var DEFAULT_HISTORY_BY = "target";
+var NO_SLOT_KEY = "(no slot)";
+var NO_SESSION_KEY = "(no session)";
+function groupExpression(by) {
+  switch (by) {
+    case "slot":
+      return `coalesce(slot, '${NO_SLOT_KEY}')`;
+    case "session":
+      return `coalesce(session, '${NO_SESSION_KEY}')`;
+    default:
+      return by;
+  }
+}
+function filterClause(filters) {
+  const parts = [];
+  const values = [];
+  for (const column of ["slot", "target", "model", "session"]) {
+    const value = filters[column];
+    if (value === undefined)
+      continue;
+    parts.push(`${column} = ?`);
+    values.push(value);
+  }
+  if (filters.status === "error")
+    parts.push("status >= 400");
+  return { sql: parts, values };
+}
+function whereClause(from, filters) {
+  const filter = filterClause(filters);
+  return { sql: ["at >= ?", ...filter.sql].join(" AND "), values: [from, ...filter.values] };
+}
+function openReadonly(file) {
+  if (!historyDbExists(file))
+    return null;
+  const db = new Database2(file, { readonly: true });
+  db.run("PRAGMA busy_timeout = 5000");
+  return db;
+}
+function percentiles(values) {
+  if (values.length === 0)
+    return { p50: 0, p95: 0 };
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (fraction) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1))] ?? 0;
+  return { p50: at(0.5), p95: at(0.95) };
+}
+function bucketStart(at, bucketMs) {
+  return Math.floor(at / bucketMs) * bucketMs;
+}
+function roundUsd(usd) {
+  return Math.round(usd * 1e6) / 1e6;
+}
+function emptyBucket() {
+  return {
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    durs: [],
+    errors: 0,
+    input: 0,
+    output: 0,
+    requests: 0
+  };
+}
+function historySeries(file, options) {
+  const now = options.now ?? Date.now();
+  const bucketMs = BUCKET_MS[options.range];
+  const first = bucketStart(now - RANGE_MS[options.range], bucketMs);
+  const last = bucketStart(now, bucketMs);
+  const db = openReadonly(file);
+  if (db === null) {
+    return { bucketMs, range: options.range, series: [] };
+  }
+  try {
+    const where = whereClause(now - RANGE_MS[options.range], options.filters ?? {});
+    const sql = `SELECT ${groupExpression(options.by)} AS key, CAST(at / ? AS INTEGER) * ? AS t,
+      status, ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd
+      FROM requests WHERE ${where.sql}`;
+    const buckets = new Map;
+    const rows = db.query(sql).iterate(bucketMs, bucketMs, ...where.values);
+    for (const row of rows) {
+      const bucket = bucketOf(buckets, row.key, row.t);
+      bucket.requests += 1;
+      if (row.status >= 400)
+        bucket.errors += 1;
+      bucket.durs.push(row.ms);
+      bucket.input += row.input_tokens ?? 0;
+      bucket.output += row.output_tokens ?? 0;
+      bucket.cacheRead += row.cache_read_tokens ?? 0;
+      bucket.cacheWrite += row.cache_write_tokens ?? 0;
+      bucket.cost += row.cost_usd ?? 0;
+    }
+    const series = [...buckets.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, byBucket]) => ({
+      key,
+      points: pointsOf(byBucket, first, last, bucketMs)
+    }));
+    return { bucketMs, range: options.range, series };
+  } finally {
+    db.close();
+  }
+}
+function bucketOf(buckets, key, t) {
+  let series = buckets.get(key);
+  if (series === undefined) {
+    series = new Map;
+    buckets.set(key, series);
+  }
+  let bucket = series.get(t);
+  if (bucket === undefined) {
+    bucket = emptyBucket();
+    series.set(t, bucket);
+  }
+  return bucket;
+}
+function pointsOf(buckets, first, last, bucketMs) {
+  const points = [];
+  for (let t = first;t <= last; t += bucketMs) {
+    const bucket = buckets.get(t);
+    if (bucket === undefined) {
+      points.push({
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        costUsd: 0,
+        errors: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        p50Ms: 0,
+        p95Ms: 0,
+        requests: 0,
+        t
+      });
+      continue;
+    }
+    const { p50, p95 } = percentiles(bucket.durs);
+    points.push({
+      cacheReadTokens: bucket.cacheRead,
+      cacheWriteTokens: bucket.cacheWrite,
+      costUsd: roundUsd(bucket.cost),
+      errors: bucket.errors,
+      inputTokens: bucket.input,
+      outputTokens: bucket.output,
+      p50Ms: p50,
+      p95Ms: p95,
+      requests: bucket.requests,
+      t
+    });
+  }
+  return points;
+}
+function formatBytes(bytes) {
+  if (bytes < 1000)
+    return `${String(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1000;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit] ?? "TB"}`;
+}
+function bucketWords(bucketMs) {
+  if (bucketMs % 86400000 === 0)
+    return `${String(bucketMs / 86400000)}-day`;
+  if (bucketMs % 3600000 === 0)
+    return `${String(bucketMs / 3600000)}-hour`;
+  return `${String(bucketMs / 60000)}-minute`;
+}
+function historyWords(options) {
+  if (options.retentionDays <= 0)
+    return "off (history.retentionDays: 0)";
+  const keeping = `keeping ${retentionWords(options.retentionDays)}`;
+  return options.exists ? `${formatBytes(options.bytes)}, ${keeping}` : `no requests logged yet, ${keeping}`;
 }
 
 // src/gateway/judge-test.ts
@@ -11958,7 +12693,7 @@ async function createOmnirouteKey(options) {
 
 // src/gateway/service.ts
 import { existsSync as existsSync9, readFileSync as readFileSync12, rmSync as rmSync3 } from "fs";
-import { basename as basename3, dirname as dirname5, join as join12 } from "path";
+import { basename as basename3, dirname as dirname6, join as join12 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
@@ -12221,7 +12956,7 @@ function systemdService(options) {
     async stop(runner, port, probe) {
       const state = port === null ? null : unitState(runner, unitName);
       const stop = stopUnits(runner, {
-        dir: dirname5(options.unitPath),
+        dir: dirname6(options.unitPath),
         names: [socketName, unitName]
       });
       const refused = stop.refused[0];
@@ -12585,7 +13320,7 @@ var REMOVED_ON_OFF = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 var envPath = (key) => ["env", key];
-function isJsonObject6(value) {
+function isJsonObject7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
@@ -12597,10 +13332,10 @@ function readSettings(path) {
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
-  if (!isJsonObject6(parsed))
+  if (!isJsonObject7(parsed))
     throw new Error(`${path} is not a JSON object; not touching it`);
   const env = parsed.env;
-  if (env !== undefined && !isJsonObject6(env))
+  if (env !== undefined && !isJsonObject7(env))
     throw new Error(`${path} has an "env" that is not an object`);
   return parsed;
 }
@@ -12648,7 +13383,7 @@ function currentSettings(settingsFile) {
 }
 function assertNoForeignGatewayKeys(settingsFile, stateDir) {
   const env = readSettings(settingsFile).env;
-  if (!isJsonObject6(env))
+  if (!isJsonObject7(env))
     return;
   const owned = ownedKeys(stateDir, realTarget(settingsFile));
   const owns = (key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
@@ -12693,12 +13428,12 @@ function turnOff(options) {
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
-  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject6(env) && Object.hasOwn(env, key));
+  const foreign = result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject7(env) && Object.hasOwn(env, key));
   return { result, foreign };
 }
 function settingsReport(settingsPath) {
   const settings = readSettings(settingsPath);
-  const env = isJsonObject6(settings.env) ? settings.env : {};
+  const env = isJsonObject7(settings.env) ? settings.env : {};
   const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
   const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   if (Object.hasOwn(settings, "apiKeyHelper"))
@@ -12715,6 +13450,12 @@ Commands:
                          backend accepts? 0 yes, 1 no key yet (OmniRoute answers, so one can
                          be made), 3 the backend could not be judged, 4 the key is refused.
   status                 Router health, backends, slots, and the Claude Code settings.
+  history [range]        The request history: one row per routed request (never a prompt, a
+                         tool or an answer). Range: ${HISTORY_RANGES.join(", ")}
+                         (default ${DEFAULT_HISTORY_RANGE}). Requests, errors, tokens and the
+                         estimated cost per target (the default), slot, model or session.
+                         Filters: --slot <name>, --target <target>, --model <model>,
+                         --session <id>, --errors. --by ${HISTORY_BY.join("|")} picks the grouping.
   models                 Every model each backend offers, and the slots.
   slot <slot> <targets>  Custom: set a slot's chain and use it. Any targets, in order, each
                          <backend>:<model> (see "models") or claude-<model>. <slot>: scout
@@ -12769,7 +13510,7 @@ function routerService(ctx) {
     taskPath: paths.routerTaskFile
   }) : systemdService({ socketPath: paths.routerSocketFile, unitPath: paths.routerUnitFile });
 }
-function isJsonObject7(value) {
+function isJsonObject8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var KNOWN_BACKENDS = {
@@ -13490,11 +14231,11 @@ async function commandStatus(ctx) {
   if ("error" in health)
     ctx.print(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
   else {
-    const body = isJsonObject7(health.body) ? health.body : {};
+    const body = isJsonObject8(health.body) ? health.body : {};
     ctx.print(`router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`);
     if (body.port !== port)
       ctx.print(`  WARN the config says port ${port}; restart the router to move it`);
-    const cooling = isJsonObject7(body.cooling) ? Object.entries(body.cooling) : [];
+    const cooling = isJsonObject8(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
     for (const line of breakerStatusLines(body.breakers, ctx.probe.now()))
@@ -13512,6 +14253,129 @@ async function commandStatus(ctx) {
   ctx.print(`
 Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON \u2192 ${report.baseUrl}`}`);
   printOverrides(report, ctx.print);
+  ctx.print(`history: ${historyWords({
+    bytes: historyDbBytes(ctx.paths.historyDbFile),
+    exists: historyDbExists(ctx.paths.historyDbFile),
+    retentionDays: config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config)
+  })} in ${tildify(ctx.paths.historyDbFile, ctx.paths.home)}`);
+  return 0;
+}
+function historyOptions(args) {
+  let by = DEFAULT_HISTORY_BY;
+  let range = DEFAULT_HISTORY_RANGE;
+  let ranged = false;
+  const filters = {};
+  const columns = ["slot", "target", "model", "session"];
+  for (let index = 0;index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--by") {
+      const value = args[index + 1];
+      if (value === undefined || !HISTORY_BY.includes(value))
+        return null;
+      by = value;
+      index += 1;
+    } else if (arg.startsWith("--") && columns.includes(arg.slice(2))) {
+      const column = arg.slice(2);
+      const value = args[index + 1];
+      if (value === undefined || value === "")
+        return null;
+      filters[column] = value;
+      index += 1;
+    } else if (arg === "--errors") {
+      filters.status = "error";
+    } else if (arg.startsWith("--")) {
+      return null;
+    } else {
+      if (ranged || !HISTORY_RANGES.includes(arg))
+        return null;
+      range = arg;
+      ranged = true;
+    }
+  }
+  return { by, filters, range };
+}
+function formatUsd(usd) {
+  if (usd === 0)
+    return "$0";
+  if (usd >= 1)
+    return `$${usd.toFixed(2)}`;
+  return `$${usd.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+}
+async function commandHistory(ctx, args) {
+  const options = historyOptions(args);
+  if (options === null) {
+    ctx.error(USAGE);
+    return 2;
+  }
+  let config = null;
+  try {
+    config = loadConfigFile(ctx.paths.gatewayConfigFile);
+  } catch {}
+  const retentionDays = config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config);
+  if (retentionDays <= 0) {
+    ctx.print(`The request history is off (history.retentionDays: 0 in ${tildify(ctx.paths.gatewayConfigFile, ctx.paths.home)}): nothing is logged.`);
+    return 0;
+  }
+  const answer = historySeries(ctx.paths.historyDbFile, {
+    by: options.by,
+    filters: options.filters,
+    range: options.range
+  });
+  if (answer.series.length === 0) {
+    ctx.print(historyDbExists(ctx.paths.historyDbFile) ? `No request in the last ${options.range} matched.` : `No request logged yet: ${tildify(ctx.paths.historyDbFile, ctx.paths.home)} is made by the router's first row.`);
+    return 0;
+  }
+  ctx.print(`History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}. Cost is estimated: Claude at its list price, a backend at the price its own list gives.`);
+  const header = [
+    options.by,
+    "requests",
+    "errors",
+    "input",
+    "output",
+    "cache read",
+    "cache write",
+    "cost",
+    "peak p95"
+  ];
+  const rows = answer.series.map((series) => {
+    const total = {
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      errors: 0,
+      input: 0,
+      output: 0,
+      requests: 0
+    };
+    let peakP95 = 0;
+    for (const point of series.points) {
+      total.requests += point.requests;
+      total.errors += point.errors;
+      total.input += point.inputTokens;
+      total.output += point.outputTokens;
+      total.cacheRead += point.cacheReadTokens;
+      total.cacheWrite += point.cacheWriteTokens;
+      total.cost += point.costUsd;
+      peakP95 = Math.max(peakP95, point.p95Ms);
+    }
+    const count = (value) => value.toLocaleString("en-US");
+    return [
+      series.key,
+      count(total.requests),
+      count(total.errors),
+      count(total.input),
+      count(total.output),
+      count(total.cacheRead),
+      count(total.cacheWrite),
+      formatUsd(total.cost),
+      `${count(peakP95)} ms`
+    ];
+  });
+  const widths = header.map((title, index) => Math.max(title.length, ...rows.map((cells) => (cells[index] ?? "").length)));
+  ctx.print(header.map((title, index) => index === 0 ? title.padEnd(widths[index] ?? 0) : title.padStart(widths[index] ?? 0)).join("  ").trimEnd());
+  for (const cells of rows) {
+    ctx.print(cells.map((cell, index) => index === 0 ? cell.padEnd(widths[index] ?? 0) : cell.padStart(widths[index] ?? 0)).join("  ").trimEnd());
+  }
   return 0;
 }
 function setupOptions(args) {
@@ -13876,6 +14740,8 @@ async function runGateway(args, ctx) {
       return commandBreaker(ctx, rest);
     case "status":
       return noArgs(() => commandStatus(ctx));
+    case "history":
+      return commandHistory(ctx, rest);
     case "setup":
       return commandSetup(ctx, rest);
     case "on":
@@ -13978,6 +14844,15 @@ async function gatewayChecks(options) {
     ok: false,
     text: notAnswering(options, service, config.port, health.error, holder.state)
   } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
+  checks.push({
+    ok: true,
+    info: true,
+    text: `history: ${historyWords({
+      bytes: historyDbBytes(paths.historyDbFile),
+      exists: historyDbExists(paths.historyDbFile),
+      retentionDays: historyRetentionDays(config)
+    })} in ${short(paths.historyDbFile)}`
+  });
   for (const [name, backend] of Object.entries(config.backends)) {
     const url = shownValue(backend.baseUrl);
     const listed = await listModels(backend.baseUrl, backend.apiKey, 5000);
@@ -14835,7 +15710,7 @@ function notifyWorkerAlert(alert, target) {
     }
   };
 }
-function isJsonObject8(value) {
+function isJsonObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringOf(value) {
@@ -14848,11 +15723,11 @@ function parseNotifyWorkerAlert(argument) {
   } catch {
     return null;
   }
-  if (!isJsonObject8(parsed) || parsed.kind !== NOTIFY_ALERT_KIND)
+  if (!isJsonObject9(parsed) || parsed.kind !== NOTIFY_ALERT_KIND)
     return null;
   if (typeof parsed.title !== "string" || typeof parsed.body !== "string")
     return null;
-  const window = isJsonObject8(parsed.window) ? parsed.window : {};
+  const window = isJsonObject9(parsed.window) ? parsed.window : {};
   const windowId = stringOf(window.windowId);
   return {
     body: parsed.body,
@@ -15561,7 +16436,7 @@ function shownClaudeMemValue(path, value) {
 }
 
 // src/machine/warp.ts
-import { chmodSync as chmodSync2, existsSync as existsSync18, mkdirSync as mkdirSync8, readFileSync as readFileSync21, rmSync as rmSync6, writeFileSync as writeFileSync4 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync18, mkdirSync as mkdirSync9, readFileSync as readFileSync21, rmSync as rmSync6, writeFileSync as writeFileSync4 } from "fs";
 import { join as join18 } from "path";
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_MARKETPLACE = "claude-code-warp";
@@ -15723,7 +16598,7 @@ function warpInstallCommands(machine, system, paths) {
 }
 function keyFingerprint(machine, stage, file) {
   const home = join18(stage, "gnupg");
-  mkdirSync8(home, { recursive: true, mode: 448 });
+  mkdirSync9(home, { recursive: true, mode: 448 });
   const shown = machine.run([
     "gpg",
     "--homedir",
@@ -15748,7 +16623,7 @@ function keyFingerprint(machine, stage, file) {
 async function stageWarpFiles(machine, system, paths) {
   const stage = warpStageDir(paths);
   rmSync6(stage, { recursive: true, force: true });
-  mkdirSync8(stage, { recursive: true, mode: 448 });
+  mkdirSync9(stage, { recursive: true, mode: 448 });
   chmodSync2(stage, 448);
   if (system.kind !== "apt" && system.kind !== "dnf")
     return;
@@ -15980,7 +16855,7 @@ function markMcpServerAdding(stateDir, name, json, now, file = mcpRecordsFile(st
 
 // src/mcp/register.ts
 import { existsSync as existsSync20, readFileSync as readFileSync23 } from "fs";
-import { dirname as dirname6, join as join21, resolve as resolve2 } from "path";
+import { dirname as dirname7, join as join21, resolve as resolve2 } from "path";
 
 // src/setup/launcher.ts
 import { join as join20 } from "path";
@@ -16347,7 +17222,7 @@ function projectMcpFiles(cwd) {
   let folder = resolve2(cwd);
   for (let depth = 0;depth < 40; depth += 1) {
     files.push(join21(folder, ".mcp.json"));
-    const parent = dirname6(folder);
+    const parent = dirname7(folder);
     if (parent === folder || existsSync20(join21(folder, ".git")))
       break;
     folder = parent;
@@ -16363,7 +17238,7 @@ import {
   readFileSync as readFileSync24,
   rmdirSync,
   rmSync as rmSync7,
-  statSync as statSync6
+  statSync as statSync7
 } from "fs";
 import { join as join22 } from "path";
 
@@ -16582,7 +17457,7 @@ function removeEmptyFolders(dir) {
     rmdirSync(dir);
 }
 function isFile(path) {
-  return existsSync21(path) && statSync6(path).isFile();
+  return existsSync21(path) && statSync7(path).isFile();
 }
 function isFolder(path) {
   return existsSync21(path) && lstatSync2(path).isDirectory();
@@ -16680,7 +17555,7 @@ function retiredChecks(paths) {
 }
 
 // src/mcp/tavily.ts
-import { existsSync as existsSync22, readFileSync as readFileSync25, statSync as statSync7 } from "fs";
+import { existsSync as existsSync22, readFileSync as readFileSync25, statSync as statSync8 } from "fs";
 var TAVILY_ENV_KEY = "TAVILY_API_KEY";
 var TAVILY_KEY_PATH = ["env", TAVILY_ENV_KEY];
 function settingsEnvValue(file, name) {
@@ -16726,7 +17601,7 @@ function readKeyFile(paths, platform) {
   let mode;
   let text;
   try {
-    mode = statSync7(paths.tavilyKeyFile).mode & 4095;
+    mode = statSync8(paths.tavilyKeyFile).mode & 4095;
     text = readFileSync25(paths.tavilyKeyFile, "utf8");
   } catch (error) {
     return {
@@ -16872,7 +17747,7 @@ import {
   readFileSync as readFileSync26,
   realpathSync as realpathSync2
 } from "fs";
-import { dirname as dirname7, join as join23 } from "path";
+import { dirname as dirname8, join as join23 } from "path";
 var PACKAGE2 = "omniroute";
 var NAME = "OmniRoute";
 function tokenize(text) {
@@ -16968,11 +17843,11 @@ function versionOf(folder, name) {
   }
 }
 function packageFolderOf(script, name) {
-  let dir = dirname7(script);
+  let dir = dirname8(script);
   for (let step = 0;step < 8; step += 1) {
     if (versionOf(dir, name) !== null)
       return dir;
-    const up = dirname7(dir);
+    const up = dirname8(dir);
     if (up === dir)
       break;
     dir = up;
@@ -17019,7 +17894,7 @@ function fromPath(which) {
 }
 function findOmniroute(options) {
   const { paths, env } = options;
-  const units = userUnits(dirname7(paths.routerUnitFile));
+  const units = userUnits(dirname8(paths.routerUnitFile));
   const unit = units.find((entry) => entry.argv.some(namesOmniroute)) ?? units.find((entry) => entry.argv.some((word) => word.includes(PACKAGE2))) ?? null;
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE2);
@@ -17084,18 +17959,18 @@ function writable(dir) {
   }
 }
 function installIsWritable(install) {
-  return writable(install.folder) && writable(dirname7(install.folder));
+  return writable(install.folder) && writable(dirname8(install.folder));
 }
 
 // src/omniroute/registry.ts
 var REGISTRY = "https://registry.npmjs.org";
 var MIN_RELEASE_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 var STABLE = /^\d+\.\d+\.\d+$/;
-function isJsonObject9(value) {
+function isJsonObject10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isDeprecated(entry) {
-  return isJsonObject9(entry) && typeof entry.deprecated === "string";
+  return isJsonObject10(entry) && typeof entry.deprecated === "string";
 }
 function parseReleases(text, nowMs) {
   let raw;
@@ -17696,7 +18571,7 @@ function removeManagedMarkdown(options) {
 
 // src/setup/restore.ts
 import { existsSync as existsSync29, readdirSync as readdirSync10, readFileSync as readFileSync32, rmdirSync as rmdirSync2 } from "fs";
-import { dirname as dirname8 } from "path";
+import { dirname as dirname9 } from "path";
 
 // src/setup/managed-entries.ts
 import { existsSync as existsSync26, readFileSync as readFileSync29 } from "fs";
@@ -18247,10 +19122,10 @@ function restore(stateDir, options = {}) {
 }
 function removeEmptyFolders2(file, stateDir) {
   const root = realTarget(stateDir);
-  let dir = dirname8(file);
+  let dir = dirname9(file);
   while (isStrictlyInside(dir, root) && existsSync29(dir) && readdirSync10(dir).length === 0) {
     rmdirSync2(dir);
-    dir = dirname8(dir);
+    dir = dirname9(dir);
   }
 }
 
@@ -18758,11 +19633,11 @@ function updateOptOuts(env, fromSettings) {
 import {
   appendFileSync,
   existsSync as existsSync32,
-  mkdirSync as mkdirSync9,
+  mkdirSync as mkdirSync10,
   readdirSync as readdirSync12,
   readFileSync as readFileSync35,
   rmSync as rmSync9,
-  statSync as statSync8,
+  statSync as statSync9,
   writeFileSync as writeFileSync5
 } from "fs";
 import { join as join29 } from "path";
@@ -18800,7 +19675,7 @@ function unreachableCheck(previous, at, nowMs, detail) {
   };
 }
 function ensureDir(dir) {
-  mkdirSync9(dir, { recursive: true, mode: 448 });
+  mkdirSync10(dir, { recursive: true, mode: 448 });
 }
 function readLastCheck(files) {
   try {
@@ -18860,7 +19735,7 @@ function isoSeconds(ms) {
 function appendLogLine(logFile, line, nowMs) {
   ensureDir(join29(logFile, ".."));
   try {
-    if (statSync8(logFile).size > LOG_MAX_BYTES) {
+    if (statSync9(logFile).size > LOG_MAX_BYTES) {
       const text = readFileSync35(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync5(logFile, keep.slice(keep.indexOf(`
@@ -18963,7 +19838,7 @@ function checkGitBash(platform, env, facts) {
 // src/cli/live-check.ts
 import {
   existsSync as existsSync35,
-  mkdirSync as mkdirSync10,
+  mkdirSync as mkdirSync11,
   mkdtempSync as mkdtempSync4,
   readFileSync as readFileSync37,
   realpathSync as realpathSync4,
@@ -18971,7 +19846,7 @@ import {
   writeFileSync as writeFileSync6
 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
-import { dirname as dirname9, join as join31 } from "path";
+import { dirname as dirname10, join as join31 } from "path";
 
 // src/project/config.ts
 import { existsSync as existsSync33, readFileSync as readFileSync36 } from "fs";
@@ -19541,7 +20416,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
 }
 
 // src/project/resolve.ts
-import { existsSync as existsSync34, realpathSync as realpathSync3, statSync as statSync9 } from "fs";
+import { existsSync as existsSync34, realpathSync as realpathSync3, statSync as statSync10 } from "fs";
 import { join as join30 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
@@ -19599,7 +20474,7 @@ function findMainCheckout(git, cwd) {
   return realpathSync3(path);
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync34(cwd) || !statSync9(cwd).isDirectory()) {
+  if (!existsSync34(cwd) || !statSync10(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env));
@@ -19753,7 +20628,7 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join31(dirname9(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const log = join31(dirname10(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
@@ -19821,7 +20696,7 @@ function runLiveCheck(paths, env, deps) {
         throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
     };
     const plain = join31(root, "plain");
-    mkdirSync10(plain);
+    mkdirSync11(plain);
     git(plain, "init", "-q", "-b", "main");
     writeFileSync6(join31(plain, "README.md"), `live check
 `);
@@ -19832,7 +20707,7 @@ function runLiveCheck(paths, env, deps) {
       branch: `worktree-${LIVE_NAME}`
     }, deps, env).map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
-      mkdirSync10(paths.stateDir, { recursive: true, mode: 448 });
+      mkdirSync11(paths.stateDir, { recursive: true, mode: 448 });
       const record = {
         claudeCode: version,
         plugin: VERSION,
@@ -19854,7 +20729,7 @@ import { join as join63 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync as realpathSync5 } from "fs";
-import { basename as basename6, dirname as dirname10, join as join32, resolve as resolve4 } from "path";
+import { basename as basename6, dirname as dirname11, join as join32, resolve as resolve4 } from "path";
 var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
   try {
@@ -19882,7 +20757,7 @@ function realPath(path) {
     try {
       return join32(realpathSync5(at), ...rest);
     } catch {
-      const parent = dirname10(at);
+      const parent = dirname11(at);
       if (parent === at)
         return resolve4(path);
       rest.unshift(basename6(at));
@@ -20012,7 +20887,7 @@ import { readFileSync as readFileSync41 } from "fs";
 import { join as join35 } from "path";
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync37, readdirSync as readdirSync13, readFileSync as readFileSync39, statSync as statSync10 } from "fs";
+import { existsSync as existsSync37, readdirSync as readdirSync13, readFileSync as readFileSync39, statSync as statSync11 } from "fs";
 import { uptime } from "os";
 import { join as join34 } from "path";
 function parseSessionRecord(json) {
@@ -20050,7 +20925,7 @@ function liveSessions(claudeConfigDir) {
       continue;
     let text;
     try {
-      if (statSync10(join34(dir, file)).mtimeMs < bootedAt)
+      if (statSync11(join34(dir, file)).mtimeMs < bootedAt)
         continue;
       text = readFileSync39(join34(dir, file), "utf8");
     } catch {
@@ -21291,8 +22166,8 @@ function programsIn(command, dialect) {
 
 // src/workflow/reviews.ts
 import { createHash as createHash4 } from "crypto";
-import { mkdirSync as mkdirSync11, readFileSync as readFileSync42 } from "fs";
-import { dirname as dirname11, join as join36 } from "path";
+import { mkdirSync as mkdirSync12, readFileSync as readFileSync42 } from "fs";
+import { dirname as dirname12, join as join36 } from "path";
 var REVIEWS_KEPT = 50;
 var REVIEWS_LOCK_WAIT_MS = 3000;
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
@@ -21351,8 +22226,8 @@ function reviewsOn(file, branch, agents) {
   return trustedReviews(file, agents).filter((review) => review.branches.includes(branch));
 }
 async function underRecordLock(file, write) {
-  const folder = dirname11(file);
-  mkdirSync11(folder, { mode: 448, recursive: true });
+  const folder = dirname12(file);
+  mkdirSync12(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
 }
 async function recordReview(file, sha, by, atMs, branch = null) {
@@ -21428,7 +22303,7 @@ async function takeReviewStart(file, agentId) {
 
 // src/hooks/after-merge.ts
 import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync38, mkdirSync as mkdirSync13, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync38, mkdirSync as mkdirSync14, writeFileSync as writeFileSync7 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join39 } from "path";
 
@@ -21523,8 +22398,8 @@ function startDetached(platform, argv, options) {
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash5 } from "crypto";
-import { mkdirSync as mkdirSync12, readFileSync as readFileSync43 } from "fs";
-import { dirname as dirname12, join as join37 } from "path";
+import { mkdirSync as mkdirSync13, readFileSync as readFileSync43 } from "fs";
+import { dirname as dirname13, join as join37 } from "path";
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var TOLD_NAMES_MAX = 8;
 var removedSchema = object({
@@ -21564,7 +22439,7 @@ function readJson2(file, schema) {
   }
 }
 function writeJson(file, value) {
-  mkdirSync12(dirname12(file), { recursive: true, mode: 448 });
+  mkdirSync13(dirname13(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -23006,7 +23881,7 @@ function afterMerge(context) {
     notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   if (outcome.announce !== null && record !== null) {
     notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
-    mkdirSync13(join39(record, ".."), { recursive: true });
+    mkdirSync14(join39(record, ".."), { recursive: true });
     writeFileSync7(record, "");
   }
   if (outcome.announce !== null)
@@ -23245,8 +24120,8 @@ function crewLaunch(kind, gateway, env) {
 }
 
 // src/hooks/agent-guard-workflows.ts
-import { existsSync as existsSync39, readdirSync as readdirSync15, readFileSync as readFileSync44, statSync as statSync11 } from "fs";
-import { dirname as dirname13, isAbsolute as isAbsolute2, join as join40, resolve as resolve6, sep as sep3 } from "path";
+import { existsSync as existsSync39, readdirSync as readdirSync15, readFileSync as readFileSync44, statSync as statSync12 } from "fs";
+import { dirname as dirname14, isAbsolute as isAbsolute2, join as join40, resolve as resolve6, sep as sep3 } from "path";
 var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
 function stringAt(text, from) {
   const quote = text[from];
@@ -23417,7 +24292,7 @@ function scriptAtPath(path, cwd) {
   const file = resolve6(cwd, path);
   let size;
   try {
-    const stat = statSync11(file);
+    const stat = statSync12(file);
     if (!stat.isFile())
       return { unreadable: `The workflow script \`${file}\` is not a file.` };
     size = stat.size;
@@ -23448,7 +24323,7 @@ function claiming(files, name) {
   const found = [];
   for (const file of files) {
     try {
-      const stat = statSync11(file);
+      const stat = statSync12(file);
       if (!stat.isFile() || stat.size > WORKFLOW_SCRIPT_MAX_BYTES)
         continue;
       const script = normalized2(readFileSync44(file, "utf8"));
@@ -23477,7 +24352,7 @@ function savedFolders(place) {
     folders.push(join40(at, ".claude", "workflows"));
     if (existsSync39(join40(at, ".git")))
       break;
-    const up = dirname13(at);
+    const up = dirname14(at);
     if (up === at)
       break;
     at = up;
@@ -23517,7 +24392,7 @@ function pluginWorkflowFiles(root) {
   return paths.filter((one) => typeof one === "string").flatMap((one) => {
     const path = resolve6(root, one);
     try {
-      if (statSync11(path).isDirectory())
+      if (statSync12(path).isDirectory())
         return workflowFiles(path);
     } catch {
       return [];
@@ -23553,12 +24428,12 @@ import {
   appendFileSync as appendFileSync2,
   closeSync as closeSync4,
   fstatSync,
-  mkdirSync as mkdirSync14,
+  mkdirSync as mkdirSync15,
   openSync as openSync4,
   readFileSync as readFileSync45,
   readSync
 } from "fs";
-import { dirname as dirname14, join as join41 } from "path";
+import { dirname as dirname15, join as join41 } from "path";
 var SESSION_EFFORT = "session-effort";
 var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
 function reasonParts(reason) {
@@ -23613,12 +24488,12 @@ function appendAgentLaunches(file, launches) {
   if (fresh.length === 0)
     return;
   try {
-    mkdirSync14(dirname14(file), { recursive: true, mode: 448 });
+    mkdirSync15(dirname15(file), { recursive: true, mode: 448 });
     appendFileSync2(file, fresh.map((one) => `${JSON.stringify(one)}
 `).join(""));
   } catch {}
 }
-function isJsonObject10(value) {
+function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function textOrNull(value) {
@@ -23631,7 +24506,7 @@ function parseAgentLaunch(line) {
   } catch {
     return null;
   }
-  if (!isJsonObject10(value))
+  if (!isJsonObject11(value))
     return null;
   const { at, family, model, project, reason, subagentType } = value;
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
@@ -23688,7 +24563,7 @@ function formatAgentLaunches(launches) {
 // src/hooks/transcript.ts
 import { closeSync as closeSync5, fstatSync as fstatSync2, openSync as openSync5, readSync as readSync2 } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject11(value) {
+function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tailLines2(transcriptPath) {
@@ -23721,7 +24596,7 @@ function* entriesFromEnd(lines) {
     } catch {
       continue;
     }
-    if (isJsonObject11(entry))
+    if (isJsonObject12(entry))
       yield entry;
   }
 }
@@ -23732,7 +24607,7 @@ function lastClaudeModel(transcriptPath) {
   for (const entry of entriesFromEnd(lines)) {
     if (entry.isSidechain === true)
       continue;
-    if (entry.type !== "assistant" || !isJsonObject11(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject12(entry.message))
       continue;
     const model = entry.message.model;
     if (typeof model === "string" && model.startsWith("claude-"))
@@ -23756,12 +24631,12 @@ function lastAssistantText(transcriptPath) {
   if (lines === null)
     return null;
   for (const entry of entriesFromEnd(lines)) {
-    if (entry.type !== "assistant" || !isJsonObject11(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject12(entry.message))
       continue;
     const content = entry.message.content;
     if (!Array.isArray(content))
       continue;
-    return content.filter((block) => isJsonObject11(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
+    return content.filter((block) => isJsonObject12(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
   }
   return null;
 }
@@ -23781,10 +24656,10 @@ function startedByPeer(transcriptPath) {
     } catch {
       continue;
     }
-    if (!isJsonObject11(entry))
+    if (!isJsonObject12(entry))
       continue;
-    const attachment = isJsonObject11(entry.attachment) ? entry.attachment : null;
-    const origin = isJsonObject11(entry.origin) ? entry.origin : null;
+    const attachment = isJsonObject12(entry.attachment) ? entry.attachment : null;
+    const origin = isJsonObject12(entry.origin) ? entry.origin : null;
     if (attachment?.humanTurn === true)
       return false;
     if (origin !== null && origin.senderTaskId !== null && origin.senderTaskId !== undefined) {
@@ -24699,7 +25574,7 @@ function firstPrompt(crewName, leadName, briefFile) {
 }
 
 // src/crew/places.ts
-import { mkdirSync as mkdirSync17 } from "fs";
+import { mkdirSync as mkdirSync18 } from "fs";
 
 // src/jobs/config.ts
 import { existsSync as existsSync40, readFileSync as readFileSync46 } from "fs";
@@ -25192,13 +26067,13 @@ async function pidsHolding(stores, person, exclusive) {
 import {
   chmodSync as chmodSync3,
   existsSync as existsSync41,
-  mkdirSync as mkdirSync15,
+  mkdirSync as mkdirSync16,
   readdirSync as readdirSync16,
   readFileSync as readFileSync48,
   realpathSync as realpathSync6,
   renameSync as renameSync2,
   statfsSync,
-  statSync as statSync12,
+  statSync as statSync13,
   unlinkSync as unlinkSync4,
   utimesSync,
   writeFileSync as writeFileSync8
@@ -25379,7 +26254,7 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync12(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync13(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
@@ -25412,7 +26287,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync12(path).mtimeMs;
+        mtimeMs = statSync13(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -25459,7 +26334,7 @@ function leaseStore(options) {
       record
     });
     if (!options.shared)
-      mkdirSync15(folder, { recursive: true });
+      mkdirSync16(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -25635,7 +26510,7 @@ function openSharedStore(dir, options = {}) {
     const path = join43(dir, folder);
     let isFolder = false;
     try {
-      isFolder = statSync12(path).isDirectory();
+      isFolder = statSync13(path).isDirectory();
     } catch {}
     if (!isFolder) {
       return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
@@ -25672,14 +26547,14 @@ import {
   closeSync as closeSync6,
   existsSync as existsSync42,
   fstatSync as fstatSync3,
-  mkdirSync as mkdirSync16,
+  mkdirSync as mkdirSync17,
   openSync as openSync6,
   readdirSync as readdirSync17,
   readFileSync as readFileSync49,
   readSync as readSync3,
-  statSync as statSync13
+  statSync as statSync14
 } from "fs";
-import { dirname as dirname15, join as join44 } from "path";
+import { dirname as dirname16, join as join44 } from "path";
 
 // src/zod-issues.ts
 function describeIssues(issues) {
@@ -25933,7 +26808,7 @@ function listRecords(schema, folder) {
   return listed;
 }
 function writeStoreFile(file, text) {
-  mkdirSync16(dirname15(file), { mode: 448, recursive: true });
+  mkdirSync17(dirname16(file), { mode: 448, recursive: true });
   atomicWrite(file, text, 384);
 }
 function writeRecord(file, value) {
@@ -25943,13 +26818,13 @@ function writeRecord(file, value) {
 function appendEvent(stateDir, repo, event) {
   const file = crewEventsFile(stateDir, repo);
   const line = checked(crewEventSchema, event, file);
-  mkdirSync16(dirname15(file), { mode: 448, recursive: true });
+  mkdirSync17(dirname16(file), { mode: 448, recursive: true });
   appendFileSync3(file, `${JSON.stringify(line)}
 `, { mode: 384 });
 }
 async function underStoreLock(stateDir, repo, write) {
   const folder = crewStoreDir(stateDir, repo);
-  mkdirSync16(folder, { mode: 448, recursive: true });
+  mkdirSync17(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: STORE_LOCK_WAIT_MS });
 }
 function readCrew(stateDir, repo, id) {
@@ -26203,7 +27078,7 @@ function readWatchState(stateDir, repo, leadSessionId) {
 }
 function eventsEndOffset(stateDir, repo) {
   try {
-    return statSync13(crewEventsFile(stateDir, repo)).size;
+    return statSync14(crewEventsFile(stateDir, repo)).size;
   } catch {
     return 0;
   }
@@ -26301,7 +27176,7 @@ function placeFor(input) {
 }
 async function withPlacesLock(stateDir, decide) {
   const root = crewRootDir(stateDir);
-  mkdirSync17(root, { mode: 448, recursive: true });
+  mkdirSync18(root, { mode: 448, recursive: true });
   return await withLock(root, decide, { waitMs: PLACES_LOCK_WAIT_MS });
 }
 async function freeForCrewGb(home, memory) {
@@ -26667,11 +27542,11 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync44, mkdirSync as mkdirSync19, writeFileSync as writeFileSync10 } from "fs";
-import { dirname as dirname16, join as join46 } from "path";
+import { existsSync as existsSync44, mkdirSync as mkdirSync20, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname17, join as join46 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync43, mkdirSync as mkdirSync18, readFileSync as readFileSync51, renameSync as renameSync3, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync43, mkdirSync as mkdirSync19, readFileSync as readFileSync51, renameSync as renameSync3, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
 import { join as join45 } from "path";
 function isSessionId(value) {
@@ -26698,7 +27573,7 @@ function recordSessionName(sessionId, raw, env) {
   const name = cleanSessionName(raw);
   if (name === null)
     throw new Error("the name is empty");
-  mkdirSync18(namesDir(env), { recursive: true });
+  mkdirSync19(namesDir(env), { recursive: true });
   writeAtomic(join45(namesDir(env), `${sessionId}.name`), name);
   return name;
 }
@@ -26726,7 +27601,7 @@ function sessionName(context) {
   const appliedFile = join45(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
-    mkdirSync18(dir, { recursive: true });
+    mkdirSync19(dir, { recursive: true });
     writeAtomic(appliedFile, title);
     return {
       stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
@@ -26751,7 +27626,7 @@ function fableSessionMark(env, sessionId) {
 }
 function firstTime(mark) {
   try {
-    mkdirSync19(dirname16(mark), { recursive: true });
+    mkdirSync20(dirname17(mark), { recursive: true });
     writeFileSync10(mark, "", { flag: "wx" });
     return true;
   } catch {
@@ -27519,7 +28394,7 @@ function routeFacts(input, context) {
 }
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync45, mkdtempSync as mkdtempSync6, readdirSync as readdirSync19, rmSync as rmSync12, statSync as statSync15 } from "fs";
+import { existsSync as existsSync45, mkdtempSync as mkdtempSync6, readdirSync as readdirSync19, rmSync as rmSync12, statSync as statSync16 } from "fs";
 import { tmpdir as tmpdir8 } from "os";
 import { join as join50 } from "path";
 
@@ -27577,7 +28452,7 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync53, statSync as statSync14 } from "fs";
+import { readFileSync as readFileSync53, statSync as statSync15 } from "fs";
 import { basename as basename8, isAbsolute as isAbsolute4, join as join48, resolve as resolve7 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
@@ -27592,7 +28467,7 @@ function idleMinutes(worktree, now) {
   let last = 0;
   for (const file of ["index", "HEAD", join48("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync14(join48(admin, file)).mtimeMs);
+      last = Math.max(last, statSync15(join48(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? 0 : (now - last) / 60000;
@@ -27603,7 +28478,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync14(listed.path);
+    statSync15(listed.path);
   } catch {
     return "gone";
   }
@@ -28038,7 +28913,7 @@ function innerWorktreeOf(worktree, all) {
   for (const entry of entries) {
     const folder = join50(claudeOwn, entry);
     try {
-      if (statSync15(folder).isDirectory() && readdirSync19(folder).length > 0)
+      if (statSync16(folder).isDirectory() && readdirSync19(folder).length > 0)
         return folder;
     } catch {}
   }
@@ -28293,7 +29168,7 @@ function pruneWorktrees(repo, env) {
 }
 
 // src/crew/claude.ts
-import { statSync as statSync16 } from "fs";
+import { statSync as statSync17 } from "fs";
 import { join as join51 } from "path";
 var CLAUDE_TIMEOUT_MS2 = 30000;
 var CREW_AUTOCOMPACT = "auto";
@@ -28329,7 +29204,7 @@ var realRunProgram = (argv, options) => {
 };
 function isFile2(path) {
   try {
-    return statSync16(path).isFile();
+    return statSync17(path).isFile();
   } catch {
     return false;
   }
@@ -28471,8 +29346,8 @@ import { existsSync as existsSync50 } from "fs";
 import { existsSync as existsSync49, readFileSync as readFileSync56 } from "fs";
 
 // src/cli/setup.ts
-import { existsSync as existsSync48, mkdirSync as mkdirSync21 } from "fs";
-import { delimiter, dirname as dirname18, join as join56 } from "path";
+import { existsSync as existsSync48, mkdirSync as mkdirSync22 } from "fs";
+import { delimiter, dirname as dirname19, join as join56 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join52 } from "path";
@@ -28521,17 +29396,17 @@ import { join as join55, relative as relative2 } from "path";
 import {
   closeSync as closeSync7,
   existsSync as existsSync46,
-  mkdirSync as mkdirSync20,
+  mkdirSync as mkdirSync21,
   openSync as openSync7,
   readdirSync as readdirSync20,
   readFileSync as readFileSync54,
   readSync as readSync4,
   rmSync as rmSync13,
-  statSync as statSync17,
+  statSync as statSync18,
   writeFileSync as writeFileSync11
 } from "fs";
 import { platform as platform2 } from "os";
-import { dirname as dirname17, join as join54, resolve as resolve8 } from "path";
+import { dirname as dirname18, join as join54, resolve as resolve8 } from "path";
 
 // src/machine/open-url.ts
 function openUrlCandidates(on, url) {
@@ -28776,7 +29651,7 @@ function sessionFiles(projectsDir, folder) {
     if (!name.endsWith(".jsonl"))
       continue;
     const path = join54(projectsDir, folder, name);
-    const stat = statSync17(path, { throwIfNoEntry: false });
+    const stat = statSync18(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
     files.push({
@@ -28829,7 +29704,7 @@ function tabPrefix(key) {
   return `claude_${key}_`;
 }
 function saveWarpTabs(dir, sessions, mainCheckout, command) {
-  mkdirSync20(dir, { recursive: true });
+  mkdirSync21(dir, { recursive: true });
   const key = repoKey(mainCheckout);
   const prefix = tabPrefix(key);
   const restoreAll = `${prefix}restore_all`;
@@ -28889,7 +29764,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
 function markOpened(stateDir, id, now) {
   atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
 `, 384);
-  const dir = dirname17(openedMarkerFile(stateDir, id));
+  const dir = dirname18(openedMarkerFile(stateDir, id));
   for (const name of readdirSync20(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
@@ -28962,7 +29837,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
   const reopenIn = pickReopenTerminal({
     hasProgram: (name) => deps.which(name) !== null,
     platform: deps.platform,
-    warpDataFolder: existsSync46(dirname17(tabDir))
+    warpDataFolder: existsSync46(dirname18(tabDir))
   });
   if (reopenIn === "warp") {
     saveWarpTabs(tabDir, sessions, mainCheckout, deps.command);
@@ -29147,7 +30022,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   if (managed.tavilyKeyFile !== null) {
     const mark = existsSync48(paths.tavilyKeyFile) ? "~" : "+";
     if (!dryRun) {
-      mkdirSync21(dirname18(paths.tavilyKeyFile), { mode: 448, recursive: true });
+      mkdirSync22(dirname19(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
 `, 384);
     }
@@ -30113,8 +30988,8 @@ import { existsSync as existsSync52, readFileSync as readFileSync58 } from "fs";
 import { basename as basename9, join as join59, resolve as resolve9 } from "path";
 
 // src/worktrees/include.ts
-import { copyFileSync, existsSync as existsSync51, mkdirSync as mkdirSync22 } from "fs";
-import { dirname as dirname19, join as join58 } from "path";
+import { copyFileSync, existsSync as existsSync51, mkdirSync as mkdirSync23 } from "fs";
+import { dirname as dirname20, join as join58 } from "path";
 var INCLUDE_TIMEOUT_MS = 60000;
 function copyWorktreeInclude(source, target, env) {
   const includeFile = join58(source, ".worktreeinclude");
@@ -30137,7 +31012,7 @@ function copyWorktreeInclude(source, target, env) {
   for (const path of ignored.stdout.toString().split("\x00")) {
     if (path === "" || existsSync51(join58(target, path)))
       continue;
-    mkdirSync22(dirname19(join58(target, path)), { recursive: true });
+    mkdirSync23(dirname20(join58(target, path)), { recursive: true });
     copyFileSync(join58(source, path), join58(target, path));
     copied.push(path);
   }
@@ -30753,7 +31628,7 @@ function monitorsRunHere(env, settingsFile) {
 }
 
 // src/crew/transcript.ts
-import { closeSync as closeSync8, openSync as openSync8, readSync as readSync5, statSync as statSync18 } from "fs";
+import { closeSync as closeSync8, openSync as openSync8, readSync as readSync5, statSync as statSync19 } from "fs";
 import { join as join60 } from "path";
 var CLAUDE_CONTEXT_WINDOW = 200000;
 var CLAUDE_CONTEXT_WINDOW_1M = 1e6;
@@ -30797,7 +31672,7 @@ function contextUseOf(file) {
     return null;
   }
   try {
-    const size = statSync18(file).size;
+    const size = statSync19(file).size;
     const from = Math.max(0, size - TAIL_BYTES2);
     const bytes = Buffer.alloc(size - from);
     let filled = 0;
@@ -30833,7 +31708,7 @@ function contextUseOf(file) {
 }
 function changedAt(file) {
   try {
-    return statSync18(file).mtimeMs;
+    return statSync19(file).mtimeMs;
   } catch {
     return null;
   }
@@ -31953,7 +32828,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname20, isAbsolute as isAbsolute6, relative as relative3, resolve as resolve11 } from "path";
+import { dirname as dirname21, isAbsolute as isAbsolute6, relative as relative3, resolve as resolve11 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -32197,7 +33072,7 @@ function movedTo2(invocation, folder, ctx) {
   return isAbsolute6(path) ? resolve11(path) : folder === null ? null : resolve11(folder, path);
 }
 function protectedNeedles(paths) {
-  const settings = dirname20(paths.workflowConfigFile);
+  const settings = dirname21(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir];
   for (const folder of [settings, paths.stateDir]) {
     const underHome = relative3(paths.home, folder);
@@ -32321,7 +33196,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname20);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname21);
   if (settingsFolders.some((folder) => isInside(path, folder, true)))
     return SETTINGS_WHAT;
   return isInside(path, paths.stateDir, true) ? STATE_WHAT : null;
@@ -33954,16 +34829,16 @@ function checkNameClash(settings) {
 }
 var OLD_PLUGIN_ID = "cc@cc-agentic";
 var OLD_NAME2 = "cc-agentic";
-function isJsonObject12(value) {
+function isJsonObject13(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function hasEntry(data, field, key) {
   const node = field === null ? data : data?.[field];
-  return isJsonObject12(node) && Object.hasOwn(node, key);
+  return isJsonObject13(node) && Object.hasOwn(node, key);
 }
 function checkOldPlugin(settings, paths) {
   const plugins = settings?.enabledPlugins;
-  const enabled = isJsonObject12(plugins) && plugins[OLD_PLUGIN_ID] === true;
+  const enabled = isJsonObject13(plugins) && plugins[OLD_PLUGIN_ID] === true;
   if (!existsSync56(join64(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
@@ -34072,7 +34947,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname21(dir)) {
+  for (let dir = cwd;; dir = dirname22(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join64(dir, name);
       if (from === join64(paths.claudeConfigDir, "CLAUDE.md") || !existsSync56(from))
@@ -34088,7 +34963,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname21(dir) === dir)
+    if (dirname22(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -36162,7 +37037,7 @@ function parseWatchArgs(argv) {
 }
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync60, mkdirSync as mkdirSync23, readFileSync as readFileSync63, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync60, mkdirSync as mkdirSync24, readFileSync as readFileSync63, writeFileSync as writeFileSync12 } from "fs";
 import { join as join65 } from "path";
 
 // src/workflow/alerts.ts
@@ -36206,7 +37081,7 @@ var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+) is limit
 var BREAKER_ALERT_FILE = "breaker-alerted.json";
 var STATE_FRESH_MS = 2 * 60000;
 var ALERT_WORKER_COMMAND = "alert-worker";
-function isJsonObject13(value) {
+function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function slotOf(model) {
@@ -36287,7 +37162,7 @@ function offerFor(config, slot, model, claim) {
   };
 }
 function breakerOpening(input, ctx) {
-  if (!isJsonObject13(input) || input.error !== "rate_limit")
+  if (!isJsonObject14(input) || input.error !== "rate_limit")
     return null;
   if (!ctx.gatewaySetUp || ctx.state === null)
     return null;
@@ -36301,7 +37176,7 @@ function breakerOpening(input, ctx) {
 function planAlert(input, ctx) {
   if (!ctx.alerts.events.value.includes("failed"))
     return null;
-  if (!isJsonObject13(input) || input.error !== "rate_limit")
+  if (!isJsonObject14(input) || input.error !== "rate_limit")
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
   if (BREAKER_TEXT.test(text))
@@ -36358,7 +37233,7 @@ function planAlert(input, ctx) {
   };
 }
 function readAlertContext(paths, nowMs, input, env = process.env) {
-  const cwd = isJsonObject13(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
+  const cwd = isJsonObject14(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
   const gatewaySetUp = existsSync60(paths.gatewayConfigFile);
   let config = null;
@@ -36388,7 +37263,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
   } catch {
     watchdogOn = false;
   }
-  const transcript = isJsonObject13(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
+  const transcript = isJsonObject14(input) && typeof input.transcript_path === "string" ? input.transcript_path : null;
   const sessionModel = transcript === null ? null : lastClaudeModel(transcript);
   return {
     alerts: here.alerts,
@@ -36406,7 +37281,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 function readBreakerAlerted(stateDir) {
   try {
     const raw = JSON.parse(readFileSync63(join65(stateDir, BREAKER_ALERT_FILE), "utf8"));
-    if (!isJsonObject13(raw))
+    if (!isJsonObject14(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
   } catch {
@@ -36452,13 +37327,13 @@ function parseAlert(text) {
   } catch {
     return null;
   }
-  if (!isJsonObject13(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
+  if (!isJsonObject14(raw) || typeof raw.title !== "string" || typeof raw.body !== "string") {
     return null;
   }
   const action = raw.action;
   if (action === null)
     return { action: null, body: raw.body, title: raw.title };
-  if (!isJsonObject13(action) || typeof action.label !== "string")
+  if (!isJsonObject14(action) || typeof action.label !== "string")
     return null;
   const commands = action.commands;
   if (!Array.isArray(commands) || commands.length === 0 || !commands.every((args) => Array.isArray(args) && args.length > 0 && args.every((arg) => typeof arg === "string"))) {
@@ -36535,7 +37410,7 @@ function runAlert(alert, platform, launcher, run) {
 }
 
 // src/jobs/commands.ts
-import { readdirSync as readdirSync22, statSync as statSync20 } from "fs";
+import { readdirSync as readdirSync22, statSync as statSync21 } from "fs";
 import { availableParallelism, hostname as hostname4 } from "os";
 
 // src/jobs/launch.ts
@@ -36866,7 +37741,7 @@ async function runJob(request, deps) {
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync24, readdirSync as readdirSync21, statSync as statSync19 } from "fs";
+import { mkdirSync as mkdirSync25, readdirSync as readdirSync21, statSync as statSync20 } from "fs";
 function machineBudget(config, memory) {
   if (config.budgetGb !== undefined)
     return { gb: config.budgetGb, why: "set in jobs.json" };
@@ -36881,7 +37756,7 @@ function machineBudget(config, memory) {
 function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
   try {
-    mkdirSync24(dir, { recursive: true, mode: 448 });
+    mkdirSync25(dir, { recursive: true, mode: 448 });
   } catch (error) {
     const code = error.code ?? String(error);
     throw new Error(`The state folder ${dir} cannot be made (${code}).`);
@@ -37022,7 +37897,7 @@ function envFilesIn(dir) {
 function isFileIn(cwd) {
   return (path) => {
     try {
-      return statSync20(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
+      return statSync21(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
     } catch {
       return false;
     }
@@ -37582,8 +38457,8 @@ ${PORTAL_USAGE}`);
 }
 
 // src/workflow/write.ts
-import { mkdirSync as mkdirSync25 } from "fs";
-import { dirname as dirname22 } from "path";
+import { mkdirSync as mkdirSync26 } from "fs";
+import { dirname as dirname23 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -37659,7 +38534,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync25(dirname22(file), { mode: 448, recursive: true });
+  mkdirSync26(dirname23(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);
@@ -38101,13 +38976,13 @@ ${WORKFLOW_USAGE}`);
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync9, mkdirSync as mkdirSync26, openSync as openSync9, readFileSync as readFileSync66, readSync as readSync6, statSync as statSync22 } from "fs";
-import { dirname as dirname23, join as join68 } from "path";
+import { closeSync as closeSync9, mkdirSync as mkdirSync27, openSync as openSync9, readFileSync as readFileSync66, readSync as readSync6, statSync as statSync23 } from "fs";
+import { dirname as dirname24, join as join68 } from "path";
 
 // src/cli/usage.ts
-import { existsSync as existsSync63, readdirSync as readdirSync23, readFileSync as readFileSync65, statSync as statSync21 } from "fs";
+import { existsSync as existsSync63, readdirSync as readdirSync23, readFileSync as readFileSync65, statSync as statSync22 } from "fs";
 import { basename as basename10, join as join67, resolve as resolve12 } from "path";
-function isJsonObject14(value) {
+function isJsonObject15(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entries(path) {
@@ -38123,7 +38998,7 @@ function entries(path) {
 }
 function changedAt2(path) {
   try {
-    return statSync21(path).mtimeMs;
+    return statSync22(path).mtimeMs;
   } catch {
     return Number.NEGATIVE_INFINITY;
   }
@@ -38156,11 +39031,11 @@ function readTranscript(path, sinceMs, sidechains) {
     } catch {
       continue;
     }
-    if (!isJsonObject14(entry))
+    if (!isJsonObject15(entry))
       continue;
     if (cwd === null && typeof entry.cwd === "string")
       cwd = entry.cwd;
-    if (entry.type !== "assistant" || !isJsonObject14(entry.message))
+    if (entry.type !== "assistant" || !isJsonObject15(entry.message))
       continue;
     if (!sidechains && entry.isSidechain === true)
       continue;
@@ -38219,7 +39094,7 @@ function collectUsage(projectsDir, options) {
         const meta = readJson3(join67(subagents, name));
         usage.cwd ??= cwd;
         usage.subagents += 1;
-        const launched = isJsonObject14(meta) && typeof meta.model === "string" ? meta.model : "inherited";
+        const launched = isJsonObject15(meta) && typeof meta.model === "string" ? meta.model : "inherited";
         usage.launched[launched] = (usage.launched[launched] ?? 0) + 1;
         count2(usage.replies, replies);
       }
@@ -38371,7 +39246,7 @@ var LAUNCH_TOOLS = new Set(["Agent", "Task"]);
 var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 var MERGE_COMMAND = /(^|[\s;&|()])gh\s+pr\s+merge\b/;
 var RULE_LABEL = /\[([A-Z][A-Za-z0-9'&.-]*(?: [A-Za-z0-9'&.-]+){0,4})\]/;
-function isJsonObject15(value) {
+function isJsonObject16(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringField2(value) {
@@ -38390,7 +39265,7 @@ function timeOf(record) {
 function hourKey(ms) {
   return String(Math.floor(ms / HOUR_MS));
 }
-function emptyBucket() {
+function emptyBucket2() {
   return {
     askUserQuestion: 0,
     autoMode: {},
@@ -38456,7 +39331,7 @@ function readCounts(record) {
 function readAskers(record) {
   const out = {};
   for (const [key, value] of Object.entries(record)) {
-    if (!isJsonObject15(value))
+    if (!isJsonObject16(value))
       continue;
     const count = numberField2(value.count);
     const ms = numberField2(value.ms);
@@ -38467,7 +39342,7 @@ function readAskers(record) {
   return out;
 }
 function readBucket(bucket) {
-  const out = emptyBucket();
+  const out = emptyBucket2();
   for (const key of Object.keys(out)) {
     if (typeof out[key] === "number") {
       const value = numberField2(bucket[key]);
@@ -38476,7 +39351,7 @@ function readBucket(bucket) {
     }
   }
   for (const [key, record] of Object.entries(bucket)) {
-    if (!isJsonObject15(record))
+    if (!isJsonObject16(record))
       continue;
     if (key === "byAsker")
       out.byAsker = readAskers(record);
@@ -38501,15 +39376,15 @@ function parseCache(text, project) {
   } catch {
     return fresh;
   }
-  if (!isJsonObject15(parsed) || parsed.version !== CACHE_VERSION)
+  if (!isJsonObject16(parsed) || parsed.version !== CACHE_VERSION)
     return fresh;
-  if (!isJsonObject15(parsed.sessions))
+  if (!isJsonObject16(parsed.sessions))
     return fresh;
   for (const [id, value] of Object.entries(parsed.sessions)) {
-    if (!isJsonObject15(value) || !isJsonObject15(value.hours) || !isJsonObject15(value.transcripts)) {
+    if (!isJsonObject16(value) || !isJsonObject16(value.hours) || !isJsonObject16(value.transcripts)) {
       continue;
     }
-    if (!isJsonObject15(value.seen))
+    if (!isJsonObject16(value.seen))
       continue;
     const session = emptySession();
     session.cwd = stringField2(value.cwd);
@@ -38524,11 +39399,11 @@ function parseCache(text, project) {
       turnMs: value.seen.turnMs === true
     };
     for (const [hour, bucket] of Object.entries(value.hours)) {
-      if (isJsonObject15(bucket))
+      if (isJsonObject16(bucket))
         session.hours[hour] = readBucket(bucket);
     }
     for (const [name, transcript] of Object.entries(value.transcripts)) {
-      if (!isJsonObject15(transcript))
+      if (!isJsonObject16(transcript))
         continue;
       const entry = emptyTranscript();
       entry.offset = numberField2(transcript.offset) ?? 0;
@@ -38539,13 +39414,13 @@ function parseCache(text, project) {
       entry.endAt = numberField2(transcript.endAt);
       entry.replyId = stringField2(transcript.replyId);
       entry.replyLaunches = numberField2(transcript.replyLaunches) ?? 0;
-      entry.turnEnd = isJsonObject15(transcript.turnEnd) ? {
+      entry.turnEnd = isJsonObject16(transcript.turnEnd) ? {
         at: numberField2(transcript.turnEnd.at) ?? 0,
         background: numberField2(transcript.turnEnd.background) ?? 0
       } : null;
-      if (isJsonObject15(transcript.pending)) {
+      if (isJsonObject16(transcript.pending)) {
         for (const [toolId, tool] of Object.entries(transcript.pending)) {
-          if (!isJsonObject15(tool) || numberField2(tool.at) === null)
+          if (!isJsonObject16(tool) || numberField2(tool.at) === null)
             continue;
           entry.pending[toolId] = {
             at: numberField2(tool.at) ?? 0,
@@ -38554,9 +39429,9 @@ function parseCache(text, project) {
           };
         }
       }
-      if (isJsonObject15(transcript.asks)) {
+      if (isJsonObject16(transcript.asks)) {
         for (const [toolId, ask] of Object.entries(transcript.asks)) {
-          if (!isJsonObject15(ask) || numberField2(ask.at) === null)
+          if (!isJsonObject16(ask) || numberField2(ask.at) === null)
             continue;
           entry.asks[toolId] = {
             at: numberField2(ask.at) ?? 0,
@@ -38609,7 +39484,7 @@ function readAskLog(file) {
       skipped += 1;
       continue;
     }
-    if (!isJsonObject15(entry)) {
+    if (!isJsonObject16(entry)) {
       skipped += 1;
       continue;
     }
@@ -38631,9 +39506,9 @@ function readAskLog(file) {
 }
 function blockLabel(result, record) {
   const decision = record.permissionDecision;
-  const reasonType = isJsonObject15(decision) ? stringField2(decision.reasonType) : null;
+  const reasonType = isJsonObject16(decision) ? stringField2(decision.reasonType) : null;
   const content = result.content;
-  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((block) => isJsonObject15(block) && block.type === "text").map((block) => isJsonObject15(block) ? String(block.text ?? "") : "").join(" ") : "";
+  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((block) => isJsonObject16(block) && block.type === "text").map((block) => isJsonObject16(block) ? String(block.text ?? "") : "").join(" ") : "";
   const label = RULE_LABEL.exec(text);
   if (label?.[1] !== undefined)
     return label[1];
@@ -38662,7 +39537,7 @@ function apply(record, session, transcript, subagent, context) {
     return;
   if (ts < context.nowMs - FLOW_DAYS_KEPT * DAY_MS || ts >= context.untilMs)
     return;
-  const bucket = session.hours[hourKey(ts)] ?? emptyBucket();
+  const bucket = session.hours[hourKey(ts)] ?? emptyBucket2();
   session.hours[hourKey(ts)] = bucket;
   const type = record.type;
   if (type === "assistant")
@@ -38678,7 +39553,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
   if (!subagent && record.isSidechain === true)
     return;
   const message = record.message;
-  if (!isJsonObject15(message)) {
+  if (!isJsonObject16(message)) {
     session.skipped += 1;
     return;
   }
@@ -38690,7 +39565,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
   const id = stringField2(message.id) ?? stringField2(record.uuid);
   let launches = 0;
   for (const block of content) {
-    if (!isJsonObject15(block) || block.type !== "tool_use")
+    if (!isJsonObject16(block) || block.type !== "tool_use")
       continue;
     const name = stringField2(block.name);
     if (name === null)
@@ -38703,7 +39578,7 @@ function applyAssistant(record, session, transcript, bucket, subagent, ts) {
       launches += 1;
     const toolId = stringField2(block.id);
     if (toolId !== null) {
-      const input = isJsonObject15(block.input) ? block.input : {};
+      const input = isJsonObject16(block.input) ? block.input : {};
       const command = stringField2(input.command);
       transcript.pending[toolId] = {
         at: ts,
@@ -38761,14 +39636,14 @@ function applyUser(record, session, transcript, bucket, context, ts) {
   if (origin !== null)
     closeTurn(transcript, bucket, ts, origin);
   const decision = record.permissionDecision;
-  const source = isJsonObject15(decision) ? stringField2(decision.source) : null;
-  if (isJsonObject15(decision))
+  const source = isJsonObject16(decision) ? stringField2(decision.source) : null;
+  if (isJsonObject16(decision))
     session.seen.permission = true;
-  const content = isJsonObject15(record.message) ? record.message.content : null;
+  const content = isJsonObject16(record.message) ? record.message.content : null;
   const blocks = Array.isArray(content) ? content : [];
   if (source?.startsWith("user")) {
     for (const block of blocks) {
-      if (!isJsonObject15(block) || block.type !== "tool_result")
+      if (!isJsonObject16(block) || block.type !== "tool_result")
         continue;
       const toolId = stringField2(block.tool_use_id);
       if (toolId === null) {
@@ -38799,13 +39674,13 @@ function applyUser(record, session, transcript, bucket, context, ts) {
       }
     }
   }
-  if (isJsonObject15(decision) && decision.decision === "reject" && source === "config") {
-    const result = blocks.find((block) => isJsonObject15(block) && block.type === "tool_result");
-    if (isJsonObject15(result))
+  if (isJsonObject16(decision) && decision.decision === "reject" && source === "config") {
+    const result = blocks.find((block) => isJsonObject16(block) && block.type === "tool_result");
+    if (isJsonObject16(result))
       addTo(bucket.autoMode, blockLabel(result, record));
   }
   for (const block of blocks) {
-    if (!isJsonObject15(block) || block.type !== "tool_result")
+    if (!isJsonObject16(block) || block.type !== "tool_result")
       continue;
     const toolId = stringField2(block.tool_use_id);
     if (toolId === null)
@@ -38832,7 +39707,7 @@ function applySystem(record, session, transcript, bucket, ts) {
   }
   if (record.subtype === "compact_boundary") {
     session.seen.compact = true;
-    const meta = isJsonObject15(record.compactMetadata) ? record.compactMetadata : {};
+    const meta = isJsonObject16(record.compactMetadata) ? record.compactMetadata : {};
     bucket.compactions += 1;
     addTo(bucket.compactByTrigger, stringField2(meta.trigger) ?? "unknown");
     bucket.compactPreTokens += numberField2(meta.preTokens) ?? 0;
@@ -38841,7 +39716,7 @@ function applySystem(record, session, transcript, bucket, ts) {
 }
 function applyAttachment(record, session, transcript, ts) {
   const attachment = record.attachment;
-  if (!isJsonObject15(attachment) || attachment.type !== "hook_success")
+  if (!isJsonObject16(attachment) || attachment.type !== "hook_success")
     return;
   const stdout = stringField2(attachment.stdout);
   if (stdout === null || !stdout.includes('"permissionDecision":"ask"'))
@@ -38888,7 +39763,7 @@ function replaced(file, transcript) {
     return false;
   let stat;
   try {
-    stat = statSync22(file);
+    stat = statSync23(file);
   } catch {
     return false;
   }
@@ -38897,7 +39772,7 @@ function replaced(file, transcript) {
 function readTranscriptFile(file, session, transcript, subagent, context) {
   let stat;
   try {
-    stat = statSync22(file);
+    stat = statSync23(file);
   } catch {
     return false;
   }
@@ -38939,7 +39814,7 @@ function readTranscriptFile(file, session, transcript, subagent, context) {
           session.skipped += 1;
           continue;
         }
-        if (!isJsonObject15(record)) {
+        if (!isJsonObject16(record)) {
           session.skipped += 1;
           continue;
         }
@@ -39052,7 +39927,7 @@ function addBucket(into, from) {
   }
 }
 function sessionFlow(project, id, session, context) {
-  const total = emptyBucket();
+  const total = emptyBucket2();
   for (const bucket of bucketsIn(session, context))
     addBucket(total, bucket);
   const spans = [];
@@ -39231,7 +40106,7 @@ function openWaitsOf(flow, session, context) {
 }
 function writeCache(file, cache) {
   try {
-    mkdirSync26(dirname23(file), { recursive: true, mode: 448 });
+    mkdirSync27(dirname24(file), { recursive: true, mode: 448 });
     atomicWrite(file, `${JSON.stringify(cache)}
 `, 384);
   } catch {}
@@ -40052,8 +40927,8 @@ function topLevelHelp() {
 }
 
 // src/cli/migrate.ts
-import { existsSync as existsSync64, readdirSync as readdirSync24, readFileSync as readFileSync67, renameSync as renameSync4, rmSync as rmSync15, statSync as statSync23 } from "fs";
-import { basename as basename11, dirname as dirname24, join as join69 } from "path";
+import { existsSync as existsSync64, readdirSync as readdirSync24, readFileSync as readFileSync67, renameSync as renameSync4, rmSync as rmSync15, statSync as statSync24 } from "fs";
+import { basename as basename11, dirname as dirname25, join as join69 } from "path";
 var OLD = {
   name: "anymodel",
   pluginId: "anymodel@anymodel",
@@ -40079,7 +40954,7 @@ function oldGatewayEnv(port) {
 }
 function migrateUnits(paths, overrides = {}) {
   return {
-    dir: overrides.dir ?? dirname24(paths.routerUnitFile),
+    dir: overrides.dir ?? dirname25(paths.routerUnitFile),
     oldUnit: overrides.oldUnit ?? OLD.unit,
     oldSocket: overrides.oldSocket ?? OLD.socket,
     unit: overrides.unit ?? basename11(paths.routerUnitFile),
@@ -40321,7 +41196,7 @@ function absorbStateFolder(from, to, dryRun) {
         renameSync4(source, target);
       continue;
     }
-    if (statSync23(source).isDirectory() && statSync23(target).isDirectory()) {
+    if (statSync24(source).isDirectory() && statSync24(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
         rmSync15(source, { recursive: true, force: true });
@@ -40431,7 +41306,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   return { set, remove, kept };
 }
 function readOldConfig(file, platform = hostPlatform()) {
-  const mode = statSync23(file).mode;
+  const mode = statSync24(file).mode;
   if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
@@ -40499,7 +41374,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (changed === 0)
     return 0;
   if (!dryRun) {
-    const mode = statSync23(file).mode & 4095;
+    const mode = statSync24(file).mode & 4095;
     backupFile(stateDir, file);
     atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
 `, mode);
@@ -40905,7 +41780,7 @@ function instructionsToSetup(paths, options) {
 
 // src/cli/restore.ts
 import { existsSync as existsSync65, rmSync as rmSync16 } from "fs";
-import { dirname as dirname25, join as join70 } from "path";
+import { dirname as dirname26, join as join70 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -40929,7 +41804,7 @@ function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
   if (existsSync65(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
-  const bunfig = bunConfigPath(dirname25(dirname25(cliBundle)));
+  const bunfig = bunConfigPath(dirname26(dirname26(cliBundle)));
   const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
   return `Restart every running Claude session (they still use the router), then run restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }
@@ -41091,15 +41966,15 @@ async function runRestore(paths, options) {
 
 // src/cli/statusline.ts
 import { readFileSync as readFileSync68 } from "fs";
-function isJsonObject16(value) {
+function isJsonObject17(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function window(input, name) {
   const limits = input.rate_limits;
-  if (!isJsonObject16(limits))
+  if (!isJsonObject17(limits))
     return null;
   const entry = limits[name];
-  if (!isJsonObject16(entry) || typeof entry.used_percentage !== "number")
+  if (!isJsonObject17(entry) || typeof entry.used_percentage !== "number")
     return null;
   return {
     percent: entry.used_percentage,
@@ -41108,8 +41983,8 @@ function window(input, name) {
 }
 function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDefaults.alerts.usagePercent) {
   const parts = [];
-  const data = isJsonObject16(input) ? input : {};
-  const model = isJsonObject16(data.model) ? data.model.display_name : undefined;
+  const data = isJsonObject17(input) ? input : {};
+  const model = isJsonObject17(data.model) ? data.model.display_name : undefined;
   if (typeof model === "string" && model !== "")
     parts.push(model);
   const until = (resetsAt) => resetsAt === null ? "" : ` until ${formatClock(resetsAt, nowMs, timeZone)}`;
@@ -41207,7 +42082,7 @@ function gatewayContext(options) {
 }
 
 // src/hooks/notify.ts
-import { readFileSync as readFileSync69, rmSync as rmSync17, statSync as statSync24, writeFileSync as writeFileSync13 } from "fs";
+import { readFileSync as readFileSync69, rmSync as rmSync17, statSync as statSync25, writeFileSync as writeFileSync13 } from "fs";
 import { tmpdir as tmpdir9 } from "os";
 import { basename as basename12, join as join72 } from "path";
 
@@ -41257,7 +42132,7 @@ var WARP_PLUGIN_ID2 = "warp@claude-code-warp";
 var WARP_AGENT_TITLE = "warp://cli-agent";
 var WARP_AGENT_PROTOCOL = 1;
 var WARP_TERMINAL_NAME = "warpterminal";
-function isJsonObject17(value) {
+function isJsonObject18(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function shown2(text, fallback) {
@@ -41282,7 +42157,7 @@ function forget(file) {
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync24(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync25(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
@@ -41304,7 +42179,7 @@ function isWarpTerminal(env) {
 function warpPluginOn(claudeConfigDir) {
   try {
     const settings = JSON.parse(readFileSync69(join72(claudeConfigDir, "settings.json"), "utf8"));
-    if (!isJsonObject17(settings) || !isJsonObject17(settings.enabledPlugins))
+    if (!isJsonObject18(settings) || !isJsonObject18(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
       return false;
@@ -41313,7 +42188,7 @@ function warpPluginOn(claudeConfigDir) {
   }
   try {
     const installed = JSON.parse(readFileSync69(join72(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
-    if (!isJsonObject17(installed) || !isJsonObject17(installed.plugins))
+    if (!isJsonObject18(installed) || !isJsonObject18(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
     return Array.isArray(entries) && entries.length > 0;
@@ -41380,7 +42255,7 @@ function sessionLabel2(transcript, cwd) {
 function askAlert(input, ctx) {
   markWaiting(ctx.mark);
   const tool = typeof input.tool_name === "string" ? input.tool_name : "";
-  const toolInput = isJsonObject17(input.tool_input) ? input.tool_input : {};
+  const toolInput = isJsonObject18(input.tool_input) ? input.tool_input : {};
   if (tool === "ExitPlanMode") {
     return {
       body: "A plan is ready for your OK",
@@ -41391,8 +42266,8 @@ function askAlert(input, ctx) {
     };
   }
   const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
-  const first = questions.find((question) => isJsonObject17(question) && question !== null);
-  const asked = (isJsonObject17(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
+  const first = questions.find((question) => isJsonObject18(question) && question !== null);
+  const asked = (isJsonObject18(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
   return {
     body: shown2(asked, "Claude has a question for you"),
     critical: true,
@@ -41533,7 +42408,7 @@ function readNotifyConfig(file) {
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
-  if (!isJsonObject17(parsed))
+  if (!isJsonObject18(parsed))
     return DEFAULT_NOTIFY_CONFIG;
   return {
     desktopSound: typeof parsed.desktopSound === "boolean" ? parsed.desktopSound : true,
@@ -41586,7 +42461,7 @@ function playSound(alert, deps, config, alerts) {
     deps.run(argv);
 }
 function notifyHook(input, event, deps) {
-  if (!isJsonObject17(input))
+  if (!isJsonObject18(input))
     return SILENT;
   if ((deps.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli")
     return SILENT;
@@ -41679,7 +42554,7 @@ import { existsSync as existsSync66 } from "fs";
 import { join as join74 } from "path";
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync10, constants as constants4, openSync as openSync10, readlinkSync as readlinkSync6, statSync as statSync25, writeSync as writeSync2 } from "fs";
+import { closeSync as closeSync10, constants as constants4, openSync as openSync10, readlinkSync as readlinkSync6, statSync as statSync26, writeSync as writeSync2 } from "fs";
 import { join as join73 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
@@ -41736,7 +42611,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync25(path).uid;
+        return statSync26(path).uid;
       } catch {
         return null;
       }
@@ -42244,7 +43119,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync68(project) || !statSync26(project).isDirectory()) {
+      if (!existsSync68(project) || !statSync27(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;

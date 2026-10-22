@@ -39,13 +39,14 @@ function routerPaths(env = process.env) {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db")
   };
 }
 
 // src/gateway/router.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync3 } from "fs";
-import { dirname as dirname2 } from "path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync3 } from "fs";
+import { dirname as dirname3 } from "path";
 
 // src/setup/write.ts
 import {
@@ -118,6 +119,10 @@ function atomicWrite(file, content, mode, beforeRename) {
     throw error;
   }
 }
+
+// src/gateway/config.ts
+import { createHash } from "crypto";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync2, statSync as statSync3 } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -5951,95 +5956,180 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var breakerTargetSchema = object({
-  status: int().nullable(),
-  target: string2(),
-  until: number2()
-});
-var breakerSchema = object({
-  held: int().min(0),
-  lastAt: number2(),
-  since: number2(),
-  targets: array(breakerTargetSchema)
-});
-var stateSchema = object({
-  breakers: record(string2(), breakerSchema).optional(),
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  seenClaude: record(string2(), number2()).optional(),
-  version: literal(1)
-});
-var SEEN_CLAUDE_MAX = 50;
-function mergeSeenClaude(a, b) {
-  const merged = new Map(Object.entries(a));
-  for (const [id, at] of Object.entries(b))
-    merged.set(id, Math.max(merged.get(id) ?? at, at));
-  return Object.fromEntries([...merged].sort(([idA, atA], [idB, atB]) => atB - atA || (idA < idB ? -1 : 1)).slice(0, SEEN_CLAUDE_MAX));
-}
-function emptyLimitState() {
-  return { fallbacks: {}, limits: {}, version: 1 };
-}
-function formatLimitState(state) {
-  return `${JSON.stringify(state, null, 2)}
+// src/gateway/history.ts
+import { Database } from "bun:sqlite";
+import { mkdirSync as mkdirSync2, statSync as statSync2 } from "fs";
+import { dirname as dirname2 } from "path";
+var HISTORY_RETENTION_DAYS = 90;
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_FLUSH_MS = 250;
+var HISTORY_BATCH_MAX = 200;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
+var HISTORY_SCHEMA_VERSION = 1;
+var CREATE_REQUESTS = `
+  CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    session TEXT,
+    model TEXT NOT NULL,
+    slot TEXT,
+    target TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    ms INTEGER NOT NULL,
+    next_target TEXT,
+    breaker TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    cost_usd REAL,
+    cost_estimated INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS requests_at ON requests(at);
+  CREATE INDEX IF NOT EXISTS requests_session_at ON requests(session, at);
 `;
-}
-function parseLimitState(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
+function openDatabase(file) {
+  mkdirSync2(dirname2(file), { mode: 448, recursive: true });
+  const db = new Database(file, { create: true });
+  db.run("PRAGMA auto_vacuum = INCREMENTAL");
+  const auto = db.query("PRAGMA auto_vacuum").get();
+  if (auto?.auto_vacuum !== 2)
+    db.run("VACUUM");
+  const mode = db.query("PRAGMA journal_mode = WAL").get();
+  if (mode?.journal_mode.toLowerCase() !== "wal") {
+    db.run("PRAGMA busy_timeout = 5000");
+  } else {
+    db.run("PRAGMA synchronous = NORMAL");
+    db.run("PRAGMA busy_timeout = 5000");
   }
-  const parsed = stateSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  const version = db.query("PRAGMA user_version").get();
+  if ((version?.user_version ?? 0) > HISTORY_SCHEMA_VERSION) {
+    db.close();
+    throw new Error(`${file} was written by a newer cc-smart-dev-kit (schema ${String(version?.user_version)}, this one reads ${String(HISTORY_SCHEMA_VERSION)})`);
+  }
+  db.run(CREATE_REQUESTS);
+  if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
+    db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
+  }
+  setFileMode(file, 384);
+  return db;
 }
-function formatClock(epochSec, nowMs, timeZone) {
-  const at = new Date(epochSec * 1000);
-  const day = (date) => new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone,
-    year: "numeric"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    timeZone
-  }).format(at);
-  if (day(at) === day(new Date(nowMs)))
-    return time;
-  const date = new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    timeZone
-  }).format(at);
-  return `${date} ${time}`;
+var INSERT_ROW = `INSERT INTO requests
+  (at, session, model, slot, target, status, ms, next_target, breaker,
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+function insertValues(row) {
+  return [
+    row.at,
+    row.session,
+    row.model,
+    row.slot,
+    row.target,
+    row.status,
+    row.ms,
+    row.nextTarget,
+    row.breaker,
+    row.tokens?.input ?? null,
+    row.tokens?.output ?? null,
+    row.tokens?.cacheRead ?? null,
+    row.tokens?.cacheWrite ?? null,
+    row.cost?.usd ?? null,
+    row.cost?.estimated === true ? 1 : 0
+  ];
 }
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
-}
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-function currentBreakers(state, nowMs) {
-  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+function createHistoryWriter(options) {
+  const flushAfterMs = options.flushAfterMs ?? HISTORY_FLUSH_MS;
+  const now = options.now ?? (() => Date.now());
+  let buffer = [];
+  let db = null;
+  let timer = null;
+  let closed = false;
+  let lastError = "";
+  let retryAt = 0;
+  let lastPurgeAt = 0;
+  const fail = (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== lastError)
+      options.log(`ERROR cannot write the request history: ${message}`);
+    lastError = message;
+    retryAt = now() + HISTORY_RETRY_MS;
+    buffer = buffer.slice(-HISTORY_BATCH_MAX);
+  };
+  const purge = (database, retentionDays) => {
+    const at = now();
+    if (at - lastPurgeAt < HISTORY_PURGE_EVERY_MS)
+      return;
+    lastPurgeAt = at;
+    if (retentionDays <= 0)
+      return;
+    const cutoff = at - retentionDays * 24 * 60 * 60 * 1000;
+    database.run("DELETE FROM requests WHERE at < ?", [cutoff]);
+    database.run("PRAGMA incremental_vacuum");
+  };
+  const flush = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (closed || buffer.length === 0)
+      return;
+    const rows = buffer;
+    buffer = [];
+    if (now() < retryAt) {
+      buffer = rows.slice(-HISTORY_BATCH_MAX);
+      return;
+    }
+    try {
+      if (db === null)
+        db = openDatabase(options.file);
+      const insert = db.prepare(INSERT_ROW);
+      const write = db.transaction((batch) => {
+        for (const row of batch)
+          insert.run(...insertValues(row));
+      });
+      write(rows);
+      lastError = "";
+      purge(db, options.retentionDays());
+    } catch (error) {
+      fail(error);
+    }
+  };
+  const schedule = () => {
+    if (timer !== null || closed)
+      return;
+    timer = setTimeout(() => {
+      timer = null;
+      flush();
+    }, flushAfterMs);
+    timer.unref?.();
+  };
+  return {
+    close() {
+      flush();
+      if (db !== null) {
+        db.close();
+        db = null;
+      }
+      closed = true;
+    },
+    enabled: () => !closed && options.retentionDays() > 0,
+    flush,
+    pending: () => buffer.length,
+    record(row) {
+      if (closed)
+        return;
+      const days = options.retentionDays();
+      if (days <= 0)
+        return;
+      buffer.push(row);
+      if (buffer.length >= HISTORY_BATCH_MAX)
+        flush();
+      else
+        schedule();
+    },
+    retentionDays: () => options.retentionDays()
+  };
 }
 
 // src/gateway/targets.ts
@@ -6247,68 +6337,7 @@ function cooldownSeconds(status, retryAfter) {
   return Math.min(Math.max(seconds, 0), COOLDOWN_MAX_SEC);
 }
 
-// src/gateway/breaker.ts
-var BREAKER_MAX_HELD = 64;
-var CLIENT_RETRY_AFTER_CEILING_SEC = 60;
-var BREAKER_RETRY_AFTER_UNKNOWN_SEC = 30;
-var BREAKER_POLL_MS = 1000;
-var BREAKER_HEARTBEAT_WAIT_MS = 180000;
-var BREAKER_REMINDER_MS = 10 * 60000;
-var BREAKER_SHUTDOWN_RETRY_AFTER_SEC = 5;
-var BREAKER_RELEASED_RETRY_AFTER_SEC = 1;
-function isCapacityFailure(status) {
-  return status === null || CAPACITY_STATUSES.has(status);
-}
-function capRetryAfter(seconds) {
-  return Math.min(seconds, CLIENT_RETRY_AFTER_CEILING_SEC);
-}
-function clientRetryAfter(seconds) {
-  if (seconds === null)
-    return BREAKER_RETRY_AFTER_UNKNOWN_SEC;
-  return Math.max(1, capRetryAfter(Math.ceil(seconds)));
-}
-function slotShortName(slot) {
-  return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
-}
-function earliestRestSeconds(failures, nowMs) {
-  if (failures.length === 0)
-    return null;
-  const earliest = Math.min(...failures.map((failure) => failure.until));
-  return Math.max(0, Math.ceil((earliest - nowMs) / 1000));
-}
-function describeFailures(failures, nowMs) {
-  return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
-}
-function breakerMessage(slot, sinceMs, failures, nowMs) {
-  const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
-  const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
-  return `cc-smart-dev-kit-router: every target of ${slot} is limited or down since ${since}${named}; change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`;
-}
-function breakerAnswer(answer) {
-  const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
-  return Response.json({
-    error: {
-      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs),
-      type: "rate_limit_error"
-    },
-    type: "error"
-  }, { headers: { "retry-after": String(retryAfter), "x-should-retry": "true" }, status: 429 });
-}
-function formatDuration(ms) {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60)
-    return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60)
-    return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
-}
-
 // src/gateway/config.ts
-import { createHash } from "crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 var DEFAULT_PORT = 20100;
 var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 var DEFAULT_FIRST_BYTE_MS = 60000;
@@ -6333,6 +6362,9 @@ var gatewayConfigSchema = looseObject({
   kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
+  history: looseObject({
+    retentionDays: int().min(0, "0 turns the request history off, which is the smallest value").max(HISTORY_MAX_RETENTION_DAYS, `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`).optional()
+  }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
@@ -6428,6 +6460,9 @@ function breakerOn(config, slot) {
 function breakerHoldMs(config) {
   return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
 }
+function historyRetentionDays(config) {
+  return config.history?.retentionDays ?? HISTORY_RETENTION_DAYS;
+}
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
     return `alias "${name}" is not a model name`;
@@ -6499,7 +6534,7 @@ function parseConfig(raw) {
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
-    mode = statSync2(path).mode;
+    mode = statSync3(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -6529,7 +6564,7 @@ function emptyConfig() {
     version: 1
   };
 }
-var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync2 };
+var REAL_WATCH_DEPS = { load: loadConfigFile, stat: statSync3 };
 function watchConfig(path, log, deps = REAL_WATCH_DEPS) {
   let current = emptyConfig();
   let good = false;
@@ -6570,6 +6605,492 @@ ${good ? "keeping the last good config" : NO_CONFIG_MEANS}`);
   };
 }
 
+// src/gateway/hosts.ts
+function ipv4Parts(host) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (match === null)
+    return null;
+  const parts = match.slice(1).map(Number);
+  return parts.every((part) => part <= 255) ? parts : null;
+}
+function ipv6Groups(host) {
+  if (!host.startsWith("[") || !host.endsWith("]"))
+    return null;
+  const halves = host.slice(1, -1).split("::");
+  if (halves.length > 2)
+    return null;
+  const groupsOf = (text) => {
+    if (text === "")
+      return [];
+    const parts = text.split(":");
+    if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part)))
+      return null;
+    return parts.map((part) => Number.parseInt(part, 16));
+  };
+  const head = groupsOf(halves[0] ?? "");
+  const tail = groupsOf(halves[1] ?? "");
+  if (head === null || tail === null)
+    return null;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 1)
+    return null;
+  return [...head, ...Array(halves.length === 1 ? 0 : missing).fill(0), ...tail];
+}
+function mappedIpv4(groups) {
+  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 65535)
+    return null;
+  const high = groups[6] ?? 0;
+  const low = groups[7] ?? 0;
+  return [high >> 8, high & 255, low >> 8, low & 255];
+}
+function normalHost(hostname) {
+  const lower = hostname.toLowerCase();
+  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
+}
+function isLoopbackHost(hostname) {
+  const host = normalHost(hostname);
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return true;
+  const v4 = ipv4Parts(host);
+  if (v4 !== null)
+    return v4[0] === 127;
+  const v6 = ipv6Groups(host);
+  if (v6 === null)
+    return false;
+  const mapped = mappedIpv4(v6);
+  if (mapped !== null)
+    return mapped[0] === 127;
+  return v6.slice(0, 7).every((group) => group === 0) && v6[7] === 1;
+}
+function directIfLoopback(url) {
+  const parsed = URL.parse(url);
+  if (parsed === null || !isLoopbackHost(parsed.hostname))
+    return {};
+  return { proxy: false };
+}
+function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
+  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
+}
+
+// src/gateway/plain-text.ts
+var CONTROL = /[\p{Cc}\p{Cf}]/gu;
+var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
+function plainText(text, options = {}) {
+  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL, " ");
+}
+function cutText(text, max) {
+  if (text.length <= max)
+    return text;
+  let end = Math.max(0, max);
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && last >= 55296 && last <= 56319)
+    end -= 1;
+  return text.slice(0, end);
+}
+function oneLine(text, max, options = {}) {
+  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
+  const line = flat.trim();
+  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
+}
+function maskedTail(secret) {
+  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
+}
+var KNOWN_SECRET_MIN = 4;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function knownSecretForms(known) {
+  const forms = new Map;
+  for (const secret of known) {
+    if (secret.length < KNOWN_SECRET_MIN)
+      continue;
+    const once = JSON.stringify(secret).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    for (const form of [secret, once, twice])
+      if (!forms.has(form))
+        forms.set(form, secret);
+  }
+  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
+}
+function maskSecrets(text, known = []) {
+  let out = text;
+  for (const { form, secret } of knownSecretForms(known)) {
+    out = out.split(form).join(maskedTail(secret));
+  }
+  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
+}
+function maskedLine(text, known, max, options = {}) {
+  return oneLine(maskSecrets(text, known), max, options);
+}
+
+// src/gateway/prices.ts
+var CLAUDE_PRICES = [
+  {
+    family: "fable",
+    major: 5,
+    minor: 1,
+    price: { cacheRead: 0.25, cacheWrite: 12.5, input: 10, output: 50 }
+  },
+  {
+    family: "fable",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 1, cacheWrite: 12.5, input: 10, output: 50 }
+  },
+  {
+    family: "opus",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.2, cacheWrite: 5, input: 4, output: 20 }
+  },
+  {
+    family: "opus",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 8,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 7,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 6,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.5, cacheWrite: 6.25, input: 5, output: 25 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 1,
+    price: { cacheRead: 1.5, cacheWrite: 18.75, input: 15, output: 75 }
+  },
+  {
+    family: "opus",
+    major: 4,
+    minor: 0,
+    price: { cacheRead: 1.5, cacheWrite: 18.75, input: 15, output: 75 }
+  },
+  {
+    family: "sonnet",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.1, cacheWrite: 2.5, input: 2, output: 10 }
+  },
+  {
+    family: "sonnet",
+    major: 5,
+    minor: 0,
+    price: { cacheRead: 0.2, cacheWrite: 2.5, input: 2, output: 10 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 6,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "sonnet",
+    major: 4,
+    minor: 0,
+    price: { cacheRead: 0.3, cacheWrite: 3.75, input: 3, output: 15 }
+  },
+  {
+    family: "haiku",
+    major: 5,
+    minor: 5,
+    price: { cacheRead: 0.01, cacheWrite: 0.125, input: 0.1, output: 0.5 },
+    overAfter: 1e5,
+    over: { cacheRead: 0.05, cacheWrite: 0.625, input: 0.5, output: 2.5 }
+  },
+  {
+    family: "haiku",
+    major: 4,
+    minor: 5,
+    price: { cacheRead: 0.1, cacheWrite: 1.25, input: 1, output: 5 }
+  },
+  {
+    family: "haiku",
+    major: 3,
+    minor: 5,
+    price: { cacheRead: 0.08, cacheWrite: 1, input: 0.8, output: 4 }
+  }
+];
+function promptTokens(tokens) {
+  return tokens.input + tokens.cacheRead + tokens.cacheWrite;
+}
+function priceRow(model) {
+  const family = claudeFamily(model);
+  const version = claudeVersion(model);
+  if (family === null || version === null)
+    return null;
+  return CLAUDE_PRICES.find((candidate) => candidate.family === family && candidate.major === version.major && candidate.minor === version.minor) ?? null;
+}
+function tierOf(row, tokens) {
+  return row.over !== undefined && row.overAfter !== undefined && promptTokens(tokens) > row.overAfter ? row.over : row.price;
+}
+function costUsd(price, tokens) {
+  const usd = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * price.cacheRead + tokens.cacheWrite * price.cacheWrite) / 1e6;
+  return Math.round(usd * 1e6) / 1e6;
+}
+function claudeCost(model, tokens) {
+  if (tokens === null)
+    return null;
+  const row = priceRow(model);
+  if (row === null)
+    return null;
+  return { estimated: true, usd: costUsd(tierOf(row, tokens), tokens) };
+}
+function backendCost(price, tokens) {
+  if (tokens === null)
+    return null;
+  return { estimated: false, usd: costUsd(price, tokens) };
+}
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function perToken(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+    return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0)
+      return parsed;
+  }
+  return null;
+}
+function perMillion(value) {
+  return Math.round(value * 1e6 * 1e6) / 1e6;
+}
+function listedPrice(entry) {
+  if (!isJsonObject(entry))
+    return null;
+  const pricing = entry.pricing;
+  if (isJsonObject(pricing)) {
+    const input = perToken(pricing.prompt) ?? perToken(pricing.input);
+    const output = perToken(pricing.completion) ?? perToken(pricing.output);
+    if (input === null || output === null)
+      return null;
+    const cacheRead = perToken(pricing.input_cache_read) ?? perToken(pricing.cache_read) ?? input;
+    const cacheWrite = perToken(pricing.input_cache_write) ?? perToken(pricing.cache_write) ?? input;
+    return {
+      cacheRead: perMillion(cacheRead),
+      cacheWrite: perMillion(cacheWrite),
+      input: perMillion(input),
+      output: perMillion(output)
+    };
+  }
+  return null;
+}
+function priceFromModels(models, model) {
+  const entry = models.find((candidate) => candidate.id === model);
+  return entry?.price ?? null;
+}
+
+// src/gateway/backends.ts
+var REASON_CHARS = 120;
+function isJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parseModelList(body) {
+  if (!isJsonObject2(body) || !Array.isArray(body.data))
+    return [];
+  const models = [];
+  for (const entry of body.data) {
+    if (!isJsonObject2(entry) || typeof entry.id !== "string")
+      continue;
+    const context = entry.context_length;
+    const price = listedPrice(entry);
+    models.push({
+      contextLength: typeof context === "number" ? context : null,
+      id: entry.id,
+      ...price === null ? {} : { price }
+    });
+  }
+  return models;
+}
+async function listModels(baseUrl, apiKey, timeoutMs = 1e4, fetchImpl = (url, init) => fetch(url, init)) {
+  try {
+    const url = `${baseUrl}/v1/models`;
+    const response = await backendFetch(url, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(timeoutMs) }, fetchImpl);
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { models: [], status: response.status };
+    }
+    return { models: parseModelList(await response.json()), status: response.status };
+  } catch (error) {
+    return { error: maskedLine(messageOf(error), [apiKey], REASON_CHARS) };
+  }
+}
+
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
+  version: literal(1)
+});
+var SEEN_CLAUDE_MAX = 50;
+function mergeSeenClaude(a, b) {
+  const merged = new Map(Object.entries(a));
+  for (const [id, at] of Object.entries(b))
+    merged.set(id, Math.max(merged.get(id) ?? at, at));
+  return Object.fromEntries([...merged].sort(([idA, atA], [idB, atB]) => atB - atA || (idA < idB ? -1 : 1)).slice(0, SEEN_CLAUDE_MAX));
+}
+function emptyLimitState() {
+  return { fallbacks: {}, limits: {}, version: 1 };
+}
+function formatLimitState(state) {
+  return `${JSON.stringify(state, null, 2)}
+`;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+
+// src/gateway/breaker.ts
+var BREAKER_MAX_HELD = 64;
+var CLIENT_RETRY_AFTER_CEILING_SEC = 60;
+var BREAKER_RETRY_AFTER_UNKNOWN_SEC = 30;
+var BREAKER_POLL_MS = 1000;
+var BREAKER_HEARTBEAT_WAIT_MS = 180000;
+var BREAKER_REMINDER_MS = 10 * 60000;
+var BREAKER_SHUTDOWN_RETRY_AFTER_SEC = 5;
+var BREAKER_RELEASED_RETRY_AFTER_SEC = 1;
+function isCapacityFailure(status) {
+  return status === null || CAPACITY_STATUSES.has(status);
+}
+function capRetryAfter(seconds) {
+  return Math.min(seconds, CLIENT_RETRY_AFTER_CEILING_SEC);
+}
+function clientRetryAfter(seconds) {
+  if (seconds === null)
+    return BREAKER_RETRY_AFTER_UNKNOWN_SEC;
+  return Math.max(1, capRetryAfter(Math.ceil(seconds)));
+}
+function slotShortName(slot) {
+  return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
+}
+function earliestRestSeconds(failures, nowMs) {
+  if (failures.length === 0)
+    return null;
+  const earliest = Math.min(...failures.map((failure) => failure.until));
+  return Math.max(0, Math.ceil((earliest - nowMs) / 1000));
+}
+function describeFailures(failures, nowMs) {
+  return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
+}
+function breakerMessage(slot, sinceMs, failures, nowMs) {
+  const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
+  const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
+  return `cc-smart-dev-kit-router: every target of ${slot} is limited or down since ${since}${named}; change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`;
+}
+function breakerAnswer(answer) {
+  const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
+  return Response.json({
+    error: {
+      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs),
+      type: "rate_limit_error"
+    },
+    type: "error"
+  }, { headers: { "retry-after": String(retryAfter), "x-should-retry": "true" }, status: 429 });
+}
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60)
+    return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
+}
+
 // src/gateway/fallback-answer.ts
 import { createHash as createHash2, randomUUID } from "crypto";
 var ROUTER_THINKING_MARK = "cc-smart-dev-kit-router:thinking:";
@@ -6594,11 +7115,11 @@ function backendSignatureOf(signature) {
 var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
 var TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
 var EMPTY_ANSWER_TEXT = "(The fallback model answered with thinking only.)";
-function isJsonObject(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isRouterThinking(block) {
-  return isJsonObject(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
+  return isJsonObject3(block) && block.type === "thinking" && typeof block.signature === "string" && block.signature.startsWith(ROUTER_THINKING_MARK);
 }
 function holdsRouterMark(bytes) {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).includes(ROUTER_THINKING_MARK);
@@ -6610,7 +7131,7 @@ function withoutRouterThinking(body) {
   let removed = 0;
   let filled = 0;
   const out = messages.map((message, at) => {
-    if (!isJsonObject(message) || message.role !== "assistant")
+    if (!isJsonObject3(message) || message.role !== "assistant")
       return message;
     if (!Array.isArray(message.content))
       return message;
@@ -6635,13 +7156,13 @@ function thinkingForBackend(body) {
   let restored = 0;
   let bare = 0;
   const out = messages.map((message) => {
-    if (!isJsonObject(message) || message.role !== "assistant")
+    if (!isJsonObject3(message) || message.role !== "assistant")
       return message;
     if (!Array.isArray(message.content))
       return message;
     let changed = false;
     const content = message.content.map((block) => {
-      if (!isJsonObject(block) || !isRouterThinking(block))
+      if (!isJsonObject3(block) || !isRouterThinking(block))
         return block;
       changed = true;
       const carried = backendSignatureOf(String(block.signature));
@@ -6680,11 +7201,11 @@ function withSafeId(block, changes) {
   return { ...block, id };
 }
 function isDropped(block) {
-  return isJsonObject(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
+  return isJsonObject3(block) && typeof block.type === "string" && DROPPED_BLOCKS.has(block.type);
 }
 function cleanFallbackMessage(message) {
   const changes = noChanges();
-  if (!isJsonObject(message) || !Array.isArray(message.content))
+  if (!isJsonObject3(message) || !Array.isArray(message.content))
     return { changes, message };
   const content = [];
   for (const block of message.content) {
@@ -6692,13 +7213,13 @@ function cleanFallbackMessage(message) {
       changes.redacted += 1;
       continue;
     }
-    if (isJsonObject(block) && block.type === "thinking") {
+    if (isJsonObject3(block) && block.type === "thinking") {
       changes.marked += 1;
       const own = typeof block.signature === "string" ? block.signature : undefined;
       content.push({ ...block, signature: routerSignature(own) });
       continue;
     }
-    content.push(isJsonObject(block) ? withSafeId(block, changes) : block);
+    content.push(isJsonObject3(block) ? withSafeId(block, changes) : block);
   }
   if (!changedAny(changes))
     return { changes, message };
@@ -6761,7 +7282,7 @@ function cleanFallbackStream(onDone = () => {
     } catch {
       return text;
     }
-    if (!isJsonObject(event) || typeof event.type !== "string")
+    if (!isJsonObject3(event) || typeof event.type !== "string")
       return text;
     const label = name ?? event.type;
     if (event.type === "message_delta" || event.type === "message_stop") {
@@ -6796,7 +7317,7 @@ function cleanFallbackStream(onDone = () => {
         return "";
       }
       kept += 1;
-      if (isJsonObject(block) && block.type === "thinking") {
+      if (isJsonObject3(block) && block.type === "thinking") {
         const mark = routerSignature();
         thinking.set(index, { mark, own: "" });
         changes.marked += 1;
@@ -6806,7 +7327,7 @@ function cleanFallbackStream(onDone = () => {
           index: next
         });
       }
-      const safe = isJsonObject(block) ? withSafeId(block, changes) : block;
+      const safe = isJsonObject3(block) ? withSafeId(block, changes) : block;
       if (next === index && safe === block)
         return text;
       return eventText(label, { ...event, content_block: safe, index: next });
@@ -6816,7 +7337,7 @@ function cleanFallbackStream(onDone = () => {
     const open = thinking.get(index);
     if (open !== undefined && event.type === "content_block_delta") {
       const delta = event.delta;
-      if (isJsonObject(delta) && delta.type === "signature_delta") {
+      if (isJsonObject3(delta) && delta.type === "signature_delta") {
         if (typeof delta.signature === "string")
           open.own = delta.signature;
         return "";
@@ -6923,73 +7444,6 @@ function cleanFallbackResponse(response, onChanged) {
     }
   });
   return { note: null, response: new Response(body, init) };
-}
-
-// src/gateway/hosts.ts
-function ipv4Parts(host) {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (match === null)
-    return null;
-  const parts = match.slice(1).map(Number);
-  return parts.every((part) => part <= 255) ? parts : null;
-}
-function ipv6Groups(host) {
-  if (!host.startsWith("[") || !host.endsWith("]"))
-    return null;
-  const halves = host.slice(1, -1).split("::");
-  if (halves.length > 2)
-    return null;
-  const groupsOf = (text) => {
-    if (text === "")
-      return [];
-    const parts = text.split(":");
-    if (!parts.every((part) => /^[0-9a-f]{1,4}$/i.test(part)))
-      return null;
-    return parts.map((part) => Number.parseInt(part, 16));
-  };
-  const head = groupsOf(halves[0] ?? "");
-  const tail = groupsOf(halves[1] ?? "");
-  if (head === null || tail === null)
-    return null;
-  const missing = 8 - head.length - tail.length;
-  if (halves.length === 1 ? missing !== 0 : missing < 1)
-    return null;
-  return [...head, ...Array(halves.length === 1 ? 0 : missing).fill(0), ...tail];
-}
-function mappedIpv4(groups) {
-  if (!groups.slice(0, 5).every((group) => group === 0) || groups[5] !== 65535)
-    return null;
-  const high = groups[6] ?? 0;
-  const low = groups[7] ?? 0;
-  return [high >> 8, high & 255, low >> 8, low & 255];
-}
-function normalHost(hostname) {
-  const lower = hostname.toLowerCase();
-  return lower.endsWith(".") ? lower.slice(0, -1) : lower;
-}
-function isLoopbackHost(hostname) {
-  const host = normalHost(hostname);
-  if (host === "localhost" || host.endsWith(".localhost"))
-    return true;
-  const v4 = ipv4Parts(host);
-  if (v4 !== null)
-    return v4[0] === 127;
-  const v6 = ipv6Groups(host);
-  if (v6 === null)
-    return false;
-  const mapped = mappedIpv4(v6);
-  if (mapped !== null)
-    return mapped[0] === 127;
-  return v6.slice(0, 7).every((group) => group === 0) && v6[7] === 1;
-}
-function directIfLoopback(url) {
-  const parsed = URL.parse(url);
-  if (parsed === null || !isLoopbackHost(parsed.hostname))
-    return {};
-  return { proxy: false };
-}
-function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, options)) {
-  return fetchImpl(url, { ...init, redirect: "manual", ...directIfLoopback(url) });
 }
 
 // src/gateway/listen.ts
@@ -7135,55 +7589,6 @@ function serveUnix(path, fetch2) {
   return Bun.serve(options);
 }
 
-// src/gateway/plain-text.ts
-var CONTROL = /[\p{Cc}\p{Cf}]/gu;
-var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
-function plainText(text, options = {}) {
-  return text.replace(options.keepNewlines === true ? CONTROL_BUT_LINES : CONTROL, " ");
-}
-function cutText(text, max) {
-  if (text.length <= max)
-    return text;
-  let end = Math.max(0, max);
-  const last = text.charCodeAt(end - 1);
-  if (end > 0 && last >= 55296 && last <= 56319)
-    end -= 1;
-  return text.slice(0, end);
-}
-function oneLine(text, max, options = {}) {
-  const flat = options.ascii === true ? text.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?") : plainText(text).replace(/\s+/g, " ");
-  const line = flat.trim();
-  return line.length > max ? `${cutText(line, max)}${options.mark ?? ""}` : line;
-}
-function maskedTail(secret) {
-  return secret.length >= 12 ? `****${secret.slice(-4)}` : "****";
-}
-var KNOWN_SECRET_MIN = 4;
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function knownSecretForms(known) {
-  const forms = new Map;
-  for (const secret of known) {
-    if (secret.length < KNOWN_SECRET_MIN)
-      continue;
-    const once = JSON.stringify(secret).slice(1, -1);
-    const twice = JSON.stringify(once).slice(1, -1);
-    for (const form of [secret, once, twice])
-      if (!forms.has(form))
-        forms.set(form, secret);
-  }
-  return [...forms].map(([form, secret]) => ({ form, secret })).sort((a, b) => b.form.length - a.form.length);
-}
-function maskSecrets(text, known = []) {
-  let out = text;
-  for (const { form, secret } of knownSecretForms(known)) {
-    out = out.split(form).join(maskedTail(secret));
-  }
-  return out.replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, "****@****").replace(/(\\?")([^"\\]{0,64}(?:key|token|secret|password|authorization)[^"\\]{0,64})\1(\s{0,4}):(\s{0,4})\1[^"\\]{0,512}\1/gi, "$1$2$1$3:$4$1****$1").replace(/\b(Bearer|Basic)\s{1,4}[A-Za-z0-9._~+/=-]{1,512}/gi, "$1 ****").replace(/\bsk-[A-Za-z0-9_-]{1,512}/g, (key) => `sk-${maskedTail(key)}`).replace(/(key|token|secret|password)(\W{0,3}[:=]\W{0,3})(?!\*{4}|sk-\*{4})([^\s"'`\\,;&<>(){}[\]]{4,256})/gi, (_match, name, separator, value) => `${name}${separator}${maskedTail(value)}`).replace(/[A-Za-z0-9_-]{32,512}/g, (run) => run.includes("__") || UUID.test(run) ? run : maskedTail(run));
-}
-function maskedLine(text, known, max, options = {}) {
-  return oneLine(maskSecrets(text, known), max, options);
-}
-
 // src/gateway/refusal.ts
 var REFUSAL_STATUS = 424;
 var LENGTH_REFUSAL = /too long|too large|too many tokens|token limit|exceeds? (?:the |this )?(?:model'?s? )?(?:maximum )?(?:context|token)|(?:maximum|max) context|context (?:length|window|limit)/i;
@@ -7279,7 +7684,7 @@ function addCheckTokens(state, day, side, tokens) {
   count.input += tokens.input;
   count.output += tokens.output;
 }
-function isJsonObject2(value) {
+function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function tokenCount(value) {
@@ -7288,7 +7693,7 @@ function tokenCount(value) {
   return Math.round(value);
 }
 function tokensOf(usage) {
-  if (!isJsonObject2(usage))
+  if (!isJsonObject4(usage))
     return null;
   const input = tokenCount(usage.input_tokens);
   const output = tokenCount(usage.output_tokens);
@@ -7303,50 +7708,103 @@ function tokensOf(usage) {
     output: output ?? 0
   };
 }
-function eventData(text) {
-  const out = [];
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, ""));
-    if (data.length > 0)
-      out.push(data.join(`
-`));
-  }
-  return out;
+var CHECK_USAGE_MAX_BYTES = 256 * 1024;
+var EVENT_MAX_CHARS = 64 * 1024;
+var EMPTY_TOKENS = { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 };
+function nextEventEnd(text) {
+  const lf = text.indexOf(`
+
+`);
+  const crlf = text.indexOf(`\r
+\r
+`);
+  if (crlf !== -1 && (lf === -1 || crlf < lf))
+    return { at: crlf, length: 4 };
+  return lf === -1 ? null : { at: lf, length: 2 };
 }
-function checkUsageFromAnswer(text, streaming) {
-  if (!streaming) {
-    let body;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      return null;
-    }
-    return tokensOf(isJsonObject2(body) ? body.usage : undefined);
+
+class AnswerUsageReader {
+  decoder = new TextDecoder;
+  streaming;
+  partial = "";
+  body = "";
+  tooBig = false;
+  start = null;
+  output = null;
+  constructor(streaming) {
+    this.streaming = streaming;
   }
-  let start = null;
-  let output = null;
-  for (const data of eventData(text)) {
+  push(chunk) {
+    if (this.streaming) {
+      this.partial += this.decoder.decode(chunk, { stream: true });
+      this.scan();
+      return;
+    }
+    if (this.tooBig)
+      return;
+    this.body += this.decoder.decode(chunk, { stream: true });
+    if (this.body.length > CHECK_USAGE_MAX_BYTES) {
+      this.tooBig = true;
+      this.body = "";
+    }
+  }
+  tokens() {
+    if (!this.streaming) {
+      if (this.tooBig)
+        return null;
+      this.body += this.decoder.decode();
+      let parsed;
+      try {
+        parsed = JSON.parse(this.body);
+      } catch {
+        return null;
+      }
+      return tokensOf(isJsonObject4(parsed) ? parsed.usage : undefined);
+    }
+    this.partial += this.decoder.decode();
+    this.scan();
+    if (this.partial.trim() !== "")
+      this.readEvent(this.partial);
+    this.partial = "";
+    if (this.start === null && this.output === null)
+      return null;
+    return {
+      ...this.start ?? EMPTY_TOKENS,
+      output: this.output ?? this.start?.output ?? 0
+    };
+  }
+  scan() {
+    for (;; ) {
+      const end = nextEventEnd(this.partial);
+      if (end === null)
+        break;
+      const event = this.partial.slice(0, end.at);
+      this.partial = this.partial.slice(end.at + end.length);
+      this.readEvent(event);
+    }
+    if (this.partial.length > EVENT_MAX_CHARS)
+      this.partial = "";
+  }
+  readEvent(block) {
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice("data:".length).replace(/^ /, "")).join(`
+`);
+    if (data === "")
+      return;
     let event;
     try {
       event = JSON.parse(data);
     } catch {
-      continue;
+      return;
     }
-    if (!isJsonObject2(event))
-      continue;
-    if (event.type === "message_start" && isJsonObject2(event.message)) {
-      start = tokensOf(event.message.usage) ?? start;
+    if (!isJsonObject4(event))
+      return;
+    if (event.type === "message_start" && isJsonObject4(event.message)) {
+      this.start = tokensOf(event.message.usage) ?? this.start;
     }
     if (event.type === "message_delta") {
-      output = tokenCount(isJsonObject2(event.usage) ? event.usage.output_tokens : undefined) ?? output;
+      this.output = tokenCount(isJsonObject4(event.usage) ? event.usage.output_tokens : undefined) ?? this.output;
     }
   }
-  if (start === null && output === null)
-    return null;
-  return {
-    ...start ?? { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
-    output: output ?? start?.output ?? 0
-  };
 }
 
 // src/gateway/server-tools.ts
@@ -7444,6 +7902,12 @@ var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
 var RECENT_MAX = 200;
+var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
+var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
+function sessionIdOf(headers) {
+  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+  return SESSION_ID.test(value) ? value : null;
+}
 var MESSAGES_PATH = "/v1/messages";
 var COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 var HOP_BY_HOP = new Set([
@@ -7630,10 +8094,10 @@ function toolSearchForBackend(body) {
   const messages = body.messages;
   if (Array.isArray(messages)) {
     out.messages = messages.map((message) => {
-      if (!isJsonObject3(message) || !Array.isArray(message.content))
+      if (!isJsonObject5(message) || !Array.isArray(message.content))
         return message;
       const content = message.content.map((block) => {
-        if (!isJsonObject3(block) || block.type !== "tool_result")
+        if (!isJsonObject5(block) || block.type !== "tool_result")
           return block;
         const inner = block.content;
         if (!Array.isArray(inner))
@@ -7641,7 +8105,7 @@ function toolSearchForBackend(body) {
         return {
           ...block,
           content: inner.map((part) => {
-            if (!isJsonObject3(part) || part.type !== "tool_reference")
+            if (!isJsonObject5(part) || part.type !== "tool_reference")
               return part;
             const name = part.tool_name;
             if (typeof name !== "string")
@@ -7657,7 +8121,7 @@ function toolSearchForBackend(body) {
   const tools = body.tools;
   if (Array.isArray(tools)) {
     out.tools = tools.flatMap((tool) => {
-      if (!isJsonObject3(tool) || tool.defer_loading !== true)
+      if (!isJsonObject5(tool) || tool.defer_loading !== true)
         return [tool];
       const name = tool.name;
       if (typeof name !== "string" || !referenced.has(name))
@@ -7671,10 +8135,10 @@ function toolSearchForBackend(body) {
 }
 function reasoningOffForBackend(body, options = {}) {
   const thinking = body.thinking;
-  const off = isJsonObject3(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
+  const off = isJsonObject5(thinking) ? thinking.type === "disabled" : thinking === undefined && options.absentIsOff === true;
   if (!off)
     return body;
-  const outputConfig = isJsonObject3(body.output_config) ? body.output_config : {};
+  const outputConfig = isJsonObject5(body.output_config) ? body.output_config : {};
   if (outputConfig.effort !== undefined)
     return body;
   return { ...body, output_config: { ...outputConfig, effort: "none" } };
@@ -7791,17 +8255,17 @@ function requestForClaudeFallback(body, model) {
   const changes = [];
   const capEffort = (why) => {
     const outputConfig = body.output_config;
-    if (isJsonObject3(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
+    if (isJsonObject5(outputConfig) && typeof outputConfig.effort === "string" && ABOVE_HIGH.has(outputConfig.effort)) {
       out.output_config = { ...outputConfig, effort: "high" };
       changes.push(`effort ${outputConfig.effort} -> high${why}`);
     }
   };
   const thinking = body.thinking;
-  if (isJsonObject3(thinking) && thinking.type === "disabled") {
+  if (isJsonObject5(thinking) && thinking.type === "disabled") {
     if (rules.thinkingOff === "left out") {
       delete out.thinking;
       changes.push("thinking disabled -> left out (always on)");
-      const outputConfig = isJsonObject3(body.output_config) ? body.output_config : undefined;
+      const outputConfig = isJsonObject5(body.output_config) ? body.output_config : undefined;
       if (outputConfig?.effort === undefined) {
         out.output_config = { ...outputConfig, effort: "low" };
         changes.push("effort low (nearest to thinking off)");
@@ -7813,12 +8277,12 @@ function requestForClaudeFallback(body, model) {
     } else if (rules.thinkingOff === "capped") {
       capEffort(" (thinking off)");
     }
-  } else if (isJsonObject3(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
+  } else if (isJsonObject5(thinking) && thinking.type === "enabled" && rules.budgetToAdaptive) {
     out.thinking = thinking.display === undefined ? { type: "adaptive" } : { display: thinking.display, type: "adaptive" };
     changes.push("thinking enabled (budget) -> adaptive");
   }
   const toolChoice = body.tool_choice;
-  if (rules.forcedToolChoice && isJsonObject3(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
+  if (rules.forcedToolChoice && isJsonObject5(toolChoice) && (toolChoice.type === "any" || toolChoice.type === "tool")) {
     out.tool_choice = toolChoice.disable_parallel_tool_use === undefined ? { type: "auto" } : { disable_parallel_tool_use: toolChoice.disable_parallel_tool_use, type: "auto" };
     changes.push(`tool_choice ${toolChoice.type} -> auto`);
   }
@@ -7837,7 +8301,7 @@ function requestForClaudeFallback(body, model) {
   return changes.length > 0 ? { body: out, changes } : { body, changes };
 }
 var encoder = new TextEncoder;
-function isJsonObject3(value) {
+function isJsonObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function parseBody(bytes) {
@@ -7847,7 +8311,7 @@ function parseBody(bytes) {
   } catch {
     return null;
   }
-  return isJsonObject3(parsed) ? parsed : null;
+  return isJsonObject5(parsed) ? parsed : null;
 }
 function deadline(ms) {
   let timer;
@@ -7864,7 +8328,6 @@ function withoutEmptyBreakers(state) {
     delete state.breakers;
   }
 }
-var CHECK_USAGE_MAX_BYTES = 256 * 1024;
 function stateWriter(deps, what, save) {
   if (save === undefined)
     return () => {};
@@ -8803,39 +9266,47 @@ function createRouter(deps) {
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+    const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
+    const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
+    const undecodable = encoding !== "" && encoding !== "identity" && format === null;
+    const usage = new AnswerUsageReader(streaming);
+    let decode = null;
+    if (format !== null) {
+      const decompressor = new DecompressionStream(format);
+      const writer = decompressor.writable.getWriter();
+      const done = (async () => {
+        const decoded = decompressor.readable.getReader();
+        for (;; ) {
+          const step = await decoded.read();
+          if (step.done)
+            return;
+          usage.push(step.value);
+        }
+      })().catch(() => {});
+      decode = { done, writer };
+    }
     const reader = body.getReader();
-    let chunks = [];
-    let kept = 0;
-    let keep = true;
     let ended = false;
-    const answerText = async () => {
-      if (!keep)
-        return null;
-      const encoding = (response.headers.get("content-encoding") ?? "").trim().toLowerCase();
-      const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
-      if (format === null && encoding !== "" && encoding !== "identity")
-        return null;
-      const bytes = new Uint8Array(kept);
-      let at = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, at);
-        at += chunk.byteLength;
-      }
-      if (format === null)
-        return new TextDecoder().decode(bytes);
-      const decoded = new Response(bytes).body;
-      if (decoded === null)
-        return null;
-      return await new Response(decoded.pipeThrough(new DecompressionStream(format))).text();
-    };
     const finish = () => {
       if (ended)
         return;
       ended = true;
-      const task = answerText().then((answer) => note(answer === null ? null : checkUsageFromAnswer(answer, streaming)), () => note(null));
+      const task = (async () => {
+        if (undecodable) {
+          note(null);
+          return;
+        }
+        if (decode !== null) {
+          try {
+            await decode.writer.close();
+          } catch {}
+          await decode.done;
+        }
+        note(usage.tokens());
+      })();
       deps.background?.(task);
     };
-    const counted = new ReadableStream({
+    const observed = new ReadableStream({
       cancel(reason) {
         finish();
         return reader.cancel(reason);
@@ -8855,18 +9326,16 @@ function createRouter(deps) {
           return;
         }
         controller.enqueue(step.value);
-        if (!keep)
+        if (undecodable)
           return;
-        kept += step.value.byteLength;
-        if (kept > CHECK_USAGE_MAX_BYTES) {
-          keep = false;
-          chunks = [];
+        if (decode !== null) {
+          decode.writer.write(step.value).catch(() => {});
           return;
         }
-        chunks.push(step.value);
+        usage.push(step.value);
       }
     });
-    return new Response(counted, {
+    return new Response(observed, {
       headers: response.headers,
       status: response.status,
       statusText: response.statusText
@@ -8911,6 +9380,7 @@ function createRouter(deps) {
       noteSeenClaude(parsed.model);
     }
     const guard = isAutoModeGuard(parsed, config.aliases);
+    model.guard = guard;
     const alias = resolveAlias(parsed.model, config.aliases);
     let body = parsed;
     if (alias !== null) {
@@ -9033,10 +9503,56 @@ function createRouter(deps) {
       return chain(req, url, config, body, [target], model.name, guard);
     }
   }
+  const backendListings = new Map;
+  const listingLoads = new Set;
+  const listingErrors = new Set;
+  function backendPrice(backend, model) {
+    const cached = backendListings.get(backend);
+    const stale = cached === undefined || deps.now() - cached.at >= PRICE_REFRESH_MS;
+    if (stale && deps.listModels !== undefined && !listingLoads.has(backend)) {
+      const entry = deps.getConfig().backends[backend];
+      if (entry !== undefined) {
+        listingLoads.add(backend);
+        const load = deps.listModels;
+        const task = load({ apiKey: entry.apiKey, baseUrl: entry.baseUrl }).then((models) => {
+          backendListings.set(backend, { at: deps.now(), models });
+        }).catch((error) => {
+          const message = messageOf(error);
+          if (!listingErrors.has(message)) {
+            listingErrors.add(message);
+            deps.log(`WARN cannot read ${backend}'s model list for history prices: ${message}`);
+          }
+          backendListings.set(backend, { at: deps.now(), models: [] });
+        }).finally(() => {
+          listingLoads.delete(backend);
+        });
+        deps.background?.(task.then(() => {}));
+      }
+    }
+    return cached === undefined ? null : priceFromModels(cached.models, model);
+  }
+  function costOf(target, asked, tokens) {
+    if (tokens === null)
+      return null;
+    if (target.startsWith("claude-"))
+      return claudeCost(target, tokens);
+    if (target === "anthropic" || target.startsWith("anthropic "))
+      return claudeCost(asked, tokens);
+    const parsed = parseTarget(target);
+    if ("target" in parsed && parsed.target.kind === "backend") {
+      const price = backendPrice(parsed.target.backend, parsed.target.model);
+      return price === null ? null : backendCost(price, tokens);
+    }
+    return null;
+  }
   return async function handle(req) {
     const startMs = deps.now();
     const url = new URL(req.url);
-    const model = { name: "-", slot: null };
+    const model = {
+      guard: false,
+      name: "-",
+      slot: null
+    };
     const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
@@ -9083,6 +9599,30 @@ function createRouter(deps) {
     });
     if (recent.length > RECENT_MAX)
       recent.shift();
+    if (req.method === "POST" && url.pathname === MESSAGES_PATH && !model.guard && deps.history?.enabled() === true) {
+      const answered = outcome;
+      const row = {
+        at: startMs,
+        breaker: answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
+        model: model.name,
+        ms: deps.now() - startMs,
+        nextTarget: answered.fallbacks > 0 ? printable(answered.target) : null,
+        session: sessionIdOf(req.headers),
+        slot: model.slot,
+        status: answered.response.status,
+        target: printable(answered.target)
+      };
+      outcome = {
+        ...answered,
+        response: observedAnswer(answered.response, (tokens) => {
+          deps.history?.record({
+            ...row,
+            cost: costOf(answered.target, model.name, tokens),
+            tokens
+          });
+        })
+      };
+    }
     return outcome.response;
   };
 }
@@ -9093,7 +9633,7 @@ async function startRouter(paths, env = process.env) {
   const source = watchConfig(configPath, log);
   const configPort = source.get().port;
   const writeState = (file, text) => {
-    mkdirSync3(dirname2(file), { mode: 448, recursive: true });
+    mkdirSync4(dirname3(file), { mode: 448, recursive: true });
     atomicWrite(file, text, 384);
   };
   const readState = (file) => {
@@ -9106,10 +9646,17 @@ async function startRouter(paths, env = process.env) {
     }
   };
   const shutdown = new AbortController;
+  const history = createHistoryWriter({
+    file: paths.historyDbFile,
+    log,
+    retentionDays: () => historyRetentionDays(source.get())
+  });
   const handlerFor = (port) => createRouter({
     configPath,
     fetch: (url, init) => fetch(url, init),
     getConfig: () => source.get(),
+    history,
+    listModels: (backend) => listModels(backend.baseUrl, backend.apiKey).then((listed) => ("models" in listed) ? listed.models : []),
     loadSafetyChecks: () => readState(paths.safetyChecksFile),
     loadState: () => readState(statePath),
     log,
@@ -9133,7 +9680,7 @@ async function startRouter(paths, env = process.env) {
     process.once("SIGTERM", () => {
       log(`SIGTERM: finishing ${server.pendingRequests} request(s), then exiting`);
       shutdown.abort();
-      exitWhenDone(server.stop(false), log, () => {});
+      exitWhenDone(server.stop(false), log, () => history.close());
     });
     return;
   }
@@ -9154,7 +9701,10 @@ async function startRouter(paths, env = process.env) {
     shutdown.abort();
     const drain = relay.drain();
     const stopped = drain.connected.then(() => server.stop(false));
-    exitWhenDone(Promise.all([stopped, drain.closed]), log, inner.cleanup);
+    exitWhenDone(Promise.all([stopped, drain.closed]), log, () => {
+      inner.cleanup();
+      history.close();
+    });
   });
 }
 function exitWhenDone(done, log, cleanup) {

@@ -23,6 +23,7 @@ import { z } from "zod";
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
+import { HISTORY_MAX_RETENTION_DAYS, HISTORY_RETENTION_DAYS } from "./history";
 import {
   claudeFamily,
   FALLBACK_OFF_BY_DEFAULT,
@@ -135,6 +136,23 @@ export const gatewayConfigSchema = z
      * on|off` writes it.
      */
     breaker: z.record(z.string(), z.boolean()).optional(),
+    /**
+     * The request history (`history.ts`, D51). Absent: 90 days, kept in
+     * `~/.local/state/cc-smart-dev-kit/history.db`. `retentionDays: 0` turns the log off:
+     * the router writes no row, and an existing database stays as it is.
+     */
+    history: z
+      .looseObject({
+        retentionDays: z
+          .int()
+          .min(0, "0 turns the request history off, which is the smallest value")
+          .max(
+            HISTORY_MAX_RETENTION_DAYS,
+            `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`,
+          )
+          .optional(),
+      })
+      .optional(),
     /**
      * 0.4.x only, read and never written again: the Claude ids whose requests a model slot
      * took (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`). A request reaches its slot by
@@ -289,6 +307,14 @@ export function breakerOn(config: Pick<GatewayConfig, "breaker">, slot: string):
  */
 export function breakerHoldMs(config: Pick<GatewayConfig, "timeouts">): number {
   return config.timeouts.breakerHoldMs ?? BREAKER_HOLD_CEILING_MS;
+}
+
+/**
+ * How long the request history keeps a row, in days: the config's
+ * `history.retentionDays`, else `HISTORY_RETENTION_DAYS`. 0 turns the log off.
+ */
+export function historyRetentionDays(config: Pick<GatewayConfig, "history">): number {
+  return config.history?.retentionDays ?? HISTORY_RETENTION_DAYS;
 }
 
 /**

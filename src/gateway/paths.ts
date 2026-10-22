@@ -47,6 +47,11 @@ export interface RouterPaths {
    * reads: `~/.local/state/cc-smart-dev-kit/safety-checks.json` (`safety-checks.ts`).
    */
   safetyChecksFile: string;
+  /**
+   * The request history's database, which the router writes and the portal reads
+   * (`history.ts`, `history-read.ts`): `~/.local/state/cc-smart-dev-kit/history.db`.
+   */
+  historyDbFile: string;
 }
 
 /**
@@ -59,5 +64,6 @@ export function routerPaths(env: Record<string, string | undefined> = process.en
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
     safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db"),
   };
 }

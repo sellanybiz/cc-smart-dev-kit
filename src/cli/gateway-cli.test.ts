@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { runGateway } from "../gateway/commands";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthFetch, HealthProbe } from "../gateway/health";
+import { createHistoryWriter } from "../gateway/history";
 import { shellQuote } from "../setup/launcher";
 import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
@@ -266,6 +267,7 @@ function machine(
   const paths = {
     config: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     copy: join(home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    history: join(home, ".local", "state", "cc-smart-dev-kit", "history.db"),
     unit: join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     socket: join(home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     settings: join(configDir, "settings.json"),
@@ -482,7 +484,11 @@ function machine(
     writeFileSync(paths.config, JSON.stringify({ ...config, ...extra }, null, 2), { mode: 0o600 });
   };
   /** A config written by hand, on the fake server's port. */
-  const writeConfig = (port: number, slots: Record<string, string[]> = {}) => {
+  const writeConfig = (
+    port: number,
+    slots: Record<string, string[]> = {},
+    extra: Record<string, unknown> = {},
+  ) => {
     mkdirSync(dirname(paths.config), { recursive: true });
     writeFileSync(
       paths.config,
@@ -491,6 +497,7 @@ function machine(
         port,
         slots: { "cc-smart-dev-kit-scout": ["omniroute:m1", "claude-sonnet-5-5"], ...slots },
         version: 1,
+        ...extra,
       }),
       { mode: 0o600 },
     );
@@ -1540,6 +1547,7 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
         "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
         `✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:${server.port}`,
         `✓ the router answers on 127.0.0.1:${server.port}`,
+        "· history: no requests logged yet, keeping 90 days in ~/.local/state/cc-smart-dev-kit/history.db",
         `✓ backend omniroute (http://127.0.0.1:${server.port}) answers`,
         "· slot cc-smart-dev-kit-scout: Custom, first target omniroute:m1 (fallback on, 1 more after it)",
         "· slot cc-smart-dev-kit-worker: Custom, first target claude-sonnet-5-5 (fallback on)",
@@ -1630,6 +1638,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
       "· no ~/.config/cc-smart-dev-kit/gateway.json yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login. To add a backend: cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file",
       "✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:20100",
       "✓ the router answers on 127.0.0.1:20100",
+      "· history: no requests logged yet, keeping 90 days in ~/.local/state/cc-smart-dev-kit/history.db",
       "· slot cc-smart-dev-kit-scout: Claude (haiku goes to Anthropic as Claude Code sent it)",
       "· slot cc-smart-dev-kit-worker: Claude (sonnet goes to Anthropic as Claude Code sent it)",
       "· slot cc-smart-dev-kit-fable: Claude (fable goes to Anthropic as Claude Code sent it)",
@@ -2109,6 +2118,113 @@ describe("status names an open breaker", () => {
   });
 });
 
+describe("cc-smart-dev-kit gateway history", () => {
+  /** A row with the values the test's assertions name. */
+  function seededRow(at: number, overrides: Record<string, unknown> = {}) {
+    return {
+      at,
+      breaker: null,
+      cost: { estimated: true, usd: 0.001 },
+      model: "claude-sonnet-5-5",
+      ms: 100,
+      nextTarget: null,
+      session: "session-1",
+      slot: "cc-smart-dev-kit-worker",
+      status: 200,
+      target: "claude-sonnet-5-5",
+      tokens: { cacheRead: 1000, cacheWrite: 20, input: 100, output: 10 },
+      ...overrides,
+    };
+  }
+
+  test("no database yet: it says the router makes the file with its first row", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const history = await m.run(["gateway", "history"]);
+    expect(history.stderr).toBe("");
+    expect(history.exitCode).toBe(0);
+    expect(history.stdout).toBe(
+      "No request logged yet: ~/.local/state/cc-smart-dev-kit/history.db is made by the router's first row.\n",
+    );
+  });
+
+  test("history.retentionDays: 0 says the log is off, and reads nothing", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, {}, { history: { retentionDays: 0 } });
+    const history = await m.run(["gateway", "history"]);
+    expect(history.exitCode).toBe(0);
+    expect(history.stdout).toBe(
+      "The request history is off (history.retentionDays: 0 in ~/.config/cc-smart-dev-kit/gateway.json): nothing is logged.\n",
+    );
+    // `gateway status` says the same, and never a failure.
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stdout).toContain(
+      "history: off (history.retentionDays: 0) in ~/.local/state/cc-smart-dev-kit/history.db\n",
+    );
+  });
+
+  test("the table: each target's requests, errors, tokens, cost and worst p95, in the range", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const now = Date.now(); // the CLI reads "now" itself, so the rows are recent
+    const writer = createHistoryWriter({
+      file: m.paths.history,
+      flushAfterMs: 60_000,
+      log: () => {},
+      retentionDays: () => 90,
+    });
+    writer.record(seededRow(now - 5 * 60_000));
+    writer.record(
+      seededRow(now - 4 * 60_000, {
+        cost: null,
+        ms: 300,
+        status: 500,
+        tokens: null,
+      }),
+    );
+    writer.flush();
+    writer.close();
+
+    const history = await m.run(["gateway", "history", "1h", "--by", "target"]);
+    expect(history.stderr).toBe("");
+    expect(history.exitCode).toBe(0);
+    expect(history.stdout).toContain(
+      "History, last 1h (1-minute buckets), by target. Cost is estimated: Claude at its list price, a backend at the price its own list gives.\n",
+    );
+    // One target, two rows: 100 and 300 ms, one error, the tokens and the cost summed.
+    expect(history.stdout).toMatch(
+      /claude-sonnet-5-5 {2,}2 +1 +100 +10 +1,000 +20 +\$0\.001 +300 ms/,
+    );
+    // A filter narrows it: --errors leaves only the 500.
+    const errors = await m.run(["gateway", "history", "1h", "--errors"]);
+    expect(errors.stdout).toMatch(/claude-sonnet-5-5 {2,}1 +1 +0 +0 +0 +0 +\$0 +300 ms/);
+    // `gateway status` shows the database's size and the retention (D51).
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stdout).toMatch(
+      /history: [\d.]+ (?:B|KB|MB), keeping 90 days in ~\/\.local\/state\/cc-smart-dev-kit\/history\.db/,
+    );
+  });
+
+  test("a wrong range, --by value or filter is a usage error", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    for (const args of [
+      ["gateway", "history", "2h"],
+      ["gateway", "history", "--by", "provider"],
+      ["gateway", "history", "--slot"],
+      ["gateway", "history", "1h", "7d"],
+    ]) {
+      const result = await m.run(args);
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toStartWith("Usage: cc-smart-dev-kit gateway <command>");
+    }
+  });
+});
+
 describe("cc-smart-dev-kit gateway breaker", () => {
   /**
    * Each test here starts the CLI as a real process, up to seven times. Bun's 5 s default is too
@@ -2341,6 +2457,7 @@ describe("secrets", () => {
     record(await m.run(["gateway", "slot", "judge", "claude-sonnet-5-5"]));
     record(await m.run(["gateway", "slot", "opus", "off"]));
     record(await m.run(["usage"]));
+    record(await m.run(["gateway", "history"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));
     record(await m.run(["gateway", "on"]));
     record(await m.run(["gateway", "status"]));

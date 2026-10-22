@@ -11,6 +11,7 @@ import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "
 import {
   emptyConfig,
   fallbackOn,
+  historyRetentionDays,
   judgeTargetUsable,
   keptChain,
   loadConfigFile,
@@ -18,6 +19,8 @@ import {
   workerJudgeTargets,
 } from "./config";
 import { type HealthFetch, routerHealth } from "./health";
+import { historyDbBytes, historyDbExists } from "./history";
+import { historyWords } from "./history-read";
 import {
   type RouterService,
   type RouterServiceKind,
@@ -162,6 +165,18 @@ export async function gatewayChecks(options: {
         }
       : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` },
   );
+
+  // The request history (D51): its size and how long it keeps rows. Information, never a
+  // failure: a log that is off, or has not logged yet, is a person's choice or a new install.
+  checks.push({
+    ok: true,
+    info: true,
+    text: `history: ${historyWords({
+      bytes: historyDbBytes(paths.historyDbFile),
+      exists: historyDbExists(paths.historyDbFile),
+      retentionDays: historyRetentionDays(config),
+    })} in ${short(paths.historyDbFile)}`,
+  });
 
   for (const [name, backend] of Object.entries(config.backends)) {
     // A base URL may carry a user and password: never printed.

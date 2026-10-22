@@ -323,6 +323,13 @@ An optional local router between Claude Code and the model providers
   the StopFailure alert and the portal read. The alert's worker runs through the launcher,
   never from the plugin's version folder. The health answer also lists the last 200 routed
   requests (`recent`: metadata only), which the portal's activity feed reads (B6b).
+- **The request history (D51): one row per routed `/v1/messages` request** — time, session
+  id, model, slot, target, status, latency, tokens, an estimated cost — and never a prompt,
+  a system text, a tool, an answer or a key. `bun:sqlite` in the state folder: WAL, written
+  in the background and batched, kept 90 days by default (`history.retentionDays`; 0 turns
+  it off), a daily purge with incremental vacuum. Its read side (`history-read.ts`) feeds
+  `gateway history` and the portal's Flow page; `doctor` and `gateway status` show its size.
+  `docs/gateway.md` § The request history.
 - **A used-up chain is bridged, not handed back dead (D42, the breaker).** When every target of
   a slot failed for want of capacity and the last one is a backend, the router holds the
   request (up to 240 s from its start, 60 s if it does not stream; the config is read once a

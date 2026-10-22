@@ -59,7 +59,8 @@ function routerPaths(env = process.env) {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db")
   };
 }
 
@@ -8522,6 +8523,11 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// src/gateway/history.ts
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
+
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
@@ -8604,6 +8610,9 @@ var gatewayConfigSchema = looseObject({
   kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
   fallback: record(string2(), boolean2()).optional(),
   breaker: record(string2(), boolean2()).optional(),
+  history: looseObject({
+    retentionDays: int().min(0, "0 turns the request history off, which is the smallest value").max(HISTORY_MAX_RETENTION_DAYS, `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`).optional()
+  }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
   slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
@@ -8764,8 +8773,11 @@ var stateSchema2 = object({
   days: record(string2(), daySchema),
   version: literal(1)
 });
+var CHECK_USAGE_MAX_BYTES = 256 * 1024;
+var EVENT_MAX_CHARS = 64 * 1024;
 
 // src/gateway/router.ts
+var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
 var HOP_BY_HOP = new Set([
   "connection",
   "keep-alive",
@@ -8777,7 +8789,6 @@ var HOP_BY_HOP = new Set([
 var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 var ABOVE_HIGH = new Set(["max", "xhigh"]);
 var encoder = new TextEncoder;
-var CHECK_USAGE_MAX_BYTES = 256 * 1024;
 
 // src/portal/lifecycle.ts
 function portalStarterArgv(bunPath, bundle, pluginDir) {

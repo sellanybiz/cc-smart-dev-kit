@@ -14,6 +14,7 @@ import { messageOf } from "./config";
 import type { HealthFetch } from "./health";
 import { backendFetch } from "./hosts";
 import { maskedLine, oneLine } from "./plain-text";
+import { listedPrice, type ModelPrice } from "./prices";
 
 /** The most characters of a backend's own words (an error answer, a fetch error) in a detail. */
 const REASON_CHARS = 120;
@@ -26,6 +27,11 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 export interface ListedModel {
   contextLength: null | number;
   id: string;
+  /**
+   * The price the list gives for it (USD per million tokens), when it gives one
+   * (`prices.ts`): the history's cost for a request this backend answered.
+   */
+  price?: ModelPrice;
 }
 
 /** The models in an OpenAI- or Anthropic-style `/v1/models` answer. */
@@ -35,7 +41,12 @@ export function parseModelList(body: unknown): ListedModel[] {
   for (const entry of body.data) {
     if (!isJsonObject(entry) || typeof entry.id !== "string") continue;
     const context = entry.context_length;
-    models.push({ contextLength: typeof context === "number" ? context : null, id: entry.id });
+    const price = listedPrice(entry);
+    models.push({
+      contextLength: typeof context === "number" ? context : null,
+      id: entry.id,
+      ...(price === null ? {} : { price }),
+    });
   }
   return models;
 }
