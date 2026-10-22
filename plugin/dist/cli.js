@@ -367,12 +367,14 @@ function readSecretLine(terminal) {
         if (character === "\r" || character === `
 `) {
           terminal.off("data", listener);
+          terminal.pause?.();
           terminal.setRawMode?.(false);
           done(cleanSecretLine(text));
           return;
         }
         if (character === "\x03") {
           terminal.off("data", listener);
+          terminal.pause?.();
           terminal.setRawMode?.(false);
           done(null);
           return;
@@ -9413,6 +9415,86 @@ function createOut(term, sink = CONSOLE_SINK) {
   };
 }
 
+// src/cli/ui/prompt.ts
+var INTERRUPTED_EXIT = 130;
+var TRIES = 2;
+function yesOrNo(answer) {
+  const word = answer.trim().toLowerCase();
+  if (word === "y" || word === "yes")
+    return true;
+  if (word === "n" || word === "no")
+    return false;
+  return;
+}
+var DIM = 2;
+function createPrompts(term, io) {
+  const hint = (text) => term.color ? `\x1B[${DIM}m${text}\x1B[0m` : text;
+  const read = (question, hintText) => {
+    const room = Math.max(1, term.width - (hintText === "" ? 0 : hintText.length + 1) - 1);
+    const lines = wrapWords(shownText(term, question), room, room);
+    for (const line of lines.slice(0, -1))
+      io.write(`${line}
+`);
+    const last = lines.at(-1) ?? "";
+    return io.readLine(hintText === "" ? last : `${last} ${hint(hintText)}`);
+  };
+  const say = (text) => {
+    for (const line of renderLine(term, "warn", text))
+      io.write(`${line}
+`);
+  };
+  const yesNoWord = (value) => value ? "yes" : "no";
+  return {
+    confirm(question, fallback = false) {
+      for (let attempt = 1;attempt <= TRIES; attempt += 1) {
+        const answer = read(question, fallback ? "[Y/n]" : "[y/N]");
+        if (answer === null || answer.trim() === "")
+          return fallback;
+        const understood = yesOrNo(answer);
+        if (understood !== undefined)
+          return understood;
+        if (attempt < TRIES) {
+          say(`Not understood: answer y or n (Enter keeps ${yesNoWord(fallback)}).`);
+        }
+      }
+      say(`Not understood again: ${yesNoWord(fallback)}, the default.`);
+      return fallback;
+    },
+    ask(question, options) {
+      const shownDefault = options.default === "" ? "" : `[${options.default}]`;
+      for (let attempt = 1;attempt <= TRIES; attempt += 1) {
+        const typed = read(question, shownDefault);
+        const answer = typed === null || typed.trim() === "" ? options.default : typed.trim();
+        if (answer === options.default)
+          return answer;
+        const problem = options.check?.(answer) ?? null;
+        if (problem === null)
+          return answer;
+        say(attempt < TRIES ? `Not understood: ${problem}.` : `Not understood again (${problem}): ${options.default === "" ? "none" : options.default}, the default.`);
+      }
+      return options.default;
+    },
+    secret: io.readSecret === undefined ? null : async (question) => {
+      io.write(`${shownText(term, question)} ${hint("(it is not shown)")} `);
+      const value = await io.readSecret?.();
+      io.write(`
+`);
+      return value ?? null;
+    }
+  };
+}
+function terminalPrompts(term, stdin = process.stdin) {
+  if (stdin.isTTY !== true)
+    return null;
+  return createPrompts(term, {
+    write: (text) => {
+      process.stdout.write(text);
+    },
+    readLine: (shown) => prompt(shown),
+    ...canHideInput(stdin) ? { readSecret: () => readSecretLine(stdin) } : {}
+  });
+}
+
 // src/cli/ui/terminal.ts
 var MAX_WIDTH = 100;
 var DEFAULT_WIDTH = 80;
@@ -13111,17 +13193,21 @@ function restartPendingFile(stateDir) {
   return join12(stateDir, "restart-pending");
 }
 var HEALTH_WAIT_MS = 5000;
+async function checkRouterPort(options) {
+  const port = await probeRouterPort(options.port, options.probe.fetch);
+  const listenerUp = options.service.listenerUp(options.runner);
+  if (port.state === "other" && !listenerUp) {
+    throw new Error(`port ${options.port} is used by another program (an older router? stop it first)`);
+  }
+  return { listenerUp };
+}
 async function installRouter(options) {
   const tooOld = bunTooOld(options.bunVersion, tildify(options.bunPath, options.home));
   if (tooOld !== null) {
     throw new Error(`${tooOld} The router is not installed. Upgrade this Bun, then run: ${COMMAND} gateway setup`);
   }
   const { service } = options;
-  const port = await probeRouterPort(options.port, options.probe.fetch);
-  const listenerUp = service.listenerUp(options.runner);
-  if (port.state === "other" && !listenerUp) {
-    throw new Error(`port ${options.port} is used by another program (an older router? stop it first)`);
-  }
+  const { listenerUp } = await checkRouterPort(options);
   const short = (path) => tildify(path, options.home);
   const copyText = readFileSync12(options.bundle, "utf8");
   const definitions = service.definitions(options);
@@ -13751,6 +13837,112 @@ function settingsReport(settingsPath) {
   return { baseUrl, loginOverrides, subagentOverrides };
 }
 
+// src/gateway/setup-questions.ts
+var OFF = "off";
+var SETUP_QUESTIONS_INTRO = "Enter keeps the answer in [brackets].";
+function addressProblem(text) {
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    return "give a full address, such as http://127.0.0.1:20128";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return "the address starts with http:// or https://";
+  }
+  return url.username === "" && url.password === "" ? null : "give the address with no user or password in it";
+}
+function resolvePicks(answer, ids, backend) {
+  const parts = answer.split(",").map((part) => part.trim()).filter((part) => part !== "");
+  const resolved = [];
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) {
+      resolved.push(part);
+      continue;
+    }
+    const id = ids[Number(part) - 1];
+    if (id === undefined) {
+      return { error: `there is no model ${part} on the list (1 to ${String(ids.length)})` };
+    }
+    resolved.push(`${backend}:${id}`);
+  }
+  return { text: resolved.join(",") };
+}
+async function askSetupQuestions(prompts, facts) {
+  facts.print(SETUP_QUESTIONS_INTRO);
+  const savedUrl = facts.saved?.baseUrl;
+  const keepsAddress = savedUrl !== undefined && addressProblem(savedUrl) !== null;
+  if (keepsAddress) {
+    facts.print(`\xB7 ${facts.label}'s address is kept as it is: it holds a user or password, so it is not shown`);
+  }
+  const baseUrl = keepsAddress ? savedUrl : prompts.ask(`${facts.label}'s address`, {
+    default: savedUrl ?? facts.defaultBaseUrl,
+    check: addressProblem
+  }).replace(/\/+$/, "");
+  if (prompts.secret === null && facts.saved === null) {
+    return {
+      error: `this terminal cannot hide what you type, so the key would be shown on screen. Give it on stdin instead: ${facts.keyFlags}`
+    };
+  }
+  if (prompts.secret === null) {
+    facts.print(`\xB7 this terminal cannot hide what you type, so the key is not asked: the saved one stays (to change it: ${facts.keyFlags})`);
+  }
+  const typed = prompts.secret === null ? "" : await prompts.secret(facts.saved === null ? `${facts.label}'s API key for the router` : `${facts.label}'s API key for the router (Enter keeps the saved one)`);
+  if (typed === null)
+    return { stopped: true };
+  const key = typed.trim() === "" ? null : typed.trim();
+  const apiKey = key ?? facts.saved?.apiKey;
+  if (apiKey === undefined && facts.hasConfig) {
+    facts.print(`\xB7 no ${facts.label} API key was given: the config stays as it is, and no slot is asked`);
+    return { answers: { baseUrl, chains: {}, ids: [], key: null, turnOn: false } };
+  }
+  if (apiKey === undefined) {
+    return { error: `no ${facts.label} API key was given. Give one: ${facts.keyFlags}` };
+  }
+  const backend = { apiKey, baseUrl };
+  const chains = {};
+  const listed = await facts.listModels(backend);
+  const ids = "ids" in listed ? listed.ids : [];
+  if ("reason" in listed || ids.length === 0) {
+    const why = "reason" in listed ? listed.reason : "it lists no model";
+    facts.print(`! ${facts.label}'s model list could not be read (${why}), so every slot stays as it is. Pick them later: ${facts.pickLater}.`);
+  } else {
+    facts.print(`${facts.label}'s models:`);
+    ids.forEach((id, index) => {
+      facts.print(`  ${String(index + 1)}. ${facts.backend}:${id}`);
+    });
+    for (const slot of facts.slots) {
+      const now = slot.chain.join(",");
+      const isClaude = (text) => facts.claudeWords.includes(text);
+      const answer = prompts.ask(`The ${slot.name} slot (${capitalized(slot.family)}'s work): numbers or targets, comma-separated, or "${OFF}"`, {
+        default: now === "" ? OFF : now,
+        check: (text) => {
+          const picked = resolvePicks(text, ids, facts.backend);
+          if ("error" in picked)
+            return picked.error;
+          if (isClaude(picked.text) && slot.chain.length === 0)
+            return null;
+          return facts.checkChain(slot.key, picked.text, ids, backend);
+        }
+      });
+      const picked = resolvePicks(answer, ids, facts.backend);
+      if ("error" in picked)
+        continue;
+      if (isClaude(picked.text)) {
+        if (slot.chain.length > 0)
+          chains[slot.key] = picked.text;
+      } else if (picked.text !== now) {
+        chains[slot.key] = picked.text;
+      }
+    }
+  }
+  const turnOn = !facts.gatewayOn && prompts.confirm("Turn the gateway on now? Every Claude Code session on this machine then sends its requests through it", false);
+  return { answers: { baseUrl, chains, ids, key, turnOn } };
+}
+function capitalized(word) {
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
 // src/gateway/commands.ts
 var USAGE = `Usage: ${COMMAND} gateway <command>
 
@@ -13826,11 +14018,11 @@ var KNOWN_BACKENDS = {
   ollama: "https://ollama.com",
   omniroute: "http://127.0.0.1:20128"
 };
-function defaultConfig(omnirouteKey) {
+function defaultConfig(omnirouteKey, baseUrl = KNOWN_BACKENDS.omniroute ?? "") {
   return {
     aliases: {},
     anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
-    backends: { omniroute: { apiKey: omnirouteKey, baseUrl: "http://127.0.0.1:20128" } },
+    backends: { omniroute: { apiKey: omnirouteKey, baseUrl } },
     port: DEFAULT_PORT,
     slots: {},
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
@@ -13846,19 +14038,20 @@ function ensureConfig(configPath, key, options = {}) {
       throw new ConfigError(`no config at ${configPath}. Create it with the OmniRoute key on stdin: ${COMMAND} gateway setup --backend-key-stdin omniroute`);
     }
     if (options.dryRun !== true)
-      saveConfig(configPath, defaultConfig(key.value));
+      saveConfig(configPath, defaultConfig(key.value, key.baseUrl));
     return `created ${configPath} (mode 600)`;
   }
   const config = loadConfigFile(configPath);
   if (key === null)
     return `kept ${configPath}`;
   const existing = Object.hasOwn(config.backends, key.backend) ? config.backends[key.backend] : undefined;
-  const baseUrl = existing?.baseUrl ?? KNOWN_BACKENDS[key.backend];
+  const baseUrl = key.baseUrl ?? existing?.baseUrl ?? KNOWN_BACKENDS[key.backend];
   if (baseUrl === undefined) {
     throw new ConfigError(`backend "${key.backend}" is unknown; add it to ${configPath} by hand first`);
   }
   if (options.dryRun !== true) {
-    if (existing !== undefined && existing.apiKey !== key.value && options.stateDir !== undefined) {
+    const changed = existing !== undefined && (existing.apiKey !== key.value || existing.baseUrl !== baseUrl);
+    if (changed && options.stateDir !== undefined) {
       backupFile(options.stateDir, configPath);
     }
     saveConfig(configPath, {
@@ -13866,7 +14059,8 @@ function ensureConfig(configPath, key, options = {}) {
       backends: { ...config.backends, [key.backend]: { apiKey: key.value, baseUrl } }
     });
   }
-  return `set the key of backend "${key.backend}" (${maskKey(key.value)}) in ${configPath}`;
+  const moved = existing !== undefined && existing.baseUrl !== baseUrl ? ` and its address to ${shownValue(baseUrl)}` : "";
+  return `set the key of backend "${key.backend}" (${maskKey(key.value)})${moved} in ${configPath}`;
 }
 function configuredPort(configPath) {
   return existsSync11(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
@@ -13894,7 +14088,7 @@ function keyRefusedMessage(options) {
     `${options.backend} answered HTTP ${String(options.status)} for this key (${options.detail}, ${shownValue(options.baseUrl)}): it does not accept it.`,
     `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
     wantedKeyWords(options.backend),
-    `Find or make it there, then run again: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} < key-file`
+    `Find or make it there, then run again: ${options.again ?? `${COMMAND} gateway setup --backend-key-stdin ${options.backend} < key-file`}`
   ].join(`
 `);
 }
@@ -13902,7 +14096,7 @@ function keyUncheckedMessage(options) {
   return [
     `could not ask ${options.backend} at ${shownValue(options.baseUrl)} whether it accepts this key (${options.detail}).`,
     `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
-    `Start ${options.backend} and run again, or save the key without checking it: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} --save-unchecked < key-file`
+    options.again === undefined ? `Start ${options.backend} and run again, or save the key without checking it: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} --save-unchecked < key-file` : `Start ${options.backend} and run again: ${options.again}`
   ].join(`
 `);
 }
@@ -14755,7 +14949,7 @@ async function omniroutePassword(ctx, fromStdin) {
   }
   const value = await ctx.readSecret("OmniRoute's dashboard password");
   if (value === null)
-    throw new Error("nothing was read (Ctrl+C)");
+    return null;
   if (value === "")
     throw new Error("no OmniRoute dashboard password was given");
   return value;
@@ -14775,6 +14969,7 @@ async function commandSetup(ctx, args) {
   const configPath = paths.gatewayConfigFile;
   let key = null;
   let password = null;
+  let answers = null;
   let discard = null;
   if (options.keyBackend !== null) {
     const value = (await ctx.readStdin()).trim();
@@ -14784,6 +14979,32 @@ async function commandSetup(ctx, args) {
   }
   if (options.omniroutePassword || options.omniroutePasswordStdin) {
     password = await omniroutePassword(ctx, options.omniroutePasswordStdin);
+    if (password === null) {
+      ctx.error(STOPPED);
+      return INTERRUPTED_EXIT;
+    }
+  }
+  const asks = ctx.prompts !== undefined && ctx.prompts !== null && !options.yes && !options.noKey && options.keyBackend === null && !options.omniroutePassword && !options.omniroutePasswordStdin;
+  if (asks && ctx.prompts) {
+    await checkRouterPort({
+      port: configuredPort(configPath),
+      probe: ctx.probe,
+      runner: ctx.runner,
+      service
+    });
+    const asked = await askSetupQuestions(ctx.prompts, setupFacts(ctx));
+    if ("stopped" in asked) {
+      ctx.error(STOPPED);
+      return INTERRUPTED_EXIT;
+    }
+    if ("error" in asked)
+      throw new Error(asked.error);
+    answers = asked.answers;
+    const saved = savedOmniroute(configPath);
+    const value = answers.key ?? saved?.apiKey;
+    if (value !== undefined && (answers.key !== null || saved?.baseUrl !== answers.baseUrl)) {
+      key = { backend: OMNIROUTE, baseUrl: answers.baseUrl, value };
+    }
   }
   const install = (overrides) => ({
     bunPath: ctx.bunPath,
@@ -14847,7 +15068,7 @@ async function commandSetup(ctx, args) {
   try {
     let unchecked = "";
     if (key !== null) {
-      const baseUrl = backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
+      const baseUrl = key.baseUrl ?? backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
       if (baseUrl !== undefined) {
         const check = await checkBackendKey(baseUrl, key.value, {
           ...ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }
@@ -14858,7 +15079,8 @@ async function commandSetup(ctx, args) {
             baseUrl,
             configPath,
             detail: check.detail,
-            status: check.status
+            status: check.status,
+            ...answers === null ? {} : { again: SETUP_AGAIN }
           }));
         }
         if (check.kind === "unchecked") {
@@ -14867,7 +15089,8 @@ async function commandSetup(ctx, args) {
               backend: key.backend,
               baseUrl,
               configPath,
-              detail: check.detail
+              detail: check.detail,
+              ...answers === null ? {} : { again: SETUP_AGAIN }
             }));
           }
           unchecked = check.detail;
@@ -14892,6 +15115,8 @@ async function commandSetup(ctx, args) {
       if (upgraded.length > 0) {
         ctx.print(`  the config as it was before these changes is in ${tildify(backups, paths.home)}`);
       }
+      if (answers !== null)
+        saveAnsweredChains(ctx, answers);
       const now = existsSync11(configPath) ? loadConfigFile(configPath) : null;
       if (now !== null && Object.keys(now.slots).length === 0) {
         const saved = Object.keys(now.kept ?? {}).length;
@@ -14920,7 +15145,7 @@ async function commandSetup(ctx, args) {
 `));
         ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
       }
-      if (settingsReport(paths.settingsFile).baseUrl === null) {
+      if (settingsReport(paths.settingsFile).baseUrl === null && answers?.turnOn !== true) {
         ctx.print(`Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`);
       }
       return 0;
@@ -14930,7 +15155,80 @@ async function commandSetup(ctx, args) {
   }
   if (code === 0)
     await proveWorkerTargets(ctx);
+  if (code === 0 && answers?.turnOn === true)
+    return await commandOn(ctx);
   return code;
+}
+var SETUP_AGAIN = `${COMMAND} gateway setup (on this terminal it asks the address and the key again)`;
+var STOPPED = "Stopped. Nothing was changed.";
+var OMNIROUTE = "omniroute";
+function savedOmniroute(configPath) {
+  if (!existsSync11(configPath))
+    return null;
+  const { backends } = loadConfigFile(configPath);
+  return Object.hasOwn(backends, OMNIROUTE) ? backends[OMNIROUTE] ?? null : null;
+}
+function setupFacts(ctx) {
+  const configPath = ctx.paths.gatewayConfigFile;
+  const config = existsSync11(configPath) ? loadConfigFile(configPath) : null;
+  return {
+    backend: OMNIROUTE,
+    label: "OmniRoute",
+    saved: savedOmniroute(configPath),
+    hasConfig: config !== null,
+    defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
+    slots: Object.entries(FAMILY_SLOTS).map(([key, family]) => ({
+      chain: config?.slots[key] ?? [],
+      family,
+      key,
+      name: slotName(key)
+    })),
+    claudeWords: SLOT_WORDS.claude,
+    listModels: async ({ apiKey, baseUrl }) => {
+      const listed = await listModels(baseUrl, apiKey, LIST_MODELS_TIMEOUT_MS, ctx.apiFetch);
+      if ("error" in listed)
+        return { reason: listed.error };
+      if (listed.status !== 200)
+        return { reason: `HTTP ${String(listed.status)}` };
+      return { ids: listed.models.map((model) => model.id) };
+    },
+    checkChain: (slot, text, ids, backend) => {
+      const base = config ?? defaultConfig(backend.apiKey, backend.baseUrl);
+      const answered = { apiKey: backend.apiKey, baseUrl: backend.baseUrl };
+      const withBackend = { ...base, backends: { ...base.backends, [OMNIROUTE]: answered } };
+      const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
+      return "error" in plan ? plan.error : null;
+    },
+    gatewayOn: settingsReport(ctx.paths.settingsFile).baseUrl !== null,
+    keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
+    pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
+    print: ctx.print
+  };
+}
+var LIST_MODELS_TIMEOUT_MS = 1e4;
+function saveAnsweredChains(ctx, answers) {
+  const configPath = ctx.paths.gatewayConfigFile;
+  for (const [slot, text] of Object.entries(answers.chains)) {
+    const plan = planSlotChange(loadConfigFile(configPath), slot, text, {
+      [OMNIROUTE]: answers.ids
+    });
+    if ("error" in plan) {
+      ctx.print(`! ${slot} stays as it was: ${plan.error}`);
+      continue;
+    }
+    const next = plan.key === WORKER_SLOT ? withJudgeProofs(plan.config, {}) : plan.config;
+    saveConfig(configPath, next);
+    if (plan.next.length === 0)
+      dropFallbackRecord(ctx.paths.gatewayStateFile, plan.key);
+    for (const line of slotChangeLines({ ...plan, config: next }))
+      ctx.print(line);
+  }
+  const now = loadConfigFile(configPath);
+  const judge = now.slots[JUDGE_SLOT] ?? [];
+  const untested = judge.filter((target) => !judgeTargetUsable(now, target));
+  if (untested.length > 0) {
+    ctx.print(`! the judge chain's ${untested.join(", ")} has no test for ${OMNIROUTE}'s address now, so Claude judges until it is tested: ${COMMAND} gateway slot judge ${judge.join(",")}`);
+  }
 }
 async function proveWorkerTargets(ctx) {
   const configPath = ctx.paths.gatewayConfigFile;
@@ -44418,85 +44716,6 @@ async function runSubagentStatusline(read = () => Bun.stdin.text()) {
   return 0;
 }
 
-// src/cli/ui/prompt.ts
-var TRIES = 2;
-function yesOrNo(answer) {
-  const word = answer.trim().toLowerCase();
-  if (word === "y" || word === "yes")
-    return true;
-  if (word === "n" || word === "no")
-    return false;
-  return;
-}
-var DIM = 2;
-function createPrompts(term, io) {
-  const hint = (text) => term.color ? `\x1B[${DIM}m${text}\x1B[0m` : text;
-  const read = (question, hintText) => {
-    const room = Math.max(1, term.width - (hintText === "" ? 0 : hintText.length + 1) - 1);
-    const lines = wrapWords(shownText(term, question), room, room);
-    for (const line of lines.slice(0, -1))
-      io.write(`${line}
-`);
-    const last = lines.at(-1) ?? "";
-    return io.readLine(hintText === "" ? last : `${last} ${hint(hintText)}`);
-  };
-  const say = (text) => {
-    for (const line of renderLine(term, "warn", text))
-      io.write(`${line}
-`);
-  };
-  const yesNoWord = (value) => value ? "yes" : "no";
-  return {
-    confirm(question, fallback = false) {
-      for (let attempt = 1;attempt <= TRIES; attempt += 1) {
-        const answer = read(question, fallback ? "[Y/n]" : "[y/N]");
-        if (answer === null || answer.trim() === "")
-          return fallback;
-        const understood = yesOrNo(answer);
-        if (understood !== undefined)
-          return understood;
-        if (attempt < TRIES) {
-          say(`Not understood: answer y or n (Enter keeps ${yesNoWord(fallback)}).`);
-        }
-      }
-      say(`Not understood again: ${yesNoWord(fallback)}, the default.`);
-      return fallback;
-    },
-    ask(question, options) {
-      const shownDefault = options.default === "" ? "" : `[${options.default}]`;
-      for (let attempt = 1;attempt <= TRIES; attempt += 1) {
-        const typed = read(question, shownDefault);
-        const answer = typed === null || typed.trim() === "" ? options.default : typed.trim();
-        if (answer === options.default)
-          return answer;
-        const problem = options.check?.(answer) ?? null;
-        if (problem === null)
-          return answer;
-        say(attempt < TRIES ? `Not understood: ${problem}.` : `Not understood again (${problem}): ${options.default === "" ? "none" : options.default}, the default.`);
-      }
-      return options.default;
-    },
-    secret: io.readSecret === undefined ? null : async (question) => {
-      io.write(`${shownText(term, question)} ${hint("(it is not shown)")} `);
-      const value = await io.readSecret?.();
-      io.write(`
-`);
-      return value ?? null;
-    }
-  };
-}
-function terminalPrompts(term, stdin = process.stdin) {
-  if (stdin.isTTY !== true)
-    return null;
-  return createPrompts(term, {
-    write: (text) => {
-      process.stdout.write(text);
-    },
-    readLine: (shown) => prompt(shown),
-    ...canHideInput(stdin) ? { readSecret: () => readSecretLine(stdin) } : {}
-  });
-}
-
 // src/crew/context.ts
 import { randomBytes } from "crypto";
 function realCrewContext(paths) {
@@ -44530,7 +44749,7 @@ function gatewayContext(options) {
     bundle: options.bundle,
     runner: options.runner,
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...secretRead(terminal),
+    ...terminalQuestions(terminal),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -44541,9 +44760,11 @@ function gatewayContext(options) {
     error: options.error ?? ((line) => console.error(line))
   };
 }
-function secretRead(terminal) {
-  const secret = terminalPrompts(currentTerminal(), terminal)?.secret ?? null;
-  return secret === null ? {} : { readSecret: secret };
+function terminalQuestions(terminal) {
+  const prompts = terminalPrompts(currentTerminal(), terminal);
+  if (prompts === null)
+    return {};
+  return prompts.secret === null ? { prompts } : { prompts, readSecret: prompts.secret };
 }
 
 // src/hooks/notify.ts
