@@ -14447,9 +14447,9 @@ function fallbackWords(config, key) {
     return "fallback on";
   return targets.length > 1 ? `fallback off: only ${targets[0]} answers; the rest are kept, not used` : "fallback off";
 }
-function printSlots(config, print) {
-  print(`
-Slots (Claude: plain Claude; Custom: the first target answers, the next one only while fallback is on):`);
+function printSlots(config, out, print) {
+  out.blank();
+  out.heading("Slots (Claude: plain Claude; Custom: the first target answers, the next one only while fallback is on):");
   const known = [...Object.keys(FAMILY_SLOTS), JUDGE_SLOT];
   const keys = [
     ...known,
@@ -14463,7 +14463,7 @@ Slots (Claude: plain Claude; Custom: the first target answers, the next one only
       if (saved !== null)
         print(`    ${keptWords(key, saved)}`);
       if (key === JUDGE_SLOT && fallbackOn(config, key) && workerJudgeTargets(config).length > 0) {
-        print(`    ! ${JUDGE_WARNING}`);
+        out.line("warn", JUDGE_WARNING, { indent: 4 });
       }
       continue;
     }
@@ -14477,36 +14477,37 @@ Slots (Claude: plain Claude; Custom: the first target answers, the next one only
     }
     print(`  ${key.padEnd(16)} Custom: ${targets.join(" \u2192 ")}  (${notes.join("; ")})`);
     if (key === JUDGE_SLOT)
-      print(`    ! ${JUDGE_WARNING}`);
+      out.line("warn", JUDGE_WARNING, { indent: 4 });
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => a < b ? -1 : 1);
   if (aliases.length > 0) {
-    print(`
-Aliases (an old name, and what it means now):`);
+    out.blank();
+    out.heading("Aliases (an old name, and what it means now):");
     for (const [name, to] of aliases)
       print(`  ${name.padEnd(16)} \u2192 ${to}`);
   }
 }
 async function commandModels(ctx) {
+  const out = gatewayOut(ctx);
   const config = loadConfigFile(ctx.paths.gatewayConfigFile);
   for (const [name, backend] of Object.entries(config.backends)) {
-    ctx.print(`
-${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
+    out.blank();
+    out.heading(`${name}  ${shownValue(backend.baseUrl)}  (key ${maskKey(backend.apiKey)})`);
     const listed = await listModels(backend.baseUrl, backend.apiKey);
     if ("error" in listed)
-      ctx.print(`  unreachable: ${listed.error}`);
-    else if (listed.status !== 200)
-      ctx.print(`  /v1/models answered HTTP ${listed.status}`);
-    else {
+      out.line("fail", `unreachable: ${listed.error}`, { indent: 2 });
+    else if (listed.status !== 200) {
+      out.line("fail", `/v1/models answered HTTP ${listed.status}`, { indent: 2 });
+    } else {
       for (const model of [...listed.models].sort((a, b) => a.id.localeCompare(b.id))) {
         const context = model.contextLength === null ? "" : `  ${model.contextLength.toLocaleString("en-US")} tokens`;
         ctx.print(`  ${name}:${model.id}${context}`);
       }
     }
   }
-  printSlots(config, ctx.print);
-  ctx.print(`
-A claude-<model> target goes to Anthropic on your own Claude login: write the id as Anthropic names it.`);
+  printSlots(config, out, ctx.print);
+  out.blank();
+  out.say("A claude-<model> target goes to Anthropic on your own Claude login: write the id as Anthropic names it.");
   return 0;
 }
 function withJudgeProofs(config, passed) {
@@ -14539,17 +14540,21 @@ async function testWorkerTargets(ctx, config) {
     const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model, ctx.apiFetch);
     if (result.verdict === "block") {
       passed[text] = backend.baseUrl;
-      lines.push(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}": it judges auto mode's checks while Claude is limited or down`);
+      lines.push({
+        mark: "ok",
+        text: `judge test: ${text} blocked "${JUDGE_TEST_ACTION}": it judges auto mode's checks while Claude is limited or down`
+      });
     } else {
-      lines.push(`judge test: ${text} did not block "${JUDGE_TEST_ACTION}" (${result.detail}): it never judges; the worker slot uses it as before`);
+      lines.push({
+        mark: "info",
+        text: `judge test: ${text} did not block "${JUDGE_TEST_ACTION}" (${result.detail}): it never judges; the worker slot uses it as before`
+      });
     }
   }
   return { lines, passed };
 }
-function sayStandInTradeOff(ctx, config) {
-  if (!Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0) {
-    ctx.print(`! ${JUDGE_WARNING}`);
-  }
+function standInTradeOff(config) {
+  return !Object.hasOwn(config.slots, JUDGE_SLOT) && fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0;
 }
 function dropFallbackRecord(statePath, slot) {
   let state;
@@ -14574,6 +14579,14 @@ function slotChangeLines(plan) {
     lines.push("  No chain is saved for it now.");
   return lines;
 }
+var ROUTER_TAKES_IT = "The router uses it from its next request.";
+function printSlotChange(out, lines) {
+  const [first, ...rest] = lines;
+  if (first !== undefined)
+    out.line("changed", first);
+  for (const line of rest)
+    out.say(line.trimStart(), line.length - line.trimStart().length);
+}
 async function commandSlot(ctx, args) {
   const [slotArg, targets, ...extra] = args;
   if (slotArg === undefined || targets === undefined || extra.length > 0) {
@@ -14597,6 +14610,7 @@ async function commandSlot(ctx, args) {
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first)
     throw new Error(first.error);
+  const out = gatewayOut(ctx);
   const passed = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
     for (const text of first.next) {
@@ -14606,7 +14620,7 @@ async function commandSlot(ctx, args) {
       if (!("target" in parsed))
         continue;
       if (parsed.target.kind === "anthropic") {
-        ctx.print(`judge: ${text} is Claude: no test needed; it judges as the model it names`);
+        out.line("info", `judge: ${text} is Claude: no test needed; it judges as the model it names`);
         continue;
       }
       const backend = config.backends[parsed.target.backend];
@@ -14617,13 +14631,13 @@ async function commandSlot(ctx, args) {
         throw new Error(`${text} did not block the test check (${JUDGE_TEST_ACTION}): ${result.detail}. The judge was not set.`);
       }
       passed[text] = backend.baseUrl;
-      ctx.print(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
+      out.line("ok", `judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
     }
   }
   if (first.key === WORKER_SLOT && first.next.length > 0) {
     const tested = await testWorkerTargets(ctx, first.config);
     for (const line of tested.lines)
-      ctx.print(line);
+      out.line(line.mark, line.text);
     Object.assign(passed, tested.passed);
   }
   const plan = await withLock(ctx.paths.stateDir, () => {
@@ -14640,20 +14654,25 @@ async function commandSlot(ctx, args) {
       dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
     return { ...again, config: saved };
   }, { waitMs: 1e4 });
-  for (const line of slotChangeLines(plan))
-    ctx.print(line);
-  if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
-    ctx.print(`  To let the next target answer when ${plan.next[0]} fails or rests: ${COMMAND} gateway fallback ${slotName(plan.key)} on`);
-  }
+  printSlotChange(out, slotChangeLines(plan));
   if (plan.key === JUDGE_SLOT && plan.next.length > 0)
-    ctx.print(`! ${JUDGE_WARNING}`);
+    out.line("warn", JUDGE_WARNING);
   if (plan.key === WORKER_SLOT || plan.key === JUDGE_SLOT && plan.next.length === 0) {
     if (plan.key === WORKER_SLOT && !Object.hasOwn(plan.config.slots, JUDGE_SLOT)) {
-      ctx.print(`  Auto mode's checks: ${judgeDefaultWords(plan.config)}`);
+      out.say(`Auto mode's checks: ${judgeDefaultWords(plan.config)}`, 2);
     }
-    sayStandInTradeOff(ctx, plan.config);
+    if (standInTradeOff(plan.config))
+      out.line("warn", JUDGE_WARNING);
   }
-  ctx.print("The router uses it from its next request.");
+  out.verdict("ok", ROUTER_TAKES_IT);
+  if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
+    out.next([
+      {
+        command: `${COMMAND} gateway fallback ${slotName(plan.key)} on`,
+        text: `To let the next target answer when ${plan.next[0]} fails or rests:`
+      }
+    ]);
+  }
   return 0;
 }
 async function commandFallback(ctx, args) {
@@ -14672,28 +14691,35 @@ async function commandFallback(ctx, args) {
       dropFallbackRecord(ctx.paths.gatewayStateFile, planned.key);
     return planned;
   }, { waitMs: 1e4 });
+  const out = gatewayOut(ctx);
   const change = `${plan.key}: fallback ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`;
   const kept = plan.key === JUDGE_SLOT ? null : keptChain(plan.config, plan.key);
   if (kept !== null && !Object.hasOwn(plan.config.slots, plan.key)) {
-    ctx.print(`${change}
-  ${claudeWords(plan.config, plan.key)}
-  ${keptWords(plan.key, kept)}`);
-    ctx.print("  The switch is used with the chain, once the slot is Custom again.");
-    ctx.print("The router uses it from its next request.");
+    printSlotChange(out, [
+      change,
+      `  ${claudeWords(plan.config, plan.key)}`,
+      `  ${keptWords(plan.key, kept)}`
+    ]);
+    out.verdict("ok", "Saved with the chain: the switch is used once the slot is Custom again.");
     return 0;
   }
   const targets = plan.config.slots[plan.key] ?? [];
   if (plan.key === JUDGE_SLOT && targets.length === 0) {
-    ctx.print(`${change}
-  ${judgeDefaultWords(plan.config)}`);
-    ctx.print(plan.now ? "  The worker's tested targets answer when Claude is limited or down." : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.");
-    sayStandInTradeOff(ctx, plan.config);
+    printSlotChange(out, [
+      change,
+      `  ${judgeDefaultWords(plan.config)}`,
+      plan.now ? "  The worker's tested targets answer when Claude is limited or down." : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code."
+    ]);
+    if (standInTradeOff(plan.config))
+      out.line("warn", JUDGE_WARNING);
   } else {
-    ctx.print(`${change}
-  ${targets.join(" \u2192 ")}  (${fallbackWords(plan.config, plan.key)})`);
-    ctx.print(plan.now ? "  The next target answers when the one before it fails or rests." : "  Only the first target answers; when it fails, its error goes back to Claude Code.");
+    printSlotChange(out, [
+      change,
+      `  ${targets.join(" \u2192 ")}  (${fallbackWords(plan.config, plan.key)})`,
+      plan.now ? "  The next target answers when the one before it fails or rests." : "  Only the first target answers; when it fails, its error goes back to Claude Code."
+    ]);
   }
-  ctx.print("The router uses it from its next request.");
+  out.verdict("ok", ROUTER_TAKES_IT);
   return 0;
 }
 async function commandBreaker(ctx, args) {
@@ -14711,59 +14737,113 @@ async function commandBreaker(ctx, args) {
     return planned;
   }, { waitMs: 1e4 });
   const targets = plan.config.slots[plan.key] ?? [];
-  ctx.print(`${plan.key}: breaker ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}
-  ${targets.join(" \u2192 ")}  (${breakerWords(plan.config, plan.key) ?? ""})`);
-  ctx.print(plan.now ? "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry." : "  While every target is limited or down, the last answer goes back to Claude Code at once.");
-  ctx.print("The router uses it from its next request.");
+  const out = gatewayOut(ctx);
+  printSlotChange(out, [
+    `${plan.key}: breaker ${plan.was ? "on" : "off"} \u2192 ${plan.now ? "on" : "off"}`,
+    `  ${targets.join(" \u2192 ")}  (${breakerWords(plan.config, plan.key) ?? ""})`,
+    plan.now ? "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry." : "  While every target is limited or down, the last answer goes back to Claude Code at once."
+  ]);
+  out.verdict("ok", ROUTER_TAKES_IT);
   return 0;
 }
-function printOverrides(report, print) {
+function printOverrides(report, out) {
   if (report.subagentOverrides.length > 0) {
-    print(`  ! ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`);
+    out.line("warn", `${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`, { indent: 2 });
   }
   if (report.loginOverrides.length > 0) {
-    print(`  ! ${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`);
+    out.line("warn", `${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`, { indent: 2 });
   }
 }
 async function commandStatus(ctx) {
+  const out = gatewayOut(ctx);
+  const configPath = ctx.paths.gatewayConfigFile;
+  const setUp = existsSync11(configPath);
   let config = null;
-  try {
-    config = loadConfigFile(ctx.paths.gatewayConfigFile);
-  } catch (error) {
-    ctx.print(`config: ${messageOf(error)}`);
+  if (!setUp)
+    out.line("info", `config: none yet (no ${tildify(configPath, ctx.paths.home)})`);
+  else {
+    try {
+      config = loadConfigFile(configPath);
+    } catch (error) {
+      out.line("fail", `config: ${messageOf(error)}`);
+    }
   }
   const port = config?.port ?? DEFAULT_PORT;
   const health = await routerHealth(port, ctx.probe.fetch);
-  if ("error" in health)
-    ctx.print(`router: DOWN on 127.0.0.1:${port} (${health.error})`);
-  else {
+  if ("error" in health && !setUp) {
+    out.line("info", `router: DOWN on 127.0.0.1:${port} (${health.error})`);
+  } else if ("error" in health) {
+    out.line("fail", `router: DOWN on 127.0.0.1:${port} (${health.error})`, {
+      detail: [`${COMMAND} gateway setup`],
+      fix: "setup starts it again"
+    });
+  } else {
     const body = isJsonObject8(health.body) ? health.body : {};
-    ctx.print(`router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`);
-    if (body.port !== port)
-      ctx.print(`  ! the config says port ${port}; restart the router to move it`);
+    out.line("ok", `router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`);
+    if (body.port !== port) {
+      out.line("warn", `the config says port ${port}; restart the router to move it`, {
+        indent: 2
+      });
+    }
     const cooling = isJsonObject8(body.cooling) ? Object.entries(body.cooling) : [];
-    for (const [target, seconds] of cooling)
-      ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
-    for (const line of breakerStatusLines(body.breakers, ctx.probe.now()))
-      ctx.print(line);
+    for (const [target, seconds] of cooling) {
+      out.line("info", `resting: ${target} for ${String(seconds)} s more`, { indent: 2 });
+    }
+    for (const line of breakerStatusLines(body.breakers, ctx.probe.now())) {
+      out.line("warn", line.trimStart(), { indent: 2 });
+    }
   }
+  let backendsAnswer = true;
   if (config !== null) {
     for (const [name, backend] of Object.entries(config.backends)) {
       const listed = await listModels(backend.baseUrl, backend.apiKey);
       const state = "error" in listed ? `unreachable (${listed.error})` : `HTTP ${listed.status}`;
-      ctx.print(`backend ${name}: ${shownValue(backend.baseUrl)} key ${maskKey(backend.apiKey)} \u2192 ${state}`);
+      const answers = !("error" in listed) && listed.status === 200;
+      if (!answers)
+        backendsAnswer = false;
+      out.line(answers ? "ok" : "fail", `backend ${name}: ${shownValue(backend.baseUrl)} key ${maskKey(backend.apiKey)} \u2192 ${state}`);
     }
-    printSlots(config, ctx.print);
+    printSlots(config, out, ctx.print);
   }
   const report = settingsReport(ctx.paths.settingsFile);
-  ctx.print(`
-Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON \u2192 ${report.baseUrl}`}`);
-  printOverrides(report, ctx.print);
-  ctx.print(`history: ${historyWords({
+  out.blank();
+  out.line("info", `Claude Code (${tildify(ctx.paths.settingsFile, ctx.paths.home)}): ${report.baseUrl === null ? "gateway OFF (no ANTHROPIC_BASE_URL)" : `gateway ON \u2192 ${report.baseUrl}`}`);
+  const routerUrl = gatewayEnv(port).ANTHROPIC_BASE_URL;
+  const pointsElsewhere = config !== null && report.baseUrl !== null && report.baseUrl !== routerUrl;
+  if (pointsElsewhere) {
+    out.line("warn", `that is not this router's address (${routerUrl})`, {
+      detail: [`${COMMAND} gateway on`],
+      fix: "point Claude Code at this router",
+      indent: 2
+    });
+  }
+  printOverrides(report, out);
+  out.line("info", `history: ${historyWords({
     bytes: historyDbBytes(ctx.paths.historyDbFile),
     exists: historyDbExists(ctx.paths.historyDbFile),
     retentionDays: config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config)
   })} in ${tildify(ctx.paths.historyDbFile, ctx.paths.home)}`);
+  if (!setUp) {
+    out.verdict("info", "The gateway is not set up.");
+    out.next([{ command: `${COMMAND} gateway setup`, text: "Set it up:" }]);
+  } else if (config === null)
+    out.verdict("fail", "The gateway's config cannot be read.");
+  else if ("error" in health)
+    out.verdict("fail", "The router does not answer.");
+  else if (pointsElsewhere) {
+    out.verdict("warn", "Claude Code points at another address than this router.");
+  } else if (!backendsAnswer) {
+    out.verdict("warn", "The router answers, and a backend does not.");
+  } else if (report.baseUrl === null) {
+    out.verdict("info", "The router answers, and Claude Code does not use it.");
+    out.next([
+      {
+        command: `${COMMAND} gateway on`,
+        text: "Point every Claude Code session on this machine at it:"
+      }
+    ]);
+  } else
+    out.verdict("ok", "The gateway is on, and its router and backends answer.");
   return 0;
 }
 function historyOptions(args) {
@@ -14808,7 +14888,8 @@ function formatUsd(usd) {
   return `$${usd.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 function gatewayOut(ctx) {
-  return createOut(currentTerminal(process.env, ctx.platform), {
+  const plain = detectTerminal({ env: {}, isTTY: false, platform: ctx.platform });
+  return createOut(ctx.term ?? plain, {
     line: (text) => ctx.print(text),
     raw: () => {
       return;
@@ -15240,7 +15321,7 @@ async function proveWorkerTargets(ctx) {
       return;
     const tested = await testWorkerTargets(ctx, loadConfigFile(configPath));
     for (const line of tested.lines)
-      ctx.print(line);
+      ctx.print(line.text);
     if (Object.keys(tested.passed).length === 0)
       return;
     const saved = await withLock(ctx.paths.stateDir, () => {
@@ -15248,7 +15329,8 @@ async function proveWorkerTargets(ctx) {
       saveConfig(configPath, next);
       return next;
     }, { waitMs: 1e4 });
-    sayStandInTradeOff(ctx, saved);
+    if (standInTradeOff(saved))
+      ctx.print(`! ${JUDGE_WARNING}`);
   } catch (error) {
     ctx.print(`! the judge test of the worker's targets could not finish (${messageOf(error)}). Run ${COMMAND} gateway setup again to retry it.`);
   }
@@ -15259,6 +15341,8 @@ function show(value) {
 var CHECK_CODES = { needsKey: 1, refused: 4, unchecked: 3, works: 0 };
 async function commandCheck(ctx) {
   const { paths } = ctx;
+  const out = gatewayOut(ctx);
+  const passwordSetup = `${COMMAND} gateway setup --omniroute-password`;
   const configPath = paths.gatewayConfigFile;
   const noKeyYet = async (why) => {
     const address = KNOWN_BACKENDS.omniroute ?? "";
@@ -15266,10 +15350,13 @@ async function commandCheck(ctx) {
       ...ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }
     });
     if (probe.kind === "silent") {
-      ctx.print(`\xB7 ${why}, and OmniRoute does not answer at ${address} (${probe.detail}): the gateway needs OmniRoute first`);
+      out.line("info", `${why}, and OmniRoute does not answer at ${address} (${probe.detail}): the gateway needs OmniRoute first`);
       return CHECK_CODES.unchecked;
     }
-    ctx.print(`\u2717 ${why}, and OmniRoute answers at ${address}: ${COMMAND} gateway setup can make the router's key with OmniRoute's dashboard password`);
+    out.line("fail", `${why}, and OmniRoute answers at ${address}`, {
+      detail: [passwordSetup],
+      fix: "let setup make the router's key with OmniRoute's dashboard password"
+    });
     return CHECK_CODES.needsKey;
   };
   if (!existsSync11(configPath))
@@ -15278,7 +15365,7 @@ async function commandCheck(ctx) {
   try {
     config = loadConfigFile(configPath);
   } catch (error) {
-    ctx.print(`\xB7 the gateway could not be checked: ${messageOf(error)}`);
+    out.line("info", `the gateway could not be checked: ${messageOf(error)}`);
     return CHECK_CODES.unchecked;
   }
   const backend = Object.hasOwn(config.backends, "omniroute") ? config.backends.omniroute : undefined;
@@ -15289,18 +15376,27 @@ async function commandCheck(ctx) {
     ...ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }
   });
   if (check.kind === "accepted") {
-    ctx.print(`\u2713 the gateway's OmniRoute key is accepted (${shownValue(backend.baseUrl)}, HTTP ${String(check.status)})`);
+    out.line("ok", `the gateway's OmniRoute key is accepted (${shownValue(backend.baseUrl)}, HTTP ${String(check.status)})`);
     return CHECK_CODES.works;
   }
   if (check.kind === "refused") {
-    ctx.print(`\u2717 OmniRoute refused the key in ${tildify(configPath, paths.home)} (HTTP ${String(check.status)}): it is not an OmniRoute API key. Give a new one: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file (or let setup make one with OmniRoute's dashboard password)`);
+    out.line("fail", `OmniRoute refused the key in ${tildify(configPath, paths.home)} (HTTP ${String(check.status)}): it is not an OmniRoute API key`, {
+      detail: [
+        `${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`,
+        passwordSetup
+      ],
+      fix: "give a new one, or let setup make one with OmniRoute's dashboard password"
+    });
     return CHECK_CODES.refused;
   }
-  ctx.print(`\xB7 the gateway could not be checked: ${check.detail}`);
+  out.line("info", `the gateway could not be checked: ${check.detail}`);
   return CHECK_CODES.unchecked;
 }
 function changeLines(result, home) {
   return result.changes.map((change) => `~ ${tildify(result.file, home)}: ${formatKeyPath(change.path)}: ${show(change.before)} -> ${show(change.after)}`);
+}
+function printChanges(out, result, home) {
+  out.marked(changeLines(result, home));
 }
 async function commandOn(ctx) {
   const { paths } = ctx;
@@ -15312,29 +15408,41 @@ async function commandOn(ctx) {
   const options = { settingsFile: paths.settingsFile, stateDir: paths.stateDir, port };
   turnOn({ ...options, dryRun: true });
   const result = await withLock(paths.stateDir, () => turnOn(options), { waitMs: 1e4 });
+  const out = gatewayOut(ctx);
   if (result.changes.length === 0) {
-    ctx.print("Nothing to change: the gateway is already on.");
+    out.verdict("ok", "Nothing to change: the gateway is already on.");
   } else {
-    ctx.print(changeLines(result, paths.home).join(`
-`));
-    ctx.print(`Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`);
-    ctx.print("Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.");
+    printChanges(out, result, paths.home);
+    out.verdict("ok", `Done. The changed file has a backup in ${tildify(paths.stateDir, paths.home)}/backups/.`);
+    out.say("Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.");
   }
-  printOverrides(settingsReport(paths.settingsFile), ctx.print);
+  printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
 }
 async function commandOff(ctx) {
   const { paths } = ctx;
   const { result, foreign } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
-  if (result.changes.length === 0) {
-    ctx.print(`Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`);
-  } else {
-    ctx.print(changeLines(result, paths.home).join(`
-`));
-    ctx.print("Restart each Claude session: removing a setting needs a restart.");
-  }
+  const out = gatewayOut(ctx);
+  printChanges(out, result, paths.home);
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH");
   for (const key of foreign) {
-    ctx.print(`  env.${key} stays: ${COMMAND} did not set it. Remove it by hand to turn the gateway off.`);
+    if (!routing.includes(key)) {
+      out.line("info", `env.${key} stays: ${COMMAND} did not set it, and it routes nothing`);
+      continue;
+    }
+    out.line("warn", `env.${key} stays: ${COMMAND} did not set it`, {
+      fix: "remove it by hand to turn the gateway off"
+    });
+  }
+  if (routing.length > 0) {
+    out.verdict("warn", `The gateway is not all off: ${plural(routing.length, "key stays", "keys stay")} that ${COMMAND} did not set.`);
+  } else if (result.changes.length === 0) {
+    out.verdict("ok", `Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`);
+  } else {
+    out.verdict("ok", "Done. The gateway is off.");
+  }
+  if (result.changes.length > 0) {
+    out.next(["Restart each Claude session: removing a setting needs a restart."]);
   }
   return 0;
 }
@@ -45262,7 +45370,8 @@ function gatewayContext(options) {
     probe: realProbe(),
     apiFetch: options.apiFetch ?? ((url, init) => fetch(url, init)),
     print: options.print ?? ((line) => console.log(line)),
-    error: options.error ?? ((line) => console.error(line))
+    error: options.error ?? ((line) => console.error(line)),
+    ...options.print === undefined ? { term: currentTerminal(process.env, options.platform) } : {}
   };
 }
 function terminalQuestions(terminal, write) {
