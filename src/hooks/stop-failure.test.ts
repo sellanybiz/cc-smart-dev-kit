@@ -4,7 +4,7 @@
  * (docs/claude-code-contract.md). The entry runs as a subprocess with a fake `notify-send`
  * first on PATH and a fake launcher that runs this CLI's source; its stdout must stay empty.
  */
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
@@ -12,6 +12,7 @@ import type { GatewayConfig } from "../gateway/config";
 import type { LimitState } from "../gateway/limit-state";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import {
   type Alert,
   type AlertContext,
@@ -27,6 +28,9 @@ import {
   usesAlertWorker,
 } from "./stop-failure";
 import { decodedToastText } from "./windows-toast";
+
+// This file starts the CLI (through the fake launcher) as a real process: its own speed limit.
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
 const RESET = NOW / 1000 + 3 * 3600;

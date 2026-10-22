@@ -1,5 +1,5 @@
 /** The commands the hooks brought: `hook`, `session-name`, and `doctor`'s options. */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLUGIN_ID, VERSION } from "../build-info";
@@ -8,6 +8,10 @@ import { USER_NOTIFY_COMMAND, USER_NOTIFY_HOOK_NAME } from "../setup/user-notify
 import { makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const SESSION = "11111111-2222-3333-4444-555555555555";

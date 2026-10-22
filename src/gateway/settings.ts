@@ -26,11 +26,13 @@ import { realTarget } from "../setup/write";
  * chain (haiku → scout, sonnet → worker, opus, fable), or to Anthropic unchanged when it has
  * none. No `ANTHROPIC_AUTH_TOKEN`: without one, Claude Code sends the person's own login.
  *
- * `ENABLE_TOOL_SEARCH`: with a base URL that is not Anthropic's, Claude Code turns MCP tool
- * search off and sends every tool definition up front (measured: an Opus session started
- * at 184K tokens through the router, against 70K without it). On `true` the tools stay
- * deferred; Anthropic expands them itself, and the router expands them for an affordable backend
- * (`toolSearchForBackend` in router.ts). https://code.claude.com/docs/en/env-vars
+ * `ENABLE_TOOL_SEARCH`: Claude Code 2.1.304 and later keep MCP tool search on behind a base
+ * URL that is not Anthropic's, so this key is not needed there. It stays written for an older
+ * Claude Code, which turned tool search off behind a gateway and sent every tool definition up
+ * front (measured before 2.1.304: an Opus session started at 184K tokens through the router,
+ * against 70K without it), and it says "on" on purpose: Anthropic expands the deferred tools
+ * itself, and the router expands them for an affordable backend (`toolSearchForBackend` in
+ * router.ts). https://code.claude.com/docs/en/env-vars
  */
 export function gatewayEnv(port: number): Record<string, string> {
   return {

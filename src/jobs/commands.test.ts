@@ -4,7 +4,7 @@
  * with a fixed `budgetGb`, so no test depends on this machine's memory. The jobs are small
  * `sh` scripts.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -19,9 +19,13 @@ import { cliPaths } from "../cli/paths";
 import { processStartTime } from "../setup/lock";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { type JobContext, runJobCommand } from "./commands";
 import { GIB, type MemoryFacts } from "./memory";
 import { currentFileHolder } from "./store";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 

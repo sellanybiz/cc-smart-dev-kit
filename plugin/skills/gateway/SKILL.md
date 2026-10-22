@@ -207,6 +207,11 @@ up).
 `cc-smart-dev-kit gateway off` removes exactly the keys `on` set. Running sessions need a
 restart. Stop the router only after every session restarted, or they fail.
 
+**Remote Control is off while the gateway is on.** `claude remote-control` needs
+`api.anthropic.com` (it answers "Remote Control is only available when using Claude via
+api.anthropic.com"), and `gateway on` points every session at the router. `gateway off`, or a
+session started without the base URL, is the way back.
+
 `cc-smart-dev-kit restore` takes the gateway out in two stages for the same reason: the first run
 removes the env keys (and everything else but the router) and says to restart every
 session; the second run stops and removes the router (it asks first). `restore --now`
