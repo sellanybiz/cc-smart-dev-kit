@@ -443,6 +443,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23: **Lead standing step until 1.1.0 is installed:** the installed 1.0.1 gauge counts Opus as 200k, so every Opus crew session (kind `ui` or `architecture`) gets one lead note the moment it starts: its window is 1M, ignore a context hand-off line below about 800k, the time caps still apply, reading goes to a scout subagent. Sent so far: B5a 2, B8 2, B6f 2, B5b. Still to come: B6d, B6e. B5a merged (`f40a70f`, bundles `3d4aa81`; full check green, 5420 pass).
 
+- 2026-10-23: **CC2 merged** (`982392d`, bundles `a9755ae`; router.js unchanged): caps per lead (`crew.perLead` 4, `crew.perLeadOpus` 2), a machine ceiling (`crew.max` 24, `crew.maxOpus` none by default), and new opus phases wait past `crew.usagePercent` of the 5-hour window unless the opus slot has a fallback chain (D54). Its test helper now strips `CC_SMART_DEV_KIT_CREW`, and the wire-mirror test finds tsc from a worktree. **For the owner after 1.1.0 is installed:** this machine's own workflow file still sets `crew.max` 12 and `crew.maxOpus` 4 (D54's stopgap) — they now cap the whole machine, so remove them (or raise them) to use the per-lead caps; and the opus usage guard needs the status line on (`cc-smart-dev-kit setup --statusline`), or it says once that it does not hold.
+
 ### Decided overnight (for the owner's review)
 
 _None yet._
