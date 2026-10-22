@@ -295,7 +295,7 @@ const crewFields = z.object({
   /**
    * The model as the launch named it, the gateway slot that answers it (null: Claude), the model
    * that does, and the premium tier the name stands for (`opus`, `fable`; null for none) — the
-   * opus cap counts it (D37).
+   * per-lead and machine opus caps count it (D54).
    */
   model: z.looseObject({
     named: text,

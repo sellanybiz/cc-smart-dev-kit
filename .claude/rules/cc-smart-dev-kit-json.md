@@ -57,7 +57,10 @@ example; keep it in step.
 `worktrees.bases` and `workflow` came with 0.4.0 (and `worktrees.engine`, since retired): a
 project that uses one raises `requires` to `>=0.4`. `workflow.crew`,
 `workflow.fixesAfterReview` and `worktrees.autoClean` come with 1.0.0 (optional fields: a
-minor change to the contract); a project that uses one raises `requires` to `>=1.0`. `worktrees.guardMainFolder`, `protectedBranches`,
+minor change to the contract); a project that uses one raises `requires` to `>=1.0`.
+`workflow.crew.perLead`, `perLeadOpus` and `usagePercent` come with 1.1.0: a project that sets
+one raises `requires` to `>=1.1`, so an older plugin hears "update" rather than refusing the
+whole file as an unknown field. `worktrees.guardMainFolder`, `protectedBranches`,
 `sessionNames` and `ownHooks` came with the hooks: a project that uses one raises its
 `requires` to the release that ships them. `worktrees.prefix` became optional in 0.5.2 with
 the engine's deprecation: a file written without it raises `requires` to `>=0.5.2` (one

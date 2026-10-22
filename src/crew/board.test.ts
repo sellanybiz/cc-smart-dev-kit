@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { recordUsageWindow } from "../cli/usage-window";
+import { recordUsageWindow, usageWindowFile } from "../cli/usage-window";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { boardWorld, MINUTE, NOW } from "../testing/board-world";
 import { LEAD_SESSION } from "../testing/crew-world";
@@ -15,7 +15,10 @@ import { git, tempDir } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
 import { runCrew } from "./command";
 import { addCrewQuestion, appendCrewEvent, crewEventsFile, crewFile, updateCrew } from "./store";
-import { usageUnreadLine } from "./usage-guard";
+
+/** The one line the board says when the opus usage guard has no window to read (D54), by hand. */
+const UNREAD =
+  "note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: cc-smart-dev-kit setup --statusline records it, and no current reading is stored";
 
 const SLOT_MODEL = {
   named: "sonnet",
@@ -24,6 +27,14 @@ const SLOT_MODEL = {
   tier: null,
 };
 const OPUS_MODEL = { named: "opus", resolved: "opus", slot: null, tier: "opus" };
+
+/** A gateway config whose opus slot has a chain in use with its fallback on. */
+const OPUS_CHAIN = {
+  backends: { omniroute: { apiKey: "test-key", baseUrl: "http://127.0.0.1:20199" } },
+  fallback: { "cc-smart-dev-kit-opus": true },
+  slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+  version: 1,
+};
 
 describe("crew list", () => {
   test("newest first; the state is since its last change, not since the last write to the record", async () => {
@@ -224,10 +235,10 @@ describe("crew list", () => {
       "  B1 · ui · opus · xhigh",
       "  crew/B1-help · memory - · lead LEAD my-app master-plan",
       "  held: a place is free; its lead's watch starts it",
-      usageUnreadLine(),
+      UNREAD,
     ]);
     // Told once, and never with a number it does not have.
-    expect(world.out.filter((line) => line === usageUnreadLine())).toHaveLength(1);
+    expect(world.out.filter((line) => line === UNREAD)).toHaveLength(1);
     // With a reading stored, the board says nothing about it.
     recordUsageWindow(
       world.paths,
@@ -236,7 +247,21 @@ describe("crew list", () => {
     );
     world.out.length = 0;
     expect(await runCrew(["list"], world.ctx())).toBe(0);
-    expect(world.out).not.toContain(usageUnreadLine());
+    expect(world.out).not.toContain(UNREAD);
+    // The opus slot's chain with its fallback on lifts the guard by design: no note either,
+    // even with no reading stored at all.
+    rmSync(usageWindowFile(world.paths));
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(OPUS_CHAIN)}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
+    );
+    world.out.length = 0;
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).not.toContain(UNREAD);
   });
 
   test("with a place free it is the memory that holds it, or only its lead's watch", async () => {

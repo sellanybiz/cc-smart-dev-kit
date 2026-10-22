@@ -13,7 +13,8 @@
  * `{"fiveHour": {"percent": 87, "resetsAt": 1792600800}, "readAt": "2026-10-23T…"}`. It is
  * written only when the numbers change, so `readAt` is when they were last seen. A window whose
  * `resetsAt` has passed measured a window that is over: it reads as unknown — never as its old
- * number — and the guard does not hold on it.
+ * number — and the guard does not hold on it. A reading with no reset time at all is unknown
+ * once it is older than the 5-hour window itself: that is the longest it could describe.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,6 +24,9 @@ import type { CliPaths } from "./paths";
 
 /** The window Claude Code calls the plan's 5-hour window. */
 export const FIVE_HOUR_WINDOW = "five_hour";
+
+/** The 5-hour window's own span: a reading with no reset time is no reading past it. */
+export const WINDOW_SPAN_MS = 5 * 60 * 60_000;
 
 /** One window of the status line input: the share used, and when it resets (Unix seconds). */
 export interface UsageWindow {
@@ -78,7 +82,8 @@ function readStored(file: string): null | { fiveHour: UsageWindow; readAt: strin
 /**
  * Records the 5-hour window a status line just read. Nothing when the input has none (an API
  * key, or a refused request: Claude Code sends no `rate_limits` then), and nothing when the
- * numbers are the ones already stored, so a busy machine writes once per change, not per reply.
+ * numbers are the ones already stored. The share rises with almost every reply, so expect one
+ * small write per reply while a session works; it is far cheaper than the command's own start.
  * A write that fails throws; the status line catches it and prints.
  */
 export function recordUsageWindow(paths: CliPaths, input: unknown, nowMs: number): void {
@@ -102,13 +107,15 @@ export function recordUsageWindow(paths: CliPaths, input: unknown, nowMs: number
 
 /**
  * The last recorded 5-hour window, as of `nowMs`; null when there is none, it cannot be read,
- * or the window it measured has already reset (a number from a window that is over is no
- * number now).
+ * or the window it measured is over (a number from a window that is over is no number now).
+ * A reading with no reset time is over once it is older than the window's own 5 hours: with
+ * identical numbers nothing rewrites the file, so `readAt` is its only age.
  */
 export function readUsageWindow(paths: CliPaths, nowMs: number): UsageWindow | null {
   const stored = readStored(usageWindowFile(paths));
   if (stored === null) return null;
   const { resetsAt } = stored.fiveHour;
-  if (resetsAt !== null && resetsAt * 1000 <= nowMs) return null;
-  return stored.fiveHour;
+  if (resetsAt !== null) return resetsAt * 1000 <= nowMs ? null : stored.fiveHour;
+  const readAt = Date.parse(stored.readAt);
+  return Number.isFinite(readAt) && nowMs - readAt > WINDOW_SPAN_MS ? null : stored.fiveHour;
 }

@@ -248,7 +248,10 @@ describe("D25: start now, or queued with the reason", () => {
 });
 
 describe("D54: a lead's crew sessions, across every repository's store", () => {
-  test("only the lead's own count; a record with no lead field counts toward the machine alone", () => {
+  // The store's schema requires `leadSessionId`, so a record from disk that lacks it is
+  // reported broken and counted nowhere. This is the function's own contract for a hand-built
+  // record: it counts toward the machine's ceiling and never against a lead's cap.
+  test("only the lead's own count; a record with no lead field belongs to no lead", () => {
     const mine = crew("A", "working");
     const theirs = { ...crew("B", "working"), leadSessionId: "another-lead" };
     const old = { ...crew("C", "working") } as Partial<CrewRecord>;

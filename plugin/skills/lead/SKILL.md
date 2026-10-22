@@ -55,8 +55,8 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   the reason (an opus start with no usage-window reading adds one note line). Your reply names
   each crew session with the model and effort its line shows (the core instructions' "say it
   when you launch").
-- **`queued` is not an error.** A cap, the free memory or `--waits-for` holds it, and it starts
-  by itself when its place frees. Never start it a second time.
+- **`queued` is not an error.** A cap, the free memory, the 5-hour usage window or `--waits-for`
+  holds it, and it starts by itself when its place frees. Never start it a second time.
 - **`--waits-for <phase,...>`** holds a phase until each of those is merged. The
   watch marks a merged branch and starts the waiting session by itself, cut from your branch
   with the merge in it. A phase the plan adds later is started the moment it is written.

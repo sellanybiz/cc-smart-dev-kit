@@ -397,6 +397,7 @@ export async function runCrewList(
   const unguarded =
     caps !== null &&
     caps.usagePercent === null &&
+    !caps.opusFallback &&
     read.records.some(
       (one) =>
         one.state === "queued" && one.model.tier === OPUS_TIER && held.get(one.id) === PLACE_FREE,

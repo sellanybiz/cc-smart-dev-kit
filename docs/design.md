@@ -915,10 +915,12 @@ reports it as one failed check — rather than reading a path that is gone.
 Two numbers the design's mockups show are not invented, and the pages say so instead:
 
 - **Claude Code's plan-usage percentages.** Claude Code computes them from the headers of its
-  own answers and hands them to the status line on stdin (`src/cli/statusline.ts`); nothing
-  writes them down. The router records only the limits it saw — which model, which window,
-  when it resets — and that is what the Overview shows, with a line naming where the
-  percentages live.
+  own answers and hands them to the status line on stdin (`src/cli/statusline.ts`). One of
+  them is written down for one purpose: the 5-hour window feeds the crew's opus guard
+  (`<stateDir>/usage-window.json`, `src/cli/usage-window.ts`, D54). The 7-day window and the
+  plan's other windows are not stored. The router records only the limits it saw — which
+  model, which window, when it resets — and that is what the Overview shows, with a line
+  naming where the percentages live.
 - **OmniRoute's prices and image support.** They are in OmniRoute's own catalog, which the
   gateway never reads: `/v1/models` carries an id and a context length, and that is all the
   model table shows.
@@ -2774,8 +2776,10 @@ the kinds come from `crew kinds` (or `crew --help`), the caps from `workflow sho
 **The switch** (D34) is `workflow.crew.enabled`, off by default, in the person's
 `workflow.json` (every project's default) and in a project's `.claude/cc-smart-dev-kit.json`,
 which wins field by field like every workflow setting (§ The workflow). Beside it in the same
-group sit the limits a lead keeps its crew to — how many run on the machine at once, and how
-many of those on the opus tier (D37), the free memory a new one needs, when a quiet one is reported, when a long one hands off, when a
+group sit one lead's caps — how many of its crew sessions run at once and how many of those on
+the opus tier (`perLead`, `perLeadOpus`) — the machine's guards (the safety ceiling `max`, an
+optional machine-wide `maxOpus`, and the 5-hour `usagePercent` past which a new opus crew
+session waits, D54), the free memory a new one needs, when a quiet one is reported, when a long one hands off, when a
 blocked one is stopped (D35: a crew session never outlives its work) — and the `tag` of their names.
 `workflow show` prints each with its source.
 

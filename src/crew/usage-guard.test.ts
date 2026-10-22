@@ -88,9 +88,24 @@ describe("the window the status line recorded", () => {
     expect(readUsageWindow(paths, NOW)).toBeNull();
     writeFileSync(file, JSON.stringify({ fiveHour: { percent: 87 } }));
     expect(readUsageWindow(paths, NOW)).toBeNull();
-    // A window with no reset time is the last word there is.
-    writeFileSync(file, JSON.stringify({ fiveHour: { percent: 87, resetsAt: null }, readAt: "x" }));
+    // A window with no reset time holds while it is younger than the window itself (5 hours),
+    // and is unknown after that: it could not describe a window that old.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        fiveHour: { percent: 87, resetsAt: null },
+        readAt: new Date(NOW - 60 * 60_000).toISOString(),
+      }),
+    );
     expect(readUsageWindow(paths, NOW)).toEqual({ percent: 87, resetsAt: null });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        fiveHour: { percent: 87, resetsAt: null },
+        readAt: new Date(NOW - 6 * 60 * 60_000).toISOString(),
+      }),
+    );
+    expect(readUsageWindow(paths, NOW)).toBeNull();
   });
 });
 
@@ -137,7 +152,7 @@ describe("D54: the gateway's opus slot lifts the guard", () => {
 
   test("the one line said when the window cannot be read", () => {
     expect(usageUnreadLine()).toBe(
-      "note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: the status line records it (cc-smart-dev-kit statusline), and this machine has no reading stored",
+      "note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: cc-smart-dev-kit setup --statusline records it, and no current reading is stored",
     );
   });
 });

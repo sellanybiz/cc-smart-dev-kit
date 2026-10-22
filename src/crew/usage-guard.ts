@@ -13,7 +13,7 @@ import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { readUsageWindow } from "../cli/usage-window";
 import { fallbackOn, type GatewayConfig, slotMode } from "../gateway/config";
-import { MODEL_SLOTS } from "../gateway/targets";
+import { familySlotKey } from "../gateway/targets";
 import { gatewayFactsOf } from "../hooks/agent-guard";
 
 /** What the guard reads: the window now, and whether the opus slot's chain answers past it. */
@@ -24,12 +24,6 @@ export interface UsageFacts {
   opusFallback: boolean;
 }
 
-/** The opus slot's key, from the one table that names the model slots. */
-export function opusSlot(): null | string {
-  const found = Object.entries(MODEL_SLOTS).find(([, family]) => family === "opus");
-  return found === undefined ? null : found[0];
-}
-
 /**
  * True when `facts`' opus slot has a chain in use (`slots`) with its fallback on. Pure. A
  * gateway that is off never falls back: its chain is not in use, whatever the file says.
@@ -38,7 +32,9 @@ export function opusFallbackOf(facts: {
   config: GatewayConfig | null;
   gatewayOn: boolean;
 }): boolean {
-  const slot = opusSlot();
+  // The slot that answers for opus: the gateway's own table (`familySlotKey`), never a second
+  // list here, so the guard and the router can never disagree about which slot that is.
+  const slot = familySlotKey("opus");
   if (slot === null || !facts.gatewayOn || facts.config === null) return false;
   return slotMode(facts.config, slot) === "custom" && fallbackOn(facts.config, slot);
 }
@@ -51,7 +47,11 @@ export function usageFacts(paths: CliPaths, nowMs: number): UsageFacts {
   };
 }
 
-/** The one line said when the window cannot be read: the guard does not hold, and says why. */
+/**
+ * The one line said when the window cannot be read: the guard does not hold, and says why.
+ * It names `setup --statusline`, the command that turns the recording on — `statusline` run by
+ * hand has no input and records nothing.
+ */
 export function usageUnreadLine(): string {
-  return `note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: the status line records it (${COMMAND} statusline), and this machine has no reading stored`;
+  return `note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: ${COMMAND} setup --statusline records it, and no current reading is stored`;
 }

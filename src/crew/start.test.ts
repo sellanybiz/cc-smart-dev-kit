@@ -25,10 +25,13 @@ import {
   readCrewEvents,
   writeLead,
 } from "./store";
-import { usageUnreadLine } from "./usage-guard";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
+
+/** The one note line an opus start says with no window to read (D54), written by hand. */
+const UNREAD =
+  "note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: cc-smart-dev-kit setup --statusline records it, and no current reading is stored";
 
 /** A gateway config whose opus slot has a chain in use with its fallback on. */
 const OPUS_CHAIN = {
@@ -686,6 +689,34 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(lifted, world.ctx())).toBe(0);
     expect(world.out[1]).toStartWith("started C my-app W1b launcher (");
+    // The guard never watches while the chain answers past the window: no note line.
+    expect(world.out).toHaveLength(2);
+  });
+
+  test("D54: with no reading, the note is silent when the opus slot's chain lifts the guard", async () => {
+    const world = await ledWorld();
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(OPUS_CHAIN)}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
+    );
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    // The guard never watches while the chain answers past the window: no note line.
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith("started C my-app W1a launcher (");
   });
 
   test("D54: a window that cannot be read never holds, and the start says so once", async () => {
@@ -702,7 +733,7 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out[0]).toStartWith("started C my-app W1a launcher (");
-    expect(world.out[1]).toBe(usageUnreadLine());
+    expect(world.out[1]).toBe(UNREAD);
     // A sonnet crew session has nothing to say about the window.
     expect(await runCrew(startArgs(world.brief), world.ctx({ randomSuffix: () => "000004" }))).toBe(
       0,

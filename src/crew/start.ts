@@ -888,8 +888,14 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   }
   const code = await launch(specOf(planned), record, ctx);
   // D54: an opus crew session started with no window to read; one line, once, and no
-  // invented number. A session that starts anyway must know the guard was not watching.
-  if (code === 0 && chosen.real.tier === OPUS_TIER && usage.percent === null) {
+  // invented number. A session that starts anyway must know the guard was not watching — and
+  // says nothing when the opus slot's fallback chain is on, because then it never watches.
+  if (
+    code === 0 &&
+    chosen.real.tier === OPUS_TIER &&
+    usage.percent === null &&
+    !usage.opusFallback
+  ) {
     ctx.print(usageUnreadLine());
   }
   return code;
