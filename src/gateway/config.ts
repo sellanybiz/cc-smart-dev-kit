@@ -20,7 +20,6 @@ import { dirname } from "node:path";
 import { z } from "zod";
 // From ./names, not the index: the index bakes in the version, and the router bundle
 // must not change with it (a changed bundle restarts every machine's router).
-import { COMMAND } from "../build-info/names";
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
@@ -32,6 +31,8 @@ import {
   JUDGE_SLOT,
   MODEL_SLOTS,
   parseTarget,
+  type Target,
+  WORKER_SLOT,
   withoutContextSuffix,
 } from "./targets";
 
@@ -87,9 +88,11 @@ export const gatewayConfigSchema = z
     anthropicBaseUrl: z.literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
     backends: z.record(z.string().refine(isBackendName, "not a backend name"), backendSchema),
     /**
-     * The judge targets that passed the judge test: `{"<target>": "<proof>"}`, written only
-     * by `gateway slot judge` after the test (`judgeTestProof`). The router uses a judge
-     * target only when its proof matches; a target without one is ignored, with a WARN.
+     * The targets that passed the judge test: `{"<target>": "<proof>"}`, written only by
+     * `gateway slot judge`, `gateway slot worker` and `gateway setup` after the test
+     * (`judgeTestProof`). The router uses a judge target only when its proof matches; a
+     * target without one is ignored, with a WARN. Both the judge slot's own chain and the
+     * worker chain's targets use it (D44).
      */
     judgeTested: z.record(z.string(), z.string()).optional(),
     /**
@@ -145,14 +148,6 @@ export const gatewayConfigSchema = z
         const parsed = parseTarget(text);
         if ("error" in parsed) {
           ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-        } else if (slot === JUDGE_SLOT && parsed.target.kind === "anthropic") {
-          // The check's body is built for the model it names: Claude Sonnet 5.5 answers
-          // 400 to its `thinking: disabled`, and auto mode would approve nothing.
-          ctx.addIssue({
-            code: "custom",
-            message: `${JUDGE_SLOT} takes no claude-… target; use "${COMMAND} gateway slot judge off" to put the checks on Claude`,
-            path: ["slots", slot, index],
-          });
         } else if (
           parsed.target.kind === "backend" &&
           !Object.hasOwn(config.backends, parsed.target.backend)
@@ -176,7 +171,10 @@ export const gatewayConfigSchema = z
       }
     }
     for (const slot of Object.keys(config.fallback ?? {})) {
-      if (!Object.hasOwn(config.slots, slot)) {
+      // The judge's switch needs no judge chain: with none, Claude judges first and the
+      // worker's tested targets follow while the switch is on (D44), so `gateway fallback
+      // judge off` ("Claude alone") must be savable on a machine that set no judge chain.
+      if (slot !== JUDGE_SLOT && !Object.hasOwn(config.slots, slot)) {
         ctx.addIssue({
           code: "custom",
           message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
@@ -233,11 +231,12 @@ export function modelSlotError(
 
 /**
  * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is
- * one. Otherwise the slot's default: off for the model slots and the judge
- * (`FALLBACK_OFF_BY_DEFAULT`), on for every other slot. A 0.4.x opus or fable chain gets that
- * default too: it moved on only at the plan's usage limit, and "on" now moves on at any 408,
- * 429, 5xx, 529 or network error, so turning it on is the person's choice
- * (`gateway fallback <slot> on`).
+ * one. Otherwise the slot's default: off for the model slots (`FALLBACK_OFF_BY_DEFAULT`),
+ * on for every other slot, the judge included (D44: while Claude cannot judge, the worker's
+ * tested targets do; `gateway fallback judge off` keeps Claude alone). A 0.4.x opus or fable
+ * chain gets that default too: it moved on only at the plan's usage limit, and "on" now
+ * moves on at any 408, 429, 5xx, 529 or network error, so turning it on is the person's
+ * choice (`gateway fallback <slot> on`).
  */
 export function fallbackOn(config: Pick<GatewayConfig, "fallback">, slot: string): boolean {
   const set = config.fallback;
@@ -314,23 +313,30 @@ function aliasError(
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
 
 /**
- * The judge test's version. Raise it when the test changes, or what passing it lets a target
- * do: every judge target then counts as untested until `gateway slot judge` tests it again.
- * 2 since 0.3.0: the fixed phrase the proof is made from changed with the plugin's name.
- * 3 since 0.5.0: a judge target judges every check first, where before it answered only
- * when Claude could not. A judge set for the old meaning is not taken for the new one: the
- * router ignores it, and Claude judges, until the person tests and sets it again.
+ * The judge test's version, and what its proof lets a target do. Raise it when the test
+ * changes, or what passing it lets a target do: every judge target then counts as untested
+ * until `gateway slot judge` tests it again. 2 since 0.3.0: the fixed phrase the proof is
+ * made from changed with the plugin's name. 3 since 0.5.0: a judge target judges every check
+ * first, where before it answered only when Claude could not. A judge set for the old
+ * meaning is not taken for the new one: the router ignores it, and Claude judges, until the
+ * person tests and sets it again.
+ *
+ * It stays 3 since D44 (2026-10-22), which put a target behind Claude: the worker's tested
+ * targets judge only while Claude is limited or down, so a target that passed the test under
+ * version 3 may do less than it did — never more. A target set for judging every check is
+ * safe judging some of them; nobody has to test its targets again.
  */
 export const JUDGE_TEST_VERSION = 3;
 
 /**
- * The proof that a judge target passed the judge test, as `gateway slot judge` writes it
- * into `judgeTested`: the first 32 hex characters of the SHA-256 of a fixed phrase naming
- * the test version, the target and its backend's URL. Why in the config, and why a digest: the slot and its proof
- * are saved in one atomic write, so they cannot drift apart; the router already reads that
- * file on each change; and a hand edit that adds a judge target, copies another target's
- * entry, or moves the backend gets no matching proof. It stops a mistake, not a person who
- * means it: anyone who reads this code can compute it.
+ * The proof that a target passed the judge test, as `gateway slot judge`, `gateway slot
+ * worker` and `gateway setup` write it into `judgeTested`: the first 32 hex characters of the
+ * SHA-256 of a fixed phrase naming the test version, the target and its backend's URL. Why in
+ * the config, and why a digest: the slot and its proof are saved in one atomic write, so they
+ * cannot drift apart; the router already reads that file on each change; and a hand edit that
+ * adds a judge target, copies another target's entry, or moves the backend gets no matching
+ * proof. It stops a mistake, not a person who means it: anyone who reads this code can
+ * compute it.
  */
 export function judgeTestProof(target: string, backendUrl: string): string {
   return createHash("sha256")
@@ -358,6 +364,40 @@ export function judgeTargetTested(
     proof !== undefined &&
     proof === judgeTestProof(target, backend.baseUrl)
   );
+}
+
+/**
+ * May this target judge? A `claude-…` target needs no test: Claude is the judge the test
+ * compares against, and it judges as the model its id names (D44 lets a judge chain hold
+ * one). Any other target needs its proof (`judgeTargetTested`).
+ */
+export function judgeTargetUsable(
+  config: Pick<GatewayConfig, "backends" | "judgeTested">,
+  target: string,
+): boolean {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed)) return false;
+  return parsed.target.kind === "anthropic" || judgeTargetTested(config, target);
+}
+
+/**
+ * The worker chain's targets that passed the judge test, in that chain's order: with no
+ * judge chain of the person's own, they judge auto mode's checks while Claude is limited or
+ * down (owner D44). Only a backend target: a `claude-…` target in the worker chain cannot
+ * stand in for Claude when Claude is the one that cannot answer. Empty when the worker slot
+ * has no chain, or none of its targets passed the test — Claude then judges alone.
+ */
+export function workerJudgeTargets(
+  config: Pick<GatewayConfig, "backends" | "judgeTested" | "slots">,
+): Target[] {
+  const chain = Object.hasOwn(config.slots, WORKER_SLOT) ? (config.slots[WORKER_SLOT] ?? []) : [];
+  const targets: Target[] = [];
+  for (const text of chain) {
+    if (!judgeTargetTested(config, text)) continue;
+    const parsed = parseTarget(text);
+    if ("target" in parsed) targets.push(parsed.target);
+  }
+  return targets;
 }
 
 /** The words of a caught error, whatever was thrown. */

@@ -6065,9 +6065,10 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-opus": "opus"
 };
 var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
-  "cc-smart-dev-kit-worker": "sonnet",
+  [WORKER_SLOT]: "sonnet",
   ...MODEL_SLOTS
 };
 var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
@@ -6109,7 +6110,7 @@ function familySlotFor(model) {
   const slot = familySlotKey(family);
   return slot === null ? null : { model: withoutContextSuffix(model), slot };
 }
-var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
+var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 function targetsInUse(targets, fallback) {
   return fallback ? [...targets] : targets.slice(0, 1);
 }
@@ -6130,6 +6131,9 @@ function planUsageLimit(status, header) {
   };
 }
 var FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+function capacityFailureStatus(status) {
+  return FALLBACK_ANY.has(status) || status >= 500 && status <= 599;
+}
 function fallbackKind(status, target) {
   if (FALLBACK_ANY.has(status))
     return "next";
@@ -6184,12 +6188,6 @@ var gatewayConfigSchema = looseObject({
       const parsed = parseTarget(text);
       if ("error" in parsed) {
         ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-      } else if (slot === JUDGE_SLOT && parsed.target.kind === "anthropic") {
-        ctx.addIssue({
-          code: "custom",
-          message: `${JUDGE_SLOT} takes no claude-\u2026 target; use "${COMMAND} gateway slot judge off" to put the checks on Claude`,
-          path: ["slots", slot, index]
-        });
       } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
         ctx.addIssue({
           code: "custom",
@@ -6211,7 +6209,7 @@ var gatewayConfigSchema = looseObject({
     }
   }
   for (const slot of Object.keys(config.fallback ?? {})) {
-    if (!Object.hasOwn(config.slots, slot)) {
+    if (slot !== JUDGE_SLOT && !Object.hasOwn(config.slots, slot)) {
       ctx.addIssue({
         code: "custom",
         message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
@@ -6298,6 +6296,24 @@ function judgeTargetTested(config, target) {
   const backend = Object.hasOwn(config.backends, parsed.target.backend) ? config.backends[parsed.target.backend] : undefined;
   const proof = config.judgeTested !== undefined && Object.hasOwn(config.judgeTested, target) ? config.judgeTested[target] : undefined;
   return backend !== undefined && proof !== undefined && proof === judgeTestProof(target, backend.baseUrl);
+}
+function judgeTargetUsable(config, target) {
+  const parsed = parseTarget(target);
+  if (!("target" in parsed))
+    return false;
+  return parsed.target.kind === "anthropic" || judgeTargetTested(config, target);
+}
+function workerJudgeTargets(config) {
+  const chain = Object.hasOwn(config.slots, WORKER_SLOT) ? config.slots[WORKER_SLOT] ?? [] : [];
+  const targets = [];
+  for (const text of chain) {
+    if (!judgeTargetTested(config, text))
+      continue;
+    const parsed = parseTarget(text);
+    if ("target" in parsed)
+      targets.push(parsed.target);
+  }
+  return targets;
 }
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
@@ -7201,6 +7217,92 @@ function checkUsageFromAnswer(text, streaming) {
   };
 }
 
+// src/gateway/server-tools.ts
+import { randomUUID as randomUUID2 } from "crypto";
+
+// src/mcp/names.ts
+var TAVILY_SERVER_NAME = "tavily-websearch";
+
+// src/gateway/server-tools.ts
+var ANTHROPIC_SERVER_TOOL_PREFIXES = ["web_search_", "web_fetch_"];
+function anthropicServerTool(body) {
+  if (!Array.isArray(body.tools))
+    return null;
+  for (const tool of body.tools) {
+    if (typeof tool !== "object" || tool === null || !("type" in tool))
+      continue;
+    if (typeof tool.type !== "string")
+      continue;
+    const type = tool.type;
+    const prefix = ANTHROPIC_SERVER_TOOL_PREFIXES.find((start) => type.startsWith(start));
+    if (prefix !== undefined)
+      return prefix.slice(0, -1);
+  }
+  return null;
+}
+function claudeUnavailableWords(status, limit) {
+  if (limit !== null) {
+    const claim = limit.claim === null ? "" : ` (${limit.claim})`;
+    const reset = limit.resetsAt === null ? "the reset time is not known" : `it resets at ${new Date(limit.resetsAt * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+    return `is at its usage limit${claim}; ${reset}`;
+  }
+  return status === null ? "could not be reached (no answer came)" : `could not answer now (HTTP ${status})`;
+}
+function claudeSearchNotice(why) {
+  return `The ${COMMAND} router answered this search, not a search engine: web search runs on Claude, and Claude ${why}. Use the search tool of the Tavily MCP server instead (its tools are named mcp__${TAVILY_SERVER_NAME}__\u2026), if it is set up.`;
+}
+function routerMessageId() {
+  return `msg_router_${randomUUID2().replaceAll("-", "")}`;
+}
+function searchMessageAnswer(model, text) {
+  return JSON.stringify({
+    content: [{ text, type: "text" }],
+    id: routerMessageId(),
+    model: typeof model === "string" ? model : "unknown",
+    role: "assistant",
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    type: "message",
+    usage: { input_tokens: 0, output_tokens: 0 }
+  });
+}
+function searchStreamAnswer(model, text) {
+  const message = {
+    content: [],
+    id: routerMessageId(),
+    model: typeof model === "string" ? model : "unknown",
+    role: "assistant",
+    stop_reason: null,
+    stop_sequence: null,
+    type: "message",
+    usage: { input_tokens: 0, output_tokens: 0 }
+  };
+  const event = (name, data) => `event: ${name}
+data: ${JSON.stringify(data)}
+
+`;
+  return [
+    event("message_start", { message, type: "message_start" }),
+    event("content_block_start", {
+      content_block: { text: "", type: "text" },
+      index: 0,
+      type: "content_block_start"
+    }),
+    event("content_block_delta", {
+      delta: { text, type: "text_delta" },
+      index: 0,
+      type: "content_block_delta"
+    }),
+    event("content_block_stop", { index: 0, type: "content_block_stop" }),
+    event("message_delta", {
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      type: "message_delta",
+      usage: { output_tokens: 0 }
+    }),
+    event("message_stop", { type: "message_stop" })
+  ].join("");
+}
+
 // src/gateway/router.ts
 var FALLBACK_SAVE_EVERY_MS = 60000;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
@@ -7776,7 +7878,7 @@ function createRouter(deps) {
       return [];
     return targetsInUse(judge.targets, fallbackOn(config, JUDGE_SLOT)).filter((target) => {
       const text = formatTarget(target);
-      if (judgeTargetTested(config, text))
+      if (judgeTargetUsable(config, text))
         return true;
       if (!untestedLogged.has(text)) {
         untestedLogged.add(text);
@@ -8106,7 +8208,7 @@ function createRouter(deps) {
     };
   }
   async function chain(req, url, config, body, targets, name, guard, asked = null) {
-    const standsInFor = asked?.model ?? null;
+    const standsInFor = guard ? null : asked?.model ?? null;
     const failures = [];
     let fallbacks = 0;
     let skipped = 0;
@@ -8398,9 +8500,68 @@ function createRouter(deps) {
     }
     if (guard)
       model.name = `${model.name} (safety check)`;
+    const serverTool = guard || alias !== null || resolveRoute(body.model, config).kind !== "anthropic" ? null : anthropicServerTool(body);
+    if (serverTool !== null)
+      return serverToolRoute(serverTool);
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
-    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : claudeRoute();
+    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : (guard ? claudeFirstJudge() : null) ?? claudeRoute();
     return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
+    async function serverToolRoute(tool) {
+      const why = `server tool ${tool}`;
+      const named = typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
+      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
+      if (req.signal.aborted)
+        return closed(result, `anthropic (${why})`);
+      const status = "response" in result ? result.response.status : null;
+      if (url.pathname !== MESSAGES_PATH || status !== null && !capacityFailureStatus(status)) {
+        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+      }
+      let limit = null;
+      if ("response" in result) {
+        const upstream = result.response;
+        limit = planUsageLimit(upstream.status, (name) => upstream.headers.get(name));
+        if (named !== null)
+          observeClaude(named, upstream, url.pathname);
+        logErrorAnswer(upstream, knownSecrets(req, config), `WARN anthropic answered ${upstream.status} to a ${tool} request; the router answered with a note naming Tavily instead`);
+      } else {
+        const reason = maskedLine(result.failure, knownSecrets(req, config), SNIPPET_MAX);
+        deps.log(`WARN anthropic did not answer a ${tool} request (${reason}); the router answered with a note naming Tavily instead`);
+      }
+      const text = claudeSearchNotice(claudeUnavailableWords(status, limit));
+      const streamed = body.stream === true;
+      return {
+        fallbacks: 0,
+        response: new Response(streamed ? searchStreamAnswer(body.model, text) : searchMessageAnswer(body.model, text), {
+          headers: {
+            "cache-control": "no-cache",
+            "content-type": streamed ? "text/event-stream" : "application/json"
+          },
+          status: 200
+        }),
+        skipped: 0,
+        target: `router (${why}; anthropic ${status ?? "did not answer"})`
+      };
+    }
+    function claudeFirstJudge() {
+      if (url.pathname !== MESSAGES_PATH || Object.hasOwn(config.slots, JUDGE_SLOT) || !fallbackOn(config, JUDGE_SLOT)) {
+        return null;
+      }
+      const standIns = workerJudgeTargets(config);
+      if (standIns.length === 0)
+        return null;
+      const decided = resolveRequestRoute(body, config, true);
+      if (decided.kind === "anthropic" && typeof body.model === "string") {
+        const claude = { kind: "anthropic", model: withoutContextSuffix(body.model) };
+        return chain(req, url, config, body, [claude, ...standIns], JUDGE_SLOT, true, {
+          model: body.model,
+          sent: bytes
+        });
+      }
+      if (decided.kind === "slot") {
+        return chain(req, url, config, body, [...decided.targets, ...standIns], JUDGE_SLOT, true, null);
+      }
+      return null;
+    }
     function claudeRoute() {
       const found = guard || alias !== null ? null : familySlotFor(body.model);
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);

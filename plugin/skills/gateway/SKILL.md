@@ -23,8 +23,8 @@ repository (the installed plugin does not carry the docs).
 - **A slot with no chain is off**: that model is plain Claude, sent to Anthropic unchanged.
   A fresh setup gives no slot a chain, and the plugin never picks a model for anyone.
 - **A slot's chain** is a list of targets the person picked: the first answers; the next
-  only while the slot's **fallback switch** is on (default: on for scout and worker, off for
-  opus, fable and judge). The router never adds a target, Claude included: a chain that is
+  only while the slot's **fallback switch** is on (default: on for scout, worker and judge, off
+  for opus and fable). The router never adds a target, Claude included: a chain that is
   used up returns its error.
 - A target is `claude-<id>` or `<backend>:<model>`, from the live list (`gateway models`).
   A `claude-<id>` target that is the very model asked for gets the request as sent; another
@@ -131,30 +131,34 @@ launched, which model wrote each reply, and the share on Opus. Read only; no mes
 
 ## The judge for auto mode
 
-**Claude judges auto mode's safety checks (should this action run?) unless the person gives
-the judge slot a chain.** With a chain, its first target judges every check, in Claude's
-place, once it has passed the judge test; the targets after it, each one tested, only while
-the judge's fallback switch is on (off by default). With the switch off and an untested first
-target, Claude judges. There is no hidden Claude step. With no judge, Claude Code asks the
-person when Claude cannot answer.
+**Claude judges auto mode's safety checks (should this action run?) first.** While Claude is
+limited or down, the person's worker-slot targets that passed the judge test judge in its place,
+in that chain's order. `gateway setup` and `gateway slot worker …` run the test and say which
+target passed and which failed; a failed or untested target never judges, and `doctor` does not
+fail on it. The judge's fallback switch is on by default; `cc-smart-dev-kit gateway fallback
+judge off` keeps Claude alone. There is no hidden Claude step after a judge chain's targets.
 
-Why it is the person's choice and never the default: an affordable judge that judged every
-check wrongly blocked real work three times, and a weaker one let a force push through.
+The person may give the judge slot a chain of their own, which wins (the worker's targets are
+never added to it), only when they ask:
 
-Only when the person asks for it:
+- On: `cc-smart-dev-kit gateway slot judge <target>[,<target>]`. A `claude-<model>` target is used
+  as it is. Any other target must first block a test check (a force push to `main`); one that
+  does not is refused, and nothing is saved. There is no way to skip the test: pick another
+  model. A target added by hand, or set before 0.5.0 (when a judge answered only after Claude
+  could not), is untested: the router ignores it, and `cc-smart-dev-kit doctor` fails on a judge
+  chain's until `slot judge` tests it.
+- Off: `cc-smart-dev-kit gateway slot judge off` (back to Claude first).
 
-- On: `cc-smart-dev-kit gateway slot judge <target>[,<target>]`. Each target must first block a
-  test check (a force push to `main`); one that does not is refused, and nothing is saved.
-  There is no way to skip the test: pick another model. A judge target added by hand, or set
-  before 0.5.0 (when a judge answered only after Claude could not), is untested: the router
-  ignores it (Claude judges), and `cc-smart-dev-kit doctor` fails until `slot judge` tests it.
-- Off: `cc-smart-dev-kit gateway slot judge off`.
+**Say the trade-off whenever a judge other than Claude is set or shown**, the worker's stand-ins
+included: it decides worse. It can block good work, and a weak one can let a risky command
+through; the test proves one obvious case only. Every check sends the conversation and the next
+action to that provider. "Auto mode blocks good work": `gateway slot judge off` for your own
+chain, or `gateway fallback judge off` so Claude alone judges.
 
-**Say the trade-off before you turn it on:** a judge other than Claude decides worse. It can
-block good work, and a weak one can let a risky command through; the test proves one
-obvious case only. Every check sends the conversation and the next action to that provider.
-The judge slot takes no `claude-*` target (with no chain, Claude judges anyway). "Auto mode
-blocks good work": `gateway slot judge off`, and Claude judges again.
+**WebSearch** runs on Claude only: a request that carries Anthropic's web search tool goes to
+Anthropic as sent, whatever the slot. When Claude is at its limit or down, the search result is
+a short note from the router that names the Tavily MCP server's search tool (use it, if it is set
+up).
 
 ## Check health
 
@@ -223,8 +227,9 @@ one the moment the port is free.
   `--append-system-prompt`.
 - **Put a backend key on the command line**, or print a key or password anywhere: names
   only.
-- **Turn the judge or a model slot on** without the person's yes and the trade-off said.
-- **Look for a way around the judge test**, or set a judge the person did not ask for.
+- **Turn a judge chain of their own or a model slot on** without the person's yes and the
+  trade-off said.
+- **Look for a way around the judge test**, or set a judge chain the person did not ask for.
 - **Restart the router** (`gateway setup --yes`, `systemctl restart`) without telling the
   person what the restart does: requests wait during the drain, and the first move to the
   socket makes them fail for one drain.

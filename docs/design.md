@@ -295,10 +295,16 @@ An optional local router between Claude Code and the model providers
   `.claude/rules/gateway.md`.
 - Every 4xx / 5xx from any target is logged with the start of its reason, keys masked,
   so a failure can be read in the journal.
-- Auto mode's safety check is judged by Claude unless the person gives the judge slot a
-  chain; then its first tested target judges every check (the next only with the judge's
-  fallback on). A target must pass a test check before it is set; the router uses only a
-  target whose test proof is in the config.
+- Auto mode's safety check is judged by Claude first; while Claude is limited or down, the worker
+  chain's targets that passed the judge test judge in its place (the judge's fallback is on by
+  default; `gateway fallback judge off` keeps Claude alone). A judge chain the person sets wins,
+  and may hold a `claude-…` target; its first usable target judges every check (the next only
+  with the judge's fallback on). A target must pass a test check before it is used; the router
+  uses only a target whose test proof is in the config (D44).
+- A request that carries an Anthropic server tool (`web_search_*`, `web_fetch_*`) goes to
+  Anthropic as sent, whatever its slot; at a Claude capacity failure the router answers it with a
+  note that names the Tavily MCP server's search tool (D41, D44; `docs/gateway.md` § Anthropic's
+  server tools).
 - Every Claude model reaches the slot of its family (haiku → scout, sonnet → worker, opus,
   fable), read from the id Claude Code sends. A slot with no chain is off: that model stays
   byte for byte on Anthropic. A chain is the person's, any targets in any order, and each

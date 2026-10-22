@@ -1777,8 +1777,10 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(saved.body).ok).toBe(true);
+      // Off is the judge's non-default switch since D44 (on is the default, so "on" would be
+      // written as no entry and there would be nothing to put back).
       expect(
-        JSON.parse((await world.post("slot.fallback", { on: true, slot: "judge" }, csrf)).body).ok,
+        JSON.parse((await world.post("slot.fallback", { on: false, slot: "judge" }, csrf)).body).ok,
       ).toBe(true);
       expect(
         JSON.parse((await world.post("switch", { name: "judge", on: false }, csrf)).body).ok,
@@ -1788,7 +1790,7 @@ describe("the actions", () => {
       const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         fallback?: Record<string, boolean>;
       };
-      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": true });
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": false });
     } finally {
       world.portal.stop();
       backend.stop();

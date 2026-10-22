@@ -7,8 +7,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { listModels } from "./backends";
-import { JUDGE_WARNING, NEEDS_SYSTEMD, routerService } from "./commands";
-import { emptyConfig, fallbackOn, judgeTargetTested, loadConfigFile, messageOf } from "./config";
+import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "./commands";
+import {
+  emptyConfig,
+  fallbackOn,
+  judgeTargetUsable,
+  loadConfigFile,
+  messageOf,
+  workerJudgeTargets,
+} from "./config";
 import { type HealthFetch, routerHealth } from "./health";
 import {
   type RouterService,
@@ -211,20 +218,25 @@ export async function gatewayChecks(options: {
     });
   }
   if (!Object.hasOwn(config.slots, JUDGE_SLOT)) {
+    // No judge chain of the person's (D44): Claude judges first, and the worker's tested
+    // targets while Claude is limited or down. A worker target that is not tested is no
+    // failure: it only never judges, and the line says so.
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${JUDGE_SLOT}: off, Claude judges auto mode's safety checks`,
+      text: `slot ${JUDGE_SLOT}: ${judgeDefaultWords(config)}`,
     });
-  }
-  if (Object.hasOwn(config.slots, JUDGE_SLOT)) {
+    if (fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0) {
+      checks.push({ ok: true, warn: true, text: `slot ${JUDGE_SLOT}: ${JUDGE_WARNING}` });
+    }
+  } else {
     checks.push({ ok: true, warn: true, text: `slot ${JUDGE_SLOT}: ${JUDGE_WARNING}` });
   }
-  // A judge target counts only once `gateway slot judge` tested it; the router ignores
-  // any other (a hand edit, a config from before 0.5.0, when a judge answered only after
-  // Claude could not).
+  // A judge target counts only once `gateway slot judge` tested it (a `claude-…` target needs
+  // no test); the router ignores any other (a hand edit, a config from before 0.5.0, when a
+  // judge answered only after Claude could not).
   for (const target of config.slots[JUDGE_SLOT] ?? []) {
-    if (judgeTargetTested(config, target)) continue;
+    if (judgeTargetUsable(config, target)) continue;
     checks.push({
       ok: false,
       text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it. Run: ${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`,

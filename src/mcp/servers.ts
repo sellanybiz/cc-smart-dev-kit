@@ -24,10 +24,11 @@
  *
  * A project's own servers are the project's: the plugin never knows them.
  */
+import { TAVILY_SERVER_NAME } from "./names";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 
 /** The servers this plugin manages, in the order setup registers them. */
-export const SERVER_NAMES = ["playwright", "sequential-thinking", "tavily-websearch"] as const;
+export const SERVER_NAMES = ["playwright", "sequential-thinking", TAVILY_SERVER_NAME] as const;
 
 export type ServerName = (typeof SERVER_NAMES)[number];
 
@@ -97,7 +98,7 @@ export function mcpServers(context: McpContext): McpServer[] {
     },
     context.tavily.key
       ? {
-          name: "tavily-websearch",
+          name: TAVILY_SERVER_NAME,
           json: json({
             // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code at connect time.
             headers: { Authorization: "Bearer ${TAVILY_API_KEY}" },
@@ -107,7 +108,7 @@ export function mcpServers(context: McpContext): McpServer[] {
           }),
         }
       : {
-          name: "tavily-websearch",
+          name: TAVILY_SERVER_NAME,
           json: "",
           skipped: context.tavily.reason,
         },

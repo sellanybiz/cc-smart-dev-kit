@@ -284,6 +284,12 @@ export const CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"] as const;
 export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
 
 /**
+ * The slot that answers for Sonnet: the worker. Its tested targets also judge auto mode's
+ * checks while Claude cannot (owner D44, `workerJudgeTargets` in `config.ts`).
+ */
+export const WORKER_SLOT = "cc-smart-dev-kit-worker";
+
+/**
  * The slot that answers for each Claude family, when it has a chain. Read from the id Claude
  * Code sends, so a newer version of a family (`claude-opus-6-0`) reaches its slot with no
  * change here. Scout and worker are Haiku's and Sonnet's: background calls, `haiku` and
@@ -291,7 +297,7 @@ export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
  */
 export const FAMILY_SLOTS: Readonly<Record<string, ClaudeFamily>> = {
   "cc-smart-dev-kit-scout": "haiku",
-  "cc-smart-dev-kit-worker": "sonnet",
+  [WORKER_SLOT]: "sonnet",
   ...MODEL_SLOTS,
 };
 
@@ -375,11 +381,13 @@ export function familySlotFor(model: unknown): null | { model: string; slot: str
 }
 
 /**
- * The slots whose fallback switch is off until the person turns it on: the model slots and
- * the judge, whose next targets stand in for a premium model or for the safety judge. Every
- * other slot (scout, worker, a machine's own) starts with it on.
+ * The slots whose fallback switch is off until the person turns it on: the model slots,
+ * whose next targets stand in for a premium model. Every other slot (scout, worker, the
+ * judge, a machine's own) starts with it on. The judge is on so that, with no judge chain of
+ * the person's own, the worker's tested targets answer while Claude cannot (D44); `gateway
+ * fallback judge off` keeps Claude alone.
  */
-export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS), JUDGE_SLOT];
+export const FALLBACK_OFF_BY_DEFAULT: readonly string[] = [...Object.keys(MODEL_SLOTS)];
 
 /**
  * The targets a slot's request may use: the whole chain while its fallback switch is on, its
@@ -428,6 +436,17 @@ export function planUsageLimit(
 
 /** Statuses that mean "this target cannot answer now: try the next one". */
 const FALLBACK_ANY = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+/**
+ * Is this status a capacity failure of Claude: it cannot answer now? The statuses a chain
+ * moves on for (`fallbackKind`) and every other 5xx, such as the 52x a proxy in front of
+ * Anthropic answers when its origin is down. For the answer that stands in for a web search
+ * (D44): a search that failed any of these ways would be retried for minutes, and a note
+ * naming Tavily is better at once. A chain's own list stays `fallbackKind`'s.
+ */
+export function capacityFailureStatus(status: number): boolean {
+  return FALLBACK_ANY.has(status) || (status >= 500 && status <= 599);
+}
 
 /**
  * Does this status move on to the next target?

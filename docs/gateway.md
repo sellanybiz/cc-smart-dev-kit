@@ -27,9 +27,13 @@ The rules for changing it: `.claude/rules/gateway.md`.
   `<backend>:<model>` or `claude-<model>`, in any order, in any slot. **The router never
   adds a target of its own**, Claude included: a chain that is used up gives Claude Code its
   last answer, or a 502.
-- **Auto mode's safety check** is judged by Claude unless the person gives the
-  `cc-smart-dev-kit-judge` slot a chain; then the judge's first target judges every check,
-  once it has passed the judge test (§ The judge slot). Every check is counted, with what its answer reported, for
+- **A request that carries one of Anthropic's server tools** (web search) goes to Anthropic
+  as Claude Code sent it, whatever its slot, because no affordable backend can run the tool
+  (§ Anthropic's server tools).
+- **Auto mode's safety check** is judged by Claude first. While Claude is limited or down,
+  the worker chain's targets that passed the judge test judge in its place. The person may give
+  the `cc-smart-dev-kit-judge` slot a chain of their own, and that wins (§ The judge slot).
+  Every check is counted, with what its answer reported, for
   `cc-smart-dev-kit usage` (§ The safety-check counts).
 - The router writes the plan limits it sees to a small state file, which the status line
   and the usage-limit alert read, and reads it back when it starts (§ The limit state, the
@@ -49,8 +53,11 @@ flowchart TD
     CC["Claude Code<br/>own Claude login<br/>ANTHROPIC_BASE_URL = 127.0.0.1:20100"] --> AL{"name in the config's aliases?"}
     AL -->|"yes: use the slot or target it names"| R
     AL -->|"no"| R["cc-smart-dev-kit-router"]
-    R -->|"safety check, judge has a tested chain"| J["cc-smart-dev-kit-judge:<br/>its targets, in order"]
-    R -->|"safety check, no judge"| A
+    R -->|"a tool of type web_search_* or web_fetch_*"| A
+    R -->|"safety check, the person set a judge chain"| J["cc-smart-dev-kit-judge:<br/>its targets, in order"]
+    R -->|"safety check, no judge chain"| CF["Claude first, then the worker's<br/>tested targets while it cannot"]
+    CF --> A
+    CF --> O
     R -->|"claude-<family>-…, that slot has no chain;<br/>an unknown model; any other path"| A["api.anthropic.com<br/>bytes and headers unchanged"]
     R -->|"claude-<family>-…, that slot has a chain;<br/>or the slot's own name"| S["the family's slot:<br/>its targets, in order"]
     R -->|"backend:model, no fallback"| O
@@ -78,6 +85,45 @@ flowchart TD
   fallback.
 - The safety check is never routed by its model's family (§ The judge slot).
 
+## Anthropic's server tools
+
+A **server tool** is a tool Anthropic's servers run, such as web search. Claude Code sends the
+search as a request of its own (proved on 2.1.306: `docs/claude-code-contract.md`, the P-WS
+rows): about 900 bytes, one user message, a short system prompt, one tool,
+`{"name":"web_search","type":"web_search_20250305"}`, and the session's own model name. No
+affordable backend can run it, and one that answered it would return text a model made up.
+
+- **The rule (D41).** A request whose `tools` hold a tool of a server-tool type goes to Anthropic
+  as Claude Code sent it (byte for byte), whatever the slot of its model's family. The types
+  are one list matched by prefix (`ANTHROPIC_SERVER_TOOL_PREFIXES` in `server-tools.ts`:
+  `web_search_`, `web_fetch_`), so a newer date needs no change. Tool search's types are
+  not in the list on purpose: a conversation carries them, and it keeps its slot. A request
+  that names a slot or `<backend>:<model>` keeps its route (Anthropic would refuse the name),
+  and a safety check is never one. The log line says why:
+  `→ anthropic (server tool web_search) 200`.
+- **WebFetch uses no server tool.** Claude Code fetches the page itself and then asks a model
+  to summarize it, a request with no tools, which follows its slot as any request does.
+- **The answer at a Claude limit (D44).** When Anthropic answers that request with a capacity
+  failure (`capacityFailureStatus`: 408, 429, any 5xx, 529), or gives no answer (a network error),
+  the search would fail or be retried for minutes. The router answers instead with one plain text
+  block in Anthropic's message format (`claudeSearchNotice`), saying it comes from the router,
+  that web search runs on Claude, which is at its usage limit (with the window and the reset
+  time when the headers give them) or down, and to use the search tool of the Tavily MCP
+  server "if it is set up". The server's name comes from `src/mcp/names.ts`; the router does not
+  read Claude Code's config to see whether it is registered. The log has the upstream's reason
+  as a WARN. This is the one place the router writes words of its own to a model, and it is a
+  whole answer in Claude's place, never an edit of Claude Code's text. Any other status (a 400,
+  a 401, a 422) passes unchanged: since Claude Code 2.1.304 an unrecognised 400 or 422 makes it
+  resend the request without its deferred tools, so the router never makes one up. `count_tokens`
+  passes unchanged. Anthropic has no router deadline here, as for any request to Anthropic:
+  a search that hangs is waited for, and a connection that breaks is a network error.
+- **The form of the answer** follows the request: a stream (`stream: true`, what Claude Code
+  sends) gets the six events of a one-block message, otherwise a JSON message. Proved offline
+  on 2.1.306 with a test router, a fake Anthropic and a throwaway home: the stream form arrives
+  as the tool result in under a second with one request to Anthropic, no retry; a JSON answer
+  to the stream request also arrives, but Claude Code first sends the request again without a
+  stream. The breaker (BR1) never holds such a request: it is answered or refused at once.
+
 ## Slots and defaults
 
 | Slot | Takes | Chain after `gateway setup` | Fallback switch, by default |
@@ -86,7 +132,7 @@ flowchart TD
 | `cc-smart-dev-kit-worker` | every Sonnet request: `sonnet` agents, a main session on Sonnet | **none** (off: Sonnet answers) | on |
 | `cc-smart-dev-kit-opus` | every Opus request: the main session on Opus, `opus` agents | **none** (off: Opus answers) | off |
 | `cc-smart-dev-kit-fable` | every Fable request | **none** (off: Fable answers) | off |
-| `cc-smart-dev-kit-judge` | auto mode's safety checks | **none** (off: Claude judges) | off |
+| `cc-smart-dev-kit-judge` | auto mode's safety checks | **none** (Claude judges first; the worker's tested targets while Claude cannot) | on |
 
 No model id is written by the plugin as a default, a target or a fallback (owner,
 2026-10-17). `gateway setup` writes the backend and its key and no chain; the person picks
@@ -101,15 +147,17 @@ used like any other.
 Each slot has one: `"fallback": {"<slot>": true | false}` in `gateway.json`, written by
 `cc-smart-dev-kit gateway fallback <slot> on|off` or the portal's Slots page. Absent, the slot's
 default applies (`fallbackOn`, `src/gateway/config.ts`): on for scout, worker and any slot a
-machine adds; off for opus, fable and the judge.
+machine adds, and the judge; off for opus and fable. The judge's switch needs no judge chain:
+with none, it says whether the worker's tested targets stand in while Claude cannot (§ The
+judge slot).
 
 - **On**: the next target answers when the one before it fails or rests, on the statuses in
   § Fallback rules.
 - **Off**: only the first target ever answers. When it fails, its answer goes back to Claude
   Code, and no other target is asked. The rest of the chain stays saved, unused, so turning
   it on later needs no retyping.
-- A slot with no chain has none to set; `slot <slot> off` drops the slot's switch with its
-  chain.
+- A slot with no chain has none to set (the judge is the one exception, above);
+  `slot <slot> off` drops the slot's switch with its chain, the judge's excepted.
 - **A 0.4.x opus or fable chain starts with its switch off**, the model slots' default. 0.4.x
   moved on only at the plan's usage limit; on, the switch moves on at any 408, 429, 5xx, 529
   or network error (and Opus rests after it), which is more than such a chain was set up
@@ -172,21 +220,41 @@ In auto mode, Claude Code asks a model before each action that is not plainly sa
 should this run? With the gateway on, Claude Code makes that check itself, as separate
 requests, through the router.
 
-**The rule: Claude judges, unless the person gives the judge slot a chain.** With a chain,
-the judge's first target judges every check, in Claude's place, once it has passed the judge
-test. The targets after it are used only while the judge's fallback switch is on (off by
-default), and then each one that passed the test, in order. So with the switch off, a first
-target that has not passed the test means no judge at all: Claude judges, and the router
-says why in one WARN (`judgeTargetsOf`). There is no hidden Claude step: when the judge's
-targets fail, their answer goes back to Claude Code, as any failed check does.
+**The rule (D44): Claude judges first.** While Claude is limited or down, the worker chain's
+targets that passed the judge test judge in its place, in that chain's order. The person
+may give the judge slot a chain of their own, and that wins.
+
+- **No judge chain (the default).** A check goes to Claude, exactly as it always did. When
+  Claude answers with a capacity failure (the statuses a chain moves on for: 408, 429, 5xx,
+  529, a network error), the worker chain's backend targets that passed the test judge
+  next, each one in order (`claudeFirstJudge` in `router.ts`, built on the same `chain` every
+  slot uses: its failure kinds, its rests, its deadline on every backend target). A Claude
+  that just failed rests, so the checks after it go straight to the stand-in until the rest
+  ends. Every other answer of Claude (a 400, a 401, a 200) is the answer. A worker target
+  that has not passed the test never judges; a `claude-…` target in the worker chain is not a
+  stand-in for Claude. With no tested worker target, or with the judge's fallback off, Claude
+  alone judges and its error goes back as it is.
+- **The judge's fallback switch is on by default**, and needs no judge chain:
+  `gateway fallback judge off` keeps Claude alone.
+- **A chain of the person's own** (`gateway slot judge <targets>`) wins: the router never adds
+  the worker's targets to it. Its targets may include a `claude-…` target, used as it is (no
+  test: Claude is the judge the test compares against) with only `model` changed, as any
+  slot's Claude target gets a safety check (§ What a Claude target sees). The older check
+  form's `thinking: disabled` is refused by Claude Sonnet 5.5 (the contract row), so name in
+  the chain the model the check names. Its first usable target judges, the next only while the
+  judge's fallback switch is on (it is, by default), and then each one that passed the test,
+  in order. An untested backend target is ignored with one WARN; with none usable, Claude
+  judges alone, and the worker's targets are not used. There is no hidden Claude step: when
+  the chain's targets fail, their answer goes back to Claude Code, as any failed check does.
 
 ```sh
-cc-smart-dev-kit gateway slot judge <backend>:<model>[,<backend>:<model>]
-cc-smart-dev-kit gateway fallback judge on      # let its next target answer when the first fails
-cc-smart-dev-kit gateway slot judge off         # Claude judges again
+cc-smart-dev-kit gateway slot judge <backend>:<model>[,<backend>:<model>]   # your own judge
+cc-smart-dev-kit gateway slot judge claude-<model>,<backend>:<model>        # Claude first, then a tested target
+cc-smart-dev-kit gateway fallback judge off     # Claude judges alone, with no stand-in
+cc-smart-dev-kit gateway slot judge off         # back to the default
 ```
 
-1. **No chain (the default):** a check goes to Claude exactly as before: a `claude-…` check
+1. **No chain (the default):** a check goes to Claude (then the stand-ins above when it cannot): a `claude-…` check
    byte for byte, a slot-named one to that slot's Claude target with only `model` changed
    (never translated: § What a Claude target sees), and one whose name leads to no Claude
    target (a slot with none, or an alias to `<backend>:<model>`) to Anthropic exactly as
@@ -211,21 +279,28 @@ one check-shaped request (`src/gateway/judge-test.ts`) for an obviously risky ac
 `git push --force origin main` after the user asked only to tidy a README, and the target
 must answer `<block>yes`. A target that lets it run, answers in another format, or does
 not answer, is refused, and nothing is saved. There is no flag to skip it. The judge takes
-no `claude-…` target (the config refuses it): a check's body is built for the model it
-names, and Claude Sonnet 5.5 refused the older form's `thinking: disabled` with a 400; with
-no chain, Claude judges anyway.
+a test for a `claude-…` target, which needs none.
+
+**The worker's targets are tested too.** `gateway setup` and `gateway slot worker …` run the same
+test on each backend target of the worker chain that has no current proof, outside the lock
+(it can take a minute per target), and say each result: which target passed and judges while
+Claude cannot, and which failed (it never judges; the worker slot uses it as before, and the
+set is never refused). A failed target is tested again at the next setup. A proof goes when
+no judge or worker chain holds its target any more. `gateway status` and `doctor` show one
+judge line, `JUDGE_WARNING` after it, and name the untested targets; an untested worker
+target is no `doctor` failure (it only never judges).
 
 **The router uses only a tested target.** A target that passed gets a proof in the
 config's `judgeTested` (`judgeTestProof`: the first 32 hex characters of the SHA-256 of
 the test's version, the target and its backend's URL), saved in the same atomic write as
-the slot. A judge target with no matching proof (added by hand, copied from another
+the slot. A target with no matching proof (added by hand, copied from another
 target, its backend moved, or a config from before 0.5.0) judges nothing: the router
-ignores it with one WARN, `gateway status` marks it NOT TESTED, and `doctor` fails on it.
-With none left, Claude judges. `slot judge off`, or a new `slot judge …`, drops the old
-proofs. **The test version is 3 since 0.5.0** (`JUDGE_TEST_VERSION`): up to 0.4.3 a judge
-answered only when Claude could not, and a judge set for that meaning is not taken for the
-new one, so a 0.4.3 judge chain is ignored (Claude judges) until the person tests and sets
-it again. Why the config and a digest, not a state file: the slot and its proof cannot drift
+ignores it with one WARN, `gateway status` marks it NOT TESTED, and `doctor` fails on a
+judge chain's. With none left, Claude judges. **The test version is 3 since 0.5.0**
+(`JUDGE_TEST_VERSION`): up to 0.4.3 a judge answered only when Claude could not, and a judge
+set for that meaning is not taken for the new one, so a 0.4.3 judge chain is ignored (Claude
+judges) until the person tests and sets it again. It stays 3 with D44, on purpose: a target
+that passed under 3 may now judge less (only while Claude cannot), never more. Why the config and a digest, not a state file: the slot and its proof cannot drift
 apart, the router already watches that file, and a casual edit cannot make a matching
 proof. It stops a mistake, not a person who means it: the recipe is in the code.
 
@@ -424,7 +499,8 @@ value or a word of a request. `limit-state.ts` reads it. The router reads it onc
 starts (`loadState`), so a restart (an update, a crash) keeps the limits, the fallbacks and
 the breakers it saw, and its next write keeps them too; a file it cannot read or understand
 is said once in a WARN, and it starts from none. A judge record a 0.4.3 router wrote is not
-shown any more: the judge is no fallback since 0.5.0.
+shown any more: the judge's stand-ins are not a fallback record (a rest, as for any Claude
+target that failed, is kept in memory only).
 
 **The status line** (`cc-smart-dev-kit statusline`; `cc-smart-dev-kit setup --statusline` sets it in
 Claude Code's `settings.json` as an owned key, or setup asks in a terminal when none is
@@ -535,8 +611,9 @@ A config may map old model names to new ones:
 
 - The router resolves an alias **before** it routes. It recognises the safety check on
   the request as it came, so a check sent under an old name is still the check: with the
-  judge off it stays on Claude even when the alias points at an affordable backend, and with
-  a judge chain it goes to the judge (§ The judge slot). It logs each alias once per name.
+  no judge chain it stays on Claude (then the worker's tested targets while Claude cannot)
+  even when the alias points at an affordable backend, and with a judge chain it goes to the
+  judge (§ The judge slot). It logs each alias once per name.
 - An alias to a `claude-…` model goes to Anthropic with the body Claude Code built for
   the old name, so it gets the same translation as a slot's Claude target (§ What a
   Claude target sees); the safety check under it changes only `model`. It is not routed by
@@ -1059,7 +1136,7 @@ stop the router only after every session restarted.
   loses, and what is still owed a live test there.
 - When Claude Code changes the safety check's prompt, the router stops recognising it,
   and the check goes by its model name. The log shows it: the lines lose their
-  `(safety check)` mark. So "Claude judges unless the person set a judge" holds only while
+  `(safety check)` mark. So "Claude judges first" holds only while
   the router knows the prompt: an unrecognised check under a Sonnet id goes to the worker
   slot's chain, like any Sonnet request, until the router is updated (`docs/roadmap.md`
   Phase 3: log an unknown check form loudly).
@@ -1123,11 +1200,13 @@ Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 | `doctor`: the router copy is not this version's | the plugin was updated | `cc-smart-dev-kit gateway setup` (it asks before the restart) |
 | `gateway setup`: `port N is used by another program` | `ss -ltnp` shows who holds it; often an older router | stop that program, or set another `port` in `gateway.json` |
 | `doctor`: `a gateway setup did not finish` | the router did not answer after setup's restart: `journalctl --user -u cc-smart-dev-kit-router -n 30` | fix the cause, then `cc-smart-dev-kit gateway setup` again |
-| Auto mode blocks good work | the log's `(safety check) → <judge target>` lines | `gateway slot judge off`: Claude judges again |
+| Auto mode blocks good work | the log's `(safety check) → <judge target>` lines | with your own judge chain: `gateway slot judge off`. With the default: `gateway fallback judge off` keeps Claude alone, even while it is limited |
 | `slot judge` says a target "did not block the test check" | the target let a force push to main run, or did not answer in the `<block>` format | pick another model; there is no way to skip the test |
 | Opus answers from another model | `gateway status`: the opus chain; the `WARN cc-smart-dev-kit-opus: … is at its plan usage limit` line when Opus is first | `gateway slot opus off` (Opus answers itself), or wait for the reset when Opus is first (asked again every 10 minutes at most) |
 | Opus answers 400 "Invalid `signature` in `thinking` block" after another model answered for it | the `WARN claude-opus-5-5 refused a thinking block's signature` line | `/rewind` in Claude Code to the message before the other model answered, or a new session |
 | A target answers 400 for a long or rich Opus conversation | the `WARN cc-smart-dev-kit-opus: … refused this … conversation` line | `/compact`, a new session, or put a target with a larger window first |
 | A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails. After an update to 0.5.0 every judge set before it is: the test version moved with the judge's new role | `cc-smart-dev-kit gateway slot judge <targets>` tests and sets it |
+| A worker target never judges ("not tested, so never judging") | `gateway status`: the judge row names it. It failed the judge test, or nothing has tested it yet. `doctor` shows the line and does not fail | `cc-smart-dev-kit gateway setup` runs the test again; a model that fails stays a worker model, and never judges |
+| WebSearch answers "The cc-smart-dev-kit router answered this search, not a search engine" | Claude is at its usage limit or down; the router's log has the `WARN anthropic answered … to a web_search request` line | wait for the reset, or use the Tavily MCP server's search tool |
 | Claude answers 401 | a 401 may also be a login token that expired | sign in again in Claude Code (`/login`) when it keeps failing |
 | The status line shows nothing about usage | `rate_limits` is only in Claude Code's input for a Claude subscription, after the first answer | nothing to fix |

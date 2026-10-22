@@ -6,6 +6,7 @@
  * Every file goes into tempDir(). Expected values by hand.
  */
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmodSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
@@ -15,12 +16,16 @@ import {
   breakerHoldMs,
   breakerOn,
   breakerWords,
+  fallbackOn,
   JUDGE_NEVER_HOLDS,
+  judgeTargetUsable,
   loadConfigFile,
   parseConfig,
   saveConfig,
   watchConfig,
+  workerJudgeTargets,
 } from "./config";
+import { formatTarget } from "./targets";
 
 const WORKER = "cc-smart-dev-kit-worker";
 const SCOUT = "cc-smart-dev-kit-scout";
@@ -265,5 +270,77 @@ describe("a file with a bad breaker key", () => {
     writeFileSync(path, '{"breaker": {"cc-smart-dev-kit-worker": nope}', { mode: 0o600 });
     chmodSync(path, 0o600);
     expect(() => loadConfigFile(path)).toThrow(`${path} is not valid JSON. Fix it by hand.`);
+  });
+});
+
+describe("the judge's targets (D44)", () => {
+  /**
+   * The proofs of two targets on the test backend, worked out by hand: `printf 'cc-smart-dev-kit
+   * judge test 3\n<target>\nhttp://127.0.0.1:20128' | sha256sum`, the first 32 characters.
+   */
+  const M1_PROOF = "817a6622e4d5eaac7c33fa6a2dfda4a5";
+  const M3_PROOF = "e0546be66f36717139fce9a39c853fd5";
+  const PROOF = "0123456789abcdef0123456789abcdef";
+  const URL_ = "http://127.0.0.1:20128";
+
+  it("a claude-… target may judge with no proof; a backend target only with its own", () => {
+    const config = parsed(raw({ judgeTested: { "omniroute:m1": M1_PROOF } }));
+    expect(judgeTargetUsable(config, "claude-sonnet-5-5")).toBe(true);
+    expect(judgeTargetUsable(config, "omniroute:m1")).toBe(true);
+    expect(judgeTargetUsable(config, "omniroute:m2")).toBe(false);
+    // A proof written for another target, or by hand, does not count.
+    expect(
+      judgeTargetUsable(parsed(raw({ judgeTested: { "omniroute:m1": PROOF } })), "omniroute:m1"),
+    ).toBe(false);
+    expect(judgeTargetUsable(config, "not a target")).toBe(false);
+  });
+
+  it("a judge chain may hold a claude-… target, first or last", () => {
+    expect(
+      "config" in parseConfig(raw({ slots: { [JUDGE]: ["claude-sonnet-5-5", "omniroute:m1"] } })),
+    ).toBe(true);
+    expect(
+      "config" in parseConfig(raw({ slots: { [JUDGE]: ["omniroute:m1", "claude-sonnet-5-5"] } })),
+    ).toBe(true);
+  });
+
+  it("the worker's targets that passed the test judge, in the worker chain's order; Claude and untested ones never", () => {
+    const config = parsed(
+      raw({
+        judgeTested: {
+          "omniroute:m1": M1_PROOF,
+          "omniroute:m3": M3_PROOF,
+        },
+        slots: { [WORKER]: ["omniroute:m3", "claude-sonnet-5-5", "omniroute:m2", "omniroute:m1"] },
+      }),
+    );
+    expect(workerJudgeTargets(config).map(formatTarget)).toEqual(["omniroute:m3", "omniroute:m1"]);
+  });
+
+  it("no worker chain, or no proof, gives none", () => {
+    expect(workerJudgeTargets(parsed(raw({ slots: { [SCOUT]: ["omniroute:m1"] } })))).toEqual([]);
+    expect(workerJudgeTargets(parsed(raw()))).toEqual([]);
+  });
+
+  it("the judge's fallback switch is on by default, and can be saved off with no judge chain", () => {
+    const config = parsed(raw());
+    expect(fallbackOn(config, JUDGE)).toBe(true);
+    const off = parsed(raw({ fallback: { [JUDGE]: false } }));
+    expect(fallbackOn(off, JUDGE)).toBe(false);
+    // Another slot with no chain is still refused.
+    const refused = parseConfig(raw({ fallback: { "cc-smart-dev-kit-nope": false } }));
+    expect("error" in refused && refused.error).toContain(
+      'fallback names slot "cc-smart-dev-kit-nope", which is not in slots',
+    );
+  });
+
+  it("an old proof (test version 2) does not count", () => {
+    const old = createHash("sha256")
+      .update(`cc-smart-dev-kit judge test 2\nomniroute:m1\n${URL_}`)
+      .digest("hex")
+      .slice(0, 32);
+    expect(
+      judgeTargetUsable(parsed(raw({ judgeTested: { "omniroute:m1": old } })), "omniroute:m1"),
+    ).toBe(false);
   });
 });

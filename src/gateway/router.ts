@@ -90,9 +90,10 @@ import { atomicWrite } from "../setup/write";
 import {
   fallbackOn,
   type GatewayConfig,
-  judgeTargetTested,
+  judgeTargetUsable,
   messageOf,
   watchConfig,
+  workerJudgeTargets,
 } from "./config";
 import {
   cleanFallbackResponse,
@@ -124,8 +125,16 @@ import {
   type SafetyCheckState,
 } from "./safety-checks";
 import {
+  anthropicServerTool,
+  claudeSearchNotice,
+  claudeUnavailableWords,
+  searchMessageAnswer,
+  searchStreamAnswer,
+} from "./server-tools";
+import {
   type ClaudeFamily,
   type ClaudeVersion,
+  capacityFailureStatus,
   claudeFamily,
   claudeVersion,
   cooldownSeconds,
@@ -1131,17 +1140,18 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
-   * The judge's targets the router may use: its chain, its first target alone while its
-   * fallback switch is off (`targetsInUse`), and of those only the ones `gateway slot judge`
-   * tested (`judgeTargetTested`). An untested one (a hand edit, a config from before 0.5.0)
-   * is ignored, with one WARN per target. None left: Claude judges.
+   * The judge slot's targets the router may use, for a chain the person set: its chain, its
+   * first target alone while its fallback switch is off (`targetsInUse`), and of those only
+   * the ones that may judge (`judgeTargetUsable`: a `claude-…` target as it is, a backend
+   * target once `gateway slot judge` tested it). An untested backend target (a hand edit, a
+   * config from before 0.5.0) is ignored, with one WARN per target. None left: Claude judges.
    */
   function judgeTargetsOf(config: GatewayConfig): Target[] {
     const judge = resolveRoute(JUDGE_SLOT, config);
     if (judge.kind !== "slot") return [];
     return targetsInUse(judge.targets, fallbackOn(config, JUDGE_SLOT)).filter((target) => {
       const text = formatTarget(target);
-      if (judgeTargetTested(config, text)) return true;
+      if (judgeTargetUsable(config, text)) return true;
       if (!untestedLogged.has(text)) {
         untestedLogged.add(text);
         deps.log(
@@ -1645,7 +1655,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     /** The Claude model the request named, and its bytes (`targetUpstream`); a size WARN names it. */
     asked: Asked | null = null,
   ): Promise<Outcome> {
-    const standsInFor = asked?.model ?? null;
+    // A safety check is no conversation: the hint below ("/compact it …") would mislead.
+    const standsInFor = guard ? null : (asked?.model ?? null);
     const failures: string[] = [];
     let fallbacks = 0;
     let skipped = 0;
@@ -2122,17 +2133,132 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     // Its newer form carries the sonnet slot's name; the log must still tell it apart.
     if (guard) model.name = `${model.name} (safety check)`;
-    // A check goes to the judge slot when it has a tested chain, like any slot's request;
-    // with none, to Claude. Only targets `gateway slot judge` tested; an untested one is
-    // ignored, with one WARN.
+    // An Anthropic server tool runs on Anthropic only (D41), so the request goes there as
+    // Claude Code sent it, whatever slot its model's family has. A name the router owns (a
+    // slot key, `<backend>:<model>`, an alias) keeps its route: Anthropic would refuse it.
+    const serverTool =
+      guard || alias !== null || resolveRoute(body.model, config).kind !== "anthropic"
+        ? null
+        : anthropicServerTool(body);
+    if (serverTool !== null) return serverToolRoute(serverTool);
+    // A check goes to the judge slot when the person gave it a chain, like any slot's
+    // request; only a Claude target, or a target `gateway slot judge` tested (an untested one
+    // is ignored, with one WARN). With none, Claude judges first (D44): then the worker
+    // chain's tested targets while Claude cannot (`claudeFirstJudge`), else Claude alone.
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
     const answered =
       judgeTargets.length > 0
         ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null)
-        : claudeRoute();
+        : ((guard ? claudeFirstJudge() : null) ?? claudeRoute());
     // Auto mode's safety check, counted (`countedCheck`). A check is a `/v1/messages`
     // request: a `count_tokens` for one counts tokens, it judges nothing.
     return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
+
+    /**
+     * A request that carries an Anthropic server tool (D41; `server-tools.ts`). Anthropic
+     * gets it with the bytes Claude Code sent, on the person's own login, and its answer
+     * goes back unchanged. The log line says why this request did not follow its model's slot.
+     *
+     * When Claude cannot answer a `/v1/messages` call (D44: a capacity failure, 429, 5xx or
+     * no answer at all), the router answers instead, in Anthropic's message format with one
+     * plain text block that says it is the router's and names the Tavily MCP server's search
+     * tool. Claude Code takes such an answer as the tool's result at once; the failure itself
+     * would be retried for minutes. Any other status passes unchanged. The breaker (BR1)
+     * never holds such a request: it is answered or refused at once.
+     */
+    async function serverToolRoute(tool: string): Promise<Outcome> {
+      const why = `server tool ${tool}`;
+      const named =
+        typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
+      const result = await send(req, anthropicUpstream(req, url, config, sent), null);
+      if (req.signal.aborted) return closed(result, `anthropic (${why})`);
+      const status = "response" in result ? result.response.status : null;
+      if (url.pathname !== MESSAGES_PATH || (status !== null && !capacityFailureStatus(status))) {
+        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+      }
+      let limit: null | PlanLimit = null;
+      if ("response" in result) {
+        const upstream = result.response;
+        limit = planUsageLimit(upstream.status, (name) => upstream.headers.get(name));
+        if (named !== null) observeClaude(named, upstream, url.pathname);
+        logErrorAnswer(
+          upstream,
+          knownSecrets(req, config),
+          `WARN anthropic answered ${upstream.status} to a ${tool} request; the router answered with a note naming Tavily instead`,
+        );
+      } else {
+        const reason = maskedLine(result.failure, knownSecrets(req, config), SNIPPET_MAX);
+        deps.log(
+          `WARN anthropic did not answer a ${tool} request (${reason}); the router answered with a note naming Tavily instead`,
+        );
+      }
+      const text = claudeSearchNotice(claudeUnavailableWords(status, limit));
+      const streamed = body.stream === true;
+      return {
+        fallbacks: 0,
+        response: new Response(
+          streamed ? searchStreamAnswer(body.model, text) : searchMessageAnswer(body.model, text),
+          {
+            headers: {
+              "cache-control": "no-cache",
+              "content-type": streamed ? "text/event-stream" : "application/json",
+            },
+            status: 200,
+          },
+        ),
+        skipped: 0,
+        target: `router (${why}; anthropic ${status ?? "did not answer"})`,
+      };
+    }
+
+    /**
+     * Auto mode's safety check when the person set no judge chain (D44): Claude judges
+     * first, as it always did. While Claude is limited or down, the worker chain's targets
+     * that passed the judge test judge in its place, in that chain's order, through the same
+     * chain every slot uses: its failure kinds, its rests (a Claude that just failed rests,
+     * and the checks after it go to the stand-in until the rest ends), its deadline on every
+     * backend target. Claude's step is the check's own route (`resolveRequestRoute`), the
+     * model the check named with the bytes as sent.
+     *
+     * Null when this does not apply, and the check takes `claudeRoute()` as before: a
+     * `count_tokens`; a judge slot in the config (the person's chain wins, even one with no
+     * usable target); the judge's fallback switch off (`gateway fallback judge off`: Claude
+     * alone); no worker target that passed the test; or a check whose route is no Claude
+     * model (a name with no Claude target behind it, which Anthropic refuses and Claude Code
+     * retries on a real Claude model).
+     */
+    function claudeFirstJudge(): null | Promise<Outcome> {
+      if (
+        url.pathname !== MESSAGES_PATH ||
+        Object.hasOwn(config.slots, JUDGE_SLOT) ||
+        !fallbackOn(config, JUDGE_SLOT)
+      ) {
+        return null;
+      }
+      const standIns = workerJudgeTargets(config);
+      if (standIns.length === 0) return null;
+      const decided = resolveRequestRoute(body, config, true);
+      if (decided.kind === "anthropic" && typeof body.model === "string") {
+        const claude: Target = { kind: "anthropic", model: withoutContextSuffix(body.model) };
+        return chain(req, url, config, body, [claude, ...standIns], JUDGE_SLOT, true, {
+          model: body.model,
+          sent: bytes,
+        });
+      }
+      if (decided.kind === "slot") {
+        return chain(
+          req,
+          url,
+          config,
+          body,
+          [...decided.targets, ...standIns],
+          JUDGE_SLOT,
+          true,
+          null,
+        );
+      }
+      return null;
+    }
 
     /** The request's way by its name: everything but a check the judge takes. */
     // Not `async`: it only hands back a promise, and an extra async step would reorder the

@@ -35,11 +35,13 @@ import {
   type GatewayConfig,
   JUDGE_NEVER_HOLDS,
   judgeTargetTested,
+  judgeTargetUsable,
   judgeTestProof,
   loadConfigFile,
   messageOf,
   parseConfig,
   saveConfig,
+  workerJudgeTargets,
 } from "./config";
 import { type HealthFetch, type HealthProbe, routerHealth } from "./health";
 import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
@@ -65,11 +67,13 @@ import {
 } from "./settings";
 import {
   FAMILY_SLOTS,
+  formatTarget,
   JUDGE_SLOT,
   parseTarget,
   SLOT_PREFIX,
   slotKeyFromArg,
   type Target,
+  WORKER_SLOT,
 } from "./targets";
 
 export const USAGE = `Usage: ${COMMAND} gateway <command>
@@ -83,16 +87,22 @@ Commands:
   slot <slot> <targets>  Set a slot's chain: any targets, in order, each <backend>:<model>
                          (see "models") or claude-<model>. <slot>: scout (Haiku's work),
                          worker (Sonnet's), opus, fable, or judge. The first target
-                         answers; the next only while the slot's fallback is on.
-  slot judge <targets>   A judge for auto mode's safety checks: it judges every check, in
-                         Claude's place. Each target must first block a test check (a
-                         force push to main), or it is not set. A weak judge can let a
-                         risky command through, and it reads the conversation.
+                         answers; the next only while the slot's fallback is on. A worker
+                         target is also given the judge test (see below); it is set
+                         either way.
+  slot judge <targets>   Your own judge for auto mode's safety checks, in the order you
+                         give: a claude-<model> target as it is, any other target only after
+                         it blocks a test check (a force push to main). Without it, Claude
+                         judges every check first, and while Claude is limited or down the
+                         worker targets that passed the same test judge in its place. A
+                         weaker judge can block good work or let a risky command through,
+                         and it reads the conversation.
   slot <slot> off        No chain: that model is plain Claude again (the judge: Claude
-                         judges the checks).
+                         first, and the worker's tested targets while Claude is limited).
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
-                         On by default for scout and worker; off for opus, fable, judge.
+                         On by default for scout, worker and judge; off for opus, fable.
+                         "fallback judge off": Claude alone judges.
   breaker <slot> on|off  When every target of a slot is limited or down, may the router hold
                          the request for a while and then ask Claude Code to retry? Off: the
                          last answer goes back at once. On by default for scout, worker,
@@ -464,9 +474,11 @@ export function upgradeConfig(configPath: string, options: { dryRun?: boolean } 
  * form's `thinking: disabled` with a 400.
  *
  * The slot's fallback switch stays as it was (`fallbackOn`); a 0.4.x `modelSlots` entry for
- * the slot goes (it changes nothing any more). A judge change drops every judge test proof
- * (`judgeTested`): `judge off` needs none, and new targets get theirs only from the test, in
- * `commandSlot` (`withJudgeProofs`).
+ * the slot goes (it changes nothing any more). The judge's own switch stays even when its
+ * chain goes: with no chain it means Claude alone (`gateway fallback judge off`). The judge
+ * test proofs (`judgeTested`) are not touched here: new targets get theirs only from the
+ * test, and those of a target no judge or worker chain holds any more go, in `commandSlot`
+ * (`withJudgeProofs`).
  */
 export function planSlotChange(
   current: GatewayConfig,
@@ -480,16 +492,19 @@ export function planSlotChange(
       error: `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`,
     };
   }
-  const { judgeTested: _proofs, ...withoutProofs } = current;
-  const config = key === JUDGE_SLOT ? withoutProofs : current;
-  const old = config.slots[key] ?? [];
-  const base = withoutModelSlot(config, key);
+  const old = current.slots[key] ?? [];
+  const base = withoutModelSlot(current, key);
   if (targetsText.trim() === "off") {
-    if (!Object.hasOwn(config.slots, key)) return { error: `${key} is already off` };
-    const slots = Object.fromEntries(Object.entries(config.slots).filter(([name]) => name !== key));
-    // An alias may still point at the slot: the check says so. The slot's switches go with
-    // its chain: an entry for a slot that is not in `slots` is a config error.
-    const checked = parseConfig(withoutSwitches({ ...base, slots }, key));
+    if (!Object.hasOwn(current.slots, key)) return { error: `${key} is already off` };
+    const slots = Object.fromEntries(
+      Object.entries(current.slots).filter(([name]) => name !== key),
+    );
+    // An alias may still point at the slot: the check says so. A slot's switches go with its
+    // chain (an entry for a slot that is not in `slots` is a config error), except the judge's
+    // fallback: it still says whether the worker's targets stand in.
+    const checked = parseConfig(
+      key === JUDGE_SLOT ? { ...base, slots } : withoutSwitches({ ...base, slots }, key),
+    );
     if ("error" in checked) return { error: checked.error };
     return { config: checked.config, key, next: [], old };
   }
@@ -503,7 +518,7 @@ export function planSlotChange(
     if ("error" in parsed) return { error: parsed.error };
     const target: Target = parsed.target;
     if (target.kind === "anthropic") continue;
-    if (!Object.hasOwn(config.backends, target.backend)) {
+    if (!Object.hasOwn(current.backends, target.backend)) {
       return { error: `"${text}": backend "${target.backend}" is not in the config` };
     }
     const models = Object.hasOwn(modelsByBackend, target.backend)
@@ -527,8 +542,10 @@ export function planSlotChange(
 
 /**
  * The config with one slot's fallback switch set: on, its next target answers when the one
- * before it fails or rests; off, only its first. A slot with no chain has none to set. A
- * value equal to the slot's default is written as no entry (`fallbackOn`).
+ * before it fails or rests; off, only its first. A slot with no chain has none to set, except
+ * the judge: with no chain of the person's own, its switch says whether the worker's tested
+ * targets stand in while Claude is limited or down, and off keeps Claude alone (D44). A value
+ * equal to the slot's default is written as no entry (`fallbackOn`).
  */
 export function planFallbackChange(
   current: GatewayConfig,
@@ -542,7 +559,7 @@ export function planFallbackChange(
     };
   }
   if (value !== "on" && value !== "off") return { error: `say on or off, not "${value}"` };
-  if (!Object.hasOwn(current.slots, key)) {
+  if (key !== JUDGE_SLOT && !Object.hasOwn(current.slots, key)) {
     return {
       error: `${key} has no chain, so it has nothing to fall back to. Give it one first: ${COMMAND} gateway slot ${slotName(key)} <targets>`,
     };
@@ -592,8 +609,8 @@ function slotName(key: string): string {
 }
 
 /** What a slot with no chain means, in words. */
-function offWords(key: string): string {
-  if (key === JUDGE_SLOT) return "off: Claude judges auto mode's safety checks";
+function offWords(config: GatewayConfig, key: string): string {
+  if (key === JUDGE_SLOT) return `default: ${judgeDefaultWords(config)}`;
   const family = Object.hasOwn(FAMILY_SLOTS, key) ? FAMILY_SLOTS[key] : undefined;
   return family === undefined
     ? "off"
@@ -603,6 +620,35 @@ function offWords(key: string): string {
 /** The trade-off of a judge other than Claude, said wherever one is set or shown. */
 export const JUDGE_WARNING =
   "a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action";
+
+/** The worker chain's backend targets that have not passed the judge test, in its order. */
+function untestedWorkerTargets(config: GatewayConfig): string[] {
+  return (config.slots[WORKER_SLOT] ?? []).filter((text) => {
+    const parsed = parseTarget(text);
+    return (
+      "target" in parsed && parsed.target.kind === "backend" && !judgeTargetTested(config, text)
+    );
+  });
+}
+
+/**
+ * What the judge is, in words, while the person set no judge chain (owner D44): Claude
+ * judges every check first, as it always did; while it is limited or down, the worker
+ * chain's targets that passed the judge test judge in its place, as long as the judge's
+ * fallback switch is on (it is, by default). One home for the words that `gateway status`,
+ * `slot judge off`, `fallback judge` and `doctor` say.
+ */
+export function judgeDefaultWords(config: GatewayConfig): string {
+  if (!fallbackOn(config, JUDGE_SLOT)) return "Claude judges every check, alone (fallback off)";
+  const standIns = workerJudgeTargets(config).map(formatTarget);
+  const untested = untestedWorkerTargets(config);
+  if (standIns.length === 0) {
+    return untested.length > 0
+      ? `Claude judges every check, alone: no worker target has passed the judge test yet (${untested.join(", ")}; ${COMMAND} gateway setup tests them)`
+      : "Claude judges every check, alone (the worker chain has no affordable target to stand in)";
+  }
+  return `Claude first; while Claude is limited or down: ${standIns.join(", ")} (fallback on)${untested.length > 0 ? `; not tested, so never judging: ${untested.join(", ")} (${COMMAND} gateway setup tests them)` : ""}`;
+}
 
 /** What a slot's fallback switch means for its chain, in words. */
 function fallbackWords(config: GatewayConfig, key: string): string {
@@ -625,18 +671,22 @@ function printSlots(config: GatewayConfig, print: (line: string) => void): void 
   for (const key of keys) {
     const targets = config.slots[key];
     if (targets === undefined) {
-      print(`  ${key.padEnd(16)} ${offWords(key)}`);
+      print(`  ${key.padEnd(16)} ${offWords(config, key)}`);
+      // The worker's tested targets are judges while Claude cannot: the trade-off is shown.
+      if (key === JUDGE_SLOT && fallbackOn(config, key) && workerJudgeTargets(config).length > 0) {
+        print(`    WARN ${JUDGE_WARNING}`);
+      }
       continue;
     }
     const notes = [fallbackWords(config, key)];
     const breaker = breakerWords(config, key);
     if (breaker !== null) notes.push(breaker);
     if (key === JUDGE_SLOT) {
-      const untested = targets.filter((target) => !judgeTargetTested(config, target));
+      const untested = targets.filter((target) => !judgeTargetUsable(config, target));
       notes.push(
         untested.length > 0
           ? `NOT TESTED, so ignored: ${untested.join(", ")}; run ${COMMAND} gateway slot judge <targets>`
-          : "judges every safety check in Claude's place",
+          : "your own judge: it judges the checks in this order",
       );
     }
     print(`  ${key.padEnd(16)} ${targets.join(" → ")}  (${notes.join("; ")})`);
@@ -676,17 +726,84 @@ async function commandModels(ctx: GatewayContext): Promise<number> {
 }
 
 /**
- * The config with a judge test proof (`judgeTestProof`) for each target that passed, on
- * the backend URL it passed on: a target whose backend moved since then gets none.
+ * The config with the judge test proofs (`judgeTestProof`) it needs: one for each target
+ * that passed, on the backend URL it passed on (a target whose backend moved since then
+ * gets none), and the ones it already held for a target the judge chain or the worker chain
+ * still has. A proof for any other target goes, so a target nothing uses must be tested
+ * again when it comes back (D44: the worker chain's targets use `judgeTested` too).
  */
 export function withJudgeProofs(
   config: GatewayConfig,
   passed: Readonly<Record<string, string>>,
 ): GatewayConfig {
-  const proofs = Object.fromEntries(
-    Object.entries(passed).map(([target, url]) => [target, judgeTestProof(target, url)]),
-  );
-  return Object.keys(proofs).length > 0 ? { ...config, judgeTested: proofs } : config;
+  const used = new Set([...(config.slots[JUDGE_SLOT] ?? []), ...(config.slots[WORKER_SLOT] ?? [])]);
+  const proofs: Record<string, string> = {};
+  for (const [target, proof] of Object.entries(config.judgeTested ?? {})) {
+    if (used.has(target)) proofs[target] = proof;
+  }
+  for (const [target, url] of Object.entries(passed)) {
+    // Another command may have taken the target out since it was tested.
+    if (used.has(target)) proofs[target] = judgeTestProof(target, url);
+  }
+  const { judgeTested: _held, ...rest } = config;
+  return Object.keys(proofs).length > 0 ? { ...rest, judgeTested: proofs } : rest;
+}
+
+/**
+ * The judge test for the worker chain's backend targets that have no proof yet (owner D44):
+ * with no judge chain of the person's own, the targets that pass judge auto mode's checks
+ * while Claude is limited or down. Says each target that passed and each that failed, and
+ * returns the backend URL each passing target passed on (for `withJudgeProofs`). A target
+ * that fails is no error: the worker slot works as it did, and the target never judges.
+ * The test reaches each target's backend with that backend's own key and nothing else
+ * (`testJudgeTarget`, through `ctx.apiFetch` when a test passes one), never the router's
+ * port. It can take a minute per target, so callers run it outside the lock.
+ */
+async function testWorkerTargets(
+  ctx: GatewayContext,
+  config: GatewayConfig,
+): Promise<{ lines: string[]; passed: Record<string, string> }> {
+  const lines: string[] = [];
+  const passed: Record<string, string> = {};
+  for (const text of config.slots[WORKER_SLOT] ?? []) {
+    const parsed = parseTarget(text);
+    if (!("target" in parsed) || parsed.target.kind !== "backend") continue;
+    if (judgeTargetTested(config, text)) continue;
+    const name = parsed.target.backend;
+    const backend = Object.hasOwn(config.backends, name) ? config.backends[name] : undefined;
+    if (backend === undefined) continue;
+    const result = await testJudgeTarget(
+      backend.baseUrl,
+      backend.apiKey,
+      parsed.target.model,
+      ctx.apiFetch,
+    );
+    if (result.verdict === "block") {
+      passed[text] = backend.baseUrl;
+      lines.push(
+        `judge test: ${text} blocked "${JUDGE_TEST_ACTION}": it judges auto mode's checks while Claude is limited or down`,
+      );
+    } else {
+      lines.push(
+        `judge test: ${text} did not block "${JUDGE_TEST_ACTION}" (${result.detail}): it never judges; the worker slot uses it as before`,
+      );
+    }
+  }
+  return { lines, passed };
+}
+
+/**
+ * The trade-off lines after the worker chain or the judge's default changed: where the worker's
+ * tested targets stand in for Claude, `JUDGE_WARNING` is said (D44: said wherever it is set).
+ */
+function sayStandInTradeOff(ctx: GatewayContext, config: GatewayConfig): void {
+  if (
+    !Object.hasOwn(config.slots, JUDGE_SLOT) &&
+    fallbackOn(config, JUDGE_SLOT) &&
+    workerJudgeTargets(config).length > 0
+  ) {
+    ctx.print(`WARN ${JUDGE_WARNING}`);
+  }
 }
 
 /**
@@ -730,16 +847,26 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
   }
   const first = planSlotChange(config, slotArg, targets, modelsByBackend);
   if ("error" in first) throw new Error(first.error);
-  /** Each judge target that passed the test, and the backend URL it passed on. */
+  /** Each target that passed the test, and the backend URL it passed on. */
   const passed: Record<string, string> = {};
   if (first.key === JUDGE_SLOT && first.next.length > 0) {
-    // A judge is never set untested, and there is no way to skip the test.
+    // A judge is never set untested, and there is no way to skip the test. A Claude target
+    // needs none: Claude is the judge the test is measured against.
     for (const text of first.next) {
       const parsed = parseTarget(text);
-      if (!("target" in parsed) || parsed.target.kind !== "backend") continue;
+      if (!("target" in parsed)) continue;
+      if (parsed.target.kind === "anthropic") {
+        ctx.print(`judge: ${text} is Claude: no test needed; it judges as the model it names`);
+        continue;
+      }
       const backend = config.backends[parsed.target.backend];
       if (backend === undefined) continue;
-      const result = await testJudgeTarget(backend.baseUrl, backend.apiKey, parsed.target.model);
+      const result = await testJudgeTarget(
+        backend.baseUrl,
+        backend.apiKey,
+        parsed.target.model,
+        ctx.apiFetch,
+      );
       if (result.verdict !== "block") {
         throw new Error(
           `${text} did not block the test check (${JUDGE_TEST_ACTION}): ${result.detail}. The judge was not set.`,
@@ -749,6 +876,13 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
       ctx.print(`judge test: ${text} blocked "${JUDGE_TEST_ACTION}"`);
     }
   }
+  if (first.key === WORKER_SLOT && first.next.length > 0) {
+    // The worker is set either way; its targets that block the test also judge while Claude
+    // cannot (D44), and the ones that fail only never judge.
+    const tested = await testWorkerTargets(ctx, first.config);
+    for (const line of tested.lines) ctx.print(line);
+    Object.assign(passed, tested.passed);
+  }
   // Read again and save inside the lock: another command may have changed the file since
   // (a key set by `gateway setup`, another slot), and its change must not be lost.
   const plan = await withLock(
@@ -756,19 +890,20 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     () => {
       const again = planSlotChange(loadConfigFile(configPath), slotArg, targets, modelsByBackend);
       if ("error" in again) throw new Error(again.error);
-      saveConfig(
-        configPath,
-        again.key === JUDGE_SLOT ? withJudgeProofs(again.config, passed) : again.config,
-      );
+      const saved =
+        again.key === JUDGE_SLOT || again.key === WORKER_SLOT
+          ? withJudgeProofs(again.config, passed)
+          : again.config;
+      saveConfig(configPath, saved);
       if (again.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
-      return again;
+      return { ...again, config: saved };
     },
     { waitMs: 10_000 },
   );
   const now =
     plan.next.length > 0
       ? `${plan.next.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`
-      : offWords(plan.key);
+      : offWords(plan.config, plan.key);
   ctx.print(`${plan.key}: ${plan.old.join(" → ") || "(new)"}\n  now: ${now}`);
   if (plan.next.length > 1 && !fallbackOn(plan.config, plan.key)) {
     ctx.print(
@@ -776,6 +911,13 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     );
   }
   if (plan.key === JUDGE_SLOT && plan.next.length > 0) ctx.print(`WARN ${JUDGE_WARNING}`);
+  // Where the judge is Claude first, the stand-ins it names are the ones that just changed.
+  if (plan.key === WORKER_SLOT || (plan.key === JUDGE_SLOT && plan.next.length === 0)) {
+    if (plan.key === WORKER_SLOT && !Object.hasOwn(plan.config.slots, JUDGE_SLOT)) {
+      ctx.print(`  Auto mode's checks: ${judgeDefaultWords(plan.config)}`);
+    }
+    sayStandInTradeOff(ctx, plan.config);
+  }
   ctx.print("The router uses it from its next request.");
   return 0;
 }
@@ -800,14 +942,25 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
     { waitMs: 10_000 },
   );
   const targets = plan.config.slots[plan.key] ?? [];
-  ctx.print(
-    `${plan.key}: fallback ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}\n  ${targets.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`,
-  );
-  ctx.print(
-    plan.now
-      ? "  The next target answers when the one before it fails or rests."
-      : "  Only the first target answers; when it fails, its error goes back to Claude Code.",
-  );
+  const change = `${plan.key}: fallback ${plan.was ? "on" : "off"} → ${plan.now ? "on" : "off"}`;
+  if (plan.key === JUDGE_SLOT && targets.length === 0) {
+    // No judge chain of the person's: the switch says whether the worker's tested targets
+    // stand in while Claude is limited or down (D44).
+    ctx.print(`${change}\n  ${judgeDefaultWords(plan.config)}`);
+    ctx.print(
+      plan.now
+        ? "  The worker's tested targets answer when Claude is limited or down."
+        : "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
+    );
+    sayStandInTradeOff(ctx, plan.config);
+  } else {
+    ctx.print(`${change}\n  ${targets.join(" → ")}  (${fallbackWords(plan.config, plan.key)})`);
+    ctx.print(
+      plan.now
+        ? "  The next target answers when the one before it fails or rests."
+        : "  Only the first target answers; when it fails, its error goes back to Claude Code.",
+    );
+  }
   ctx.print("The router uses it from its next request.");
   return 0;
 }
@@ -1080,6 +1233,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
       `${messageOf(error)}\n  WARN the key this run made in OmniRoute could not be removed (${discard.name}, id ${discard.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`,
     );
   };
+  let code: number;
   try {
     /** Why a key was saved without its backend accepting it, for the closing line. Empty: checked. */
     let unchecked = "";
@@ -1116,7 +1270,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
       }
     }
 
-    return await withLock(
+    code = await withLock(
       paths.stateDir,
       async () => {
         // How many backups the config already has, so the line below is said only when THIS run
@@ -1178,6 +1332,42 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   } catch (error) {
     // The key this run made is not saved: it must not stay in OmniRoute unused.
     return await discardKey(error);
+  }
+  // After the try, never inside it: the key is saved by now, and a failure here must not
+  // delete it again. This step catches its own.
+  if (code === 0) await proveWorkerTargets(ctx);
+  return code;
+}
+
+/**
+ * `gateway setup`'s last step (owner D44): the judge test for the worker chain's backend
+ * targets that have no proof, so the ones that pass can judge auto mode's checks while
+ * Claude is limited or down. It runs once the router is in place and outside the lock (a
+ * test can take a minute per target); the proofs are saved under the lock, into the config
+ * as it is then. A failure of this step is said in one line and never fails the setup: the
+ * router works without it, and the next setup tries again.
+ */
+async function proveWorkerTargets(ctx: GatewayContext): Promise<void> {
+  const configPath = ctx.paths.gatewayConfigFile;
+  try {
+    if (!existsSync(configPath)) return;
+    const tested = await testWorkerTargets(ctx, loadConfigFile(configPath));
+    for (const line of tested.lines) ctx.print(line);
+    if (Object.keys(tested.passed).length === 0) return;
+    const saved = await withLock(
+      ctx.paths.stateDir,
+      () => {
+        const next = withJudgeProofs(loadConfigFile(configPath), tested.passed);
+        saveConfig(configPath, next);
+        return next;
+      },
+      { waitMs: 10_000 },
+    );
+    sayStandInTradeOff(ctx, saved);
+  } catch (error) {
+    ctx.print(
+      `WARN the judge test of the worker's targets could not finish (${messageOf(error)}). Run ${COMMAND} gateway setup again to retry it.`,
+    );
   }
 }
 
