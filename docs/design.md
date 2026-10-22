@@ -639,7 +639,9 @@ not a network read.
 - **Everything it does is real**, and goes through the command line's own code. A slot, the
   gateway switch, the judge, the fallback, the router restart and the OmniRoute update run
   `runGateway` / `runOmniroute` — the same functions, the same checks, the same lock, the
-  same lines, with `print` collecting them instead of the terminal (`src/gateway/commands.ts`,
+  same lines, with `print` collecting them instead of the terminal, as plain text: the
+  gateway's colour and wrapping come only with `GatewayContext.term`, which only the CLI's
+  own context sets (`src/gateway/commands.ts`,
   `src/cli/update.ts` and `src/cli/doctor.ts` each take their output from the caller for
   this). A page can therefore never do something the command line would refuse.
 - **The person's own yes.** A browser cannot be asked a terminal question, so each page asks

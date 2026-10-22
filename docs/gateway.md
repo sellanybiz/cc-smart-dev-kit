@@ -343,7 +343,7 @@ switches `--fallback-model` (a 529 does after three).
    of the config, or whose switch went off, ends it too. While it is open, a reminder line comes
    at most every 10 minutes.
 
-**What a person sees.** `gateway status` (the router's health page, `breakers`): `cc-smart-dev-kit-worker:
+**What a person sees.** `gateway status` (the router's health page, `breakers`): `! cc-smart-dev-kit-worker:
 all targets limited, holding requests since 21:05 (omniroute:a 429 until 21:07; …)`. The status line
 shows `<slot> slot: every target limited since 21:05 → gateway slot <slot> <targets>` while the
 record is fresh, and a turn that still stops gives the StopFailure alert once per opening

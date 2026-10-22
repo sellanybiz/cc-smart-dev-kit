@@ -296,8 +296,9 @@ valid across updates.
 - **One way to print: `src/cli/ui/out.ts`** (with `terminal.ts`, which reads the terminal once).
   New or rebuilt output prints headings, marked lines, groups, `Fix:` lines, a verdict,
   progress and JSON through it, never its own marks or colour codes (`doctor`, `setup` and
-  `project init` do all of it; `browser setup` draws its marks with `Out.marked`; the gateway, workflow,
-  migrate and restore lines move when those commands are rebuilt). Rich on a terminal (colour on the marks and the
+  `project init` do all of it; `browser setup` draws its marks with `Out.marked`; the gateway's
+  commands print through `gatewayOut`, plain for the portal's collector; `gateway setup`'s own
+  report, workflow, migrate and restore lines move when those commands are rebuilt). Rich on a terminal (colour on the marks and the
   verdict only, wrapping to the width, at most 100 columns; a progress line while a slow step
   runs), plain otherwise (a pipe, a file, `NO_COLOR` with a value, `TERM=dumb`) with **the same
   words**: a test of the plain text is a test of what a person reads. An old Windows console on

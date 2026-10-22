@@ -1312,9 +1312,14 @@ describe("cc-smart-dev-kit gateway check: the installer's one question", () => {
     const m = machine();
     const result = await m.runHere(["gateway", "check"]);
     expect(result.exitCode).toBe(1);
-    expect(result.stdout).toContain("the gateway has no config yet");
-    expect(result.stdout).toContain("OmniRoute answers at http://127.0.0.1:20128");
-    expect(result.stdout).toContain("OmniRoute's dashboard password");
+    expect(result.stdout).toBe(
+      [
+        "✗ the gateway has no config yet (no ~/.config/cc-smart-dev-kit/gateway.json), and OmniRoute answers at http://127.0.0.1:20128",
+        "  Fix: let setup make the router's key with OmniRoute's dashboard password",
+        "  cc-smart-dev-kit gateway setup --omniroute-password",
+        "",
+      ].join("\n"),
+    );
   });
 
   test("no config, and nothing answers: 3, and it says the gateway needs OmniRoute first", async () => {
@@ -1341,11 +1346,15 @@ describe("cc-smart-dev-kit gateway check: the installer's one question", () => {
     m.writeConfig(20177);
     const result = await m.runHere(["gateway", "check"]);
     expect(result.exitCode).toBe(4);
-    expect(result.stdout).toContain(
-      "OmniRoute refused the key in ~/.config/cc-smart-dev-kit/gateway.json (HTTP 401)",
+    expect(result.stdout).toBe(
+      [
+        "✗ OmniRoute refused the key in ~/.config/cc-smart-dev-kit/gateway.json (HTTP 401): it is not an OmniRoute API key",
+        "  Fix: give a new one, or let setup make one with OmniRoute's dashboard password",
+        "  cc-smart-dev-kit gateway setup --backend-key-stdin omniroute < key-file",
+        "  cc-smart-dev-kit gateway setup --omniroute-password",
+        "",
+      ].join("\n"),
     );
-    expect(result.stdout).toContain("gateway setup --backend-key-stdin omniroute < key-file");
-    expect(result.stdout).toContain("let setup make one with OmniRoute's dashboard password");
   });
 
   test("a config with no omniroute backend is the same question as no config at all", async () => {
@@ -1759,20 +1768,61 @@ describe("cc-smart-dev-kit gateway on / off", () => {
       [
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: (none) -> "http://127.0.0.1:${server.port}"`,
-        "Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
+        "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
         "",
       ].join("\n"),
     );
     expect((await m.run(["gateway", "on"])).stdout).toBe(
-      "Nothing to change: the gateway is already on.\n",
+      "✓ Nothing to change: the gateway is already on.\n",
     );
     const off = await m.run(["gateway", "off"]);
-    expect(off.stdout.split("\n").at(-2)).toBe(
-      "Restart each Claude session: removing a setting needs a restart.",
+    expect(off.stdout).toBe(
+      [
+        '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: "true" -> (none)',
+        `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "http://127.0.0.1:${server.port}" -> (none)`,
+        "~ ~/.claude/settings.json: env: {} -> (none)",
+        "✓ Done. The gateway is off.",
+        "Next steps:",
+        "  1. Restart each Claude session: removing a setting needs a restart.",
+        "",
+      ].join("\n"),
+    );
+    expect((await m.run(["gateway", "off"])).stdout).toBe(
+      "✓ Nothing to remove: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.\n",
     );
     // `env` went with its last key: the settings file as it was before the gateway wrote there.
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
+  });
+
+  test("off leaves a gateway key someone else set, and says the gateway is not all off", async () => {
+    const m = machine();
+    const settings = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" } }, null, 2)}\n`;
+    writeFileSync(m.paths.settings, settings);
+    const off = await m.runHere(["gateway", "off"]);
+    expect(off.exitCode).toBe(0);
+    expect(off.stdout).toBe(
+      [
+        "! env.ANTHROPIC_BASE_URL stays: cc-smart-dev-kit did not set it",
+        "  Fix: remove it by hand to turn the gateway off",
+        "! The gateway is not all off: 1 key stays that cc-smart-dev-kit did not set.",
+        "",
+      ].join("\n"),
+    );
+    expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
+  });
+
+  test("off: a person's own ENABLE_TOOL_SEARCH stays, and the gateway is off all the same", async () => {
+    const m = machine();
+    writeFileSync(m.paths.settings, JSON.stringify({ env: { ENABLE_TOOL_SEARCH: "true" } }));
+    const off = await m.runHere(["gateway", "off"]);
+    expect(off.stdout).toBe(
+      [
+        "· env.ENABLE_TOOL_SEARCH stays: cc-smart-dev-kit did not set it, and it routes nothing",
+        "✓ Nothing to remove: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
+        "",
+      ].join("\n"),
+    );
   });
 
   test("a gateway key someone else set stops on: ForeignKeyError, nothing written", async () => {
@@ -2048,7 +2098,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     const refused = await m.run(["gateway", "slot", "judge", "omniroute:m1,omniroute:m2"]);
     expect(refused.exitCode).toBe(1);
     expect(refused.stdout).toBe(
-      'judge test: omniroute:m1 blocked "git push --force origin main"\n',
+      '✓ judge test: omniroute:m1 blocked "git push --force origin main"\n',
     );
     expect(refused.stderr).toBe(
       "cc-smart-dev-kit: omniroute:m2 did not block the test check (git push --force origin main): let it run. The judge was not set.\n",
@@ -2088,12 +2138,12 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     expect(set.exitCode).toBe(0);
     expect(set.stdout).toBe(
       [
-        'judge test: omniroute:m2 blocked "git push --force origin main"',
-        'judge test: omniroute:m1 blocked "git push --force origin main"',
-        "cc-smart-dev-kit-judge: (new)",
+        '✓ judge test: omniroute:m2 blocked "git push --force origin main"',
+        '✓ judge test: omniroute:m1 blocked "git push --force origin main"',
+        "~ cc-smart-dev-kit-judge: (new)",
         "  now: omniroute:m2 → omniroute:m1  (fallback on)",
         "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
-        "The router uses it from its next request.",
+        "✓ The router uses it from its next request.",
         "",
       ].join("\n"),
     );
@@ -2218,7 +2268,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     expect(on.stderr).toBe("");
     expect(on.exitCode).toBe(0);
     expect(on.stdout).toBe(
-      "cc-smart-dev-kit-opus: (new)\n  now: omniroute:ollama-cloud/glm-5.3-flash  (fallback off)\nThe router uses it from its next request.\n",
+      "~ cc-smart-dev-kit-opus: (new)\n  now: omniroute:ollama-cloud/glm-5.3-flash  (fallback off)\n✓ The router uses it from its next request.\n",
     );
     const saved = JSON.parse(readFileSync(m.paths.config, "utf8"));
     expect(saved).not.toHaveProperty("modelSlots");
@@ -2226,10 +2276,10 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     const off = await m.run(["gateway", "slot", "opus", "off"]);
     expect(off.stdout).toBe(
       [
-        "cc-smart-dev-kit-opus: omniroute:ollama-cloud/glm-5.3-flash",
+        "~ cc-smart-dev-kit-opus: omniroute:ollama-cloud/glm-5.3-flash",
         "  now: Claude: opus goes to Anthropic as Claude Code sent it, on your own login",
         "  saved, not in use: omniroute:ollama-cloud/glm-5.3-flash  (fallback off; to use it: cc-smart-dev-kit gateway slot opus custom)",
-        "The router uses it from its next request.",
+        "✓ The router uses it from its next request.",
         "",
       ].join("\n"),
     );
@@ -2253,7 +2303,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     expect(claude.exitCode).toBe(0);
     expect(claude.stdout).toContain(
       [
-        "cc-smart-dev-kit-worker: omniroute:m1 → omniroute:m2",
+        "~ cc-smart-dev-kit-worker: omniroute:m1 → omniroute:m2",
         "  now: Claude: sonnet goes to Anthropic as Claude Code sent it, on your own login",
         "  saved, not in use: omniroute:m1 → omniroute:m2  (fallback off; to use it: cc-smart-dev-kit gateway slot worker custom)",
       ].join("\n"),
@@ -2282,7 +2332,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     expect(custom.exitCode).toBe(0);
     expect(custom.stdout).toContain(
       [
-        "cc-smart-dev-kit-worker: Claude",
+        "~ cc-smart-dev-kit-worker: Claude",
         "  now: omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used)",
       ].join("\n"),
     );
@@ -2314,10 +2364,12 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     expect(set.stderr).toBe("");
     expect(set.stdout).toBe(
       [
-        "cc-smart-dev-kit-fable: (new)",
+        "~ cc-smart-dev-kit-fable: (new)",
         "  now: omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used)",
-        "  To let the next target answer when omniroute:m1 fails or rests: cc-smart-dev-kit gateway fallback fable on",
-        "The router uses it from its next request.",
+        "✓ The router uses it from its next request.",
+        "Next steps:",
+        "  1. To let the next target answer when omniroute:m1 fails or rests:",
+        "       cc-smart-dev-kit gateway fallback fable on",
         "",
       ].join("\n"),
     );
@@ -2325,10 +2377,10 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     expect(on.stderr).toBe("");
     expect(on.stdout).toBe(
       [
-        "cc-smart-dev-kit-fable: fallback off → on",
+        "~ cc-smart-dev-kit-fable: fallback off → on",
         "  omniroute:m1 → omniroute:m2  (fallback on)",
         "  The next target answers when the one before it fails or rests.",
-        "The router uses it from its next request.",
+        "✓ The router uses it from its next request.",
         "",
       ].join("\n"),
     );
@@ -2388,7 +2440,7 @@ describe("status names an open breaker", () => {
     expect(status.stderr).toBe("");
     const line = status.stdout.split("\n").find((text) => text.includes("all targets limited"));
     expect(line).toMatch(
-      /^ {2}cc-smart-dev-kit-worker: all targets limited, holding requests since (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d \(omniroute:m1 429 until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d; omniroute:m2 no answer until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d\)$/,
+      /^ {2}! cc-smart-dev-kit-worker: all targets limited, holding requests since (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d \(omniroute:m1 429 until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d; omniroute:m2 no answer until (?:[A-Z][a-z]{2} \d{1,2} )?\d\d:\d\d\)$/,
     );
   });
 });
@@ -2528,10 +2580,10 @@ describe("cc-smart-dev-kit gateway breaker", () => {
       expect(off.exitCode).toBe(0);
       expect(off.stdout).toBe(
         [
-          "cc-smart-dev-kit-worker: breaker on → off",
+          "~ cc-smart-dev-kit-worker: breaker on → off",
           "  omniroute:m1 → omniroute:m2  (breaker off)",
           "  While every target is limited or down, the last answer goes back to Claude Code at once.",
-          "The router uses it from its next request.",
+          "✓ The router uses it from its next request.",
           "",
         ].join("\n"),
       );
@@ -2549,10 +2601,10 @@ describe("cc-smart-dev-kit gateway breaker", () => {
       expect(on.stderr).toBe("");
       expect(on.stdout).toBe(
         [
-          "cc-smart-dev-kit-worker: breaker off → on",
+          "~ cc-smart-dev-kit-worker: breaker off → on",
           "  omniroute:m1 → omniroute:m2  (breaker on)",
           "  While every target is limited or down, the request waits a little and then Claude Code is asked to retry.",
-          "The router uses it from its next request.",
+          "✓ The router uses it from its next request.",
           "",
         ].join("\n"),
       );
@@ -2986,13 +3038,14 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
       expect(set.exitCode).toBe(0);
       expect(set.stdout).toBe(
         [
-          PASSED_LINE,
-          FAILED_LINE,
-          "cc-smart-dev-kit-worker: (new)",
+          // `gateway slot` marks each line; setup's own report prints them plain (below).
+          `✓ ${PASSED_LINE}`,
+          `· ${FAILED_LINE}`,
+          "~ cc-smart-dev-kit-worker: (new)",
           "  now: omniroute:m1 → omniroute:m2  (fallback on)",
           `  Auto mode's checks: Claude first; while Claude is limited or down: omniroute:m1 (fallback on); not tested, so never judging: omniroute:m2 (cc-smart-dev-kit gateway setup tests them)`,
           "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
-          "The router uses it from its next request.",
+          "✓ The router uses it from its next request.",
           "",
         ].join("\n"),
       );
@@ -3019,10 +3072,10 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
       expect(claude.stderr).toBe("");
       expect(claude.stdout).toBe(
         [
-          "cc-smart-dev-kit-worker: (new)",
+          "~ cc-smart-dev-kit-worker: (new)",
           "  now: claude-sonnet-5-5  (fallback on)",
           "  Auto mode's checks: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
-          "The router uses it from its next request.",
+          "✓ The router uses it from its next request.",
           "",
         ].join("\n"),
       );
@@ -3133,10 +3186,10 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
       expect(off.exitCode).toBe(0);
       expect(off.stdout).toBe(
         [
-          "cc-smart-dev-kit-judge: fallback on → off",
+          "~ cc-smart-dev-kit-judge: fallback on → off",
           "  Claude judges every check, alone (fallback off)",
           "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
-          "The router uses it from its next request.",
+          "✓ The router uses it from its next request.",
           "",
         ].join("\n"),
       );
@@ -3146,11 +3199,11 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
       const on = await m.run(["gateway", "fallback", "judge", "on"]);
       expect(on.stdout).toBe(
         [
-          "cc-smart-dev-kit-judge: fallback off → on",
+          "~ cc-smart-dev-kit-judge: fallback off → on",
           "  Claude first; while Claude is limited or down: omniroute:m1 (fallback on)",
           "  The worker's tested targets answer when Claude is limited or down.",
           "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
-          "The router uses it from its next request.",
+          "✓ The router uses it from its next request.",
           "",
         ].join("\n"),
       );
@@ -3171,12 +3224,12 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
       expect(set.exitCode).toBe(0);
       expect(set.stdout).toBe(
         [
-          "judge: claude-sonnet-5-5 is Claude: no test needed; it judges as the model it names",
-          'judge test: omniroute:m2 blocked "git push --force origin main"',
-          "cc-smart-dev-kit-judge: (new)",
+          "· judge: claude-sonnet-5-5 is Claude: no test needed; it judges as the model it names",
+          '✓ judge test: omniroute:m2 blocked "git push --force origin main"',
+          "~ cc-smart-dev-kit-judge: (new)",
           "  now: claude-sonnet-5-5 → omniroute:m2  (fallback on)",
           "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
-          "The router uses it from its next request.",
+          "✓ The router uses it from its next request.",
           "",
         ].join("\n"),
       );
@@ -3194,4 +3247,183 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
     },
     SPAWNING_TEST_MS,
   );
+});
+
+describe("the gateway commands' output, as plain text", () => {
+  // Every command prints through the output module (`src/cli/ui/out.ts`): a mark in front of
+  // each finding, a `Fix:` under what is wrong, one verdict, the next steps last. Off a terminal
+  // (a pipe, a log, the portal) the text is plain: no colour, no wrapping.
+  test("status: the router, a backend and Claude Code, a verdict, and the next step", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stderr).toBe("");
+    const lines = status.stdout.split("\n");
+    expect(lines[0]).toBe(
+      `✓ router: up on 127.0.0.1:${server.port} for 7 s, 3 requests, 0 fallbacks`,
+    );
+    expect(lines[1]).toBe(
+      `✓ backend omniroute: http://127.0.0.1:${server.port} key ••••cdef → HTTP 200`,
+    );
+    expect(lines).toContain(
+      "· Claude Code (~/.claude/settings.json): gateway OFF (no ANTHROPIC_BASE_URL)",
+    );
+    expect(lines.slice(-5)).toEqual([
+      "· The router answers, and Claude Code does not use it.",
+      "Next steps:",
+      "  1. Point every Claude Code session on this machine at it:",
+      "       cc-smart-dev-kit gateway on",
+      "",
+    ]);
+  });
+
+  test("status: a router that is down is the verdict, with its fix", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    for (const s of servers.splice(0)) s.stop(true);
+    const status = await m.run(["gateway", "status"]);
+    const lines = status.stdout.split("\n");
+    expect(lines[0]).toStartWith(`✗ router: DOWN on 127.0.0.1:${server.port} (`);
+    expect(lines.slice(1, 3)).toEqual([
+      "  Fix: setup starts it again",
+      "  cc-smart-dev-kit gateway setup",
+    ]);
+    expect(lines.slice(-2)).toEqual(["✗ The router does not answer.", ""]);
+  });
+
+  test("status: all well once Claude Code points at the router", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    expect((await m.run(["gateway", "on"])).exitCode).toBe(0);
+    const status = await m.run(["gateway", "status"]);
+    expect(status.stdout).toContain(
+      `· Claude Code (~/.claude/settings.json): gateway ON → http://127.0.0.1:${server.port}\n`,
+    );
+    expect(status.stdout).toEndWith("✓ The gateway is on, and its router and backends answer.\n");
+  });
+
+  test("status: Claude Code pointing at another address is no ✓, and gateway on is the fix", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeFileSync(
+      m.paths.settings,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" } }),
+    );
+    const lines = (await m.run(["gateway", "status"])).stdout.split("\n");
+    const at = lines.indexOf(
+      "· Claude Code (~/.claude/settings.json): gateway ON → http://127.0.0.1:19999",
+    );
+    expect(at).toBeGreaterThan(0);
+    expect(lines.slice(at + 1, at + 4)).toEqual([
+      `  ! that is not this router's address (http://127.0.0.1:${server.port})`,
+      "    Fix: point Claude Code at this router",
+      "    cc-smart-dev-kit gateway on",
+    ]);
+    expect(lines.slice(-2)).toEqual([
+      "! Claude Code points at another address than this router.",
+      "",
+    ]);
+  });
+
+  test("status: a backend that does not answer is marked, and the verdict says so", async () => {
+    const m = machine();
+    const server = fakeServer({ modelsStatus: 503 });
+    m.writeConfig(server.port);
+    const lines = (await m.run(["gateway", "status"])).stdout.split("\n");
+    expect(lines[1]).toBe(
+      `✗ backend omniroute: http://127.0.0.1:${server.port} key ••••cdef → HTTP 503`,
+    );
+    expect(lines.slice(-2)).toEqual(["! The router answers, and a backend does not.", ""]);
+  });
+
+  test("status: a config that cannot be read", async () => {
+    const m = machine();
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(m.paths.config, "{not json", { mode: 0o600 });
+    // In this process, with the fake probe: without a config, status asks the default port.
+    const status = await m.runHere(["gateway", "status"]);
+    expect(status.stdout).toStartWith("✗ config: ");
+    expect(status.stdout).toEndWith("✗ The gateway's config cannot be read.\n");
+  });
+
+  test("status: no config yet is a gateway not set up, with the step that sets it up", async () => {
+    const m = machine();
+    const status = await m.runHere(["gateway", "status"]);
+    expect(status.stderr).toBe("");
+    const lines = status.stdout.split("\n");
+    expect(lines[0]).toBe("· config: none yet (no ~/.config/cc-smart-dev-kit/gateway.json)");
+    // A router nobody installed is no failure, and setup is said once: the next step.
+    expect(status.stdout).not.toContain("✗");
+    expect(status.stdout).not.toContain("Fix:");
+    expect(lines.slice(-5)).toEqual([
+      "· The gateway is not set up.",
+      "Next steps:",
+      "  1. Set it up:",
+      "       cc-smart-dev-kit gateway setup",
+      "",
+    ]);
+  });
+
+  test("models: a backend whose list does not answer is marked", async () => {
+    const m = machine();
+    const server = fakeServer({ modelsStatus: 503 });
+    m.writeConfig(server.port);
+    const models = await m.run(["gateway", "models"]);
+    expect(models.stderr).toBe("");
+    expect(models.stdout.split("\n").slice(0, 3)).toEqual([
+      "",
+      `omniroute  http://127.0.0.1:${server.port}  (key ••••cdef)`,
+      "  ✗ /v1/models answered HTTP 503",
+    ]);
+  });
+
+  test("slot, fallback, breaker: the change, what it means, the verdict, the next step", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    const slot = await m.run(["gateway", "slot", "opus", "omniroute:m1,claude-opus-5-5"]);
+    expect(slot.stderr).toBe("");
+    expect(slot.stdout).toBe(
+      [
+        "~ cc-smart-dev-kit-opus: (new)",
+        "  now: omniroute:m1 → claude-opus-5-5  (fallback off: only omniroute:m1 answers; the rest are kept, not used)",
+        "✓ The router uses it from its next request.",
+        "Next steps:",
+        "  1. To let the next target answer when omniroute:m1 fails or rests:",
+        "       cc-smart-dev-kit gateway fallback opus on",
+        "",
+      ].join("\n"),
+    );
+    const fallback = await m.run(["gateway", "fallback", "opus", "on"]);
+    expect(fallback.stdout).toBe(
+      [
+        "~ cc-smart-dev-kit-opus: fallback off → on",
+        "  omniroute:m1 → claude-opus-5-5  (fallback on)",
+        "  The next target answers when the one before it fails or rests.",
+        "✓ The router uses it from its next request.",
+        "",
+      ].join("\n"),
+    );
+    // A slot that answers as Claude: the switch waits with its saved chain, and says so.
+    expect((await m.run(["gateway", "slot", "fable", "omniroute:m1"])).exitCode).toBe(0);
+    expect((await m.run(["gateway", "slot", "fable", "claude"])).exitCode).toBe(0);
+    const waiting = await m.run(["gateway", "fallback", "fable", "on"]);
+    expect(waiting.stdout).toStartWith("~ cc-smart-dev-kit-fable: fallback off → on\n");
+    expect(waiting.stdout).toEndWith(
+      "✓ Saved with the chain: the switch is used once the slot is Custom again.\n",
+    );
+    const breaker = await m.run(["gateway", "breaker", "opus", "off"]);
+    expect(breaker.stdout).toStartWith("~ cc-smart-dev-kit-opus: breaker on → off\n");
+    expect(breaker.stdout).toEndWith(
+      [
+        "  While every target is limited or down, the last answer goes back to Claude Code at once.",
+        "✓ The router uses it from its next request.",
+        "",
+      ].join("\n"),
+    );
+  });
 });

@@ -71,6 +71,10 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
     apiFetch: options.apiFetch ?? ((url, init) => fetch(url, init)),
     print: options.print ?? ((line) => console.log(line)),
     error: options.error ?? ((line) => console.error(line)),
+    // Colour and wrapping only for this process's own stdout, never for a caller's collector.
+    ...(options.print === undefined
+      ? { term: currentTerminal(process.env, options.platform) }
+      : {}),
   };
 }
 
