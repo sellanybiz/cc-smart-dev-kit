@@ -115,7 +115,7 @@ the session cuts its own line mid-change — give the person the command instead
 
 **Effort:** `high` for searches, reads and building (UI/UX too, unless a reason takes it to `xhigh`), `xhigh` for
 the hardest judgment (architecture, a risky review), `max` for the hardest problem only (on Opus, with the person's
-yes, above). An affordable gateway slot always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
+yes, above). An affordable gateway slot always runs at `max`. A subagent never runs at `low`; the session's own effort is the person's choice.
 
 **Say it when you launch.** The reply that starts an agent names its slot, the model behind it
 and its effort — "a reviewer (`sonnet` → Claude Sonnet, effort high)" — so the person sees which

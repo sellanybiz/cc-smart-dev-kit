@@ -21,11 +21,11 @@ People can look up items by name, the API returns the matches, and the web page 
 
 ## Phases
 
-| Wave | Phase | Files | About | Waits for |
-|---|---|---|---|---|
-| 1 | S1 the lookup index: tokenize names, build and update an index, ranked matches, tests | `src/lookup/**` | 60 min | nothing |
-| 1 | S2 the lookup endpoint: query parsing, paging, errors, tests, API docs | `src/api/lookup.js`, `docs/api.md` | 60 min | nothing (S1's contract is `lookup(query) -> Item[]`, fixed here) |
-| 2 | S3 lookup suggestions: suggest names as the person types, from S1's index, tests | `src/suggest/**` | 45 min | S1 merged (it reads the index's internals) |
+| Wave | Phase | Files | About | Waits for | Crew sessions |
+|---|---|---|---|---|---|
+| 1 | S1 the lookup index: tokenize names, build and update an index, ranked matches, tests | `src/lookup/**` | 60 min | nothing | a crew session, kind `build` |
+| 1 | S2 the lookup endpoint: query parsing, paging, errors, tests, API docs | `src/api/lookup.js`, `docs/api.md` | 60 min | nothing (S1's contract is `lookup(query) -> Item[]`, fixed here) | a crew session, kind `build` |
+| 2 | S3 lookup suggestions: suggest names as the person types, from S1's index, tests | `src/suggest/**` | 45 min | S1 merged (it reads the index's internals) | a crew session, kind `build` |
 
 Each phase writes its failing tests first, runs the whole suite, and gets one review.
 PLAN

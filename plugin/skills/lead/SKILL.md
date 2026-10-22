@@ -1,6 +1,6 @@
 ---
 name: lead
-description: Use when a plan's phases go to crew sessions, in a project with crew sessions on. Register the lead, start each phase with `cc-smart-dev-kit crew start`, hear the news without waiting, route the questions, merge the branches. Trigger phrases - "start the crew", "run the plan", "next wave".
+description: Use when an approved plan's phases are ready to build, in a project with crew sessions on (`.claude/cc-smart-dev-kit.json` sets `workflow.crew.enabled`). Register the lead, write each phase's brief, start every phase with `cc-smart-dev-kit crew start` at once (later phases with `--waits-for`), hear the news without waiting, route the questions, merge the branches. Trigger phrases - "the plan is approved", "start building the plan", "start building it", "start the crew", "run the plan", "next wave".
 ---
 
 # Lead The Crew
@@ -15,8 +15,10 @@ belongs — inline, a subagent or a crew session — is in the core instructions
 
 ## 1. The crew on, and this session registered
 
-- **`cc-smart-dev-kit workflow show`** prints `crew.enabled` and where it came from. Off:
-  this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
+- **`cc-smart-dev-kit workflow show`** prints `crew.enabled` and where it came from. When the shell cannot run,
+  read `workflow.crew.enabled` in the project's `.claude/cc-smart-dev-kit.json` (it may also come
+  from your own workflow file).
+  Off: this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
   Turning crew sessions on is the person's choice, never yours.
 - **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
   names the session `LEAD <tag> <plan>` and prints a `/rename` line: give it to the person, who
