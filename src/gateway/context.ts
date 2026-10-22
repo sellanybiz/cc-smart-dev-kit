@@ -43,6 +43,8 @@ export interface GatewayContextOptions {
    * flag says to give the password on stdin instead.
    */
   terminal?: RawTerminal;
+  /** Where the questions on that terminal are shown; stdout in use, a recorder in a test. */
+  questionOutput?: (text: string) => void;
   /** The network for the key check, OmniRoute's dashboard and the liveness probe. */
   apiFetch?: HealthFetch;
   print?: (line: string) => void;
@@ -60,7 +62,7 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
     // A secret on stdin is cleaned first: a terminal that keeps bracketed paste on hands a
     // paste to a pipe as `ESC[200~<key>ESC[201~` (`src/cli/secret-line.ts`).
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...terminalQuestions(terminal),
+    ...terminalQuestions(terminal, options.questionOutput),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -80,8 +82,9 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
  */
 function terminalQuestions(
   terminal: RawTerminal & { isTTY?: boolean },
+  write?: (text: string) => void,
 ): Pick<GatewayContext, "prompts" | "readSecret"> {
-  const prompts = terminalPrompts(currentTerminal(), terminal);
+  const prompts = terminalPrompts(currentTerminal(), terminal, write);
   if (prompts === null) return {};
   return prompts.secret === null ? { prompts } : { prompts, readSecret: prompts.secret };
 }

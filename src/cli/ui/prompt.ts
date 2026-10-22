@@ -148,12 +148,16 @@ type Stdin = RawTerminal & { isTTY?: boolean };
  * A typed line is read with Bun's own `prompt` (it shows the question and a space, and reads
  * one line); a secret with `readSecretLine`, only where the echo can be switched off.
  */
-export function terminalPrompts(term: Terminal, stdin: Stdin = process.stdin): Prompts | null {
+export function terminalPrompts(
+  term: Terminal,
+  stdin: Stdin = process.stdin,
+  write: (text: string) => void = (text) => {
+    process.stdout.write(text);
+  },
+): Prompts | null {
   if (stdin.isTTY !== true) return null;
   return createPrompts(term, {
-    write: (text) => {
-      process.stdout.write(text);
-    },
+    write,
     readLine: (shown) => prompt(shown),
     ...(canHideInput(stdin) ? { readSecret: () => readSecretLine(stdin) } : {}),
   });

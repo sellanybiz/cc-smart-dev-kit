@@ -56,6 +56,9 @@ function fakeTty(lines: string[]): {
   };
 }
 
+/** What the questions showed: a test never writes to the real terminal. */
+const shown: string[] = [];
+
 function options(terminal: unknown) {
   return {
     account: null,
@@ -63,6 +66,9 @@ function options(terminal: unknown) {
     confirm: null,
     paths: cliPaths({ CLAUDE_CONFIG_DIR: join(tempDir("gateway-context"), ".claude") }),
     platform: "linux" as NodeJS.Platform,
+    questionOutput: (text: string) => {
+      shown.push(text);
+    },
     runner: () => ({ exitCode: 0, output: "" }),
     service: "systemd" as const,
     terminal: terminal as never,
@@ -77,7 +83,10 @@ describe("the gateway context: the terminal for --omniroute-password", () => {
     // The whole set of questions too, for `gateway setup` on a terminal.
     expect(ctx.prompts?.secret).toBe(ctx.readSecret);
     // No echo while it is read (`setRawMode`), and the line comes back cleaned.
+    shown.length = 0;
     expect(await ctx.readSecret?.("Password")).toBe("the-dashboard-password");
+    // The question goes to the context's own output, never straight to stdout.
+    expect(shown.join("")).toStartWith("Password ");
     expect(tty.modes).toEqual([true, false]);
     // The read is paused again, so the process can end when the command is done.
     expect(tty.pauses()).toBe(1);
