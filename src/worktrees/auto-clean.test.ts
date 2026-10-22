@@ -5,13 +5,15 @@
  * it are tested beside them (`worktree-leftovers.test.ts`, `after-merge.test.ts`); the told
  * line is checked here end to end, through the session-start hook.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { detachedArgv } from "../hooks/detached";
 import { worktreeLeftoversHook } from "../hooks/specs";
+import { samePath } from "../path-compare";
+import { locateCheckout } from "../project/resolve";
 import {
   hookEnv,
   makeClone,
@@ -22,6 +24,7 @@ import {
 } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir, withGitVersion } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { appendLogLine, LOG_MAX_BYTES } from "../update/state";
 import { type AutoCleanDeps, runAutoClean } from "./auto-clean";
 import { autoCleanArgv, autoCleanEntry } from "./auto-start";
@@ -43,6 +46,10 @@ import {
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+
+// This file runs real git in real repositories, many times per test: its own speed limit
+// (`src/testing/timeouts.ts`). A Windows CI run had two tests at 4.3-4.9 s of Bun's 5 s.
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 /** True on native Windows, where a `#!/bin/sh` fake program is no program at all. */
 const NO_POSIX_MODES = process.platform === "win32";
@@ -66,11 +73,22 @@ interface Project {
   squash: (worktree: string) => void;
 }
 
+/**
+ * The repo as the hooks hand it to the clean: `project.mainCheckout ?? project.root` from
+ * `locateCheckout`, which resolves the real path. On Windows a temp folder may be named with
+ * an 8.3 short name (`C:\Users\SHORTN~1\…`), and git reports the long one — two spellings of
+ * one folder.
+ */
+function mainCheckoutOf(repo: string, env: Record<string, string>): string {
+  return locateCheckout(repo, { env })?.mainCheckout ?? repo;
+}
+
 /** A clone with a project file, a throwaway home, and worktrees made beside it. */
 function project(config: Record<string, unknown> = { worktrees: { base: "main" } }): Project {
-  const { repo } = makeClone();
-  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+  const { repo: made } = makeClone();
   const env = hookEnv();
+  const repo = mainCheckoutOf(made, env);
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
   return {
     add: (name) => {
       const folder = join(repo, "..", `app-wt-${name}`);
@@ -157,14 +175,16 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     expect(record.repo).toBe(repo);
     expect(record.seq).toBe(1);
     expect(toldMark(env, repo)).toBe(0);
-    expect(record.removed).toEqual([
-      {
-        branch: "feature",
-        name: "app-wt-feature",
-        path: done,
-        why: "merging it into main changes nothing",
-      },
-    ]);
+    // git lists a worktree's path in its own spelling (on Windows, forward slashes), so the
+    // place is compared as the kit compares paths (`samePath`); everything else is exact.
+    expect(record.removed).toHaveLength(1);
+    const removed = record.removed[0];
+    expect({ branch: removed?.branch, name: removed?.name, why: removed?.why }).toEqual({
+      branch: "feature",
+      name: "app-wt-feature",
+      why: "merging it into main changes nothing",
+    });
+    expect(samePath(removed?.path ?? "", done)).toBe(true);
     // One log line for the run.
     const lines = logLines(env);
     expect(lines).toHaveLength(1);
@@ -239,9 +259,14 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     expect(git(repo, "branch", "--list", "ahead")).toContain("ahead");
     const record = recorded(env, repo);
     expect(record.removed).toEqual([]);
-    expect(record.kept).toEqual([
-      { name: "app-wt-ahead", path: ahead, why: "1 commit not on main" },
-    ]);
+    // As above: the folder is the worktree's, whatever spelling git listed it in.
+    expect(record.kept).toHaveLength(1);
+    const kept = record.kept[0];
+    expect({ name: kept?.name, why: kept?.why }).toEqual({
+      name: "app-wt-ahead",
+      why: "1 commit not on main",
+    });
+    expect(samePath(kept?.path ?? "", ahead)).toBe(true);
     expect(logLines(env)[0]).toEndWith("removed 0; kept 1");
   });
 
@@ -295,7 +320,7 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     );
   });
 
-  test("a worktree the verdict is not certain of stays: programs or Docker unlisted, a program in it, a git too old to replay", async () => {
+  test("a worktree the verdict is not certain of stays: programs or Docker unlisted, a program in it", async () => {
     const { add, env, repo, squash } = project();
     const done = add("done");
     squash(done);
@@ -312,15 +337,35 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     // A program that works in the folder.
     await attempt({ facts: { ...facts, programs: [{ cwd: done, path: null, pid: 99_999 }] } }, 2);
     expect(recorded(env, repo).kept[0]?.why).toStartWith("a program runs from its files");
-    // A git too old to replay the branch onto the base cannot see a squash merge.
-    await attempt({ env: withGitVersion(env, "2.30.0") }, 3);
-    expect(recorded(env, repo).kept[0]?.why).toContain("git 2.30.0 is too old");
     expect(existsSync(done)).toBe(true);
 
     // All of it answered: now it goes.
-    await attempt({}, 4);
+    await attempt({}, 3);
     expect(existsSync(done)).toBe(false);
   });
+
+  test.skipIf(NO_POSIX_MODES)(
+    "a git too old to replay the branch onto the base keeps the worktree",
+    async () => {
+      // A `#!/bin/sh` fake git is a fake program only where there is a POSIX shell to run it
+      // (Windows has none, and cannot spawn an extensionless script as a program).
+      const { add, env, repo, squash } = project();
+      const done = add("done");
+      squash(done);
+      const at = Date.now() + 2 * HOUR;
+
+      // A git too old to replay the branch onto the base cannot see a squash merge.
+      expect(
+        await runAutoClean(repo, "merge", deps(env, { env: withGitVersion(env, "2.30.0") }, at)),
+      ).toBe("cleaned");
+      expect(recorded(env, repo).kept[0]?.why).toContain("git 2.30.0 is too old");
+      expect(existsSync(done)).toBe(true);
+
+      // The real git answers the replay: now it goes.
+      expect(await runAutoClean(repo, "merge", deps(env, {}, at + MINUTE))).toBe("cleaned");
+      expect(existsSync(done)).toBe(false);
+    },
+  );
 
   test("with the lock busy, nothing happens: no removal, no record, no log", async () => {
     const { add, env, repo, squash } = project();
@@ -359,9 +404,9 @@ describe("the background clean removes what is finished, and keeps the rest", ()
   });
 
   test("a repo whose base cannot be fetched or read is an error line, and the lock is let go", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
     const env = hookEnv();
+    const repo = mainCheckoutOf(makeRepo(), env);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
     const lock = freeLock();
 
     expect(await runAutoClean(repo, "session", deps(env, { hold: async () => lock }))).toBe(
@@ -534,28 +579,26 @@ describe("the log is kept small", () => {
 
 describe("how the hooks start it", () => {
   test("the entry is the bundle beside a hook's own, or the source when run from source", () => {
-    expect(autoCleanEntry("/p/plugin/dist")).toBe("/p/plugin/dist/worktrees-clean.js");
-    expect(autoCleanEntry("/r/src/worktrees")).toBe("/r/src/entries/worktrees-clean.ts");
+    // Built with `join`, so the same test proves the same thing with Windows separators.
+    const dist = join("/p", "plugin", "dist");
+    expect(autoCleanEntry(dist)).toBe(join(dist, "worktrees-clean.js"));
+    const source = join("/r", "src", "worktrees");
+    expect(autoCleanEntry(source)).toBe(join("/r", "src", "entries", "worktrees-clean.ts"));
   });
 
   test("the command line: this bun, the two flags, the entry, the repo, why, and the session's folder", () => {
-    expect(
-      autoCleanArgv(
-        "/bin/bun",
-        "/p/dist/worktrees-clean.js",
-        "/p",
-        "/r/app",
-        "merge",
-        "/r/app-wt-a",
-      ),
-    ).toEqual([
+    const plugin = join("/p");
+    const entry = join(plugin, "dist", "worktrees-clean.js");
+    const repo = join("/r", "app");
+    const keep = join("/r", "app-wt-a");
+    expect(autoCleanArgv("/bin/bun", entry, plugin, repo, "merge", keep)).toEqual([
       "/bin/bun",
       "--no-env-file",
-      "--config=/p/bunfig.toml",
-      "/p/dist/worktrees-clean.js",
-      "/r/app",
+      `--config=${join(plugin, "bunfig.toml")}`,
+      entry,
+      repo,
       "merge",
-      "/r/app-wt-a",
+      keep,
     ]);
   });
 

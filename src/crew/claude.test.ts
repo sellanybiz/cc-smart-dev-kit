@@ -222,7 +222,9 @@ describe("running claude", () => {
       const bin = tempDir("bin");
       const work = tempDir("work");
       const fake = join(bin, "claude.cmd");
-      writeFileSync(fake, "@echo off\r\ncd\r\necho err: %1 1>&2\r\nexit /b 3\r\n");
+      // `%~1`: cmd.exe hands a quoted argument (`windowsRun` quotes every word), and `%~1`
+      // is the argument without its quotes — `%1` would echo them.
+      writeFileSync(fake, "@echo off\r\ncd\r\necho err: %~1 1>&2\r\nexit /b 3\r\n");
       const call = callClaude(
         {
           env: process.env,

@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { leadFile, writeStoreFile } from "../crew/store";
+import { locateCheckout } from "../project/resolve";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import type { HookResult } from "./io";
@@ -69,22 +70,25 @@ function leadProject(config: unknown = { jobs: { route: true } }): {
   repo: string;
 } {
   const made = project(config);
+  // The store file goes where `crew lead` writes it: the repo as `locateCheckout` finds it
+  // (the hooks' own key), never a temp folder's other spelling (Windows' 8.3 name, say).
+  const repo = locateCheckout(made.repo, { env: made.env })?.mainCheckout ?? made.repo;
   const at = "2026-10-21T10:00:00.000Z";
   writeStoreFile(
-    leadFile(cliPaths(made.env).stateDir, made.repo, SESSION),
+    leadFile(cliPaths(made.env).stateDir, repo, SESSION),
     `${JSON.stringify({
-      cwd: made.repo,
+      cwd: repo,
       createdAt: at,
       name: "LEAD app plan",
       plan: "plan",
-      repo: made.repo,
+      repo,
       sessionId: SESSION,
       tag: "app",
       updatedAt: at,
       version: 1,
     })}\n`,
   );
-  return made;
+  return { ...made, repo };
 }
 
 describe("a raw background session (`claude --bg`)", () => {

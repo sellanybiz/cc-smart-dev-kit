@@ -6,20 +6,43 @@
  * Every expectation is written by hand. A fixture never touches the real home: `hookEnv()`
  * gives a temp HOME and Claude config folder.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { hookEnv, makeClone, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import type { HookInput, HookResult } from "./io";
 import { handleHook } from "./run";
-import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
+import { inEscapeDomain, sessionEscapeGuard, shellTargetPath } from "./session-escape-guard";
 import { sessionEscapeGuardHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const KIT = "cc-smart-dev-kit";
+
+// This file builds real clones and worktrees: its own speed limit (`src/testing/timeouts.ts`).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
+
+/** True on native Windows, where Claude Code's Bash tool is Git Bash. */
+const ON_WINDOWS = process.platform === "win32";
+
+/**
+ * A path as a line of this platform's Bash tool carries it. On native Windows the Bash tool
+ * is Git Bash: its lines write a Win32 path with forward slashes (`C:/Users/…`), while a
+ * backslash outside quotes is an escape Bash removes, so `> C:\…` writes no such file.
+ */
+function bashPath(path: string): string {
+  return ON_WINDOWS ? path.replaceAll("\\", "/") : path;
+}
+
+/** A native Windows path as Git Bash's own POSIX form: `C:\Users\me\x` is `/c/Users/me/x`. */
+function msysPath(path: string): string {
+  return path
+    .replace(/^([A-Za-z]):[\\/]/, (_whole, drive: string) => `/${drive.toLowerCase()}/`)
+    .replaceAll("\\", "/");
+}
 
 /** The decision a result carries, or null for silence. */
 function decisionOf(result: HookResult): { decision: string; reason: string } | null {
@@ -649,7 +672,7 @@ describe("a shell line that writes into the kit's own files: asked", () => {
   describe.each(BASH_FORMS)("Bash: %s", (_name, form) => {
     test.each(TARGETS)("into %s: asks", async (_target, fileOf, what) => {
       const file = fileOf();
-      const answer = await ask(form(file));
+      const answer = await ask(form(bashPath(file)));
       expect(answer?.decision).toBe("ask");
       expect(answer?.reason).toContain(`This command writes into ${what}: `);
       expect(answer?.reason).toEndWith(`${file}. ${TAIL}`);
@@ -671,13 +694,14 @@ describe("a shell line that writes into the kit's own files: asked", () => {
   });
 
   test("a copy into a protected folder: -t, --target-directory, and the folder as the last word", async () => {
+    const dir = bashPath(settingsDir);
     for (const command of [
-      `cp -t ${settingsDir} /tmp/new.json`,
-      `cp -t${settingsDir} /tmp/new.json`,
-      `cp --target-directory=${settingsDir} /tmp/new.json`,
-      `cp --target-directory ${settingsDir} /tmp/new.json`,
-      `cp /tmp/new.json ${settingsDir}/`,
-      `mv /tmp/a.json /tmp/b.json ${settingsDir}`,
+      `cp -t ${dir} /tmp/new.json`,
+      `cp -t${dir} /tmp/new.json`,
+      `cp --target-directory=${dir} /tmp/new.json`,
+      `cp --target-directory ${dir} /tmp/new.json`,
+      `cp /tmp/new.json ${dir}/`,
+      `mv /tmp/a.json /tmp/b.json ${dir}`,
       `Copy-Item /tmp/new.json -Destination ${settingsDir}`,
     ]) {
       const tool = command.startsWith("Copy-Item") ? "PowerShell" : "Bash";
@@ -685,13 +709,13 @@ describe("a shell line that writes into the kit's own files: asked", () => {
       expect(answer?.reason).toContain(`This command writes into ${SETTINGS}: ${settingsDir}`);
     }
     // The project's `.claude` folder is not the project file: only a file named for it is.
-    expect(await ask(`cp -t ${join(repo, ".claude")} /tmp/new.json`)).toBeNull();
-    expect(await ask(`cp /tmp/new.json ${join(repo, ".claude")}/`)).toBeNull();
+    expect(await ask(`cp -t ${bashPath(join(repo, ".claude"))} /tmp/new.json`)).toBeNull();
+    expect(await ask(`cp /tmp/new.json ${bashPath(join(repo, ".claude"))}/`)).toBeNull();
   });
 
   test("the reason is the Edit's reason with the command's first words, exactly", async () => {
     const edit = await run(editInput(projectFile, repo), env);
-    const shell = await ask(`echo '{}' > ${projectFile}`);
+    const shell = await ask(`echo '{}' > ${bashPath(projectFile)}`);
     expect(edit?.reason).toBe(`This edit changes ${PROJECT}: ${projectFile}. ${TAIL}`);
     expect(shell?.reason).toBe(`This command writes into ${PROJECT}: ${projectFile}. ${TAIL}`);
   });
@@ -719,7 +743,7 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     ["a message that names it", (t: string) => `git commit -m "edit ${t} by hand"`],
     ["a quoted echo of its name", (t: string) => `echo "${t}"`],
   ])("a read passes: %s", async (_name, form) => {
-    for (const [, file] of TARGETS) expect(await ask(form(file()))).toBeNull();
+    for (const [, file] of TARGETS) expect(await ask(form(bashPath(file())))).toBeNull();
   });
 
   test.each([
@@ -737,17 +761,23 @@ describe("a shell line that writes into the kit's own files: asked", () => {
   });
 
   test.each([
-    ["the project's other settings", () => `echo '{}' > ${join(repo, ".claude", "settings.json")}`],
+    [
+      "the project's other settings",
+      () => `echo '{}' > ${bashPath(join(repo, ".claude", "settings.json"))}`,
+    ],
     [
       "the name outside .claude",
-      () => `echo '{}' > ${join(repo, "docs", "cc-smart-dev-kit.json")}`,
+      () => `echo '{}' > ${bashPath(join(repo, "docs", "cc-smart-dev-kit.json"))}`,
     ],
-    ["a source file", () => `sed -i 's/a/b/' ${join(repo, "src", "a.ts")}`],
+    ["a source file", () => `sed -i 's/a/b/' ${bashPath(join(repo, "src", "a.ts"))}`],
     [
       "a folder with the kit's name as a prefix",
-      () => `echo x > ${settingsDir}-other/workflow.json`,
+      () => `echo x > ${bashPath(settingsDir)}-other/workflow.json`,
     ],
-    ["a skill's add-on file", () => `echo x > ${join(repo, ".claude", KIT, "review.md")}`],
+    [
+      "a skill's add-on file",
+      () => `echo x > ${bashPath(join(repo, ".claude", KIT, "review.md"))}`,
+    ],
     ["the null device", () => "echo x > /dev/null"],
     ["a normal file", () => "tee /tmp/notes.txt < /dev/null"],
     ["cp to a normal file", () => "cp a.txt b.txt"],
@@ -767,9 +797,15 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     });
 
     test("a `cd` moves the line", async () => {
-      const answer = await ask(`cd ${settingsDir} && echo '{}' >> gateway.json`, "Bash", "/tmp");
+      const answer = await ask(
+        `cd ${bashPath(settingsDir)} && echo '{}' >> gateway.json`,
+        "Bash",
+        "/tmp",
+      );
       expect(answer?.reason).toContain(paths.gatewayConfigFile);
-      const relative = await ask(`cd ${repo} && cd .claude && echo '{}' > cc-smart-dev-kit.json`);
+      const relative = await ask(
+        `cd ${bashPath(repo)} && cd .claude && echo '{}' > cc-smart-dev-kit.json`,
+      );
       expect(relative?.reason).toContain(projectFile);
       const home = await ask(`cd ~/.config/${KIT} && echo '{}' > workflow.json`, "Bash", "/tmp");
       expect(home?.reason).toContain(paths.workflowConfigFile);
@@ -792,7 +828,7 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     });
 
     test("a case-blind spelling of the project file", async () => {
-      const answer = await ask(`echo '{}' > ${repo}/.Claude/CC-Smart-Dev-Kit.JSON`);
+      const answer = await ask(`echo '{}' > ${bashPath(repo)}/.Claude/CC-Smart-Dev-Kit.JSON`);
       expect(answer?.decision).toBe("ask");
     });
 
@@ -810,10 +846,10 @@ describe("a shell line that writes into the kit's own files: asked", () => {
       const link = join(tempDir("links"), "notes.txt");
       symlinkSync(paths.workflowConfigFile, link);
       for (const command of [
-        `echo x > ${link}`,
-        `echo x | tee -a ${link}`,
-        `sed -i s/a/b/ ${link}`,
-        `cp /tmp/x ${link}`,
+        `echo x > ${bashPath(link)}`,
+        `echo x | tee -a ${bashPath(link)}`,
+        `sed -i s/a/b/ ${bashPath(link)}`,
+        `cp /tmp/x ${bashPath(link)}`,
       ]) {
         const answer = await ask(command);
         expect(answer?.reason).toContain(
@@ -827,14 +863,16 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     test("a link to a folder of the kit's settings", async () => {
       const folder = tempDir("links");
       symlinkSync(settingsDir, join(folder, "cfg"), "dir");
-      const answer = await ask(`echo x > ${join(folder, "cfg", "new.json")}`);
+      const answer = await ask(`echo x > ${bashPath(join(folder, "cfg", "new.json"))}`);
       expect(answer?.decision).toBe("ask");
     });
 
     test("a link to the project file under another name", async () => {
       const link = join(tempDir("links"), "innocent.txt");
       symlinkSync(projectFile, link);
-      expect((await ask(`echo x > ${link}`))?.reason).toContain(`${PROJECT}: ${projectFile}`);
+      expect((await ask(`echo x > ${bashPath(link)}`))?.reason).toContain(
+        `${PROJECT}: ${projectFile}`,
+      );
     });
 
     test("a link to a normal file passes", async () => {
@@ -842,7 +880,7 @@ describe("a shell line that writes into the kit's own files: asked", () => {
       writeFileSync(normal, "x\n");
       const link = join(tempDir("links"), "alias.txt");
       symlinkSync(normal, link);
-      expect(await ask(`echo x > ${link}`)).toBeNull();
+      expect(await ask(`echo x > ${bashPath(link)}`)).toBeNull();
     });
   });
 
@@ -855,7 +893,7 @@ describe("a shell line that writes into the kit's own files: asked", () => {
       writeFileSync(realFile, "{}\n");
       // `~/.config` is a link to `real`, as a dotfiles setup makes it.
       symlinkSync(real, join(linked.HOME ?? "", ".config"), "dir");
-      const answer = await run(shellInput(`echo '{}' > ${realFile}`, repo), linked);
+      const answer = await run(shellInput(`echo '{}' > ${bashPath(realFile)}`, repo), linked);
       expect(answer?.decision).toBe("ask");
       expect(answer?.reason).toContain(realFile);
       const edit = await run(editInput(realFile, repo, "Write"), linked);
@@ -869,9 +907,9 @@ describe("a shell line that writes into the kit's own files: asked", () => {
       mkdirSync(dirname(guardFile), { recursive: true });
       writeFileSync(guardFile, "// the guard\n");
       for (const command of [
-        `cp /tmp/x ${guardFile}`,
-        `echo x > ${guardFile}`,
-        `sed -i s/a/b/ ${guardFile}`,
+        `cp /tmp/x ${bashPath(guardFile)}`,
+        `echo x > ${bashPath(guardFile)}`,
+        `sed -i s/a/b/ ${bashPath(guardFile)}`,
       ]) {
         const answer = await ask(command);
         expect({ command, decision: answer?.decision }).toEqual({ command, decision: "ask" });
@@ -902,15 +940,18 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     });
 
     test.each([
-      ["a variable and the file name", () => `F=${paths.workflowConfigFile}; echo x > $F`],
+      [
+        "a variable and the file name",
+        () => `F=${bashPath(paths.workflowConfigFile)}; echo x > $F`,
+      ],
       ["the project file named, a variable written", () => `echo x > "$ROOT/.claude/${KIT}.json"`],
       ["the home folder as a variable", () => `echo x > "$HOME/.config/${KIT}/workflow.json"`],
       ["the state folder as text", () => `echo x | tee "$S/.claude/${KIT}/guard-asks.jsonl"`],
       [
         "the file named in a read, the target computed",
-        () => `cat ${paths.workflowConfigFile} > $OUT`,
+        () => `cat ${bashPath(paths.workflowConfigFile)} > $OUT`,
       ],
-      ["a command substitution", () => `echo x > $(echo ${paths.workflowConfigFile})`],
+      ["a command substitution", () => `echo x > $(echo ${bashPath(paths.workflowConfigFile)})`],
       [
         "a Windows path in the text",
         () => `echo x > $DIR\\x.json ; echo .config\\${KIT}\\workflow.json`,
@@ -937,15 +978,48 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     });
   });
 
+  describe.skipIf(!ON_WINDOWS)("Git Bash paths on Windows", () => {
+    test.each([
+      ["the project file", () => projectFile],
+      ["workflow.json", () => paths.workflowConfigFile],
+      ["the state folder", () => stateFile],
+    ])("Git Bash's /c/… path into %s asks", async (_what, fileOf) => {
+      // Claude Code's Bash tool is Git Bash on Windows: a line may name a native file as
+      // MSYS2's own `/c/Users/…` (every backslash gone — Bash would remove it otherwise).
+      const file = fileOf();
+      const answer = await ask(`echo x > ${msysPath(file)}`);
+      expect(answer?.decision).toBe("ask");
+      expect(answer?.reason).toContain(file);
+    });
+
+    test("a `cd` into /c/… and a quoted Win32 path ask", async () => {
+      // `cd /c/…` moves the line there, as a native `cd` would.
+      const cd = await ask(
+        `cd ${msysPath(settingsDir)} && echo '{}' > gateway.json`,
+        "Bash",
+        "/tmp",
+      );
+      expect(cd?.reason).toContain(paths.gatewayConfigFile);
+      // A quoted Win32 path keeps its backslashes through Bash, and is the same file.
+      const quoted = await ask(`echo x > "${projectFile}"`);
+      expect(quoted?.decision).toBe("ask");
+      expect(quoted?.reason).toContain(projectFile);
+    });
+  });
+
   test("two writes, two questions; a deny still wins", async () => {
-    const two = await ask(`echo x > ${paths.workflowConfigFile}; echo y > ${projectFile}`);
+    const two = await ask(
+      `echo x > ${bashPath(paths.workflowConfigFile)}; echo y > ${bashPath(projectFile)}`,
+    );
     expect(two?.reason.split("\n")).toHaveLength(2);
-    const denied = await ask(`env -u CLAUDECODE ${KIT} doctor; echo x > ${projectFile}`);
+    const denied = await ask(`env -u CLAUDECODE ${KIT} doctor; echo x > ${bashPath(projectFile)}`);
     expect(denied?.decision).toBe("deny");
   });
 
   test("the portal's question and a write's come together", async () => {
-    const both = await ask(`curl localhost:${DEFAULT_PORTAL_PORT}; echo x > ${projectFile}`);
+    const both = await ask(
+      `curl localhost:${DEFAULT_PORTAL_PORT}; echo x > ${bashPath(projectFile)}`,
+    );
     expect(both?.decision).toBe("ask");
     expect(both?.reason).toContain("reaches the portal's port");
     expect(both?.reason).toContain("This command writes into");
@@ -954,13 +1028,13 @@ describe("a shell line that writes into the kit's own files: asked", () => {
   test("outside git, and with a broken project file, it still asks", async () => {
     const folder = tempDir("no-git");
     const loose = await run(
-      shellInput(`echo x > ${join(folder, ".claude", "cc-smart-dev-kit.json")}`, folder),
+      shellInput(`echo x > ${bashPath(join(folder, ".claude", "cc-smart-dev-kit.json"))}`, folder),
     );
     expect(loose?.decision).toBe("ask");
     const { repo: broken } = makeClone();
     writeClaudeFile(broken, "cc-smart-dev-kit.json", { worktree: {} });
     const answer = await run(
-      shellInput(`echo x > ${broken}/.claude/cc-smart-dev-kit.json`, broken),
+      shellInput(`echo x > ${bashPath(broken)}/.claude/cc-smart-dev-kit.json`, broken),
     );
     expect(answer?.decision).toBe("ask");
   });
@@ -969,7 +1043,10 @@ describe("a shell line that writes into the kit's own files: asked", () => {
     const { repo: main, worktree } = repoWithWorktree();
     const subagent = { agent_id: "0a1b2c3d4e5f60718", agent_type: "general-purpose" };
     const file = join(main, ".claude", "cc-smart-dev-kit.json");
-    const answer = await run({ ...shellInput(`echo '{}' > ${file}`, worktree), ...subagent });
+    const answer = await run({
+      ...shellInput(`echo '{}' > ${bashPath(file)}`, worktree),
+      ...subagent,
+    });
     expect(answer?.reason).toContain(file);
     const own = await run({
       ...shellInput("echo '{}' > .claude/cc-smart-dev-kit.json", worktree),
@@ -979,12 +1056,85 @@ describe("a shell line that writes into the kit's own files: asked", () => {
   });
 
   test("a 64 KB line of writes stays inside the guard's time", async () => {
-    const long = `${"echo hello > /tmp/out.txt; ".repeat(2_500)}echo x > ${projectFile}`;
+    const long = `${"echo hello > /tmp/out.txt; ".repeat(2_500)}echo x > ${bashPath(projectFile)}`;
     expect(long.length).toBeGreaterThan(64_000);
     const started = performance.now();
     const answer = await ask(long);
     expect(performance.now() - started).toBeLessThan(5_000);
     expect(answer?.decision).toBe("ask");
+  });
+});
+
+describe("shellTargetPath: a path a Bash line names", () => {
+  test("Git Bash's /c/… is the drive C: on Windows, and a plain path elsewhere", () => {
+    expect(shellTargetPath("/c/Users/me/x.json", "win32")).toBe("C:/Users/me/x.json");
+    expect(shellTargetPath("/c/Users/me/x.json", "linux")).toBe("/c/Users/me/x.json");
+    // A Win32 path, a POSIX path, and a folder that only looks like a drive are as they are.
+    expect(shellTargetPath("C:/Users/me/x.json", "win32")).toBe("C:/Users/me/x.json");
+    expect(shellTargetPath("/home/user/x.json", "win32")).toBe("/home/user/x.json");
+    expect(shellTargetPath("/config/x.json", "win32")).toBe("/config/x.json");
+    // PowerShell runs natively: `/c/…` is a folder on the current drive, not the drive C:.
+    expect(shellTargetPath("/c/Users/me/x.json", "win32", "powershell")).toBe("/c/Users/me/x.json");
+  });
+
+  test("the guard reads a /c/… write as the Windows file it names, on any host", () => {
+    // The Windows CI job runs this on Windows; `win32` here is what makes it prove the
+    // Git Bash form on Linux too (the guard's platform is the machine whose paths a line names).
+    const paths = cliPaths(hookEnv());
+    const ask = (command: string, cwd: string, tool = "Bash") =>
+      decisionOf(sessionEscapeGuard(shellInput(command, cwd, tool), paths, "win32"));
+    const redirect = ask("echo x > /c/Users/me/app/.claude/cc-smart-dev-kit.json", "/c/Users/me");
+    expect(redirect?.decision).toBe("ask");
+    expect(redirect?.reason).toContain("C:\\Users\\me\\app\\.claude\\cc-smart-dev-kit.json");
+    // `cd /c/…` moves the line there, as a native `cd` would.
+    const moved = ask(
+      "cd /c/Users/me/app && echo x > .claude/cc-smart-dev-kit.json",
+      "/c/Users/me",
+    );
+    expect(moved?.reason).toContain("C:\\Users\\me\\app\\.claude\\cc-smart-dev-kit.json");
+    // A quoted Win32 path keeps its backslashes through Bash, and is the same file.
+    const quoted = ask(
+      'echo x > "C:\\Users\\me\\app\\.claude\\cc-smart-dev-kit.json"',
+      "/c/Users/me",
+    );
+    expect(quoted?.reason).toContain("C:\\Users\\me\\app\\.claude\\cc-smart-dev-kit.json");
+    // A PowerShell line's `/c/…` is no drive: it stays the folder `c` on the current drive
+    // (and still asks for a project file, whose name alone decides, wherever it sits).
+    const ps = ask(
+      "echo x > /c/Users/me/app/.claude/cc-smart-dev-kit.json",
+      "/c/Users/me",
+      "PowerShell",
+    );
+    expect(ps?.reason).toContain("\\c\\Users\\me\\app\\.claude\\cc-smart-dev-kit.json");
+  });
+
+  test("a protected path in other letters asks on Windows (a case-blind disk)", () => {
+    // Windows compares paths without case, so `C:/USERS/ME/.../.CONFIG/...` is the same file
+    // as `C:/Users/Me/.../.config/...`. Proved here through win32 path rules on Linux; the
+    // Windows CI job runs it natively too.
+    const home = "C:/Users/Me/AppData/Local/Temp/cc-smart-dev-kit-hook-home-ABC";
+    const paths = {
+      ...cliPaths(hookEnv()),
+      home,
+      workflowConfigFile: `${home}/.config/cc-smart-dev-kit/workflow.json`,
+      gatewayConfigFile: `${home}/.config/cc-smart-dev-kit/gateway.json`,
+      stateDir: `${home}/.claude/cc-smart-dev-kit`,
+    };
+    const ask = (command: string) =>
+      decisionOf(sessionEscapeGuard(shellInput(command, home), paths, "win32"));
+    // The project file's name decides, whatever the letters of its folder.
+    expect(ask("echo x > /c/users/me/app/.CLAUDE/CC-SMART-DEV-KIT.JSON")?.decision).toBe("ask");
+    // The settings folder and the state folder: the whole path is compared without case.
+    expect(
+      ask(
+        "echo x > /c/USERS/ME/APPDATA/LOCAL/TEMP/CC-SMART-DEV-KIT-HOOK-HOME-ABC/.CONFIG/CC-SMART-DEV-KIT/WORKFLOW.JSON",
+      )?.reason,
+    ).toContain("the kit's own settings folder");
+    expect(
+      ask(
+        "echo x > /c/users/me/appdata/local/temp/cc-smart-dev-kit-hook-home-abc/.CLAUDE/CC-SMART-DEV-KIT/reviews/APP-1.JSON",
+      )?.reason,
+    ).toContain("the kit's own state folder");
   });
 });
 
@@ -1014,13 +1164,14 @@ describe("machine-wide: the project does not change the answer", () => {
   });
 
   test("a project file that is broken, or needs a newer plugin", async () => {
+    // One clone for the three files: a clone costs seconds on Windows, and the guard reads
+    // the file again on every call, so rewriting it proves the same thing.
+    const { repo } = makeClone();
     for (const config of [{ worktree: {} }, { requires: ">=99" }]) {
-      const { repo } = makeClone();
       writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
       expect((await run(shellInput(DENIED, repo)))?.decision).toBe("deny");
     }
-    const { repo } = makeClone();
-    mkdirSync(join(repo, ".claude"));
+    // The file that is not JSON, in the same clone.
     writeFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
     expect((await run(shellInput(DENIED, repo)))?.decision).toBe("deny");
   });
@@ -1217,7 +1368,7 @@ describe("as Claude Code runs it: the entry, over stdin", () => {
 });
 
 describe("the direct call", () => {
-  test("sessionEscapeGuard takes the input and the paths, and nothing else", () => {
+  test("sessionEscapeGuard takes the input and the paths, and judges with them", () => {
     const env = hookEnv();
     const result = sessionEscapeGuard(shellInput(`sudo ${KIT} doctor`, "/"), cliPaths(env));
     expect(decisionOf(result)?.decision).toBe("deny");
