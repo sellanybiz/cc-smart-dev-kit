@@ -287,8 +287,8 @@ Each phase below is one worker (D21 kind), started by the lead with `worker star
 |---|---|---|---|
 | B0 slot modes | schema | finish from `4a97a33`: tests (none yet), `facts.ts` `claudeModels`, every doc, rule and the skill | — |
 | B6a client and look | ui | finish from `3bd0a9d`: tests and PX tests; port main's 0.5.2 project form (no engine fields) | — |
-| B2 output module, doctor | build | + UX-13's other sites from B1 | — |
-| B3 setup, project init prompts | build | | B2 |
+| B2 output module, doctor | ui (D50: terminal output design is UX, so opus) | + UX-13's other sites from B1 | — |
+| B3 setup, project init prompts | ui (D50) | | B2 |
 | B5 interactive `gateway setup` | security | | B0, B2, B3 |
 | B7 always-on portal | security | | B2 (`doctor.ts`) |
 | B6b live stream | security | + the Work view's data hub (research file § R4), the flow report reader | B6a, B7 |
@@ -415,3 +415,4 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 - 2026-10-22: owner decision D51 (SSE for realtime; request history in `bun:sqlite`); phase H1 added after B0; UI-1 told the history shape.
 - 2026-10-22: the owner set the history's content and retention: a request log only (tokens, estimated USD, session id when present; never the conversation), every row kept 90 days by default (about 400 MB at this machine's rate), configurable.
 - 2026-10-22: the owner set the portal's switches: every chart gets the range switcher 1h, 4h, 1d, 7d, 14d, 30d, 90d, plus filters (slot, target, model, session, errors only); the pages are Overview, Usage (new: tokens and estimated USD by slot, target, model, session), Work, Flow, Slots, Health, Machine, Settings, with charts on Overview, Usage, Health, Slots, Work and Flow. UI-1 told; H1's API follows D51's new shape.
+- 2026-10-22: the CLI's UI/UX work started in parallel (1.1.0): B2 (the output module and doctor) on Opus — terminal output design is UX under D50, so B2, B3 and B5 run on opus or fable — and B4 (one way in, a README fix) on sonnet.
