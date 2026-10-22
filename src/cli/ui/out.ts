@@ -18,8 +18,11 @@
 import { FIX_LABEL } from "../check";
 import type { Terminal } from "./terminal";
 
-/** A line's mark: a check's status, or a change setup made. */
-export type Mark = "changed" | "created" | "fail" | "info" | "ok" | "removed" | "warn";
+/**
+ * A line's mark: a check's status, a change a command made (`created` `changed` `removed`), or a
+ * command it runs or would run (`run`, `$`).
+ */
+export type Mark = "changed" | "created" | "fail" | "info" | "ok" | "removed" | "run" | "warn";
 
 const UNICODE_MARKS: Readonly<Record<Mark, string>> = {
   changed: "~",
@@ -28,6 +31,7 @@ const UNICODE_MARKS: Readonly<Record<Mark, string>> = {
   info: "·",
   ok: "✓",
   removed: "-",
+  run: "$",
   warn: "!",
 };
 
@@ -39,6 +43,7 @@ const ASCII_MARKS: Readonly<Record<Mark, string>> = {
   info: "[i]",
   ok: "[ok]",
   removed: "-",
+  run: "$",
   warn: "[!]",
 };
 
@@ -51,6 +56,7 @@ const COLOURS: Readonly<Record<Mark, number>> = {
   info: 2,
   ok: 32,
   removed: 31,
+  run: 36,
   warn: 33,
 };
 
@@ -92,8 +98,16 @@ function paint(term: Terminal, code: number, text: string): string {
   return term.color ? `\x1b[${code}m${text}\x1b[0m` : text;
 }
 
-function words(term: Terminal, text: string): string {
+/** Words as this terminal shows them: ASCII on an old Windows console, as they are elsewhere. */
+export function shownText(term: Terminal, text: string): string {
   return term.unicode ? text : asciiText(text);
+}
+
+const words = shownText;
+
+/** A count and its noun: "1 change", "3 changes". */
+export function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
 }
 
 /**
@@ -127,6 +141,11 @@ export interface LineOptions {
   fix?: string | undefined;
   /** Spaces before the mark. */
   indent?: number;
+  /**
+   * Lines under the text (and under its fix), at the text's own indent: the commands a note
+   * names, say. Never wrapped, so a command copies whole.
+   */
+  detail?: readonly string[] | undefined;
 }
 
 /** The lines `line` prints, with no newline at their end. Pure, so a test reads exact text. */
@@ -154,6 +173,7 @@ export function renderLine(
       ),
     );
   }
+  for (const detail of options.detail ?? []) lines.push(`${hang}${words(term, detail)}`);
   return lines;
 }
 
@@ -172,6 +192,7 @@ export interface GroupLine {
   mark: Mark;
   text: string;
   fix?: string | undefined;
+  detail?: readonly string[] | undefined;
 }
 
 /** A group: its line, then its lines indented under it. Pure. */
@@ -180,7 +201,7 @@ export function renderGroup(term: Terminal, header: GroupHeader, lines: GroupLin
   return [
     ...renderLine(term, header.mark, title),
     ...lines.flatMap((line) =>
-      renderLine(term, line.mark, line.text, { fix: line.fix, indent: 2 }),
+      renderLine(term, line.mark, line.text, { detail: line.detail, fix: line.fix, indent: 2 }),
     ),
   ];
 }
@@ -204,12 +225,18 @@ export function dryRunEnding(notDone: readonly string[]): string {
   return `Dry run: nothing was ${list}.`;
 }
 
-/** The marks a line of text may start with, as `setup` and `restore` have always written them. */
+/**
+ * The marks a line of text may start with, as the shared line makers write them (the MCP
+ * registrations, the companions, Serena's clean-up, `restore`): `$ ` is a command run or to run,
+ * `· ` information.
+ */
 const LEADING_MARKS: ReadonlyArray<readonly [string, Mark]> = [
   ["+ ", "created"],
   ["~ ", "changed"],
   ["- ", "removed"],
   ["! ", "warn"],
+  ["$ ", "run"],
+  ["· ", "info"],
 ];
 
 /**
@@ -233,6 +260,13 @@ const FRAME_MS = 80;
 /** Back to the start of the line, and clear it. */
 const CLEAR_LINE = "\r\x1b[2K";
 
+/**
+ * One next step: words, or words and the command they name, which prints on a line of its own
+ * under them (two spaces in, never wrapped), so it copies whole. A command is the person's to
+ * run as it is: it is never changed for an old console either.
+ */
+export type NextStep = string | { text: string; command: string };
+
 export interface Out {
   readonly term: Terminal;
   /** A title line, bold on a colour terminal. */
@@ -245,7 +279,7 @@ export interface Out {
   group(header: GroupHeader, lines: GroupLine[]): void;
   verdict(mark: Mark, text: string): void;
   /** "Next steps", numbered: what the person does after this command. */
-  next(steps: readonly string[]): void;
+  next(steps: readonly NextStep[]): void;
   /**
    * Runs a slow step. On a rich terminal a turning mark and the label stand on the line while
    * it runs, and go when it ends; plain output gets nothing (no half-lines in a log). A step
@@ -255,8 +289,9 @@ export interface Out {
   /** The value as JSON, two spaces deep, for a program to read. */
   json(value: unknown): void;
   /**
-   * Lines that carry their mark in front (`+ `, `~ `, `- `, `! `), each drawn with `line`; a line
-   * with none is printed as it is. How `setup` prints its report until its lines are data.
+   * Lines that carry their mark in front (`+ `, `~ `, `- `, `! `, `$ `), each drawn with `line`; a
+   * line with none is printed as it is. How `browser setup` prints its report until its lines are
+   * data (`setup` and `project init` print data: `line` and `group`).
    */
   marked(lines: readonly string[]): void;
 }
@@ -324,12 +359,16 @@ export function createOut(term: Terminal, sink: Sink = CONSOLE_SINK): Out {
       const number = (index: number) => `${index + 1}.`.padEnd(String(steps.length).length + 2);
       for (const [index, step] of steps.entries()) {
         const lead = `  ${number(index)}`;
+        const hang = " ".repeat(lead.length);
         const room = term.width - lead.length;
+        const text = typeof step === "string" ? step : step.text;
         print(
-          wrapWords(words(term, step), room, room).map((part, at) =>
-            at === 0 ? `${lead}${part}` : `${" ".repeat(lead.length)}${part}`,
+          wrapWords(words(term, text), room, room).map((part, at) =>
+            at === 0 ? `${lead}${part}` : `${hang}${part}`,
           ),
         );
+        // The command on a line of its own, never wrapped: it copies whole.
+        if (typeof step !== "string") print([`${hang}  ${step.command}`]);
       }
     },
     async progress(label, work) {

@@ -9,9 +9,11 @@ import { join } from "node:path";
 import { readMcpRecords, recordMcpServer } from "../mcp/records";
 import { serenaLeftoverPaths } from "../mcp/retired";
 import { restore } from "../setup/restore";
+import { retryWatchdogDeclinedFile } from "../setup/retry-watchdog";
 import { readChanged, writeManagedFile } from "../setup/write";
-import { capturePrinted, printed, world } from "../testing/fake-machine";
+import { capturePrinted, changeLines, printed, world } from "../testing/fake-machine";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { statuslineDeclinedFile } from "./setup";
 
 capturePrinted();
 
@@ -40,7 +42,7 @@ describe("setup on a terminal: the auto-mode entries", () => {
     expect(await w.setup({ project: repo })).toBe(0);
     expect(w.questions).toEqual([QUESTION]);
     expect(printed).toContain(
-      `~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}`,
+      `  ~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}`,
     );
     expect(readJson(w.paths.settingsFile).autoMode).toEqual({
       environment: ["$defaults", "Mine: github.com/example-org", RULE],
@@ -62,9 +64,10 @@ describe("setup on a terminal: the auto-mode entries", () => {
     });
     printed.length = 0;
     expect(await w.setup({ project: repo })).toBe(0);
-    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(changeLines()).toEqual([]);
+    expect(printed.join("\n")).toContain("Nothing to change. Setup is up to date");
     expect(printed.join("\n")).not.toContain("Auto mode");
-    expect(printed.join("\n")).not.toContain("Done.");
+    expect(printed.join("\n")).not.toContain("Done:");
   });
 
   test("--dry-run on a terminal: the entries as changes, the no-terminal note left out, nothing asked or written", async () => {
@@ -73,7 +76,7 @@ describe("setup on a terminal: the auto-mode entries", () => {
     const before = readFileSync(w.paths.settingsFile, "utf8");
     expect(await w.setup({ project: repo, dryRun: true })).toBe(0);
     expect(printed).toContain(
-      `~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}`,
+      `  ~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}`,
     );
     // A terminal is there: the note a run without one prints stays out.
     expect(printed.join("\n")).not.toContain("left out");
@@ -86,7 +89,7 @@ describe("setup on a terminal: the auto-mode entries", () => {
     const repo = project({ autoMode: [RULE] });
     const w = world({ git: true, answer: false });
     expect(await w.setup({ project: repo })).toBe(0);
-    expect(printed).toContain("  auto-mode entries left out (you said no)");
+    expect(printed).toContain("  · auto-mode entries left out (you said no)");
     expect(readJson(w.paths.settingsFile).autoMode).toBeUndefined();
     expect(
       readJson(w.paths.settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate,
@@ -119,9 +122,9 @@ describe("setup and tmux: the one managed line", () => {
     const w = world({ bins: { tmux: "exit 0" }, git: true });
     writeFileSync(w.paths.tmuxConfFile, "set -g mouse on\n");
     expect(await w.setup({ project: repo, yes: true })).toBe(0);
-    expect(printed).toContain("~ ~/.tmux.conf: added set -g allow-passthrough all");
-    expect(printed).toContain(
-      "  tmux is running: run `tmux set -g allow-passthrough all` to apply the line now (a restart works too)",
+    expect(printed).toContain("  ~ ~/.tmux.conf: added set -g allow-passthrough all");
+    expect(printed.join("\n")).toContain(
+      "Apply the tmux line to the tmux server that runs now (a restart of tmux works too):\n       tmux set -g allow-passthrough all\n",
     );
     expect(readFileSync(w.paths.tmuxConfFile, "utf8")).toBe(
       "set -g mouse on\nset -g allow-passthrough all\n",
@@ -129,7 +132,8 @@ describe("setup and tmux: the one managed line", () => {
     // A second run changes nothing, and says so.
     printed.length = 0;
     expect(await w.setup({ project: repo, yes: true })).toBe(0);
-    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(changeLines()).toEqual([]);
+    expect(printed.join("\n")).toContain("Nothing to change. Setup is up to date");
     expect(printed.join("\n")).not.toContain("tmux.conf");
     // restore takes exactly that line out and keeps the person's own.
     restore(w.paths.stateDir);
@@ -158,9 +162,9 @@ describe("setup and tmux: the one managed line", () => {
     const repo = project({ autoMode: [RULE] });
     const w = world({ bins: { tmux: "exit 0" }, git: true });
     expect(await w.setup({ project: repo, dryRun: true })).toBe(0);
-    expect(printed).toContain("+ ~/.tmux.conf: added set -g allow-passthrough all");
+    expect(printed).toContain("  + ~/.tmux.conf: added set -g allow-passthrough all");
     expect(printed).toContain(
-      "  tmux is running: run `tmux set -g allow-passthrough all` to apply the line now (a restart works too)",
+      "  · tmux is running: run `tmux set -g allow-passthrough all` to apply the line now (a restart works too)",
     );
     expect(existsSync(w.paths.tmuxConfFile)).toBe(false);
   });
@@ -178,7 +182,7 @@ describe("setup in a worktree: where the entries come from", () => {
     );
     const w = world({ git: true });
     await w.setup({ project: worktree });
-    expect(printed.slice(0, 4)).toEqual([
+    expect(printed.slice(2, 6)).toEqual([
       `Auto mode: trust rules from ${worktree}/.claude/cc-smart-dev-kit.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
       `  This worktree's file is not the same as the main checkout's (${repo}/.claude/cc-smart-dev-kit.json). The rules below come from this worktree's file.`,
       '  + "$defaults"',
@@ -192,10 +196,10 @@ describe("setup in a worktree: where the entries come from", () => {
     git(repo, "worktree", "add", "-q", "-b", "plain", worktree);
     const w = world({ git: true });
     await w.setup({ project: worktree });
-    expect(printed[0]).toBe(
+    expect(printed[2]).toBe(
       `Auto mode: trust rules from ${repo}/.claude/cc-smart-dev-kit.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
     );
-    expect(printed[1]).toBe('  + "$defaults"');
+    expect(printed[3]).toBe('  + "$defaults"');
   });
 });
 
@@ -216,7 +220,7 @@ describe("every question comes first", () => {
     expect(w.calls()).toBe("");
     expect(order).toEqual([`asked: ${QUESTION}`, "asked: Run these commands now?"]);
     expect(readJson(w.paths.settingsFile).autoMode).toEqual({ environment: ["$defaults", RULE] });
-    expect(printed).toContain("! Warp: these commands were not run (you said no).");
+    expect(printed).toContain("  ! Warp: these commands were not run (you said no).");
   });
   test("the status-line question joins the same pass: auto mode, status line, Warp, all before anything runs", async () => {
     const repo = project({ autoMode: [RULE] });
@@ -241,6 +245,28 @@ describe("every question comes first", () => {
     const settings = readJson(w.paths.settingsFile);
     expect(settings.statusLine.command).toEndWith("/.local/bin/cc-smart-dev-kit statusline");
     expect(settings.autoMode).toEqual({ environment: ["$defaults", RULE] });
+  });
+});
+
+describe("UX-11: --yes asks nothing it may skip", () => {
+  test("on a terminal, --yes offers neither the status line nor the retry watchdog, and remembers no no", async () => {
+    const w = world({ statuslineAnswered: false, retryWatchdogAnswered: false });
+    expect(await w.setup({ yes: true })).toBe(0);
+    expect(w.questions).toEqual([]);
+    expect(readJson(w.paths.settingsFile).statusLine).toBeUndefined();
+    // Not a "no": a later plain setup on a terminal still offers both.
+    expect(existsSync(statuslineDeclinedFile(w.paths.stateDir))).toBe(false);
+    expect(existsSync(retryWatchdogDeclinedFile(w.paths.stateDir))).toBe(false);
+    expect(await w.setup()).toBe(0);
+    expect(w.questions).toHaveLength(2);
+  });
+
+  test("a dry run with --yes says the watchdog is not offered", async () => {
+    const w = world({ retryWatchdogAnswered: false });
+    expect(await w.setup({ dryRun: true, yes: true })).toBe(0);
+    expect(printed).toContain(
+      "  · retry watchdog: not offered with --yes (nothing changes); --retry-watchdog turns it on",
+    );
   });
 });
 
@@ -302,13 +328,14 @@ describe("setup manages agent view's notification hook", () => {
     const w = world();
     expect(await w.setup()).toBe(0);
     expect(printed).toContain(
-      `~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
+      `  ~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
     );
     expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
 
     printed.length = 0;
     expect(await w.setup()).toBe(0);
-    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(changeLines()).toEqual([]);
+    expect(printed.join("\n")).toContain("Nothing to change. Setup is up to date");
     expect(printed.join("\n")).not.toContain("agent view");
     expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
 
@@ -327,7 +354,7 @@ describe("setup manages agent view's notification hook", () => {
     writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
     expect(await w.setup()).toBe(0);
     expect(printed).toContain(
-      `~ ~/.claude/settings.json: hooks.Notification: replaced the hand-written notify hook with the managed one (${COMMAND})`,
+      `  ~ ~/.claude/settings.json: hooks.Notification: replaced the hand-written notify hook with the managed one (${COMMAND})`,
     );
     expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
     // Restore removes the managed entry and does not bring the replaced hand entry back:
@@ -422,7 +449,7 @@ describe("setup manages agent view's notification hook", () => {
     writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
     expect(await w.setup()).toBe(0);
     expect(printed).toContain(
-      `  ~/.claude/settings.json: hooks.Notification: a hook with this matcher was edited since setup wrote it (${COMMAND}); it stays, and no second one was added`,
+      `  · ~/.claude/settings.json: hooks.Notification: a hook with this matcher was edited since setup wrote it (${COMMAND}); it stays, and no second one was added`,
     );
     expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([edited]);
     restore(w.paths.stateDir);
@@ -453,7 +480,7 @@ describe("setup manages agent view's notification hook", () => {
     const before = readFileSync(w.paths.settingsFile, "utf8");
     expect(await w.setup({ dryRun: true })).toBe(0);
     expect(printed).toContain(
-      `~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
+      `  ~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
     );
     expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(before);
     expect(printed).toContain("Dry run: nothing was written or run.");
@@ -490,16 +517,16 @@ describe("setup turns claude-mem's two start blocks off (D23)", () => {
     const w = world();
     const file = seed(w);
     expect(await w.setup()).toBe(0);
-    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
-    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
+    expect(printed).toContain(`  ~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
+    expect(printed).toContain(`  ~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
     expect(printed).toContain(
-      '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+      '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
     );
     expect(printed).toContain(
-      "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
+      "  ! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
     );
-    expect(printed).toContain(
-      "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
+    expect(printed.join("\n")).toContain(
+      "Start a new Claude Code session (and restart the ones running): a session reads its settings, instructions, plugins and MCP servers when it starts. claude-mem's start hook reads its new settings then too, and its worker reads them when it starts.",
     );
     expect(printed.filter((line) => line.includes("work_state_read"))).toHaveLength(1);
     expect(readJson(file)).toEqual({ ...SEEDED, [WORK_STATE]: "false", [MEMORY]: "false" });
@@ -508,7 +535,8 @@ describe("setup turns claude-mem's two start blocks off (D23)", () => {
     // A second run: nothing to change, nothing about claude-mem or the task tools.
     printed.length = 0;
     expect(await w.setup()).toBe(0);
-    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(changeLines()).toEqual([]);
+    expect(printed.join("\n")).toContain("Nothing to change. Setup is up to date");
     expect(printed.join("\n")).not.toContain("claude-mem");
     expect(printed.join("\n")).not.toContain("CLAUDE_CODE_ENABLE_TODO_TOOLS");
   });
@@ -519,10 +547,10 @@ describe("setup turns claude-mem's two start blocks off (D23)", () => {
     const before = readFileSync(file, "utf8");
     const settingsBefore = readFileSync(w.paths.settingsFile, "utf8");
     expect(await w.setup({ dryRun: true })).toBe(0);
-    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
-    expect(printed).toContain(`~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
+    expect(printed).toContain(`  ~ ~/.claude-mem/settings.json: ${WORK_STATE}: "true" -> "false"`);
+    expect(printed).toContain(`  ~ ~/.claude-mem/settings.json: ${MEMORY}: "true" -> "false"`);
     expect(printed).toContain(
-      '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+      '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
     );
     expect(printed).toContain("Dry run: nothing was written or run.");
     expect(readFileSync(file, "utf8")).toBe(before);
@@ -540,7 +568,7 @@ describe("setup turns claude-mem's two start blocks off (D23)", () => {
     printed.length = 0;
     expect(await w.setup()).toBe(0);
     expect(printed).toContain(
-      `! claude-mem settings left alone: ${WORK_STATE} is "true" in ~/.claude-mem/settings.json (your choice)`,
+      `  ! claude-mem settings left alone: ${WORK_STATE} is "true" in ~/.claude-mem/settings.json (your choice)`,
     );
     expect(readJson(file)[WORK_STATE]).toBe("true");
     // Its to-do list is back: no task tools are needed, and setup leaves the ones it set.
@@ -568,7 +596,7 @@ describe("setup turns claude-mem's two start blocks off (D23)", () => {
     expect(await w.setup()).toBe(0);
     // The fake `claude` records the step but installs nothing, so the plan still sees no
     // claude-mem: nothing of its settings is touched, and no task tools are turned on.
-    expect(printed).toContain("+ plugin claude-mem@thedotmack");
+    expect(printed).toContain("  + plugin claude-mem@thedotmack");
     expect(readFileSync(file, "utf8")).toBe(before);
     expect(readJson(w.paths.settingsFile).env).toBeUndefined();
   });
@@ -582,7 +610,7 @@ describe("setup turns claude-mem's two start blocks off (D23)", () => {
     expect(await w.setup()).toBe(0);
     expect(readJson(w.paths.settingsFile).env.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("0");
     expect(printed).toContain(
-      '  ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" (your choice); left alone',
+      '  · ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" (your choice); left alone',
     );
     // claude-mem's own keys are still turned off around it.
     expect(readJson(file)[WORK_STATE]).toBe("false");
@@ -634,20 +662,20 @@ describe("setup takes back what an older setup left for Serena", () => {
   }
 
   const CONTEXT_REMOVED =
-    "- ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: removed (Serena's context; Serena is retired in 0.6.0)";
+    "  - ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: removed (Serena's context; Serena is retired in 0.6.0)";
   const FOLDER_REMOVED =
-    "- ~/.local/share/cc-smart-dev-kit/serena/: removed (Serena's folder, empty now)";
+    "  - ~/.local/share/cc-smart-dev-kit/serena/: removed (Serena's folder, empty now)";
   const RECORDS_REMOVED =
-    "- ~/.claude/cc-smart-dev-kit/serena-root/: removed (the serena-root hook's records; Serena is retired in 0.6.0)";
+    "  - ~/.claude/cc-smart-dev-kit/serena-root/: removed (the serena-root hook's records; Serena is retired in 0.6.0)";
   const KEPT =
-    "  ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: left in place: serena still starts Serena with it";
+    "  · ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: left in place: serena still starts Serena with it";
 
   test("its own registration through `claude mcp remove`, then the context file and the records", async () => {
     const w = world();
     const where = olderSerena(w, true);
     expect(await w.setup()).toBe(0);
     expect(w.mcpCalls()).toContain("claude mcp remove serena --scope user");
-    expect(printed).toContain("- MCP server serena removed from your user config");
+    expect(printed).toContain("  - MCP server serena removed from your user config");
     expect(printed).toContain(CONTEXT_REMOVED);
     expect(printed).toContain(FOLDER_REMOVED);
     expect(printed).toContain(RECORDS_REMOVED);
@@ -681,7 +709,7 @@ describe("setup takes back what an older setup left for Serena", () => {
     });
     const where = olderSerena(w, true);
     expect(await w.setup()).toBe(1);
-    expect(printed).toContain("! $ claude mcp remove serena --scope user failed (remove failed)");
+    expect(printed).toContain("  ! $ claude mcp remove serena --scope user failed (remove failed)");
     expect(printed).toContain(KEPT);
     expect(existsSync(where.contextFile)).toBe(true);
     expect(readMcpRecords(w.paths.stateDir).serena).toBeDefined();
@@ -691,7 +719,7 @@ describe("setup takes back what an older setup left for Serena", () => {
     const w = world();
     const where = olderSerena(w, true);
     expect(await w.setup({ dryRun: true })).toBe(0);
-    expect(printed).toContain("$ claude mcp remove serena --scope user");
+    expect(printed).toContain("  $ claude mcp remove serena --scope user");
     expect(printed).toContain(CONTEXT_REMOVED);
     expect(printed).toContain(FOLDER_REMOVED);
     expect(printed).toContain(RECORDS_REMOVED);
@@ -718,13 +746,14 @@ describe("D33: setup lists the repos that still carry a retired worktree piece",
   test("D33: every run names each such repo once, with the fix; the repo itself is not changed", async () => {
     const w = world({ git: true });
     const { config, dir } = oldRepo(w);
-    const line = `! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`;
+    const line = `  ! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`;
     expect(await w.setup({ env: cleanGitEnv() })).toBe(0);
     expect(printed.filter((printedLine) => printedLine === line)).toHaveLength(1);
     printed.length = 0;
     // A second run, with nothing else to change, still says it.
     expect(await w.setup({ env: cleanGitEnv() })).toBe(0);
-    expect(printed[0]).toBe("Nothing to change. Setup is up to date.");
+    expect(changeLines()).toEqual([]);
+    expect(printed.join("\n")).toContain("Nothing to change. Setup is up to date");
     expect(printed).toContain(line);
     expect(readFileSync(join(dir, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(config);
   });
@@ -734,7 +763,7 @@ describe("D33: setup lists the repos that still carry a retired worktree piece",
     const { dir } = oldRepo(w);
     expect(await w.setup({ dryRun: true, env: cleanGitEnv() })).toBe(0);
     expect(printed).toContain(
-      `! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`,
+      `  ! ${dir} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${dir} && cc-smart-dev-kit project init`,
     );
     expect(printed).toContain("Dry run: nothing was written or run.");
   });

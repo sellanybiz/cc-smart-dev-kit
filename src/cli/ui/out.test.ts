@@ -218,8 +218,46 @@ describe("Out", () => {
 
   test("a line with a newline in it, or no mark, is printed as it is", () => {
     expect(leadingMark("+ two\nlines")).toBeNull();
-    expect(leadingMark("$ claude mcp add")).toBeNull();
+    expect(leadingMark("Nothing to change.")).toBeNull();
     expect(leadingMark("- gone")).toEqual({ mark: "removed", text: "gone" });
+    // A command run or to run, and information, as the shared line makers write them.
+    expect(leadingMark("$ claude mcp add")).toEqual({ mark: "run", text: "claude mcp add" });
+    expect(leadingMark("· not registered")).toEqual({ mark: "info", text: "not registered" });
+  });
+
+  test("a line with the commands it names under it, never wrapped; a run mark", () => {
+    expect(
+      renderLine(RICH, "fail", "claude is not on PATH, so these were skipped:", {
+        detail: ["$ claude plugin marketplace add example-org/a-very-long-marketplace-name"],
+      }),
+    ).toEqual([
+      "\x1b[31m✗\x1b[0m claude is not on PATH, so these were",
+      "  skipped:",
+      "  $ claude plugin marketplace add example-org/a-very-long-marketplace-name",
+    ]);
+    expect(renderLine(PLAIN, "run", "claude mcp list")).toEqual(["$ claude mcp list"]);
+    expect(renderLine(RICH, "run", "x")).toEqual(["\x1b[36m$\x1b[0m x"]);
+  });
+
+  test("a next step with its command: the command on its own line, whole", () => {
+    const { out, text } = collect(RICH);
+    out.next([
+      {
+        text: "Add the folder to your PATH, then open a new terminal:",
+        command: 'export PATH="$HOME/.local/bin:$PATH"',
+      },
+      "Start a new session.",
+    ]);
+    expect(text()).toBe(
+      [
+        "Next steps:",
+        "  1. Add the folder to your PATH, then",
+        "     open a new terminal:",
+        '       export PATH="$HOME/.local/bin:$PATH"',
+        "  2. Start a new session.",
+        "",
+      ].join("\n"),
+    );
   });
 
   test("one dry-run ending for every command", () => {

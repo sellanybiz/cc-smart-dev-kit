@@ -19,6 +19,7 @@ import {
   readBrowserToken,
   readTokenFromStdin,
   savePastedToken,
+  TOKEN_QUESTION,
   tokenProtection,
   tokenSavedLine,
   writeBrowserToken,
@@ -254,7 +255,7 @@ describe("reading the token from a terminal", () => {
     // `readAll` on a terminal would wait for Ctrl+D and show the token: the one thing this must
     // not do, so it throws and the caller says to pipe the token in instead.
     await expect(
-      readTokenFromStdin({ isTTY: true, readAll: () => Promise.resolve("") }, () => undefined),
+      readTokenFromStdin({ isTTY: true, readAll: () => Promise.resolve("") }),
     ).rejects.toThrow("cannot hide what you type");
     expect(canHideInput({ isTTY: true, setRawMode: () => undefined })).toBe(true);
     expect(canHideInput({ isTTY: true })).toBe(false);
@@ -262,26 +263,31 @@ describe("reading the token from a terminal", () => {
     expect(canHideInput({})).toBe(false);
   });
 
-  test("a terminal is read with no echo; a pipe is read as it is", async () => {
-    const said: string[] = [];
-    const fromSecret = await readTokenFromStdin(
-      {
-        isTTY: true,
-        readAll: () => Promise.resolve("from-the-pipe"),
-        readSecret: () => Promise.resolve(TOKEN),
+  test("a terminal is asked the one question and read with no echo; a pipe is read as it is", async () => {
+    const asked: string[] = [];
+    const fromSecret = await readTokenFromStdin({
+      isTTY: true,
+      readAll: () => Promise.resolve("from-the-pipe"),
+      readSecret: (question) => {
+        asked.push(question);
+        return Promise.resolve(TOKEN);
       },
-      (line) => said.push(line),
-    );
+    });
     expect(fromSecret).toBe(TOKEN);
-    expect(said.join("\n")).toContain("not shown");
+    // The secret read of the prompts' one home shows it, and says the token is not shown.
+    expect(asked).toEqual([TOKEN_QUESTION]);
 
-    const fromPipe = await readTokenFromStdin(
-      { isTTY: false, readAll: () => Promise.resolve("from-the-pipe\n") },
-      (line) => said.push(line),
-    );
+    const fromPipe = await readTokenFromStdin({
+      isTTY: false,
+      readAll: () => Promise.resolve("from-the-pipe\n"),
+      readSecret: (question) => {
+        asked.push(question);
+        return Promise.resolve(TOKEN);
+      },
+    });
     expect(fromPipe).toBe("from-the-pipe\n");
-    // No prompt when there is nothing to hide from: a pipe already echoes nothing.
-    expect(said).toHaveLength(1);
+    // No question when there is nothing to hide from: a pipe already echoes nothing.
+    expect(asked).toHaveLength(1);
   });
 });
 

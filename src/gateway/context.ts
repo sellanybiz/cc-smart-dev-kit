@@ -3,8 +3,9 @@
  *
  * WHY IT IS ITS OWN MODULE (a live-shaped bug, 2026-10-17). `gateway setup --omniroute-password`
  * asks for OmniRoute's dashboard password with no echo, and it can only do that when the context
- * carries a `readSecret` — a function that reads one line from a terminal whose echo can be
- * switched off (`readSecretLine`, `src/cli/secret-line.ts`). The context used to be built inside
+ * carries a `readSecret` — a function that shows the question and reads one line from a terminal
+ * whose echo can be switched off (the prompts' `secret`, `src/cli/ui/prompt.ts`). The context used
+ * to be built inside
  * the CLI entry, and it never set that field: every run of `--omniroute-password` answered "this
  * terminal cannot hide what you type", on a real terminal too, while the README, the installer
  * and the gateway skill all send people to that flag. The entry now calls this function, and
@@ -15,12 +16,9 @@
  * so a test builds a context of its own and no test reaches a real terminal or a real backend.
  */
 import type { CliPaths } from "../cli/paths";
-import {
-  canHideInput,
-  cleanSecretLine,
-  type RawTerminal,
-  readSecretLine,
-} from "../cli/secret-line";
+import { cleanSecretLine, type RawTerminal } from "../cli/secret-line";
+import { terminalPrompts } from "../cli/ui/prompt";
+import { currentTerminal } from "../cli/ui/terminal";
 import type { GatewayContext } from "./commands";
 import type { HealthFetch } from "./health";
 import { realProbe } from "./health";
@@ -62,7 +60,7 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
     // A secret on stdin is cleaned first: a terminal that keeps bracketed paste on hands a
     // paste to a pipe as `ESC[200~<key>ESC[201~` (`src/cli/secret-line.ts`).
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...(canHideInput(terminal) ? { readSecret: () => readSecretLine(terminal) } : {}),
+    ...secretRead(terminal),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -72,4 +70,15 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
     print: options.print ?? ((line) => console.log(line)),
     error: options.error ?? ((line) => console.error(line)),
   };
+}
+
+/**
+ * The secret read of the prompts' one home (`src/cli/ui/prompt.ts`): it shows the question, and
+ * reads with no echo. Nothing at all on a pipe, or on a terminal that cannot switch its echo off.
+ */
+function secretRead(
+  terminal: RawTerminal & { isTTY?: boolean },
+): Pick<GatewayContext, "readSecret"> {
+  const secret = terminalPrompts(currentTerminal(), terminal)?.secret ?? null;
+  return secret === null ? {} : { readSecret: secret };
 }

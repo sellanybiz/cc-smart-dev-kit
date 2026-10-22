@@ -98,7 +98,7 @@ import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
 import { projectChecks } from "./project-checks";
-import { type Mark, markText, type Out } from "./ui/out";
+import { type Mark, markText, type Out, plural } from "./ui/out";
 import type { Terminal } from "./ui/terminal";
 
 /** The fix most checks name: setup puts the plugin's files back in place. */
@@ -1320,10 +1320,6 @@ export function countChecks(checks: readonly Check[]): CheckCounts {
   const counts: CheckCounts = { fail: 0, info: 0, ok: 0, warn: 0 };
   for (const check of checks) counts[checkStatus(check)] += 1;
   return counts;
-}
-
-function plural(count: number, one: string, many: string): string {
-  return `${count} ${count === 1 ? one : many}`;
 }
 
 /** What a group holds, in words: "1 to fix, 4 passed, 1 note". */

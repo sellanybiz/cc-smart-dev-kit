@@ -783,20 +783,20 @@ function clearBrowserToken(paths) {
   unlinkSync2(paths.browserTokenFile);
   return paths.browserTokenFile;
 }
-async function readTokenFromStdin(input, say) {
+var TOKEN_QUESTION = "Paste the token from the extension's status page, then press Enter";
+async function readTokenFromStdin(input) {
   if (input.isTTY) {
     if (input.readSecret === undefined) {
       throw new Error("this terminal cannot hide what you type, so the token would be shown on screen");
     }
-    say("Paste the token from the extension's status page, then press Enter (it is not shown):");
-    return await input.readSecret();
+    return await input.readSecret(TOKEN_QUESTION);
   }
   return await input.readAll();
 }
 async function savePastedToken(paths, input, say, error) {
   let pasted;
   try {
-    pasted = await readTokenFromStdin(input, say);
+    pasted = await readTokenFromStdin(input);
   } catch (cause) {
     const why = cause instanceof Error ? cause.message : String(cause);
     error(`${why}. Save the token to a file and pipe it in (\`${COMMAND} browser token < token.txt\`), or paste it in the portal's Browser card (\`${COMMAND} portal\`).`);
@@ -2048,15 +2048,18 @@ function browserSetupReport(paths, deps) {
   const state = browserState(paths, deps);
   const missing = missingBrowserSteps(state);
   if (missing.length === 0)
-    return { info: legacy, notes: [] };
+    return { info: legacy, notes: [], next: null };
+  const open = missing.join(", ");
   return {
     info: [
       ...legacy,
-      `  the browser is NOT ready: steps ${missing.join(", ")} of the guide below are still open`,
-      ...browserGuideLines(browserGuide(state)),
-      `  run \`${COMMAND} browser setup\`: it opens the Chrome window in the "${state.profileDirName}" profile and checks Chrome, the extension and the token`
+      `  the browser is NOT ready: steps ${open} of ${COMMAND} browser setup are open`
     ],
-    notes: []
+    notes: [],
+    next: {
+      text: `Finish the browser: this opens Chrome in the "${state.profileDirName}" profile and walks you through steps ${open}:`,
+      command: `${COMMAND} browser setup`
+    }
   };
 }
 function legacyBrowserInfo(paths, deps) {
@@ -9192,6 +9195,7 @@ var UNICODE_MARKS = {
   info: "\xB7",
   ok: "\u2713",
   removed: "-",
+  run: "$",
   warn: "!"
 };
 var ASCII_MARKS = {
@@ -9201,6 +9205,7 @@ var ASCII_MARKS = {
   info: "[i]",
   ok: "[ok]",
   removed: "-",
+  run: "$",
   warn: "[!]"
 };
 var COLOURS = {
@@ -9210,6 +9215,7 @@ var COLOURS = {
   info: 2,
   ok: 32,
   removed: 31,
+  run: 36,
   warn: 33
 };
 var ASCII_TEXT = [
@@ -9241,8 +9247,12 @@ function markText(term, mark) {
 function paint(term, code, text) {
   return term.color ? `\x1B[${code}m${text}\x1B[0m` : text;
 }
-function words(term, text) {
+function shownText(term, text) {
   return term.unicode ? text : asciiText(text);
+}
+var words = shownText;
+function plural(count, one, many) {
+  return `${count} ${count === 1 ? one : many}`;
 }
 function wrapWords(text, firstWidth, restWidth) {
   const lines = [];
@@ -9276,13 +9286,15 @@ function renderLine(term, mark, text, options = {}) {
     const fix = wrapWords(words(term, options.fix), fixRoom, fixRoom);
     lines.push(...fix.map((part, index) => index === 0 ? `${hang}${FIX_LABEL} ${part}` : `${fixHang}${part}`));
   }
+  for (const detail of options.detail ?? [])
+    lines.push(`${hang}${words(term, detail)}`);
   return lines;
 }
 function renderGroup(term, header, lines) {
   const title = `${words(term, header.title).padEnd(header.titleWidth)}  ${header.summary}`;
   return [
     ...renderLine(term, header.mark, title),
-    ...lines.flatMap((line) => renderLine(term, line.mark, line.text, { fix: line.fix, indent: 2 }))
+    ...lines.flatMap((line) => renderLine(term, line.mark, line.text, { detail: line.detail, fix: line.fix, indent: 2 }))
   ];
 }
 function renderVerdict(term, mark, text) {
@@ -9299,7 +9311,9 @@ var LEADING_MARKS = [
   ["+ ", "created"],
   ["~ ", "changed"],
   ["- ", "removed"],
-  ["! ", "warn"]
+  ["! ", "warn"],
+  ["$ ", "run"],
+  ["\xB7 ", "info"]
 ];
 function leadingMark(line) {
   if (line.includes(`
@@ -9356,8 +9370,12 @@ function createOut(term, sink = CONSOLE_SINK) {
       const number = (index) => `${index + 1}.`.padEnd(String(steps.length).length + 2);
       for (const [index, step] of steps.entries()) {
         const lead = `  ${number(index)}`;
+        const hang = " ".repeat(lead.length);
         const room = term.width - lead.length;
-        print(wrapWords(words(term, step), room, room).map((part, at) => at === 0 ? `${lead}${part}` : `${" ".repeat(lead.length)}${part}`));
+        const text = typeof step === "string" ? step : step.text;
+        print(wrapWords(words(term, text), room, room).map((part, at) => at === 0 ? `${lead}${part}` : `${hang}${part}`));
+        if (typeof step !== "string")
+          print([`${hang}  ${step.command}`]);
       }
     },
     async progress(label, work) {
@@ -14735,7 +14753,7 @@ async function omniroutePassword(ctx, fromStdin) {
   if (ctx.readSecret === undefined) {
     throw new Error("this terminal cannot hide what you type, so the password would be shown on screen. Give it on stdin instead: " + `${COMMAND} gateway setup --omniroute-password-stdin < password-file`);
   }
-  const value = await ctx.readSecret();
+  const value = await ctx.readSecret("OmniRoute's dashboard password");
   if (value === null)
     throw new Error("nothing was read (Ctrl+C)");
   if (value === "")
@@ -33866,7 +33884,7 @@ var MACHINE_WIDE_HOOKS = [
 
 // src/cli/project-init.ts
 import { existsSync as existsSync52, readFileSync as readFileSync62 } from "fs";
-import { join as join63 } from "path";
+import { join as join63, relative as relative4 } from "path";
 
 // src/project/init.ts
 import { existsSync as existsSync51 } from "fs";
@@ -34425,26 +34443,69 @@ function shownBases(bases) {
 function listOf(text) {
   return text.split(",").map((word) => word.trim()).filter((word) => word !== "");
 }
-function confirmOr(terminal, question, fallback) {
-  const answer = terminal.text(`${question} (yes/no)`, fallback ? "yes" : "no");
-  return answer.trim().toLowerCase().startsWith("y");
+var POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
+var NONE2 = "none";
+function listAnswer(text) {
+  return text.trim().toLowerCase() === NONE2 ? "" : text;
 }
-function askedAnswers(terminal, answers) {
-  const base = terminal.text("The branch a new worktree starts from", answers.base);
-  const basesText = terminal.text("Bases for other branch prefixes, as prefix=base,prefix=base (empty: none)", shownBases(answers.bases));
-  const protectedText = terminal.text("The branches the git guard asks about before a push (comma separated)", answers.protectedBranches.join(", "));
-  const workflowText = terminal.text(`The workflow policy, as ${POLICY_EXAMPLE} (empty: none)`, shownWorkflow(answers.workflow));
+function refusal2(check) {
+  try {
+    check();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+var QUESTIONS = [
+  ["base", "Base branch: the branch a new worktree starts from"],
+  ["bases", `Bases for other branch prefixes, as prefix=base,prefix=base ("${NONE2}" for none)`],
+  [
+    "protectedBranches",
+    `Protected branches: the git guard asks before a push to these, comma separated ("${NONE2}" for none)`
+  ],
+  [
+    "workflow",
+    `Workflow policy: what happens by itself after a step, as ${POLICY_EXAMPLE} ("${NONE2}" for none)`
+  ],
+  [
+    "guardMainFolder",
+    "Refuse edits in the main checkout itself, so every change goes in a worktree?"
+  ],
+  ["sessionNames", "Name each session after its task?"],
+  [
+    "jobRoute",
+    "Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns?"
+  ]
+];
+function numbered(key) {
+  const index = QUESTIONS.findIndex(([name]) => name === key);
+  return `[${index + 1}/${QUESTIONS.length}] ${QUESTIONS[index]?.[1] ?? key}`;
+}
+var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
+function askedAnswers(prompts, answers) {
+  const base = prompts.ask(numbered("base"), { default: answers.base });
+  const basesText = listAnswer(prompts.ask(numbered("bases"), {
+    default: shownBases(answers.bases),
+    check: (answer) => refusal2(() => parseBases(listAnswer(answer)))
+  }));
+  const protectedText = listAnswer(prompts.ask(numbered("protectedBranches"), {
+    default: answers.protectedBranches.join(", ")
+  }));
+  const workflowText = listAnswer(prompts.ask(numbered("workflow"), {
+    default: shownWorkflow(answers.workflow),
+    check: (answer) => refusal2(() => workflowFromFlags(listOf(listAnswer(answer))))
+  }));
   const guards = {
-    guardMainFolder: confirmOr(terminal, "Refuse edits in the main checkout itself, so every change goes in a worktree?", answers.guards.guardMainFolder),
-    sessionNames: confirmOr(terminal, "Name each session after its task?", answers.guards.sessionNames),
-    jobRoute: confirmOr(terminal, "Send heavy commands (type checks, test runs, builds) through the machine's job queue?", answers.guards.jobRoute)
+    guardMainFolder: prompts.confirm(numbered("guardMainFolder"), answers.guards.guardMainFolder),
+    sessionNames: prompts.confirm(numbered("sessionNames"), answers.guards.sessionNames),
+    jobRoute: prompts.confirm(numbered("jobRoute"), answers.guards.jobRoute)
   };
   return {
-    base: base.trim() === "" ? answers.base : base.trim(),
+    base: base === "" ? answers.base : base,
     bases: parseBases(basesText),
-    protectedBranches: protectedText.trim() === "" ? [] : listOf(protectedText),
+    protectedBranches: listOf(protectedText),
     guards,
-    workflow: workflowText.trim() === "" ? {} : workflowFromFlags(listOf(workflowText))
+    workflow: workflowFromFlags(listOf(workflowText))
   };
 }
 function parseBases(text, where = "") {
@@ -34472,23 +34533,32 @@ function shownWorkflow(workflow) {
   }
   return words.join(",");
 }
-var POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
+function planLine(line) {
+  return leadingMark(line) ?? { mark: "info", text: line };
+}
 function printPlan(plan, context) {
-  context.print(`${plan.file} will hold:`);
-  if (plan.diff.length === 0)
-    context.print("  (no change)");
-  for (const line of plan.diff)
-    context.print(`  ${line}`);
+  const shown = (file) => relative4(context.root, file);
   const settings = [plan.settings, plan.localSettings].filter((one) => one.changed);
+  const titleWidth = Math.max(...[plan.file, ...settings.map((one) => one.file)].map((file) => shown(file).length));
+  const notes = plan.notes.map((note) => ({ mark: "warn", text: note }));
+  context.out.group({
+    mark: notes.length > 0 ? "warn" : "info",
+    summary: [
+      plan.diff.length > 0 ? `${plan.diff.length} to change` : "no change",
+      ...notes.length > 0 ? [plural(notes.length, "warning", "warnings")] : []
+    ].join(", "),
+    title: shown(plan.file),
+    titleWidth
+  }, [...plan.diff.map(planLine), ...notes]);
   for (const one of settings) {
-    context.print(`${one.file} also changes, merged with what it has:`);
-    for (const line of one.lines)
-      context.print(`  ${line}`);
+    context.out.group({
+      mark: "info",
+      summary: `${one.lines.length} to change, merged with what it has`,
+      title: shown(one.file),
+      titleWidth
+    }, one.lines.map(planLine));
   }
-  if (!plan.changed && settings.length === 0)
-    context.print("Nothing to change.");
-  for (const note of plan.notes)
-    context.print(`! ${note}`);
+  return (plan.changed ? 1 : 0) + settings.length;
 }
 function readText2(file) {
   return existsSync52(file) ? readFileSync62(file, "utf8") : null;
@@ -34529,13 +34599,15 @@ the project.
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
-  --dry-run              print the plan and write nothing
+  --dry-run              print the plan of the flags and the defaults (no questions), and
+                         write nothing
   --yes                  no questions: write the flags and the defaults
 
 The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
 function runProjectInit(argv, context, runner = realRunner(context.env)) {
+  const out = context.out;
   if (argv.includes("--help") || argv.includes("-h")) {
-    context.print(PROJECT_INIT_USAGE);
+    out.say(PROJECT_INIT_USAGE);
     return 0;
   }
   const parsed = parseFlags(argv);
@@ -34549,12 +34621,17 @@ ${PROJECT_INIT_USAGE}`);
   const file = join63(context.root, ".claude", "cc-smart-dev-kit.json");
   const existing = readText2(file);
   const facts = detectFacts(runner, context.root);
+  const prompts = flags.yes || flags.dryRun ? null : context.prompts;
+  out.heading(`${COMMAND} project init: ${tildify(context.root, context.home)}${flags.dryRun ? " (dry run)" : ""}`);
+  out.blank();
   let answers;
   let plan;
   try {
     answers = defaultAnswers(readExisting(file), facts, flags);
-    if (context.terminal !== null && !flags.yes) {
-      answers = askedAnswers(context.terminal, answers);
+    if (prompts !== null) {
+      out.say(QUESTIONS_INTRO);
+      answers = askedAnswers(prompts, answers);
+      out.blank();
     }
     plan = planProjectInit({
       root: context.root,
@@ -34569,18 +34646,27 @@ ${PROJECT_INIT_USAGE}`);
     context.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  printPlan(plan, context);
-  if (flags.dryRun) {
-    context.print(dryRunEnding(["written"]));
+  const files = printPlan(plan, context);
+  out.blank();
+  if (files === 0) {
+    out.verdict("ok", "Nothing to change.");
+    if (flags.dryRun)
+      out.say(dryRunEnding(["written"]));
     return 0;
   }
-  if (context.terminal !== null && !flags.yes) {
-    if (!context.terminal.confirm("Write these files?")) {
-      context.print("Left alone.");
+  const these = files === 1 ? "this file" : `these ${files} files`;
+  if (flags.dryRun) {
+    out.verdict("info", `A real run writes ${plural(files, "file", "files")}.`);
+    out.say(dryRunEnding(["written"]));
+    return 0;
+  }
+  if (prompts !== null) {
+    if (!prompts.confirm(`Write ${these}?`, false)) {
+      out.verdict("info", "Left alone: nothing was written.");
       return 0;
     }
   } else if (!flags.yes) {
-    context.print(`Nothing was written: run this on a terminal, or add --yes.`);
+    out.verdict("info", "Nothing was written: run this on a terminal, or add --yes.");
     return 0;
   }
   let writes;
@@ -34591,12 +34677,23 @@ ${PROJECT_INIT_USAGE}`);
     return 1;
   }
   for (const write of writes) {
-    const shown = tildify(write.file, context.home);
-    context.print(`${write.created ? "+" : "~"} ${shown}`);
+    const shown = relative4(context.root, write.file);
+    out.line(write.created ? "created" : "changed", `${shown}: ${write.created ? "created" : "changed"}`);
   }
-  context.print("Commit both files with the project.");
+  out.blank();
+  out.verdict("ok", `Done: ${plural(writes.length, "file", "files")} written.`);
   const requires = parseUserJson(plan.text).requires ?? requiresFor(VERSION);
-  context.print(`The file asks for ${COMMAND} ${requires}: every teammate needs that plugin version or newer.`);
+  const shared = writes.map((write) => relative4(context.root, write.file)).filter((shown) => shown !== relative4(context.root, plan.localSettings.file));
+  out.blank();
+  out.next([
+    ...shared.length === 0 ? [] : [
+      {
+        text: `Commit ${shared.length === 1 ? "the file" : "the files"} with the project:`,
+        command: `git add ${shared.join(" ")} && git commit`
+      }
+    ],
+    `Tell your teammates: the file asks for ${COMMAND} ${requires}, so each of them needs that plugin version or newer.`
+  ]);
   return 0;
 }
 
@@ -35708,9 +35805,6 @@ function countChecks(checks) {
     counts[checkStatus(check)] += 1;
   return counts;
 }
-function plural(count, one, many) {
-  return `${count} ${count === 1 ? one : many}`;
-}
 function groupSummary(counts) {
   return [
     counts.fail > 0 ? `${counts.fail} to fix` : null,
@@ -36160,7 +36254,7 @@ function refuse2(refusal, ctx) {
 function failure2(...lines) {
   return { code: 1, lines };
 }
-function relative4(repo, path) {
+function relative5(repo, path) {
   return isInside(path, repo) ? path.slice(repo.replace(/\/+$/, "").length + 1) : path;
 }
 function crewSessionRefusal(command, ctx) {
@@ -36465,7 +36559,7 @@ async function runCrewRm(ref, ctx) {
   } catch (error) {
     return refuse2(failure2(`crew rm: ${reasonOf4(error)}`), ctx);
   }
-  const shown = relative4(repo, record.worktree);
+  const shown = relative5(repo, record.worktree);
   const locked = listed?.locked === true;
   if (locked && !(listed?.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX)) {
     const why = listed?.lockReason === undefined ? "" : ` (${listed.lockReason})`;
@@ -36747,7 +36841,7 @@ class ReportRefusal extends Error {
     this.code = code;
   }
 }
-function refusal2(line, fix, code = 1) {
+function refusal3(line, fix, code = 1) {
   const lines = [`crew report: ${line}`];
   if (fix !== undefined)
     lines.push(`Fix: ${fix}`);
@@ -36756,7 +36850,7 @@ function refusal2(line, fix, code = 1) {
 function reportFacts(record, base, repo, ctx, reviewAgents) {
   const head = headSha(record, ctx);
   if (head === null) {
-    throw refusal2(`the head of ${record.branch} cannot be read in ${record.worktree}`, "run it in the crew session's own worktree, with the branch checked out");
+    throw refusal3(`the head of ${record.branch} cannot be read in ${record.worktree}`, "run it in the crew session's own worktree, with the branch checked out");
   }
   let diff;
   try {
@@ -36764,7 +36858,7 @@ function reportFacts(record, base, repo, ctx, reviewAgents) {
   } catch (error) {
     if (!(error instanceof DiffError))
       throw error;
-    throw refusal2(error.message, "the report counts the diff against the base the crew session started from");
+    throw refusal3(error.message, "the report counts the diff against the base the crew session started from");
   }
   const reviews = reviewsOn(reviewsFile(ctx.paths.stateDir, repo), record.branch, reviewAgents);
   return {
@@ -36786,7 +36880,7 @@ function openQuestion(record) {
 }
 function buildReport(model, facts, status, record, summary = null) {
   if (model.review !== null && facts.reviewSha === null) {
-    throw refusal2("the review record holds no review of this branch, so the report cannot claim one", "record the review (workflow review-done), or report no review");
+    throw refusal3("the review record holds no review of this branch, so the report cannot claim one", "record the review (workflow review-done), or report no review");
   }
   const review = model.review === null ? null : { ...model.review, sha: facts.reviewSha ?? "" };
   return {
@@ -36815,10 +36909,10 @@ function say2(ctx, refused) {
 }
 async function askQuestion(args, record, repo, ctx) {
   if (args.options.length < 2) {
-    return say2(ctx, refusal2("a question needs two options at least, so the lead can answer it", `--option "<choice>" --option "<choice>"`, 2));
+    return say2(ctx, refusal3("a question needs two options at least, so the lead can answer it", `--option "<choice>" --option "<choice>"`, 2));
   }
   if (args.recommend !== null && (args.recommend < 1 || args.recommend > args.options.length)) {
-    return say2(ctx, refusal2(`the question recommends option ${args.recommend}, and it has ${args.options.length}`, "--recommend is the number of one of the options", 2));
+    return say2(ctx, refusal3(`the question recommends option ${args.recommend}, and it has ${args.options.length}`, "--recommend is the number of one of the options", 2));
   }
   try {
     await addCrewQuestion(ctx.paths.stateDir, repo, record.id, { options: args.options, question: args.question, recommended: args.recommend }, ctx.now());
@@ -36836,7 +36930,7 @@ async function readPart(args, ctx) {
     return { raw: await ctx.readStdin() };
   const file = Bun.file(args.file);
   if (!await file.exists()) {
-    return { refused: refusal2(`the file ${args.file} cannot be read`) };
+    return { refused: refusal3(`the file ${args.file} cannot be read`) };
   }
   return { raw: await file.text() };
 }
@@ -36851,17 +36945,17 @@ async function runCrewReport(args, ctx) {
   if (args.question !== null)
     return await askQuestion({ ...args, question: args.question }, record, repo, ctx);
   if (args.status === null) {
-    return say2(ctx, refusal2("say how the phase ends: --status done|blocked|failed|handoff", "--status done", 2));
+    return say2(ctx, refusal3("say how the phase ends: --status done|blocked|failed|handoff", "--status done", 2));
   }
   if (record.base === null) {
-    return say2(ctx, refusal2("this crew session never started, so it has no base to report against"));
+    return say2(ctx, refusal3("this crew session never started, so it has no base to report against"));
   }
   const read = await readPart(args, ctx);
   if ("refused" in read)
     return say2(ctx, read.refused);
   const model = modelPartOf(read.raw);
   if ("error" in model) {
-    return say2(ctx, refusal2(model.error, "the report is JSON: the tests, the checks, the review, the docs, what the lead must do, and what is open"));
+    return say2(ctx, refusal3(model.error, "the report is JSON: the tests, the checks, the review, the docs, what the lead must do, and what is open"));
   }
   let report;
   try {
@@ -41235,7 +41329,7 @@ ${REPORT_USAGE}`);
 
 // src/update/retired-repos.ts
 import { existsSync as existsSync63, readFileSync as readFileSync70 } from "fs";
-import { join as join71, relative as relative5 } from "path";
+import { join as join71, relative as relative6 } from "path";
 
 // src/sessions/command.ts
 import {
@@ -41563,7 +41657,7 @@ function retiredPartsOf(repo, mainCheckout = null) {
       error = messageOf4(cause);
     }
   }
-  const engineFiles = projectSettingsFiles(repo).filter((file) => allWiredHandlers(file).some((handler) => retiredEngineHookOf(handler.command) !== null)).map((file) => relative5(repo, file));
+  const engineFiles = projectSettingsFiles(repo).filter((file) => allWiredHandlers(file).some((handler) => retiredEngineHookOf(handler.command) !== null)).map((file) => relative6(repo, file));
   if (fields.length === 0 && engineFiles.length === 0 && error === null)
     return null;
   return { engineFiles, error, fields, mainCheckout, repo };
@@ -41793,7 +41887,8 @@ by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, po
 at the scout slot's affordable model (when its chain starts with one), and copies the
 project's auto-mode entries into your settings. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
-with --yes.
+with --yes. --yes offers neither the status line nor the retry watchdog. It prints a section
+per part, one verdict line, and the next steps to run, in order.
 
   --project <dir>      the project to read .claude/cc-smart-dev-kit.json from
                        (default: this folder)
@@ -43113,7 +43208,7 @@ async function runRestore(paths, options) {
 
 // src/cli/setup.ts
 import { existsSync as existsSync66, mkdirSync as mkdirSync29 } from "fs";
-import { delimiter, dirname as dirname28, join as join75 } from "path";
+import { basename as basename13, delimiter, dirname as dirname28, isAbsolute as isAbsolute8, join as join75, relative as relative7 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join74 } from "path";
@@ -43187,18 +43282,40 @@ function hasStatusline(settingsFile) {
     return false;
   }
 }
+var SETUP_SECTIONS = [
+  { id: "command", title: "The command" },
+  { id: "settings", title: "Claude Code settings" },
+  { id: "instructions", title: "Instructions" },
+  { id: "companions", title: groupTitle("companions") },
+  { id: "mcp", title: groupTitle("mcp") },
+  { id: "browser", title: groupTitle("browser") },
+  { id: "projects", title: "Projects" },
+  { id: "terminal", title: "Terminal" }
+];
+var CHANGE_MARKS = new Set(["changed", "created", "removed", "run"]);
+function reportLine(section, text) {
+  const found = leadingMark(text);
+  if (found !== null)
+    return { section, mark: found.mark, text: found.text };
+  return { section, mark: "info", text: text.trimStart() };
+}
+function reportLines(section, texts) {
+  return texts.map((text) => reportLine(section, text));
+}
 function applySetup(paths, managed, dryRun, takenBack, platform) {
   const short = (path) => tildify(path, paths.home);
-  const changes = [];
-  const info = [];
+  const lines = [];
+  const add = (section, mark, text) => {
+    lines.push({ section, mark, text });
+  };
   const launcher = installLauncher(paths.binDir, {
     stateDir: paths.stateDir,
     bunPath: process.execPath,
     dryRun
   });
   if (launcher.outcome !== "unchanged") {
-    const mark = launcher.outcome === "created" ? "+" : "~";
-    changes.push(`${mark} ${short(launcher.path)}: launcher ${launcher.outcome}`);
+    const mark = launcher.outcome === "created" ? "created" : "changed";
+    add("command", mark, `${short(launcher.path)}: launcher ${launcher.outcome}`);
   }
   if (platform === "win32") {
     const cmd = installLauncherCmd(paths.binDir, {
@@ -43207,18 +43324,18 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
       dryRun
     });
     if (cmd.outcome !== "unchanged") {
-      const mark = cmd.outcome === "created" ? "+" : "~";
-      changes.push(`${mark} ${short(cmd.path)}: launcher ${cmd.outcome}`);
+      const mark = cmd.outcome === "created" ? "created" : "changed";
+      add("command", mark, `${short(cmd.path)}: launcher ${cmd.outcome}`);
     }
   }
   if (managed.tavilyKeyFile !== null) {
-    const mark = existsSync66(paths.tavilyKeyFile) ? "~" : "+";
+    const mark = existsSync66(paths.tavilyKeyFile) ? "changed" : "created";
     if (!dryRun) {
       mkdirSync29(dirname28(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
 `, 384);
     }
-    changes.push(`${mark} ${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
+    add("mcp", mark, `${short(paths.tavilyKeyFile)}: the Tavily key (a secret, mode 600)`);
   }
   const set = [[AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE]];
   if (managed.statusline)
@@ -43242,52 +43359,54 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun
   });
+  const keySection = (path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH) ? "mcp" : "settings";
   for (const change of settings.changes) {
-    changes.push(`~ ${short(settings.file)}: ${formatKeyPath(change.path)}: ${shownValue2(change.path, change.before)} -> ${shownValue2(change.path, change.after)}`);
+    add(keySection(change.path), "changed", `${short(settings.file)}: ${formatKeyPath(change.path)}: ${shownValue2(change.path, change.before)} -> ${shownValue2(change.path, change.after)}`);
   }
   for (const skip of settings.skipped) {
-    info.push(`  ${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+    add(keySection(skip.path), "info", `${short(settings.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
   }
   if (todoTools?.kind === "kept") {
-    info.push(`  ${short(settings.file)}: ${formatKeyPath(todoTools.path)} is ${JSON.stringify(todoTools.value)} (your choice); left alone`);
+    add("settings", "info", `${short(settings.file)}: ${formatKeyPath(todoTools.path)} is ${JSON.stringify(todoTools.value)} (your choice); left alone`);
   }
   if (managed.autoMode !== null) {
     const result = applyAutoMode(paths.settingsFile, paths.stateDir, managed.autoMode, dryRun);
     const where = `${short(result.file)}: ${formatKeyPath(AUTO_MODE_PATH)}`;
-    for (const entry of result.added)
-      changes.push(`~ ${where}: added ${JSON.stringify(entry)}`);
+    for (const entry of result.added) {
+      add("projects", "changed", `${where}: added ${JSON.stringify(entry)}`);
+    }
     for (const entry of result.removed) {
-      changes.push(`~ ${where}: removed ${JSON.stringify(entry)}`);
+      add("projects", "changed", `${where}: removed ${JSON.stringify(entry)}`);
     }
     for (const entry of result.skipped) {
-      info.push(`  ${where}: ${JSON.stringify(entry)} is there already (not cc-smart-dev-kit's); left alone`);
+      add("projects", "info", `${where}: ${JSON.stringify(entry)} is there already (not cc-smart-dev-kit's); left alone`);
     }
   }
   const notifyHook = applyUserNotifyHook(paths, dryRun);
   const notifyWhere = `${short(paths.settingsFile)}: ${formatKeyPath(["hooks", "Notification"])}`;
   if (notifyHook.action === "left") {
-    info.push(`  ${notifyWhere}: a hook with this matcher was edited since setup wrote it (${USER_NOTIFY_COMMAND}); it stays, and no second one was added`);
+    add("settings", "info", `${notifyWhere}: a hook with this matcher was edited since setup wrote it (${USER_NOTIFY_COMMAND}); it stays, and no second one was added`);
   } else if (notifyHook.action !== "unchanged") {
-    changes.push(notifyHook.action === "replaced" ? `~ ${notifyWhere}: replaced the hand-written notify hook with the managed one (${USER_NOTIFY_COMMAND})` : `~ ${notifyWhere}: ${notifyHook.action === "updated" ? "updated" : "added"} the agent-view notification hook (${USER_NOTIFY_COMMAND})`);
+    add("settings", "changed", notifyHook.action === "replaced" ? `${notifyWhere}: replaced the hand-written notify hook with the managed one (${USER_NOTIFY_COMMAND})` : `${notifyWhere}: ${notifyHook.action === "updated" ? "updated" : "added"} the agent-view notification hook (${USER_NOTIFY_COMMAND})`);
   }
+  let claudeMemChanged = false;
   if (managed.claudeMem !== null) {
     const result = applyClaudeMem(paths, managed.claudeMem, dryRun);
     for (const change of result.changes) {
-      changes.push(`~ ${short(result.file)}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.before)} -> ${shownClaudeMemValue(change.path, change.after)}`);
+      add("companions", "changed", `${short(result.file)}: ${formatKeyPath(change.path)}: ${shownClaudeMemValue(change.path, change.before)} -> ${shownClaudeMemValue(change.path, change.after)}`);
     }
-    if (!dryRun && result.changes.length > 0)
-      info.push(CLAUDE_MEM_RESTART_STEP);
+    claudeMemChanged = result.changes.length > 0;
   }
+  let tmuxAdded = false;
   if (managed.tmuxLine) {
     const line = applyTmuxLine({ dryRun, file: paths.tmuxConfFile, stateDir: paths.stateDir });
     if (line.outcome !== "unchanged") {
-      const mark = line.outcome === "created" ? "+" : "~";
-      changes.push(`${mark} ${short(paths.tmuxConfFile)}: added ${TMUX_LINE}`);
+      tmuxAdded = true;
+      add("terminal", line.outcome === "created" ? "created" : "changed", `${short(paths.tmuxConfFile)}: added ${TMUX_LINE}`);
     }
   }
   const serena = applySerenaCleanup(paths, planSerenaCleanup(paths, takenBack), dryRun);
-  changes.push(...serena.changes);
-  info.push(...serena.info);
+  lines.push(...reportLines("mcp", serena.changes), ...reportLines("mcp", serena.info));
   const { where, choice } = managed.instructions;
   const optOut = choice === null ? instructionsOptedOut(paths.stateDir) : !choice;
   const stored = choice === null ? null : setInstructionsOptOut(paths.stateDir, optOut, dryRun);
@@ -43295,46 +43414,67 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     ...stored ? [stored] : [],
     ...optOut ? removeInstructions(where, dryRun) : installInstructions(where, dryRun, VERSION)
   ];
-  const notes = [];
   for (const line of instructions) {
-    (line.mark === "!" ? notes : changes).push(`${line.mark} ${short(line.file)}: ${line.what}`);
+    lines.push(reportLine("instructions", `${line.mark} ${short(line.file)}: ${line.what}`));
   }
-  return { changes, info, notes };
+  return { lines, tmuxAdded, claudeMemChanged };
 }
-function askToRun(machine, what, commands, rerun, notes) {
-  console.log(`${what}:`);
+function askToRun(machine, out, screen, what, commands, rerun, report) {
+  screen.spoke = true;
+  out.say(`${what}:`);
   for (const command of commands)
-    console.log(`  $ ${showCommand(command)}`);
+    out.line("run", showCommand(command), { indent: 2 });
   if (machine.confirm === null) {
-    notes.push(`! Warp: no terminal, so these commands were not run. Run \`${rerun}\` in a terminal to run them.`);
+    report.push({
+      section: "terminal",
+      mark: "fail",
+      text: "Warp: no terminal, so these commands were not run.",
+      fix: `run \`${rerun}\` in a terminal`
+    });
     return false;
   }
   if (!machine.confirm("Run these commands now?")) {
-    notes.push("! Warp: these commands were not run (you said no).");
+    report.push({
+      section: "terminal",
+      mark: "warn",
+      text: "Warp: these commands were not run (you said no)."
+    });
     return false;
   }
   return true;
 }
-function runOnTerminal(machine, commands, undo, notes) {
+function runOnTerminal(machine, commands, undo, report) {
   for (const [index, command] of commands.entries()) {
     const code = machine.runOnTerminal(command);
     if (code === 0)
       continue;
-    notes.push(`! ${showCommand(command)} failed (exit ${code}). Nothing after it ran.`);
     const done = commands.slice(0, index);
-    if (done.length > 0) {
-      notes.push("  These ran before it:", ...done.map((ran) => `    $ ${showCommand(ran)}`), ...undo === null ? [] : [`  To undo them: ${undo}`]);
-    }
+    report.push({
+      section: "terminal",
+      mark: "fail",
+      text: `${showCommand(command)} failed (exit ${code}). Nothing after it ran.`,
+      ...done.length === 0 ? {} : {
+        detail: [
+          "These ran before it:",
+          ...done.map((ran) => `  $ ${showCommand(ran)}`),
+          ...undo === null ? [] : [`To undo them: ${undo}`]
+        ]
+      }
+    });
     return false;
   }
   return true;
 }
-function planAutoMode(paths, options, notes) {
+function planAutoMode(paths, options, report) {
   let wanted;
   try {
     wanted = autoModeSource(options.project, options.machine.which);
   } catch (error) {
-    notes.push(`! auto-mode entries left out: ${messageOf(error)}`);
+    report.push({
+      section: "projects",
+      mark: "warn",
+      text: `auto-mode entries left out: ${messageOf(error)}`
+    });
     return null;
   }
   if (wanted === null)
@@ -43342,57 +43482,67 @@ function planAutoMode(paths, options, notes) {
   const diff = applyAutoMode(paths.settingsFile, paths.stateDir, wanted, true);
   return { wanted, added: diff.added, removed: diff.removed };
 }
-var AUTO_MODE_NO_TERMINAL_NOTE = "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.";
+var AUTO_MODE_NO_TERMINAL = {
+  section: "projects",
+  mark: "warn",
+  text: "auto-mode entries left out: they are trust rules, so setup asks first, on a terminal",
+  fix: `run ${COMMAND} setup in a terminal`
+};
 function autoModeAsking(machine, planned) {
-  const confirm2 = machine.confirm;
+  const confirm = machine.confirm;
   if (planned.added.length === 0 && planned.removed.length === 0)
     return { ask: false, note: null };
-  if (confirm2 === null)
-    return { ask: false, note: AUTO_MODE_NO_TERMINAL_NOTE };
-  return { ask: true, confirm: confirm2 };
+  if (confirm === null)
+    return { ask: false, note: AUTO_MODE_NO_TERMINAL };
+  return { ask: true, confirm };
 }
-function askAutoMode(paths, options, planned, notes) {
+function askAutoMode(paths, options, planned, out, screen, report) {
   const { wanted, added, removed } = planned;
   if (added.length === 0 && removed.length === 0)
     return wanted;
   const short = (path) => tildify(path, paths.home);
   const from = wanted.file ?? `${wanted.source}/.claude/cc-smart-dev-kit.json`;
-  console.log(`Auto mode: trust rules from ${short(from)} ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`);
+  screen.spoke = true;
+  out.say(`Auto mode: trust rules from ${short(from)} ("autoMode"), for ${formatKeyPath(AUTO_MODE_PATH)} in ${short(paths.settingsFile)}:`);
   if (wanted.differsFrom !== null) {
-    console.log(`  This worktree's file is not the same as the main checkout's (${short(wanted.differsFrom)}). The rules below come from this worktree's file.`);
+    out.say(`This worktree's file is not the same as the main checkout's (${short(wanted.differsFrom)}). The rules below come from this worktree's file.`, 2);
   }
   for (const entry of added)
-    console.log(`  + ${JSON.stringify(entry)}`);
+    out.line("created", JSON.stringify(entry), { indent: 2 });
   for (const entry of removed)
-    console.log(`  - ${JSON.stringify(entry)}`);
+    out.line("removed", JSON.stringify(entry), { indent: 2 });
   const asking = autoModeAsking(options.machine, planned);
   if (!asking.ask) {
     if (asking.note !== null)
-      notes.push(asking.note);
+      report.push(asking.note);
     return null;
   }
   if (options.yes)
     return wanted;
   if (!asking.confirm("Write these auto-mode entries?")) {
-    notes.push("  auto-mode entries left out (you said no)");
+    report.push({
+      section: "projects",
+      mark: "info",
+      text: "auto-mode entries left out (you said no)"
+    });
     return null;
   }
   return wanted;
 }
-function askStatusline(paths, machine, managed) {
-  if (managed.statusline || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync66(statuslineDeclinedFile(paths.stateDir))) {
+function askStatusline(paths, machine, managed, yes) {
+  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync66(statuslineDeclinedFile(paths.stateDir))) {
     return false;
   }
   managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
   return !managed.statusline;
 }
-function askRetryWatchdog(paths, machine, managed) {
-  if (machine.confirm === null || !retryWatchdogUndecided(paths, managed))
+function askRetryWatchdog(paths, machine, managed, yes) {
+  if (yes || machine.confirm === null || !retryWatchdogUndecided(paths, managed))
     return false;
-  const yes = machine.confirm(RETRY_WATCHDOG_QUESTION);
-  if (yes)
+  const answer = machine.confirm(RETRY_WATCHDOG_QUESTION);
+  if (answer)
     managed.retryWatchdog = "on";
-  return !yes;
+  return !answer;
 }
 function retryWatchdogUndecided(paths, managed) {
   if (managed.retryWatchdog !== null)
@@ -43405,29 +43555,33 @@ function retryWatchdogUndecided(paths, managed) {
     return false;
   }
 }
-function retryWatchdogDryNote(paths, machine, managed) {
+function retryWatchdogDryNote(paths, machine, managed, yes) {
   if (!retryWatchdogUndecided(paths, managed))
     return null;
-  return machine.confirm === null ? `  retry watchdog: not offered, there is no terminal (nothing changes); ${RETRY_WATCHDOG_FLAG} turns it on` : `  retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); ${RETRY_WATCHDOG_FLAG} turns it on without asking`;
+  const text = machine.confirm === null ? `retry watchdog: not offered, there is no terminal (nothing changes); ${RETRY_WATCHDOG_FLAG} turns it on` : yes ? `retry watchdog: not offered with --yes (nothing changes); ${RETRY_WATCHDOG_FLAG} turns it on` : `retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); ${RETRY_WATCHDOG_FLAG} turns it on without asking`;
+  return { section: "settings", mark: "info", text };
 }
 function workStateWarning(paths) {
-  return `! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`;
+  return {
+    section: "companions",
+    mark: "warn",
+    text: `claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`
+  };
 }
-var CLAUDE_MEM_RESTART_STEP = "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.";
-async function decideClaudeMem(paths, dryRun, report) {
+async function decideClaudeMem(paths, dryRun, report, out) {
   const planned = claudeMemPlan(paths);
   if ("notInstalled" in planned)
     return "not-installed";
   if ("note" in planned) {
     if (planned.note !== null)
-      report.notes.push(planned.note);
+      report.push(reportLine("companions", planned.note));
     return null;
   }
   const plan = planned.plan;
-  report.notes.push(...plan.notes);
+  report.push(...reportLines("companions", plan.notes));
   const changes = applyClaudeMem(paths, plan, true).changes;
   if (changes.some((change) => change.path.at(-1) === WORK_STATE_KEY)) {
-    report.notes.push(workStateWarning(paths));
+    report.push(workStateWarning(paths));
   }
   const provider = plan.provider;
   if (provider === null)
@@ -43436,12 +43590,20 @@ async function decideClaudeMem(paths, dryRun, report) {
   if (!providerChanges)
     return plan;
   if (dryRun) {
-    report.info.push(`  claude-mem: would check ${provider.target.backend} (one chat request) before writing its settings`);
+    report.push({
+      section: "companions",
+      mark: "info",
+      text: `claude-mem: would check ${provider.target.backend} (one chat request) before writing its settings`
+    });
     return plan;
   }
-  const problem = await checkAffordableTarget(provider.target);
+  const problem = await out.progress(`Checking claude-mem's backend (${provider.target.backend})\u2026`, () => checkAffordableTarget(provider.target));
   if (problem !== null) {
-    report.notes.push(`! claude-mem settings left alone: ${problem}`);
+    report.push({
+      section: "companions",
+      mark: "warn",
+      text: `claude-mem settings left alone: ${problem}`
+    });
     return { ...plan, provider: null };
   }
   return plan;
@@ -43500,37 +43662,76 @@ function planWarp(paths, options) {
     pluginSteps: warpPluginSteps(paths)
   };
 }
+function pathStep(paths, platform, env) {
+  if (platform === "win32") {
+    return `Add ${paths.binDir} to your PATH, so the ${COMMAND} command works: Windows Settings \u2192 System \u2192 About \u2192 Advanced system settings \u2192 Environment Variables \u2192 Path for your account. Then open a new terminal.`;
+  }
+  const inHome = relative7(paths.home, paths.binDir);
+  const underHome = inHome !== "" && !inHome.startsWith("..") && !isAbsolute8(inHome);
+  const shown = tildify(paths.binDir, paths.home);
+  const why = `Add ${shown} to your PATH, so the ${COMMAND} command works`;
+  const shell = basename13(env.SHELL ?? "");
+  if (shell === "fish") {
+    return {
+      text: `${why}: run this once, then open a new terminal:`,
+      command: `fish_add_path ${shown}`
+    };
+  }
+  const file = shell === "zsh" ? "~/.zshrc" : shell === "bash" ? platform === "darwin" ? "~/.bash_profile" : "~/.bashrc" : "~/.profile";
+  return {
+    text: `${why}: add this line to ${file}, then open a new terminal:`,
+    command: `export PATH="${underHome ? `$HOME/${inHome}` : paths.binDir}:$PATH"`
+  };
+}
+function restartStep(claudeMemChanged) {
+  const claudeMem = claudeMemChanged ? " claude-mem's start hook reads its new settings then too, and its worker reads them when it starts." : "";
+  return `Start a new Claude Code session (and restart the ones running): a session reads its settings, instructions, plugins and MCP servers when it starts.${claudeMem}`;
+}
+var RESTART_SECTIONS = new Set([
+  "settings",
+  "instructions",
+  "companions",
+  "mcp",
+  "projects"
+]);
 async function runSetup(paths, options) {
   const short = (path) => tildify(path, paths.home);
   const machine = options.machine;
-  const out = createOut(currentTerminal(process.env, machine.platform));
+  const out = options.out ?? createOut(currentTerminal(process.env, machine.platform));
   if (!marketplaceKnown(paths.settingsFile)) {
     console.error(`${short(paths.settingsFile)} does not list the ${MARKETPLACE} marketplace yet.
 ` + `Run first: ${MARKETPLACE_ADD_COMMAND}
 ` + `Then:      ${PLUGIN_INSTALL_COMMAND}`);
     return 1;
   }
-  const report = { changes: [], info: [], notes: [] };
-  let ok = true;
   const warp = planWarp(paths, options);
   if ("error" in warp) {
     console.error(`Cannot install Warp here: ${warp.error}`);
     return 1;
   }
+  out.heading(options.dryRun ? `${COMMAND} ${VERSION}: what setup would change (dry run)` : `${COMMAND} ${VERSION}: setting up this machine`);
+  out.blank();
+  const report = [];
+  let ok = true;
   const companions = companionPlan(paths);
-  report.notes.push(...companions.notes);
+  report.push(...reportLines("companions", companions.notes));
+  const warpSteps = new Set(warp.pluginSteps);
+  const stepSection = (step) => step !== undefined && warpSteps.has(step) ? "terminal" : "companions";
   let claudeSteps = [...companions.steps, ...warp.pluginSteps];
   if (claudeSteps.length > 0 && machine.which("claude") === null) {
-    report.notes.push("! The claude command is not on PATH, so setup skipped these steps. Run them once it is:", ...claudeSteps.map((step) => `  $ ${showCommand(step.argv)}`));
+    report.push({
+      section: "companions",
+      mark: "fail",
+      text: "The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
+      detail: claudeSteps.map((step) => `$ ${showCommand(step.argv)}`)
+    });
     claudeSteps = [];
     ok = false;
   }
-  const claudeMem = await decideClaudeMem(paths, options.dryRun, report);
-  const autoMode = planAutoMode(paths, options, report.notes);
+  const claudeMem = await decideClaudeMem(paths, options.dryRun, report, out);
+  const autoMode = planAutoMode(paths, options, report);
   const tmuxLine = machine.which("tmux") !== null;
-  if (tmuxLine && tmuxServerRunning(machine.run)) {
-    report.info.push(`  tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`);
-  }
+  const tmuxRunning = tmuxLine && tmuxServerRunning(machine.run);
   const tavily = options.tavilyKeyStdin === null ? readTavilyKey(paths, options.env) : { source: "file", value: options.tavilyKeyStdin };
   const managed = {
     claudeMem: claudeMem === "not-installed" ? null : claudeMem,
@@ -43563,63 +43764,75 @@ async function runSetup(paths, options) {
   ];
   const plannedRemovals = mcpPlan.filter((entry) => entry.action === "remove").map((entry) => entry.name);
   if (recordsProblem !== null) {
-    report.notes.push(unreadableRecordsNote(short(mcpRecordsFile(paths.stateDir)), recordsProblem));
+    report.push(reportLine("mcp", unreadableRecordsNote(short(mcpRecordsFile(paths.stateDir)), recordsProblem)));
   } else if (liveServers === null) {
-    report.notes.push(unreadableUserConfigNote(short(paths.userConfigFile), Object.keys(records).sort()));
+    report.push(reportLine("mcp", unreadableUserConfigNote(short(paths.userConfigFile), Object.keys(records).sort())));
   }
   const claudeRun = (argv) => {
     const result = machine.run(argv);
     return { ok: result.exitCode === 0, out: result.output };
   };
   const browser = browserSetupReport(paths, realBrowserSetupDeps(machine, paths.home));
-  report.info.push(...browser.info);
-  report.notes.push(...browser.notes);
-  report.notes.push(...retiredRepoLines(paths, options.env));
+  report.push(...reportLines("browser", browser.info), ...reportLines("browser", browser.notes));
+  report.push(...reportLines("projects", retiredRepoLines(paths, options.env)));
   const planned = applySetup(paths, managed, true, plannedRemovals, machine.platform);
+  const tmuxNow = `tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`;
   if (options.dryRun) {
     const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
-    const changes = [
-      ...warp.commands.map((command) => `$ ${showCommand(command)}`),
-      ...claudeSteps.map((step) => step.line),
-      ...warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : [],
-      ...wouldRegister.wouldRun,
-      ...planned.changes
-    ];
+    report.push(...warp.commands.map((command) => ({ section: "terminal", mark: "run", text: showCommand(command) })), ...claudeSteps.map((step) => reportLine(stepSection(step), step.line)), ...reportLines("terminal", warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []), ...reportLines("mcp", wouldRegister.wouldRun), ...planned.lines, ...reportLines("terminal", warp.info), ...reportLines("mcp", wouldRegister.notes));
     if (autoMode !== null) {
       const asking = autoModeAsking(machine, autoMode);
       if (!asking.ask && asking.note !== null)
-        report.notes.push(asking.note);
+        report.push(asking.note);
     }
-    const watchdogNote = retryWatchdogDryNote(paths, machine, managed);
+    const watchdogNote = retryWatchdogDryNote(paths, machine, managed, options.yes);
     if (watchdogNote !== null)
-      report.info.push(watchdogNote);
-    printReport(out, {
-      changes,
-      info: [...warp.info, ...planned.info, ...report.info],
-      notes: [...report.notes, ...wouldRegister.notes, ...planned.notes]
-    }, "Nothing to change.");
+      report.push(watchdogNote);
+    if (planned.tmuxAdded && tmuxRunning) {
+      report.push({ section: "terminal", mark: "info", text: tmuxNow });
+    }
+    const counts = printSections(out, report, true);
+    out.blank();
+    const verdict = setupVerdict(counts, { dryRun: true, ok, backups: null });
+    out.verdict(verdict.mark, verdict.text);
     out.say(dryRunEnding(["written", "run"]));
     return 0;
   }
-  if (autoMode !== null)
-    managed.autoMode = askAutoMode(paths, options, autoMode, report.notes);
-  const declined = askStatusline(paths, machine, managed);
-  const watchdogDeclined = askRetryWatchdog(paths, machine, managed) || options.retryWatchdog === false;
+  const screen = { spoke: false };
+  const confirm = machine.confirm;
+  const asking = {
+    ...machine,
+    confirm: confirm === null ? null : (question) => {
+      screen.spoke = true;
+      return confirm(question);
+    }
+  };
+  if (autoMode !== null) {
+    managed.autoMode = askAutoMode(paths, { ...options, machine: asking }, autoMode, out, screen, report);
+  }
+  const declined = askStatusline(paths, asking, managed, options.yes);
+  const watchdogDeclined = askRetryWatchdog(paths, asking, managed, options.yes) || options.retryWatchdog === false;
   let warpYes = true;
   if (warp.commands.length > 0) {
-    const what = options.removeWarp ? "To remove Warp, cc-smart-dev-kit runs these commands (sudo asks for your password)" : "To install Warp from its signed source, cc-smart-dev-kit runs these commands (sudo asks for your password)";
-    const rerun = options.removeWarp ? "cc-smart-dev-kit setup --remove-warp" : "cc-smart-dev-kit setup --warp";
-    warpYes = askToRun(machine, what, warp.commands, rerun, report.notes);
+    const what = options.removeWarp ? `To remove Warp, ${COMMAND} runs these commands (sudo asks for your password)` : `To install Warp from its signed source, ${COMMAND} runs these commands (sudo asks for your password)`;
+    const rerun = options.removeWarp ? `${COMMAND} setup --remove-warp` : `${COMMAND} setup --warp`;
+    warpYes = askToRun(asking, out, screen, what, warp.commands, rerun, report);
   }
+  if (screen.spoke)
+    out.blank();
   let warpDone = warpYes;
   if (warp.commands.length > 0 && warpYes) {
     try {
       if (warp.stage)
         await stageWarpFiles(machine, detectSystem(machine), paths);
-      const undo = options.removeWarp ? null : "cc-smart-dev-kit setup --remove-warp";
-      warpDone = runOnTerminal(machine, warp.commands, undo, report.notes);
+      const undo = options.removeWarp ? null : `${COMMAND} setup --remove-warp`;
+      warpDone = runOnTerminal(machine, warp.commands, undo, report);
     } catch (error) {
-      report.notes.push(`! ${messageOf(error)}. No Warp command was run.`);
+      report.push({
+        section: "terminal",
+        mark: "fail",
+        text: `${messageOf(error)}. No Warp command was run.`
+      });
       warpDone = false;
     } finally {
       if (warp.stage)
@@ -43628,23 +43841,26 @@ async function runSetup(paths, options) {
   }
   if (!warpDone) {
     ok = false;
-    const warpSteps = new Set(warp.pluginSteps);
     claudeSteps = claudeSteps.filter((step) => !warpSteps.has(step));
   }
-  report.info.unshift(...warp.info);
-  const steps = runCompanionSteps(claudeSteps, machine);
-  for (const line of steps.lines)
-    (line.startsWith("!") ? report.notes : report.changes).push(line);
-  if (!steps.ok)
-    ok = false;
-  const claudeMemAgain = { changes: [], info: [], notes: [] };
+  report.push(...reportLines("terminal", warp.info));
+  if (claudeSteps.length > 0) {
+    const ran = claudeSteps;
+    const steps = await out.progress("Adding the companion plugins\u2026", async () => runCompanionSteps(ran, machine));
+    report.push(...steps.lines.map((line, index) => {
+      const read = reportLine(stepSection(ran[index]), line);
+      return read.mark === "warn" ? { ...read, mark: "fail" } : read;
+    }));
+    if (!steps.ok)
+      ok = false;
+  }
   if (claudeMem === "not-installed" && claudeSteps.length > 0) {
-    const again = await decideClaudeMem(paths, false, claudeMemAgain);
+    const again = await decideClaudeMem(paths, false, report, out);
     if (again !== "not-installed")
       managed.claudeMem = again;
   }
   const now = new Date().toISOString();
-  const written = await withLock(paths.stateDir, () => {
+  const written = await out.progress("Registering the MCP servers and writing the settings\u2026", () => withLock(paths.stateDir, () => {
     const mcp = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name, json) => {
       markMcpServerAdding(paths.stateDir, name, json, now);
     });
@@ -43660,36 +43876,105 @@ async function runSetup(paths, options) {
     }
     return {
       mcp,
-      changes: [...shortcuts, ...files.changes],
-      info: files.info,
-      notes: files.notes
+      files: { ...files, lines: [...reportLines("terminal", shortcuts), ...files.lines] }
     };
-  }, { waitMs: 1e4 });
-  report.changes.push(...written.mcp.changes);
-  report.notes.push(...written.mcp.notes);
+  }, { waitMs: 1e4 }));
+  report.push(...reportLines("mcp", written.mcp.changes), ...reportLines("mcp", written.mcp.notes), ...written.files.lines);
   if (!written.mcp.ok)
     ok = false;
-  report.info.push(...claudeMemAgain.info);
-  report.notes.push(...claudeMemAgain.notes);
-  report.changes.push(...written.changes);
-  report.info.push(...written.info);
-  report.notes.push(...written.notes);
-  printReport(out, report, "Nothing to change. Setup is up to date.");
-  if (written.changes.length > 0) {
-    console.log(`Done. Each changed file has a backup in ${short(paths.stateDir)}/backups/.`);
+  const counts = printSections(out, report, false);
+  const filesWritten = written.files.lines.some((line) => CHANGE_MARKS.has(line.mark));
+  out.blank();
+  const verdict = setupVerdict(counts, {
+    dryRun: false,
+    ok,
+    backups: filesWritten ? `${short(paths.stateDir)}/backups/` : null
+  });
+  out.verdict(verdict.mark, verdict.text);
+  const next = [];
+  if (!(options.env.PATH ?? "").split(delimiter).includes(paths.binDir)) {
+    next.push(pathStep(paths, machine.platform, options.env));
   }
-  const pathDirs = (process.env.PATH ?? "").split(delimiter);
-  if (!pathDirs.includes(paths.binDir)) {
-    console.log(machine.platform === "win32" ? `Note: ${paths.binDir} is not on your PATH. Add it there (Windows Settings \u2192 System \u2192 About \u2192 Advanced system settings \u2192 Environment Variables \u2192 Path for your account), then open a new terminal, so the cc-smart-dev-kit command works.` : `Note: ${short(paths.binDir)} is not on your PATH. Add it, so the cc-smart-dev-kit command works.`);
+  if (written.files.tmuxAdded && tmuxRunning) {
+    next.push({
+      text: "Apply the tmux line to the tmux server that runs now (a restart of tmux works too):",
+      command: TMUX_NOW_COMMAND
+    });
+  }
+  if (browser.next !== null)
+    next.push(browser.next);
+  if (report.some((line) => CHANGE_MARKS.has(line.mark) && RESTART_SECTIONS.has(line.section))) {
+    next.push(restartStep(written.files.claudeMemChanged));
+  }
+  if (next.length > 0) {
+    out.blank();
+    out.next(next);
   }
   return ok ? 0 : 1;
 }
-function printReport(out, report, nothing) {
-  out.marked([
-    ...report.changes.length > 0 ? report.changes : [nothing],
-    ...report.info,
-    ...report.notes
-  ]);
+function countLines(lines) {
+  const counts = { changes: 0, fail: 0, warn: 0, info: 0 };
+  for (const line of lines) {
+    if (CHANGE_MARKS.has(line.mark))
+      counts.changes += 1;
+    else if (line.mark === "fail")
+      counts.fail += 1;
+    else if (line.mark === "warn")
+      counts.warn += 1;
+    else
+      counts.info += 1;
+  }
+  return counts;
+}
+function lineRank(line) {
+  if (CHANGE_MARKS.has(line.mark))
+    return 0;
+  return line.mark === "fail" || line.mark === "warn" ? 2 : 1;
+}
+function sectionHeader(counts, dryRun) {
+  const summary = [
+    counts.changes > 0 ? dryRun ? `${counts.changes} to change` : plural(counts.changes, "change", "changes") : null,
+    counts.fail > 0 ? `${counts.fail} to fix` : null,
+    counts.warn > 0 ? plural(counts.warn, "warning", "warnings") : null,
+    counts.info > 0 ? plural(counts.info, "note", "notes") : null
+  ].filter((part) => part !== null).join(", ");
+  const mark = counts.fail > 0 ? "fail" : counts.warn > 0 ? "warn" : !dryRun && counts.changes > 0 ? "ok" : "info";
+  return { mark, summary };
+}
+function printSections(out, report, dryRun) {
+  const titleWidth = Math.max(...SETUP_SECTIONS.map((section) => section.title.length));
+  for (const { id, title } of SETUP_SECTIONS) {
+    const lines = report.filter((line) => line.section === id).sort((a, b) => lineRank(a) - lineRank(b));
+    if (lines.length === 0)
+      continue;
+    const { mark, summary } = sectionHeader(countLines(lines), dryRun);
+    out.group({ mark, summary, title, titleWidth }, lines.map((line) => ({
+      mark: line.mark,
+      text: line.text,
+      fix: line.fix,
+      detail: line.detail
+    })));
+  }
+  return countLines(report);
+}
+function setupVerdict(counts, run) {
+  const changes = plural(counts.changes, "change", "changes");
+  const warnings = plural(counts.warn, "warning", "warnings");
+  if (run.dryRun) {
+    return {
+      mark: "info",
+      text: counts.changes > 0 ? `A real run makes ${changes}.` : "Nothing to change. Setup is up to date."
+    };
+  }
+  const backups = run.backups === null ? "" : ` Each changed file has a backup in ${run.backups}.`;
+  if (!run.ok) {
+    return {
+      mark: "fail",
+      text: `Setup is not finished: do what the \u2717 and ! lines above say, then run ${COMMAND} setup again.${backups}`
+    };
+  }
+  const done = counts.changes > 0 ? `Done: ${changes}` : "Nothing to change. Setup is up to date";
+  return counts.warn > 0 ? { mark: "warn", text: `${done}, with ${warnings} to read above.${backups}` } : { mark: "ok", text: `${done}.${backups}` };
 }
 
 // src/cli/statusline.ts
@@ -43827,6 +44112,85 @@ async function runSubagentStatusline(read = () => Bun.stdin.text()) {
   return 0;
 }
 
+// src/cli/ui/prompt.ts
+var TRIES = 2;
+function yesOrNo(answer) {
+  const word = answer.trim().toLowerCase();
+  if (word === "y" || word === "yes")
+    return true;
+  if (word === "n" || word === "no")
+    return false;
+  return;
+}
+var DIM = 2;
+function createPrompts(term, io) {
+  const hint = (text) => term.color ? `\x1B[${DIM}m${text}\x1B[0m` : text;
+  const read = (question, hintText) => {
+    const room = Math.max(1, term.width - (hintText === "" ? 0 : hintText.length + 1) - 1);
+    const lines = wrapWords(shownText(term, question), room, room);
+    for (const line of lines.slice(0, -1))
+      io.write(`${line}
+`);
+    const last = lines.at(-1) ?? "";
+    return io.readLine(hintText === "" ? last : `${last} ${hint(hintText)}`);
+  };
+  const say = (text) => {
+    for (const line of renderLine(term, "warn", text))
+      io.write(`${line}
+`);
+  };
+  const yesNoWord = (value) => value ? "yes" : "no";
+  return {
+    confirm(question, fallback = false) {
+      for (let attempt = 1;attempt <= TRIES; attempt += 1) {
+        const answer = read(question, fallback ? "[Y/n]" : "[y/N]");
+        if (answer === null || answer.trim() === "")
+          return fallback;
+        const understood = yesOrNo(answer);
+        if (understood !== undefined)
+          return understood;
+        if (attempt < TRIES) {
+          say(`Not understood: answer y or n (Enter keeps ${yesNoWord(fallback)}).`);
+        }
+      }
+      say(`Not understood again: ${yesNoWord(fallback)}, the default.`);
+      return fallback;
+    },
+    ask(question, options) {
+      const shownDefault = options.default === "" ? "" : `[${options.default}]`;
+      for (let attempt = 1;attempt <= TRIES; attempt += 1) {
+        const typed = read(question, shownDefault);
+        const answer = typed === null || typed.trim() === "" ? options.default : typed.trim();
+        if (answer === options.default)
+          return answer;
+        const problem = options.check?.(answer) ?? null;
+        if (problem === null)
+          return answer;
+        say(attempt < TRIES ? `Not understood: ${problem}.` : `Not understood again (${problem}): ${options.default === "" ? "none" : options.default}, the default.`);
+      }
+      return options.default;
+    },
+    secret: io.readSecret === undefined ? null : async (question) => {
+      io.write(`${shownText(term, question)} ${hint("(it is not shown)")} `);
+      const value = await io.readSecret?.();
+      io.write(`
+`);
+      return value ?? null;
+    }
+  };
+}
+function terminalPrompts(term, stdin = process.stdin) {
+  if (stdin.isTTY !== true)
+    return null;
+  return createPrompts(term, {
+    write: (text) => {
+      process.stdout.write(text);
+    },
+    readLine: (shown) => prompt(shown),
+    ...canHideInput(stdin) ? { readSecret: () => readSecretLine(stdin) } : {}
+  });
+}
+
 // src/crew/context.ts
 import { randomBytes } from "crypto";
 function realCrewContext(paths) {
@@ -43860,7 +44224,7 @@ function gatewayContext(options) {
     bundle: options.bundle,
     runner: options.runner,
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...canHideInput(terminal) ? { readSecret: () => readSecretLine(terminal) } : {},
+    ...secretRead(terminal),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -43871,11 +44235,15 @@ function gatewayContext(options) {
     error: options.error ?? ((line) => console.error(line))
   };
 }
+function secretRead(terminal) {
+  const secret = terminalPrompts(currentTerminal(), terminal)?.secret ?? null;
+  return secret === null ? {} : { readSecret: secret };
+}
 
 // src/hooks/notify.ts
 import { readFileSync as readFileSync73, rmSync as rmSync18, statSync as statSync26, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir9 } from "os";
-import { basename as basename13, join as join77 } from "path";
+import { basename as basename14, join as join77 } from "path";
 
 // src/hooks/alert-sound.ts
 import { join as join76 } from "path";
@@ -44009,7 +44377,7 @@ function warpAgentSequence(alert, input) {
     event,
     session_id: typeof input.session_id === "string" ? input.session_id : "",
     cwd,
-    project: cwd === "" ? "" : basename13(cwd)
+    project: cwd === "" ? "" : basename14(cwd)
   };
   if (event === "stop" || event === "stop_failure")
     payload.response = alert.body;
@@ -44040,7 +44408,7 @@ function sessionLabel2(transcript, cwd) {
   }
   if (cwd === null)
     return null;
-  const folder = basename13(cwd);
+  const folder = basename14(cwd);
   return folder === "" || folder === "." ? null : cleanSessionName(folder);
 }
 function askAlert(input, ctx) {
@@ -44220,7 +44588,7 @@ function agentViewKey(session, message) {
 }
 function desktopTarget(deps, cwd, label, session) {
   return {
-    folder: cwd === null ? "" : basename13(cwd),
+    folder: cwd === null ? "" : basename14(cwd),
     name: label ?? "",
     program: deps.env.TERM_PROGRAM ?? "",
     session,
@@ -44477,7 +44845,7 @@ function hostFacts(env) {
     macApp: given.macApp ?? real.macApp
   };
 }
-function realMachine(env, confirm2) {
+function realMachine(env, confirm) {
   const PATH = env.PATH ?? "";
   const host = hostFacts(env);
   return {
@@ -44511,7 +44879,7 @@ function realMachine(env, confirm2) {
       } catch {}
     },
     which: (command) => Bun.which(command, { PATH }),
-    confirm: confirm2,
+    confirm,
     platform: host.platform,
     arch: host.arch,
     osRelease: host.osRelease,
@@ -44542,10 +44910,10 @@ function realMachine(env, confirm2) {
 }
 
 // src/worktrees/command.ts
-import { basename as basename15, resolve as resolve13 } from "path";
+import { basename as basename16, resolve as resolve13 } from "path";
 
 // src/worktrees/clean.ts
-import { basename as basename14 } from "path";
+import { basename as basename15 } from "path";
 
 // src/machine/hold-port.ts
 import { createServer } from "net";
@@ -44596,7 +44964,7 @@ function cleanFinished(repo, scanned, judged, say) {
     const removal = removeWorktree(repo, worktree.listed, judged);
     for (const said of removal.said)
       say(`  ${said}`);
-    const name = basename14(worktree.listed.path);
+    const name = basename15(worktree.listed.path);
     if (removal.status === "removed") {
       removed.push({
         branch: worktree.listed.branch,
@@ -44635,7 +45003,7 @@ function cleanFinished(repo, scanned, judged, say) {
     const { state } = worktree;
     if (typeof state === "object" && !state.finished) {
       kept.push({
-        name: basename14(worktree.listed.path),
+        name: basename15(worktree.listed.path),
         path: worktree.listed.path,
         why: state.why
       });
@@ -44672,7 +45040,7 @@ var CONSOLE_SINKS2 = {
 function show4(scanned, print) {
   for (const worktree of scanned) {
     const { branch, head, path } = worktree.listed;
-    const name = basename15(path).padEnd(30);
+    const name = basename16(path).padEnd(30);
     const on = (branch ?? `detached at ${head.slice(0, 9)}`).padEnd(42);
     print(`  ${name} ${on} ${describe3(worktree)}`);
   }
@@ -44798,7 +45166,8 @@ var runner = (cmd) => {
 var systemd = process.platform === "linux" && Bun.which("systemctl") !== null;
 var service = routerServiceKind(process.platform, (command) => Bun.which(command, { PATH: process.env.PATH ?? "" }));
 var account = windowsAccount(process.env);
-var ask = process.stdin.isTTY ? (question) => confirm(question) : null;
+var prompts = terminalPrompts(currentTerminal(process.env));
+var ask = prompts === null ? null : (question) => prompts.confirm(question, false);
 function gatewayContext2(paths) {
   return gatewayContext({
     account,
@@ -45049,11 +45418,8 @@ Fix: run it in the project's folder, or run git init here first`);
         env: process.env,
         stateDir: paths.stateDir,
         home: paths.home,
-        terminal: process.stdin.isTTY && process.stdout.isTTY ? {
-          confirm: (question) => confirm(question),
-          text: (question, fallback) => prompt(question, fallback) ?? fallback
-        } : null,
-        print: (line) => console.log(line),
+        prompts,
+        out: createOut(currentTerminal(process.env)),
         error: (line) => console.error(line)
       });
     }
@@ -45198,11 +45564,11 @@ ${result.stderr.toString()}`
           console.log(removed === null ? `  nothing to remove: there is no token file at ${paths.browserTokenFile}` : `- ${paths.browserTokenFile}: removed`);
           return 0;
         }
-        const hide = canHideInput(process.stdin);
+        const secret = prompts?.secret ?? null;
         return await savePastedToken(paths, {
-          isTTY: hide,
+          isTTY: process.stdin.isTTY === true,
           readAll: () => Bun.stdin.text(),
-          ...hide ? { readSecret: () => readSecretLine(process.stdin) } : {}
+          ...secret === null ? {} : { readSecret: secret }
         }, (line) => console.log(line), (line) => console.error(line));
       }
       if (sub === "check") {

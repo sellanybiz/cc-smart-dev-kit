@@ -67,7 +67,7 @@ describe("the gateway context: the terminal for --omniroute-password", () => {
     const ctx = gatewayContext(options(tty.terminal));
     expect(typeof ctx.readSecret).toBe("function");
     // No echo while it is read (`setRawMode`), and the line comes back cleaned.
-    expect(await ctx.readSecret?.()).toBe("the-dashboard-password");
+    expect(await ctx.readSecret?.("Password")).toBe("the-dashboard-password");
     expect(tty.modes).toEqual([true, false]);
   });
 

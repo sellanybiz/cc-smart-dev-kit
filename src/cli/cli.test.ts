@@ -27,6 +27,7 @@ import { restore } from "../setup/restore";
 import { retryWatchdogDeclinedFile } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { listBackups, writeManagedFile } from "../setup/write";
+import { FAKE_CLAUDE_MCP_JS } from "../testing/fake-claude-mcp";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
@@ -348,59 +349,6 @@ function setup(options: SetupOptions = {}) {
 const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
 /**
- * The fake `claude mcp` (run by the fake `claude` on PATH): it emulates Claude Code's own
- * writes, so setup's registration, doctor's check and restore's removal are exercised for
- * real — user-scope servers live in `<config dir>/.claude.json` under `mcpServers`.
- */
-const FAKE_CLAUDE_MCP_JS = `
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const file = join(process.env.CLAUDE_CONFIG_DIR ?? join(process.env.HOME ?? "", ".claude"), ".claude.json");
-const read = () => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});
-const argv = process.argv.slice(2);
-const verb = argv[1];
-const rest = argv.slice(2);
-if (verb === "add-json") {
-  const name = rest[rest.length - 2];
-  const config = JSON.parse(rest[rest.length - 1]);
-  const all = read();
-  if (all.mcpServers?.[name] !== undefined) {
-    console.error("MCP server " + name + " already exists in user config");
-    process.exit(1);
-  }
-  writeFileSync(file, JSON.stringify({ ...all, mcpServers: { ...all.mcpServers, [name]: config } }, null, 2));
-  console.log("Added stdio MCP server " + name + " to user config");
-  process.exit(0);
-}
-if (verb === "remove") {
-  const name = rest[0];
-  const all = read();
-  if (all.mcpServers?.[name] === undefined) {
-    console.error("No MCP server found with name: " + name);
-    process.exit(1);
-  }
-  delete all.mcpServers[name];
-  writeFileSync(file, JSON.stringify(all, null, 2));
-  console.log("Removed MCP server " + name);
-  process.exit(0);
-}
-if (verb === "get") {
-  const name = rest[0];
-  const config = read().mcpServers?.[name];
-  if (config === undefined) {
-    console.error("No MCP server found with name: " + name);
-    process.exit(1);
-  }
-  console.log(name + ":");
-  console.log("  Scope: User config (available in all your projects)");
-  console.log("  Status: ✔ Connected");
-  console.log("  Type: " + (config.type ?? "stdio"));
-  process.exit(0);
-}
-process.exit(0);
-`;
-
-/**
  * For setup or doctor run in this process: a Linux with no package manager cc-smart-dev-kit knows,
  * no Warp app and no command on PATH, so nothing of the host this test runs on is read.
  */
@@ -444,26 +392,32 @@ function setupOptions(
   };
 }
 
-/** What a first setup prints for the instructions: the plugin's real files, then the block. */
+/**
+ * What a first setup prints for the instructions, in their section: the plugin's real files,
+ * then the block.
+ */
 const INSTRUCTIONS_CREATED = [
-  "+ ~/.claude/cc-smart-dev-kit/instructions/core.md: created",
-  "+ ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: created",
-  "+ ~/.claude/CLAUDE.md: created, with the cc-smart-dev-kit block",
+  "  + ~/.claude/cc-smart-dev-kit/instructions/core.md: created",
+  "  + ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: created",
+  "  + ~/.claude/CLAUDE.md: created, with the cc-smart-dev-kit block",
 ];
 
 /**
- * The MCP servers setup registers, as it prints them: the two that need no key. Tavily is
- * left out without a key (`TAVILY_SKIPPED`).
+ * The MCP servers setup registers, as it prints them in their section: the two that need no
+ * key. Tavily is left out without a key (`TAVILY_SKIPPED`).
  */
 const MCP_REGISTERED = [
-  "+ MCP server playwright registered for your user",
-  "+ MCP server sequential-thinking registered for your user",
+  "  + MCP server playwright registered for your user",
+  "  + MCP server sequential-thinking registered for your user",
 ];
 /** What a dry run with no terminal says about the retry watchdog question (`src/setup/retry-watchdog.ts`). */
 const WATCHDOG_NOT_OFFERED =
-  "  retry watchdog: not offered, there is no terminal (nothing changes); --retry-watchdog turns it on";
+  "  · retry watchdog: not offered, there is no terminal (nothing changes); --retry-watchdog turns it on";
+/** setup's warning for the Tavily server on a machine with no key, in the MCP section. */
 const TAVILY_SKIPPED =
-  "! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, in the settings, or in a key file: put the key there (chmod 600), or set the variable, then run setup again";
+  "  ! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, in the settings, or in a key file: put the key there (chmod 600), or set the variable, then run setup again";
+/** The MCP section of a machine where nothing else is said about the servers. */
+const MCP_TAVILY_ONLY = ["! MCP servers           1 warning", TAVILY_SKIPPED];
 
 /**
  * The `claude mcp add-json` lines a dry run prints, written by hand from `home`. These
@@ -473,10 +427,57 @@ const TAVILY_SKIPPED =
 function mcpDryRunLines(home: string): string[] {
   const launcher = join(home, ".local", "bin", "cc-smart-dev-kit");
   return [
-    `$ claude mcp add-json --scope user playwright {"command":"${launcher}","args":["browser","mcp"]}`,
-    `$ claude mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"bunx"}`,
+    `  $ claude mcp add-json --scope user playwright {"command":"${launcher}","args":["browser","mcp"]}`,
+    `  $ claude mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"bunx"}`,
   ];
 }
+
+/** setup's first line on a real run, and on a dry run. */
+const SETUP_HEADING = `cc-smart-dev-kit ${VERSION}: setting up this machine`;
+const SETUP_DRY_HEADING = `cc-smart-dev-kit ${VERSION}: what setup would change (dry run)`;
+/** The verdict's sentence when a file was written. */
+const BACKUPS = "Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.";
+/** The verdict of a run with nothing to change but the Tavily warning. */
+const UP_TO_DATE = "! Nothing to change. Setup is up to date, with 1 warning to read above.";
+/** The next step after a change a running Claude Code session does not see. */
+const RESTART_STEP =
+  "Start a new Claude Code session (and restart the ones running): a session reads its settings, instructions, plugins and MCP servers when it starts.";
+/** The same step when claude-mem's settings changed too. */
+const RESTART_WITH_CLAUDE_MEM = `${RESTART_STEP} claude-mem's start hook reads its new settings then too, and its worker reads them when it starts.`;
+
+/**
+ * The whole of setup's stdout, the way it prints it: the heading, a blank line, the sections,
+ * a blank line, the verdict (and a dry run's last line), and the next steps after a blank line.
+ * Every line of each part is written out by hand in the test.
+ */
+function setupStdout(
+  heading: string,
+  sections: readonly string[],
+  verdict: readonly string[],
+  next: readonly string[] = [],
+): string {
+  const steps = next.map((step, index) => `  ${index + 1}. ${step}`);
+  return [
+    heading,
+    "",
+    ...sections,
+    "",
+    ...verdict,
+    ...(steps.length === 0 ? [] : ["", "Next steps:", ...steps]),
+    "",
+  ].join("\n");
+}
+
+/** The companions' section of a first setup: claude-mem's two start blocks off (D23), and the warning. */
+const CLAUDE_MEM_OFF = [
+  "! Companion plugins     2 changes, 1 warning",
+  '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+  '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
+  "  ! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
+];
+
+/** A re-run with nothing to change on a machine with no Tavily key: what it prints, whole. */
+const NOTHING_TO_CHANGE = setupStdout(SETUP_HEADING, MCP_TAVILY_ONLY, [UP_TO_DATE]);
 
 /** doctor's information line for the Tavily server on a machine with no key. */
 const tavilyDoctorSkipped = (home: string): string =>
@@ -495,7 +496,7 @@ const NOTIFY_HOOK_ENTRY = {
     { type: "command", command: '"$HOME/.local/bin/cc-smart-dev-kit" hook notify', timeout: 10 },
   ],
 };
-const NOTIFY_HOOK_ADDED = `~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook ("$HOME/.local/bin/cc-smart-dev-kit" hook notify)`;
+const NOTIFY_HOOK_ADDED = `  ~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook ("$HOME/.local/bin/cc-smart-dev-kit" hook notify)`;
 
 /** The block setup writes into ~/.claude/CLAUDE.md. */
 const BLOCK = [
@@ -509,9 +510,9 @@ const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instruc
 
 /** What setup prints when it stores `--no-instructions`, and when `--instructions` clears it. */
 const OPT_OUT_STORED =
-  "+ ~/.claude/cc-smart-dev-kit/no-instructions: setup leaves the instructions out from now on (`cc-smart-dev-kit setup --instructions` brings them back)";
+  "  + ~/.claude/cc-smart-dev-kit/no-instructions: setup leaves the instructions out from now on (`cc-smart-dev-kit setup --instructions` brings them back)";
 const OPT_OUT_CLEARED =
-  "- ~/.claude/cc-smart-dev-kit/no-instructions: removed: setup installs the instructions again";
+  "  - ~/.claude/cc-smart-dev-kit/no-instructions: removed: setup installs the instructions again";
 
 /** doctor's line for instructions that are in place. */
 const INSTRUCTIONS_OK =
@@ -525,22 +526,26 @@ describe("cc-smart-dev-kit setup", () => {
     // The companions are there already: no `claude plugin …` step runs.
     expect(pluginCalls()).toBe("");
     expect(result.stdout).toBe(
-      [
-        ...MCP_REGISTERED,
-        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
-        // D23: work state off gives sessions Claude Code's own task tools.
-        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
-        NOTIFY_HOOK_ADDED,
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
-        ...INSTRUCTIONS_CREATED,
-        "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
-        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ The command           1 change",
+          "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "✓ Claude Code settings  3 changes",
+          '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          // D23: work state off gives sessions Claude Code's own task tools.
+          '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+          NOTIFY_HOOK_ADDED,
+          "✓ Instructions          3 changes",
+          ...INSTRUCTIONS_CREATED,
+          ...CLAUDE_MEM_OFF,
+          "! MCP servers           2 changes, 1 warning",
+          ...MCP_REGISTERED,
+          TAVILY_SKIPPED,
+        ],
+        [`! Done: 11 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [RESTART_WITH_CLAUDE_MEM],
+      ),
     );
     expect(existsSync(launcher)).toBe(true);
     expect(readJson(settingsFile)).toEqual({
@@ -580,12 +585,16 @@ describe("cc-smart-dev-kit setup", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      [
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: true -> false',
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ Claude Code settings  1 change",
+          '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: true -> false',
+          ...MCP_TAVILY_ONLY,
+        ],
+        [`! Done: 1 change, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
     );
     expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
       false,
@@ -614,7 +623,7 @@ describe("cc-smart-dev-kit setup", () => {
     run(["setup"]);
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe(`Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`);
+    expect(result.stdout).toBe(NOTHING_TO_CHANGE);
     expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
   });
 
@@ -624,22 +633,27 @@ describe("cc-smart-dev-kit setup", () => {
     const result = run(["setup", "--dry-run"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      [
-        ...mcpDryRunLines(home),
-        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
-        // D23: work state off gives sessions Claude Code's own task tools.
-        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
-        NOTIFY_HOOK_ADDED,
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
-        ...INSTRUCTIONS_CREATED,
-        WATCHDOG_NOT_OFFERED,
-        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
-        TAVILY_SKIPPED,
-        "Dry run: nothing was written or run.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_DRY_HEADING,
+        [
+          "· The command           1 to change",
+          "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "· Claude Code settings  3 to change, 1 note",
+          '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          // D23: work state off gives sessions Claude Code's own task tools.
+          '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+          NOTIFY_HOOK_ADDED,
+          WATCHDOG_NOT_OFFERED,
+          "· Instructions          3 to change",
+          ...INSTRUCTIONS_CREATED,
+          "! Companion plugins     2 to change, 1 warning",
+          ...CLAUDE_MEM_OFF.slice(1),
+          "! MCP servers           2 to change, 1 warning",
+          ...mcpDryRunLines(home),
+          TAVILY_SKIPPED,
+        ],
+        ["· A real run makes 11 changes.", "Dry run: nothing was written or run."],
+      ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     expect(existsSync(stateDir)).toBe(false);
@@ -679,7 +693,7 @@ describe("cc-smart-dev-kit setup", () => {
     expect(existsSync(launcher)).toBe(false);
   });
 
-  test("nothing to change, with a line of information: 'Nothing to change' first, and no 'Done'", () => {
+  test("nothing to change, with lines of information: they show in their section, and the verdict says nothing changed", () => {
     const { settingsFile, run } = setup();
     run(["setup"]);
     // The person's own auto-update key, with the value cc-smart-dev-kit wants: not cc-smart-dev-kit's.
@@ -687,22 +701,38 @@ describe("cc-smart-dev-kit setup", () => {
     writeFileSync(ownedFile, "{}\n");
     const result = run(["setup"]);
     expect(result.stdout).toBe(
-      [
-        "Nothing to change. Setup is up to date.",
-        '  ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
-        "  ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: already set by someone else; left alone",
-        TAVILY_SKIPPED,
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "· Claude Code settings  2 notes",
+          '  · ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
+          "  · ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: already set by someone else; left alone",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [UP_TO_DATE],
+      ),
     );
   });
 
-  test("a note when ~/.local/bin is not on PATH, and none when it is", () => {
-    const { run } = setup();
-    expect(run(["setup"]).stdout).not.toContain("Note:");
-    const withoutBin = run(["setup"], { PATH: process.env.PATH ?? "" });
-    expect(withoutBin.stdout).toContain(
-      "Note: ~/.local/bin is not on your PATH. Add it, so the cc-smart-dev-kit command works.",
+  test("UX-7: a next step when ~/.local/bin is not on PATH, with the line for this shell, and none when it is", () => {
+    const { fakeBin, home, run } = setup();
+    expect(run(["setup"]).stdout).not.toContain("to your PATH");
+    const step = (file: string) =>
+      `  1. Add ~/.local/bin to your PATH, so the cc-smart-dev-kit command works: add this line to ${file}, then open a new terminal:\n       export PATH="$HOME/.local/bin:$PATH"`;
+    // The world's own PATH without the launcher's folder: the fakes and bun's own folder.
+    const path = `${fakeBin}:${join(home, "bun-bin")}`;
+    // Nothing else to change: the PATH step is the only one.
+    expect(run(["setup"], { PATH: path }).stdout).toBe(
+      `${NOTHING_TO_CHANGE}\nNext steps:\n${step("~/.profile")}\n`,
+    );
+    expect(run(["setup"], { PATH: path, SHELL: "/bin/bash" }).stdout).toContain(
+      `\n${step("~/.bashrc")}\n`,
+    );
+    expect(run(["setup"], { PATH: path, SHELL: "/usr/bin/zsh" }).stdout).toContain(
+      `\n${step("~/.zshrc")}\n`,
+    );
+    expect(run(["setup"], { PATH: path, SHELL: "/usr/local/bin/fish" }).stdout).toContain(
+      "\n  1. Add ~/.local/bin to your PATH, so the cc-smart-dev-kit command works: run this once, then open a new terminal:\n       fish_add_path ~/.local/bin\n",
     );
   });
 
@@ -753,12 +783,16 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     writeFileSync(join(stateDir, "instructions", "core.md"), "# Edited by hand\n");
     const result = run(["setup"]);
     expect(result.stdout).toBe(
-      [
-        "~ ~/.claude/cc-smart-dev-kit/instructions/core.md: updated",
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ Instructions          1 change",
+          "  ~ ~/.claude/cc-smart-dev-kit/instructions/core.md: updated",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [`! Done: 1 change, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
     );
   });
 
@@ -767,22 +801,26 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     const result = run(["setup", "--no-instructions"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      [
-        ...MCP_REGISTERED,
-        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
-        // D23: work state off gives sessions Claude Code's own task tools.
-        '~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
-        NOTIFY_HOOK_ADDED,
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
-        OPT_OUT_STORED,
-        "  Start a new Claude Code session for claude-mem's new settings: its start hook reads them, and its worker reads them when it starts.",
-        "! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ The command           1 change",
+          "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "✓ Claude Code settings  3 changes",
+          '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          // D23: work state off gives sessions Claude Code's own task tools.
+          '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
+          NOTIFY_HOOK_ADDED,
+          "✓ Instructions          1 change",
+          OPT_OUT_STORED,
+          ...CLAUDE_MEM_OFF,
+          "! MCP servers           2 changes, 1 warning",
+          ...MCP_REGISTERED,
+          TAVILY_SKIPPED,
+        ],
+        [`! Done: 9 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [RESTART_WITH_CLAUDE_MEM],
+      ),
     );
     expect(existsSync(join(configDir, "CLAUDE.md"))).toBe(false);
     expect(existsSync(join(stateDir, "instructions"))).toBe(false);
@@ -796,36 +834,38 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     const dry = run(["setup", "--no-instructions", "--dry-run"]);
     const expected = [
       OPT_OUT_STORED,
-      "~ ~/.claude/CLAUDE.md: cc-smart-dev-kit block removed",
-      "- ~/.claude/cc-smart-dev-kit/instructions/core.md: removed",
-      "- ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed",
+      "  ~ ~/.claude/CLAUDE.md: cc-smart-dev-kit block removed",
+      "  - ~/.claude/cc-smart-dev-kit/instructions/core.md: removed",
+      "  - ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md: removed",
     ];
     expect(dry.stdout).toBe(
-      [
-        ...expected,
-        WATCHDOG_NOT_OFFERED,
-        TAVILY_SKIPPED,
-        "Dry run: nothing was written or run.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_DRY_HEADING,
+        [
+          "· Claude Code settings  1 note",
+          WATCHDOG_NOT_OFFERED,
+          "· Instructions          4 to change",
+          ...expected,
+          ...MCP_TAVILY_ONLY,
+        ],
+        ["· A real run makes 4 changes.", "Dry run: nothing was written or run."],
+      ),
     );
     expect(readFileSync(claudeMd, "utf8")).toContain(BLOCK);
 
     const result = run(["setup", "--no-instructions"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      [
-        ...expected,
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        ["✓ Instructions          4 changes", ...expected, ...MCP_TAVILY_ONLY],
+        [`! Done: 4 changes, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
     );
     expect(readFileSync(claudeMd, "utf8")).toBe("# My notes\n");
     expect(existsSync(join(stateDir, "instructions"))).toBe(false);
-    expect(run(["setup", "--no-instructions"]).stdout).toBe(
-      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
-    );
+    expect(run(["setup", "--no-instructions"]).stdout).toBe(NOTHING_TO_CHANGE);
   });
 
   test("restore removes the copy and the block; the user's text stays", () => {
@@ -846,7 +886,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     run(["setup", "--no-instructions"]);
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe(`Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`);
+    expect(result.stdout).toBe(NOTHING_TO_CHANGE);
     expect(existsSync(join(configDir, "CLAUDE.md"))).toBe(false);
     expect(existsSync(join(stateDir, "instructions"))).toBe(false);
   });
@@ -856,29 +896,35 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     run(["setup", "--no-instructions"]);
     const dry = run(["setup", "--instructions", "--dry-run"]);
     expect(dry.stdout).toBe(
-      [
-        OPT_OUT_CLEARED,
-        ...INSTRUCTIONS_CREATED,
-        WATCHDOG_NOT_OFFERED,
-        TAVILY_SKIPPED,
-        "Dry run: nothing was written or run.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_DRY_HEADING,
+        [
+          "· Claude Code settings  1 note",
+          WATCHDOG_NOT_OFFERED,
+          "· Instructions          4 to change",
+          OPT_OUT_CLEARED,
+          ...INSTRUCTIONS_CREATED,
+          ...MCP_TAVILY_ONLY,
+        ],
+        ["· A real run makes 4 changes.", "Dry run: nothing was written or run."],
+      ),
     );
     expect(existsSync(join(stateDir, "no-instructions"))).toBe(true);
     const result = run(["setup", "--instructions"]);
     expect(result.stdout).toBe(
-      [
-        OPT_OUT_CLEARED,
-        ...INSTRUCTIONS_CREATED,
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ Instructions          4 changes",
+          OPT_OUT_CLEARED,
+          ...INSTRUCTIONS_CREATED,
+          ...MCP_TAVILY_ONLY,
+        ],
+        [`! Done: 4 changes, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
     );
-    expect(run(["setup"]).stdout).toBe(
-      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
-    );
+    expect(run(["setup"]).stdout).toBe(NOTHING_TO_CHANGE);
   });
 
   test("--instructions and --no-instructions together are refused with exit 2", () => {
@@ -1816,23 +1862,36 @@ describe("ccSmartDevKitImports", () => {
 });
 
 describe("cc-smart-dev-kit setup: the companion plugins", () => {
+  /** The two companions' marketplaces, as setup adds them (each installs its plugin). */
+  const COMPANION_MARKETPLACES_ADDED = [
+    "  + marketplace thedotmack (thedotmack/claude-mem), which installs claude-mem@thedotmack",
+    "  + marketplace claude-plugins-official (anthropics/claude-plugins-official), which installs frontend-design@claude-plugins-official",
+  ];
+
   test("their marketplaces are not added: setup adds each, which installs the plugin", () => {
     const { run, pluginCalls, launcher } = setup({ companions: false });
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      [
-        "+ marketplace thedotmack (thedotmack/claude-mem), which installs claude-mem@thedotmack",
-        "+ marketplace claude-plugins-official (anthropics/claude-plugins-official), which installs frontend-design@claude-plugins-official",
-        ...MCP_REGISTERED,
-        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
-        NOTIFY_HOOK_ADDED,
-        ...INSTRUCTIONS_CREATED,
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ The command           1 change",
+          "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "✓ Claude Code settings  2 changes",
+          '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          NOTIFY_HOOK_ADDED,
+          "✓ Instructions          3 changes",
+          ...INSTRUCTIONS_CREATED,
+          "✓ Companion plugins     2 changes",
+          ...COMPANION_MARKETPLACES_ADDED,
+          "! MCP servers           2 changes, 1 warning",
+          ...MCP_REGISTERED,
+          TAVILY_SKIPPED,
+        ],
+        [`! Done: 10 changes, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
     );
     // No `claude plugin …` step beyond the two marketplaces: the MCP registrations are
     // `claude mcp …`, asserted in § MCP servers.
@@ -1875,8 +1934,8 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
     const { run, pluginCalls, stateDir } = setup({ companions: false });
     const result = run(["setup", "--dry-run"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toStartWith(
-      "+ marketplace thedotmack (thedotmack/claude-mem), which installs claude-mem@thedotmack\n",
+    expect(result.stdout).toContain(
+      ["· Companion plugins     2 to change", ...COMPANION_MARKETPLACES_ADDED, ""].join("\n"),
     );
     expect(result.stdout).toEndWith("Dry run: nothing was written or run.\n");
     expect(pluginCalls()).toBe("");
@@ -1891,9 +1950,17 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
     );
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
+    // Each failed step is a ✗ with Claude Code's own words, and the verdict says setup is not done.
     expect(result.stdout).toContain(
-      "! claude plugin marketplace add thedotmack/claude-mem failed (exit 1): clone failed: no network\n" +
-        "! claude plugin marketplace add anthropics/claude-plugins-official failed (exit 1): clone failed: no network\n",
+      [
+        "✗ Companion plugins     2 to fix",
+        "  ✗ claude plugin marketplace add thedotmack/claude-mem failed (exit 1): clone failed: no network",
+        "  ✗ claude plugin marketplace add anthropics/claude-plugins-official failed (exit 1): clone failed: no network",
+        "",
+      ].join("\n"),
+    );
+    expect(result.stdout).toContain(
+      `\n✗ Setup is not finished: do what the ✗ and ! lines above say, then run cc-smart-dev-kit setup again. ${BACKUPS}\n`,
     );
     expect(existsSync(launcher)).toBe(true);
   });
@@ -1903,20 +1970,30 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toBe(
-      [
-        "+ ~/.local/bin/cc-smart-dev-kit: launcher created",
-        '~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
-        NOTIFY_HOOK_ADDED,
-        ...INSTRUCTIONS_CREATED,
-        "! The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
-        "  $ claude plugin marketplace add thedotmack/claude-mem",
-        "  $ claude plugin marketplace add anthropics/claude-plugins-official",
-        "! The claude command is not on PATH, so playwright was not registered. Run it once it is.",
-        "! The claude command is not on PATH, so sequential-thinking was not registered. Run it once it is.",
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ The command           1 change",
+          "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "✓ Claude Code settings  2 changes",
+          '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
+          NOTIFY_HOOK_ADDED,
+          "✓ Instructions          3 changes",
+          ...INSTRUCTIONS_CREATED,
+          "✗ Companion plugins     1 to fix",
+          "  ✗ The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
+          "    $ claude plugin marketplace add thedotmack/claude-mem",
+          "    $ claude plugin marketplace add anthropics/claude-plugins-official",
+          "! MCP servers           3 warnings",
+          "  ! The claude command is not on PATH, so playwright was not registered. Run it once it is.",
+          "  ! The claude command is not on PATH, so sequential-thinking was not registered. Run it once it is.",
+          TAVILY_SKIPPED,
+        ],
+        [
+          `✗ Setup is not finished: do what the ✗ and ! lines above say, then run cc-smart-dev-kit setup again. ${BACKUPS}`,
+        ],
+        [RESTART_STEP],
+      ),
     );
     expect(existsSync(launcher)).toBe(true);
     expect(readJson(settingsFile).extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate).toBe(
@@ -2042,6 +2119,8 @@ describe("cc-smart-dev-kit setup: the auto-mode block", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toStartWith(
         [
+          SETUP_HEADING,
+          "",
           `Auto mode: trust rules from ${repo}/.claude/cc-smart-dev-kit.json ("autoMode"), for autoMode.environment in ~/.claude/settings.json:`,
           '  + "$defaults"',
           `  + ${JSON.stringify(RULE)}`,
@@ -2049,7 +2128,11 @@ describe("cc-smart-dev-kit setup: the auto-mode block", () => {
         ].join("\n"),
       );
       expect(result.stdout).toContain(
-        "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.\n",
+        [
+          "  ! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal",
+          "    Fix: run cc-smart-dev-kit setup in a terminal",
+          "",
+        ].join("\n"),
       );
       expect(readJson(settingsFile).autoMode).toBeUndefined();
     }
@@ -2059,12 +2142,17 @@ describe("cc-smart-dev-kit setup: the auto-mode block", () => {
     const repo = project({ autoMode: [RULE] });
     const { settingsFile, stateDir, run } = setup({ fakeGit: false });
     const result = run(["setup", "--dry-run"], GIT_ENV, repo);
+    // The entries as changes in their section, then the same line the real run prints: they are
+    // left out without a terminal.
     expect(result.stdout).toContain(
-      `~ ~/.claude/settings.json: autoMode.environment: added "$defaults"\n~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}\n`,
-    );
-    // The same note the real run prints: these entries are left out without a terminal.
-    expect(result.stdout).toContain(
-      "! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal. Run cc-smart-dev-kit setup in a terminal.\n",
+      [
+        "! Projects              2 to change, 1 warning",
+        '  ~ ~/.claude/settings.json: autoMode.environment: added "$defaults"',
+        `  ~ ~/.claude/settings.json: autoMode.environment: added ${JSON.stringify(RULE)}`,
+        "  ! auto-mode entries left out: they are trust rules, so setup asks first, on a terminal",
+        "    Fix: run cc-smart-dev-kit setup in a terminal",
+        "",
+      ].join("\n"),
     );
     expect(readJson(settingsFile).autoMode).toBeUndefined();
     expect(existsSync(stateDir)).toBe(false);
@@ -2228,11 +2316,11 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
       [
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "claude" -> "openai-compatible"',
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_PRESET: "" -> "custom"',
-        `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "" -> "${backend.url}/v1"`,
-        `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "${AFFORDABLE_MODEL}"`,
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "" -> "••••cdef"',
+        '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "claude" -> "openai-compatible"',
+        '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_PRESET: "" -> "custom"',
+        `  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "" -> "${backend.url}/v1"`,
+        `  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "${AFFORDABLE_MODEL}"`,
+        '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "" -> "••••cdef"',
         "",
       ].join("\n"),
     );
@@ -2255,9 +2343,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(statSync(file).mode & 0o777).toBe(0o600);
 
     // A second run: nothing to change, and no need to ask the backend again.
-    expect(run(["setup"]).stdout).toBe(
-      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
-    );
+    expect(run(["setup"]).stdout).toBe(NOTHING_TO_CHANGE);
     expect(backend.seen).toHaveLength(1);
 
     // Restore takes out the keys setup owns: claude-mem falls back to its own defaults.
@@ -2285,7 +2371,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const result = await runAsync(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
-      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-haiku-4-5-20251001" -> (none)\n',
+      '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-haiku-4-5-20251001" -> (none)\n',
     );
     const written = readJson(file);
     expect(Object.hasOwn(written, "CLAUDE_MEM_QUOTA_FALLBACK_MODEL")).toBe(false);
@@ -2339,7 +2425,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
-      '  claude-mem settings left alone: CLAUDE_MEM_PROVIDER is "gemini" in ~/.claude-mem/settings.json (your choice)\n',
+      '  · claude-mem settings left alone: CLAUDE_MEM_PROVIDER is "gemini" in ~/.claude-mem/settings.json (your choice)\n',
     );
     const written = readJson(file);
     // The provider keys stay exactly as the person left them...
@@ -2360,7 +2446,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     });
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_API_KEY is another key in ~/.claude-mem/settings.json (your choice)\n",
+      "  · claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_API_KEY is another key in ~/.claude-mem/settings.json (your choice)\n",
     );
     expect(result.stdout).not.toContain("sk-their-own-key");
   });
@@ -2372,7 +2458,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const result = await runAsync(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
-      "! claude-mem settings left alone: omniroute refused its key (HTTP 401)\n",
+      "  ! claude-mem settings left alone: omniroute refused its key (HTTP 401)\n",
     );
     const written = readJson(file);
     // Nothing of the provider's is written...
@@ -2424,7 +2510,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     writeFileSync(installed, JSON.stringify(plugins));
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "! claude-mem@thedotmack 13.28.0 is outside >=13.36.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
+      "  ! claude-mem@thedotmack 13.28.0 is outside >=13.36.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
     );
     expect(result.stdout.match(/13\.28\.0/g)).toHaveLength(1);
     const written = readJson(file);
@@ -2441,17 +2527,17 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       [
         404,
         "404 page not found",
-        "! claude-mem settings left alone: omniroute has no OpenAI chat endpoint at URL/v1/chat/completions (HTTP 404)\n",
+        "  ! claude-mem settings left alone: omniroute has no OpenAI chat endpoint at URL/v1/chat/completions (HTTP 404)\n",
       ],
       [
         404,
         { error: { code: "model_not_found", message: "The model does not exist" } },
-        `! claude-mem settings left alone: omniroute does not serve the model ${AFFORDABLE_MODEL} (HTTP 404)\n`,
+        `  ! claude-mem settings left alone: omniroute does not serve the model ${AFFORDABLE_MODEL} (HTTP 404)\n`,
       ],
       [
         500,
         { error: { message: `upstream rejected ${PLANTED_KEY}` } },
-        `! claude-mem settings left alone: omniroute answered HTTP 500 to a one-token chat request for ${AFFORDABLE_MODEL} at URL/v1/chat/completions\n`,
+        `  ! claude-mem settings left alone: omniroute answered HTTP 500 to a one-token chat request for ${AFFORDABLE_MODEL} at URL/v1/chat/completions\n`,
       ],
     ];
     for (const [status, body, note] of cases) {
@@ -2480,10 +2566,10 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     writeClaudeMem(home, SEEDED);
     const result = run(["setup", "--dry-run"]);
     expect(result.stdout).toContain(
-      "  claude-mem: would check omniroute (one chat request) before writing its settings\n",
+      "  · claude-mem: would check omniroute (one chat request) before writing its settings\n",
     );
     expect(result.stdout).toContain(
-      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "claude" -> "openai-compatible"\n',
+      '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "claude" -> "openai-compatible"\n',
     );
     expect(backend.seen).toEqual([]);
   });
@@ -2500,7 +2586,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      '  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "my-own-model" in ~/.claude-mem/settings.json (your choice)\n',
+      '  · claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "my-own-model" in ~/.claude-mem/settings.json (your choice)\n',
     );
     expect(readFileSync(file, "utf8")).toBe(before);
     run(["restore"]);
@@ -2525,7 +2611,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     writeFileSync(gateway, JSON.stringify(config));
     const result = await runAsync(["setup"]);
     expect(result.stdout).toContain(
-      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "••••cdef" -> "••••9999"\n',
+      '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "••••cdef" -> "••••9999"\n',
     );
     expect(readJson(file).CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(
       "sk-rotated-SECRET-9999999999999999",
@@ -2539,12 +2625,15 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     await runAsync(["setup"]);
     rmSync(join(home, ".config", "cc-smart-dev-kit", "gateway.json"));
     expect(run(["setup"]).stdout).toBe(
-      [
-        "Nothing to change. Setup is up to date.",
-        "! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. Run cc-smart-dev-kit setup again once the scout slot starts with an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.",
-        TAVILY_SKIPPED,
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "! Companion plugins     1 warning",
+          "  ! claude-mem still uses the backend cc-smart-dev-kit set for it, but the gateway is not set up. Run cc-smart-dev-kit setup again once the scout slot starts with an affordable model, or cc-smart-dev-kit restore to put claude-mem back on its own defaults.",
+          ...MCP_TAVILY_ONLY,
+        ],
+        ["! Nothing to change. Setup is up to date, with 2 warnings to read above."],
+      ),
     );
   });
 
@@ -2567,7 +2656,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     });
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "  claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_API_KEYS holds your own keys in ~/.claude-mem/settings.json (your choice)\n",
+      "  · claude-mem settings left alone: CLAUDE_MEM_OPENAI_COMPAT_API_KEYS holds your own keys in ~/.claude-mem/settings.json (your choice)\n",
     );
     expect(result.stdout).not.toContain("sk-pool");
     const written = readJson(file);
@@ -2585,7 +2674,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const before = readFileSync(file, "utf8");
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "! claude-mem settings left alone: ~/.claude-mem/settings.json is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.\n",
+      "  ! claude-mem settings left alone: ~/.claude-mem/settings.json is in claude-mem's old nested form, which claude-mem rewrites when it next starts. Start a Claude Code session, then run cc-smart-dev-kit setup again.\n",
     );
     expect(readFileSync(file, "utf8")).toBe(before);
   });
@@ -2595,7 +2684,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const file = writeClaudeMem(home, SEEDED);
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"\n',
+      '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"\n',
     );
     expect(result.stdout).not.toContain("CLAUDE_MEM_PROVIDER");
     const written = readJson(file);
@@ -3165,8 +3254,8 @@ describe("D42: setup offers Claude Code's retry watchdog", () => {
   const RECHECK = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
   /** The key setup writes beside them whenever claude-mem is installed (D23). */
   const TODO = { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" };
-  const ON_LINE = `~ ~/.claude/settings.json: env.${WATCHDOG}: (none) -> "1"`;
-  const RECHECK_LINE = `~ ~/.claude/settings.json: env.${RECHECK}: (none) -> "300000"`;
+  const ON_LINE = `  ~ ~/.claude/settings.json: env.${WATCHDOG}: (none) -> "1"`;
+  const RECHECK_LINE = `  ~ ~/.claude/settings.json: env.${RECHECK}: (none) -> "300000"`;
   const DOCTOR_OFF =
     "· retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog\n";
 
@@ -3246,7 +3335,7 @@ describe("D42: setup offers Claude Code's retry watchdog", () => {
     const dry = run(["setup", "--dry-run"]);
     expect(dry.exitCode).toBe(0);
     expect(dry.stdout).toContain(
-      "  retry watchdog: not offered, there is no terminal (nothing changes); --retry-watchdog turns it on\n",
+      "  · retry watchdog: not offered, there is no terminal (nothing changes); --retry-watchdog turns it on\n",
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     const real = run(["setup"]);
@@ -3273,7 +3362,7 @@ describe("D42: setup offers Claude Code's retry watchdog", () => {
       expect(await runSetup(paths, setupOptions(home, say, { dryRun: true }))).toBe(0);
       expect(asked).toEqual([]);
       expect(lines.join("\n")).toContain(
-        "  retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); --retry-watchdog turns it on without asking",
+        "  · retry watchdog: a real run asks once whether Claude Code waits and retries at a limit (default no); --retry-watchdog turns it on without asking",
       );
       expect(readFileSync(settingsFile, "utf8")).toBe(before);
       expect(existsSync(join(stateDir, "retry-watchdog-declined"))).toBe(false);
@@ -3297,9 +3386,7 @@ describe("D42: setup offers Claude Code's retry watchdog", () => {
     expect(real.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
     expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
     // Again: nothing to change.
-    expect(run(["setup", "--retry-watchdog"]).stdout).toStartWith(
-      "Nothing to change. Setup is up to date.",
-    );
+    expect(run(["setup", "--retry-watchdog"]).stdout).toBe(NOTHING_TO_CHANGE);
   });
 
   test("with the flag, a terminal is not asked", async () => {
@@ -3342,7 +3429,7 @@ describe("D42: setup offers Claude Code's retry watchdog", () => {
     const same = run(["setup", "--retry-watchdog"]);
     expect(same.exitCode).toBe(0);
     expect(same.stdout).toContain(
-      `  ~/.claude/settings.json: env.${WATCHDOG}: already set by someone else; left alone\n`,
+      `  · ~/.claude/settings.json: env.${WATCHDOG}: already set by someone else; left alone\n`,
     );
     expect(same.stdout).toContain(RECHECK_LINE);
     expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
@@ -3470,22 +3557,26 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(before.stdout).toContain(owed);
 
     const removed = [
-      "- ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: removed (Serena's context; Serena is retired in 0.6.0)",
-      "- ~/.local/share/cc-smart-dev-kit/serena/: removed (Serena's folder, empty now)",
-      "- ~/.claude/cc-smart-dev-kit/serena-root/: removed (the serena-root hook's records; Serena is retired in 0.6.0)",
+      "  - ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml: removed (Serena's context; Serena is retired in 0.6.0)",
+      "  - ~/.local/share/cc-smart-dev-kit/serena/: removed (Serena's folder, empty now)",
+      "  - ~/.claude/cc-smart-dev-kit/serena-root/: removed (the serena-root hook's records; Serena is retired in 0.6.0)",
     ];
     // A dry run shows each step, and changes nothing.
     const dry = run(["setup", "--dry-run"]);
     expect(dry.exitCode).toBe(0);
     expect(dry.stdout).toBe(
-      [
-        "$ claude mcp remove serena --scope user",
-        ...removed,
-        WATCHDOG_NOT_OFFERED,
-        TAVILY_SKIPPED,
-        "Dry run: nothing was written or run.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_DRY_HEADING,
+        [
+          "· Claude Code settings  1 note",
+          WATCHDOG_NOT_OFFERED,
+          "! MCP servers           4 to change, 1 warning",
+          "  $ claude mcp remove serena --scope user",
+          ...removed,
+          TAVILY_SKIPPED,
+        ],
+        ["· A real run makes 4 changes.", "Dry run: nothing was written or run."],
+      ),
     );
     expect(readJson(userConfigFile).mcpServers.serena).toBeDefined();
     expect(existsSync(where.contextFile)).toBe(true);
@@ -3495,13 +3586,17 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
-      [
-        "- MCP server serena removed from your user config",
-        ...removed,
-        TAVILY_SKIPPED,
-        "Done. Each changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
-        "",
-      ].join("\n"),
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "! MCP servers           4 changes, 1 warning",
+          "  - MCP server serena removed from your user config",
+          ...removed,
+          TAVILY_SKIPPED,
+        ],
+        [`! Done: 4 changes, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
     );
     // Through Claude Code's own command; the plugin's own servers stay.
     expect(claudeCalls()).toContain("mcp remove serena --scope user\n");
@@ -3517,9 +3612,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     const after = run(["doctor", "--verbose"]);
     expect(after.stdout).not.toContain("Serena");
     expect(after.stdout).not.toContain("serena");
-    expect(run(["setup"]).stdout).toBe(
-      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
-    );
+    expect(run(["setup"]).stdout).toBe(NOTHING_TO_CHANGE);
   });
 
   test("a serena of the person's own: setup never touches it, and doctor shows it with ·, never ✗", () => {
@@ -3530,9 +3623,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     userConfig.mcpServers.serena = { args: ["serena", "start-mcp-server"], command: "uvx" };
     writeFileSync(userConfigFile, JSON.stringify(userConfig, null, 2));
 
-    expect(run(["setup"]).stdout).toBe(
-      `Nothing to change. Setup is up to date.\n${TAVILY_SKIPPED}\n`,
-    );
+    expect(run(["setup"]).stdout).toBe(NOTHING_TO_CHANGE);
     expect(claudeCalls()).not.toContain("mcp remove serena");
     expect(readJson(userConfigFile).mcpServers.serena).toEqual({
       args: ["serena", "start-mcp-server"],
@@ -3809,9 +3900,7 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
     // It bakes the bun that ran setup, and runs the installed cli.js.
     expect(readFileSync(cmd, "utf8")).toContain(`set "baked_bun=${process.execPath}"`);
     // A second setup changes nothing.
-    expect(run(["setup"], windowsHost()).stdout).toContain(
-      "Nothing to change. Setup is up to date.",
-    );
+    expect(run(["setup"], windowsHost()).stdout).toContain(`\n${UP_TO_DATE}\n`);
   });
 
   test("off Windows setup writes no .cmd, and Linux output is untouched", () => {
@@ -3835,13 +3924,13 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
     expect(existsSync(join(binDir, "cc-smart-dev-kit"))).toBe(false);
   });
 
-  test("the PATH note names the Windows folder and where to add it", () => {
+  test("the PATH step names the Windows folder and where to add it, first of the next steps", () => {
     const { binDir, fakeBin, run } = setup();
     // A PATH without the launcher's folder: what a fresh Windows machine has.
     const result = run(["setup"], windowsHost({ PATH: fakeBin }));
     expect(existsSync(join(binDir, "cc-smart-dev-kit.cmd"))).toBe(true);
     expect(result.stdout).toContain(
-      `Note: ${binDir} is not on your PATH. Add it there (Windows Settings → System → About → Advanced system settings → Environment Variables → Path for your account), then open a new terminal, so the cc-smart-dev-kit command works.`,
+      `\nNext steps:\n  1. Add ${binDir} to your PATH, so the cc-smart-dev-kit command works: Windows Settings → System → About → Advanced system settings → Environment Variables → Path for your account. Then open a new terminal.\n`,
     );
   });
 

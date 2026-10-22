@@ -168,10 +168,11 @@ export interface GatewayContext {
   /** Every secret that arrives on stdin (`--backend-key-stdin`, `--omniroute-password-stdin`). */
   readStdin: () => Promise<string>;
   /**
-   * Asks for a secret on the terminal, with no echo; left out when stdin is not a terminal that
-   * can hide it. `readSecretLine` in use, so nothing typed or pasted is shown on screen.
+   * Shows the question, then reads a secret on the terminal with no echo; left out when stdin is
+   * not a terminal that can hide it. The prompts' `secret` in use (`src/cli/ui/prompt.ts`), so
+   * nothing typed or pasted is shown on screen. Null: Ctrl+C.
    */
-  readSecret?: () => Promise<null | string>;
+  readSecret?: (question: string) => Promise<null | string>;
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
   /**
@@ -1677,7 +1678,7 @@ async function omniroutePassword(ctx: GatewayContext, fromStdin: boolean): Promi
         `${COMMAND} gateway setup --omniroute-password-stdin < password-file`,
     );
   }
-  const value = await ctx.readSecret();
+  const value = await ctx.readSecret("OmniRoute's dashboard password");
   if (value === null) throw new Error("nothing was read (Ctrl+C)");
   if (value === "") throw new Error("no OmniRoute dashboard password was given");
   return value;

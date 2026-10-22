@@ -304,13 +304,21 @@ describe("restore takes the browser's own things back", () => {
 });
 
 describe("what cc-smart-dev-kit setup prints", () => {
-  test("not ready: the state, how many steps are open, and the guide", () => {
+  test("UX-8: not ready: one line with the open steps, and browser setup as the next step; the guide stays in browser setup", () => {
     const world = chromeWorld();
     const report = browserSetupReport(world.paths, world.deps);
-    expect(report.notes).toEqual([]);
-    expect(report.info.join("\n")).toContain("the browser is NOT ready: steps 1, 2, 5");
-    expect(report.info.join("\n")).toContain("browser setup");
-    expect(report.info.join("\n")).toContain(PLAYWRIGHT_EXTENSION_SETTINGS_URL);
+    expect(report).toEqual({
+      info: [
+        "  the browser is NOT ready: steps 1, 2, 5 of cc-smart-dev-kit browser setup are open",
+      ],
+      notes: [],
+      next: {
+        text: 'Finish the browser: this opens Chrome in the "claude-code" profile and walks you through steps 1, 2, 5:',
+        command: "cc-smart-dev-kit browser setup",
+      },
+    });
+    // The guide is browser setup's own: setup does not print it.
+    expect(JSON.stringify(report)).not.toContain(PLAYWRIGHT_EXTENSION_SETTINGS_URL);
     expect(world.detached).toEqual([]);
   });
 
@@ -318,7 +326,11 @@ describe("what cc-smart-dev-kit setup prints", () => {
     const world = chromeWorld();
     world.withProfile({ fileUrls: true });
     writeWorldToken(world);
-    expect(browserSetupReport(world.paths, world.deps)).toEqual({ info: [], notes: [] });
+    expect(browserSetupReport(world.paths, world.deps)).toEqual({
+      info: [],
+      notes: [],
+      next: null,
+    });
   });
 
   test("the same lines on a machine whose Chrome cannot be found: no host fact leaks in", () => {

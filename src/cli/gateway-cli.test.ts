@@ -405,7 +405,7 @@ function machine(
   const runHere = async (
     args: string[],
     input?: string,
-    how: { readSecret?: () => Promise<null | string> } = {},
+    how: { readSecret?: (question: string) => Promise<null | string> } = {},
   ) => {
     if (args[0] !== "gateway" && args[0] !== "restore") {
       throw new Error("runHere runs `gateway …` and `restore …` commands only");
@@ -916,14 +916,15 @@ describe("cc-smart-dev-kit gateway setup: OmniRoute's dashboard password", () =>
   test("--omniroute-password asks on the terminal, with no echo, and saves the key it makes", async () => {
     // The command path the README, the installer and the gateway skill all send people to.
     const m = machine();
-    let asked = 0;
+    const asked: string[] = [];
     const result = await m.runHere(["gateway", "setup", "--omniroute-password"], undefined, {
-      readSecret: () => {
-        asked += 1;
+      readSecret: (question) => {
+        asked.push(question);
         return Promise.resolve("the-dashboard-password");
       },
     });
-    expect(asked).toBe(1);
+    // One question, which the secret read shows (`src/cli/ui/prompt.ts`): UX-9's visible prompt.
+    expect(asked).toEqual(["OmniRoute's dashboard password"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('made the key "cc-smart-dev-kit-router-');
     expect(

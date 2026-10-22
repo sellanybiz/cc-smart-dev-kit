@@ -25,11 +25,12 @@ import { cliPaths } from "../cli/paths";
 import { runProjectInit } from "../cli/project-init";
 import { runReport } from "../cli/report";
 import { runRestore } from "../cli/restore";
-import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
+import { cleanSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
 import { runSubagentStatusline } from "../cli/subagent-statusline";
 import { createOut, dryRunEnding } from "../cli/ui/out";
+import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
@@ -139,8 +140,14 @@ const service = routerServiceKind(process.platform, (command) =>
 /** The Windows account a Scheduled Task runs as (`MACHINE\user`); null everywhere else. */
 const account = windowsAccount(process.env);
 
-/** Asks on the terminal; null when stdin is not one (a pipe, a script, a test). */
-const ask = process.stdin.isTTY ? (question: string) => confirm(question) : null;
+/**
+ * The questions every command asks, from their one home (`src/cli/ui/prompt.ts`); null when
+ * stdin is not a terminal (a pipe, a script, a test): then nothing is asked.
+ */
+const prompts = terminalPrompts(currentTerminal(process.env));
+
+/** A yes/no question whose default is no; null when there is no terminal to ask on. */
+const ask = prompts === null ? null : (question: string) => prompts.confirm(question, false);
 
 /**
  * The gateway commands' context. `src/gateway/context.ts` owns it — including the one decision
@@ -472,14 +479,8 @@ async function main(argv: string[]): Promise<number> {
         env: process.env,
         stateDir: paths.stateDir,
         home: paths.home,
-        terminal:
-          process.stdin.isTTY && process.stdout.isTTY
-            ? {
-                confirm: (question) => confirm(question),
-                text: (question, fallback) => prompt(question, fallback) ?? fallback,
-              }
-            : null,
-        print: (line) => console.log(line),
+        prompts,
+        out: createOut(currentTerminal(process.env)),
         error: (line) => console.error(line),
       });
     }
@@ -640,15 +641,17 @@ async function main(argv: string[]): Promise<number> {
           );
           return 0;
         }
-        const hide = canHideInput(process.stdin);
+        // The secret read of the prompts' one home: null where the terminal cannot hide what
+        // is typed, and then a terminal is refused (the token would show), never read with echo.
+        const secret = prompts?.secret ?? null;
         // The four outcomes (0 saved, 130 Ctrl+C, 1 a wrong shape, 1 a read that failed) are
         // decided in one place, `savePastedToken`, so each is tested there.
         return await savePastedToken(
           paths,
           {
-            isTTY: hide,
+            isTTY: process.stdin.isTTY === true,
             readAll: () => Bun.stdin.text(),
-            ...(hide ? { readSecret: () => readSecretLine(process.stdin) } : {}),
+            ...(secret === null ? {} : { readSecret: secret }),
           },
           (line) => console.log(line),
           (line) => console.error(line),

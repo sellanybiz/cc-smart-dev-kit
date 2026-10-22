@@ -191,14 +191,23 @@ step below runs the plugin through it.
    Setup installs the launcher `~/.local/bin/cc-smart-dev-kit`, turns Claude Code's own plugin
    auto-update off (the kit updates itself, below), registers the MCP servers for your user ([MCP servers](#mcp-servers)), installs
    the plugin's general instructions for Claude (§ Instructions, skills
-   and agents), adds any companion marketplace that is missing, and prints the [browser](#the-browser)'s
-   own steps while they are still open (the browser needs the Playwright extension in a Chrome
-   profile of its own, and its token — `browser setup` does the machine's half of that). Add
+   and agents), adds any companion marketplace that is missing, and says whether the
+   [browser](#the-browser) is ready (the browser needs the Playwright extension in a Chrome
+   profile of its own, and its token). Add
    `--dry-run` to see the changes first; it writes and runs nothing at all. Add
    `--no-instructions` to leave the instructions out (setup remembers that choice).
 
-4. Restart Claude Code. Finish the browser's steps if setup printed them
-   ([The browser](#the-browser)); without the token, the browser tools do not work.
+   Setup's report has a section per part (the command, Claude Code's settings, the
+   instructions, the companion plugins, the MCP servers, the browser, your projects, the
+   terminal), each change one line with its mark (`+` created, `~` changed, `-` removed, `$` a
+   command), then one verdict line, then **Next steps**: what to run now, in order — the line
+   that puts `~/.local/bin` on your PATH (for your shell) when it is not there yet,
+   `cc-smart-dev-kit browser setup` while the browser's steps are open, and a new Claude Code
+   session after a change.
+
+4. Do the next steps setup printed: `cc-smart-dev-kit browser setup` walks you through the
+   browser's steps ([The browser](#the-browser)); without the token, the browser tools do not
+   work. Then restart Claude Code.
 
 After that, use `cc-smart-dev-kit setup` to set up again (for example after an update).
 
@@ -704,7 +713,7 @@ Five pages say how, and what still has to be tested there:
 
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit setup` | Installs the launcher, turns Claude Code's own plugin auto-update off for this marketplace (`extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: false`: the background update below is the one updater, so a major version waits for you), writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and prints the command that applies it to a running tmux server. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up, and turns [claude-mem's two start blocks off, with Claude Code's own task tools on](#claude-mem) whenever claude-mem is installed. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: true`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"), and, with no `CLAUDE_CODE_RETRY_WATCHDOG` in your settings, [Claude Code's retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) (once, default no; it remembers a "no"). |
+| `cc-smart-dev-kit setup` | Installs the launcher, turns Claude Code's own plugin auto-update off for this marketplace (`extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: false`: the background update below is the one updater, so a major version waits for you), writes one user-level `Notification` hook for agent view ([Notifications](#notifications)), and installs the [instructions](#instructions-skills-and-agents): a copy in `~/.claude/cc-smart-dev-kit/instructions/`, imported by a cc-smart-dev-kit block in `~/.claude/CLAUDE.md` (your own text there is kept); each run refreshes the copy, so run it after a plugin update. Adds a missing [companion](#companion-plugins) marketplace (or plugin). Adds the [tmux line](#notifications) to `~/.tmux.conf` when tmux is installed (kept next to your own lines, removed again by `restore`), and names the command that applies it to a running tmux server as a next step. Points [claude-mem at the gateway's affordable model](#claude-mem-on-the-gateway) when both are set up, and turns [claude-mem's two start blocks off, with Claude Code's own task tools on](#claude-mem) whenever claude-mem is installed. Copies the project's [auto-mode entries](#the-auto-mode-block) into your settings, after it shows them and asks. It never touches [Warp](#warp) or its plugin without `--warp`. Every question comes before anything runs or is written. `--dry-run` shows the changes, and writes, runs and checks nothing at all (it reaches no network). A settings key you set yourself (for example `autoUpdate: true`, also after setup had set it) stops setup before it writes or runs anything. Without `claude` on your PATH, setup skips only the `claude plugin …` steps, names them, does the rest, and exits with 1. Run in a terminal with no status line set, setup also offers [cc-smart-dev-kit's status line](#the-usage-limit-the-alert-the-status-line-and-usage) (once: it remembers a "no"), and, with no `CLAUDE_CODE_RETRY_WATCHDOG` in your settings, [Claude Code's retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) (once, default no; it remembers a "no"); `--yes` offers neither, and remembers no "no". A question shows its default and takes Enter for it; an answer it cannot read is asked again once. The report has a section per part, one verdict line, and the next steps to run, in order. |
 | `cc-smart-dev-kit setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/cc-smart-dev-kit/no-instructions`), so a later plain `cc-smart-dev-kit setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `cc-smart-dev-kit setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, they are left out, also with `--yes`. |
 | `cc-smart-dev-kit setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
@@ -2566,10 +2575,15 @@ works from `dev`, never from a `main` it does not have), else `main`, else `mast
 branch HEAD is on — the bases offered for `hotfix/` and `release/` from the default branch,
 and the protected branches from the default branch and the base plus, when `gh` is installed
 and answers, the branches GitHub protects (a read-only `gh api`; anything missing is skipped
-quietly). Then it prints the file it will write with the changes line by line, the lines it
-adds to (`+`) or takes out of (`-`) each settings file, and writes them — a backup first, in
-`~/.claude/cc-smart-dev-kit/backups/`. **Nothing is committed:** commit the two files with the
-project (`.claude/settings.local.json` is your own, and stays uncommitted).
+quietly). The questions are counted (`[2/7]`), each shows its default in brackets, and Enter
+keeps it; a list question takes `none` for an empty list, and an answer it cannot read is asked
+again once, with the reason. Then it prints the plan, one group per file — the changes line by
+line (`+` added, `~` changed, `-` taken out), and the settings files merged with what they have
+— asks `Write these files? [y/N]`, writes them (a backup first, in
+`~/.claude/cc-smart-dev-kit/backups/`), and ends with the next steps. **Nothing is
+committed:** the first next step is the `git add … && git commit` line for the files to commit
+with the project (`.claude/settings.local.json` is your own, and stays uncommitted); the second
+is the plugin version every teammate needs.
 
 Every question has a flag, so it also runs without a terminal:
 
@@ -2582,7 +2596,7 @@ cc-smart-dev-kit project init --base dev --bases "hotfix/=main,release/=main" \
 too (`--no-guard-main-folder`, `--no-session-names`, `--no-job-route`), so a run with no
 terminal can answer either way. With no terminal it writes nothing unless
 `--yes` is given: it prints the plan and the line to run instead. `--dry-run` prints the plan
-and writes nothing at all. Run it again on a project that has a file: it shows the diff and
+of the flags and the defaults, asks nothing (on a terminal too), and writes nothing at all. Run it again on a project that has a file: it shows the diff and
 asks, and `--yes` keeps every field the flags do not set. A `--workflow` word changes only
 the setting it names — `--workflow autoPush=true` keeps `crew.*`, `fixesAfterReview.*` and
 every other workflow field the file holds; a dotted key (`crew.enabled=false`) changes only

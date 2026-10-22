@@ -201,33 +201,32 @@ export interface TokenInput {
   /** Everything on stdin, up to its end (a pipe, or `< token.txt`). */
   readAll: () => Promise<string>;
   /**
-   * A terminal's own line read, with no echo and cleaned (`readSecretLine`, `src/cli/secret-line.ts`);
-   * left out when there is none.
+   * The question, then a terminal's own line read with no echo and cleaned: the prompts' secret
+   * read (`src/cli/ui/prompt.ts`). Left out when the terminal cannot hide what is typed.
    */
-  readSecret?: () => Promise<null | string>;
+  readSecret?: (question: string) => Promise<null | string>;
 }
+
+/** What `browser token` asks on a terminal; the secret read adds that the token is not shown. */
+export const TOKEN_QUESTION = "Paste the token from the extension's status page, then press Enter";
 
 /**
  * The token a person pasted. On a terminal the line is read with no echo (the token is a secret,
  * and a terminal shows what it receives); from a pipe or a file it is read as it is. Nothing is
- * printed but the one prompt, which says the token is not shown.
+ * printed but the one question (`TOKEN_QUESTION`), which says the token is not shown.
  *
  * A terminal whose echo cannot be switched off throws instead of reading: the caller then says to
  * pipe the token in, which never shows it either. (Without that, `readAll` on a terminal would
  * wait for Ctrl+D and echo the token — the one thing this must not do.)
  */
-export async function readTokenFromStdin(
-  input: TokenInput,
-  say: (line: string) => void,
-): Promise<null | string> {
+export async function readTokenFromStdin(input: TokenInput): Promise<null | string> {
   if (input.isTTY) {
     if (input.readSecret === undefined) {
       throw new Error(
         "this terminal cannot hide what you type, so the token would be shown on screen",
       );
     }
-    say("Paste the token from the extension's status page, then press Enter (it is not shown):");
-    return await input.readSecret();
+    return await input.readSecret(TOKEN_QUESTION);
   }
   return await input.readAll();
 }
@@ -253,7 +252,7 @@ export async function savePastedToken(
 ): Promise<number> {
   let pasted: null | string;
   try {
-    pasted = await readTokenFromStdin(input, say);
+    pasted = await readTokenFromStdin(input);
   } catch (cause) {
     const why = cause instanceof Error ? cause.message : String(cause);
     error(

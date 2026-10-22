@@ -13329,6 +13329,7 @@ var UNICODE_MARKS = {
   info: "\xB7",
   ok: "\u2713",
   removed: "-",
+  run: "$",
   warn: "!"
 };
 var ASCII_MARKS = {
@@ -13338,6 +13339,7 @@ var ASCII_MARKS = {
   info: "[i]",
   ok: "[ok]",
   removed: "-",
+  run: "$",
   warn: "[!]"
 };
 var COLOURS = {
@@ -13347,6 +13349,7 @@ var COLOURS = {
   info: 2,
   ok: 32,
   removed: 31,
+  run: 36,
   warn: 33
 };
 var ASCII_TEXT = [
@@ -13378,9 +13381,10 @@ function markText(term, mark) {
 function paint(term, code, text) {
   return term.color ? `\x1B[${code}m${text}\x1B[0m` : text;
 }
-function words(term, text) {
+function shownText(term, text) {
   return term.unicode ? text : asciiText(text);
 }
+var words = shownText;
 function wrapWords(text, firstWidth, restWidth) {
   const lines = [];
   for (const paragraph of text.split(`
@@ -13413,13 +13417,15 @@ function renderLine(term, mark, text, options = {}) {
     const fix = wrapWords(words(term, options.fix), fixRoom, fixRoom);
     lines.push(...fix.map((part, index) => index === 0 ? `${hang}${FIX_LABEL} ${part}` : `${fixHang}${part}`));
   }
+  for (const detail of options.detail ?? [])
+    lines.push(`${hang}${words(term, detail)}`);
   return lines;
 }
 function renderGroup(term, header, lines) {
   const title = `${words(term, header.title).padEnd(header.titleWidth)}  ${header.summary}`;
   return [
     ...renderLine(term, header.mark, title),
-    ...lines.flatMap((line) => renderLine(term, line.mark, line.text, { fix: line.fix, indent: 2 }))
+    ...lines.flatMap((line) => renderLine(term, line.mark, line.text, { detail: line.detail, fix: line.fix, indent: 2 }))
   ];
 }
 function renderVerdict(term, mark, text) {
@@ -13431,7 +13437,9 @@ var LEADING_MARKS = [
   ["+ ", "created"],
   ["~ ", "changed"],
   ["- ", "removed"],
-  ["! ", "warn"]
+  ["! ", "warn"],
+  ["$ ", "run"],
+  ["\xB7 ", "info"]
 ];
 function leadingMark(line) {
   if (line.includes(`
@@ -13488,8 +13496,12 @@ function createOut(term, sink = CONSOLE_SINK) {
       const number = (index) => `${index + 1}.`.padEnd(String(steps.length).length + 2);
       for (const [index, step] of steps.entries()) {
         const lead = `  ${number(index)}`;
+        const hang = " ".repeat(lead.length);
         const room = term.width - lead.length;
-        print(wrapWords(words(term, step), room, room).map((part, at) => at === 0 ? `${lead}${part}` : `${" ".repeat(lead.length)}${part}`));
+        const text = typeof step === "string" ? step : step.text;
+        print(wrapWords(words(term, text), room, room).map((part, at) => at === 0 ? `${lead}${part}` : `${hang}${part}`));
+        if (typeof step !== "string")
+          print([`${hang}  ${step.command}`]);
       }
     },
     async progress(label, work) {
@@ -15760,7 +15772,7 @@ async function omniroutePassword(ctx, fromStdin) {
   if (ctx.readSecret === undefined) {
     throw new Error("this terminal cannot hide what you type, so the password would be shown on screen. Give it on stdin instead: " + `${COMMAND} gateway setup --omniroute-password-stdin < password-file`);
   }
-  const value = await ctx.readSecret();
+  const value = await ctx.readSecret("OmniRoute's dashboard password");
   if (value === null)
     throw new Error("nothing was read (Ctrl+C)");
   if (value === "")
@@ -29889,6 +29901,30 @@ function defaultAnswers(existing, facts, flags) {
 function defaultBases(facts) {
   return { "hotfix/": facts.defaultBranch, "release/": facts.defaultBranch };
 }
+var POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
+var NONE2 = "none";
+var QUESTIONS = [
+  ["base", "Base branch: the branch a new worktree starts from"],
+  ["bases", `Bases for other branch prefixes, as prefix=base,prefix=base ("${NONE2}" for none)`],
+  [
+    "protectedBranches",
+    `Protected branches: the git guard asks before a push to these, comma separated ("${NONE2}" for none)`
+  ],
+  [
+    "workflow",
+    `Workflow policy: what happens by itself after a step, as ${POLICY_EXAMPLE} ("${NONE2}" for none)`
+  ],
+  [
+    "guardMainFolder",
+    "Refuse edits in the main checkout itself, so every change goes in a worktree?"
+  ],
+  ["sessionNames", "Name each session after its task?"],
+  [
+    "jobRoute",
+    "Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns?"
+  ]
+];
+var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
 function readText2(file) {
   return existsSync46(file) ? readFileSync55(file, "utf8") : null;
 }
@@ -29925,7 +29961,8 @@ the project.
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
-  --dry-run              print the plan and write nothing
+  --dry-run              print the plan of the flags and the defaults (no questions), and
+                         write nothing
   --yes                  no questions: write the flags and the defaults
 
 The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;

@@ -295,8 +295,8 @@ valid across updates.
 
 - **One way to print: `src/cli/ui/out.ts`** (with `terminal.ts`, which reads the terminal once).
   New or rebuilt output prints headings, marked lines, groups, `Fix:` lines, a verdict,
-  progress and JSON through it, never its own marks or colour codes (`doctor` does all of it;
-  `setup` and `browser setup` draw their marks with `Out.marked`; the gateway, workflow,
+  progress and JSON through it, never its own marks or colour codes (`doctor`, `setup` and
+  `project init` do all of it; `browser setup` draws its marks with `Out.marked`; the gateway, workflow,
   migrate and restore lines move when those commands are rebuilt). Rich on a terminal (colour on the marks and the
   verdict only, wrapping to the width, at most 100 columns; a progress line while a slow step
   runs), plain otherwise (a pipe, a file, `NO_COLOR` with a value, `TERM=dumb`) with **the same
@@ -313,12 +313,23 @@ valid across updates.
   behind").
 - **A `--dry-run` ends with `dryRunEnding`** ("Dry run: nothing was written or run."), one form
   for every command.
-- `setup` prints one line per change: `+` created, `~` changed, `-` removed, with `~`
-  for the home folder (`tildify`); then information lines (two spaces: what it left
-  alone); then notes (`!`). With no change it prints "Nothing to change. Setup is up to
-  date." first; information may follow. "Done. Each changed file has a backup in
-  ~/.claude/cc-smart-dev-kit/backups/." (the state folder's `backups/`) comes only when a file
-  was written.
+- `setup` prints a heading, its questions, then its report in sections, in `SETUP_SECTIONS`'
+  fixed order (a section with nothing to say is left out): one line per change — `+`
+  created, `~` changed, `-` removed, `$` a command — with `~` for the home folder
+  (`tildify`), then information (`·`: what it left alone), then warnings (`!`) and failures
+  (`✗`). Then one verdict line ("Done: 11 changes. Each changed file has a backup in
+  ~/.claude/cc-smart-dev-kit/backups/." — the backup sentence only when a file was written;
+  "Nothing to change. Setup is up to date." when nothing changed; "Setup is not finished: …"
+  on exit 1), then **Next steps** in the order a person does them: PATH (the line for their
+  shell), what applies a change to a running program (tmux), `browser setup`, a new Claude
+  Code session. Each part another command shares (`restore`, `doctor`) keeps its own line
+  text; setup reads its mark once (`reportLine`). `project init` has the same shape, a group
+  per file.
+- **Every question goes through `src/cli/ui/prompt.ts`** (`confirm`, `ask`, `secret`): the
+  default shown and taken by Enter, an answer it cannot read asked once more, the end of
+  the input taken as the default, no prompts at all without a terminal, and a secret never
+  echoed or printed. Never Bun's own `confirm()` or `prompt()` in a command: the module
+  draws the question with the rest of the output.
 - `doctor` prints its checks in groups (`CHECK_GROUPS` in `src/cli/check.ts`), each as it is
   done. A group that passed folds to its line and its `·` notes; one with a `✗` or a `!` shows
   every line, each `✗` with its `Fix:` line. Then one verdict line. `--verbose` opens every

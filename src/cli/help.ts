@@ -95,7 +95,8 @@ by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, po
 at the scout slot's affordable model (when its chain starts with one), and copies the
 project's auto-mode entries into your settings. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
-with --yes.
+with --yes. --yes offers neither the status line nor the retry watchdog. It prints a section
+per part, one verdict line, and the next steps to run, in order.
 
   --project <dir>      the project to read .claude/cc-smart-dev-kit.json from
                        (default: this folder)
