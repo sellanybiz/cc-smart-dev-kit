@@ -60,7 +60,7 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
     // A secret on stdin is cleaned first: a terminal that keeps bracketed paste on hands a
     // paste to a pipe as `ESC[200~<key>ESC[201~` (`src/cli/secret-line.ts`).
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...secretRead(terminal),
+    ...terminalQuestions(terminal),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -73,12 +73,15 @@ export function gatewayContext(options: GatewayContextOptions): GatewayContext {
 }
 
 /**
- * The secret read of the prompts' one home (`src/cli/ui/prompt.ts`): it shows the question, and
- * reads with no echo. Nothing at all on a pipe, or on a terminal that cannot switch its echo off.
+ * The prompts' one home (`src/cli/ui/prompt.ts`) on this terminal: `prompts` for `gateway
+ * setup`'s questions, and `readSecret` (the prompts' secret read: it shows the question, and
+ * reads with no echo). Nothing at all on a pipe; no `readSecret` on a terminal that cannot
+ * switch its echo off.
  */
-function secretRead(
+function terminalQuestions(
   terminal: RawTerminal & { isTTY?: boolean },
-): Pick<GatewayContext, "readSecret"> {
-  const secret = terminalPrompts(currentTerminal(), terminal)?.secret ?? null;
-  return secret === null ? {} : { readSecret: secret };
+): Pick<GatewayContext, "prompts" | "readSecret"> {
+  const prompts = terminalPrompts(currentTerminal(), terminal);
+  if (prompts === null) return {};
+  return prompts.secret === null ? { prompts } : { prompts, readSecret: prompts.secret };
 }

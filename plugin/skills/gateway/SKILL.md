@@ -43,11 +43,16 @@ repository (the installed plugin does not carry the docs).
 
 ## Set it up
 
-1. A backend first, for example OmniRoute with an Ollama Cloud connection. Setup writes
-   `http://127.0.0.1:20128` as the `omniroute` backend's address; OmniRoute elsewhere: change
-   `backends.omniroute.baseUrl` in `~/.config/cc-smart-dev-kit/gateway.json` after setup. The
-   first key is the `omniroute` backend's. **Two ways to give it**, and neither puts a secret on
-   the command line:
+1. A backend first, for example OmniRoute with an Ollama Cloud connection. **On a terminal,
+   plain `cc-smart-dev-kit gateway setup` asks its questions one at a time** — OmniRoute's
+   address (Enter keeps `http://127.0.0.1:20128` or the saved one), its API key with no echo
+   (Enter keeps the saved one), a chain for each model slot picked by number from the live model
+   list (Enter keeps the slot as it is: "off" for a slot with no chain, so no model is picked for
+   anyone; the judge is not asked), and whether to turn the gateway on now (default no). Every
+   question comes before any change; Ctrl+C at one stops it with exit 130 and nothing changed.
+   Any key flag, `--no-backend-key` or `--yes`, and every run with no terminal (a script, a
+   pipe, this shell tool), asks nothing. The first key is the `omniroute` backend's. **Two ways
+   to give it with a flag**, and neither puts a secret on the command line:
    - let setup make one: `cc-smart-dev-kit gateway setup --omniroute-password` — it asks for
      OmniRoute's own dashboard password with no echo (or takes it on stdin with
      `--omniroute-password-stdin < password-file`), logs in to the local OmniRoute, makes a key

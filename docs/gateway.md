@@ -142,8 +142,10 @@ affordable backend can run it, and one that answered it would return text a mode
 | `cc-smart-dev-kit-judge` | auto mode's safety checks | **none** (Claude judges first; the worker's tested targets while Claude cannot) | on |
 
 No model id is written by the plugin as a default, a target or a fallback (owner,
-2026-10-17). `gateway setup` writes the backend and its key and no chain; the person picks
-each target from the live model list, `cc-smart-dev-kit gateway models` (each backend's own
+2026-10-17). `gateway setup` writes the backend and its key and no chain the person did not
+pick: on a terminal its questions show the live model list and offer each slot "off" (or the
+chain it has) as the default. The person picks each target from the live model list (setup's
+questions), `cc-smart-dev-kit gateway models` (each backend's own
 `/v1/models`) or the portal's Slots page, then `cc-smart-dev-kit gateway slot <slot>
 <targets>`. A config saved by 0.4.3 or earlier keeps every chain it holds: `claude-sonnet-5-5`
 at the end of a scout or worker chain from an older setup is now the person's own target,
@@ -1173,8 +1175,13 @@ open), the router binds the config's port itself, as before.
    older router? stop it first)", nothing written; except a port that gives no answer in
    time while `cc-smart-dev-kit-router.socket` is active: that is our socket with its router down
    or restarting, and setup goes on;
-2. checks everything and writes nothing: the config, the copy, the two units;
-3. when the router is running and the copy or a unit changed (or an earlier setup did not
+2. on a terminal with no key flag and no `--yes`, asks its questions
+   (`src/gateway/setup-questions.ts`): OmniRoute's address, its API key (the secret read; Enter
+   keeps the saved one), a chain per model slot from the live model list (the judge is not
+   asked), and whether to turn the gateway on. Ctrl+C at one exits 130 with nothing changed. A
+   key or address the backend refuses stops setup at the key check, before any write;
+3. checks everything and writes nothing: the config, the copy, the two units;
+4. when the router is running and the copy or a unit changed (or an earlier setup did not
    finish), says what the restart does and asks (`--yes` skips the question; without a
    terminal and without `--yes`, it stops and changes nothing). Five texts, from what
    really changed (`restartWarning`):
@@ -1191,7 +1198,7 @@ open), the router binds the config's port itself, as before.
      to a new port";
    - a socket unit that changed on the same port: the same, "its socket unit changed, so
      the socket closes and opens again";
-4. makes the config when there is none (the backend key comes on stdin, never argv). For a
+5. makes the config when there is none (the backend key comes on stdin, never argv). For a
    config an older version wrote, it drops 0.4.x's hidden Claude step: a scout or worker
    chain that still equals 0.4.x's exact default (`omniroute:ollama-cloud/deepseek-v4.1-flash`
    → `omniroute:ollama-cloud/glm-5.3-flash` → `claude-sonnet-5-5`) loses its last target,
@@ -1199,9 +1206,9 @@ open), the router binds the config's port itself, as before.
    and it moves what a 0.5.x `portal.json` remembered into `kept`, then takes the slot parts
    out of that file (§ Slot modes: Claude or Custom). Both files are backed up first, under
    the state lock, and the moved chains arrive with the new router copy that reads them;
-5. writes the **restart-pending marker**, then the copy and the two units, all through
+6. writes the **restart-pending marker**, then the copy and the two units, all through
    `src/setup/` (backup, record for `restore`, atomic write);
-6. runs `systemctl --user daemon-reload` and `enable cc-smart-dev-kit-router.socket
+7. runs `systemctl --user daemon-reload` and `enable cc-smart-dev-kit-router.socket
    cc-smart-dev-kit-router.service`, then one of two ways:
    - **the socket is open and its file did not change:** `restart cc-smart-dev-kit-router.service`.
      The socket stays open; `restart` returns once the old router has drained and the new

@@ -63,6 +63,13 @@ export interface Prompts {
   readonly secret: ((question: string) => Promise<string | null>) | null;
 }
 
+/**
+ * The exit code of a command the person stopped with Ctrl+C: 128 + SIGINT, the shell's own. A
+ * typed question gets it from the signal itself; a command whose secret read answered null
+ * returns it, so both ways end alike.
+ */
+export const INTERRUPTED_EXIT = 130;
+
 /** How many times a question is asked when the answers are not understood. */
 const TRIES = 2;
 

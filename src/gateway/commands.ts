@@ -22,6 +22,7 @@ import { z } from "zod";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { createOut, type Out } from "../cli/ui/out";
+import { INTERRUPTED_EXIT, type Prompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import { withLock } from "../setup/lock";
 import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
@@ -69,6 +70,7 @@ import { formatLimitState, parseLimitState } from "./limit-state";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { startRouter } from "./router";
 import {
+  checkRouterPort,
   type InstallOptions,
   installRouter,
   type RouterService,
@@ -85,6 +87,7 @@ import {
   turnOff,
   turnOn,
 } from "./settings";
+import { askSetupQuestions, type SetupAnswers } from "./setup-questions";
 import {
   FAMILY_SLOTS,
   formatTarget,
@@ -176,6 +179,11 @@ export interface GatewayContext {
   /** Asks the person; null when there is no terminal. */
   confirm: ((question: string) => boolean) | null;
   /**
+   * Every kind of question (`src/cli/ui/prompt.ts`), for `gateway setup`'s questions; left out
+   * when stdin is not a terminal (and by the portal), and then nothing is asked.
+   */
+  prompts?: null | Prompts;
+  /**
    * The fetch every extra network call of a command uses — the key check (`checkBackendKey`),
    * OmniRoute's dashboard (`createOmnirouteKey`) and the OmniRoute liveness probe
    * (`probeOmniroute`). The real `fetch` in use; a test passes a fake, so no test reaches a real
@@ -246,11 +254,14 @@ export const KNOWN_BACKENDS: Record<string, string> = {
  * No aliases: a project's own migration writes those, and `migrate` writes the ones a
  * machine moving from 0.2.x's slot names needs.
  */
-export function defaultConfig(omnirouteKey: string): GatewayConfig {
+export function defaultConfig(
+  omnirouteKey: string,
+  baseUrl: string = KNOWN_BACKENDS.omniroute ?? "",
+): GatewayConfig {
   return {
     aliases: {},
     anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
-    backends: { omniroute: { apiKey: omnirouteKey, baseUrl: "http://127.0.0.1:20128" } },
+    backends: { omniroute: { apiKey: omnirouteKey, baseUrl } },
     port: DEFAULT_PORT,
     slots: {},
     timeouts: { firstByteMs: DEFAULT_FIRST_BYTE_MS },
@@ -274,11 +285,15 @@ export function defaultConfig(omnirouteKey: string): GatewayConfig {
  * gets no backup: nothing is being replaced. `setup` refuses a key its backend rejects before
  * this is ever called, so a backup here is a key that was checked (or saved unchecked).
  *
+ * `key.baseUrl` (setup's address question): the backend's address, saved with the key; left
+ * out, the address in the config stays (or the one `setup` knows, for a new backend). A
+ * changed address is backed up like a changed key.
+ *
  * `dryRun`: checks everything and writes nothing.
  */
 export function ensureConfig(
   configPath: string,
-  key: null | { backend: string; value: string },
+  key: null | SetupKey,
   options: { allowNone?: boolean; dryRun?: boolean; stateDir?: string } = {},
 ): string {
   if (!existsSync(configPath)) {
@@ -290,7 +305,7 @@ export function ensureConfig(
         `no config at ${configPath}. Create it with the OmniRoute key on stdin: ${COMMAND} gateway setup --backend-key-stdin omniroute`,
       );
     }
-    if (options.dryRun !== true) saveConfig(configPath, defaultConfig(key.value));
+    if (options.dryRun !== true) saveConfig(configPath, defaultConfig(key.value, key.baseUrl));
     return `created ${configPath} (mode 600)`;
   }
   const config = loadConfigFile(configPath);
@@ -298,16 +313,19 @@ export function ensureConfig(
   const existing = Object.hasOwn(config.backends, key.backend)
     ? config.backends[key.backend]
     : undefined;
-  const baseUrl = existing?.baseUrl ?? KNOWN_BACKENDS[key.backend];
+  const baseUrl = key.baseUrl ?? existing?.baseUrl ?? KNOWN_BACKENDS[key.backend];
   if (baseUrl === undefined) {
     throw new ConfigError(
       `backend "${key.backend}" is unknown; add it to ${configPath} by hand first`,
     );
   }
   if (options.dryRun !== true) {
-    if (existing !== undefined && existing.apiKey !== key.value && options.stateDir !== undefined) {
-      // A key that is there and changes: keep the whole file as it was, so the key it held can
-      // be read back (the person may only notice a wrong key days later, when the slots fail).
+    const changed =
+      existing !== undefined && (existing.apiKey !== key.value || existing.baseUrl !== baseUrl);
+    if (changed && options.stateDir !== undefined) {
+      // A key (or an address) that is there and changes: keep the whole file as it was, so the
+      // key it held can be read back (the person may only notice a wrong key days later, when
+      // the slots fail).
       backupFile(options.stateDir, configPath);
     }
     saveConfig(configPath, {
@@ -315,7 +333,18 @@ export function ensureConfig(
       backends: { ...config.backends, [key.backend]: { apiKey: key.value, baseUrl } },
     });
   }
-  return `set the key of backend "${key.backend}" (${maskKey(key.value)}) in ${configPath}`;
+  const moved =
+    existing !== undefined && existing.baseUrl !== baseUrl
+      ? ` and its address to ${shownValue(baseUrl)}`
+      : "";
+  return `set the key of backend "${key.backend}" (${maskKey(key.value)})${moved} in ${configPath}`;
+}
+
+/** A backend key `setup` saves: the backend, the key, and the address the person answered. */
+export interface SetupKey {
+  backend: string;
+  value: string;
+  baseUrl?: string;
 }
 
 /**
@@ -364,12 +393,14 @@ export function keyRefusedMessage(options: {
   configPath: string;
   detail: string;
   status: number;
+  /** The way to try again, when it is not the stdin flag (setup's questions). */
+  again?: string;
 }): string {
   return [
     `${options.backend} answered HTTP ${String(options.status)} for this key (${options.detail}, ${shownValue(options.baseUrl)}): it does not accept it.`,
     `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
     wantedKeyWords(options.backend),
-    `Find or make it there, then run again: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} < key-file`,
+    `Find or make it there, then run again: ${options.again ?? `${COMMAND} gateway setup --backend-key-stdin ${options.backend} < key-file`}`,
   ].join("\n");
 }
 
@@ -379,11 +410,15 @@ export function keyUncheckedMessage(options: {
   baseUrl: string;
   configPath: string;
   detail: string;
+  /** The way to try again, when it is not the stdin flag (setup's questions). */
+  again?: string;
 }): string {
   return [
     `could not ask ${options.backend} at ${shownValue(options.baseUrl)} whether it accepts this key (${options.detail}).`,
     `Nothing was saved, and the key in ${options.configPath} is kept as it was.`,
-    `Start ${options.backend} and run again, or save the key without checking it: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} --save-unchecked < key-file`,
+    options.again === undefined
+      ? `Start ${options.backend} and run again, or save the key without checking it: ${COMMAND} gateway setup --backend-key-stdin ${options.backend} --save-unchecked < key-file`
+      : `Start ${options.backend} and run again: ${options.again}`,
   ].join("\n");
 }
 
@@ -1664,9 +1699,10 @@ function setupOptions(args: string[]): {
 /**
  * The OmniRoute dashboard password: from stdin (`--omniroute-password-stdin`, the way the
  * installer hands it over), or asked on the terminal with no echo (`--omniroute-password`).
- * Empty means the person gave nothing: setup stops before it writes anything.
+ * Empty means the person gave nothing: setup stops before it writes anything. Null: Ctrl+C at
+ * the question.
  */
-async function omniroutePassword(ctx: GatewayContext, fromStdin: boolean): Promise<string> {
+async function omniroutePassword(ctx: GatewayContext, fromStdin: boolean): Promise<null | string> {
   if (fromStdin) {
     const value = (await ctx.readStdin()).trim();
     if (value === "") throw new Error("no OmniRoute dashboard password on stdin");
@@ -1679,7 +1715,8 @@ async function omniroutePassword(ctx: GatewayContext, fromStdin: boolean): Promi
     );
   }
   const value = await ctx.readSecret("OmniRoute's dashboard password");
-  if (value === null) throw new Error("nothing was read (Ctrl+C)");
+  // Ctrl+C: the caller stops, and says so.
+  if (value === null) return null;
   if (value === "") throw new Error("no OmniRoute dashboard password was given");
   return value;
 }
@@ -1697,8 +1734,10 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   const { paths } = ctx;
   const service = routerService(ctx);
   const configPath = paths.gatewayConfigFile;
-  let key: null | { backend: string; value: string } = null;
+  let key: null | SetupKey = null;
   let password: null | string = null;
+  /** The answers to the questions on a terminal; null when nothing was asked. */
+  let answers: null | SetupAnswers = null;
   /** A key this run made in OmniRoute: deleted again unless the run saves it. */
   let discard: null | {
     discard: () => Promise<{ detail: string; ok: boolean }>;
@@ -1712,6 +1751,42 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   }
   if (options.omniroutePassword || options.omniroutePasswordStdin) {
     password = await omniroutePassword(ctx, options.omniroutePasswordStdin);
+    if (password === null) {
+      ctx.error(STOPPED);
+      return INTERRUPTED_EXIT;
+    }
+  }
+  // On a terminal, with no flag that answers them: every question first, the changes after.
+  const asks =
+    ctx.prompts !== undefined &&
+    ctx.prompts !== null &&
+    !options.yes &&
+    !options.noKey &&
+    options.keyBackend === null &&
+    !options.omniroutePassword &&
+    !options.omniroutePasswordStdin;
+  if (asks && ctx.prompts) {
+    // The port first, as everywhere in setup: nobody answers questions for a port another
+    // program holds, and OmniRoute is not called for it.
+    await checkRouterPort({
+      port: configuredPort(configPath),
+      probe: ctx.probe,
+      runner: ctx.runner,
+      service,
+    });
+    const asked = await askSetupQuestions(ctx.prompts, setupFacts(ctx));
+    if ("stopped" in asked) {
+      ctx.error(STOPPED);
+      return INTERRUPTED_EXIT;
+    }
+    if ("error" in asked) throw new Error(asked.error);
+    answers = asked.answers;
+    const saved = savedOmniroute(configPath);
+    const value = answers.key ?? saved?.apiKey;
+    // Enter kept the saved key at the saved address: there is no key to check or save.
+    if (value !== undefined && (answers.key !== null || saved?.baseUrl !== answers.baseUrl)) {
+      key = { backend: OMNIROUTE, baseUrl: answers.baseUrl, value };
+    }
   }
   const install = (overrides: Partial<InstallOptions>): InstallOptions => ({
     bunPath: ctx.bunPath,
@@ -1801,7 +1876,8 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     /** Why a key was saved without its backend accepting it, for the closing line. Empty: checked. */
     let unchecked = "";
     if (key !== null) {
-      const baseUrl = backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
+      const baseUrl =
+        key.baseUrl ?? backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
       if (baseUrl !== undefined) {
         const check = await checkBackendKey(baseUrl, key.value, {
           ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
@@ -1814,6 +1890,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
               configPath,
               detail: check.detail,
               status: check.status,
+              ...(answers === null ? {} : { again: SETUP_AGAIN }),
             }),
           );
         }
@@ -1825,6 +1902,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
                 baseUrl,
                 configPath,
                 detail: check.detail,
+                ...(answers === null ? {} : { again: SETUP_AGAIN }),
               }),
             );
           }
@@ -1859,6 +1937,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
             `  the config as it was before these changes is in ${tildify(backups, paths.home)}`,
           );
         }
+        if (answers !== null) saveAnsweredChains(ctx, answers);
         const now = existsSync(configPath) ? loadConfigFile(configPath) : null;
         if (now !== null && Object.keys(now.slots).length === 0) {
           const saved = Object.keys(now.kept ?? {}).length;
@@ -1900,7 +1979,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
             "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
           );
         }
-        if (settingsReport(paths.settingsFile).baseUrl === null) {
+        if (settingsReport(paths.settingsFile).baseUrl === null && answers?.turnOn !== true) {
           ctx.print(
             `Claude Code does not use the gateway yet. Check it: ${COMMAND} gateway status. Then: ${COMMAND} gateway on.`,
           );
@@ -1916,7 +1995,101 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   // After the try, never inside it: the key is saved by now, and a failure here must not
   // delete it again. This step catches its own.
   if (code === 0) await proveWorkerTargets(ctx);
+  if (code === 0 && answers?.turnOn === true) return await commandOn(ctx);
   return code;
+}
+
+/** How to try setup's questions again: the stdin flag would check the key at the old address. */
+const SETUP_AGAIN = `${COMMAND} gateway setup (on this terminal it asks the address and the key again)`;
+
+/** What `setup` says when the person stopped it at a question (Ctrl+C): exit 130. */
+const STOPPED = "Stopped. Nothing was changed.";
+
+/** The backend `setup` asks about, makes a key in and saves the address of. */
+const OMNIROUTE = "omniroute";
+
+/** OmniRoute's address and key in the config; null with no config, or no OmniRoute in it. */
+function savedOmniroute(configPath: string): null | { apiKey: string; baseUrl: string } {
+  if (!existsSync(configPath)) return null;
+  const { backends } = loadConfigFile(configPath);
+  return Object.hasOwn(backends, OMNIROUTE) ? (backends[OMNIROUTE] ?? null) : null;
+}
+
+/**
+ * The facts `setup`'s questions are asked from (`askSetupQuestions`): the config as it is now,
+ * the live model list through the context's own fetch (a test's fake, so no test reaches a real
+ * OmniRoute), and `planSlotChange`'s checks for a chain, against the address and key answered.
+ */
+function setupFacts(ctx: GatewayContext): Parameters<typeof askSetupQuestions>[1] {
+  const configPath = ctx.paths.gatewayConfigFile;
+  const config = existsSync(configPath) ? loadConfigFile(configPath) : null;
+  return {
+    backend: OMNIROUTE,
+    label: "OmniRoute",
+    saved: savedOmniroute(configPath),
+    hasConfig: config !== null,
+    defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
+    slots: Object.entries(FAMILY_SLOTS).map(([key, family]) => ({
+      chain: config?.slots[key] ?? [],
+      family,
+      key,
+      name: slotName(key),
+    })),
+    claudeWords: SLOT_WORDS.claude,
+    listModels: async ({ apiKey, baseUrl }) => {
+      const listed = await listModels(baseUrl, apiKey, LIST_MODELS_TIMEOUT_MS, ctx.apiFetch);
+      if ("error" in listed) return { reason: listed.error };
+      if (listed.status !== 200) return { reason: `HTTP ${String(listed.status)}` };
+      return { ids: listed.models.map((model) => model.id) };
+    },
+    checkChain: (slot, text, ids, backend) => {
+      const base = config ?? defaultConfig(backend.apiKey, backend.baseUrl);
+      const answered = { apiKey: backend.apiKey, baseUrl: backend.baseUrl };
+      const withBackend = { ...base, backends: { ...base.backends, [OMNIROUTE]: answered } };
+      const plan = planSlotChange(withBackend, slot, text, { [OMNIROUTE]: ids });
+      return "error" in plan ? plan.error : null;
+    },
+    gatewayOn: settingsReport(ctx.paths.settingsFile).baseUrl !== null,
+    keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
+    pickLater: `${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets>`,
+    print: ctx.print,
+  };
+}
+
+/** How long setup waits for OmniRoute's model list before it asks no slot question. */
+const LIST_MODELS_TIMEOUT_MS = 10_000;
+
+/**
+ * The chains answered at setup's questions, saved under setup's lock into the config as it is
+ * then (the key and the address are in it by now). Each is planned again here: a chain another
+ * command made impossible since the question is said in one line and left as it is, never a
+ * failed setup.
+ */
+function saveAnsweredChains(ctx: GatewayContext, answers: SetupAnswers): void {
+  const configPath = ctx.paths.gatewayConfigFile;
+  for (const [slot, text] of Object.entries(answers.chains)) {
+    const plan = planSlotChange(loadConfigFile(configPath), slot, text, {
+      [OMNIROUTE]: answers.ids,
+    });
+    if ("error" in plan) {
+      ctx.print(`! ${slot} stays as it was: ${plan.error}`);
+      continue;
+    }
+    // A proof for a target no worker or judge chain holds any more goes, as with `gateway
+    // slot`; the worker's new targets get theirs from `proveWorkerTargets`, after the lock.
+    const next = plan.key === WORKER_SLOT ? withJudgeProofs(plan.config, {}) : plan.config;
+    saveConfig(configPath, next);
+    if (plan.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, plan.key);
+    for (const line of slotChangeLines({ ...plan, config: next })) ctx.print(line);
+  }
+  const now = loadConfigFile(configPath);
+  const judge = now.slots[JUDGE_SLOT] ?? [];
+  const untested = judge.filter((target) => !judgeTargetUsable(now, target));
+  if (untested.length > 0) {
+    ctx.print(
+      `! the judge chain's ${untested.join(", ")} has no test for ${OMNIROUTE}'s address now, so Claude judges until it is tested: ${COMMAND} gateway slot judge ${judge.join(",")}`,
+    );
+  }
 }
 
 /**

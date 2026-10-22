@@ -402,6 +402,14 @@ An optional local router between Claude Code and the model providers
   folder, never beside a file that holds keys). Live, 2026-10-17: a pasted provider key
   overwrote the router's working key, OmniRoute answered 401 to everything, and every affordable
   subagent fell back to Claude.
+- **`gateway setup` on a terminal asks before it changes anything** (`setup-questions.ts`):
+  the router's port first, then OmniRoute's address, its API key (the secret read), a chain for
+  each model slot picked from the live model list (default: the chain it has, or "off"; so
+  nothing is picked for the person), and whether to turn the gateway on. It asks the API key,
+  not the dashboard password: the model list needs a key before any change. The judge is not
+  asked, because a judge target needs the judge test (`gateway slot judge`). The questions
+  take facts as arguments, so the module imports nothing from `commands.ts`. No terminal, the
+  portal, `--yes` or a key flag: nothing is asked.
 - **`gateway setup --omniroute-password[-stdin]` makes the router's key in OmniRoute itself**,
   with the person's dashboard password (asked with no echo, never stored, never printed):
   `POST /api/auth/login` (no `Origin` header — OmniRoute skips its CSRF check without one),
