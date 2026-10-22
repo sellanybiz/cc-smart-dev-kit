@@ -280,6 +280,8 @@ function docker(args: string[]): null | { err: string; ok: boolean; out: string 
       stderr: "pipe",
       stdout: "pipe",
       timeout: DOCKER_TIMEOUT_MS,
+      // The clean may run detached from a hook, with no console of its own on Windows.
+      windowsHide: true,
     });
     return {
       err: run.stderr.toString().trim(),
@@ -357,7 +359,13 @@ export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | R
     try {
       const run = Bun.spawnSync(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS],
-        { stderr: "pipe", stdout: "pipe", timeout: PROGRAMS_TIMEOUT_MS },
+        {
+          stderr: "pipe",
+          stdout: "pipe",
+          timeout: PROGRAMS_TIMEOUT_MS,
+          // The clean may run detached from a hook, with no console of its own on Windows.
+          windowsHide: true,
+        },
       );
       return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
     } catch {

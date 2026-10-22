@@ -38,6 +38,8 @@ export function copyWorktreeInclude(source: string, target: string, env: Env): s
     stdout: "pipe",
     stderr: "pipe",
     timeout: INCLUDE_TIMEOUT_MS,
+    // The launcher may run with no console of its own on Windows: without this, git opens one.
+    windowsHide: true,
   });
   // check-ignore exits 1 when nothing is ignored.
   const copied: string[] = [];

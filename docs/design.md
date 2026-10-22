@@ -1365,9 +1365,10 @@ that, so the plugin ships no worktree hook at all.
 | `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port and before an edit of the kit's own settings. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
-| `job-route` | PreToolUse (Bash) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one Bash judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's `crew start` is denied; a polling loop over `crew list|status` or `claude agents --json` (a `while`/`until`/`for` loop or a `watch`, or a `sleep` beside a read) is denied. **The route** is the project's `jobs.route`: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). § The Bash judge and the job route. |
+| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's `crew start` is denied; a polling loop over `crew list|status` or `claude agents --json` (a `while`/`until`/`for`/`foreach` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). § The Bash judge and the job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send the other sessions when it went into `worktrees.base`, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
+| `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook keeps only the tasks whose ids appear in the agent's own transcript (`agent_transcript_path`), and drops the ending agent's own entry (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
 | `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
@@ -1842,14 +1843,21 @@ running server that does not pass alerts through.
 
 ### The Bash judge and the job route
 
-`job-route` (PreToolUse on Bash) is the kit's one Bash judge, and it keeps its public name:
-`hooks.json`, project files and `ownHooks` values stay valid. It is **machine-wide** and
-**`alwaysOn`** — the frame skips the `ownHooks` step and `ownHooks` cannot switch it off — and it
-runs outside git, and with a broken or too new `cc-smart-dev-kit.json`: a session must not be
+`job-route` (PreToolUse on Bash and PowerShell) is the kit's one shell judge, and it keeps its
+public name: `hooks.json`, project files and `ownHooks` values stay valid. It is **machine-wide**
+and **`alwaysOn`** — the frame skips the `ownHooks` step and `ownHooks` cannot switch it off — and
+it runs outside git, and with a broken or too new `cc-smart-dev-kit.json`: a session must not be
 able to switch off the limits on its own launches by editing a file it owns (the reason
 `session-escape-guard` is always on too). A project file that still lists `"job-route"` keeps
 parsing (`UNSWITCHABLE_HOOK_NAMES`), it silences nothing, and `doctor` prints one `·` line that
 it can go. Two parts sit in it, and only one reads the project.
+
+**Both shell tools.** Claude Code has a PowerShell tool beside Bash on native Windows, so the
+judge is wired on both and reads each line in its tool's dialect (`dialectOfTool`): a limit a
+session steps around by choosing the other shell tool is not a limit. The route and the lead's
+background move stay **Bash only**: their rewritten line names the `sh` launcher and, for
+anything but one plain command, `sh -c`, which the PowerShell tool cannot run — a wrong rewrite
+is worse than none, so a PowerShell line is judged and otherwise left as it was written.
 
 **The judge** (`src/hooks/bash-judge.ts`, the rules; `job-route.ts`, the answer) reads the line
 with the one shell reader and answers four things:
@@ -1871,9 +1879,9 @@ with the one shell reader and answers four things:
 - **a crew session's `crew start`**: denied, in the launcher's own words (`CREW_NEVER_DOES`,
   `src/crew/brief.ts`): the need goes to the lead with `crew report --question`.
 - **polling**: a `crew list` / `crew status` read or a `claude agents --json` read inside a
-  `while` / `until` / `for` loop or a `watch`, or beside a `sleep`, is denied — a crew session's
-  news arrives by itself, through the lead's watch and the monitors. One read, and `crew watch`
-  itself, pass.
+  `while` / `until` / `for` / `foreach` loop or a `watch`, or beside a `sleep` or
+  `Start-Sleep`, is denied — a crew session's news arrives by itself, through the lead's watch
+  and the monitors. One read, and `crew watch` itself, pass.
 
 **The route** is the heavy-job queue's door, and the project's opt-in: with
 `"jobs": { "route": true }` in its `.claude/cc-smart-dev-kit.json` (the `switches.jobRoute`
@@ -2795,6 +2803,8 @@ the store records — a session the kit does not know is the person's own:
 The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
 the crew session's record without moving its `updatedAt` (the idle stop counts from it), where `crew
 list` and the portal read it, and into the event the watch writes when it ends the crew session.
+It is **Linux only**, and it is never faked: on macOS and Windows the board and `crew status`
+show `-` (`docs/windows-setup.md` § The short version).
 
 `--once` ends on the next change: the fallback where monitors do not run (the lead runs it with
 `run_in_background: true`, re-armed per event, and the end of the run starts the lead's next
@@ -2886,7 +2896,10 @@ of the session, and they end with it, so the long-lived-parts rule of `bundles-a
 part that outlives a session must run from a copy in `~/.local/share/`) does not apply to them.
 **They do not run where telemetry is off** (`DISABLE_TELEMETRY`, or
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), and there the lead uses `crew watch --once` in the
-background instead — the fallback the lead skill names. The watch knows which case it is in (the
+background instead — the fallback the lead skill names. On native Windows each command is a
+`$HOME` shell line naming the launcher, so it needs Git Bash; that Claude Code starts a monitor
+through Git Bash there is the one live check owed (`docs/windows-setup.md` § The owner's
+checklist, step 5). The watch knows which case it is in (the
 environment and the user's settings' `env`, `telemetry.ts`) and says so once, so the lead knows to
 re-arm it; the watch's own help names the fallback too. **`claude plugin validate` does not read
 this file** (it checks a monitors path or an inline list in the manifest, not the default

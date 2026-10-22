@@ -1,5 +1,5 @@
 /** `cc-smart-dev-kit project init`: the flags, the defaults from the repo, and the run. */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
@@ -7,6 +7,7 @@ import { parseCcSmartDevKitConfig } from "../project/config";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { cliPaths } from "./paths";
 import {
   askedAnswers,
@@ -24,6 +25,9 @@ import {
   shownWorkflow,
   workflowFromFlags,
 } from "./project-init";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 function context(
   root: string,

@@ -489,6 +489,11 @@ whether it takes a name that is not a Claude model, nor what the check's request
 like, so the router does not rely on it: a model name of the router's own there would let it
 know a check by its name, once Claude Code documents that it may.
 
+**An Anthropic-side check is not a request of its own:** it rides the session's own request
+(the `safeguards` field and the `dangerous-tool-use` beta), which reaches the router as an
+ordinary model call, so neither the judge slot nor the safety-check count sees it
+(`docs/claude-code-contract.md` § The gateway).
+
 ## Model slots: Opus and Fable
 
 The opus and fable slots work exactly like scout and worker (owner, 2026-10-17): any chain,
@@ -973,7 +978,8 @@ The router builds a **new** request for an affordable backend:
   does not install it there, and `doctor` skips the gateway checks there
   (`src/gateway/proxy.test.ts`; `docs/design.md` § The Bun it needs).
 - **Prompt text exactly as sent.** Only three named translations, each tested:
-  - `toolSearchForBackend`: with `ENABLE_TOOL_SEARCH=true`, Claude Code marks most tools
+  - `toolSearchForBackend`: with tool search on (the default behind a custom base URL since
+    2.1.304; `ENABLE_TOOL_SEARCH=true` forces it), Claude Code marks most tools
     `defer_loading` and answers its `ToolSearch` with `tool_reference` blocks. Anthropic
     expands those; other backends do not. So a deferred tool no `tool_reference` names is
     dropped, a named one stays without `defer_loading`, and each `tool_reference` becomes
@@ -1279,8 +1285,10 @@ not installed".
 Into the `env` of Claude Code's user `settings.json`, as **owned keys** (so `gateway off`
 and `restore` remove exactly them):
 
-1. `ENABLE_TOOL_SEARCH` = `true`: behind a gateway, Claude Code otherwise sends every MCP
-   tool definition on every turn (184K tokens of context on a first turn, against 70K).
+1. `ENABLE_TOOL_SEARCH` = `true`: Claude Code 2.1.304 and later keep tool search on behind a
+   gateway by themselves, so this key is for an older version, which otherwise sent every MCP
+   tool definition on every turn (184K tokens of context on a first turn, against 70K). It
+   stays: it is the one value that forces the deferred tools on every version.
 2. `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`
 
 **No model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
@@ -1312,6 +1320,13 @@ stop the router only after every session restarted.
 ## Known limits
 
 - Anthropic does not support non-Claude models behind a gateway (not banned, no help).
+- **Remote Control needs Anthropic's own API.** `claude remote-control` answers "Remote
+  Control is only available when using Claude via api.anthropic.com" while
+  `ANTHROPIC_BASE_URL` points anywhere else, and the docs say to unset that variable;
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` or `DISABLE_GROWTHBOOK` also turn Remote Control
+  off. `gateway on` writes that base URL into user settings, so every session has it: Remote
+  Control is off while the gateway is on. `gateway off`, or a session started without the base
+  URL, is the way back (`docs/claude-code-contract.md` § The gateway).
 - **Windows has no socket activation and no file modes**: a restart refuses requests for a
   moment (Claude Code retries them), a stop cuts the answers in flight, and the router's log
   goes nowhere (a task has no console). `docs/windows-gateway.md` says exactly what Windows

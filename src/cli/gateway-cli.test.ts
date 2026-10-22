@@ -13,7 +13,7 @@
  * router runs in this process anyway: it waits for the port to close, and the fake server
  * here never closes.
  */
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -26,8 +26,12 @@ import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { cliPaths } from "./paths";
 import { runRestore, stageOneDone } from "./restore";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 const BUILT_ROUTER = join(import.meta.dir, "..", "..", "plugin", "dist", "router.js");

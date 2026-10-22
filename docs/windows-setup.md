@@ -22,6 +22,18 @@ Windows yet.
 | The gateway service | A per-user **Scheduled Task**, `cc-smart-dev-kit-router`, instead of the systemd units: `gateway setup` writes its definition and registers it, `doctor` reads its state, `restore` stops and removes it. No socket activation and no journal (`windows-gateway.md`). |
 | The heavy-job queue | Runs each job as a plain child (no memory ceiling); the free memory comes from Windows itself (`os.freemem`, `windows-jobs.md`). |
 | Notifications | A desktop toast through PowerShell, and Windows plays the sound of its own notification; the terminal route (`terminalSequence`) is Claude Code's own and platform-neutral (`windows-notify.md`). |
+| **The crew** (`crew lead`, `start`, `watch`, `report`, `rm`) | **Works.** `claude` is found on PATH or as `claude.exe`, then npm's `claude.cmd`, in `%USERPROFILE%\.local\bin`; a `.cmd` is no executable, so it runs through `cmd.exe` with one quoted line (`src/crew/claude.ts` § `findClaude`, `claudeArgv`). The session above a `crew` command comes from PowerShell's process list (its parent pids), because Windows has no `/proc` (`src/crew/session.ts` § `realProcessFacts`). A process's command line is not read there, so a hand-off is identified by the session record, not by its arguments. **Linux-only figure:** a crew session's memory comes from `/proc/<pid>/status`; on Windows the board and `crew status` show `-` (`src/crew/memory.ts`, `src/crew/display.ts` § `memoryText`) — it is never faked. |
+| **The crew's hooks** (`crew-role`, `lead-notes`) | **Works.** They are plugin hooks, so shell form through the bun shim and Git Bash, like every hook (below). Their work is JSON, files and text: no platform code. |
+| **The always-on guards** (the Agent guard's PostToolUse record, the session-escape guard, the shell judge `job-route`) | **Works.** Shell form through Git Bash. The shell judge is wired on **Bash and PowerShell** and reads a line in the dialect of the tool that runs it (`src/hooks/bash-judge.ts` § `readBash`); its queue rewrite stays Bash-only, because the rewritten line is a `sh` line the PowerShell tool cannot run (`src/hooks/job-route.ts` § `jobRoute`). The session-escape guard asks on a `C:\…` settings path and on PowerShell's `Set-Content`/`Copy-Item` (`src/hooks/session-escape-guard.ts` § `kitFileKind`). |
+| **The hook frame's fail-closed path** (A4) and the shim's `--missing=fail` | **Works.** No bun, or one older than the plugin needs, is an **ask** for a guard and one line on stderr with exit 1 for the command (`plugin/bin/cc-smart-dev-kit-bun.sh`, its `--missing=fail` block); the Windows CI job runs both in Git Bash. |
+| **The background clean** (WT, D48) | **Works.** A detached start from a hook goes through `cmd /d /s /v:off /c "start "" /b …"` with every argument quoted, so the clean outlives the hook (`src/hooks/detached.ts` § `windowsStart`, `src/worktrees/auto-start.ts` § `startAutoClean`), and `windowsHide` starts no console window. The scan and removal it calls were already Windows-aware (the `worktrees` row above). |
+| **The gateway's breaker** (BR1–BR3) | **Works**, with the Windows service's cost: a restart is the Scheduled Task stopped and started, so it refuses requests for a moment and a stop cuts answers in flight (`windows-gateway.md`). The breaker itself is in the router — the same bundle on every platform. |
+| **The retry watchdog keys** (CC1) | **Works.** Two owned keys under `env` in `settings.json`, written through the managed-key path (`src/setup/retry-watchdog.ts` § `RETRY_WATCHDOG_SETTINGS`); a crew session carries the same keys in its own settings file (`src/crew/start.ts` § `launch`). No platform code. |
+| **The major-version hold and `autoUpdate: false`** (D33, D39) | **Works.** State files and one managed settings key: no platform code (`src/update/major.ts`, `src/setup/auto-update.ts`). |
+| **The usage-limit alert** (BR2) | **Works** as every alert: a PowerShell toast (`docs/windows-notify.md`). A toast has no action button, so the hook shows the plain toast itself and skips the detached worker. |
+| **Server tools and the judge** (WS) | **Works.** The router's route is the same bundle and the same rule on every platform (`docs/gateway.md`). |
+| **The one shell reader** (A2) | **Works.** It reads Bash and PowerShell and is the only reader every guard uses; its tests run in the Windows CI job. |
+| **The plugin's monitors** (the lead's watch, the crew session's self-watch) | **Owed a live run.** Each command is the shell line `"$HOME/.local/bin/cc-smart-dev-kit" …` (`plugin/monitors/monitors.json`), so it needs Git Bash and its `$HOME`. The Windows CI job proves that line runs there against a stand-in launcher, but **which shell Claude Code starts a monitor with on Windows is not proved**: the live check below is that a lead actually hears a crew session's report. If Claude Code uses PowerShell there, the monitor needs a Windows-shaped line. |
 
 ## Where things live: one folder, three shells
 
@@ -190,45 +202,108 @@ The gateway and the heavy-job queue have Windows answers of their own (`windows-
   `cc-smart-dev-kit portal` ends with **130** — the shell's code for "ended by SIGINT", and the
   code the parent returns from the child. There is nothing like Linux's process group to
   forward a signal to, and a parent that the same console event ends first can exit with
-  Windows' own code instead of 130. Owed: press Ctrl+C in a real Windows console and read the
-  code back (`echo %ERRORLEVEL%`).
+  Windows' own code instead of 130. The owner's checklist below runs it (step 6).
 
-## Owed: run these on a real Windows machine
+## The owner's checklist: run these on a real Windows PC
 
-Nothing below has been run on Windows yet. Each one is a live check, not a unit test.
+Native Windows (not WSL), Windows 10 or 11, with **Git for Windows** installed. Run the six in
+order, in PowerShell 5.1 (the one Windows ships) or `pwsh`; the exact commands are there so
+nothing has to be worked out on the machine. Each says what it must show. `<owner>` is the
+repository's publisher, as in `README.md` § Install.
 
-1. **Git Bash, end to end** — `cc-smart-dev-kit doctor` shows the Git Bash `✓`, and a guard
-   actually blocks in a real Claude Code session (a force-push denied). Research live test 1.
-2. **The control**: the shell-form hook command (a `.sh` first token) runs through Git Bash with
-   `${CLAUDE_PLUGIN_ROOT}` in forward-slash form. Research live tests 1 and 2.
-3. **The `.cmd` from PowerShell and from `cmd`**: `cc-smart-dev-kit setup`, then `doctor`, then
-   `version`. It must find bun, find the plugin folder, and pass arguments and the exit code
-   through. Research live test 3.
-4. **Chrome**: `browser setup`, then `browser check`, on the person's own Chrome through the
-   Playwright extension in the `claude-code` profile: the `%LOCALAPPDATA%` profile path, the
-   Windows `lockfile` check (there is no `SingletonLock` there), the HKCU pre-registration and
-   its Enable click, and the Web Store install. Research live test 8, and the owed list in
-   README § The browser.
-5. **`worktrees --clean`**: a finished worktree with a running program in it, and one without —
-   the PowerShell process scan, `hostPath`, and "a folder in use cannot be renamed". Research
-   live test 9.
-6. **`sessions --open`** in Windows Terminal: `wt.exe -d <folder> cmd /k …` opens one window per
-   session, and the `--open` marker file stops a second run from opening a second copy.
-7. **File modes**: `setup` completes on Windows with a lock and a state folder; nothing crashes
-   over `chmod`/`fchmod`, and the state folder's ACL keeps other accounts out. Then the readers
-   side, by hand: `gateway status` reads the config (no "can be read by other users" line),
-   `browser mcp` finds the token, and `doctor` reads the Tavily key file — none of them refused
-   over a mode, and no message saying `chmod 600`. (The readers' own tests run in the Windows CI
-   job; this is the live run.)
-8. **The paths**: `doctor` prints the `~`-shortened paths and they point under `%USERPROFILE%`;
-   Git Bash, PowerShell and `cmd` all reach the same `installed_plugins.json`.
-9. **Git Bash absent** (deliberately): `doctor` says `✗ Git Bash was not found`, and in a
-   session a hook that needs bash errors visibly instead of passing silently.
-10. **Ctrl+C**: in a real console, `cc-smart-dev-kit portal` then Ctrl+C — the exit code is 130
-    (`echo %ERRORLEVEL%` right after), and the parent prints nothing odd.
-11. **The browser's MCP server through `cmd.exe /c`**: after `setup`, `claude mcp get playwright`
-    shows `cmd.exe /c …\cc-smart-dev-kit.cmd browser mcp` and says Connected; a session's
-    Playwright tools answer; and when the session ends no `cmd.exe` or bun is left running, and
-    no "Terminate batch job (Y/N)?" waits in a console.
-12. **The instructions' copy**: after `setup`, `doctor` shows the instructions `✓` (the copy is
-    found as installed), and `restore` removes the copy's folders.
+**1. Install, with the one-liner.**
+
+```powershell
+$f = Join-Path $env:TEMP "cc-smart-dev-kit-install.ps1"
+gh api repos/<owner>/cc-smart-dev-kit/contents/install.ps1 -H "Accept: application/vnd.github.raw" | Set-Content -Path $f
+powershell -NoProfile -ExecutionPolicy Bypass -File $f <owner>/cc-smart-dev-kit
+Remove-Item $f
+```
+
+Shows: exit **0**, or **3** with the items it could not finish named; the marketplaces installed,
+the plugin installed, `setup` and `doctor` done. A **2** is a refusal and an **1** a failed step.
+
+**2. `doctor`.** Open a new PowerShell window (so `PATH` is the one setup printed), then:
+
+```powershell
+& "$env:USERPROFILE\.local\bin\cc-smart-dev-kit.cmd" doctor
+```
+
+Shows: every line `✓` or `·` (`tmux: not on Windows` is a `·`), **no `✗`**; `Git Bash` `✓`;
+the `.cmd` launcher `✓`; the instructions copy `✓`; the gateway line is `·` until step 4.
+In `cmd`, `"%USERPROFILE%\.local\bin\cc-smart-dev-kit.cmd" version` prints the version and the
+exit code is 0.
+
+**3. A normal session.** In a git repository you can try things in, start `claude`, and:
+
+- ask it to run `git push --force` — the git guard **asks** (it must not run in silence);
+- ask it to run `claude --bg "x"` — the shell judge **asks**, showing the `crew start` line;
+- let a permission prompt wait, then end a turn — a **Windows toast** shows each, and the
+  terminal title/badge shows Warp's or Windows Terminal's own alert where they have one;
+- ask it to edit a file in the main checkout from a session in a worktree — the main-folder
+  guard asks.
+
+Shows: the hooks run through Git Bash and fail closed where they should; no console window
+flashes; the toasts are the ones `windows-notify.md` describes (toast or balloon).
+
+**4. The gateway on.**
+
+```powershell
+& "$env:USERPROFILE\.local\bin\cc-smart-dev-kit.cmd" gateway setup
+& "$env:USERPROFILE\.local\bin\cc-smart-dev-kit.cmd" gateway status
+Get-ScheduledTask -TaskName cc-smart-dev-kit-router | Format-List State
+```
+
+Shows: no elevation prompt; `State : Running`; status's health page answers, the port is the one
+in `gateway.json`, the slots show their chains. Then run `gateway setup --yes` with nothing
+changed: it restarts nothing. Change a slot in the portal or with `gateway slot`, run
+`gateway setup --yes`: the task is stopped and started, its port closes and reopens, and a
+running session's next request works (Claude Code retries the moment of refusal — the expected
+cost of Windows, `windows-gateway.md`). `gateway off` and `restore --yes` stop and remove the
+task; Task Scheduler no longer lists it.
+
+**5. A small crew session.** In the same repository (crew sessions are off by default):
+
+```powershell
+& "$env:USERPROFILE\.local\bin\cc-smart-dev-kit.cmd" workflow set crew.enabled true --project
+claude
+```
+
+In the session: `/cc-smart-dev-kit:lead` (or ask it to lead this phase). Put a one-line brief in
+`crew-brief.md` at the repository root, then have the lead run:
+
+```powershell
+cc-smart-dev-kit crew lead --plan windows-check
+cc-smart-dev-kit crew start K --slug first --kind docs --brief crew-brief.md
+cc-smart-dev-kit crew list
+cc-smart-dev-kit crew status "C <tag> K first"
+```
+
+`<tag>` is the main checkout's folder name made clean (or `workflow.crew.tag` when it is set),
+the same tag in every name and in the board.
+
+Shows: `started C <tag> K first (…) · … · crew/K-first @ <sha>`; agent view lists a session with
+that name working in `.claude/worktrees/crew-K-first`; its branch `crew/K-first` gets its commit;
+the board shows its state, model and effort, and **memory `-`** (the one Linux-only figure);
+its report arrives in the lead as a `crew watch`/notes line; `crew rm` refuses until the lead
+merges `crew/K-first` into its own branch, then removes the session, the worktree and the branch.
+The lead's monitor (`crew-events`) must deliver that line by itself — that is also the live
+proof that Claude Code runs a plugin monitor through Git Bash on Windows.
+
+**6. The portal.**
+
+```powershell
+& "$env:USERPROFILE\.local\bin\cc-smart-dev-kit.cmd" portal
+```
+
+Shows: the default browser opens the portal at `http://127.0.0.1:<port>`; the pages load with no
+console errors; Ctrl+C in the console ends it, and `echo $LASTEXITCODE` (PowerShell) or
+`echo %ERRORLEVEL%` (cmd) right after is **130**.
+
+**The other live checks, one line each** — their detail is in the page named, and none of them
+blocks 1.0.0 on Windows: Chrome through the Playwright extension (`browser setup`, `browser
+check`; `README.md` § The browser), `worktrees --clean` with a program still using a folder
+(`windows-jobs.md` § Live checks has the process scan), `sessions --open` in Windows Terminal,
+the file-mode readers on a real profile (`gateway status`, `browser mcp`, the Tavily key),
+Git Bash deliberately absent (`doctor` `✗`, a hook errors visibly), and the browser's MCP server
+through `cmd.exe /c` (`claude mcp get playwright`).

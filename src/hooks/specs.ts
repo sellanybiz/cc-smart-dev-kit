@@ -13,9 +13,10 @@
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
  * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
- * | job-route | PreToolUse (Bash) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` (`bash-judge.ts`, `job-route.ts`) |
+ * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
+ * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | machine-wide: the card, the ask refused, the report block, the pause at a limit (`crew-role.ts`) |
@@ -70,6 +71,7 @@ import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
 import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
+import { subagentBackground } from "./subagent-background";
 import { worktreeLeftovers } from "./worktree-leftovers";
 
 /** Said to the person when a guard cannot read the project's cc-smart-dev-kit.json. */
@@ -261,6 +263,24 @@ export const reviewRecordHook: HookSpec = {
       : SILENT;
   },
   run: reviewRecord,
+};
+
+/**
+ * The subagent's hand-back (`subagent-background.ts`): a subagent never ends its turn while
+ * background work it started still runs — it waits for the work or stops it, then reports.
+ * SubagentStop only, and like `review-record` it **touches no worktree**, the one kind of
+ * plugin SubagentStop entry `hooks.md` allows. It reads no setting, but it is still
+ * project-scoped: with no cc-smart-dev-kit.json it stays silent. A broken or too new file is
+ * one stderr line, exit 0 (an informational hook never stops a subagent), and a transcript it
+ * cannot read is no block at all: the hook cannot tell whose background work is running.
+ */
+export const subagentBackgroundHook: HookSpec = {
+  name: "subagent-background",
+  events: ["SubagentStop"],
+  onConfigProblem: (message) => ({
+    stderr: `cc-smart-dev-kit subagent-background: ${message}`,
+  }),
+  run: subagentBackground,
 };
 
 export const worktreeLeftoversHook: HookSpec = {
@@ -466,6 +486,7 @@ export const HOOKS: readonly HookSpec[] = [
   jobRouteHook,
   afterMergeHook,
   reviewRecordHook,
+  subagentBackgroundHook,
   worktreeLeftoversHook,
   sessionNameHook,
   crewRoleHook,

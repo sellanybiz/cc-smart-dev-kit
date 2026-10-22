@@ -6391,6 +6391,7 @@ var PLUGIN_HOOK_NAMES = [
   "fable-session",
   "after-merge",
   "review-record",
+  "subagent-background",
   "worktree-leftovers",
   "session-name",
   "crew-role",
@@ -6509,7 +6510,8 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs
+        timeout: timeoutMs,
+        windowsHide: true
       });
       return {
         ok: result.exitCode === 0,

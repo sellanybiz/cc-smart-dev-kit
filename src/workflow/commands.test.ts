@@ -1,5 +1,5 @@
 /** `cc-smart-dev-kit workflow`: what `show` prints, and where `set` and `unset` write. */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -16,9 +16,13 @@ import { cliPaths, tildify } from "../cli/paths";
 import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, type WorkflowContext } from "./commands";
 import { personalWorkflowFile } from "./resolve";
 import { writePersonalSetting, writeProjectSetting } from "./write";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 function context(
   cwd: string,

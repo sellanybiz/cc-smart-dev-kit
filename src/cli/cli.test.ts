@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -29,11 +29,15 @@ import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { listBackups, writeManagedFile } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { workflowDefaults } from "../workflow/schema";
 import { ccSmartDevKitImports, runDoctor } from "./doctor";
 import { COMMAND_HELP, HELP_COMMAND } from "./help";
 import { cliPaths } from "./paths";
 import { type SetupOptions as RunSetupOptions, runSetup } from "./setup";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 

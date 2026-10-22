@@ -49,6 +49,8 @@ export function runGit(
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
+      // A guard runs with no console of its own on Windows: without this, git opens one.
+      windowsHide: true,
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;

@@ -115,7 +115,8 @@ there is. The fields:
 
 A heavy command typed by hand runs raw. A project can have it sent through the queue:
 `"jobs": { "route": true }` in its `.claude/cc-smart-dev-kit.json`, and the plugin's `job-route`
-hook (PreToolUse on Bash, in `src/hooks/job-route.ts`) rewrites the call to
+hook (PreToolUse on Bash; on PowerShell it judges launches and polls, and leaves routing to
+Bash, because the rewritten line is a `sh` line; `src/hooks/job-route.ts`) rewrites the call to
 
     "$HOME/.local/bin/cc-smart-dev-kit" job run --kind <kind> -- <command>
 

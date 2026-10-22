@@ -224,6 +224,8 @@ export function capturingRunner(env: Env, home: string): CommandRunner {
         stdout: "pipe",
         stderr: "pipe",
         timeout: CLAUDE_TIMEOUT_MS,
+        // The background check runs with no console of its own on Windows.
+        windowsHide: true,
       });
       return {
         exitCode: result.exitCode ?? 1,

@@ -5,7 +5,7 @@
  * commands) and the notifiers. Each fake logs its calls, so the tests assert them.
  * Nothing here reaches the network, the real ~/.claude or the real `claude`.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
@@ -21,6 +21,7 @@ import { lockIsHeld, withLock } from "../setup/lock";
 import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { capturingRunner, installedText, notifyCommand } from "./apply";
 import {
   backgroundCheck,
@@ -42,6 +43,9 @@ import {
   writeHeldMajor,
   writeLastCheck,
 } from "./state";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const HOOK = join(import.meta.dir, "..", "entries", "update-check.ts");
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");

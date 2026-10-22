@@ -4,15 +4,19 @@
  * record under the test's pid makes the test the "Claude Code session" the CLI finds (L1a.1
  * P13's shape). A PATH of fakes: bun's folder, git's, and the fake `claude`. No real session.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { crewWorld, SHORT_ID, writeSessionRecord } from "../testing/crew-world";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { listCrew, readLead } from "./store";
 import { BOARD_COMMANDS } from "./usage";
+
+// This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
+setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 

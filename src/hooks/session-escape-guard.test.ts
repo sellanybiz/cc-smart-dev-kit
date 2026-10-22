@@ -431,7 +431,7 @@ describe("an edit of the kit's own settings: asked", () => {
     const paths = cliPaths(env);
     mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
     const folder = tempDir("links");
-    symlinkSync(dirname(paths.workflowConfigFile), join(folder, "cfg"));
+    symlinkSync(dirname(paths.workflowConfigFile), join(folder, "cfg"), "dir");
     const got = asked(await run(editInput(join(folder, "cfg", "workflow.json"), folder), env));
     expect(got.what).toBe(SETTINGS);
   });
@@ -768,7 +768,7 @@ describe("a shell line that writes into the kit's own files: asked", () => {
 
     test("a link to a folder of the kit's settings", async () => {
       const folder = tempDir("links");
-      symlinkSync(settingsDir, join(folder, "cfg"));
+      symlinkSync(settingsDir, join(folder, "cfg"), "dir");
       const answer = await ask(`echo x > ${join(folder, "cfg", "new.json")}`);
       expect(answer?.decision).toBe("ask");
     });

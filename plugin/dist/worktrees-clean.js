@@ -136,7 +136,8 @@ function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      windowsHide: true
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
@@ -6211,6 +6212,7 @@ var PLUGIN_HOOK_NAMES = [
   "fable-session",
   "after-merge",
   "review-record",
+  "subagent-background",
   "worktree-leftovers",
   "session-name",
   "crew-role",
@@ -6327,7 +6329,8 @@ function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS) {
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
-        timeout: timeoutMs
+        timeout: timeoutMs,
+        windowsHide: true
       });
       return {
         ok: result.exitCode === 0,
@@ -6866,7 +6869,8 @@ function docker(args) {
     const run = Bun.spawnSync(["docker", ...args], {
       stderr: "pipe",
       stdout: "pipe",
-      timeout: DOCKER_TIMEOUT_MS
+      timeout: DOCKER_TIMEOUT_MS,
+      windowsHide: true
     });
     return {
       err: run.stderr.toString().trim(),
@@ -6911,7 +6915,12 @@ function procPids() {
 function runningPrograms(on = platform()) {
   if (on === "win32") {
     try {
-      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], { stderr: "pipe", stdout: "pipe", timeout: PROGRAMS_TIMEOUT_MS });
+      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
+        stderr: "pipe",
+        stdout: "pipe",
+        timeout: PROGRAMS_TIMEOUT_MS,
+        windowsHide: true
+      });
       return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
     } catch {
       return "unknown";

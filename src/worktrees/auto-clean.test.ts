@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
+import { detachedArgv } from "../hooks/detached";
 import { worktreeLeftoversHook } from "../hooks/specs";
 import {
   hookEnv,
@@ -42,6 +43,9 @@ import {
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+
+/** True on native Windows, where a `#!/bin/sh` fake program is no program at all. */
+const NO_POSIX_MODES = process.platform === "win32";
 
 /** A lock that is free: closing it is counted. */
 function freeLock() {
@@ -187,36 +191,40 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     expect(toldMark(env, repo)).toBe(1);
   });
 
-  test("a removal git could not finish is named in the log, never counted as removed", async () => {
-    const { add, env, repo, squash } = project();
-    const done = add("done");
-    squash(done);
-    // A git that does everything but delete a folder it moved aside: the one failure a clean
-    // cannot see coming, and the one a person must be able to find in the log.
-    const real = Bun.which("git") ?? "/usr/bin/git";
-    const dir = tempDir("git-remove-fails");
-    const fake = join(dir, "git");
-    writeFileSync(
-      fake,
-      `#!/bin/sh\nif [ "$1" = "worktree" ] && [ "$2" = "remove" ]; then echo "the folder is in use" >&2; exit 1; fi\nexec "${real}" "$@"\n`,
-    );
-    chmodSync(fake, 0o755);
-    const failing = { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
+  test.skipIf(NO_POSIX_MODES)(
+    "a removal git could not finish is named in the log, never counted as removed",
+    async () => {
+      const { add, env, repo, squash } = project();
+      const done = add("done");
+      squash(done);
+      // A git that does everything but delete a folder it moved aside: the one failure a clean
+      // cannot see coming, and the one a person must be able to find in the log. A shell
+      // script is a fake program only where there is a POSIX shell to run it.
+      const real = Bun.which("git") ?? "/usr/bin/git";
+      const dir = tempDir("git-remove-fails");
+      const fake = join(dir, "git");
+      writeFileSync(
+        fake,
+        `#!/bin/sh\nif [ "$1" = "worktree" ] && [ "$2" = "remove" ]; then echo "the folder is in use" >&2; exit 1; fi\nexec "${real}" "$@"\n`,
+      );
+      chmodSync(fake, 0o755);
+      const failing = { ...env, PATH: `${dir}:${env.PATH ?? ""}` };
 
-    expect(await runAutoClean(repo, "merge", deps(failing))).toBe("cleaned");
+      expect(await runAutoClean(repo, "merge", deps(failing))).toBe("cleaned");
 
-    // The folder was moved aside, and the log names where it is now; it is not counted as
-    // removed, nor as a worktree the verdict kept.
-    expect(existsSync(done)).toBe(false);
-    const record = recorded(failing, repo);
-    expect(record.removed).toEqual([]);
-    expect(record.kept).toEqual([]);
-    const [line] = logLines(failing);
-    expect(line).toContain("could not finish removing 1 (moved ");
-    expect(line).toContain("app-wt-done-removing-");
-    expect(line).toContain("then could not remove it");
-    expect(line).toEndWith("kept 0");
-  });
+      // The folder was moved aside, and the log names where it is now; it is not counted as
+      // removed, nor as a worktree the verdict kept.
+      expect(existsSync(done)).toBe(false);
+      const record = recorded(failing, repo);
+      expect(record.removed).toEqual([]);
+      expect(record.kept).toEqual([]);
+      const [line] = logLines(failing);
+      expect(line).toContain("could not finish removing 1 (moved ");
+      expect(line).toContain("app-wt-done-removing-");
+      expect(line).toContain("then could not remove it");
+      expect(line).toEndWith("kept 0");
+    },
+  );
 
   test("a commit that is not on the base keeps the worktree", async () => {
     const { add, env, repo } = project();
@@ -550,6 +558,40 @@ describe("how the hooks start it", () => {
       "/r/app-wt-a",
     ]);
   });
+
+  test.skipIf(!NO_POSIX_MODES)(
+    "on Windows the clean starts behind cmd /c start, every argument quoted",
+    () => {
+      // The background clean is a detached start from a hook (D48). On Windows a plain
+      // detached child dies with the hook (oven-sh/bun#31603), so `startDetached` runs it
+      // through the trampoline; this is the exact argv a Windows machine gets.
+      const argv = autoCleanArgv(
+        "C:\\Users\\me\\.bun\\bin\\bun.exe",
+        "C:\\p\\dist\\worktrees-clean.js",
+        "C:\\p",
+        "C:\\r\\app",
+        "merge",
+        "C:\\r\\app-wt-a",
+      );
+      expect(argv).toEqual([
+        "C:\\Users\\me\\.bun\\bin\\bun.exe",
+        "--no-env-file",
+        "--config=C:\\p\\bunfig.toml",
+        "C:\\p\\dist\\worktrees-clean.js",
+        "C:\\r\\app",
+        "merge",
+        "C:\\r\\app-wt-a",
+      ]);
+      expect(detachedArgv("win32", argv)).toEqual([
+        "cmd",
+        "/d",
+        "/s",
+        "/v:off",
+        "/c",
+        String.raw`"start "" /b "C:\Users\me\.bun\bin\bun.exe" "--no-env-file" "--config=C:\p\bunfig.toml" "C:\p\dist\worktrees-clean.js" "C:\r\app" "merge" "C:\r\app-wt-a""`,
+      ]);
+    },
+  );
 
   test("the entry refuses what it was not told: exit 2 and one line, nothing run", () => {
     const entry = join(import.meta.dir, "..", "entries", "worktrees-clean.ts");
