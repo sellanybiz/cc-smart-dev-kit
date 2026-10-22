@@ -24,7 +24,7 @@ import { ActionResultLine, useAction } from "@/components/action-button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
 import { columnsFor, PortalTable } from "@/components/data-table";
-import { ProjectStatePills } from "@/components/project-state";
+import { NarrowLabel, ProjectStatePills, STACK_ROWS_WHEN_NARROW } from "@/components/project-state";
 import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { SettingsCards } from "@/components/settings-rows";
@@ -288,8 +288,10 @@ const column = columnsFor<ProjectBranchRow>();
 const BRANCH_COLUMNS = column.columns([
   column.accessor("branch", {
     header: "Branch",
+    // The cells wrap (the table's cells do not by default): a long branch name or reason makes
+    // the row taller, never the table wider.
     cell: ({ row }) => (
-      <span className="flex min-w-0 flex-col gap-0.5">
+      <span className="flex min-w-0 flex-col gap-0.5 whitespace-normal">
         <span className="wrap-any font-mono text-xs">{row.original.branch}</span>
         {row.original.title !== null && (
           <span className="text-xs text-pretty text-muted-foreground">{row.original.title}</span>
@@ -301,18 +303,21 @@ const BRANCH_COLUMNS = column.columns([
   column.accessor("kind", {
     header: "What",
     cell: ({ row }) => (
-      <span className="flex flex-wrap items-center gap-1.5 whitespace-nowrap">
-        {row.original.kind === "pr" ? (
-          <>
-            <GitPullRequestIcon className="size-3.5" aria-hidden="true" />
-            {row.original.number === null ? "Pull request" : `PR #${row.original.number}`}
-          </>
-        ) : (
-          <>
-            <GitBranchIcon className="size-3.5" aria-hidden="true" />
-            Crew branch
-          </>
-        )}
+      <span className="flex flex-wrap items-center gap-1.5">
+        {/* The icon stays with its words; only the draft badge may wrap to a line of its own. */}
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          {row.original.kind === "pr" ? (
+            <>
+              <GitPullRequestIcon className="size-3.5" aria-hidden="true" />
+              {row.original.number === null ? "Pull request" : `PR #${row.original.number}`}
+            </>
+          ) : (
+            <>
+              <GitBranchIcon className="size-3.5" aria-hidden="true" />
+              Crew branch
+            </>
+          )}
+        </span>
         {row.original.draft && (
           <Badge variant="outline" className="text-muted-foreground">
             draft
@@ -324,14 +329,17 @@ const BRANCH_COLUMNS = column.columns([
   column.accessor("base", {
     header: "Into",
     cell: ({ row }) => (
-      <span className="wrap-any font-mono text-xs">{row.original.base ?? "—"}</span>
+      <span className="wrap-any whitespace-normal">
+        <NarrowLabel>into</NarrowLabel>
+        <span className="font-mono text-xs">{row.original.base ?? "—"}</span>
+      </span>
     ),
   }),
   column.accessor((row) => row.verdict.label, {
     id: "verdict",
     header: "Verdict",
     cell: ({ row }) => (
-      <span className="flex min-w-48 flex-col items-start gap-1">
+      <span className="flex min-w-48 flex-col items-start gap-1 whitespace-normal">
         <TonePill tone={row.original.verdict.tone}>{row.original.verdict.label}</TonePill>
         {row.original.verdict.reason !== null && (
           <span className="text-xs text-pretty text-muted-foreground">
@@ -360,13 +368,23 @@ function Branches({ data }: { data: ProjectData }) {
             <AlertDescription>{data.branchesNote}</AlertDescription>
           </Alert>
         )}
-        <PortalTable
-          rows={data.branches}
-          columns={BRANCH_COLUMNS}
-          rowKey={(row) => `${row.kind}:${row.branch}`}
-          label={`Branches of ${data.project.name}`}
-          empty="No open pull request and no crew branch."
-        />
+        <div className={STACK_ROWS_WHEN_NARROW}>
+          <PortalTable
+            rows={data.branches}
+            columns={BRANCH_COLUMNS}
+            rowKey={(row) => `${row.kind}:${row.branch}`}
+            label={`Branches of ${data.project.name}`}
+            empty={
+              // The note is why a part could not be read: an empty table then only says that
+              // nothing was found in the part that could. It wraps on a narrow screen.
+              <span className="block whitespace-normal text-pretty">
+                {data.branchesNote === null
+                  ? "No open pull request and no crew branch."
+                  : "Nothing found in what could be read. The note above says what is missing."}
+              </span>
+            }
+          />
+        </div>
       </CardContent>
     </Card>
   );

@@ -7,7 +7,12 @@ import { SETTINGS_REFRESH } from "@/api/refresh";
 import type { ProjectList, ProjectListRow } from "@/api/types";
 import { ActionResultLine, useAction } from "@/components/action-button";
 import { columnsFor, PortalTable } from "@/components/data-table";
-import { ProjectStatePills, projectHref } from "@/components/project-state";
+import {
+  NarrowLabel,
+  ProjectStatePills,
+  projectHref,
+  STACK_ROWS_WHEN_NARROW,
+} from "@/components/project-state";
 import { AppLink, useAppQuery, useSetAppQuery } from "@/components/router";
 import { SettingsCards } from "@/components/settings-rows";
 import { EmptyState, ErrorState, LoadingState, PagePad } from "@/components/states";
@@ -23,33 +28,34 @@ const column = columnsFor<ProjectListRow>();
 const PROJECT_COLUMNS = column.columns([
   column.accessor("name", {
     header: "Project",
+    // The folder is the name's second line, wrapping anywhere: a long path makes the row
+    // taller, never the table wider.
     cell: ({ row }) => (
-      <span className="flex flex-wrap items-center gap-1.5">
-        <AppLink
-          href={projectHref(row.original.id)}
-          className="wrap-any font-medium underline-offset-4 hover:underline focus-visible:underline"
-        >
-          {row.original.name}
-        </AppLink>
-        {row.original.current && (
-          <Badge variant="secondary" title="The portal was started in this project">
-            this folder
-          </Badge>
-        )}
-        {row.original.source === "added" && (
-          <Badge variant="outline" className="text-muted-foreground">
-            added
-          </Badge>
-        )}
+      <span className="flex min-w-0 flex-col gap-1 whitespace-normal">
+        <span className="flex flex-wrap items-center gap-1.5">
+          <AppLink
+            href={projectHref(row.original.id)}
+            className="wrap-any font-medium underline-offset-4 hover:underline focus-visible:underline"
+          >
+            {row.original.name}
+          </AppLink>
+          {row.original.current && (
+            <Badge variant="secondary" title="The portal was started in this project">
+              this folder
+            </Badge>
+          )}
+          {row.original.source === "added" && (
+            <Badge variant="outline" className="text-muted-foreground">
+              added
+            </Badge>
+          )}
+        </span>
+        <span className="wrap-any font-mono text-xs text-muted-foreground">
+          {row.original.path}
+        </span>
       </span>
     ),
     enableHiding: false,
-  }),
-  column.accessor("path", {
-    header: "Folder",
-    cell: ({ row }) => (
-      <span className="block max-w-80 wrap-any font-mono text-xs">{row.original.path}</span>
-    ),
   }),
   column.accessor("setUp", {
     header: "State",
@@ -59,6 +65,7 @@ const PROJECT_COLUMNS = column.columns([
     header: "Last used",
     cell: ({ row }) => (
       <span className="whitespace-nowrap">
+        <NarrowLabel>Last used</NarrowLabel>
         {row.original.lastUsed === null ? "—" : ago(row.original.lastUsed)}
       </span>
     ),
@@ -66,7 +73,10 @@ const PROJECT_COLUMNS = column.columns([
   column.accessor("worktrees", {
     header: "Worktrees",
     cell: ({ row }) => (
-      <span className="block text-right tabular-nums">{row.original.worktrees ?? "—"}</span>
+      <span className="block text-right tabular-nums">
+        <NarrowLabel>Worktrees</NarrowLabel>
+        {row.original.worktrees ?? "—"}
+      </span>
     ),
   }),
   column.display({
@@ -216,13 +226,15 @@ function Projects({ projects }: { projects: ProjectsResource }) {
           folder.
         </EmptyState>
       ) : (
-        <PortalTable
-          rows={rows}
-          columns={PROJECT_COLUMNS}
-          rowKey={(row) => row.id}
-          label="Projects on this machine"
-          empty="No project yet."
-        />
+        <div className={STACK_ROWS_WHEN_NARROW}>
+          <PortalTable
+            rows={rows}
+            columns={PROJECT_COLUMNS}
+            rowKey={(row) => row.id}
+            label="Projects on this machine"
+            empty="No project yet."
+          />
+        </div>
       )}
     </div>
   );
