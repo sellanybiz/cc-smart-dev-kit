@@ -18555,6 +18555,9 @@ var NUMBER_RULES = {
   "crew.max": AT_LEAST_ONE,
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
+  "crew.perLead": AT_LEAST_ONE,
+  "crew.perLeadOpus": AT_LEAST_ONE,
+  "crew.usagePercent": PERCENT,
   "crew.quietMinutes": AT_LEAST_ONE,
   "crew.handoffPercent": PERCENT,
   "crew.softHours": ABOVE_ZERO,
@@ -18593,6 +18596,9 @@ var workflowSchema = strictObject({
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
     memoryGb: numberField("crew.memoryGb"),
+    perLead: numberField("crew.perLead"),
+    perLeadOpus: numberField("crew.perLeadOpus"),
+    usagePercent: numberField("crew.usagePercent"),
     quietMinutes: numberField("crew.quietMinutes"),
     handoffPercent: numberField("crew.handoffPercent"),
     softHours: numberField("crew.softHours"),
@@ -18623,9 +18629,12 @@ var workflowDefaults = {
   crew: {
     enabled: false,
     idleStopMinutes: 10,
-    max: 6,
-    maxOpus: 2,
+    max: 24,
+    maxOpus: null,
     memoryGb: 2,
+    perLead: 4,
+    perLeadOpus: 2,
+    usagePercent: 85,
     quietMinutes: 20,
     handoffPercent: 70,
     softHours: 2,
@@ -18655,6 +18664,9 @@ var POLICY_KEYS = [
   "crew.max",
   "crew.maxOpus",
   "crew.memoryGb",
+  "crew.perLead",
+  "crew.perLeadOpus",
+  "crew.usagePercent",
   "crew.quietMinutes",
   "crew.handoffPercent",
   "crew.softHours",
@@ -27740,6 +27752,9 @@ var RESOLVED = {
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
   "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.perLead": (r) => r.crew.perLead,
+  "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
+  "crew.usagePercent": (r) => r.crew.usagePercent,
   "crew.quietMinutes": (r) => r.crew.quietMinutes,
   "crew.handoffPercent": (r) => r.crew.handoffPercent,
   "crew.softHours": (r) => r.crew.softHours,
@@ -27785,6 +27800,9 @@ function resolveWorkflow(paths, projectConfig) {
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
+      perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
+      usagePercent: of("crew.usagePercent", crew.usagePercent ?? workflowDefaults.crew.usagePercent),
       quietMinutes: of("crew.quietMinutes", crew.quietMinutes ?? workflowDefaults.crew.quietMinutes),
       handoffPercent: of("crew.handoffPercent", crew.handoffPercent ?? workflowDefaults.crew.handoffPercent),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
@@ -28023,6 +28041,13 @@ ${called.run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
 function lastLine2(text) {
   return text.trim().split(/\r?\n/).at(-1)?.trim() ?? "";
 }
+
+// src/cli/usage-window.ts
+var WINDOW_SPAN_MS = 5 * 60 * 60000;
+var storedSchema = looseObject({
+  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
+  readAt: string2()
+});
 
 // src/sessions/saved-sessions.ts
 import { join as join53 } from "path";

@@ -6276,6 +6276,9 @@ var NUMBER_RULES = {
   "crew.max": AT_LEAST_ONE,
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
+  "crew.perLead": AT_LEAST_ONE,
+  "crew.perLeadOpus": AT_LEAST_ONE,
+  "crew.usagePercent": PERCENT,
   "crew.quietMinutes": AT_LEAST_ONE,
   "crew.handoffPercent": PERCENT,
   "crew.softHours": ABOVE_ZERO,
@@ -6314,6 +6317,9 @@ var workflowSchema = strictObject({
     max: numberField("crew.max"),
     maxOpus: numberField("crew.maxOpus"),
     memoryGb: numberField("crew.memoryGb"),
+    perLead: numberField("crew.perLead"),
+    perLeadOpus: numberField("crew.perLeadOpus"),
+    usagePercent: numberField("crew.usagePercent"),
     quietMinutes: numberField("crew.quietMinutes"),
     handoffPercent: numberField("crew.handoffPercent"),
     softHours: numberField("crew.softHours"),
@@ -6344,9 +6350,12 @@ var workflowDefaults = {
   crew: {
     enabled: false,
     idleStopMinutes: 10,
-    max: 6,
-    maxOpus: 2,
+    max: 24,
+    maxOpus: null,
     memoryGb: 2,
+    perLead: 4,
+    perLeadOpus: 2,
+    usagePercent: 85,
     quietMinutes: 20,
     handoffPercent: 70,
     softHours: 2,
@@ -6376,6 +6385,9 @@ var POLICY_KEYS = [
   "crew.max",
   "crew.maxOpus",
   "crew.memoryGb",
+  "crew.perLead",
+  "crew.perLeadOpus",
+  "crew.usagePercent",
   "crew.quietMinutes",
   "crew.handoffPercent",
   "crew.softHours",
@@ -14968,6 +14980,9 @@ function resolveWorkflow(paths, projectConfig) {
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
+      perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
+      usagePercent: of("crew.usagePercent", crew.usagePercent ?? workflowDefaults.crew.usagePercent),
       quietMinutes: of("crew.quietMinutes", crew.quietMinutes ?? workflowDefaults.crew.quietMinutes),
       handoffPercent: of("crew.handoffPercent", crew.handoffPercent ?? workflowDefaults.crew.handoffPercent),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
@@ -14995,6 +15010,13 @@ var RETRY_WATCHDOG_SETTINGS = [
   [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)]
 ];
 var RETRY_WATCHDOG_QUESTION = "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " + 'Every Claude session on this machine then waits ("Retrying in \u2026"; Esc cancels) with no time limit, ' + "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
+
+// src/cli/usage-window.ts
+var WINDOW_SPAN_MS = 5 * 60 * 60000;
+var storedSchema = looseObject({
+  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
+  readAt: string2()
+});
 
 // src/crew/transcript.ts
 var TAIL_BYTES = 256 * 1024;
