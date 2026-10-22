@@ -1623,8 +1623,13 @@ reader's `redirectionTargets` gives the targets), `tee` (and `Tee-Object`), `sed
 parameter name). Every target goes through the same `kitFileKind` as an Edit, as written (the
 `~`, a relative path against the input's `cwd` and against each `cd` / `Set-Location` /
 `Push-Location` the line ran before it) and as a real path, with each folder compared as written
-and by its real path. A write into the installed plugin folder asks too (never a deny: a person
-may mean it before an update), and Claude Code's own `claude plugin …` commands are not touched.
+and by its real path. **On Windows the Bash tool is Git Bash**, so a line may name a native file
+in MSYS2's own form (`/c/Users/…` for `C:/Users/…`): the target is read as the drive it names
+before the comparison (`shellTargetPath`, on Windows and for a Bash line only; PowerShell runs
+natively), beside the Win32 forms Git Bash also accepts (`C:/…`, and a quoted `"C:\…"`, where
+Bash keeps the backslashes). A write into the installed plugin folder asks too (never a deny: a
+person may mean it before an update), and Claude Code's own `claude plugin …` commands are not
+touched.
 A target the line works out when it
 runs (`> $FILE`, `$(mktemp)`, a glob) cannot be resolved: it asks only when the line also names
 a protected file or folder by text (`cc-smart-dev-kit.json`, `.config/cc-smart-dev-kit`, the

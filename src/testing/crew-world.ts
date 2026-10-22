@@ -13,11 +13,12 @@
  *   FAKE_STOP     `fail` (`claude stop` exits 1); unset: it stops.
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import { realRunProgram } from "../crew/claude";
 import type { CrewContext } from "../crew/context";
 import { sessionRecordFile } from "../crew/session";
+import { locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
 /** The lead session's id in every world. */
@@ -108,9 +109,13 @@ export function writeSessionRecord(
 export function crewWorld(): CrewWorld {
   const home = tempDir("home");
   const paths = cliPaths({ HOME: home });
-  const repo = join(tempDir("parent"), "my-app");
+  let repo = join(tempDir("parent"), "my-app");
   mkdirSync(repo);
   git(repo, "init", "-q", "-b", "main");
+  // The repo as every command finds it (`locateCheckout` resolves the real path): a Windows
+  // temp folder may be named with an 8.3 short name (`C:\Users\SHORTN~1\…`), and git reports
+  // the long one.
+  repo = locateCheckout(repo, { env: cleanGitEnv() })?.root ?? repo;
   writeFileSync(join(repo, "README.md"), "app\n");
   writeFileSync(join(repo, ".gitignore"), ".claude/worktrees/\n.env.local\n");
   git(repo, "add", ".");
@@ -138,7 +143,8 @@ export function crewWorld(): CrewWorld {
       FAKE_CLAUDE_LOG: log,
       FAKE_CLAUDE_STATE: join(bin, "state"),
       HOME: home,
-      PATH: `${bin}:${gitDir}`,
+      // The platform's own separator: `:` splits a PATH on macOS and Linux, `;` on Windows.
+      PATH: `${bin}${delimiter}${gitDir}`,
       ...env,
     };
     return {

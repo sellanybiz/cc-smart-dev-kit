@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isOwnerOnly } from "../setup/file-mode";
 import { withLock } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import {
@@ -760,7 +761,12 @@ describe("the lead record", () => {
       version: 1,
     });
     expect(readLead(state, REPO, LEAD)).toEqual(again);
-    expect(statSync(leadFile(state, REPO, LEAD)).mode & 0o777).toBe(0o600);
+    // On Windows a file's mode says nothing (a writable file reports 0666): the profile's ACL
+    // protects it, and `isOwnerOnly` is the check the rest of the kit reads (`file-mode.ts`).
+    expect(isOwnerOnly(statSync(leadFile(state, REPO, LEAD)).mode)).toBe(true);
+    if (!NO_POSIX_MODES) {
+      expect(statSync(leadFile(state, REPO, LEAD)).mode & 0o777).toBe(0o600);
+    }
     expect(listLeads(state, REPO)).toEqual({ broken: [], records: [again] });
     expect(readLead(state, REPO, SESSION)).toBeNull();
   });
@@ -918,7 +924,9 @@ describe("the hand-back report", () => {
     const file = await writeReport(state, REPO, "crew-K-contracts", report());
     expect(file).toBe(crewReportFile(state, REPO, "crew-K-contracts"));
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(report());
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // As above: a Windows mode is made up, so the profile's ACL is what protects the file.
+    expect(isOwnerOnly(statSync(file).mode)).toBe(true);
+    if (!NO_POSIX_MODES) expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(readReport(file)).toEqual(report());
     expect(readReport(join(dirname(file), "none.json"))).toBeNull();
   });

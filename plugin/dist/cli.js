@@ -32044,7 +32044,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname20, isAbsolute as isAbsolute6, relative as relative3, resolve as resolve11 } from "path";
+import { dirname as dirname20, isAbsolute as isAbsolute6, posix as posix3, relative as relative3, resolve as resolve11, win32 as win324 } from "path";
 
 // src/ports.ts
 var LOCK_PORTS = {
@@ -32198,6 +32198,15 @@ function persistentDrop(words, program, args) {
   }
   return null;
 }
+function pathRules(platform) {
+  return platform === "win32" ? win324 : posix3;
+}
+function shellTargetPath(path, platform = process.platform, dialect = "bash") {
+  if (platform !== "win32" || dialect !== "bash")
+    return path;
+  const drive = /^\/+([A-Za-z])\//.exec(path);
+  return drive === null ? path : `${drive[1]?.toUpperCase()}:/${path.slice(drive[0].length)}`;
+}
 var REVIEW_DONE_DENIAL = `\`${COMMAND} workflow review-done\` records a review by hand, for the person in their own terminal. A session never records its own review: the review-record hook records it when a review agent (the \`reviewAgents\` setting) returns. Run the review agent on the change instead; if it did and nothing was recorded, tell the person.`;
 function droppedDenial(why) {
   return `This runs a ${COMMAND} command with CLAUDECODE removed: it ${why}. Claude Code sets CLAUDECODE for the commands it runs, and the commands that change this machine's settings (the workflow gate, the portal, updates) refuse to run while it is set, because they are for the person in their own terminal. Dropping it to get past that is not allowed. If the person wants the command run, they run it themselves.`;
@@ -32294,14 +32303,15 @@ function writtenPaths(words, invocation) {
   }
   return written;
 }
-function movedTo2(invocation, folder, ctx) {
+function movedTo2(invocation, folder, ctx, dialect) {
   const to = withoutRedirections(invocation.args).find((arg) => !arg.startsWith("-"));
   if (to === undefined)
     return invocation.program === "cd" ? ctx.paths.home : folder;
-  const path = expanded(to, ctx.paths.home);
+  const path = shellTargetPath(expanded(to, ctx.paths.home), ctx.platform, dialect);
   if (COMPUTED_PATH.test(path) || path === "-")
     return null;
-  return isAbsolute6(path) ? resolve11(path) : folder === null ? null : resolve11(folder, path);
+  const rules = pathRules(ctx.platform);
+  return rules.isAbsolute(path) ? rules.resolve(path) : folder === null ? null : rules.resolve(folder, path);
 }
 function protectedNeedles(paths) {
   const settings = dirname20(paths.workflowConfigFile);
@@ -32332,20 +32342,21 @@ var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a 
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
 }
-function judgeWrites(raw, folder, ctx, found) {
+function judgeWrites(raw, folder, ctx, found, dialect) {
   const { cwd, paths } = ctx;
+  const rules = pathRules(ctx.platform);
   let computed = null;
   for (const target of raw) {
-    const path = expanded(target, paths.home);
+    const path = shellTargetPath(expanded(target, paths.home), ctx.platform, dialect);
     if (COMPUTED_PATH.test(path)) {
       computed ??= target;
       continue;
     }
-    if (!isAbsolute6(path) && folder === null)
+    if (!rules.isAbsolute(path) && folder === null)
       computed ??= target;
-    const bases = isAbsolute6(path) ? [""] : [...new Set([folder, cwd, "/"].filter(isString))];
+    const bases = rules.isAbsolute(path) ? [""] : [...new Set([folder, cwd, "/"].filter(isString))];
     const files = bases.flatMap((base) => {
-      const written = resolve11(base, path);
+      const written = rules.resolve(base, path);
       return [written, realPath(written)];
     });
     for (const file of new Set(files)) {
@@ -32369,9 +32380,9 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
     const invocation = invocationOf(words);
     const writes = writtenPaths(words, invocation);
     if (writes.length > 0)
-      judgeWrites(writes, where, ctx, found);
+      judgeWrites(writes, where, ctx, found, dialect);
     if (invocation !== undefined && CHANGES_FOLDER.has(invocation.program)) {
-      where = invocation.program === "popd" ? null : movedTo2(invocation, where, ctx);
+      where = invocation.program === "popd" ? null : movedTo2(invocation, where, ctx, dialect);
     }
     const later = persistentDrop(words, invocation?.program, invocation === undefined ? [] : withoutRedirections(invocation.args));
     if (invocation !== undefined) {
@@ -32414,12 +32425,17 @@ var PORTAL_QUESTION = `This command reaches the portal's port (${DEFAULT_PORTAL_
 function commandOf2(input) {
   return stringField(toolInput(input).command) ?? "";
 }
-function judgeShell(input, paths) {
+function judgeShell(input, paths, platform) {
   const command = commandOf2(input);
   if (command === "")
     return SILENT;
   const found = { denials: new Set, asks: new Set };
-  const ctx = { paths, cwd: stringField(input.cwd), text: command };
+  const ctx = {
+    paths,
+    cwd: stringField(input.cwd),
+    platform,
+    text: command
+  };
   for (const reading of readingsOf(command, dialectOfTool(input.tool_name))) {
     readLine(command, reading, null, ctx.cwd, 0, found, ctx);
   }
@@ -32473,10 +32489,10 @@ function judgeEdit(input, paths) {
   }
   return SILENT;
 }
-function sessionEscapeGuard(input, paths) {
+function sessionEscapeGuard(input, paths, platform = process.platform) {
   const tool = stringField(input.tool_name) ?? "";
   if (ESCAPE_SHELL_TOOLS.includes(tool))
-    return judgeShell(input, paths);
+    return judgeShell(input, paths, platform);
   if (ESCAPE_EDIT_TOOLS.includes(tool))
     return judgeEdit(input, paths);
   return SILENT;

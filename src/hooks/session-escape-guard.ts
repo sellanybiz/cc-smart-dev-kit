@@ -54,12 +54,13 @@
  * `src/shell/command.ts`'s job; this file adds no lexer of its own.
  */
 
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, posix, relative, resolve, win32 } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { isInside } from "../path-compare";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import {
+  type Dialect,
   dialectOfTool,
   invocationOf,
   isAssignmentOnly,
@@ -296,8 +297,32 @@ interface ShellContext {
   paths: CliPaths;
   /** The input's `cwd`, or null; where a relative target is looked for, besides a `cd`'s. */
   cwd: string | null;
+  /** The platform whose paths the line names (the hook's own; a test may pass another). */
+  platform: NodeJS.Platform;
   /** The whole command text, for the check that reads text rather than commands. */
   text: string;
+}
+
+/** `node:path`'s Windows or POSIX rules, for the platform whose paths the line names. */
+function pathRules(platform: NodeJS.Platform): typeof posix {
+  return platform === "win32" ? win32 : posix;
+}
+
+/**
+ * A path a Bash line names, as the platform reads it. Claude Code's Bash tool is Git Bash on
+ * Windows, where MSYS2 maps the drive `C:` to `/c`: a line that writes `/c/Users/…` writes
+ * `C:/Users/…`. Read as it is, `/c/…` would look like a folder named `c` on whatever drive
+ * the line runs on, and a write into the kit's own files would go unseen. PowerShell runs
+ * natively, so its `/c/…` is no drive and is left alone.
+ */
+export function shellTargetPath(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+  dialect: Dialect = "bash",
+): string {
+  if (platform !== "win32" || dialect !== "bash") return path;
+  const drive = /^\/+([A-Za-z])\//.exec(path);
+  return drive === null ? path : `${drive[1]?.toUpperCase()}:/${path.slice(drive[0].length)}`;
 }
 
 const REVIEW_DONE_DENIAL = `\`${COMMAND} workflow review-done\` records a review by hand, for the person in their own terminal. A session never records its own review: the review-record hook records it when a review agent (the \`reviewAgents\` setting) returns. Run the review agent on the change instead; if it did and nothing was recorded, tell the person.`;
@@ -427,12 +452,18 @@ function movedTo(
   invocation: NonNullable<ReturnType<typeof invocationOf>>,
   folder: string | null,
   ctx: ShellContext,
+  dialect: Dialect,
 ): string | null {
   const to = withoutRedirections(invocation.args).find((arg) => !arg.startsWith("-"));
   if (to === undefined) return invocation.program === "cd" ? ctx.paths.home : folder;
-  const path = expanded(to, ctx.paths.home);
+  const path = shellTargetPath(expanded(to, ctx.paths.home), ctx.platform, dialect);
   if (COMPUTED_PATH.test(path) || path === "-") return null;
-  return isAbsolute(path) ? resolve(path) : folder === null ? null : resolve(folder, path);
+  const rules = pathRules(ctx.platform);
+  return rules.isAbsolute(path)
+    ? rules.resolve(path)
+    : folder === null
+      ? null
+      : rules.resolve(folder, path);
 }
 
 /** The places in the text of a command that name the protected files, normalised for `includes`. */
@@ -496,21 +527,23 @@ function judgeWrites(
   folder: string | null,
   ctx: ShellContext,
   found: Findings,
+  dialect: Dialect,
 ): void {
   const { cwd, paths } = ctx;
+  const rules = pathRules(ctx.platform);
   let computed: string | null = null;
   for (const target of raw) {
-    const path = expanded(target, paths.home);
+    const path = shellTargetPath(expanded(target, paths.home), ctx.platform, dialect);
     if (COMPUTED_PATH.test(path)) {
       computed ??= target;
       continue;
     }
     // A relative path is looked for where the line has moved to, and where it began: a `cd` in a
     // subshell is not told apart from one that lasts.
-    if (!isAbsolute(path) && folder === null) computed ??= target;
-    const bases = isAbsolute(path) ? [""] : [...new Set([folder, cwd, "/"].filter(isString))];
+    if (!rules.isAbsolute(path) && folder === null) computed ??= target;
+    const bases = rules.isAbsolute(path) ? [""] : [...new Set([folder, cwd, "/"].filter(isString))];
     const files = bases.flatMap((base) => {
-      const written = resolve(base, path);
+      const written = rules.resolve(base, path);
       return [written, realPath(written)];
     });
     for (const file of new Set(files)) {
@@ -552,9 +585,9 @@ function readLine(
     const words = wordsOf(step.text, dialect);
     const invocation = invocationOf(words);
     const writes = writtenPaths(words, invocation);
-    if (writes.length > 0) judgeWrites(writes, where, ctx, found);
+    if (writes.length > 0) judgeWrites(writes, where, ctx, found, dialect);
     if (invocation !== undefined && CHANGES_FOLDER.has(invocation.program)) {
-      where = invocation.program === "popd" ? null : movedTo(invocation, where, ctx);
+      where = invocation.program === "popd" ? null : movedTo(invocation, where, ctx, dialect);
     }
     const later = persistentDrop(
       words,
@@ -619,11 +652,16 @@ function commandOf(input: HookInput): string {
 }
 
 /** The answer for a Bash or PowerShell call. */
-function judgeShell(input: HookInput, paths: CliPaths): HookResult {
+function judgeShell(input: HookInput, paths: CliPaths, platform: NodeJS.Platform): HookResult {
   const command = commandOf(input);
   if (command === "") return SILENT;
   const found: Findings = { denials: new Set(), asks: new Set() };
-  const ctx: ShellContext = { paths, cwd: stringField(input.cwd), text: command };
+  const ctx: ShellContext = {
+    paths,
+    cwd: stringField(input.cwd),
+    platform,
+    text: command,
+  };
   for (const reading of readingsOf(command, dialectOfTool(input.tool_name))) {
     readLine(command, reading, null, ctx.cwd, 0, found, ctx);
   }
@@ -708,10 +746,18 @@ function judgeEdit(input: HookInput, paths: CliPaths): HookResult {
 
 // ---- The guard -------------------------------------------------------------------------
 
-/** The guard's answer for one call; silent for a tool it does not judge. */
-export function sessionEscapeGuard(input: HookInput, paths: CliPaths): HookResult {
+/**
+ * The guard's answer for one call; silent for a tool it does not judge. `platform` is the
+ * machine whose paths a shell line names (the hook's own; a test may pass another, so the
+ * Windows forms of a path are proved on Linux too).
+ */
+export function sessionEscapeGuard(
+  input: HookInput,
+  paths: CliPaths,
+  platform: NodeJS.Platform = process.platform,
+): HookResult {
   const tool = stringField(input.tool_name) ?? "";
-  if (ESCAPE_SHELL_TOOLS.includes(tool)) return judgeShell(input, paths);
+  if (ESCAPE_SHELL_TOOLS.includes(tool)) return judgeShell(input, paths, platform);
   if (ESCAPE_EDIT_TOOLS.includes(tool)) return judgeEdit(input, paths);
   return SILENT;
 }
