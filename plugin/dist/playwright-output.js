@@ -231,7 +231,7 @@ function toolDecision(decision, reason) {
 
 // src/hooks/playwright-output.ts
 function outputFilename(fields, outputDir) {
-  const filename = fields["filename"];
+  const filename = fields.filename;
   if (typeof filename !== "string" || filename === "" || isAbsolute(filename))
     return null;
   const name = filename.replace(/^(?:\.[\\/])+/, "");
@@ -269,7 +269,7 @@ function playwrightIsOurs(paths) {
   return live !== null && sameConfig(record.json, live.playwright);
 }
 function rewritableFilename(input) {
-  const filename = toolInput(input)["filename"];
+  const filename = toolInput(input).filename;
   return typeof filename === "string" && filename !== "" && !isAbsolute(filename) ? filename : null;
 }
 function playwrightOutputAnswer(input, outputDir, ours) {

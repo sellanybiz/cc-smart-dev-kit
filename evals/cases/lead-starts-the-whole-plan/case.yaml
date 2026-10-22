@@ -6,7 +6,9 @@ description: >-
   at plan approval the lead starts all three in that turn, S3 with `--waits-for S1`, so the watch
   starts it once S1 is merged. A lead that starts only wave 1, or only S1, fails. In the eval
   sandbox the command cannot start a real session, so the case grades the attempt.
-tags: [watch, workflow, needs-shell]
+  It needs Sonnet 5.5: Haiku fired the lead skill in 0 of 3 runs, Sonnet in 3 of 3 (EV1), so
+  it runs in the strong tier and stays out of fast.
+tags: [strong, workflow, needs-shell]
 plugins: ["../../.under-test/plugin", "../../harness"]
 execution:
   max_turns: 25

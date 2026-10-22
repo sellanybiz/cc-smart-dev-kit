@@ -57,7 +57,7 @@ import {
 
 /** The rewritten `filename` for a call, or null when this call's name is left alone. */
 export function outputFilename(fields: Record<string, unknown>, outputDir: string): null | string {
-  const filename = fields["filename"];
+  const filename = fields.filename;
   if (typeof filename !== "string" || filename === "" || isAbsolute(filename)) return null;
   // `./x.png` means `x.png` in that folder.
   const name = filename.replace(/^(?:\.[\\/])+/, "");
@@ -111,7 +111,7 @@ export function playwrightIsOurs(paths: CliPaths): boolean {
 
 /** The `filename` of a call this hook could rewrite, or null when the call is left alone. */
 function rewritableFilename(input: HookInput): null | string {
-  const filename = toolInput(input)["filename"];
+  const filename = toolInput(input).filename;
   return typeof filename === "string" && filename !== "" && !isAbsolute(filename) ? filename : null;
 }
 

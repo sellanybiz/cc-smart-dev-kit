@@ -6,7 +6,9 @@ description: >-
   session through `crew start` (the lead skill), not to a subagent and not built inline. In the
   eval sandbox the command cannot start a real session (no home folder, no network, no registered
   lead), so the case grades the attempt.
-tags: [watch, workflow, needs-shell]
+  It needs Sonnet 5.5: Haiku fired the lead skill in 1 of 3 runs, Sonnet in 3 of 3 (EV1), so
+  it runs in the strong tier and stays out of fast.
+tags: [strong, workflow, needs-shell]
 plugins: ["../../.under-test/plugin", "../../harness"]
 execution:
   max_turns: 20

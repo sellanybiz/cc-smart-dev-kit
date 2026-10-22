@@ -3,9 +3,10 @@
  * with the saved baseline. `claude plugin eval` does the work; this script holds the flags,
  * so every tier runs the same way on a laptop, in CI and in the release skill.
  *
- *   bun evals/run.ts <gate|watch|fast|full> [--without <name>]... [--model <id>]
+ *   bun evals/run.ts <gate|watch|fast|strong|full> [--without <name>]... [--model <id>]
  *                    [--route direct|settings] [--max-cost-usd <usd>] [--case <glob>]
- *                    [--concurrency <n>] [--keep-temp] [--save-baseline]
+ *                    [--concurrency <n>] [--without-needs-shell] [--keep-temp]
+ *                    [--save-baseline]
  *   bun evals/run.ts compare <baseline.json> <run.json>
  *
  * WHAT IT TESTS. A copy of `plugin/` in `evals/.under-test/plugin` (git ignores it), with
@@ -15,19 +16,36 @@
  * measure what that piece adds. The test-only plugin in `evals/` loads core.md
  * (`evals/harness/load-instructions.ts`).
  *
- * WHICH MODEL. `--route direct` (the default) sends every run to Anthropic: an eval run takes
- * `ANTHROPIC_BASE_URL` from the person's `~/.claude/settings.json`, so with the gateway on, a
- * haiku or sonnet run would be answered by whatever that slot's chain names, and the scores
- * would measure that model. `--route settings` keeps the person's own route.
+ * WHICH MODEL. A tier names its own model (Haiku, except `strong`): a case that needs a
+ * stronger model lives in `strong`, so its tier and baseline stay per model. `--route direct`
+ * (the default) sends every run to Anthropic: an eval run takes `ANTHROPIC_BASE_URL` from the
+ * person's `~/.claude/settings.json`, so with the gateway on, a run would be answered by
+ * whatever that slot's chain names, and the scores would measure that model. `--route
+ * settings` keeps the person's own route. `--model` overrides the tier's model everywhere.
  *
  * THE TIERS (each case.yaml's `tags`), three runs a case:
- *   gate   the cases today's plugin passes; a case below PASS_SHARE fails the run.
- *   watch  the cases a planned change should fix, or that need what this machine may lack
- *          (`needs-shell`: Claude Code's Bash sandbox); scored, never failing.
- *   fast   gate and watch together, deterministic graders only: the baseline a change is
- *          compared with (`evals/baseline/<tier>-<model>.json`).
- *   full   every case against the no-plugin baseline, the judge graders too.
+ *   gate    the cases today's plugin passes; a case below PASS_SHARE fails the run.
+ *   watch   the cases a planned change should fix, or that need what this machine may lack
+ *           (`needs-shell`: Claude Code's Bash sandbox); scored, never failing.
+ *   fast    gate and watch together, deterministic graders only: the baseline a change is
+ *           compared with (`evals/baseline/<tier>-<model>.json`).
+ *   strong  the cases that need a stronger model than Haiku, on Sonnet 5.5: the same
+ *           threshold as gate, its own baseline.
+ *   full    every Haiku case against the no-plugin baseline, the judge graders too; the
+ *           strong cases run in their own tier.
  * A watch case that a change makes pass in a fast run moves to gate in the same change.
+ *
+ * NESTED RUNS. A run started from a Claude Code session's shell is nested: the run's own OS
+ * sandbox cannot nest in the session's, so every Bash call fails and every `needs-shell` case
+ * would score void. The runner detects the session (`CLAUDECODE` and the other markers) and
+ * refuses the run with one line; `--without-needs-shell` runs the other cases only. A nested
+ * run never saves a baseline, and its summary names the cases it skipped.
+ *
+ * THE COST CAP. The suite checks `--max-cost-usd` only before it launches a run, with up to
+ * `--concurrency` runs in flight. The runner lowers the ceiling it passes by the runs that may
+ * already be in flight, each counted at a reserve (the highest cost per run in the tier's
+ * baseline, else a fixed reserve), so the total stays within one run's cost of the cap. The
+ * summary names what the cap skipped.
  *
  * One run at a time per checkout: every run rebuilds `evals/.under-test`.
  */
@@ -47,14 +65,24 @@ export const EVALS = import.meta.dir;
 const REPO = join(EVALS, "..");
 /** Where the copy under test goes; every case.yaml's `plugins` points at it. */
 export const UNDER_TEST = join(EVALS, ".under-test", "plugin");
+/** The test-only plugin every case loads (core.md); a filtered run names it absolutely. */
+export const HARNESS = join(EVALS, "harness");
 const CASES = join(EVALS, "cases");
+/**
+ * A run that takes only some cases gets a copy here, because the suite filters by tag or by
+ * one glob and cannot exclude: the copy's `plugins` paths are made absolute.
+ */
+const FILTERED_CASES = join(EVALS, ".under-test", "cases");
 const RESULTS = join(EVALS, "results");
 const BASELINE = join(EVALS, "baseline");
 
-/** The agent under test: the smallest Claude, pinned so a model rollout is not read as a plugin change. */
+/**
+ * The agent under test: the smallest Claude, pinned so a model rollout is not read as a
+ * plugin change.
+ */
 export const MODEL = "claude-haiku-5-5";
-/** The judge for `llm` graders (the full tier only). */
-export const JUDGE_MODEL = "claude-sonnet-5-5";
+/** The stronger Claude: the judge for `llm` graders (full only), and the `strong` tier's model. */
+export const SONNET_MODEL = "claude-sonnet-5-5";
 /** Where `--route direct` sends the runs. */
 const ANTHROPIC_API = "https://api.anthropic.com";
 
@@ -65,12 +93,24 @@ const ANTHROPIC_API = "https://api.anthropic.com";
  */
 export const ALLOW_TOOLS = ["Edit(./**)", "Write(./**)", "Bash"];
 
+/**
+ * What one run is counted at when the cap counts the runs in flight, and the tier's baseline
+ * has no higher cost per run. An estimate: the suite checks the ceiling only before it
+ * launches a run, so the cap can overrun by the runs in flight, and this keeps that to about
+ * one run's cost.
+ */
+export const RUN_RESERVE_USD = 0.25;
+
 export interface Tier {
   ablation: "none" | "with-without";
   /** The judge graders cost money; only the full tier runs them. */
   judge: boolean;
   maxCostUsd: number;
+  /** The model every case in this tier runs on; `--model` overrides it. */
+  model: string;
   runs: number;
+  /** Cases with one of these tags run in another tier, on that tier's model. */
+  skipTags: string[];
   /** Empty: every case. */
   tags: string[];
   /** A case below this fails the run. */
@@ -89,24 +129,49 @@ export const TIERS: Record<string, Tier> = {
     ablation: "none",
     judge: false,
     maxCostUsd: 1,
+    model: MODEL,
     runs: 3,
+    skipTags: [],
     tags: ["gate"],
     threshold: PASS_SHARE,
   },
-  watch: { ablation: "none", judge: false, maxCostUsd: 1, runs: 3, tags: ["watch"], threshold: 0 },
+  watch: {
+    ablation: "none",
+    judge: false,
+    maxCostUsd: 1,
+    model: MODEL,
+    runs: 3,
+    skipTags: [],
+    tags: ["watch"],
+    threshold: 0,
+  },
   fast: {
     ablation: "none",
     judge: false,
     maxCostUsd: 2,
+    model: MODEL,
     runs: 3,
+    skipTags: [],
     tags: ["gate", "watch"],
     threshold: 0,
+  },
+  strong: {
+    ablation: "none",
+    judge: false,
+    maxCostUsd: 3,
+    model: SONNET_MODEL,
+    runs: 3,
+    skipTags: [],
+    tags: ["strong"],
+    threshold: PASS_SHARE,
   },
   full: {
     ablation: "with-without",
     judge: true,
     maxCostUsd: 15,
+    model: MODEL,
     runs: 3,
+    skipTags: ["strong"],
     tags: [],
     threshold: PASS_SHARE,
   },
@@ -124,6 +189,21 @@ const SESSION_VARIABLES = [
   "CLAUDE_CODE_SESSION_ID",
   "CLAUDE_PID",
 ];
+
+/**
+ * The markers Claude Code leaves in the environment of a session's shell. Any one of them
+ * means this run is nested, and a nested run's sandbox cannot nest in the session's.
+ */
+export const NESTED_MARKERS = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_ENTRYPOINT",
+] as const;
+
+/** The first marker Claude Code set in `env`, or null when this is not a nested run. */
+export function nestedSession(env: Record<string, string | undefined>): null | string {
+  return NESTED_MARKERS.find((name) => (env[name] ?? "") !== "") ?? null;
+}
 
 /**
  * Builds the copy under test: `plugin/` without its `dependencies`, and without each piece
@@ -147,6 +227,26 @@ export function prepare(source: string, target: string, without: string[]): void
   }
 }
 
+/**
+ * Builds the eval dir for a run that takes only some cases: a copy of each named case under
+ * `.under-test/cases`, its `plugins` made absolute, because the copy no longer sits two
+ * folders below `evals/`. The source cases are never touched.
+ */
+export function prepareCases(source: string, target: string, names: string[]): void {
+  rmSync(target, { force: true, recursive: true });
+  for (const name of names) {
+    const copy = join(target, name);
+    cpSync(join(source, name), copy, { recursive: true });
+    const file = join(copy, "case.yaml");
+    const yaml = readFileSync(file, "utf8");
+    if (!/^plugins:.*$/m.test(yaml)) throw new Error(`${name}: case.yaml has no plugins line`);
+    writeFileSync(
+      file,
+      yaml.replace(/^plugins:.*$/m, `plugins: ${JSON.stringify([UNDER_TEST, HARNESS])}`),
+    );
+  }
+}
+
 /** The `tags:` list of each case, read from its case.yaml (written as `tags: [a, b]`). */
 export function caseTags(casesFolder: string): Record<string, string[]> {
   const tags: Record<string, string[]> = {};
@@ -162,6 +262,56 @@ export function caseTags(casesFolder: string): Record<string, string[]> {
   return tags;
 }
 
+/** The suite's own glob: `*` matches any run of characters, `?` one, everything else literal. */
+export function matchesGlob(glob: string, name: string): boolean {
+  const source = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${source}$`).test(name);
+}
+
+/**
+ * The cases a tier runs: its tags (any one, as the suite filters), the `--case` glob, and
+ * without the cases another tier owns (`skipTags`).
+ */
+export function selectedCases(
+  tier: Tier,
+  caseGlob: null | string,
+  tags: Record<string, string[]>,
+): string[] {
+  return Object.keys(tags)
+    .filter((name) => {
+      const own = tags[name] ?? [];
+      if (tier.skipTags.some((tag) => own.includes(tag))) return false;
+      if (tier.tags.length > 0 && !tier.tags.some((tag) => own.includes(tag))) return false;
+      return caseGlob === null || matchesGlob(caseGlob, name);
+    })
+    .sort();
+}
+
+/**
+ * A run's cost when the cap counts the runs in flight: the highest cost per run among the
+ * cases in the tier's baseline, or the fixed reserve when the history has none higher.
+ */
+export function runReserve(cases: string[], baseline: null | RunSummary): number {
+  let reserve = RUN_RESERVE_USD;
+  for (const one of baseline?.cases ?? []) {
+    if (!cases.includes(one.name) || one.runs <= 0) continue;
+    reserve = Math.max(reserve, one.costUsd / one.runs);
+  }
+  return reserve;
+}
+
+/**
+ * The ceiling the suite sees, so the cap holds within one run's cost: it checks the ceiling
+ * only before it launches a run, and up to `concurrency - 1` other runs are in flight then.
+ * Each of those is counted at `reserveUsd`.
+ */
+export function costCeiling(limitUsd: number, concurrency: number, reserveUsd: number): number {
+  return Math.max(0, limitUsd - Math.max(0, concurrency - 1) * reserveUsd);
+}
+
 export interface CaseSummary {
   costUsd: number;
   /** Why a run ended abnormally, once per distinct reason. */
@@ -175,14 +325,36 @@ export interface CaseSummary {
   tags: string[];
 }
 
+/** The cost cap as the runner applied it. */
+export interface CapSummary {
+  /** The ceiling the suite saw, after the runs in flight were counted. */
+  ceilingUsd: number;
+  /** The cap the person set: `--max-cost-usd`, or the tier's. */
+  limitUsd: number;
+  /** What each run in flight was counted at. */
+  reserveUsd: number;
+}
+
+/** A run the suite did not start, and why. */
+export interface SkippedRuns {
+  case: string;
+  reason: "cost-cap" | "needs-shell";
+  runs: number;
+}
+
 export interface RunSummary {
+  cap: CapSummary;
   cases: CaseSummary[];
   claudeVersion: string;
   costUsd: number;
   model: string;
+  /** The session marker when the run was nested in a Claude Code session, else null. */
+  nested: null | string;
   partial: boolean;
   pluginVersion: string;
   schema: 1;
+  /** What the run left out: the runs the cap stopped, and the cases a nested run skipped. */
+  skipped: SkippedRuns[];
   startedAt: string;
   tier: string;
   without: string[];
@@ -207,6 +379,21 @@ interface Aggregate {
   startedAt: string;
 }
 
+export interface SummaryMeta {
+  cap: CapSummary;
+  model: string;
+  nested: null | string;
+  pluginVersion: string;
+  /** The runs the tier asked each case for. */
+  runs: number;
+  /** The cases the run asked for, so one the suite never started is recorded too. */
+  selected: string[];
+  /** The cases a `--without-needs-shell` run left out, by name. */
+  skippedShell: string[];
+  tier: string;
+  without: string[];
+}
+
 /** Drops the folders of this machine from a text, so a saved summary names no machine. */
 function scrub(text: string): string {
   const home = process.env.HOME ?? "";
@@ -218,34 +405,54 @@ function scrub(text: string): string {
 /** The part of `claude plugin eval`'s result a baseline keeps: scores and verdicts, no paths. */
 export function summarize(
   aggregate: Aggregate,
-  meta: { model: string; pluginVersion: string; tier: string; without: string[] },
+  meta: SummaryMeta,
   tags: Record<string, string[]>,
 ): RunSummary {
+  const skipped: SkippedRuns[] = [];
+  const cases = aggregate.cases.map((one) => {
+    const graders: Record<string, number> = {};
+    for (const run of one.arms.with) {
+      for (const grader of run.graders) {
+        graders[grader.name] = (graders[grader.name] ?? 0) + (grader.passed ? 1 : 0);
+      }
+    }
+    const errors = one.arms.with.flatMap((run) => (run.error == null ? [] : [scrub(run.error)]));
+    const missing = meta.runs - one.arms.with.length;
+    if (missing > 0) skipped.push({ case: one.name, reason: "cost-cap", runs: missing });
+    return {
+      name: one.name,
+      tags: tags[one.name] ?? [],
+      runs: one.arms.with.length,
+      score: one.aggregates.score,
+      costUsd: one.arms.with.reduce((sum, run) => sum + run.costUsd, 0),
+      errors: [...new Set(errors)],
+      graders,
+    };
+  });
+  const started = new Set(cases.map((one) => one.name));
+  for (const name of meta.selected) {
+    // A partial run can stop before a case starts; silence would read as a case that passed.
+    if (aggregate.partial && !started.has(name)) {
+      skipped.push({ case: name, reason: "cost-cap", runs: meta.runs });
+    }
+  }
+  for (const name of meta.skippedShell) {
+    skipped.push({ case: name, reason: "needs-shell", runs: meta.runs });
+  }
   return {
     schema: 1,
-    ...meta,
+    model: meta.model,
+    pluginVersion: meta.pluginVersion,
+    tier: meta.tier,
+    without: meta.without,
     claudeVersion: aggregate.claudeVersion,
     costUsd: aggregate.costUsd,
     partial: aggregate.partial,
     startedAt: aggregate.startedAt,
-    cases: aggregate.cases.map((one) => {
-      const graders: Record<string, number> = {};
-      for (const run of one.arms.with) {
-        for (const grader of run.graders) {
-          graders[grader.name] = (graders[grader.name] ?? 0) + (grader.passed ? 1 : 0);
-        }
-      }
-      const errors = one.arms.with.flatMap((run) => (run.error == null ? [] : [scrub(run.error)]));
-      return {
-        name: one.name,
-        tags: tags[one.name] ?? [],
-        runs: one.arms.with.length,
-        score: one.aggregates.score,
-        costUsd: one.arms.with.reduce((sum, run) => sum + run.costUsd, 0),
-        errors: [...new Set(errors)],
-        graders,
-      };
-    }),
+    cap: meta.cap,
+    nested: meta.nested,
+    skipped,
+    cases,
   };
 }
 
@@ -291,6 +498,12 @@ function readSummary(file: string): RunSummary {
   return JSON.parse(readFileSync(file, "utf8")) as RunSummary;
 }
 
+/** The baseline of one tier and model, or null when none was saved for them. */
+function readBaseline(tier: string, model: string): null | RunSummary {
+  const file = join(BASELINE, `${tier}-${model}.json`);
+  return existsSync(file) ? readSummary(file) : null;
+}
+
 export interface Options {
   caseGlob: null | string;
   /** Runs at once (1 to 8); they share the account's rate limit. */
@@ -298,22 +511,26 @@ export interface Options {
   /** Keep each run's workspace and trace, for reading what a case did. */
   keepTemp: boolean;
   maxCostUsd: null | number;
-  model: string;
+  /** Null: the tier's own model. */
+  model: null | string;
   route: "direct" | "settings";
   saveBaseline: boolean;
   without: string[];
+  /** Run without the cases that need Claude Code's Bash sandbox. */
+  withoutNeedsShell: boolean;
 }
 
-function parseOptions(args: string[]): Options {
+export function parseOptions(args: string[]): Options {
   const options: Options = {
     caseGlob: null,
     concurrency: 1,
     keepTemp: false,
     maxCostUsd: null,
-    model: MODEL,
+    model: null,
     route: "direct",
     saveBaseline: false,
     without: [],
+    withoutNeedsShell: false,
   };
   for (let at = 0; at < args.length; at++) {
     const flag = args[at];
@@ -327,9 +544,20 @@ function parseOptions(args: string[]): Options {
     else if (flag === "--case") options.caseGlob = value();
     else if (flag === "--save-baseline") options.saveBaseline = true;
     else if (flag === "--keep-temp") options.keepTemp = true;
-    else if (flag === "--concurrency") options.concurrency = Number(value());
-    else if (flag === "--max-cost-usd") options.maxCostUsd = Number(value());
-    else if (flag === "--route") {
+    else if (flag === "--without-needs-shell") options.withoutNeedsShell = true;
+    else if (flag === "--concurrency") {
+      options.concurrency = Number(value());
+      if (
+        !Number.isInteger(options.concurrency) ||
+        options.concurrency < 1 ||
+        options.concurrency > 8
+      )
+        throw new Error("--concurrency is a whole number from 1 to 8");
+    } else if (flag === "--max-cost-usd") {
+      options.maxCostUsd = Number(value());
+      if (!Number.isFinite(options.maxCostUsd) || options.maxCostUsd <= 0)
+        throw new Error("--max-cost-usd is a positive number");
+    } else if (flag === "--route") {
       const route = value();
       if (route !== "direct" && route !== "settings")
         throw new Error("--route is direct or settings");
@@ -339,19 +567,89 @@ function parseOptions(args: string[]): Options {
   return options;
 }
 
+/** What one run of a tier does, decided before anything is copied or launched. */
+export interface RunPlan {
+  /** The cases to run, in name order. */
+  cases: string[];
+  ceilingUsd: number;
+  /** The eval dir the suite reads: `evals/cases`, or a filtered copy. */
+  evalDir: string;
+  limitUsd: number;
+  model: string;
+  nested: null | string;
+  reserveUsd: number;
+  skippedShell: string[];
+}
+
+/**
+ * Plans a tier's run: which cases, on which model, under which ceiling. Throws with the
+ * reason when the run must not start: no case selected, a nested run whose shell cases would
+ * score void, or a cap that cannot hold the runs in flight.
+ */
+export function planRun(
+  tierName: string,
+  tier: Tier,
+  options: Options,
+  env: Record<string, string | undefined>,
+  tags: Record<string, string[]>,
+): RunPlan {
+  const selected = selectedCases(tier, options.caseGlob, tags);
+  if (selected.length === 0) throw new Error(`${tierName}: no case is in this tier`);
+  const nested = nestedSession(env);
+  const shell = selected.filter((name) => (tags[name] ?? []).includes("needs-shell"));
+  if (nested !== null && shell.length > 0 && !options.withoutNeedsShell) {
+    throw new Error(
+      `this run is nested in a Claude Code session (${nested} is set), whose shell cannot nest: ${shell.length} needs-shell case(s) would score void. Run the tier from a normal terminal, or pass --without-needs-shell to run the other cases only.`,
+    );
+  }
+  const cases = options.withoutNeedsShell
+    ? selected.filter((name) => !shell.includes(name))
+    : selected;
+  if (cases.length === 0) {
+    throw new Error(
+      `${tierName}: every case it selects needs the shell, so --without-needs-shell leaves none`,
+    );
+  }
+  const model = options.model ?? tier.model;
+  const limitUsd = options.maxCostUsd ?? tier.maxCostUsd;
+  const reserveUsd = runReserve(cases, readBaseline(tierName, model));
+  const ceilingUsd = costCeiling(limitUsd, options.concurrency, reserveUsd);
+  if (ceilingUsd <= 0) {
+    throw new Error(
+      `the $${limitUsd.toFixed(2)} cap cannot hold ${options.concurrency - 1} run(s) in flight at the $${reserveUsd.toFixed(2)} reserve. Raise --max-cost-usd or lower --concurrency.`,
+    );
+  }
+  const filtered = shell.length > 0 && options.withoutNeedsShell;
+  return {
+    cases,
+    ceilingUsd,
+    evalDir: filtered || tier.skipTags.length > 0 ? FILTERED_CASES : CASES,
+    limitUsd,
+    model,
+    nested,
+    reserveUsd,
+    skippedShell: filtered ? shell : [],
+  };
+}
+
 /** The `claude` command line for one tier. */
-export function evalArgs(tier: Tier, options: Options, outputDir: string): string[] {
+export function evalArgs(
+  tier: Tier,
+  options: Options,
+  outputDir: string,
+  plan: { ceilingUsd: number; evalDir: string; model: string },
+): string[] {
   const args: string[] = [];
   if (options.route === "direct") {
     args.push("--settings", JSON.stringify({ env: { ANTHROPIC_BASE_URL: ANTHROPIC_API } }));
   }
-  args.push("plugin", "eval", ".", "--eval-dir", relative(REPO, CASES));
+  args.push("plugin", "eval", ".", "--eval-dir", relative(REPO, plan.evalDir));
   args.push("--trust-plugin", "--scaffold", "--no-publish");
-  args.push("--model", options.model, "--runs", String(tier.runs), "--ablation", tier.ablation);
+  args.push("--model", plan.model, "--runs", String(tier.runs), "--ablation", tier.ablation);
   args.push("--threshold", String(tier.threshold));
-  args.push("--max-cost-usd", String(options.maxCostUsd ?? tier.maxCostUsd));
+  args.push("--max-cost-usd", String(plan.ceilingUsd));
   args.push("--output-dir", outputDir);
-  if (tier.judge) args.push("--judge-model", JUDGE_MODEL);
+  if (tier.judge) args.push("--judge-model", SONNET_MODEL);
   if (options.caseGlob !== null) args.push("--case", options.caseGlob);
   if (options.keepTemp) args.push("--keep-temp");
   if (options.concurrency > 1) args.push("--concurrency", String(options.concurrency));
@@ -360,66 +658,119 @@ export function evalArgs(tier: Tier, options: Options, outputDir: string): strin
   return args;
 }
 
-function runTier(name: string, tier: Tier, options: Options): number {
-  prepare(join(REPO, "plugin"), UNDER_TEST, options.without);
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const outputDir = join(RESULTS, `${name}-${stamp}`);
-  mkdirSync(outputDir, { recursive: true });
-  const env = { ...process.env };
-  for (const variable of SESSION_VARIABLES) delete env[variable];
-  console.log(
-    `Tier ${name}: model ${options.model}, route ${options.route}${options.without.length > 0 ? `, without ${options.without.join(", ")}` : ""}`,
-  );
-  const run = spawnSync("claude", evalArgs(tier, options, outputDir), {
-    cwd: REPO,
-    env,
-    stdio: "inherit",
-  });
-  const aggregateFile = join(outputDir, "aggregate-result.json");
-  if (!existsSync(aggregateFile)) {
-    console.error(`No result was written (${aggregateFile}).`);
-    return run.status ?? 1;
-  }
-  const manifest = JSON.parse(
-    readFileSync(join(UNDER_TEST, ".claude-plugin", "plugin.json"), "utf8"),
-  );
-  const summary = summarize(
-    JSON.parse(readFileSync(aggregateFile, "utf8")) as Aggregate,
-    {
-      model: options.model,
-      pluginVersion: String(manifest.version),
-      tier: name,
-      without: options.without,
-    },
-    caseTags(CASES),
-  );
-  const summaryFile = join(outputDir, "summary.json");
-  writeFileSync(summaryFile, `${JSON.stringify(summary, null, 2)}\n`);
-  console.log(`Summary: ${relative(REPO, summaryFile)} (cost $${summary.costUsd.toFixed(4)})`);
-  // One baseline per tier and model: a run is only compared with runs of the same model.
-  const baselineFile = join(BASELINE, `${name}-${options.model}.json`);
-  if (options.saveBaseline) {
-    mkdirSync(BASELINE, { recursive: true });
-    writeFileSync(baselineFile, `${JSON.stringify(summary, null, 2)}\n`);
-    // The baseline is committed, so it takes the repo's JSON format, or `bun run lint` fails.
-    const format = spawnSync(
-      join(REPO, "node_modules", ".bin", "biome"),
-      ["format", "--write", baselineFile],
-      {
-        cwd: REPO,
-        encoding: "utf8",
-      },
+/** A nested run never becomes a baseline: its sandbox is not the one a tier runs in. */
+export function maySaveBaseline(plan: RunPlan): boolean {
+  return plan.nested === null;
+}
+
+/** Prints what the run left out, so a summary never hides a skipped case. */
+function printSkipped(summary: RunSummary): void {
+  const forCap = summary.skipped.filter((one) => one.reason === "cost-cap");
+  const shell = summary.skipped.filter((one) => one.reason === "needs-shell");
+  if (summary.partial) {
+    console.log(
+      forCap.length > 0
+        ? `Partial run: the cost cap or the suite stopped it; skipped ${forCap.length} case(s).`
+        : "Partial run: the suite stopped before every case finished; no case was left unstarted.",
     );
-    if (format.status !== 0) {
+  }
+  if (forCap.length > 0) {
+    const list = forCap.map((one) => `${one.case} (${one.runs} run(s))`).join(", ");
+    console.log(`Skipped for the cap: ${list}`);
+  }
+  if (shell.length > 0) {
+    console.log(`Skipped, needs a shell: ${shell.map((one) => one.case).join(", ")}`);
+  }
+}
+
+function runTier(name: string, tier: Tier, options: Options): number {
+  const tags = caseTags(CASES);
+  const plan = planRun(name, tier, options, process.env, tags);
+  const cap =
+    plan.ceilingUsd < plan.limitUsd
+      ? `, cap $${plan.limitUsd.toFixed(2)} (the suite stops at $${plan.ceilingUsd.toFixed(2)}: ${options.concurrency - 1} run(s) in flight × $${plan.reserveUsd.toFixed(2)} reserve)`
+      : `, cap $${plan.limitUsd.toFixed(2)}`;
+  console.log(
+    `Tier ${name}: model ${plan.model}, route ${options.route}${cap}${options.without.length > 0 ? `, without ${options.without.join(", ")}` : ""}`,
+  );
+  prepare(join(REPO, "plugin"), UNDER_TEST, options.without);
+  const filtered = plan.evalDir !== CASES;
+  try {
+    if (filtered) prepareCases(CASES, plan.evalDir, plan.cases);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const outputDir = join(RESULTS, `${name}-${stamp}`);
+    mkdirSync(outputDir, { recursive: true });
+    const env = { ...process.env };
+    for (const variable of SESSION_VARIABLES) delete env[variable];
+    const run = spawnSync("claude", evalArgs(tier, options, outputDir, plan), {
+      cwd: REPO,
+      env,
+      stdio: "inherit",
+    });
+    const aggregateFile = join(outputDir, "aggregate-result.json");
+    if (!existsSync(aggregateFile)) {
+      console.error(`No result was written (${aggregateFile}).`);
+      return run.status ?? 1;
+    }
+    const manifest = JSON.parse(
+      readFileSync(join(UNDER_TEST, ".claude-plugin", "plugin.json"), "utf8"),
+    );
+    const summary = summarize(
+      JSON.parse(readFileSync(aggregateFile, "utf8")) as Aggregate,
+      {
+        cap: {
+          ceilingUsd: plan.ceilingUsd,
+          limitUsd: plan.limitUsd,
+          reserveUsd: plan.reserveUsd,
+        },
+        model: plan.model,
+        nested: plan.nested,
+        pluginVersion: String(manifest.version),
+        runs: tier.runs,
+        selected: plan.cases,
+        skippedShell: plan.skippedShell,
+        tier: name,
+        without: options.without,
+      },
+      tags,
+    );
+    const summaryFile = join(outputDir, "summary.json");
+    writeFileSync(summaryFile, `${JSON.stringify(summary, null, 2)}\n`);
+    console.log(`Summary: ${relative(REPO, summaryFile)} (cost $${summary.costUsd.toFixed(4)})`);
+    printSkipped(summary);
+    // One baseline per tier and model: a run is only compared with runs of the same model.
+    const baselineFile = join(BASELINE, `${name}-${plan.model}.json`);
+    const save = options.saveBaseline && maySaveBaseline(plan);
+    if (options.saveBaseline && !save) {
       console.error(
-        `Could not format the baseline (${format.error?.message ?? format.stderr.trim()}): run bun run format.`,
+        `evals: no baseline saved: this run is nested in a Claude Code session (${plan.nested} is set). Run it from a normal terminal.`,
       );
     }
-    console.log(`Saved as the baseline: ${relative(REPO, baselineFile)}`);
-  } else if (existsSync(baselineFile)) {
-    printCompare(readSummary(baselineFile), summary);
+    if (save) {
+      mkdirSync(BASELINE, { recursive: true });
+      writeFileSync(baselineFile, `${JSON.stringify(summary, null, 2)}\n`);
+      // The baseline is committed, so it takes the repo's JSON format, or `bun run lint` fails.
+      const format = spawnSync(
+        join(REPO, "node_modules", ".bin", "biome"),
+        ["format", "--write", baselineFile],
+        {
+          cwd: REPO,
+          encoding: "utf8",
+        },
+      );
+      if (format.status !== 0) {
+        console.error(
+          `Could not format the baseline (${format.error?.message ?? format.stderr.trim()}): run bun run format.`,
+        );
+      }
+      console.log(`Saved as the baseline: ${relative(REPO, baselineFile)}`);
+    } else if (existsSync(baselineFile)) {
+      printCompare(readSummary(baselineFile), summary);
+    }
+    return run.status ?? 1;
+  } finally {
+    if (filtered) rmSync(plan.evalDir, { force: true, recursive: true });
   }
-  return run.status ?? 1;
 }
 
 if (import.meta.main) {
