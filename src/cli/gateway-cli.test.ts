@@ -1795,6 +1795,23 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({ model: "opus" });
   });
 
+  test("off leaves a gateway key someone else set, and says the gateway is not all off", async () => {
+    const m = machine();
+    const settings = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:19999" } }, null, 2)}\n`;
+    writeFileSync(m.paths.settings, settings);
+    const off = await m.runHere(["gateway", "off"]);
+    expect(off.exitCode).toBe(0);
+    expect(off.stdout).toBe(
+      [
+        "! env.ANTHROPIC_BASE_URL stays: cc-smart-dev-kit did not set it",
+        "  Fix: remove it by hand to turn the gateway off",
+        "! The gateway is not all off: 1 key stays that cc-smart-dev-kit did not set.",
+        "",
+      ].join("\n"),
+    );
+    expect(readFileSync(m.paths.settings, "utf8")).toBe(settings);
+  });
+
   test("a gateway key someone else set stops on: ForeignKeyError, nothing written", async () => {
     const m = machine();
     const server = fakeServer();

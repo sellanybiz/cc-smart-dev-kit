@@ -1043,6 +1043,10 @@ function fallbackWords(config: GatewayConfig, key: string): string {
     : "fallback off";
 }
 
+/**
+ * Every slot and alias: headings and the judge's warning through `out`; the rows through
+ * `print` as they are, because their names are padded into a column that must not wrap.
+ */
 function printSlots(config: GatewayConfig, out: Out, print: (line: string) => void): void {
   out.blank();
   out.heading(
@@ -2361,7 +2365,7 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
   if (foreign.length > 0) {
     out.verdict(
       "warn",
-      `The gateway is not all off: ${plural(foreign.length, "key", "keys")} ${COMMAND} did not set ${foreign.length === 1 ? "stays" : "stay"}.`,
+      `The gateway is not all off: ${plural(foreign.length, "key stays", "keys stay")} that ${COMMAND} did not set.`,
     );
   } else if (result.changes.length === 0) {
     out.verdict(
