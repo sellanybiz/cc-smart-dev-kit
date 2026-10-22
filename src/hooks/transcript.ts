@@ -4,7 +4,9 @@
  *   - the session's own model (the StopFailure usage-limit alert, the Agent guard);
  *   - the session's name (the notifier names the session in its alert);
  *   - the turn's last answer (the notifier's "finished" message);
- *   - who started the turn (the notifier stays quiet for a turn another session started).
+ *   - who started the turn (the notifier stays quiet for a turn another session started);
+ *   - the session's own file changes and its runs of the project's fast check (the
+ *     verification gate, `verify-gate.ts`).
  *
  * Claude Code writes a session's conversation to
  * `<config>/projects/<project folder>/<session id>.jsonl`. Only the file's tail is read: a
