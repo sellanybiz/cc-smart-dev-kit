@@ -67,6 +67,7 @@ import {
   unitActive,
 } from "../gateway/service";
 import { gatewayEnv } from "../gateway/settings";
+import { ASK_LOG_FILE } from "../hooks/ask-log";
 import { hostPlatform } from "../machine/host";
 import { isInside } from "../path-compare";
 import { isOwnerOnly } from "../setup/file-mode";
@@ -414,6 +415,8 @@ function writeProgress(stateDir: string, progress: MigrateProgress): void {
  */
 export const BOOKKEEPING_NAMES: readonly string[] = [
   "agent-launches.jsonl",
+  // The guards' record of what they asked (`src/hooks/ask-log.ts`): a hook writes it.
+  ASK_LOG_FILE,
   "lock",
   "migrate-progress.json",
   "notify.json",

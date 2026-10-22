@@ -34,10 +34,11 @@
 
 import { classifyHeavyCommand } from "../jobs/classify";
 import { mergeKinds } from "../jobs/kinds";
+import { programsOf } from "../shell/command";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsMerge } from "./after-merge";
-import { agentGuard, guardFacts } from "./agent-guard";
+import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
@@ -57,12 +58,56 @@ import { messageGuard } from "./message-guard";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
 import { sessionName } from "./session-name";
-import { programsOf } from "./shell-command";
 import { worktreeLeftovers } from "./worktree-leftovers";
 
 /** Said to the person when a guard cannot read the project's cc-smart-dev-kit.json. */
 function cannotCheck(what: string, message: string): string {
   return `cc-smart-dev-kit cannot check ${what}: ${message}`;
+}
+
+/**
+ * A guard's answer when its own code throws: **ask the person about the call in the
+ * guard's own domain**. A crash must never let a call through — that is the whole point of
+ * the answer — and a guard that cannot judge a call asks.
+ *
+ * `inDomain` says whether the call is one the guard judges: a call outside its domain is
+ * none of its business, and the guard stays silent. With an input the frame could not read
+ * (the hook input was not JSON) the guard asks in general: it cannot tell what the call is.
+ * A domain check that throws itself is no reason to let the call through: the guard asks.
+ *
+ * The event: a guard's bundle runs on PreToolUse, where it answers; the agent guard also
+ * runs on PostToolUse, to record a launch that ran. A crash there has nothing to ask about —
+ * the call already ran — so it says nothing, and the frame's one line on stderr is all. An
+ * event the frame could not read counts as the guard's own, PreToolUse.
+ */
+export function guardCrash(
+  what: string,
+  inDomain: (input: HookInput) => boolean,
+): NonNullable<HookSpec["onCrash"]> {
+  return (why: string, input: HookInput | null, event: string): HookResult => {
+    if (event !== "" && event !== "PreToolUse") return SILENT;
+    if (input !== null && !judgesCall(inDomain, input)) return SILENT;
+    return toolDecision("ask", cannotCheck(what, why));
+  };
+}
+
+/** True when the guard judges this call; true too when the check itself throws. */
+function judgesCall(inDomain: (input: HookInput) => boolean, input: HookInput): boolean {
+  try {
+    return inDomain(input);
+  } catch {
+    return true;
+  }
+}
+
+/** The tool the call is for, or "" when the input names none. */
+function toolOf(input: HookInput | null): string {
+  return input === null ? "" : (stringField(input.tool_name) ?? "");
+}
+
+/** The command of the call, or "" when the input names none. */
+function commandOf(input: HookInput | null): string {
+  return input === null ? "" : (stringField(toolInput(input).command) ?? "");
 }
 
 export const gitGuardHook: HookSpec = {
@@ -74,6 +119,12 @@ export const gitGuardHook: HookSpec = {
       ? toolDecision("ask", cannotCheck("this git command", message))
       : SILENT;
   },
+  // A crash must not let a git command through: the guard asks about the command it was
+  // asked to judge.
+  onCrash: guardCrash("this git command", (input) => {
+    const command = commandOf(input);
+    return command !== "" && runsGit(command);
+  }),
   // For the hook log: the programs of the command line, read the way the guard reads it, so
   // `doctor --live` can prove the guard parsed the call (not only that the hook ran).
   logFacts: (input) => {
@@ -115,6 +166,12 @@ export const mergeGuardHook: HookSpec = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
+  // A crash must not let a merge through: the guard asks about the command it was asked to
+  // judge.
+  onCrash: guardCrash("whether this merge may happen by itself", (input) => {
+    const command = commandOf(input);
+    return command !== "" && requestsMerge(command);
+  }),
   run: mergeGuard,
 };
 
@@ -128,6 +185,11 @@ export const mainFolderGuardHook: HookSpec = {
       ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message))
       : SILENT;
   },
+  // A crash must not let an edit through: the guard asks about the edit it was asked to
+  // judge.
+  onCrash: guardCrash("whether this edit belongs in a worktree", (input) =>
+    ["Edit", "Write", "NotebookEdit"].includes(toolOf(input)),
+  ),
   run: mainFolderGuard,
 };
 
@@ -136,6 +198,12 @@ export const messageGuardHook: HookSpec = {
   events: ["PreToolUse"],
   onConfigProblem: (message) =>
     toolDecision("ask", cannotCheck("whether this message stays in this repo", message)),
+  // A crash must not let a message through: the guard asks about the message it was asked
+  // to judge.
+  onCrash: guardCrash(
+    "whether this message stays in this repo",
+    (input) => toolOf(input) === "SendMessage",
+  ),
   run: messageGuard,
 };
 
@@ -194,21 +262,32 @@ export const sessionNameHook: HookSpec = {
 };
 
 /**
- * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`). **Machine-wide**:
- * it runs with or without cc-smart-dev-kit.json (like `update-check`), and its answer never depends on
- * the project's file — it judges the model and effort a launch names (§ `agent-guard.ts`). A
- * project that runs its own Agent guard lists `"agent-guard"` in `ownHooks`, and this one
- * stays silent there. `onConfigProblem` and `outsideGit` judge the same way: a broken or too
- * new cc-smart-dev-kit.json, or a folder that is not in git, does not change which model a launch runs
- * on.
+ * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`), and PostToolUse
+ * for the record. **Machine-wide**: it runs with or without cc-smart-dev-kit.json (like
+ * `update-check`), and its answer never depends on the project's file — it judges the model
+ * and effort a launch names (§ `agent-guard.ts`). A project that runs its own Agent guard
+ * lists `"agent-guard"` in `ownHooks`, and this one stays silent there. `onConfigProblem` and
+ * `outsideGit` judge the same way: a broken or too new cc-smart-dev-kit.json, or a folder that
+ * is not in git, does not change which model a launch runs on.
+ *
+ * PostToolUse is the **record**: a launch the guard asked about on PreToolUse, and the person
+ * allowed, ran, and is recorded there (`RAN_EVENT` in `agent-guard.ts`). Claude Code runs
+ * PostToolUse only for a call that ran, so a launch the person refused is never recorded. It
+ * is wired `--missing=quiet`: a launch that could not be recorded is one line on stderr, and
+ * the record is never a question.
  */
 export const agentGuardHook: HookSpec = {
   name: "agent-guard",
-  events: ["PreToolUse"],
+  events: ["PreToolUse", "PostToolUse"],
   onConfigProblem: (_message, input, _event, _checkout, context) =>
     agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) =>
     agentGuard(input, context.env, context.paths, cwdOf(input)),
+  // A crash must not let a launch through unchecked: the guard asks about the launch it was
+  // asked to judge. On PostToolUse (the record) it says nothing: the launch already ran.
+  onCrash: guardCrash("the model this launch runs on", (input) =>
+    ([...AGENT_TOOLS, ...WORKFLOW_TOOLS] as readonly string[]).includes(toolOf(input)),
+  ),
   logFacts: guardFacts,
   run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd),
 };
@@ -258,6 +337,12 @@ export const jobRouteHook: HookSpec = {
         );
   },
   logFacts: routeFacts,
+  // A crash must not let a heavy command through unrouted: the guard asks about the command
+  // it was asked to judge, the same domain `onConfigProblem` asks about.
+  onCrash: guardCrash(
+    "whether this project routes heavy commands through its job queue",
+    (input) => classifyHeavyCommand(commandOf(input), mergeKinds(undefined)) !== null,
+  ),
   run: jobRoute,
 };
 

@@ -1,9 +1,22 @@
 #!/bin/sh
 # Runs the cc-smart-dev-kit command of this plugin version (on the Bash tool's PATH in Claude Code).
+#
+# It runs through the hooks' shim (cc-smart-dev-kit-bun.sh, beside this script), which finds bun
+# where the launcher does: a Claude Code started from a desktop launcher or a service may have
+# no bun on PATH, and a bare `bun` here would then not start. The shim starts bun with the two
+# flags this command needs:
 # --no-env-file: bun would load the .env files of the working folder into the command, and
 # "cc-smart-dev-kit job run" must hand its job exactly the environment it was given.
 # --config: bun would also read the working folder's bunfig.toml, and a project's `preload`
-# would run its own code inside the command. This points bun at the plugin's own empty config,
-# in the plugin folder beside this script.
-dir=$(dirname "$0")
-exec bun --no-env-file --config="$dir/../bunfig.toml" "$dir/../dist/cli.js" "$@"
+# would run its own code inside the command. The shim points bun at the plugin's own empty
+# config, in the plugin folder beside this script.
+#
+# --missing=fail: a command that cannot run (no bun, or one that is too old) says why on stderr
+# and exits 1. A hook that cannot run exits 0, so the session goes on; a command must never
+# report success when it did not run.
+#
+# Shell built-ins only (no `dirname`), so it starts with an empty PATH too. /bin/sh runs the
+# shim, so the shim needs no execute bit (Windows has none).
+dir=${0%/*}
+case $dir in "$0") dir=. ;; esac
+exec /bin/sh "$dir/cc-smart-dev-kit-bun.sh" --missing=fail "$dir/../dist/cli.js" "$@"

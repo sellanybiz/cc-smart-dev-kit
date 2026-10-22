@@ -470,11 +470,23 @@ describe("the guard matrix", () => {
   );
 });
 
-test("an input that is not JSON, or for another event: nothing (and no crash)", async () => {
+test("an input that is not JSON: a guard asks, any other hook says one line; for another event: nothing", async () => {
   const { handleHook } = await import("./run");
+  // A guard that cannot read its input cannot judge the call, so it asks (fails closed).
   expect(await handleHook(gitGuardHook, "not json", hookEnv())).toEqual({
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason:
+          "cc-smart-dev-kit cannot check this git command: the hook input is not JSON",
+      },
+    }),
+  });
+  // An informational hook never stops a person's work: one line on stderr, exit 0.
+  expect(await handleHook(sessionNameHook, "not json", hookEnv())).toEqual({
     exitCode: 0,
-    stderr: "cc-smart-dev-kit git-guard: the hook input is not JSON",
+    stderr: "cc-smart-dev-kit session-name: the hook input is not JSON",
   });
   expect(
     await handleHook(

@@ -1385,6 +1385,19 @@ function workflowPlace(paths: CliPaths, env: Env, cwd: string): WorkflowPlace {
 }
 
 /**
+ * The model Claude Code resolved for a launch it started: `PostToolUse`'s
+ * `tool_response.resolvedModel` (`docs/claude-code-contract.md` § Hooks). PostToolUse on the
+ * Agent tool fires **at the launch**, not when the agent finishes, so this is the model the
+ * agent runs on (proved live on 2.1.306: `claude-opus-5-5` for a launch that named `opus`).
+ * Null on PreToolUse, and for a call whose answer carries none (a Workflow).
+ */
+export function resolvedModelOf(input: HookInput): null | string {
+  const response = input.tool_response;
+  if (typeof response !== "object" || response === null || Array.isArray(response)) return null;
+  return stringField((response as Record<string, unknown>).resolvedModel);
+}
+
+/**
  * One line in the record for an Opus or Fable launch; null for any other. `index` is the
  * launch's place in its tool call (a Workflow's launches share one `tool_use_id`).
  */
@@ -1406,7 +1419,9 @@ function recorded(
     effort: result.ran.effort?.toLowerCase() ?? SESSION_EFFORT,
     family,
     launchIndex: index,
-    model: result.real?.model ?? "",
+    // What Claude Code says the launch runs on, when it says (PostToolUse, the record of an
+    // asked launch); else what the guard resolved from the model name.
+    model: resolvedModelOf(input) ?? result.real?.model ?? "",
     project: cwd,
     reason,
     session: stringField(input.session_id) ?? "",

@@ -90,8 +90,14 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   On Windows the same checks read the `bun.exe` it found, through the same MSYS path rules.
 - **The shim's first argument says what to do when no bun is found**, and is never passed
   to bun: `--missing=ask` prints one PreToolUse answer on stdout, asking the person, and
-  exits 0; `--missing=quiet` writes one line on stderr and exits 0. A hook never stops a
-  session either way.
+  exits 0; `--missing=quiet` writes one line on stderr and exits 0; `--missing=fail` writes
+  one line on stderr and **exits 1**, for the command (`plugin/bin/cc-smart-dev-kit`), which must
+  never report success when it did not run. A hook never stops a session on its own.
+- **A guard also asks when its bundle file is gone** (`--missing=ask` checks the file): Claude
+  Code deletes an old plugin version folder some time after an update, and bun told to run a
+  file that is not there only prints its error and exits 1, which Claude Code reads as a failure
+  that goes on. Every guard's `hooks.json` entry also says **`"onFailure": "block"`**, the
+  second belt for a hook that cannot start at all (the shim is gone too).
 - **A PreToolUse guard passes `--missing=ask`** — with no bun it asks instead of letting
   the tool run: a guard fails closed. **Every other hook passes `--missing=quiet`**, so a
   missing bun is one stderr line and the session goes on.
@@ -128,7 +134,8 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
 2. **`ownHooks`** (below).
 3. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (below).
-4. **Run.**
+4. **Run.** A guard's crash answers through `onCrash` (§ Fail safe).
+5. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`.
 
 The frame stays general: later hooks (notifications, the routing of heavy jobs) are new
 specs in it.
@@ -321,10 +328,33 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
 
 ## Fail safe
 
-A bug in a hook must never stop a user's work.
+A bug in an informational hook must never stop a user's work. A bug in a **guard** must never
+let a call through. Each hook's answer to its own failure, in one table (the same in
+`docs/design.md` § One frame for every hook):
 
-- Catch every error, write one line to stderr, and exit 0. No plugin hook exits 1
-  (`crashExitCode`): a bug never stops a person's work.
+| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard` | Any other plugin hook | `cc-smart-dev-kit hook notify` |
+|---|---|---|---|
+| Its own code throws | `onCrash`: **ask** about the call in the guard's domain (a call outside it: silent; on PostToolUse: silent, one stderr line) | one stderr line, exit 0 | one stderr line, exit 0 |
+| The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
+| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard` judges the call anyway) | one line of context, or on stderr | not read |
+| No bun, or one older than `MIN_BUN` | the shim's `--missing=ask`: **ask** | the shim's `--missing=quiet`: one stderr line, exit 0 | the launcher's line on stderr, exit 1 (Claude Code reads exit 1 as a failure that goes on) |
+| The bundle file is gone (an update removed the version folder) | the shim **asks** | bun's own error, exit 1 | not applicable: the launcher runs the installed version |
+| The hook cannot start, times out, or fails (an exit code other than 0 and 2) | `"onFailure": "block"` in `hooks.json`: Claude Code **blocks** the call | Claude Code goes on | Claude Code goes on |
+
+`"onFailure": "block"` sits on a guard's **PreToolUse** entry and on nothing else: Claude Code
+ignores it on `Stop` and `SubagentStop` (and two other events), and on PostToolUse the call
+already ran (`docs/claude-code-contract.md` § Hooks). `plugin/bin/cc-smart-dev-kit`, the command, runs
+through the same shim with `--missing=fail`: no bun is one line on stderr and **exit 1**, because
+a command must never report success when it did not run.
+
+- A guard's `onCrash` is `guardCrash(what, inDomain)` in `specs.ts`; `entries.test.ts` runs every
+  guard on an input that is not JSON and expects an ask, so a guard without one fails a test.
+  An `onCrash` that throws is one stderr line, exit 0: never worse than the line.
+- No informational plugin hook exits 1 (`crashExitCode`): a bug never stops a person's work.
+- **Every ask is recorded.** The frame appends one JSON line to `guard-asks.jsonl` in the state
+  folder (`src/hooks/ask-log.ts`: the time, the hook, the session, the tool, a short reason put
+  through `maskedLine`), kept small by the same rule as `update.log`. A write that fails is one
+  stderr line and never changes the answer.
 - A guard decides with a PreToolUse answer (`ask` or `deny`), never exit code 2.
 - A guard asks rather than denies when the person may mean it (a force-push); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message

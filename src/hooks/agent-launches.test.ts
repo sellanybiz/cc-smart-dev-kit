@@ -112,6 +112,14 @@ describe("G2: each launch is recorded once", () => {
     expect(readAgentLaunches(file, 0)).toHaveLength(5);
   });
 
+  it("A4: a state folder that is not there yet is made, so the first launch is not lost", () => {
+    // An asked launch is recorded on PostToolUse, and nothing may have written the folder
+    // before it: the record must not vanish into a missing folder.
+    const file = join(tempDir("launches"), "state", "agent-launches.jsonl");
+    appendAgentLaunch(file, launch({}));
+    expect(readAgentLaunches(file, 0)).toHaveLength(1);
+  });
+
   it("G2: a line with no tool_use_id is never taken for another", () => {
     const file = join(tempDir("launches"), "agent-launches.jsonl");
     appendAgentLaunch(file, launch({ toolUseId: "" }));

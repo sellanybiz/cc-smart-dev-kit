@@ -29,6 +29,8 @@ interface Handler {
   command: string;
   args?: string[];
   timeout?: number;
+  /** Claude Code's "what happens when the hook fails": `block` or nothing (continue). */
+  onFailure?: string;
 }
 interface Group {
   matcher?: string;
@@ -83,6 +85,34 @@ describe("hooks.json", () => {
       );
       expect(typeof handler.timeout).toBe("number");
     }
+  });
+
+  test("a guard fails closed in Claude Code too: onFailure block on its PreToolUse entry, on nothing else", () => {
+    // Claude Code lets a call through when a hook fails to start, times out, exits with
+    // another code than 0 or 2, or prints something it cannot read — unless the entry says
+    // `"onFailure": "block"` (2.1.295+). The shim's own answers and the frame's `onCrash`
+    // cover a guard that runs; this covers one that cannot start at all (the plugin folder is
+    // gone, so the shim is gone too). Only a guard's PreToolUse entry blocks: an
+    // informational hook that fails must never stop a person's work, and on PostToolUse a
+    // block would stop nothing (the call already ran).
+    for (const { event, handler } of wired) {
+      const guard = event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler));
+      expect(handler.onFailure).toBe(guard ? "block" : undefined);
+    }
+    // And the list is not empty: the guards are wired.
+    expect(wired.filter(({ handler }) => handler.onFailure === "block").length).toBe(
+      GUARD_BUNDLES.size,
+    );
+  });
+
+  test("the agent guard's record is wired after the call ran: PostToolUse on the same tools", () => {
+    // An asked launch is recorded when it is known to run, and Claude Code runs PostToolUse
+    // only for a call that ran (`RAN_EVENT`). The matcher is the guard's own.
+    const matcherOf = (event: string) =>
+      wired.find(({ event: one, handler }) => one === event && bundleOf(handler) === "agent-guard")
+        ?.matcher;
+    expect(matcherOf("PostToolUse")).toBe("Agent|Task|Workflow");
+    expect(matcherOf("PostToolUse")).toBe(matcherOf("PreToolUse"));
   });
 
   test("the first token is the shim and ends in .sh: Claude Code runs it through bash on Windows", () => {
@@ -250,14 +280,48 @@ describe("the entries, run as Claude Code runs them", () => {
     );
   });
 
-  test.each(HOOKS.map((spec) => [spec.name, spec.crashExitCode ?? 0] as const))(
-    "%s: input that is not JSON is one stderr line, exit %j",
-    (name, exitCode) => {
+  // What each guard says it cannot check, when it cannot read its input: a guard that cannot
+  // judge a call asks (written by hand, one per guard in `GUARD_BUNDLES`).
+  const CANNOT_CHECK: Record<string, string> = {
+    "agent-guard": "the model this launch runs on",
+    "git-guard": "this git command",
+    "job-route": "whether this project routes heavy commands through its job queue",
+    "main-folder-guard": "whether this edit belongs in a worktree",
+    "merge-guard": "whether this merge may happen by itself",
+    "message-guard": "whether this message stays in this repo",
+  };
+
+  test("the list of guards above is the list of guards", () => {
+    expect(Object.keys(CANNOT_CHECK).sort()).toEqual([...GUARD_BUNDLES].sort());
+  });
+
+  test.each(
+    HOOKS.filter((spec) => !GUARD_BUNDLES.has(spec.name)).map(
+      (spec) => [spec.name, spec.crashExitCode ?? 0] as const,
+    ),
+  )("%s: input that is not JSON is one stderr line, exit %j", (name, exitCode) => {
+    const run = runEntry(name, "not json", hookEnv());
+    expect(run).toEqual({
+      exitCode,
+      stdout: "",
+      stderr: `cc-smart-dev-kit ${name}: the hook input is not JSON\n`,
+    });
+  });
+
+  test.each([...GUARD_BUNDLES])(
+    "%s: input that is not JSON is an ask, never a pass: a guard that cannot read a call does not let it through",
+    (name) => {
       const run = runEntry(name, "not json", hookEnv());
       expect(run).toEqual({
-        exitCode,
-        stdout: "",
-        stderr: `cc-smart-dev-kit ${name}: the hook input is not JSON\n`,
+        exitCode: 0,
+        stdout: JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "ask",
+            permissionDecisionReason: `cc-smart-dev-kit cannot check ${CANNOT_CHECK[name]}: the hook input is not JSON`,
+          },
+        }),
+        stderr: "",
       });
     },
   );

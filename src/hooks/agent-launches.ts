@@ -13,8 +13,16 @@
  * lines. A file that cannot be written or read never fails a hook: the record is information.
  */
 
-import { appendFileSync, closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
-import { join } from "node:path";
+import {
+  appendFileSync,
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import type { ClaudeFamily } from "../gateway/targets";
 import { ALLOWED_EFFORTS, EFFORT_AUTO } from "../models/launch-policy";
 
@@ -35,7 +43,11 @@ export interface AgentLaunch {
    * line.
    */
   launchIndex: number;
-  /** The model the launch really runs on, as the guard resolved it. */
+  /**
+   * The model the launch really runs on: Claude Code's own `resolvedModel`, when its
+   * PostToolUse answer carries one (the record of an asked launch), else the model the
+   * guard resolved from the name the call gave.
+   */
   model: string;
   /** The folder the session worked in. */
   project: string;
@@ -159,6 +171,9 @@ export function appendAgentLaunches(file: string, launches: readonly AgentLaunch
   });
   if (fresh.length === 0) return;
   try {
+    // The state folder is made when it is not there yet: a launch recorded on PostToolUse (an
+    // asked one) must not be lost because nothing else has written the folder first.
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     appendFileSync(file, fresh.map((one) => `${JSON.stringify(one)}\n`).join(""));
   } catch {
     // The state folder cannot be written: the launch itself is unaffected.

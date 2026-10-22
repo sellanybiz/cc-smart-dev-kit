@@ -1142,9 +1142,12 @@ The hooks live in `src/hooks/`. Every one of them is wired by the plugin:
   `plugin/bin/cc-smart-dev-kit-bun.sh`, a small `sh` script that finds
   bun without PATH (Claude Code's hooks get the PATH it was started with, which may lack
   bun): the bun `cc-smart-dev-kit setup` baked into the launcher, then `$BUN_INSTALL/bin/bun`,
-  `~/.bun/bin/bun`, and PATH. With none it answers by its `--missing=` mode and exits 0: a
-  PreToolUse guard passes `--missing=ask`, so it asks the person instead of letting the tool
-  run (a guard fails closed); every other hook passes `--missing=quiet`, one line on stderr.
+  `~/.bun/bin/bun`, and PATH. With none it answers by its `--missing=` mode: a PreToolUse
+  guard passes `--missing=ask`, so it asks the person instead of letting the tool run (a
+  guard fails closed, and it asks too when its own bundle file is gone, and its `hooks.json`
+  entry says `"onFailure": "block"`); every other hook passes `--missing=quiet`, one line on
+  stderr and exit 0; the command `plugin/bin/cc-smart-dev-kit` passes `--missing=fail`, one
+  line and exit 1.
   It starts bun with `--no-env-file` and the plugin's own empty config, like the launcher and
   `plugin/bin/cc-smart-dev-kit`: bun would otherwise add the working folder's `.env` files to
   the hook and run its `bunfig.toml`, and a hook must see the environment Claude Code gave
@@ -1177,7 +1180,35 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    **fails closed**, each in the way that suits its event: a guard asks the person (it cannot
    know whether the project turned it on), an informational hook says one line. "Closed"
    never means silent: a person must hear why.
-4. **Run.** Any error is one line on stderr and exit 0: a hook's bug never stops work.
+4. **Run.** An informational hook's error is one line on stderr and exit 0: its bug never
+   stops work. A **guard's** error answers through its `onCrash` (`guardCrash` in
+   `specs.ts`): it asks about the call in its own domain, so a crash never lets a call
+   through.
+5. **Record an ask.** An answer that asks the person is appended to `guard-asks.jsonl` in the
+   state folder (`src/hooks/ask-log.ts`): the time, the hook, the session, the tool and a
+   short reason, put through `maskedLine` so no secret reaches it. The file stays small by
+   the rule of `update.log` (past `LOG_MAX_BYTES` the newer half is kept). A write that fails
+   is one line on stderr and never changes the answer.
+
+Each hook's answer when it fails (the same table is in `.claude/rules/hooks.md` § Fail safe):
+
+| Failure | A guard (git, merge, main-folder, message, job-route, agent) | Any other plugin hook | `hook notify` |
+|---|---|---|---|
+| Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 | one stderr line, exit 0 |
+| The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
+| `cc-smart-dev-kit.json` broken or too new | **ask** | one line of context or stderr | not read |
+| No bun, or one too old | the shim's `--missing=ask`: **ask** | `--missing=quiet`: stderr, exit 0 | the launcher's line, exit 1 (Claude Code goes on) |
+| The bundle file is gone | the shim **asks** | bun's error, exit 1 | not applicable |
+| Cannot start, times out, fails (exit code other than 0 and 2) | `"onFailure": "block"`: the call is **blocked** | Claude Code goes on | Claude Code goes on |
+
+The command `plugin/bin/cc-smart-dev-kit` runs through the same shim with `--missing=fail`: no
+bun is one stderr line and exit 1, because a command must never report success when it did not run.
+
+The agent guard is also wired on **PostToolUse** for the same tools (`Agent|Task|Workflow`).
+Claude Code fires it **at the launch**, with the tool response `status: "async_launched"`,
+`agentId`, `resolvedModel` and `outputFile`; the order is PreToolUse, PostToolUse,
+SubagentStart, SubagentStop. A launch the guard asked about, and the person allowed, is recorded
+there with that `resolvedModel` rather than a rebuilt one (§ The Agent guard).
 
 The frame is general on purpose: later hooks (notifications, the routing of heavy jobs)
 are new specs in it.
@@ -1235,7 +1266,7 @@ that, so the plugin ships no worktree hook at all.
 
 | Hook | Event (matcher) | On when | What it does |
 |---|---|---|---|
-| `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`shell-command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
+| `git-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks before a force-push (git's abbreviations included: `--forc`), a push to a protected branch (`protectedBranches`, default `main`), `push --all`/`--mirror`, a branch deleted on the remote (`git push origin :x`, `-d`/`--delete`), `reset --hard`, `clean -f`, `worktree remove -f`, a checkout or restore that discards changes, `branch -D`, `stash clear` and an unnamed `stash drop`, and (with `worktrees`) a bare `git stash` / `stash pop`. One shell lexer (`src/shell/command.ts`) reads each command of a line; quoted text, here-docs and comments are data, and shell keywords, wrappers (`timeout 60 git push -f`, `env -i sudo -u me …`, `xargs …`), the here-doc a shell reads as its script, and the text piped into one are read through. Known limits: a git alias, `branch -f`, `checkout -B`, `switch -C`, `ssh`, a script file. "Ask", never "deny": the person may mean it. |
 | `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. (Until 0.6.0 it also placed Serena's edits, with the `serena-root` hook's record; both went with Serena.) |
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
@@ -1793,7 +1824,7 @@ the guard's "autoMerge is off" question says to commit the change to the base an
 **Every merge of the line is judged**, in the order it runs them: `gh pr merge 5 && gh pr merge
 6` reads both, and the first the policy does not allow asks, naming that pull request
 (`mergeCalls`, in `after-merge.ts` — the one reader of a merge command line, on the one lexer
-every guard uses, `shell-command.ts`). The forms it reads: `gh pr [<its own flags>] merge …`
+every guard uses, `src/shell/command.ts`). The forms it reads: `gh pr [<its own flags>] merge …`
 (`gh pr -R owner/repo merge 5`, `-R` before the subcommand), `--auto` (an armed merge lands once
 the checks pass, with nobody watching) while `--disable-auto` is no merge, and a `gh <word>`
 that is no gh command — an alias, looked up once in `gh alias list` (a local file read) and

@@ -94,6 +94,27 @@ export function toolDecision(decision: "ask" | "deny", reason: string): HookResu
   };
 }
 
+/**
+ * The reason of an answer that asks the person, or null when the answer is not an ask.
+ * The frame reads it to record the question (`src/hooks/ask-log.ts`): an answer that is
+ * not our own JSON is not an ask.
+ */
+export function askReason(result: HookResult): string | null {
+  if (result.stdout === undefined) return null;
+  try {
+    const value = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: unknown; permissionDecisionReason?: unknown };
+    };
+    const output = value.hookSpecificOutput;
+    if (output?.permissionDecision !== "ask") return null;
+    return typeof output.permissionDecisionReason === "string"
+      ? output.permissionDecisionReason
+      : "";
+  } catch {
+    return null;
+  }
+}
+
 /** Text added to Claude's context (SessionStart, UserPromptSubmit, PostToolUse, …). */
 export function addContext(event: string, text: string): HookResult {
   return {

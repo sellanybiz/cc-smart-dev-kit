@@ -1132,6 +1132,7 @@ describe("migrate — the later 0.3.0 development build", () => {
     expect(BOOKKEEPING_NAMES).toContain("update-check.json");
     expect(BOOKKEEPING_NAMES).toContain("update.log");
     expect(BOOKKEEPING_NAMES).toContain("notify.json");
+    expect(BOOKKEEPING_NAMES).toContain("guard-asks.jsonl");
     // The held major version (D33): a background check writes it with no command run.
     expect(BOOKKEEPING_NAMES).toContain("update-major.json");
     expect(BOOKKEEPING_NAMES).toContain("update-hold");

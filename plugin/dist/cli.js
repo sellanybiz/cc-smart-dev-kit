@@ -2072,7 +2072,7 @@ function oldBunRefusal(command, version, path) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync49, readFileSync as readFileSync51 } from "fs";
-import { dirname as dirname16, join as join50 } from "path";
+import { dirname as dirname17, join as join50 } from "path";
 
 // src/gateway/config.ts
 import { createHash as createHash2 } from "crypto";
@@ -18650,6 +18650,9 @@ function resolveProject(cwd, options = {}) {
   return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
 }
 
+// src/hooks/ask-log.ts
+var ASK_LOG_FILE = "guard-asks.jsonl";
+
 // src/hooks/io.ts
 var SILENT = {};
 function stringField(value) {
@@ -21842,8 +21845,16 @@ function scriptByName(name, place) {
 }
 
 // src/hooks/agent-launches.ts
-import { appendFileSync as appendFileSync2, closeSync as closeSync4, fstatSync, openSync as openSync4, readFileSync as readFileSync41, readSync } from "fs";
-import { join as join36 } from "path";
+import {
+  appendFileSync as appendFileSync2,
+  closeSync as closeSync4,
+  fstatSync,
+  mkdirSync as mkdirSync13,
+  openSync as openSync4,
+  readFileSync as readFileSync41,
+  readSync
+} from "fs";
+import { dirname as dirname13, join as join36 } from "path";
 var SESSION_EFFORT = "session-effort";
 var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
 function reasonParts(reason) {
@@ -21898,6 +21909,7 @@ function appendAgentLaunches(file, launches) {
   if (fresh.length === 0)
     return;
   try {
+    mkdirSync13(dirname13(file), { recursive: true, mode: 448 });
     appendFileSync2(file, fresh.map((one) => `${JSON.stringify(one)}
 `).join(""));
   } catch {}
@@ -22852,6 +22864,12 @@ function workflowPlace(paths, env, cwd) {
     pluginRoot: stringField(env.CLAUDE_PLUGIN_ROOT)
   };
 }
+function resolvedModelOf(input) {
+  const response = input.tool_response;
+  if (typeof response !== "object" || response === null || Array.isArray(response))
+    return null;
+  return stringField(response.resolvedModel);
+}
 function recorded(result, launch, input, cwd, nowMs, index) {
   const family = result.real?.tier;
   if (family !== "opus" && family !== "fable")
@@ -22862,7 +22880,7 @@ function recorded(result, launch, input, cwd, nowMs, index) {
     effort: result.ran.effort?.toLowerCase() ?? SESSION_EFFORT,
     family,
     launchIndex: index,
-    model: result.real?.model ?? "",
+    model: resolvedModelOf(input) ?? result.real?.model ?? "",
     project: cwd,
     reason,
     session: stringField(input.session_id) ?? "",
@@ -22908,11 +22926,11 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync40, mkdirSync as mkdirSync14, writeFileSync as writeFileSync9 } from "fs";
-import { dirname as dirname13, join as join38 } from "path";
+import { existsSync as existsSync40, mkdirSync as mkdirSync15, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname14, join as join38 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync39, mkdirSync as mkdirSync13, readFileSync as readFileSync42, renameSync as renameSync2, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync39, mkdirSync as mkdirSync14, readFileSync as readFileSync42, renameSync as renameSync2, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
 import { join as join37 } from "path";
 function isSessionId(value) {
@@ -22939,7 +22957,7 @@ function recordSessionName(sessionId, raw, env) {
   const name = cleanSessionName(raw);
   if (name === null)
     throw new Error("the name is empty");
-  mkdirSync13(namesDir(env), { recursive: true });
+  mkdirSync14(namesDir(env), { recursive: true });
   writeAtomic(join37(namesDir(env), `${sessionId}.name`), name);
   return name;
 }
@@ -22967,7 +22985,7 @@ function sessionName(context) {
   const appliedFile = join37(dir, sessionId);
   const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
   if (title !== null) {
-    mkdirSync13(dir, { recursive: true });
+    mkdirSync14(dir, { recursive: true });
     writeAtomic(appliedFile, title);
     return {
       stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } })
@@ -22992,7 +23010,7 @@ function fableSessionMark(env, sessionId) {
 }
 function firstTime(mark) {
   try {
-    mkdirSync14(dirname13(mark), { recursive: true });
+    mkdirSync15(dirname14(mark), { recursive: true });
     writeFileSync9(mark, "", { flag: "wx" });
     return true;
   } catch {
@@ -23168,8 +23186,8 @@ function mainFolderGuard(context) {
 import { existsSync as existsSync45, readFileSync as readFileSync46 } from "fs";
 
 // src/cli/setup.ts
-import { existsSync as existsSync44, mkdirSync as mkdirSync16 } from "fs";
-import { delimiter, dirname as dirname15, join as join44 } from "path";
+import { existsSync as existsSync44, mkdirSync as mkdirSync17 } from "fs";
+import { delimiter, dirname as dirname16, join as join44 } from "path";
 
 // src/setup/auto-mode.ts
 import { join as join39 } from "path";
@@ -23218,7 +23236,7 @@ import { join as join43, relative as relative2 } from "path";
 import {
   closeSync as closeSync6,
   existsSync as existsSync42,
-  mkdirSync as mkdirSync15,
+  mkdirSync as mkdirSync16,
   openSync as openSync6,
   readdirSync as readdirSync15,
   readFileSync as readFileSync44,
@@ -23228,7 +23246,7 @@ import {
   writeFileSync as writeFileSync10
 } from "fs";
 import { platform } from "os";
-import { dirname as dirname14, join as join42, resolve as resolve8 } from "path";
+import { dirname as dirname15, join as join42, resolve as resolve8 } from "path";
 
 // src/hooks/sessions.ts
 import { existsSync as existsSync41, readdirSync as readdirSync14, readFileSync as readFileSync43, statSync as statSync11 } from "fs";
@@ -23568,7 +23586,7 @@ function tabPrefix(key) {
   return `claude_${key}_`;
 }
 function saveWarpTabs(dir, sessions, mainCheckout, command) {
-  mkdirSync15(dir, { recursive: true });
+  mkdirSync16(dir, { recursive: true });
   const key = repoKey(mainCheckout);
   const prefix = tabPrefix(key);
   const restoreAll = `${prefix}restore_all`;
@@ -23628,7 +23646,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
 function markOpened(stateDir, id, now) {
   atomicWrite(openedMarkerFile(stateDir, id), `${new Date(now).toISOString()}
 `, 384);
-  const dir = dirname14(openedMarkerFile(stateDir, id));
+  const dir = dirname15(openedMarkerFile(stateDir, id));
   for (const name of readdirSync15(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
@@ -23701,7 +23719,7 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
   const reopenIn = pickReopenTerminal({
     hasProgram: (name) => deps.which(name) !== null,
     platform: deps.platform,
-    warpDataFolder: existsSync42(dirname14(tabDir))
+    warpDataFolder: existsSync42(dirname15(tabDir))
   });
   if (reopenIn === "warp") {
     saveWarpTabs(tabDir, sessions, mainCheckout, deps.command);
@@ -23886,7 +23904,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   if (managed.tavilyKeyFile !== null) {
     const mark = existsSync44(paths.tavilyKeyFile) ? "~" : "+";
     if (!dryRun) {
-      mkdirSync16(dirname15(paths.tavilyKeyFile), { mode: 448, recursive: true });
+      mkdirSync17(dirname16(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
 `, 384);
     }
@@ -24955,6 +24973,7 @@ async function reviewRecord(context) {
   }
   return SILENT;
 }
+
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync48, statSync as statSync13 } from "fs";
 import { basename as basename7, isAbsolute as isAbsolute4, join as join46, resolve as resolve9 } from "path";
@@ -25101,6 +25120,28 @@ function worktreeLeftovers(context) {
 function cannotCheck(what, message) {
   return `cc-smart-dev-kit cannot check ${what}: ${message}`;
 }
+function guardCrash(what, inDomain) {
+  return (why, input, event) => {
+    if (event !== "" && event !== "PreToolUse")
+      return SILENT;
+    if (input !== null && !judgesCall(inDomain, input))
+      return SILENT;
+    return toolDecision("ask", cannotCheck(what, why));
+  };
+}
+function judgesCall(inDomain, input) {
+  try {
+    return inDomain(input);
+  } catch {
+    return true;
+  }
+}
+function toolOf2(input) {
+  return input === null ? "" : stringField(input.tool_name) ?? "";
+}
+function commandOf(input) {
+  return input === null ? "" : stringField(toolInput(input).command) ?? "";
+}
 var gitGuardHook = {
   name: "git-guard",
   events: ["PreToolUse"],
@@ -25108,6 +25149,10 @@ var gitGuardHook = {
     const command = stringField(toolInput(input).command);
     return command !== null && runsGit(command) ? toolDecision("ask", cannotCheck("this git command", message)) : SILENT;
   },
+  onCrash: guardCrash("this git command", (input) => {
+    const command = commandOf(input);
+    return command !== "" && runsGit(command);
+  }),
   logFacts: (input) => {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
@@ -25139,6 +25184,10 @@ var mergeGuardHook = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
+  onCrash: guardCrash("whether this merge may happen by itself", (input) => {
+    const command = commandOf(input);
+    return command !== "" && requestsMerge(command);
+  }),
   run: mergeGuard
 };
 var mainFolderGuardHook = {
@@ -25149,12 +25198,14 @@ var mainFolderGuardHook = {
     const repo = checkout.mainCheckout ?? checkout.root;
     return file !== null && isInside(file, repo) ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message)) : SILENT;
   },
+  onCrash: guardCrash("whether this edit belongs in a worktree", (input) => ["Edit", "Write", "NotebookEdit"].includes(toolOf2(input))),
   run: mainFolderGuard
 };
 var messageGuardHook = {
   name: "message-guard",
   events: ["PreToolUse"],
   onConfigProblem: (message) => toolDecision("ask", cannotCheck("whether this message stays in this repo", message)),
+  onCrash: guardCrash("whether this message stays in this repo", (input) => toolOf2(input) === "SendMessage"),
   run: messageGuard
 };
 var afterMergeHook = {
@@ -25189,9 +25240,10 @@ var sessionNameHook = {
 };
 var agentGuardHook = {
   name: "agent-guard",
-  events: ["PreToolUse"],
+  events: ["PreToolUse", "PostToolUse"],
   onConfigProblem: (_message, input, _event, _checkout, context) => agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) => agentGuard(input, context.env, context.paths, cwdOf(input)),
+  onCrash: guardCrash("the model this launch runs on", (input) => [...AGENT_TOOLS, ...WORKFLOW_TOOLS].includes(toolOf2(input))),
   logFacts: guardFacts,
   run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd)
 };
@@ -25210,6 +25262,7 @@ var jobRouteHook = {
     return command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null ? SILENT : toolDecision("ask", cannotCheck("whether this project routes heavy commands through its job queue", message));
   },
   logFacts: routeFacts,
+  onCrash: guardCrash("whether this project routes heavy commands through its job queue", (input) => classifyHeavyCommand(commandOf(input), mergeKinds(undefined)) !== null),
   run: jobRoute
 };
 function cwdOf(input) {
@@ -26603,7 +26656,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname16(dir)) {
+  for (let dir = cwd;; dir = dirname17(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join50(dir, name);
       if (from === join50(paths.claudeConfigDir, "CLAUDE.md") || !existsSync49(from))
@@ -26619,7 +26672,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname16(dir) === dir)
+    if (dirname17(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -27189,7 +27242,7 @@ function runAlert(alert, platform, launcher, run) {
 }
 
 // src/jobs/commands.ts
-import { mkdirSync as mkdirSync18, readdirSync as readdirSync18, statSync as statSync15 } from "fs";
+import { mkdirSync as mkdirSync19, readdirSync as readdirSync18, statSync as statSync15 } from "fs";
 import { availableParallelism, hostname as hostname4 } from "os";
 
 // src/jobs/ancestry.ts
@@ -28127,7 +28180,7 @@ async function runJob(request, deps) {
 import {
   chmodSync as chmodSync3,
   existsSync as existsSync53,
-  mkdirSync as mkdirSync17,
+  mkdirSync as mkdirSync18,
   readdirSync as readdirSync17,
   readFileSync as readFileSync56,
   realpathSync as realpathSync6,
@@ -28325,7 +28378,7 @@ function leaseStore(options) {
       record
     });
     if (!options.shared)
-      mkdirSync17(folder, { recursive: true });
+      mkdirSync18(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -28560,7 +28613,7 @@ function machineBudget(config, memory) {
 function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
   try {
-    mkdirSync18(dir, { recursive: true, mode: 448 });
+    mkdirSync19(dir, { recursive: true, mode: 448 });
   } catch (error) {
     const code = error.code ?? String(error);
     throw new JobsConfigError(`The state folder ${dir} cannot be made (${code}).`);
@@ -29383,13 +29436,13 @@ import {
   closeSync as closeSync7,
   existsSync as existsSync55,
   fstatSync as fstatSync3,
-  mkdirSync as mkdirSync19,
+  mkdirSync as mkdirSync20,
   openSync as openSync7,
   readdirSync as readdirSync20,
   readFileSync as readFileSync59,
   readSync as readSync4
 } from "fs";
-import { dirname as dirname17, join as join56 } from "path";
+import { dirname as dirname18, join as join56 } from "path";
 var WORKER_STORE_VERSION = 1;
 var STORE_LOCK_WAIT_MS = 3000;
 class WorkerStoreError extends Error {
@@ -29618,7 +29671,7 @@ function listRecords(schema, folder) {
   return listed;
 }
 function writeStoreFile(file, text) {
-  mkdirSync19(dirname17(file), { mode: 448, recursive: true });
+  mkdirSync20(dirname18(file), { mode: 448, recursive: true });
   atomicWrite(file, text, 384);
 }
 function writeRecord(file, value) {
@@ -29628,13 +29681,13 @@ function writeRecord(file, value) {
 function appendEvent(stateDir, repo, event) {
   const file = workerEventsFile(stateDir, repo);
   const line = checked(workerEventSchema, event, file);
-  mkdirSync19(dirname17(file), { mode: 448, recursive: true });
+  mkdirSync20(dirname18(file), { mode: 448, recursive: true });
   appendFileSync3(file, `${JSON.stringify(line)}
 `, { mode: 384 });
 }
 async function underStoreLock(stateDir, repo, write) {
   const folder = workerStoreDir(stateDir, repo);
-  mkdirSync19(folder, { mode: 448, recursive: true });
+  mkdirSync20(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: STORE_LOCK_WAIT_MS });
 }
 function listAllWorkers(stateDir) {
@@ -29776,8 +29829,8 @@ import { existsSync as existsSync57, readFileSync as readFileSync60 } from "fs";
 import { join as join59, resolve as resolve10 } from "path";
 
 // src/worktrees/include.ts
-import { copyFileSync, existsSync as existsSync56, mkdirSync as mkdirSync20 } from "fs";
-import { dirname as dirname18, join as join57 } from "path";
+import { copyFileSync, existsSync as existsSync56, mkdirSync as mkdirSync21 } from "fs";
+import { dirname as dirname19, join as join57 } from "path";
 var INCLUDE_TIMEOUT_MS = 60000;
 function copyWorktreeInclude(source, target, env) {
   const includeFile = join57(source, ".worktreeinclude");
@@ -29799,7 +29852,7 @@ function copyWorktreeInclude(source, target, env) {
   for (const path of ignored.stdout.toString().split("\x00")) {
     if (path === "" || existsSync56(join57(target, path)))
       continue;
-    mkdirSync20(dirname18(join57(target, path)), { recursive: true });
+    mkdirSync21(dirname19(join57(target, path)), { recursive: true });
     copyFileSync(join57(source, path), join57(target, path));
     copied.push(path);
   }
@@ -30024,7 +30077,7 @@ function agentRow(rows, shortId) {
 }
 
 // src/workers/places.ts
-import { mkdirSync as mkdirSync21 } from "fs";
+import { mkdirSync as mkdirSync22 } from "fs";
 var RUNNING_STATES = [
   "starting",
   "working",
@@ -30078,7 +30131,7 @@ function placeFor(input) {
 }
 async function withPlacesLock(stateDir, decide) {
   const root = workersRootDir(stateDir);
-  mkdirSync21(root, { mode: 448, recursive: true });
+  mkdirSync22(root, { mode: 448, recursive: true });
   return await withLock(root, decide, { waitMs: PLACES_LOCK_WAIT_MS });
 }
 async function freeForWorkersGb(home, memory) {
@@ -30606,8 +30659,8 @@ async function runWorker(argv, ctx) {
 }
 
 // src/workflow/write.ts
-import { mkdirSync as mkdirSync22 } from "fs";
-import { dirname as dirname19 } from "path";
+import { mkdirSync as mkdirSync23 } from "fs";
+import { dirname as dirname20 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -30683,7 +30736,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync22(dirname19(file), { mode: 448, recursive: true });
+  mkdirSync23(dirname20(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);
@@ -31011,8 +31064,8 @@ ${WORKFLOW_USAGE}`);
 }
 
 // src/sessions/flow.ts
-import { closeSync as closeSync8, mkdirSync as mkdirSync23, openSync as openSync8, readFileSync as readFileSync62, readSync as readSync5, statSync as statSync18 } from "fs";
-import { dirname as dirname20, join as join61 } from "path";
+import { closeSync as closeSync8, mkdirSync as mkdirSync24, openSync as openSync8, readFileSync as readFileSync62, readSync as readSync5, statSync as statSync18 } from "fs";
+import { dirname as dirname21, join as join61 } from "path";
 
 // src/cli/usage.ts
 import { existsSync as existsSync58, readdirSync as readdirSync21, readFileSync as readFileSync61, statSync as statSync17 } from "fs";
@@ -32141,7 +32194,7 @@ function openWaitsOf(flow, session, context) {
 }
 function writeCache(file, cache) {
   try {
-    mkdirSync23(dirname20(file), { recursive: true, mode: 448 });
+    mkdirSync24(dirname21(file), { recursive: true, mode: 448 });
     atomicWrite(file, `${JSON.stringify(cache)}
 `, 384);
   } catch {}
@@ -32955,7 +33008,7 @@ function topLevelHelp() {
 
 // src/cli/migrate.ts
 import { existsSync as existsSync59, readdirSync as readdirSync22, readFileSync as readFileSync63, renameSync as renameSync4, rmSync as rmSync12, statSync as statSync19 } from "fs";
-import { basename as basename9, dirname as dirname21, join as join62 } from "path";
+import { basename as basename9, dirname as dirname22, join as join62 } from "path";
 var OLD = {
   name: "anymodel",
   pluginId: "anymodel@anymodel",
@@ -32981,7 +33034,7 @@ function oldGatewayEnv(port) {
 }
 function migrateUnits(paths, overrides = {}) {
   return {
-    dir: overrides.dir ?? dirname21(paths.routerUnitFile),
+    dir: overrides.dir ?? dirname22(paths.routerUnitFile),
     oldUnit: overrides.oldUnit ?? OLD.unit,
     oldSocket: overrides.oldSocket ?? OLD.socket,
     unit: overrides.unit ?? basename9(paths.routerUnitFile),
@@ -33104,6 +33157,7 @@ function writeProgress(stateDir, progress) {
 }
 var BOOKKEEPING_NAMES = [
   "agent-launches.jsonl",
+  ASK_LOG_FILE,
   "lock",
   "migrate-progress.json",
   "notify.json",
@@ -33806,7 +33860,7 @@ function instructionsToSetup(paths, options) {
 
 // src/cli/restore.ts
 import { existsSync as existsSync60, rmSync as rmSync13 } from "fs";
-import { dirname as dirname22, join as join63 } from "path";
+import { dirname as dirname23, join as join63 } from "path";
 function describe2(result, short) {
   const file = short(result.file);
   switch (result.action) {
@@ -33830,7 +33884,7 @@ function stageOneDone(paths, cliBundle, bunPath = process.execPath) {
   if (existsSync60(launcher)) {
     return `Restart every running Claude session (they still use the router), then run \`${COMMAND} restore\` again to stop and remove the router.`;
   }
-  const bunfig = bunConfigPath(dirname22(dirname22(cliBundle)));
+  const bunfig = bunConfigPath(dirname23(dirname23(cliBundle)));
   const flags = [shellQuote("--no-env-file"), shellQuote(`--config=${bunfig}`)].join(" ");
   return `Restart every running Claude session (they still use the router), then run restore again \u2014 this one removed the launcher (${tildify(launcher, paths.home)}), so \`${COMMAND}\` is not on your PATH any more: ${shellQuote(bunPath)} ${flags} ${shellQuote(cliBundle)} restore`;
 }

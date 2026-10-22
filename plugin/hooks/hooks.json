@@ -29,6 +29,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/git-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -39,6 +40,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/merge-guard.js\"",
+            "onFailure": "block",
             "timeout": 30
           }
         ]
@@ -49,6 +51,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/main-folder-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -59,6 +62,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/message-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -69,6 +73,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/job-route.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -79,6 +84,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/agent-guard.js\"",
+            "onFailure": "block",
             "timeout": 10
           }
         ]
@@ -175,6 +181,16 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/notify.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/agent-guard.js\"",
             "timeout": 10
           }
         ]
