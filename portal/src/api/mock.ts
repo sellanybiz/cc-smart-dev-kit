@@ -14,6 +14,7 @@ import {
   seeded,
   TRAFFIC,
 } from "./mock-history";
+import { type ProjectMocks, projectMocks } from "./mock-projects";
 import type {
   AskerCount,
   CrewDetail,
@@ -36,7 +37,7 @@ import type {
   OverviewData,
   PortalFacts,
   ProjectData,
-  ProjectListRow,
+  ProjectList,
   RecentRequest,
   RequestPage,
   RequestQuery,
@@ -599,8 +600,10 @@ export interface MockData {
   health: HealthData;
   machine: MachineData;
   settings: SettingsData;
-  projects: ProjectListRow[];
+  projects: ProjectList;
   projectPages: Record<string, ProjectData>;
+  /** A `project.*` action's mock answer; null: the generic "sent nothing" line. */
+  act: ProjectMocks["act"];
 }
 
 export function mockData(empty: boolean): MockData {
@@ -737,67 +740,15 @@ export function mockData(empty: boolean): MockData {
     tested: {},
   };
 
-  const projects: ProjectListRow[] = empty
-    ? []
-    : [
-        {
-          id: "my-app",
-          name: "my-app",
-          path: `${PATH}/my-app`,
-          setUp: true,
-          lastUsed: iso(now - MINUTE),
-          worktrees: 5,
-        },
-        {
-          id: "docs-site",
-          name: "docs-site",
-          path: `${PATH}/docs-site`,
-          setUp: true,
-          lastUsed: iso(now - 6 * MINUTE),
-          worktrees: 1,
-        },
-        {
-          id: "api-service",
-          name: "api-service",
-          path: `${PATH}/api-service`,
-          setUp: false,
-          lastUsed: iso(now - 2 * HOUR),
-          worktrees: 0,
-        },
-        {
-          id: "notes",
-          name: "notes",
-          path: "/home/user/notes",
-          setUp: false,
-          lastUsed: iso(now - 9 * DAY),
-          worktrees: 0,
-        },
-      ];
-  const projectPages: Record<string, ProjectData> = Object.fromEntries(
-    projects.map((project) => [
-      project.id,
-      {
-        project,
-        settings: {
-          autoMerge: { allowed: false, base: "main" },
-          error: null,
-          projectNote: null,
-          rows: settingsRows(project.setUp),
-        },
-        answers: project.setUp
-          ? {
-              base: "main",
-              bases: { "release/": "main", "crew/": "release-1.1.0" },
-              protectedBranches: ["main", "release-1.1.0"],
-              guards: { guardMainFolder: true, sessionNames: true, jobRoute: true },
-            }
-          : null,
-        uncommitted: project.id === "my-app",
-      },
-    ]),
-  );
+  const projects = projectMocks(now, empty, {
+    autoMerge: { allowed: false, base: "main" },
+    error: null,
+    projectNote: null,
+    rows: settingsRows(true),
+  });
 
   return {
+    act: projects.act,
     facts,
     history: (query) => historyFor(now, query, empty),
     requests: (query) => requestsFor(now, query, empty),
@@ -986,7 +937,7 @@ export function mockData(empty: boolean): MockData {
       ],
     },
     settings: { autoMerge: null, error: null, projectNote: null, rows: settingsRows(false) },
-    projects,
-    projectPages,
+    projects: projects.projects,
+    projectPages: projects.projectPages,
   };
 }

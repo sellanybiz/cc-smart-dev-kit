@@ -4,25 +4,83 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  branchVerdictOf,
   crewOf,
   guardAsksOf,
   healthOf,
   NotSetUpError,
   needsOf,
   overviewOf,
+  projectOf,
   projectsOf,
   workOf,
 } from "./adapt";
 import { CSRF_HEADER, getJson, PortalRequestError, postAction } from "./http";
+import type { SettingsData } from "./types";
 import type {
   CrewAnswer,
   CrewSummary,
   HealthAnswer,
   NeedsAnswer,
   OverviewAnswer,
+  ProjectAnswer,
+  ProjectCardData,
+  ProjectSummary,
   RouterFacts,
   WorkAnswer,
 } from "./wire";
+
+const CARD: ProjectCardData = {
+  answers: {
+    base: "main",
+    bases: { "crew/": "release" },
+    guards: { guardMainFolder: true, jobRoute: false, sessionNames: true },
+    protectedBranches: ["main"],
+    workflow: { autoMerge: false },
+  },
+  error: null,
+  filesHash: "f00d",
+  name: "my-app",
+  plan: {
+    changed: true,
+    diff: ["+ {"],
+    file: "/home/user/code/my-app/.claude/cc-smart-dev-kit.json",
+    localSettings: {
+      adds: [],
+      changed: false,
+      file: "/home/user/code/my-app/.claude/settings.local.json",
+      lines: [],
+      removes: [],
+      text: "",
+    },
+    notes: [],
+    settings: {
+      adds: [],
+      changed: false,
+      file: "/home/user/code/my-app/.claude/settings.json",
+      lines: [],
+      removes: [],
+      text: "{}",
+    },
+    text: "{}\n",
+  },
+  planError: null,
+  root: "/home/user/code/my-app",
+  set: true,
+};
+
+const SUMMARY: ProjectSummary = {
+  configFile: "/home/user/code/my-app/.claude/cc-smart-dev-kit.json",
+  current: true,
+  id: "a1f0",
+  lastUsed: "2026-10-20T10:00:00.000Z",
+  name: "my-app",
+  root: "/home/user/code/my-app",
+  set: true,
+  source: "sessions",
+  uncommitted: true,
+  worktrees: 3,
+};
 
 const ROUTER: RouterFacts = {
   breakers: {},
@@ -330,31 +388,157 @@ describe("the adapters", () => {
     ]);
   });
 
-  test("projects: unknown counts stay unknown", () => {
-    const rows = projectsOf({
-      current: {
-        answers: null,
-        error: null,
-        filesHash: null,
-        name: "my-app",
-        plan: null,
-        planError: null,
-        root: "/home/user/my-app",
-        set: true,
-      },
-      note: null,
-      projects: [{ configFile: null, name: "my-app", root: "/home/user/my-app", set: true }],
+  test("projects: every field from the wire, unknown counts stay unknown, the note travels", () => {
+    const list = projectsOf({
+      current: CARD,
+      note: "Only 2 projects: the other session records are older than 90 days.",
+      projects: [
+        SUMMARY,
+        {
+          ...SUMMARY,
+          current: false,
+          id: "b7c1",
+          lastUsed: null,
+          name: "api-service",
+          root: "/home/user/code/api-service",
+          set: false,
+          source: "added",
+          uncommitted: null,
+          worktrees: null,
+        },
+      ],
     });
-    expect(rows).toEqual([
-      {
-        id: "/home/user/my-app",
-        lastUsed: null,
-        name: "my-app",
-        path: "/home/user/my-app",
-        setUp: true,
-        worktrees: null,
-      },
+    expect(list).toEqual({
+      note: "Only 2 projects: the other session records are older than 90 days.",
+      rows: [
+        {
+          current: true,
+          id: "a1f0",
+          lastUsed: "2026-10-20T10:00:00.000Z",
+          name: "my-app",
+          path: "/home/user/code/my-app",
+          setUp: true,
+          source: "sessions",
+          uncommitted: true,
+          worktrees: 3,
+        },
+        {
+          current: false,
+          id: "b7c1",
+          lastUsed: null,
+          name: "api-service",
+          path: "/home/user/code/api-service",
+          setUp: false,
+          source: "added",
+          uncommitted: null,
+          worktrees: null,
+        },
+      ],
+    });
+  });
+
+  test("a merge verdict, in the page's words: each kind has its tone and its reason", () => {
+    expect(branchVerdictOf({ kind: "allowed", reason: "reviewed at abc123" })).toEqual({
+      kind: "allowed",
+      label: "allowed",
+      reason: "reviewed at abc123",
+      tone: "ok",
+    });
+    expect(branchVerdictOf({ kind: "refused", number: 4, reason: "no review recorded" })).toEqual({
+      kind: "refused",
+      label: "refused",
+      reason: "no review recorded",
+      tone: "warn",
+    });
+    expect(branchVerdictOf({ kind: "late", number: 4, what: "the review record" })).toEqual({
+      kind: "late",
+      label: "ran late",
+      reason: "the review record",
+      tone: "warn",
+    });
+    expect(branchVerdictOf({ kind: "unread", number: null, what: "gh is not installed" })).toEqual({
+      kind: "unread",
+      label: "not read",
+      reason: "gh is not installed",
+      tone: "info",
+    });
+    expect(branchVerdictOf({ kind: "silent" })).toEqual({
+      kind: "silent",
+      label: "no verdict",
+      reason: null,
+      tone: "info",
+    });
+  });
+
+  test("a project's page: its row, its branches, its card; settings only for the current one", () => {
+    const answer: ProjectAnswer = {
+      branches: [
+        {
+          base: "main",
+          branch: "feature/login",
+          draft: false,
+          kind: "pr",
+          number: 12,
+          title: "Add the login page",
+          verdict: { kind: "allowed", reason: "reviewed at abc123" },
+        },
+        {
+          base: null,
+          branch: "crew/B2-api",
+          draft: true,
+          kind: "crew",
+          number: null,
+          title: null,
+          verdict: { kind: "silent" },
+        },
+      ],
+      branchesNote: null,
+      card: CARD,
+      checkedAt: "2026-10-20T10:05:00.000Z",
+      project: SUMMARY,
+    };
+    const settings: SettingsData = {
+      autoMerge: null,
+      error: null,
+      projectNote: null,
+      rows: [],
+    };
+    const data = projectOf(answer, settings);
+    expect(data.project.id).toBe("a1f0");
+    // The card's answers lose the opaque workflow object: the page draws four fields.
+    expect(data.answers).toEqual({
+      base: "main",
+      bases: { "crew/": "release" },
+      guards: { guardMainFolder: true, jobRoute: false, sessionNames: true },
+      protectedBranches: ["main"],
+    });
+    expect(data.setup).toEqual({ answers: data.answers, error: null, planError: null });
+    expect(data.branches.map((one) => [one.branch, one.kind, one.verdict.label])).toEqual([
+      ["feature/login", "pr", "allowed"],
+      ["crew/B2-api", "crew", "no verdict"],
     ]);
+    expect(data.branchesNote).toBe(null);
+    expect(data.checkedAt).toBe("2026-10-20T10:05:00.000Z");
+    expect(data.settings).toBe(settings);
+    // Another project: the portal's own settings rows are not its rows.
+    const other = projectOf({ ...answer, project: { ...SUMMARY, current: false } }, settings);
+    expect(other.settings).toBe(null);
+  });
+
+  test("a project that is not set up has no answers of its own, but its card keeps the defaults", () => {
+    const data = projectOf(
+      {
+        branches: [],
+        branchesNote: "gh is not installed: the pull requests could not be read.",
+        card: { ...CARD, set: false },
+        checkedAt: "2026-10-20T10:05:00.000Z",
+        project: { ...SUMMARY, set: false },
+      },
+      null,
+    );
+    expect(data.answers).toBe(null);
+    expect(data.setup.answers?.base).toBe("main");
+    expect(data.branchesNote).toBe("gh is not installed: the pull requests could not be read.");
   });
 });
 

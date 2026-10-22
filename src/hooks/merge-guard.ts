@@ -262,7 +262,7 @@ function askFor(verdict: Exclude<MergeVerdict, { kind: "allowed" | "silent" }>, 
  * for a merge the whole policy allows; a question whenever one condition fails or a fact
  * could not be read. An exact `gh pr merge <n>` that the policy allows gets `allow` (D31).
  */
-export function mergeGuard(context: HookContext): HookResult {
+export async function mergeGuard(context: HookContext): Promise<HookResult> {
   const { project, input, env, cwd, paths } = context;
   const command = stringField(toolInput(input).command);
   // The line in the dialect of the tool that runs it: Bash and PowerShell quote differently.
@@ -328,12 +328,14 @@ export function mergeGuard(context: HookContext): HookResult {
   // repository — `gh repo view` first (the guard's own way to read a repo fact), then the
   // `origin/HEAD` git already has. Late and unread are their own answers: both ask.
   const openingDefaults = new Map<string, string | null>();
-  const defaultBranchHere = (repo: string | null): string | null | "late" | "unread" => {
+  const defaultBranchHere = async (
+    repo: string | null,
+  ): Promise<string | null | "late" | "unread"> => {
     const key = repo ?? "";
     if (openingDefaults.has(key)) return openingDefaults.get(key) ?? null;
     const left = timeFor(GH_TIMEOUT_MS);
     if (left <= 0) return "late";
-    let branch = defaultBranchOf(cwd, env, repo, left);
+    let branch = await defaultBranchOf(cwd, env, repo, left);
     if (branch === null) {
       const gitLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
       if (gitLeft <= 0) return "late";
@@ -351,15 +353,15 @@ export function mergeGuard(context: HookContext): HookResult {
    * `worktrees.base`, or the `worktrees.bases` mapping for that branch. With no `--base` the
    * pull request opens into the repository's default branch.
    */
-  const opensOutsideBase = (
+  const opensOutsideBase = async (
     opening: MergeCall,
     worktrees: CcSmartDevKitConfig["worktrees"] | undefined,
-  ): string | null | "late" | "unread" => {
+  ): Promise<string | null | "late" | "unread"> => {
     if (opening.opens !== "create" || opening.cli !== true || worktrees === undefined) return null;
     const head = headBranchOf(opening.head ?? null) ?? currentBranch();
     if (head === null) return null;
     const expected = baseForBranch(worktrees, head);
-    const into = opening.base ?? defaultBranchHere(opening.target?.repo ?? null);
+    const into = opening.base ?? (await defaultBranchHere(opening.target?.repo ?? null));
     if (into === "late" || into === "unread") return into;
     if (into === null) return null;
     return into === expected ? null : opensElsewhere(into, head, expected);
@@ -439,7 +441,7 @@ export function mergeGuard(context: HookContext): HookResult {
         return toolDecision("ask", notByItself(foreign.reason, number));
       }
     }
-    const verdict = checkPullRequest(world, target, defaultBranches);
+    const verdict = await checkPullRequest(world, target, defaultBranches);
     if (verdict.kind === "silent") return SILENT;
     if (verdict.kind !== "allowed") return toolDecision("ask", askFor(verdict, env));
     allowed = verdict.reason;
@@ -496,7 +498,7 @@ export function mergeGuard(context: HookContext): HookResult {
     if (why !== null) return toolDecision("ask", notOpenedByItself(opening, why));
     // WA1: a `gh pr create` outside the base its head branch belongs to asks, never denies:
     // the person may mean it.
-    const outside = opensOutsideBase(opening, read.gate.config?.worktrees);
+    const outside = await opensOutsideBase(opening, read.gate.config?.worktrees);
     if (outside === "late") {
       return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
     }

@@ -47,8 +47,19 @@ export const UPDATE_REFRESH: RefreshOn = (message) =>
 export const WORKTREES_REFRESH: RefreshOn = (message) =>
   actionResult(message, "worktrees.") || actionResult(message, "crew.rm");
 
-export const SETTINGS_REFRESH: RefreshOn = (message) =>
-  actionResult(message, "workflow.") || actionResult(message, "project.");
+function settingsChanged(message: LiveMessage): boolean {
+  return actionResult(message, "workflow.") || actionResult(message, "project.");
+}
+
+/** Settings and its Projects tab: a work-flow change, and any `project.*` result (an add, a write). */
+export const SETTINGS_REFRESH: RefreshOn = settingsChanged;
+
+/**
+ * A project's page: what changes Settings, and a crew event or result too — a crew branch
+ * starts, ends or is stopped, and the page's branch verdicts follow.
+ */
+export const PROJECT_REFRESH: RefreshOn = (message) =>
+  settingsChanged(message) || message.name === "crew" || actionResult(message, "crew.");
 
 export const GUARDS_REFRESH: RefreshOn = ["guard-ask"];
 

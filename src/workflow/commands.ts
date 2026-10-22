@@ -393,7 +393,7 @@ function mergeCheckArgs(argv: string[]): MergeCheckArgs {
  * `workflow merge-check [<pr>… | --branch <b> --base <base>]`: the merge guard's judgment,
  * printed and not made. Exit 0 when every verdict is allowed, 1 when any asks.
  */
-function mergeCheck(context: WorkflowContext, argv: string[]): number {
+async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<number> {
   const parsed = mergeCheckArgs(argv);
   if (!parsed.ok) {
     context.error(`${parsed.why}\n\n${WORKFLOW_USAGE}`);
@@ -412,14 +412,14 @@ function mergeCheck(context: WorkflowContext, argv: string[]): number {
   }
   const world = checkWorld(context.paths, here.checkout, context.cwd, context.env);
   if (parsed.branch !== null && parsed.base !== null) {
-    const verdict = checkBranch(world, { branch: parsed.branch, base: parsed.base });
+    const verdict = await checkBranch(world, { branch: parsed.branch, base: parsed.base });
     context.print(verdictLine(verdict, `branch ${parsed.branch}`, context.env));
     return verdict.kind === "allowed" ? 0 : 1;
   }
   let everyAllowed = true;
   const defaultBranches = new Map<string, string | null>();
   for (const pr of parsed.prs) {
-    const verdict = checkPullRequest(world, { ref: String(pr), repo: null }, defaultBranches);
+    const verdict = await checkPullRequest(world, { ref: String(pr), repo: null }, defaultBranches);
     if (verdict.kind !== "allowed") everyAllowed = false;
     context.print(verdictLine(verdict, `#${pr}`, context.env));
   }
@@ -498,7 +498,7 @@ export async function runWorkflow(argv: string[], context: WorkflowContext): Pro
   if (sub === undefined || sub === "show") return show(context);
   if (sub === "set" || sub === "unset") return setOrUnset(context, sub, rest);
   if (sub === "review-done") return await reviewDone(context, rest);
-  if (sub === "merge-check") return mergeCheck(context, rest);
+  if (sub === "merge-check") return await mergeCheck(context, rest);
   context.error(`Unknown workflow command: ${sub}\n\n${WORKFLOW_USAGE}`);
   return 2;
 }

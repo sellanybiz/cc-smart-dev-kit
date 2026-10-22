@@ -13,8 +13,6 @@ import { jobContext } from "../actions";
 import {
   configExists,
   type FallbackRow,
-  projectCardData,
-  projectFiles,
   type RouterFacts,
   type SwitchFacts,
   switchFacts,
@@ -28,6 +26,7 @@ import {
   slotsData,
   updateFacts,
 } from "../page-data";
+import { projectsAnswerFor } from "./projects";
 import type {
   ApiError,
   HealthAnswer,
@@ -177,26 +176,9 @@ export function settingsAnswer(deps: PageDataDeps): SettingsAnswer {
   return settingsPageData(deps);
 }
 
-/** `/api/projects`: the project the portal runs in, and its row on the Projects page (B8). */
-export function projectsAnswer(deps: PageDataDeps): ProjectsAnswer {
-  const current = projectCardData(
-    deps.action.portal,
-    deps.action.cwd,
-    deps.projectDefaults,
-    deps.workflow,
-  );
-  return {
-    current,
-    note: "One project for now: the folder the portal was started in. Listing every repository arrives with the Projects page.",
-    projects: [
-      {
-        configFile: current.root === null ? null : projectFiles(current.root).config,
-        name: current.name,
-        root: current.root,
-        set: current.set,
-      },
-    ],
-  };
+/** `/api/projects`: every project the person works in, newest use first (B8, `projects.ts`). */
+export async function projectsAnswer(deps: PageDataDeps): Promise<ProjectsAnswer> {
+  return await projectsAnswerFor(deps);
 }
 
 /** `/api/update`: the version, the last check, and a held major with its notes. */

@@ -31,7 +31,7 @@ import {
 import { currentBreakers, parseLimitState } from "../../gateway/limit-state";
 import { oneLine } from "../../gateway/plain-text";
 import { askLogFile } from "../../hooks/ask-log";
-import { locateCheckout } from "../../project/resolve";
+import { locateCheckout, locateCheckoutAsync } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
 import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, openWaits, readFlow } from "../../sessions/flow";
 import {
@@ -176,8 +176,8 @@ export function workAnswer(deps: PageDataDeps): WorkAnswer {
   return { crew, lead, note: null, repo, sessions };
 }
 
-/** A merge verdict, in the API's own shape (the command's kinds). */
-function mergeVerdictOf(verdict: CheckVerdict): CrewAnswer["mergeCheck"] {
+/** A merge verdict, in the API's own shape (the command's kinds). One home for every page. */
+export function mergeVerdictOf(verdict: CheckVerdict): CrewAnswer["mergeCheck"] {
   switch (verdict.kind) {
     case "allowed":
       return { kind: "allowed", reason: verdict.reason };
@@ -193,7 +193,10 @@ function mergeVerdictOf(verdict: CheckVerdict): CrewAnswer["mergeCheck"] {
 }
 
 /** `/api/crew/<id>`: one crew session's page, or why it cannot be named. */
-export function crewAnswerFor(deps: PageDataDeps, ref: string): CrewAnswer | { error: string } {
+export async function crewAnswerFor(
+  deps: PageDataDeps,
+  ref: string,
+): Promise<CrewAnswer | { error: string }> {
   const found = repoOf(deps);
   if ("note" in found) return { error: found.note };
   const { repo } = found;
@@ -257,7 +260,12 @@ export function crewAnswerFor(deps: PageDataDeps, ref: string): CrewAnswer | { e
     .filter(([, entry]) => entry.branches?.includes(record.branch) === true)
     .map(([sha, entry]) => ({ at: entry.at, by: entry.by, sha }))
     .sort((a, b) => b.at.localeCompare(a.at));
-  const mergeCheck = mergeCheckOf(deps, repo, record.branch, record.base?.ref ?? null);
+  const mergeCheck = await mergeCheckOf(
+    deps,
+    repo,
+    record.branch,
+    record.base?.ref ?? record.baseRef,
+  );
   return {
     brief,
     crew: crewSummary(record, allEvents),
@@ -279,17 +287,27 @@ function reportOf(file: null | string): CrewReport | null {
   }
 }
 
-/** The merge check for a crew session's branch against its base (D22's gate, D17b's record). */
-function mergeCheckOf(
+/**
+ * The merge check for a crew session's branch against its base (D22's gate, D17b's record),
+ * awaited: every child on the path is `Bun.spawn`, so a page never blocks the server. The
+ * base is the one its record started from; a record that has not started yet names its
+ * `baseRef`, with no git call to find a base.
+ */
+async function mergeCheckOf(
   deps: PageDataDeps,
   repo: string,
   branch: string,
   base: null | string,
-): CrewAnswer["mergeCheck"] {
+): Promise<CrewAnswer["mergeCheck"]> {
   try {
-    const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
+    const checkout = await locateCheckoutAsync(deps.action.cwd, {
+      env: deps.action.portal.env,
+    });
     if (checkout === null) {
       return { kind: "unread", number: null, what: "this folder is not in a git project" };
+    }
+    if (base === null) {
+      return { kind: "unread", number: null, what: "the base branch its record names" };
     }
     const world: MergeWorld = {
       checkout,
@@ -298,12 +316,7 @@ function mergeCheckOf(
       paths: deps.action.portal.paths,
       timeFor: (limitMs) => limitMs,
     };
-    return mergeVerdictOf(
-      checkBranch(world, {
-        base: base ?? baseBranch(checkout, deps.action.portal.env, repo).base,
-        branch,
-      }),
-    );
+    return mergeVerdictOf(await checkBranch(world, { base, branch }));
   } catch (error) {
     return {
       kind: "unread",

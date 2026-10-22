@@ -1554,7 +1554,7 @@ Six screens, each following the design the owner approved (2026-10-16):
 | **Slots** | One card per slot. **Who answers**: Claude or Custom, both named (`gateway slot <slot> claude\|custom`); Custom stays unavailable, with its reason, until a chain is saved (the judge: until every backend target passed the force-push test). **The chain**: the one in use, or the one saved while Claude answers ("Saved, not in use"); drag a target or use its arrows, add one from the backends' live model list, or type one, which the server checks with the command line's own rule before it joins (`✗ "omnirout:glm-5.3": backend "omnirout" is not in the config`). Edits stay a draft until **Save**, which asks first and runs `gateway slot <slot> <targets>` (in Claude mode it says that saving puts the chain in use). A save over a chain that changed since the page read it (another tab, the command line) is refused, and the card offers **Load it** or **Keep mine**. **Test each target** marks each one (one tiny chat to an affordable model, the force-push test for a judge). **Fallback** and **Breaker** save at once, after a confirmation (`gateway fallback`, `gateway breaker`; the judge has no breaker). Each target shows its last day from the request history. |
 | **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all). |
 | **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, the **Browser card** (the browser's own `doctor` lines, the five steps as one numbered list — each step's sentence, then the address or command it needs in a box of its own with a Copy button — a button that runs `browser setup`, which opens the extension's page in your `claude-code` profile and names that profile in Chrome's own settings file while Chrome is closed, and a masked field that saves the token: the stored value is never on the page), `doctor` (run again, without the browser's lines, which are on that card), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
-| **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. |
+| **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. Its **Projects** tab lists every project you work in, with each one's page (below). |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
 
 **The Settings page writes one value at a time**, through the same functions the command
@@ -1580,6 +1580,22 @@ two files it was planned from, and **Write the files** sends it back: a project 
 changed in between makes the write refuse ("preview again") rather than quietly write their
 change away. The write itself goes through the same `applyProjectInit` (a backup, then an
 atomic write), asks first, and **never commits**: commit them with the project.
+
+**Settings → Projects** lists every project you work in, newest use first. The list comes
+from Claude Code's own session records (the folders under `~/.claude/projects/`), each
+worktree folded into the repository it belongs to; a folder that is gone or not in git is
+left out. Each row shows when you last used it, its worktrees, whether it is set up, and
+**not committed yet** when its project files differ from what is committed (the merge gate
+reads the committed file, so a change counts once it is committed). A project that is not
+set up has **Set up**: its page previews the two files with `project init`'s own plan, asks
+first, and writes them, exactly as the Project card does. **Add a folder** adds a repository
+no session has used yet: it must be a full path inside a git checkout, and its main checkout
+is kept in `portal-projects.json` in cc-smart-dev-kit's state folder. A project's page also
+shows its open pull requests and its crew branches, each with the merge guard's own verdict
+(`workflow merge-check`): `allowed`, the reason it would ask, or "not read yet" when `gh` is
+missing or the time ran out (about 8 seconds per page). The verdicts are kept for a minute.
+The page names a project by an id from this list, never by a path, so a request cannot point
+the write at another folder.
 
 **Without a gateway config** (never set up, or one that cannot be read): Overview, Slots and
 Health show "The gateway is not set up", with the command that sets it up and a button to

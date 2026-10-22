@@ -48,6 +48,11 @@ export interface CliPaths extends RouterPaths {
   portalUiFolder: string;
   /** What the portal remembers between pages: `<stateDir>/portal.json`. */
   portalStateFile: string;
+  /**
+   * The folders the person added to the Projects page: `<stateDir>/portal-projects.json`
+   * (`src/portal/api/projects.ts`). A list of main checkout roots, nothing else.
+   */
+  portalProjectsFile: string;
   /** The running portal's own log: `<stateDir>/portal.log` (start, restart, stop, failures). */
   portalLogFile: string;
   /**
@@ -132,6 +137,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalProjectsFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),

@@ -140,21 +140,36 @@ function readSession(file: SessionFile): SavedSession {
 }
 
 /**
- * Every folder Claude Code's saved sessions name, once each: the folder the newest session of
- * each project folder last worked in. One tail per project folder, so a machine with thousands
- * of sessions reads one file per folder. `setup` and `update` read it to find the repos the
- * person works in (`src/update/retired-repos.ts`).
+ * Every folder Claude Code's saved sessions name, once each, with the newest time one of its
+ * session records was written: the folder the newest session of each project folder last
+ * worked in. One tail per project folder, so a machine with thousands of sessions reads one
+ * file per folder. A project folder whose newest session names no folder is left out, and a
+ * folder two project folders name once keeps the newer time.
+ *
+ * `setup` and `update` read the folders (`sessionWorkFolders`) to find the repos the person
+ * works in (`src/update/retired-repos.ts`); the portal's Projects page reads the times too.
  */
-export function sessionWorkFolders(projectsDir: string): string[] {
+export function sessionWorkFolderTimes(
+  projectsDir: string,
+): { folder: string; lastWrite: number }[] {
   if (!existsSync(projectsDir)) return [];
-  const folders = new Set<string>();
+  const folders = new Map<string, number>();
   for (const folder of readdirSync(projectsDir)) {
     const newest = sessionFiles(projectsDir, folder)[0];
     if (newest === undefined) continue;
     const worked = readSession(newest).folder;
-    if (worked !== null) folders.add(worked);
+    if (worked === null) continue;
+    folders.set(worked, Math.max(folders.get(worked) ?? 0, newest.lastWrite));
   }
-  return [...folders];
+  return [...folders].map(([folder, lastWrite]) => ({ folder, lastWrite }));
+}
+
+/**
+ * Every folder Claude Code's saved sessions name, once each (the folders of
+ * `sessionWorkFolderTimes`, without their times).
+ */
+export function sessionWorkFolders(projectsDir: string): string[] {
+  return sessionWorkFolderTimes(projectsDir).map((worked) => worked.folder);
 }
 
 /** This project's sessions written since `since`, newest first. */

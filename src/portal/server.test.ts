@@ -28,6 +28,7 @@ import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
+import { NO_SESSION_RECORDS } from "./api/projects";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
@@ -3589,6 +3590,7 @@ describe("the JSON API", () => {
         "/api/machine",
         "/api/settings",
         "/api/projects",
+        "/api/projects/no-such-project",
         "/api/work",
         "/api/crew/crew-K-contracts",
         "/api/flow?range=1d",
@@ -3717,11 +3719,12 @@ describe("the JSON API", () => {
       expect(settings.error).toBe(null);
       expect(Array.isArray(settings.rows)).toBe(true);
       const projects = JSON.parse((await world.call("/api/projects")).body) as {
-        note: string;
+        note: null | string;
         projects: unknown[];
       };
-      expect(projects.projects).toHaveLength(1);
-      expect(typeof projects.note).toBe("string");
+      // No Claude Code session records in this temp home: the list is empty, and says why.
+      expect(projects.projects).toEqual([]);
+      expect(projects.note).toBe(NO_SESSION_RECORDS);
       const update = JSON.parse((await world.call("/api/update")).body) as {
         held: null;
         installed: null;

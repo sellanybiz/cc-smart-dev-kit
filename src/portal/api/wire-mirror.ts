@@ -100,6 +100,10 @@ export const MIRRORED = {
   OverviewAnswer: same<Server.OverviewAnswer, Wire.OverviewAnswer>(true),
   PermissionWait: same<Server.PermissionWait, Wire.PermissionWait>(true),
   PortalFacts: same<Server.PortalFacts, Wire.PortalFacts>(true),
+  // The card it carries keeps the project's workflow opaque in the app (`ProjectCardData`),
+  // so this is the one-way form, as `ProjectsAnswer` is.
+  ProjectAnswer: fits<Server.ProjectAnswer, Wire.ProjectAnswer>(true),
+  ProjectBranch: same<Server.ProjectBranch, Wire.ProjectBranch>(true),
   ProjectCardData: fits<Server.ProjectCardData, Wire.ProjectCardData>(true),
   ProjectSummary: same<Server.ProjectSummary, Wire.ProjectSummary>(true),
   ProjectsAnswer: fits<Server.ProjectsAnswer, Wire.ProjectsAnswer>(true),
