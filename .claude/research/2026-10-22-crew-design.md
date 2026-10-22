@@ -65,3 +65,19 @@ First line self-contained: it is the preview line the person sees (CSM) and the 
 - **`notify_when_idle` refuses teammates/subagents and cross-machine targets** (CSM) — crew must stay plain background sessions, which matches our current launch shape.
 - **Shared-list lifetime:** retention/cleanup and per-session claiming of a `CLAUDE_CODE_TASK_LIST_ID` list are underspecified in the docs I read (EV, IM) [hunch: verify empirically before building on it].
 - **Background-session instability upstream:** crash-loop on reattach and lost completion records reported in github.com/anthropics/claude-code/issues/75037 — keep hand-off files + commits so a respawn loses nothing.
+
+## 2. One example: the person's sessions of another project (a haiku scout read their saved transcripts, 2026-10-22)
+
+Counts are transcript records, not unique events. Names are left out on purpose.
+
+- **Shape:** a lead session per plan, sessions per slice, builders per wave. The lead's tool mix was hands-on (Bash 260, SendMessage 53, its to-do list 43, Edit 37, Agent 12, questions to the person 8), and it never looked blocked on a session. A wave table in the plan named each builder's owned files and what it waited for. A resume prompt re-briefed a fresh lead: goal, ordered start steps, the decisions to keep, the hard rules to restate to every helper.
+- **Messages:** addressed by the session's name. They were mostly merge notices ("main has #N; merge at your next stop; no reply needed", which is the kit's own after-merge text: 361 messages end with "No reply needed"), contract notes between slices, a gate ("hold the migration until the lead's go"), ownership ("your files", "do not touch"), and "resume after the rate limit". Replies come back by the sender's name. `notify_when_idle` was used about 10 times.
+- **Friction:**
+  - 218 sends were queued for a session in another permission mode ("its user must approve first"), and their outcome never shows.
+  - 38 sends failed: 24 to a name that no longer answered, 9 stopped by the person.
+  - One session sent 249 messages, half of them about push, test, merge or deploy, which is a storm.
+  - Every merge fans out 3-6 notices.
+  - Two builders worked in one worktree.
+  - After rate-limit cut-offs, builders had to be told to check `git diff` before going on.
+  - The message guard refused 35 sends to other projects, correctly.
+- **What worked:** one broadcast with exact git steps; labels by role (lead, slice, builder letter); the wave table with owned files and dependencies; "do not touch" in briefs; the plan file and the to-do list as the truth; a resume prompt for a fresh session.
