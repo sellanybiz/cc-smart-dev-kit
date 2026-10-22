@@ -437,13 +437,17 @@ export interface WorktreeItem {
   why: null | string;
 }
 
-/** What the last background clean of a repository did (`src/worktrees/auto-state.ts`). */
+/**
+ * The background clean's record of a repository (`src/worktrees/auto-state.ts`): when it last
+ * ran, and the removals no session start has reported to the person yet (the record keeps them
+ * until then, so they are not necessarily from that last run).
+ */
 export interface WorktreeAutoClean {
-  /** The base its removals were judged against. */
+  /** The base those removals were judged against. */
   base: string;
-  /** When it last ran (ISO 8601). */
+  /** When auto-clean last ran (ISO 8601), whatever that run did. */
   lastRunAt: string;
-  /** What it removed, and why each counted as finished. */
+  /** The latest removals auto-clean has not reported yet, and why each counted as finished. */
   removed: { branch: null | string; name: string; path: string; why: string }[];
 }
 

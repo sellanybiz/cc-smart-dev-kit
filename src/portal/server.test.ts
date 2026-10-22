@@ -9,7 +9,15 @@
  * Each security rule is one test, and each was watched failing with its rule broken.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
@@ -4002,6 +4010,48 @@ describe("the JSON API", () => {
     }
   });
 
+  test("a crew page of an ended session: its memory series is the log's readings only", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const now = Date.UTC(2026, 9, 23, 12, 0, 0);
+    const world = await open({
+      backendPort: backend.port,
+      now: () => now,
+      projectFiles: {},
+    });
+    try {
+      // Its session ended: the record's last memory reading is not a reading at this time.
+      const crew = {
+        ...crewFixture(world.cwd),
+        branch: "crew/K-done",
+        id: "crew-K-done",
+        memoryMb: 999,
+        state: "done",
+      };
+      await createCrew(world.paths.stateDir, crew, now - 300_000);
+      await appendCrewEvent(
+        world.paths.stateDir,
+        world.cwd,
+        {
+          crew: crew.id,
+          lead: crew.leadSessionId,
+          memoryMb: 64,
+          name: crew.name,
+          state: "working",
+          text: "a step",
+          type: "step",
+        },
+        now - 120_000,
+      );
+      const body = JSON.parse((await world.call(`/api/crew/${crew.id}`)).body) as {
+        memory: { at: string; mb: number }[];
+      };
+      expect(body.memory).toEqual([{ at: new Date(now - 120_000).toISOString(), mb: 64 }]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
   test("needs: a crew question, doctor's failures, an open breaker and a held major", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({
@@ -4067,9 +4117,9 @@ describe("the JSON API", () => {
       expect(body.breakers).toHaveLength(1);
       expect(body.breakers[0]?.slot).toBe("cc-smart-dev-kit-worker");
       expect(body.breakers[0]?.held).toBe(3);
-      // The health page this test's machine answers names no breakers: the router does not say
-      // how many wait right now, and the answer says so rather than guessing.
-      expect(body.breakers[0]?.heldNow).toBe(null);
+      // The health page this test's machine answers lists no breakers: the router answered,
+      // so nothing waits there right now, and the count is 0 rather than an unknown.
+      expect(body.breakers[0]?.heldNow).toBe(0);
       expect(body.update).toMatchObject({ notes: ["it refuses old fields"], version: "2.0.0" });
       expect(body.doctor.failures.length).toBeGreaterThan(0);
       // A failure keeps doctor's own words, the line that fixes it, and its report group.
@@ -4192,6 +4242,8 @@ describe("the JSON API", () => {
           ask("git-guard", "push to main", minutesAgo(5)),
           ask("merge-guard", "merge without review token=omni_PLANTED_SECRET_a1b2", minutesAgo(5)),
           ask("git-guard", "force push", minutesAgo(3), "s2"),
+          // A time that is not a whole millisecond: it cannot name a page cursor, so it is skipped.
+          ask("git-guard", "a half time", 1.5),
           // Two days back: outside the default range (24 hours), so not a row, a guard or a bucket.
           ask("git-guard", "an old ask", now - 2 * 86_400_000),
         ].join("\n")}\n`,
@@ -4206,11 +4258,14 @@ describe("the JSON API", () => {
         next: null | string;
         range: string;
         sessions: string[];
+        skipped: number;
       };
       // `byHook` stays the whole log's; the range decides the rows, the guards and the chart.
       expect(all.byHook).toEqual({ "git-guard": 3, "merge-guard": 1 });
       expect(all.range).toBe("1d");
       expect(all.kept).toBe(3);
+      // The row whose `at` is not a whole millisecond cannot name a cursor: it is skipped.
+      expect(all.skipped).toBe(1);
       expect(all.guards).toEqual(["git-guard", "merge-guard"]);
       expect(all.sessions).toEqual(["s1", "s2"]);
       // Newest first, and the key a reason quoted is masked before a page sees it (its last
@@ -4289,6 +4344,14 @@ describe("the JSON API", () => {
       // A linked worktree of this test's repo: git just wrote to it, so it is minutes old.
       const linked = join(tempDir("worktree"), "one");
       git(world.cwd, "worktree", "add", "-q", "-b", "feat", linked);
+      // And one whose folder was deleted: git still lists it, and its idle time is unknown.
+      const gone = join(tempDir("worktree"), "gone");
+      git(world.cwd, "worktree", "add", "-q", "-b", "old", gone);
+      rmSync(gone, { recursive: true, force: true });
+      // And one whose git folder cannot be read: nothing says when git last wrote to it.
+      const broken = join(tempDir("worktree"), "broken");
+      git(world.cwd, "worktree", "add", "-q", "-b", "drift", broken);
+      writeFileSync(join(broken, ".git"), "gitdir: /nonexistent/cc-smart-dev-kit-worktree\n");
       // Auto-clean's record, as the background clean writes it.
       const files = autoCleanFiles(world.paths.stateDir, world.cwd);
       mkdirSync(dirname(files.result), { recursive: true });
@@ -4332,6 +4395,14 @@ describe("the JSON API", () => {
       expect(one).toBeDefined();
       expect(typeof one?.idleMinutes).toBe("number");
       expect(one?.idleMinutes ?? 60).toBeLessThan(60);
+      // A worktree whose folder is gone has no git files to read: its idle time is unknown.
+      const missing = body.worktrees.find((one) => one.path === gone);
+      expect(missing?.kind).toBe("gone");
+      expect(missing?.idleMinutes).toBe(null);
+      // So does one whose `.git` cannot be read: never a made-up 0.
+      const unread = body.worktrees.find((one) => one.path === broken);
+      expect(unread).toBeDefined();
+      expect(unread?.idleMinutes).toBe(null);
       expect(body.autoClean).toEqual({
         base: "main",
         lastRunAt: new Date(ranAt).toISOString(),

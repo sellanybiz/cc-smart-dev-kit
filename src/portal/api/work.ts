@@ -13,6 +13,7 @@ import { groupTitle } from "../../cli/check";
 import { openQuestionIndex } from "../../crew/answer";
 import { findCrew, stateSince } from "../../crew/board";
 import { diffAgainstBase, outsideBrief } from "../../crew/diff";
+import { RUNNING_STATES } from "../../crew/places";
 import {
   type CrewEvent,
   type CrewRecord,
@@ -35,7 +36,6 @@ import {
 import { currentBreakers, parseLimitState } from "../../gateway/limit-state";
 import { oneLine } from "../../gateway/plain-text";
 import { askLogFile } from "../../hooks/ask-log";
-import { idleMinutes } from "../../hooks/worktree-leftovers";
 import { locateCheckout } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
 import {
@@ -293,7 +293,9 @@ export function crewAnswerFor(deps: PageDataDeps, ref: string): CrewAnswer | { e
 
 /**
  * A crew session's memory over time, oldest first: each reading its own log kept (the watch
- * writes one when a session ends), then the record's memory as it is now, at this answer's time.
+ * writes one when a session ends), then — only while its session still runs — the record's
+ * memory as it is now, at this answer's time. An ended session's last reading is history, not
+ * a reading now, so its series is the log's own.
  */
 function memoryOf(
   record: CrewRecord,
@@ -305,7 +307,8 @@ function memoryOf(
     return [{ at: event.at, mb: event.memoryMb }];
   });
   kept.sort((a, b) => a.at.localeCompare(b.at));
-  if (record.memoryMb !== null) {
+  const running = (RUNNING_STATES as readonly string[]).includes(record.state);
+  if (running && record.memoryMb !== null) {
     kept.push({ at: new Date(nowMs).toISOString(), mb: record.memoryMb });
   }
   return kept;
@@ -467,7 +470,9 @@ async function breakersOf(deps: PageDataDeps, now: number): Promise<BreakerNeed[
   const live = router?.up === true ? router.breakers : null;
   return open.map(([slot, record]) => ({
     held: record.held,
-    heldNow: live?.[slot]?.heldNow ?? null,
+    // The router answered: a slot it does not list holds nothing right now. Only a router
+    // that did not answer leaves the count unknown.
+    heldNow: live === null ? null : (live[slot]?.heldNow ?? 0),
     since: new Date(record.since).toISOString(),
     slot,
     targets: record.targets.map((target) => ({
@@ -558,7 +563,9 @@ export function guardAsksAnswer(deps: PageDataDeps, query: GuardAskQuery): Guard
     const value = parsed as Record<string, unknown>;
     const hook = typeof value.hook === "string" ? value.hook : null;
     const at = typeof value.at === "number" ? value.at : null;
-    if (hook === null || at === null) {
+    // A time that is not a whole millisecond cannot name a page cursor (`<at>.<n>`): skipped,
+    // like a line with no hook or no time.
+    if (hook === null || at === null || !Number.isSafeInteger(at)) {
       skipped += 1;
       continue;
     }
@@ -685,10 +692,23 @@ export function worktreesAnswer(deps: PageDataDeps): WorktreesAnswer {
           why: "its folder no longer exists",
         };
       }
-      const idle = idleMinutes(path, now);
       return worktree.state.finished
-        ? { branch, head, idleMinutes: idle, kind: "finished", path, why: null }
-        : { branch, head, idleMinutes: idle, kind: "kept", path, why: worktree.state.why };
+        ? {
+            branch,
+            head,
+            idleMinutes: worktree.idleMinutes,
+            kind: "finished",
+            path,
+            why: null,
+          }
+        : {
+            branch,
+            head,
+            idleMinutes: worktree.idleMinutes,
+            kind: "kept",
+            path,
+            why: worktree.state.why,
+          };
     });
     return {
       autoClean: autoCleanOf(deps, repo),

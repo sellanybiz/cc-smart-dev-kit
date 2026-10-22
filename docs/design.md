@@ -805,7 +805,8 @@ sessions it holds for the filter menus. The facts a page explains itself with ar
 answers: a crew page's changed files each with their own line counts and the crew session's
 memory over time, the merge verdict's review, its limits and what the review still covers,
 every open breaker with the router's live count of what waits, each doctor failure with its
-fix and section, and each worktree's idle minutes and what the last background clean removed. Nothing carries a key or a prompt.
+fix and section, and each worktree's idle minutes and the removals auto-clean has not reported
+yet. Nothing carries a key or a prompt.
 
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its
