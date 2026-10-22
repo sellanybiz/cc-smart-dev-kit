@@ -1,7 +1,7 @@
 /**
  * The launch policy (`launch-policy.ts`): the parts the Agent guard does not test through its
  * own verdicts — what "affordable" means, and the model and effort each worker kind runs on
- * (D21). The guard's own tests (`src/hooks/agent-guard.test.ts`) cover `resolveLaunchModel`.
+ * (D46). The guard's own tests (`src/hooks/agent-guard.test.ts`) cover `resolveLaunchModel`.
  */
 import { describe, expect, test } from "bun:test";
 import type { GatewayConfig } from "../gateway/config";
@@ -56,8 +56,8 @@ const CLAUDE_SLOTS: GatewayFacts = {
 /** A config with backend chains, but Claude Code's settings do not point at the router. */
 const CONFIG_BUT_OFF: GatewayFacts = { ...AFFORDABLE, gatewayOn: false };
 
-describe("D21: the worker kinds", () => {
-  test("D21: build, docs and tests name sonnet; the seven judgment kinds name opus at xhigh", () => {
+describe("D46: the worker kinds", () => {
+  test("D46: eight kinds name sonnet, only architecture and ui name opus at xhigh", () => {
     expect(WORKER_KINDS).toEqual({
       build: {
         about: "routine building",
@@ -79,33 +79,33 @@ describe("D21: the worker kinds", () => {
       },
       security: {
         about: "code that touches security",
-        affordableEffort: "xhigh",
-        effort: "xhigh",
-        model: "opus",
+        affordableEffort: "max",
+        effort: "high",
+        model: "sonnet",
       },
       money: {
         about: "code that touches money",
-        affordableEffort: "xhigh",
-        effort: "xhigh",
-        model: "opus",
+        affordableEffort: "max",
+        effort: "high",
+        model: "sonnet",
       },
       permissions: {
         about: "code that touches permissions",
-        affordableEffort: "xhigh",
-        effort: "xhigh",
-        model: "opus",
+        affordableEffort: "max",
+        effort: "high",
+        model: "sonnet",
       },
       schema: {
         about: "a schema or a contract",
-        affordableEffort: "xhigh",
-        effort: "xhigh",
-        model: "opus",
+        affordableEffort: "max",
+        effort: "high",
+        model: "sonnet",
       },
       deploy: {
         about: "deploy plumbing",
-        affordableEffort: "xhigh",
-        effort: "xhigh",
-        model: "opus",
+        affordableEffort: "max",
+        effort: "high",
+        model: "sonnet",
       },
       architecture: {
         about: "architecture and design",
@@ -122,7 +122,7 @@ describe("D21: the worker kinds", () => {
     });
   });
 
-  test("D21: the kind names, in the table's order, and the check for one", () => {
+  test("D46: the kind names, in the table's order, and the check for one", () => {
     expect(WORKER_KIND_NAMES).toEqual([
       "build",
       "docs",
@@ -141,7 +141,7 @@ describe("D21: the worker kinds", () => {
     expect(isWorkerKind("toString")).toBe(false);
   });
 
-  test("D21: a sonnet kind runs at max on an affordable worker slot", () => {
+  test("D46: a sonnet kind runs at max on an affordable worker slot", () => {
     const launch = workerLaunch("build", AFFORDABLE, NO_ENV);
     expect(launch.model).toBe("sonnet");
     expect(launch.effort).toBe("max");
@@ -157,8 +157,17 @@ describe("D21: the worker kinds", () => {
     ["the gateway off", NO_GATEWAY],
     ["the worker slot answered by Claude Sonnet", CLAUDE_SLOTS],
     ["a backend chain, but the gateway off", CONFIG_BUT_OFF],
-  ] as const)("D21: a sonnet kind runs at high with %s", (_label, gateway) => {
-    for (const kind of ["build", "docs", "tests"] as const) {
+  ] as const)("D46: a sonnet kind runs at high with %s", (_label, gateway) => {
+    for (const kind of [
+      "build",
+      "docs",
+      "tests",
+      "security",
+      "money",
+      "permissions",
+      "schema",
+      "deploy",
+    ] as const) {
       expect(workerLaunch(kind, gateway, NO_ENV)).toMatchObject({
         effort: "high",
         model: "sonnet",
@@ -166,7 +175,7 @@ describe("D21: the worker kinds", () => {
     }
   });
 
-  test("D21: a person's own override to a backend is affordable too: max", () => {
+  test("D46: a person's own override to a backend is affordable too: max", () => {
     const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: "omniroute:glm-5.3-flash" };
     expect(workerLaunch("tests", NO_GATEWAY, env).effort).toBe("max");
   });
@@ -176,16 +185,16 @@ describe("D21: the worker kinds", () => {
     ["the opus slot answered by a backend", AFFORDABLE],
     ["the opus slot answered by Claude Opus", CLAUDE_SLOTS],
   ] as const)(
-    "D21: an opus kind runs at xhigh with %s: a tier is never affordable",
+    "D46: an opus kind runs at xhigh with %s: a tier is never affordable",
     (_l, gateway) => {
-      const launch = workerLaunch("security", gateway, NO_ENV);
+      const launch = workerLaunch("architecture", gateway, NO_ENV);
       expect(launch.model).toBe("opus");
       expect(launch.effort).toBe("xhigh");
       expect(launch.real.tier).toBe("opus");
     },
   );
 
-  test("D21: the Agent guard allows every kind's own launch, on every gateway", () => {
+  test("D46: the Agent guard allows every kind's own launch, on every gateway", () => {
     for (const gateway of [NO_GATEWAY, AFFORDABLE, CLAUDE_SLOTS, CONFIG_BUT_OFF]) {
       for (const kind of WORKER_KIND_NAMES) {
         const { effort, model } = workerLaunch(kind, gateway, NO_ENV);
@@ -201,10 +210,14 @@ describe("D21: the worker kinds", () => {
     }
   });
 
-  test("D21: every kind resolves through the policy the guard uses", () => {
+  test("D46: every kind resolves through the policy the guard uses", () => {
     const kind: WorkerKind = "architecture";
     expect(workerLaunch(kind, AFFORDABLE, NO_ENV).real).toEqual(
       resolveLaunchModel("opus", AFFORDABLE, NO_ENV),
+    );
+    const sonnetKind: WorkerKind = "security";
+    expect(workerLaunch(sonnetKind, AFFORDABLE, NO_ENV).real).toEqual(
+      resolveLaunchModel("sonnet", AFFORDABLE, NO_ENV),
     );
   });
 });

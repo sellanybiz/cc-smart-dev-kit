@@ -35,9 +35,9 @@ Each step's procedure is its skill; the brief's done-check decides when the phas
 5. **The whole suite and the project's checks** (`/cc-smart-dev-kit:verify-change` § 4). Step
    `suite-green`. Commit.
 6. **Your own pass** (`/cc-smart-dev-kit:review`), and its fixes. Commit.
-7. **One review:** the `cc-smart-dev-kit:reviewer` agent on `opus` at effort `xhigh`, once, on the
-   committed phase (`/cc-smart-dev-kit:review` § Second opinion). Steps `review-started`, then
-   `review-done`.
+7. **One review:** the `cc-smart-dev-kit:reviewer` agent (model and effort: the core
+   instructions), once, on the committed phase (`/cc-smart-dev-kit:review` § Second opinion).
+   Steps `review-started`, then `review-done`.
 8. **The fixes** it confirmed under the evidence bar, then the whole suite again. Step
    `fixes-done`. Commit. No second review to re-check the fixes.
 9. Step `committed`, then the report (§ 4).

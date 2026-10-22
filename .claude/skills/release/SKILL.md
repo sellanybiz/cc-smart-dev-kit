@@ -52,8 +52,9 @@ updates `docs/design.md`, and one that relies on a new Claude Code behaviour add
 `docs/claude-code-contract.md` — before the pull request, never after it.
 
 The second opinion, once, before the first push (`plugin/instructions/core.md` § Review): the
-read-only `cc-smart-dev-kit:reviewer` agent on `opus`, for anything beyond a small fix. A release
-that only raises the version and rebuilds the bundle counts as a small fix.
+read-only `cc-smart-dev-kit:reviewer` agent, for anything beyond a small fix. A release is a risky
+change set there, so the reviewer runs on `opus` at `xhigh`. A release that only raises the
+version and rebuilds the bundle counts as a small fix.
 
 ## 4. Pull request
 

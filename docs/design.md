@@ -2139,15 +2139,16 @@ many of those on the opus tier (D37), the free memory a new one needs, when a qu
 blocked one is stopped (D35: a worker never outlives its work) — and the `tag` of their names.
 `workflow show` prints each with its source.
 
-**The kinds** (D21) say what a phase needs, and so the model and effort its worker runs on:
+**The kinds** (D46) say what a phase needs, and so the model and effort its worker runs on:
 `WORKER_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
 guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`, `tests` — runs on
 `sonnet`, the worker slot: at `max` when an affordable gateway slot answers it, at `high` when
-Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Work that needs
-judgment — `security`, `money`, `permissions`, `schema`, `deploy`, `architecture`, `ui` — runs on
-`opus` at `xhigh`, whatever answers the tier. `workerLaunch(kind, gateway, env)` makes that
-choice from the same reading of the gateway the guard makes, so a worker never starts on a model
-or an effort the guard would refuse a subagent; a test runs every kind through the guard.
+Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). So does code that
+touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
+Work that needs judgment — `architecture`, `ui` — runs on `opus` at `xhigh`, whatever answers the
+tier. `workerLaunch(kind, gateway, env)` makes that choice from the same reading of the gateway
+the guard makes, so a worker never starts on a model or an effort the guard would refuse a
+subagent; a test runs every kind through the guard.
 
 **The names** (D26, `src/workers/names.ts`) show the role, because agent view has no parent link
 and no grouping by lead — the name is how a person, and the portal, groups the sessions:
@@ -2265,7 +2266,7 @@ polls or retries. In order:
    a brief that cannot be read, or is empty; no `claude` (PATH, then `~/.local/bin`); a base that
    is no commit. A wrong command line is exit 2: no phase, slug or kind, an unknown kind, an effort
    a worker never runs at, a phase that waits for itself.
-2. **The model and effort**: the kind's (`workerLaunch`, D21). An override (`--model`, `--effort`;
+2. **The model and effort**: the kind's (`workerLaunch`, D46). An override (`--model`, `--effort`;
    a model alone runs at the kind's effort, or `max` when an affordable model answers it) is
    judged by the Agent guard's own `judgeLaunch`: one it refuses is refused with its words, and
    one it would **ask** the person about (`opus` at `max`, an unreadable name) is refused too,
@@ -2282,8 +2283,8 @@ polls or retries. In order:
    — the workers of every repository on this machine in `starting`, `working`, `blocked`,
    `paused` or `quiet` stay below `workflow.workers.max` (6), and, for a new opus-tier worker, the
    opus-tier ones among them stay below `workflow.workers.maxOpus` (2): the tier the model's name
-   stands for, recorded at launch (`model.tier`), so the opus kinds and an override onto opus
-   both count; the queued line names the cap that holds it; **the memory** — the memory free now less what heavy
+   stands for, recorded at launch (`model.tier`), so the opus kinds (`architecture`, `ui`) and an
+   override onto opus both count; the queued line names the cap that holds it; **the memory** — the memory free now less what heavy
    jobs reserved and have not used yet (the job queue's own reading) is at least
    `workflow.workers.memoryGb` (no check where free memory cannot be read: macOS). The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that

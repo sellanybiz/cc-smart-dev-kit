@@ -123,8 +123,8 @@ Bias upward when unsure. If everything is a Suggestion, say so plainly.
 You cannot see your own blind spots. So after your own pass, for every change beyond a small
 fix, start **one** `cc-smart-dev-kit:reviewer` agent (model and effort: the core instructions).
 For a hard or high-stakes change — security, money, permissions, a big architecture change —
-you may run the reviewer on `fable` instead of `opus`, on your own judgment or when the person
-asks, with the line `Fable reason: review - <why>`; `agent-guard` then asks the person.
+you may run the reviewer on `fable` instead of its usual model, on your own judgment or when the
+person asks, with the line `Fable reason: review - <why>`; `agent-guard` then asks the person.
 
 - **When** (the rule is in the core instructions § Review): phases built in parallel that
   ship together get one read, not one each. A phase built on another open pull request is a

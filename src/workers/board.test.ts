@@ -487,7 +487,7 @@ describe("worker kinds", () => {
       "build         sonnet  high              max               routine building",
     );
     expect(world.out[4]).toBe(
-      "security      opus    xhigh             xhigh             code that touches security",
+      "security      sonnet  high              max               code that touches security",
     );
     // Every row is the table's own: the kind, the model, both efforts and what it is for.
     for (const [index, kind] of WORKER_KIND_NAMES.entries()) {

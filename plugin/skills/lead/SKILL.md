@@ -34,8 +34,8 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
 - **Each brief says the worker never touches the shared files** that stay yours.
 - **Each phase gets a kind**, and the kind picks the model and the effort:
   `cc-smart-dev-kit worker kinds` (or `worker --help`) lists each kind with its model. Pick
-  the kind of the phase's riskiest part. Override `--model` or `--effort` only when the person
-  asks.
+  the kind of the phase's riskiest part; a kind that runs on opus is for design judgment, never
+  a way to get a stronger builder. Override `--model` or `--effort` only when the person asks.
 
 ## 3. Start each phase
 
@@ -135,9 +135,9 @@ Once you merged its branch, the watch removes it; if `worker list` still shows i
 ## 7. Caps and the queue
 
 `workflow show` prints the caps: `workers.max` (every worker on the machine, across leads) and
-`workers.maxOpus` (those on the opus tier). Routine phases on the worker slot run wide; opus
-phases queue, so put the opus phases that unblock the most first. Your own Opus subagents share
-the same usage window: at most 3 at once.
+`workers.maxOpus` (those on the opus tier). Routine phases on the worker slot run wide; the opus
+phases — the kinds that run on opus — queue, so put those that unblock the most first. Your own
+Opus subagents share the same usage window: at most 3 at once.
 
 ## 8. Hand-offs
 

@@ -200,7 +200,7 @@ describe("D25: worker start returns at once", () => {
     expect(brief).toContain("The files this phase owns: `src/a.ts`, `src/b.ts`.");
   });
 
-  test("D21: an opus kind starts on opus at xhigh", async () => {
+  test("D46: an opus kind starts on opus at xhigh", async () => {
     const world = await ledWorld();
     const args = [
       "start",
@@ -512,7 +512,7 @@ describe("D25: the queue — still one line, at once", () => {
       "--slug",
       "launcher",
       "--kind",
-      "security",
+      "architecture",
       "--brief",
       world.brief,
     ];

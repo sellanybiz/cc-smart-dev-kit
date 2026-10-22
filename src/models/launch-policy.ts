@@ -1,7 +1,7 @@
 /**
  * The launch policy: which model and effort a launch really runs on (Claude Code's own overrides,
  * `effectiveLaunch`, then the model's resolution), the effort levels a subagent may run at, the
- * Fable reason words, and the model and effort each kind of worker phase runs on (D21).
+ * Fable reason words, and the model and effort each kind of worker phase runs on (D46).
  *
  * **One home, pure.** The Agent guard (`src/hooks/agent-guard.ts`) judges every Agent, Task and
  * Workflow launch by it; the worker launcher and the Bash judge read the same table, so a
@@ -442,13 +442,14 @@ export interface WorkerKindPolicy {
 }
 
 /**
- * The kinds of worker phase, and the model and effort each runs on (the owner's decision D21).
+ * The kinds of worker phase, and the model and effort each runs on (the owner's decision D46).
  * Routine work — building, docs, tests — goes to `sonnet`, the worker slot: at `max` when an
- * affordable slot answers it, at `high` when Claude Sonnet does. Work that needs judgment —
- * security, money, permissions, a schema, deploy plumbing, architecture, UI — goes to `opus` at
- * `xhigh`, whatever answers the tier. The premium kinds are also the purpose a launch record
- * names (`Opus reason: <kind>`). A person may override one worker's model (the launcher's own
- * flag); the table is the default.
+ * affordable slot answers it, at `high` when Claude Sonnet does. So does code that touches
+ * security, money, permissions, a schema or deploy plumbing: it builds like any other code.
+ * Only work that needs design judgment — architecture, UI — goes to `opus` at `xhigh`, whatever
+ * answers the tier. A kind's name may also be the word of an `Opus reason: <word>` line in a
+ * launch record: the guard takes any word there, so `security` still names an Opus review. A
+ * person may override one worker's model (the launcher's own flag); the table is the default.
  */
 export const WORKER_KINDS = {
   build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
@@ -461,29 +462,29 @@ export const WORKER_KINDS = {
   tests: { about: "tests and test runs", affordableEffort: "max", effort: "high", model: "sonnet" },
   security: {
     about: "code that touches security",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet",
   },
   money: {
     about: "code that touches money",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet",
   },
   permissions: {
     about: "code that touches permissions",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet",
   },
   schema: {
     about: "a schema or a contract",
-    affordableEffort: "xhigh",
-    effort: "xhigh",
-    model: "opus",
+    affordableEffort: "max",
+    effort: "high",
+    model: "sonnet",
   },
-  deploy: { about: "deploy plumbing", affordableEffort: "xhigh", effort: "xhigh", model: "opus" },
+  deploy: { about: "deploy plumbing", affordableEffort: "max", effort: "high", model: "sonnet" },
   architecture: {
     about: "architecture and design",
     affordableEffort: "xhigh",
