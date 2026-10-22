@@ -747,10 +747,10 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (its settings keys, the auto-mode entries it copied, the [agent view notification hook](#notifications), claude-mem's keys, its block in `CLAUDE.md`, the instructions' copy, the [tmux line](#notifications) it added, the two [retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog) keys, and a stored `--no-instructions` choice) and keeps everything else. A key setup set and you changed since is yours: it stays. The plugins and marketplaces setup added stay installed: remove them with `claude plugin uninstall` and `claude plugin marketplace remove`. The launcher goes back to how it was before setup first changed it, or is removed when setup created it. With the gateway installed and on, it runs in **two stages**, because running Claude sessions still send every request to the router: the first restore removes everything but the router (the gateway's env keys too, and the launcher when setup created it — so `cc-smart-dev-kit` may be off your PATH then, and the line it prints is the `bun --no-env-file --config=… …/dist/cli.js restore` form of [Install](#install) step 3, with the bun running the restore, its own absolute path, and your installed version) and says to restart every running session; the second disables and stops the router and its socket (it asks, because that cuts answers in flight; `--yes` skips the question), waits up to 15 s for its port to close (not for its answers in flight, which finish in the background; and not at all when the unit was not running or another program answers on the port: it says so), and removes its copy, its units and its limit state (`~/.local/state/cc-smart-dev-kit/gateway-state.json`). `--now` does both at once, after a warning that every running session fails until it restarts (asked, or `--yes`). It keeps `gateway.json`, which holds your key. Some of cc-smart-dev-kit's own state stays too, and restore never removes the state folder `~/.claude/cc-smart-dev-kit/` itself, or a folder outside it. Still there afterwards: the backups a later restore or a hand-undo reads, the records (now empty), the running sessions' and the background update's bookkeeping, and the live-check record. The heavy-job queue's folder `~/.local/share/cc-smart-dev-kit/jobs/` stays as it is, with its `leases/` and `tickets/` folders (empty once no job runs). A restore with nothing left changes nothing. |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version; a new major version too, which the background update holds for this. `--check` only says whether a newer version exists, and whether it is a major one (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit gateway <command>` | The optional AI gateway (below). |
-| `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. |
+| `cc-smart-dev-kit browser mcp` | Starts the Playwright MCP server on **your own Google Chrome**, through the Playwright extension, in the profile `claude-code` ([The browser](#the-browser)). `setup` registers it as the `playwright` MCP server; you do not run it by hand. **It refuses to start without the token**: without one the extension would ask you to approve every connection. When Chrome is closed — after a machine restart, say — it starts your own Chrome with that profile first and waits for it, so the first browser call works with nobody at the desktop; a Chrome that cannot be started (no reachable desktop, an error) is one line naming the one step, at once. |
 | `cc-smart-dev-kit browser setup [--dry-run]` | Finds Chrome, opens the Playwright extension's Web Store page in the `claude-code` profile (Chrome makes that profile on that launch, if it is not there yet), pre-registers the extension for your user on macOS and Windows, and prints the steps that are left for you. It never installs or removes an extension, and never deletes a profile. `--dry-run` prints the same lines and runs and writes nothing. |
 | `cc-smart-dev-kit browser token [--clear]` | Saves the token the extension's status page shows — paste the whole line (its Copy button copies `PLAYWRIGHT_MCP_EXTENSION_TOKEN=…`), and it is not echoed while you type. It is written to `~/.config/cc-smart-dev-kit/playwright-extension.token` (mode 600 on Linux and macOS; on Windows your profile's own permissions keep it yours), and is never printed again. `--clear` removes it. |
-| `cc-smart-dev-kit browser check` | Proves the browser end to end on your own Chrome: a real connection with **no approval page**, a `file://` page (which needs "Allow access to file URLs"), screenshots (one the server names, one a caller names), an upload, a download, and `browser_close`. Exit 0 when every check passed. It opens that Chrome window once, and the tabs of its connection stay behind. |
+| `cc-smart-dev-kit browser check` | Proves the browser end to end on your own Chrome: a real connection with **no approval page**, a `file://` page (which needs "Allow access to file URLs"), screenshots (one the server names, one a caller names), an upload, a download, and `browser_close`. Exit 0 when every check passed. It opens that Chrome window once, and the tabs of its connection stay behind. It always ends: one limit bounds the whole run, and shorter ones the start, each answer and each stop — a Chrome that cannot start fails it at once instead of hanging it. |
 | `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--clean` and `--remove` run in the main checkout only, one at a time. |
 | `cc-smart-dev-kit omniroute <status\|update\|rollback>` | The OmniRoute behind the gateway's affordable slots (below): what is installed, the newest npm release at least three days old, the user unit that runs it, and the backend that talks to it. `update` installs the newest such release, restarts its unit, checks the model path, and puts the old version back when the new one does not answer. `rollback` installs the version the last update replaced. `update` and `rollback` refuse to run inside a Claude Code session, and are never in the background. |
@@ -983,7 +983,9 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
 - the browser: Google Chrome is installed, the `claude-code` Chrome profile is there, the
   Playwright extension is installed in it and it is the ONLY extension there (a second one
   breaks a browser session: microsoft/playwright#43230, open — a `!` line names it), the profile
-  lets the extension open `file://` pages, and the extension's token is saved. A ✗ names the
+  lets the extension open `file://` pages, and the extension's token is saved. Whether Chrome is
+  running is information (`·`): when it is closed — after a machine restart, say — the first
+  browser call starts it in that profile itself. A ✗ names the
   command or the click that fixes it; without the token nothing runs at all
   ([The browser](#the-browser)). Whether the `playwright` server is registered and starts is the
   MCP servers' own line, just below;
@@ -2172,7 +2174,16 @@ neither planned to change:
   install runs, a record left behind after an extension is gone, and built-ins like Chrome Web
   Store Payments (which are hidden from `chrome://extensions` and cannot be removed there) are
   not named. An extra extension that IS there is named by its manifest name, with its id.
-- **There is no headless mode.** A machine with no desktop cannot use the browser at all.
+- **There is no headless mode.** A machine with no desktop cannot use the browser at all — and the
+  first browser call says so in one line instead of waiting out the MCP's deadline.
+
+**Chrome closed is not a problem.** After a machine restart Chrome is closed, and that used to
+leave the browser broken until you opened Chrome by hand. Now the first browser call starts your
+own Chrome with the `claude-code` profile itself, on your desktop — from a background session too:
+it takes the desktop's display settings from your graphical session, which a background session
+does not inherit. It goes on once Chrome is up, so the call works with nobody at the desktop. A
+Chrome that cannot be started — no reachable desktop, or an error of Chrome's own — is one line at
+once, naming the one step: open Google Chrome with that profile, then start a new session.
 
 **The token is required, and there is no approval mode.** The extension normally asks you, in a
 page, to approve every connection. The plugin never runs that way: `browser mcp` refuses to start
@@ -2236,8 +2247,9 @@ deadline with a message naming the profile and the variable. Copy the token agai
 - **`browser check`** proves all of it on your real Chrome: a connection with no approval page, a
   `file://` page, a screenshot the server names and one a caller names, an upload through the MCP's
   file-upload tool, a download, and `browser_close`. Run it when the browser misbehaves.
-- **Nothing here is a second browser.** The plugin starts no Chrome of its own, keeps no profile of
-  its own and never deletes one. The single thing it may write inside Chrome's own folder is the
+- **Nothing here is a second browser.** The plugin starts no browser of its own and keeps no profile
+  of its own. When Chrome is closed it starts YOUR Google Chrome, with the `claude-code` profile,
+  and it never deletes one. The single thing it may write inside Chrome's own folder is the
   profile's **display name** in `Local State`, and only while no Chrome is running on that user data
   folder (`restore` puts that one name back; every other byte of that file is left as it is).
 - **What 0.3.0 left is left alone.** 0.3.0 kept its shared profile at
@@ -2296,6 +2308,12 @@ Store extension is 0.4.0 at the time of writing.
 12. **Uploads from the output folder**: the MCP now runs in the output folder, so a relative
     upload path is read from there. Check that `browser check`'s upload (a full path) still
     passes, and that a session that names a file relative to its project gets a clear error.
+13. **A Chrome the kit starts, after a restart**: with Chrome closed, the first browser call must
+    start it in the `claude-code` profile and connect with nobody at the desktop — run
+    `browser check` with Chrome closed, from a terminal session and from a background one (the
+    launcher takes the display from the systemd user manager there), on Linux. With no reachable
+    display at all, the call must end at once with its one line, never wait 30 seconds. Owed:
+    proved in tests (`src/browser/chrome-start.test.ts`), not yet live.
 13. **A profile Chrome's own dialog made** (`Profile 2`, named `claude-code` in Chrome): the MCP
     is told `--profile-dir-name=Profile 2` and must connect to that profile.
 11. **`doctor` must not open a page.** Its MCP check runs `claude mcp get playwright`, which starts

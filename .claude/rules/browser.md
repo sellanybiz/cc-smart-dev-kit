@@ -77,6 +77,22 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
 - **`--allow-unrestricted-file-access` and `--file-paths=absolute` stay in the launcher's argv**:
   the first is what lets a session upload a file from its worktree AND open `file://` pages (both
   blocked by default), the second is what makes a path the MCP reports usable from any folder.
+- **The launcher starts the person's Chrome when none is running.** A machine restart leaves Chrome
+  closed, and the MCP's own start of it — it spawns Chrome only to open the connect page — is
+  detached with its output ignored, so a Chrome that cannot start dies unseen and the call ends
+  after the MCP's 30-second deadline. So `browser mcp` starts the Chrome `chrome.ts` finds, with the
+  profile's folder name, ON THE PERSON'S DESKTOP (`chrome-start.ts`): this session's display
+  variables, else on Linux the ones the systemd user manager holds (a session the Claude daemon
+  starts has no `DISPLAY`; measured 2026-10-23), then it waits for Chrome's own singleton lock
+  (`chromeMayBeRunning`, the same question `browser setup` asks before it writes). No display, a
+  spawn that throws, a Chrome that exits at once (its own stderr in the line) or one not up within
+  `CHROME_START_LIMIT_MS`: one stderr line naming the one step, exit 2 — never a retry, never the
+  30-second wait. Starting the person's own Chrome is not a second browser, and nothing here writes
+  a byte of Chrome's files.
+- **`browser check` always ends.** One named whole-check limit (`CHECK_LIMIT_MS`) and shorter ones
+  derived from it for the start, every answer and every stop (close-input, SIGTERM, then SIGKILL);
+  a failed start stops the run at once. No child or wait may ever be unbounded: before this, a dead
+  Chrome made the check run past 60 seconds and keep going.
 - **A lock is a port** (`src/ports.ts`, `src/machine/hold-port.ts`): the system frees it however
   the holder ends, so it can never go stale, and a new port goes into that table with its reason.
 
@@ -84,7 +100,15 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
 
 - `launcher.test.ts` — the exact argv (the found profile's folder name), the token in the
   child's environment and never in `argv`, the child's working folder (a planted `bunfig.toml`
-  preload never runs), and that a missing, unreadable or wrong-shaped token starts nothing.
+  preload never runs), that a missing, unreadable or wrong-shaped token starts nothing, and the
+  Chrome start: none running → the found Chrome with the profile on the desktop's variables;
+  cannot start → one line and no MCP.
+- `chrome-start.test.ts` — the display lookup (session, then the user manager, then none; macOS and
+  Windows need none), the launch argv, already running → nothing started, a stale lock → started, a
+  Chrome that exits at once or never comes up → one plain line (and a killed child), no display →
+  nothing started.
+- `check.test.ts` — a child that never answers ends the check within its limit, a failed start stops
+  it there, and the whole run's own limit ends a run whose calls never answer.
 - `token.test.ts` — the extension's own shape (43 URL-safe characters, with or without the
   `PLAYWRIGHT_MCP_EXTENSION_TOKEN=` line the Copy button includes), the 0600 file, and the
   no-echo terminal read.
@@ -96,7 +120,9 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
 - `legacy.test.ts` — what 0.3.0 left: the profile folder and the picker with the exact removal
   command per platform, the old Chrome's pid (and not its `--type=` children), "could not check"
   when the listing fails, and that the folder and its files are still there after doctor and setup.
-- `browser check` — the live proof against the real Chrome and the real extension, run by hand.
+- `browser check` — the live proof against the real Chrome and the real extension, run by hand
+  (and the live proof that a Chrome started by the kit connects: after a restart, or with Chrome
+  closed, the first call works; a session with no reachable desktop gets its one line at once).
 - `src/hooks/playwright-output.test.ts` — a caller-named file goes into the output folder, an
   absolute path stays as it was, a `..` name is refused, and a server that is not the plugin's own
   is left alone. Run it before a release that touches `src/browser/`.

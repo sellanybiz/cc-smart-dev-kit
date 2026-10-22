@@ -2606,10 +2606,31 @@ filter that made each session's windows its own.
 
 - **Extension mode is the only mode.** `browser mcp` runs the pinned `@playwright/mcp` with
   `--extension --browser=chrome --profile-dir-name=<the profile's folder>`; Playwright itself
-  connects to the running Chrome (`cdpRelay.ts` opens the connect page, starting Chrome when it
-  is not running). The registration is unchanged — `{"command": <launcher>, "args":
+  connects to the running Chrome (`cdpRelay.ts` hands the connect page to it). The registration is
+  unchanged — `{"command": <launcher>, "args":
   ["browser","mcp"]}` — because the mode is the launcher's own business and every setting
   reaches the MCP through its environment or `argv`.
+- **The launcher starts Chrome when none is running** (`chrome-start.ts`). A machine restart leaves
+  Chrome closed, and the MCP's own start of it — `cdpRelay.ts`'s `_openConnectPageInBrowser` — is
+  detached with `stdio: "ignore"` and never checked. A session the Claude daemon starts has no
+  `DISPLAY` (measured 2026-10-23: the daemon's `XDG_SESSION_TYPE=tty`, while the systemd user
+  manager held `DISPLAY=:10.0`), so Chrome died in under a second and the browser call ended after
+  the MCP's 30-second deadline with a message about the extension and the token. So before the MCP
+  is started, `browser mcp` asks Chrome's own singleton lock whether a Chrome runs
+  (`chromeMayBeRunning`, the question `browser setup` already asks before it writes), and when none
+  does, starts the Chrome `chrome.ts` finds with the `claude-code` profile on the person's desktop —
+  this session's display variables, else the ones the graphical session imported into the systemd
+  user manager — and goes on once the lock is there. Every failure is ONE stderr line naming the
+  one step: no display, a spawn that throws, Chrome's early exit (its own stderr in the line), or no
+  lock within `CHROME_START_LIMIT_MS`. Nothing retries and nothing waits past that. The file checks
+  come first (`connectPrerequisites`: Chrome, the profile, the extension), so the MCP's generic
+  deadline never speaks for a file that is missing. A started Chrome is the person's own browser,
+  not a second one, and no byte of Chrome's files is written.
+- **`browser check` is bounded from one constant.** `CHECK_LIMIT_MS` bounds the whole run, and the
+  waits inside it are derived from it (the start, one answer, one stop); a child that ignores
+  close-input and SIGTERM gets SIGKILL. A failed start ends the run at once. Before this, every
+  call had a 90-second wait of its own and a dead Chrome made `browser check` run past 60 seconds
+  and keep going.
 - **One answer to "which profile".** `claudeCodeProfileOn` (`chrome.ts`) finds the `claude-code`
   profile — its folder, else the folder `Local State` names `claude-code` (Chrome's own "Add
   profile" makes `Profile 2`) — and the launcher, `doctor`, `browser setup` and the portal all
@@ -2663,7 +2684,8 @@ filter that made each session's windows its own.
   neither is planned to change: every connection brings that window to the front and switches its
   active tab (microsoft/playwright#42343), and a second extension in that profile breaks the
   session (microsoft/playwright#43230, open — `doctor` warns by name). There is no headless mode:
-  a machine with no desktop cannot use the browser at all.
+  a machine with no desktop cannot use the browser at all, and the first browser call says so in
+  one line instead of waiting out the MCP's deadline.
 - **What counts as "another extension" is Chrome's own record** (`otherExtensions`,
   `src/browser/chrome.ts`), never the folders on disk. The folders are wrong in both directions,
   and both were seen live (2026-10-17): Chrome's `Temp` folder sits under
