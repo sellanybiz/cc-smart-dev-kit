@@ -104,6 +104,12 @@ export interface ScannedWorktree {
 export interface ScanOptions {
   /** The base branch work must be on: `worktrees.base`, or the repo's default branch. */
   base: string;
+  /**
+   * The ref the commits are judged against, and how a message calls it: the lead's branch, for
+   * a worker's worktree (D24: the lead merges locally, nothing is pushed). Without it the ref is
+   * `origin/<base>`, as `worktrees` judges.
+   */
+  against?: { label: string; ref: string };
   env: Env;
   /**
    * 0 lets a session remove the worktree it has just finished in. The default is the hour
@@ -125,13 +131,13 @@ export interface ScanOptions {
 const GH_TIMEOUT_MS = 10_000;
 
 /**
- * Is every commit on this worktree on `origin/<base>` under another sha? `git cherry` says so
- * with a `-` for each commit whose change is already there: what a rebase merge or a
- * cherry-pick leaves, where the base holds the same change as a commit of its own. False when
- * git cannot compare them, and when the range is empty (that is no evidence of a merge).
+ * Is every commit on this branch on `baseRef` under another sha? `git cherry` says so with a
+ * `-` for each commit whose change is already there: what a rebase merge or a cherry-pick
+ * leaves, where the base holds the same change as a commit of its own. False when git cannot
+ * compare them, and when the range is empty (that is no evidence of a merge).
  */
-export function cherryOnBase(repo: string, base: string, head: string, env: Env): boolean {
-  const run = runGit(repo, ["cherry", `origin/${base}`, head], env);
+export function cherryOnBase(repo: string, baseRef: string, head: string, env: Env): boolean {
+  const run = runGit(repo, ["cherry", baseRef, head], env);
   if (!run.ok) return false;
   const lines = run.out.split("\n").filter((line) => line.trim() !== "");
   return lines.length > 0 && lines.every((line) => line.startsWith("-"));
@@ -284,28 +290,31 @@ export function holdsSubmodule(worktree: string, env: Env): boolean {
  */
 export function workOnBase(
   repo: string,
-  base: string,
+  baseRef: string,
   head: string,
   branch: string | null,
   env: Env,
   replayer: Replayer,
 ): MergedBy | null {
-  const replay = replayer.replay(`origin/${base}`, head);
+  const replay = replayer.replay(baseRef, head);
   if (replay === "nothing") return "replay";
   if (replay === "changes") return null;
-  if (cherryOnBase(repo, base, head, env)) return "cherry";
+  if (cherryOnBase(repo, baseRef, head, env)) return "cherry";
   if (branch !== null && pullRequestMerged(repo, branch, head, env)) return "pull request";
   return null;
 }
 
 /** What one look at this machine gives every worktree of the scan. */
 interface MachineLook {
-  base: string;
   containers: "unknown" | ContainerMounts[];
   env: Env;
   idleLimit: number | undefined;
+  /** How a message calls the ref the work is judged against: the base, or `against.label`. */
+  label: string;
   now: number;
   programs: "unknown" | RunningProgram[];
+  /** The ref commits are judged against: `origin/<base>`, or `against.ref`. */
+  ref: string;
   /** The replay of a branch onto the base: git's own answer, and the git version it needs. */
   replayer: Replayer;
   sessions: SessionRecord[];
@@ -322,16 +331,12 @@ function judgeOne(
   all: ListedWorktree[],
   look: MachineLook,
 ): Verdict {
-  const ahead = runGit(
-    repo,
-    ["rev-list", "--count", `origin/${look.base}..${listed.head}`],
-    look.env,
-  );
+  const ahead = runGit(repo, ["rev-list", "--count", `${look.ref}..${listed.head}`], look.env);
   if (!ahead.ok) {
     return {
       finished: false,
       held: false,
-      why: `git could not compare it with ${look.base}`,
+      why: `git could not compare it with ${look.label}`,
     };
   }
   const aheadOfBase = Number(ahead.out);
@@ -341,7 +346,7 @@ function judgeOne(
   const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
   const facts: WorktreeFacts = {
     aheadOfBase,
-    base: look.base,
+    base: look.label,
     containers:
       look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
     gitTooOld: look.replayer.tooOld,
@@ -352,7 +357,7 @@ function judgeOne(
     // commits of its own.
     mergedBy:
       aheadOfBase > 0
-        ? workOnBase(repo, look.base, listed.head, listed.branch, look.env, look.replayer)
+        ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
         : null,
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
     sessionName: session?.name ?? null,
@@ -361,31 +366,38 @@ function judgeOne(
 }
 
 /** The machine's facts, read once for a whole scan (or one removal). */
-function lookAt(repo: string, base: string, options: ScanOptions): MachineLook {
+function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
-    base,
     containers: options.facts?.containers ?? dockerMounts(),
     env: options.env,
     idleLimit: options.idleLimit,
+    label: options.against?.label ?? options.base,
     now: options.now ?? Date.now(),
     programs: options.facts?.programs ?? runningPrograms(),
+    ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
     replayer: replayerFor(repo, options.env),
     sessions: options.facts?.sessions ?? liveSessions(options.claudeConfigDir),
   };
 }
 
 /**
- * Every worktree of the repo, judged. Reads `origin/<base>` as it is — fetch first for a
- * fresh answer (`fetchBase`).
+ * Every worktree of the repo, judged: its commits against `against.ref`, or `origin/<base>`
+ * without `against` — fetched fresh first (`fetchBase`).
  *
- * Throws when `origin/<base>` is not known here: nothing can be judged against it.
+ * Throws when that ref is not known here: nothing can be judged against it.
  */
 export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktree[] {
-  const { base, env } = options;
-  if (!runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`], env).ok) {
-    throw new Error(`origin/${base} is not known here — run \`git fetch origin ${base}\` first`);
+  const { env } = options;
+  const againstRef = options.against?.ref ?? `refs/remotes/origin/${options.base}`;
+  const againstLabel = options.against?.label ?? options.base;
+  if (!runGit(repo, ["rev-parse", "--verify", "--quiet", againstRef], env).ok) {
+    throw new Error(
+      options.against === undefined
+        ? `origin/${options.base} is not known here — run \`git fetch origin ${options.base}\` first`
+        : `${againstLabel} is not known here`,
+    );
   }
-  const look = lookAt(repo, base, options);
+  const look = lookAt(repo, options);
   const all = listWorktrees(repo, env);
   const [main, ...others] = all;
   const scanned: ScannedWorktree[] = main === undefined ? [] : [{ listed: main, state: "main" }];
@@ -452,7 +464,7 @@ export function removeWorktree(
       status: "kept",
     };
   }
-  const fresh = judgeOne(repo, current, all, lookAt(repo, options.base, options));
+  const fresh = judgeOne(repo, current, all, lookAt(repo, options));
   if (!fresh.finished) {
     return {
       said: [`kept ${listed.path}: ${fresh.why}`],
@@ -492,36 +504,53 @@ export function removeWorktree(
   const deleteBranch =
     options.deleteBranch ??
     ((repo_: string, branch: string) =>
-      deleteMergedBranch(repo_, options.base, branch, options.env));
+      deleteBranchOnRef(
+        repo_,
+        options.against?.ref ?? `refs/remotes/origin/${options.base}`,
+        options.against?.label ?? options.base,
+        branch,
+        options.env,
+      ));
   const said = [`removed ${listed.path}`];
   if (listed.branch !== null) said.push(deleteBranch(repo, listed.branch));
   return { said, status: "removed" };
 }
 
 /**
- * Deletes a branch only when `origin/<base>` holds its work, so nothing on it is lost: every
- * commit by ancestry, or the work under another sha (a rebase merge), or the work a squash
- * merge left on the base (merging the branch into the base changes nothing), or the work
- * through a merged pull request. git refuses while a worktree — even one whose folder is gone
- * and not yet pruned — still has it checked out.
+ * Deletes a branch only when `ref` holds its work, so nothing on it is lost: every commit by
+ * ancestry, or the work under another sha (a rebase merge), or the work a squash merge left on
+ * the base (merging the branch into the base changes nothing), or the work through a merged
+ * pull request; `label` is how a message calls that ref. git refuses while a worktree — even
+ * one whose folder is gone and not yet pruned — still has the branch checked out.
  */
-export function deleteMergedBranch(repo: string, base: string, branch: string, env: Env): string {
-  const ahead = runGit(repo, ["rev-list", "--count", `origin/${base}..refs/heads/${branch}`], env);
+export function deleteBranchOnRef(
+  repo: string,
+  ref: string,
+  label: string,
+  branch: string,
+  env: Env,
+): string {
+  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
   if (!ahead.ok) {
-    return `kept branch ${branch}: ${ahead.err || `git could not compare it with ${base}`}`;
+    return `kept branch ${branch}: ${ahead.err || `git could not compare it with ${label}`}`;
   }
   if (ahead.out !== "0") {
     const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
     const sha = head.ok ? head.out.trim() : "";
     // The same answer the worktree's verdict gave, on the same branch: the branch goes only
-    // when its work is on the base.
+    // when its work is on the ref.
     const elsewhere =
       COMMIT_SHA.test(sha) &&
-      workOnBase(repo, base, sha, branch, env, replayerFor(repo, env)) !== null;
-    if (!elsewhere) return `kept branch ${branch}: it has commits that are not on ${base}`;
+      workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
+    if (!elsewhere) return `kept branch ${branch}: it has commits that are not on ${label}`;
   }
   const deleted = runGit(repo, ["branch", "-D", branch], env);
   return deleted.ok ? `deleted branch ${branch}` : `kept branch ${branch}: ${deleted.err}`;
+}
+
+/** `deleteBranchOnRef` against `origin/<base>`: what `worktrees` asks. */
+export function deleteMergedBranch(repo: string, base: string, branch: string, env: Env): string {
+  return deleteBranchOnRef(repo, `refs/remotes/origin/${base}`, base, branch, env);
 }
 
 /** Forgets worktrees whose folder is gone. */

@@ -2118,9 +2118,11 @@ sessions win over subagents alone (every hand-back lands in the lead's context, 
 rots it) and over agent teams (no worktree isolation, no resume).
 
 This section holds the contracts every part of it builds on — the switch, the kinds, the names
-and the store — and the two commands that act on them so far: `worker lead` and the launcher,
-`worker start` (§ The lead and the launch, below). The watch that brings the lead its news, the
-hand-back report command, and the worker and lead hooks are later parts, and extend this section.
+and the store — and the commands that act on them so far: `worker lead` and the launcher,
+`worker start` (§ The lead and the launch, below), and the board and the end of a worker, `worker
+list`, `status`, `kinds`, `attach`, `stop`, `resume` and `rm` (§ The board and the end of a
+worker). The watch that brings the lead its news, the hand-back report command, and the worker
+and lead hooks are later parts, and extend this section.
 
 **The instructions** say when a phase goes to a worker (`core.md` § Lead the work: a phase with
 its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
@@ -2309,6 +2311,53 @@ polls or retries. In order:
    prompt), or `claude --bg` failed — the worktree and its branch are taken back (the branch only
    while it still points at its base), so a second try finds the name free. When a session may
    have started — no `backgrounded` line, or no answer in time — the worktree stays.
+
+### The board and the end of a worker
+
+`worker list`, `status`, `kinds` and `attach` read; `stop`, `resume` and `rm` act (`board.ts`,
+`end.ts`, `remove.ts`; their help is one table, `usage.ts`, which the help table's rows
+(`src/cli/help.ts`) and `worker --help` read too). All of them look a worker up **in this
+repository's store only**, by its name (also the ` [ref]` form ListAgents prints), its id, its
+session's short id or its session id. A name that matches two workers is refused and both are
+named, so the store, never a guess, decides which session is meant (D35). A worker's own
+session (`CC_SMART_DEV_KIT_WORKER` set) never runs `stop`, `rm` or `resume`.
+
+- **`list`** shows the repository's workers (`--all`: every repository), newest first, one block
+  each. The state's age is the newest `state` or `created` event about the worker, not
+  `updatedAt`: the watch writes a line or a memory reading every few seconds, and that changes
+  the record without changing what the worker does. Its last step or line is its newest event
+  with a line, else `lastLine`. A queued worker says what holds it, recomputed from the store the
+  way `worker start` decides (`placeFor`: the phases it waits for, then the cap of all workers,
+  the opus cap, the memory), or that a place is free and only its lead's watch is left to start
+  it. `--json` prints the records as stored. A record that cannot be read is named on stderr and
+  the rest still prints.
+- **`stop`** runs `claude stop <short id>`: the conversation stays on disk. A worker that was
+  running becomes `stopped`; one that ended with an outcome (`done`, `failed`, `handoff`,
+  `merged`) keeps it, because a phase that waits for it (`--waits-for`) reads `done` and
+  `merged`, and stopping its process changes neither. A stop Claude Code refuses for a session
+  that agent view does not list counts as stopped (the goal is met); one it refuses for a listed
+  session is an error and changes nothing.
+- **`resume`** runs `claude respawn <short id>` for that one session — never `--all`, which
+  restarts every background session on the machine — and the worker is `working` again. It is
+  refused for a worker that is `removed` or `merged`, or has no session yet. It does not check
+  the caps: the person or the lead asked for exactly this session.
+- **`rm`** ends a finished worker, and refuses at the first step that would lose something. A
+  worker commits on its branch and never pushes (D24), so **only the lead's branch decides**
+  whether its work is kept: `git merge-base --is-ancestor` of the worker's branch against the
+  commit checked out in the lead's own folder (its lead record's `cwd`; the ref the worker was cut
+  from when that folder is gone). Then: uncommitted work in the worktree refuses it (before any
+  side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
+  lock — its reason starts `claude session` — is released); the session is stopped; the kit's
+  own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges
+  the worktree **against the lead's branch rather than `origin/<base>`** (`ScanOptions.against`)
+  and removes it, then its branch by the same rule (`deleteBranchOnRef`); and only then
+  `claude rm <short id>`, which refuses a worktree that is still there (proved live, L1a.1). A
+  `claude rm` that fails leaves the worker `stopped` with a `step` event saying what is left, and
+  a second `worker rm` goes straight to it. Nothing is ever forced: `claude rm` has two force
+  flags (`--discard-unpushed`, `--force-remove-worktree`), and neither is used.
+  **Limit:** a branch the lead *squashed* is not an ancestor of the lead's branch, so `rm`
+  refuses it; the lead merges a worker's branch with a merge commit (`workflow.mergeMethod`
+  `merge`, the default).
 
 ## Sessions and worktrees
 

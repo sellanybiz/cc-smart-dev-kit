@@ -405,7 +405,7 @@ describe("the refusals before anything is recorded", () => {
     ],
     [["start", "B6b", "--slug", "x", "--slug", "y"], "--slug is given twice"],
     [["start", "B6b", "--wait"], "Unknown option: --wait"],
-    [["stop"], "Unknown worker command: stop"],
+    [["nope"], "Unknown worker command: nope"],
   ])("a wrong command line %j: exit 2, one line and the help", async (argv, line) => {
     const world = workerWorld();
     expect(await runWorker(argv, world.ctx())).toBe(2);

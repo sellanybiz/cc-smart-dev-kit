@@ -27,6 +27,7 @@ import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKER_USAGE } from "../workers/command";
+import { BOARD_COMMANDS } from "../workers/usage";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import { PROJECT_INIT_USAGE } from "./project-init";
@@ -281,6 +282,8 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "gateway", help: GATEWAY_USAGE },
   { name: "project", help: PROJECT_INIT_USAGE },
   { name: "mcp status", help: MCP_HELP },
+  // The board and the end of a worker: a row each, from their own table (`workers/usage.ts`).
+  ...BOARD_COMMANDS.map((one) => ({ name: `worker ${one.name}`, help: one.help })),
   { name: "session-name", help: SESSION_NAME_HELP },
   { name: ALERT_WORKER_COMMAND, help: ALERT_WORKER_HELP },
   // `help` prints the top-level help, which is built from this table (see `helpTextFor`).
