@@ -447,6 +447,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23: **CC6 merged** (`e9b9ec1`; the test env filter unified `4abfa93`; bundles `13018ce`, router.js unchanged): in a crew session the git guard's work-destroying asks are denies that name the step. **CC8** started from its list (brief `briefs/cc8.md`).
 
+- 2026-10-23 (overnight): **merged on `release-1.1.0`:** C6b (`606d5bf`, the verification gate; bundles `374e33a`), B6f (`5fe2e46`, the person acts; bundles and portal export `ee2becd`; its screenshots kept in the lead's job folder), B5b (`e91e6cf`, the gateway's output through Out; bundles `a615f98`). Integration fixes: the test env's kit-variable rule unified again after C6b (`606d5bf`), and a test of the secret question no longer writes to the real terminal (`5924818`). A clean full check after B6f: 5521 pass, 0 fail. Still running: B8 2, CC3, CC4, CC5, CC7, CC8, BR1; queued: B6d (after B8), B6e (after B6d).
+
 ### Decided overnight (for the owner's review)
 
 - **CC8 (no guard asks a crew session where the fix is mechanical).** CC6 listed every other ask a crew session can still meet (merge-guard, agent-guard, job-route, session-escape-guard, the bun shim's no-bun ask). Decided: build CC6's recommendation for each — a deny that names the step in a crew session, the person's own asks unchanged; a guard's crash and non-JSON input still ask (the bug path). Why: the owner's "I don't want to answer it again and again", and the hooks rule (a mechanical fix is a deny with the step). To undo: drop CC8 before the 1.1.0 merge.
