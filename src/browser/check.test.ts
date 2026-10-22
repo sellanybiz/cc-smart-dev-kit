@@ -5,16 +5,11 @@
  * tested here.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromeWorld, writeWorldToken } from "../testing/chrome-world";
 import { tempDir } from "../testing/temp";
-import {
-  browserCheckCommand,
-  checkPrerequisites,
-  fileUrlHint,
-  runBrowserCheck,
-} from "./check";
+import { browserCheckCommand, checkPrerequisites, fileUrlHint, runBrowserCheck } from "./check";
 
 describe("browserCheckCommand", () => {
   test("this bun, the plugin's two flags, and this bundle", () => {

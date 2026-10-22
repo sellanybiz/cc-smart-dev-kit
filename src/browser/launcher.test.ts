@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { chromeWorld, type ChromeWorld, writeWorldToken } from "../testing/chrome-world";
+import { type ChromeWorld, chromeWorld, writeWorldToken } from "../testing/chrome-world";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import type { DesktopEnvironment } from "./chrome-start";
@@ -53,7 +53,6 @@ function world(
 
 /** What the launcher starts, recorded: the MCP, and the person's Chrome. */
 function launcher(
-  built: ChromeWorld,
   chromeDeps: BrowserMcpDeps["chrome"],
   desktop: DesktopEnvironment = { display: true, source: "session", vars: { DISPLAY: ":0" } },
   chromeExit: { code: number; stderr: string } | null = null,
@@ -73,7 +72,10 @@ function launcher(
     startChrome: (argv, env) => {
       chrome.push({ argv, env });
       return {
-        exited: chromeExit === null ? new Promise<number>(() => undefined) : Promise.resolve(chromeExit.code),
+        exited:
+          chromeExit === null
+            ? new Promise<number>(() => undefined)
+            : Promise.resolve(chromeExit.code),
         kill: () => undefined,
         stderr: () => chromeExit?.stderr ?? "",
       };
@@ -95,7 +97,9 @@ describe("the launcher's own arguments", () => {
   test("without it: the plugin's own output folder", () => {
     const { built } = world();
     const read = browserMcpOptions(built.paths, []);
-    expect(read.outputDir).toBe(join(built.home, ".local/share/cc-smart-dev-kit/playwright-output"));
+    expect(read.outputDir).toBe(
+      join(built.home, ".local/share/cc-smart-dev-kit/playwright-output"),
+    );
     expect(read.mcpArgs).toEqual([]);
   });
 });
@@ -132,7 +136,7 @@ describe("browserMcpArgv", () => {
 describe("runBrowserMcp", () => {
   test("no token: nothing is started — no Chrome and no MCP — and one line says the fix", async () => {
     const { built, chromeDeps } = world({ running: false });
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = await runBrowserMcp(built.paths, [], run.deps);
     expect(code).not.toBe(0);
     expect(run.mcp).toHaveLength(0);
@@ -146,7 +150,7 @@ describe("runBrowserMcp", () => {
   test("a token file with the wrong shape is refused like a missing one", async () => {
     const { built, chromeDeps } = world();
     writeWorldToken(built, "half-a-token");
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = await runBrowserMcp(built.paths, [], run.deps);
     expect(code).not.toBe(0);
     expect(run.mcp).toHaveLength(0);
@@ -157,7 +161,7 @@ describe("runBrowserMcp", () => {
     const { built, chromeDeps } = world();
     writeWorldToken(built, "b".repeat(43));
     chmodSync(built.paths.browserTokenFile, 0o644);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = await runBrowserMcp(built.paths, [], run.deps);
     expect(code).not.toBe(0);
     expect(run.mcp).toHaveLength(0);
@@ -167,7 +171,7 @@ describe("runBrowserMcp", () => {
   test("with a token: the MCP is started in extension mode, the token in its environment only", async () => {
     const { built, chromeDeps } = world();
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = await runBrowserMcp(built.paths, ["--caps=vision"], run.deps);
     expect(code).toBe(0);
     expect(run.chrome).toHaveLength(0); // Chrome was running: nothing started
@@ -190,7 +194,7 @@ describe("runBrowserMcp", () => {
     writeWorldToken(built);
     mkdirSync(built.paths.browserOutputDir, { recursive: true });
     chmodSync(built.paths.browserOutputDir, 0o755);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     await runBrowserMcp(built.paths, [], run.deps);
     expect(statSync(built.paths.browserOutputDir).mode & 0o777).toBe(0o700);
     expect(run.lines.join("\n")).toContain("was readable by other users");
@@ -199,7 +203,7 @@ describe("runBrowserMcp", () => {
   test("bunx missing: the MCP is started through this bun's own x", async () => {
     const { built, chromeDeps } = world();
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     run.deps.which = () => null;
     await runBrowserMcp(built.paths, [], run.deps);
     expect(run.mcp[0]?.argv.slice(0, 2)).toEqual([process.execPath, "x"]);
@@ -208,7 +212,7 @@ describe("runBrowserMcp", () => {
   test("PB-1: the MCP starts in the browser's own output folder, never the session's folder", async () => {
     const { built, chromeDeps } = world();
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     await runBrowserMcp(built.paths, [], run.deps);
     await runBrowserMcp(built.paths, ["--output-dir=/tmp/other-output"], run.deps);
     expect(run.mcp.map((one) => one.cwd)).toEqual([
@@ -232,7 +236,7 @@ describe("runBrowserMcp", () => {
       JSON.stringify({ profile: { info_cache: { "Profile 2": { name: "claude-code" } } } }),
     );
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     await runBrowserMcp(built.paths, [], run.deps);
     expect(run.mcp[0]?.argv).toContain("--profile-dir-name=Profile 2");
     expect(run.mcp[0]?.argv).not.toContain("--profile-dir-name=claude-code");
@@ -241,7 +245,7 @@ describe("runBrowserMcp", () => {
   test("no Chrome is running: it starts the found Chrome with the profile, then the MCP", async () => {
     const { built, chromeDeps, state } = world({ running: false });
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = runBrowserMcp(built.paths, [], run.deps);
     await Bun.sleep(10);
     state.running = true; // Chrome takes its singleton lock while the launcher waits
@@ -265,7 +269,7 @@ describe("runBrowserMcp", () => {
     const { built, chromeDeps } = world({ running: false });
     writeWorldToken(built);
     // What a session with no reachable display gets from Chrome itself.
-    const run = launcher(built, chromeDeps, undefined, {
+    const run = launcher(chromeDeps, undefined, {
       code: 1,
       stderr: "Missing X server or $DISPLAY",
     });
@@ -281,7 +285,7 @@ describe("runBrowserMcp", () => {
   test("no Google Chrome on the machine: one line naming browser setup", async () => {
     const { built, chromeDeps } = world({ chrome: false, running: false });
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = await runBrowserMcp(built.paths, [], run.deps);
     expect(code).toBe(2);
     expect(run.mcp).toHaveLength(0);
@@ -294,7 +298,7 @@ describe("runBrowserMcp", () => {
   test("no claude-code profile: one line naming browser setup", async () => {
     const { built, chromeDeps } = world({ profile: false, running: false });
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = await runBrowserMcp(built.paths, [], run.deps);
     expect(code).toBe(2);
     expect(run.mcp).toHaveLength(0);
@@ -306,7 +310,7 @@ describe("runBrowserMcp", () => {
   test("the extension missing from the profile: one line naming browser setup", async () => {
     const { built, chromeDeps } = world({ extension: false, running: false });
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps);
+    const run = launcher(chromeDeps);
     const code = await runBrowserMcp(built.paths, [], run.deps);
     expect(code).toBe(2);
     expect(run.mcp).toHaveLength(0);
@@ -318,7 +322,7 @@ describe("runBrowserMcp", () => {
   test("no display for the person's desktop: one line, and nothing is started", async () => {
     const { built, chromeDeps } = world({ running: false });
     writeWorldToken(built);
-    const run = launcher(built, chromeDeps, { display: false, source: "none", vars: {} });
+    const run = launcher(chromeDeps, { display: false, source: "none", vars: {} });
     const code = await runBrowserMcp(built.paths, [], run.deps);
     expect(code).toBe(2);
     expect(run.chrome).toHaveLength(0);
@@ -339,7 +343,10 @@ describe("PB-1: the real command, from a project with its own bunfig.toml", () =
     writeWorldToken(world_.built);
     // A Chrome is running on that profile's folder: the launcher connects to it, and never starts
     // the machine's real Chrome.
-    symlinkSync(`${hostname()}-${String(process.pid)}`, join(world_.built.userDataDir, "SingletonLock"));
+    symlinkSync(
+      `${hostname()}-${String(process.pid)}`,
+      join(world_.built.userDataDir, "SingletonLock"),
+    );
     const project = tempDir("browser-mcp-project");
     const marker = join(project, "preload-ran");
     writeFileSync(

@@ -190,7 +190,11 @@ class Session {
   async call(tool: string, args: object = {}): Promise<ToolResult> {
     // One upper bound per answer, under the whole check's: an answer still waiting at the step's
     // limit is a broken call, not a slow one.
-    const message = await this.request("tools/call", { arguments: args, name: tool }, this.limits.stepMs);
+    const message = await this.request(
+      "tools/call",
+      { arguments: args, name: tool },
+      this.limits.stepMs,
+    );
     const content = message.result?.content ?? [];
     return {
       images: content.filter((part) => part.type === "image").length,
@@ -441,7 +445,11 @@ export async function runBrowserCheck(
         target: ref(links, "get the file"),
       })
     ).text;
-    for (let look = 0; look < 10 && !seen.includes("Downloaded file") && !session.expired(); look++) {
+    for (
+      let look = 0;
+      look < 10 && !seen.includes("Downloaded file") && !session.expired();
+      look++
+    ) {
       await Bun.sleep(300); // bounded by the ten looks: the report arrives with a later call
       seen += (await session.call("browser_tabs", { action: "list" })).text;
     }

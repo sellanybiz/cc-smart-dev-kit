@@ -9,8 +9,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   CHROME_START_LIMIT_MS,
-  chromeLaunchArgv,
   type ChromeStartDeps,
+  chromeLaunchArgv,
   desktopEnvironment,
   ensureChromeRunning,
   type StartedChrome,
@@ -46,7 +46,12 @@ describe("desktopEnvironment", () => {
       { DISPLAY: "", XDG_SESSION_TYPE: "tty" },
       {
         platform: "linux",
-        ...managerEnv("DISPLAY=:10.0", "WAYLAND_DISPLAY=", "XDG_RUNTIME_DIR=/run/user/1001", "PWD=/"),
+        ...managerEnv(
+          "DISPLAY=:10.0",
+          "WAYLAND_DISPLAY=",
+          "XDG_RUNTIME_DIR=/run/user/1001",
+          "PWD=/",
+        ),
       },
     );
     expect(read).toEqual({

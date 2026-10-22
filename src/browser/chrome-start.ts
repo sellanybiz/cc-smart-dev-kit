@@ -230,8 +230,7 @@ export async function ensureChromeRunning(
   ready: { chrome: string; profileDirName: string; userDataDir: string },
   deps: ChromeStartDeps,
 ): Promise<ChromeStartResult> {
-  const running = () =>
-    chromeMayBeRunning(ready.userDataDir, deps.chrome.platform, deps.chrome);
+  const running = () => chromeMayBeRunning(ready.userDataDir, deps.chrome.platform, deps.chrome);
   if (running()) return { ok: true, started: false };
 
   const desktop = deps.desktop();

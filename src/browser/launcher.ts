@@ -250,9 +250,7 @@ export async function runBrowserMcp(
   const bunx = deps.which("bunx");
   const head = bunx === null ? [process.execPath, "x"] : [bunx];
   const packageName = deps.package ?? `@playwright/mcp@${MCP_VERSIONS.playwright}`;
-  const child = deps.spawn(
-    browserMcpArgv(head, options, packageName, ready.profile.dirName),
-    {
+  const child = deps.spawn(browserMcpArgv(head, options, packageName, ready.profile.dirName), {
     // A folder the plugin owns, never the session's: no project's bunfig.toml, `.env` or
     // node_modules reaches the child that holds the token.
     cwd: options.outputDir,
