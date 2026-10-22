@@ -89,13 +89,13 @@ Opus spawn. Never put `model:` or `effort:` in an agent's frontmatter — perman
 | `model` | What it is | Give it |
 |---|---|---|
 | `haiku` | the **scout** | file discovery, searches, reading, summaries, mechanical bounded work |
-| `sonnet` | the **worker** | routine building, doc updates, test runs, mechanical edits, UI checks |
-| `opus` | Claude Opus | every review; building code that touches security, money, permissions, schema or deploy plumbing; architecture, plan second-reads, tangled debugging, ambiguous research, all UI/UX and design judgment |
+| `sonnet` | the **worker** | routine building, doc updates, test runs, mechanical edits, UI checks; code that touches security, money, permissions, a schema or deploy plumbing |
+| `opus` | Claude Opus | architecture and UI/UX, with the design judgment in them; plan second-reads, tangled debugging, ambiguous research; the review of a risky change set (§ Review) |
 | `fable` | Claude Fable | the hardest long-horizon work, a fresh attempt when the person is not satisfied, or building when the person asks; never the default |
 
-**Opus may build when the work needs it** (security, money, permissions, schema, deploy, architecture, UI judgment,
-tangled debugging) **up to `xhigh`, with no approval; `max` needs the person's yes** — a session nobody watches refuses
-it (`claude -p`), and a fork runs at the session's own effort. **Fable advises; it builds only when the person asks.**
+**Opus builds architecture and UI/UX** (the design judgment in them) **up to `xhigh`, with no approval; `max` needs
+the person's yes** — a session nobody watches refuses it (`claude -p`), and a fork runs at the session's own effort.
+All other building runs on `sonnet`. **Fable advises; it builds only when the person asks.**
 Read-only agents (Plan, Reviewer, Explore) take `Fable reason:
 <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`; a builder, or a fork, needs `Fable reason:
 build - <what the person asked>` — each word's use is in `/cc-smart-dev-kit:subagent-decision` § Choosing Fable. A
@@ -103,24 +103,22 @@ session may run on Fable as its main model: the person's choice — **never comm
 `/model` switch, not even when Claude Code's own notice says the model changed; the plugin's one line is the only
 word on it.** `opus` and `fable` mean the tier, whatever model answers; `agent-guard` asks for Fable, and for Opus at `max`.
 
-**With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router), each
-Claude family has a slot the person controls (`haiku` → scout, `sonnet` → worker, `opus`, `fable`;
-auto mode's safety checks → judge). A slot with a chain sends that family to the person's models;
-one with no chain is off — plain Claude on their login. No hidden Claude fallback. What answers is
-live config, read once a session (`cc-smart-dev-kit gateway status`); affordable work still gets an Opus review.
+**With the cc-smart-dev-kit gateway on** (`ANTHROPIC_BASE_URL` points at the local router), each Claude family has a
+slot the person controls (`haiku` → scout, `sonnet` → worker, `opus`, `fable`; auto mode's safety checks → judge). A
+slot with a chain sends that family to the person's models; one with no chain is off — plain Claude on their login. No
+hidden Claude fallback. What answers is live config, read once a session (`cc-smart-dev-kit gateway status`).
 
 **Every slot and its fallback switch is the person's** — never set or change one yourself. **Never
 change the path your own model traffic takes** (`gateway on`/`off`/`slot`/`fallback`, a router restart,
 its address) from your own shell tool: the session cuts its own line mid-change. Give the person the
 command to run instead (`/cc-smart-dev-kit:gateway`).
 
-**Effort:** `high` for searches, reads and routine building, `xhigh` for review and real judgment, and `max` for
-the hardest problem only (on Opus, with the person's yes, above). An
-affordable gateway slot always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort
-is the person's choice.
+**Effort:** `high` for searches, reads and building, `xhigh` for the hardest judgment (architecture, UI/UX, a risky
+review), `max` for the hardest problem only (on Opus, with the person's yes, above). An affordable gateway slot
+always runs at `max`. A subagent never runs at `low` or `medium`; the session's own effort is the person's choice.
 
 **Say it when you launch.** The reply that starts an agent names its slot, the model behind it
-and its effort — "a reviewer (`opus` → Claude Opus, effort xhigh)" — so the person sees which
+and its effort — "a reviewer (`sonnet` → Claude Sonnet, effort high)" — so the person sees which
 model does the work and whose usage it spends. A fork runs on the session's model: name that. A
 Workflow: name each `agent()`'s; a subagent that launches agents names them in its report.
 
@@ -135,8 +133,10 @@ branch you are on, and ask the person wherever it is off. The skills carry each 
 - **Your own pass before every commit** of finished work (`/cc-smart-dev-kit:review`): read the
   whole diff, walk the review dimensions and edge cases that apply, and fix what you find.
 - **One second opinion per change set** (the commits one pull request ships), for anything beyond
-  a small fix: the read-only `cc-smart-dev-kit:reviewer` agent on `opus`, once, before the first
-  push, after the code is complete — never per commit, never on a re-push or to re-check the fixes.
+  a small fix: the read-only `cc-smart-dev-kit:reviewer` agent, once, before the first push, after
+  the code is complete — never per commit, never on a re-push or to re-check the fixes. A risky
+  change set — security, money, permissions, a schema, deploy plumbing, the gateway's router, a
+  release — gets `opus` at `xhigh`; every other one gets `sonnet` at `max` (affordable) or `high`.
 - **The evidence bar.** A finding counts only with a concrete trigger, the real code path
   (`file:line`), the real outcome and the missing guard — yours or a reviewer's — checked in
   the code (§ Core principles). Anything less is a hunch: say so, or drop it.

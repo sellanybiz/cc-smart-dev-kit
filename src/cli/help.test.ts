@@ -13,6 +13,8 @@ import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { WORKER_USAGE } from "../workers/command";
+import { BOARD_COMMANDS } from "../workers/usage";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import {
@@ -69,6 +71,47 @@ describe("the command table", () => {
     expect(helpTextFor(["portal"])).toBe(PORTAL_USAGE);
     expect(helpTextFor(["project", "init"])).toBe(PROJECT_INIT_USAGE);
     expect(helpTextFor(["update"])).toStartWith(UPDATE_USAGE);
+  });
+
+  test("CM-12: `worker --help` lists every worker command with a short line, the board's own rows from their table", () => {
+    const usage = helpTextFor(["worker"]) ?? "";
+    // The names of the plan's phases: the launcher, the watch and the reports, the board.
+    for (const name of [
+      "lead",
+      "start",
+      "watch",
+      "self-watch",
+      "step",
+      "report",
+      "answer",
+      "list",
+      "status",
+      "stop",
+      "rm",
+      "resume",
+      "attach",
+      "kinds",
+    ]) {
+      expect(usage).toMatch(new RegExp(`^  ${name}\\b`, "m"));
+    }
+    // A row each for the board and the end of a worker, with its own help and nothing else.
+    for (const one of BOARD_COMMANDS) {
+      expect(helpTextFor(["worker", one.name])).toBe(one.help);
+      expect(one.help).toStartWith(`Usage: ${COMMAND} worker ${one.name}`);
+      expect(usage).toContain(one.summary);
+    }
+    expect(BOARD_COMMANDS.map((one) => one.name)).toEqual([
+      "list",
+      "status",
+      "stop",
+      "rm",
+      "resume",
+      "attach",
+      "kinds",
+    ]);
+    // The commands that are not in the table still print the whole usage.
+    expect(helpTextFor(["worker", "start"])).toBe(WORKER_USAGE);
+    expect(helpTextFor(["worker", "lead"])).toBe(WORKER_USAGE);
   });
 
   test("CM-12: the hook help names the one hook left, from the constant that names it", () => {

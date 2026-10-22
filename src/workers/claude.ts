@@ -216,6 +216,10 @@ export interface AgentRow {
   pid: null | number;
   sessionId: null | string;
   state: null | string;
+  /** `busy`, `waiting` or `idle`: what the session is doing now. */
+  status: null | string;
+  /** What the session waits for (`permission prompt`, `input needed`, …); null when it waits for nothing. */
+  waitingFor: null | string;
 }
 
 /** A field as text, or null. */
@@ -240,6 +244,8 @@ export function parseAgents(output: string): AgentRow[] | null {
       pid: typeof row.pid === "number" ? row.pid : null,
       sessionId: textField(row.sessionId),
       state: textField(row.state),
+      status: textField(row.status),
+      waitingFor: textField(row.waitingFor),
     }));
 }
 

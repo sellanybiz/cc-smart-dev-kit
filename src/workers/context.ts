@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import type { CliPaths } from "../cli/paths";
 import { realMemoryFacts } from "../jobs/memory";
+import type { ScanOptions } from "../worktrees/scan";
 import { type RunProgram, realRunProgram } from "./claude";
 import { freeForWorkersGb } from "./places";
 import { type ProcessFacts, realProcessFacts } from "./session";
@@ -23,6 +24,8 @@ export interface WorkerContext {
   pid: number;
   processes: ProcessFacts;
   now: () => number;
+  /** Waits `ms` milliseconds: the polls of the watch and the self-watch (a test hands in its own). */
+  sleep: (ms: number) => Promise<void>;
   /** A short random suffix that keeps two workers of one phase and slug apart in the store. */
   randomSuffix: () => string;
   /** All of stdin, for `--brief -`. */
@@ -32,6 +35,11 @@ export interface WorkerContext {
   runProgram: RunProgram;
   /** The full path of a command on PATH (`env.PATH`), or null. */
   which: (command: string) => null | string;
+  /**
+   * The machine's facts `worker rm` judges a worktree by: the running sessions, the programs and
+   * the Docker containers. A test gives them; left out, they are read from the machine.
+   */
+  scanFacts?: ScanOptions["facts"];
   print: (line: string) => void;
   error: (line: string) => void;
 }
@@ -53,6 +61,7 @@ export function realWorkerContext(paths: CliPaths): WorkerContext {
     randomSuffix: () => randomBytes(3).toString("hex"),
     readStdin: () => Bun.stdin.text(),
     runProgram: realRunProgram,
+    sleep: (ms) => Bun.sleep(ms),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
   };
 }

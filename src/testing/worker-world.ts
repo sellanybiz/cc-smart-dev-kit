@@ -9,6 +9,8 @@
  *                 backgrounded line); unset: it starts.
  *   FAKE_AGENTS   `other` (the session works in the main checkout), `missing` (no row),
  *                 `broken` (not JSON); unset: the row names the `-w` worktree.
+ *   FAKE_AGENTS_JSON  the exact JSON `agents --json` prints (the watch's own view).
+ *   FAKE_STOP     `fail` (`claude stop` exits 1); unset: it stops.
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -53,6 +55,7 @@ case "$1" in
     echo "backgrounded · ${SHORT_ID} · $name"
     ;;
   agents)
+    if [ -n "$FAKE_AGENTS_JSON" ]; then printf '%s\\n' "$FAKE_AGENTS_JSON"; exit 0; fi
     case "$FAKE_AGENTS" in
       missing) echo "[]"; exit 0 ;;
       broken) echo "not json"; exit 0 ;;
@@ -61,7 +64,10 @@ case "$1" in
     esac
     printf '[{"id":"${SHORT_ID}","sessionId":"${SHORT_ID}-0000-1111-2222-333333333333","cwd":"%s","kind":"background","state":"working","pid":4242}]\\n' "$cwd"
     ;;
-  stop) exit 0 ;;
+  stop)
+    if [ "$FAKE_STOP" = fail ]; then echo "no such session" >&2; exit 1; fi
+    exit 0
+    ;;
 esac
 `;
 
@@ -152,6 +158,8 @@ export function workerWorld(): WorkerWorld {
       randomSuffix: () => "1a2b3c",
       readStdin: () => Promise.resolve(""),
       runProgram: realRunProgram,
+      // No test waits for real: a loop under test is driven by the `sleep` it hands in.
+      sleep: () => Promise.resolve(),
       which: (command: string) => Bun.which(command, { PATH: fullEnv.PATH }),
       ...change,
     };

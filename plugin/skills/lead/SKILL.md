@@ -34,8 +34,8 @@ The phases, their waves and what stays with you follow `/cc-smart-dev-kit:plan-t
 - **Each brief says the worker never touches the shared files** that stay yours.
 - **Each phase gets a kind**, and the kind picks the model and the effort:
   `cc-smart-dev-kit worker kinds` (or `worker --help`) lists each kind with its model. Pick
-  the kind of the phase's riskiest part. Override `--model` or `--effort` only when the person
-  asks.
+  the kind of the phase's riskiest part; a kind that runs on opus is for design judgment, never
+  a way to get a stronger builder. Override `--model` or `--effort` only when the person asks.
 
 ## 3. Start each phase
 
@@ -49,9 +49,9 @@ cc-smart-dev-kit worker start <phase> --slug <slug> --kind <kind> --brief <file>
   and effort its line shows (the core instructions' "say it when you launch").
 - **`queued` is not an error.** A cap, the free memory or `--waits-for` holds it, and it starts
   by itself when its place frees. Never start it a second time.
-- **A phase that builds on another phase's code starts after you merged that phase**, in the
-  same turn as the merge. `--waits-for` only orders phases: it counts a phase finished once it
-  is `done`, before you merge it, and the waiting phase is cut from your branch as it is then.
+- **A phase that builds on another phase's code** uses `--waits-for <phase,...>`: it holds a
+  phase until each of those is merged (or removed). The watch marks a merged branch and starts
+  the waiting session by itself, cut from your branch with the merge in it.
 - **`failed`:** read the reason and fix that. `Workspace not trusted`: the person opens the
   repository once with `claude` and accepts the trust prompt.
 
@@ -129,15 +129,15 @@ only the part that does not.
 a new worker (`worker start` with a new slug), or the phase back into the plan.
 
 **The end of a worker.** A worker never outlives its work: each one holds hundreds of MB.
-Once you merged its branch, the watch removes it; if `worker list` still shows it, run
-`cc-smart-dev-kit worker rm <name>`.
+Once you merged its branch, the watch marks it `merged` and ends its session;
+`cc-smart-dev-kit worker rm <name>` removes its worktree, branch and record.
 
 ## 7. Caps and the queue
 
 `workflow show` prints the caps: `workers.max` (every worker on the machine, across leads) and
-`workers.maxOpus` (those on the opus tier). Routine phases on the worker slot run wide; opus
-phases queue, so put the opus phases that unblock the most first. Your own Opus subagents share
-the same usage window: at most 3 at once.
+`workers.maxOpus` (those on the opus tier). Routine phases on the worker slot run wide; the opus
+phases — the kinds that run on opus — queue, so put those that unblock the most first. Your own
+Opus subagents share the same usage window: at most 3 at once.
 
 ## 8. Hand-offs
 

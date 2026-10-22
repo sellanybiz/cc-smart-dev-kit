@@ -7,10 +7,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { SHORT_ID, workerWorld, writeSessionRecord } from "../testing/worker-world";
 import { listWorkers, readLead } from "./store";
+import { BOARD_COMMANDS } from "./usage";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -76,8 +78,57 @@ describe("worker through the CLI", () => {
     const home = tempDir("home");
     const run = cli(["worker"], home, { HOME: home, PATH: dirname(process.execPath) });
     expect(run.code).toBe(2);
-    expect(run.err).toBe(
-      "Say which worker command: lead or start\nSee: cc-smart-dev-kit worker --help\n",
+    expect(run.err).toBe("Say which worker command\nSee: cc-smart-dev-kit worker --help\n");
+  });
+
+  test("the board through the CLI: kinds and `list --all` need no project; `list` does; help is per command", () => {
+    const home = tempDir("home");
+    const env = {
+      HOME: home,
+      PATH: [dirname(process.execPath), dirname(Bun.which("git") ?? "/usr/bin/git")].join(":"),
+    };
+    const kinds = cli(["worker", "kinds"], home, env);
+    expect(kinds.code).toBe(0);
+    expect(kinds.err).toBe("");
+    expect(kinds.out.split("\n")[0]).toBe(
+      "kind          model   effort on Claude  effort on a slot  for",
     );
+    const all = cli(["worker", "list", "--all"], home, env);
+    expect([all.code, all.err, all.out]).toEqual([0, "", "No workers on this machine.\n"]);
+    const outside = cli(["worker", "list"], home, env);
+    expect(outside.code).toBe(1);
+    expect(outside.err).toBe(
+      "worker list: this folder is not in a git project\nFix: run it in the project's folder, or add --all\n",
+    );
+    const help = cli(["worker", "rm", "--help"], home, env);
+    expect(help.code).toBe(0);
+    expect(help.out).toStartWith(`Usage: ${COMMAND} worker rm <name|id>`);
+    const mistake = cli(["worker", "stop"], home, env);
+    expect(mistake.code).toBe(2);
+    expect(mistake.err).toBe(
+      `Say which worker: worker stop <name|id>\nSee: ${COMMAND} worker stop --help\n`,
+    );
+  });
+
+  test("worker --help: every command is named, and the fallback where the monitors do not run", () => {
+    const home = tempDir("home");
+    const env = { HOME: home, PATH: dirname(process.execPath) };
+    const run = cli(["worker", "--help"], home, env);
+    expect(run.code).toBe(0);
+    for (const command of [
+      "lead",
+      "start",
+      "step",
+      "report",
+      "answer",
+      "watch",
+      "self-watch",
+      ...BOARD_COMMANDS.map((one) => one.name),
+    ]) {
+      expect(run.out).toContain(command);
+    }
+    // The fallback is named where the lead reads it: the watch's own help.
+    expect(run.out).toContain("worker watch --once");
+    expect(run.out).toContain("telemetry off");
   });
 });
