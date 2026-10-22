@@ -102,9 +102,15 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
     (`capRetryAfter`), breaker on or off: above 60 Claude Code ends the request at once.
   - **A hold counts from the request's start** and never exceeds `timeouts.breakerHoldMs`
     (60 s for a request that does not stream). The longest wait for the last target's first
-    event is part of that hold, not added to it.
+    event is part of that hold, not added to it. While holding, every backend probe's wait is
+    capped by what is left (a probe of a request that does not stream gets `firstByteMs` too,
+    or a hung one would block its target's only probe for ever).
   - **Held means asked once.** While a breaker is open, a resting backend is not asked, the
     last one included, and one request at a time probes each target. A hang-up rests nothing.
+    A probe is made only while what is left of the hold is at least `timeouts.firstByteMs`;
+    with less it could only fail on the hold's own deadline, so the request is answered at
+    once. A probe whose wait the hold's end cut short rests nothing either: its timeout is
+    the router's, not the target's.
   - **A refused key or request is never held**, and never relayed as a 400 or 422 Claude Code
     does not know: since 2.1.304 it sends such a request again without its deferred tools,
     and the chain is walked twice. A model call's refusal is a 424, or "prompt is too long"
@@ -135,10 +141,11 @@ Claude judges auto mode's safety checks first.
   Claude's answer, never a reason to use a stand-in. An untested worker target, and a
   `claude-…` target in the worker chain, never judge.
 - **A chain the person sets wins:** its first usable target judges (the next only with the
-  switch on), and the worker's targets are never added to it, even when none of its targets is
-  usable (Claude then judges alone). It may hold a `claude-…` target, used as it is with no
-  test, with only `model` changed like any slot's Claude target. No hidden Claude step after
-  it: the chain's failure is the answer.
+  switch on; with it off, the chain's first target alone is considered, so an untested first
+  target leaves Claude alone), and the worker's targets are never added to it, even when none
+  of its targets is usable (Claude then judges alone). It may hold a `claude-…` target, used
+  as it is with no test, with only `model` changed like any slot's Claude target. No hidden
+  Claude step after it: the chain's failure is the answer.
 - **Never used untested:** `gateway slot judge`, `gateway slot worker …` and `gateway setup` run
   the judge test (`judge-test.ts`) on each backend target; `slot judge` refuses one that does
   not block it, `slot worker` and `setup` set the worker either way and name each target that
@@ -165,8 +172,9 @@ Claude judges auto mode's safety checks first.
   safety check is never one. The log line says why.
 - **At a Claude capacity failure** (`capacityFailureStatus`: 408, 429, any 5xx, 529) **or no
   answer**, the router gives one plain text block in Anthropic's message format, a stream when
-  the request streams (`claudeSearchNotice`). It says it is the router's, that web search needs
-  Claude, and to use the Tavily MCP server's search tool "if it is set up". The name comes from
+  the request streams (`claudeSearchNotice`). It says it is the router's, names the server
+  tool that failed (`web_search` or `web_fetch`), says that tool runs on Claude, and points to
+  the Tavily MCP server "if it is set up". The server's name comes from
   `src/mcp/names.ts`; the router never reads Claude Code's config. It is the one place the router
   writes words of its own to a model, as a whole answer, never an edit. **Any other status passes
   unchanged**: Claude Code 2.1.304 and later resend a request that got an unrecognised 400 or 422

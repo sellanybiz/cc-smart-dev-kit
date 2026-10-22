@@ -11,12 +11,12 @@
  * of the tool types and of the answer below.
  *
  * When Claude cannot answer it (the plan's usage limit, an overload, no answer at all), the
- * search would simply fail. The router answers instead, in Anthropic's message format with
- * one plain text block, naming the Tavily MCP server's search tool and saying the text comes
- * from the router. A plain answer to the search request becomes the tool result
- * `Web search results for query: <q>` and that text, at once and with no retry (proved; the
- * contract's P-WS rows). This is the one place the router writes words of its own to a
- * model: it is a whole answer in Claude's place, never an edit of Claude Code's text.
+ * server tool would simply fail. The router answers instead, in Anthropic's message format
+ * with one plain text block, naming the tool that failed and the Tavily MCP server's tools,
+ * and saying the text comes from the router. A plain answer to the search request becomes the
+ * tool result `Web search results for query: <q>` and that text, at once and with no retry
+ * (proved; the contract's P-WS rows). This is the one place the router writes words of its own
+ * to a model: it is a whole answer in Claude's place, never an edit of Claude Code's text.
  *
  * Pure, so a test writes the expected words by hand. The router bundle imports this module,
  * so it imports nothing that carries the plugin version.
@@ -76,15 +76,16 @@ export function claudeUnavailableWords(status: null | number, limit: null | Plan
 }
 
 /**
- * The words that stand in for a search Claude could not run. `why` finishes "Claude …"
- * (`claudeUnavailableWords`). They say where the answer comes from, why web search needs
- * Claude, and what to use instead. The Tavily server's name is built from its one home
- * (`src/mcp/names.ts`), never typed; whether that server is set up is not read here (the
- * router stays a small, fast path), so the answer says "if it is set up". It names the
- * server's tool prefix, not one tool: the tool names are Tavily's.
+ * The words that stand in for the server tool Claude could not run. `tool` is the tool that
+ * failed (`web_search` or `web_fetch`, `anthropicServerTool`); `why` finishes "Claude …"
+ * (`claudeUnavailableWords`). They say where the answer comes from, name the tool and that it
+ * runs on Claude, and point to the Tavily MCP server. The Tavily server's name is built from
+ * its one home (`src/mcp/names.ts`), never typed; whether that server is set up is not read
+ * here (the router stays a small, fast path), so the answer says "if it is set up". It names
+ * the server's tool prefix, not one tool: the tool names are Tavily's.
  */
-export function claudeSearchNotice(why: string): string {
-  return `The ${COMMAND} router answered this search, not a search engine: web search runs on Claude, and Claude ${why}. Use the search tool of the Tavily MCP server instead (its tools are named mcp__${TAVILY_SERVER_NAME}__…), if it is set up.`;
+export function claudeSearchNotice(tool: string, why: string): string {
+  return `The ${COMMAND} router answered this ${tool} request, not Anthropic: ${tool} runs on Claude, and Claude ${why}. Use the Tavily MCP server instead (its tools are named mcp__${TAVILY_SERVER_NAME}__…), if it is set up.`;
 }
 
 /** A message id of the router's own, so a log of the session shows where the answer came from. */

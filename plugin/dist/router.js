@@ -7363,8 +7363,8 @@ function claudeUnavailableWords(status, limit) {
   }
   return status === null ? "could not be reached (no answer came)" : `could not answer now (HTTP ${status})`;
 }
-function claudeSearchNotice(why) {
-  return `The ${COMMAND} router answered this search, not a search engine: web search runs on Claude, and Claude ${why}. Use the search tool of the Tavily MCP server instead (its tools are named mcp__${TAVILY_SERVER_NAME}__\u2026), if it is set up.`;
+function claudeSearchNotice(tool, why) {
+  return `The ${COMMAND} router answered this ${tool} request, not Anthropic: ${tool} runs on Claude, and Claude ${why}. Use the Tavily MCP server instead (its tools are named mcp__${TAVILY_SERVER_NAME}__\u2026), if it is set up.`;
 }
 function routerMessageId() {
   return `msg_router_${randomUUID2().replaceAll("-", "")}`;
@@ -8382,8 +8382,13 @@ function createRouter(deps) {
         skipped += 1;
         continue;
       }
+      const firstByteWait = target.kind === "backend" && (guard || !last && body.stream === true) ? config.timeouts.firstByteMs : null;
       const lastWaitMs = hold !== null && last && target.kind === "backend" && body.stream === true ? hold.lastWaitMs : null;
-      const deadlineAt = target.kind === "backend" && (guard || !last && body.stream === true) ? deps.now() + config.timeouts.firstByteMs : lastWaitMs !== null ? deps.now() + lastWaitMs : null;
+      const budgetMs = last && target.kind === "backend" && body.stream === true && hold !== null ? BREAKER_HEARTBEAT_WAIT_MS : firstByteWait ?? config.timeouts.firstByteMs;
+      const probeWaitMs = hold?.holding === true && target.kind === "backend" ? Math.min(budgetMs, hold.leftMs) : null;
+      const waitMs = probeWaitMs ?? lastWaitMs ?? firstByteWait;
+      const deadlineAt = waitMs === null ? null : deps.now() + waitMs;
+      const holdCutShort = hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
       const built = targetUpstream(req, url, config, body, target, guard, asked);
       const probe = hold?.holding === true && !("error" in built);
       if (probe) {
@@ -8415,7 +8420,8 @@ function createRouter(deps) {
         if (probe)
           probing.delete(label);
       }
-      if (url.pathname === MESSAGES_PATH)
+      const timeoutCutShort = holdCutShort && "failure" in result && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
+      if (url.pathname === MESSAGES_PATH && !timeoutCutShort)
         noteCooldown(label, result);
       if ("failure" in result) {
         lastTimedOut = last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
@@ -8440,10 +8446,11 @@ function createRouter(deps) {
           };
         }
         if (target.kind === "backend" && (status === 401 || status === 403)) {
-          logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; returned as a 400 (the backend refused its key)`);
+          const refused = backendKeyRefused(label, target.backend, status, !guard);
+          logErrorAnswer(result.response, knownSecrets(req, config), `WARN ${label} answered ${status}; returned as a ${refused.status} (the backend refused its key)`);
           return {
             fallbacks,
-            response: backendKeyRefused(label, target.backend, status, !guard),
+            response: refused,
             skipped,
             target: label
           };
@@ -8509,10 +8516,11 @@ function createRouter(deps) {
   }
   function holdMode(config, body, startMs, holding, probes) {
     const limit = holdLimitMs(config, body);
-    const left = Math.max(startMs + limit - deps.now(), 1);
+    const left = limit === 0 ? Number.POSITIVE_INFINITY : Math.max(startMs + limit - deps.now(), 0);
     return {
       holding,
-      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, left),
+      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, Math.max(left, 1)),
+      leftMs: left,
       probes
     };
   }
@@ -8619,33 +8627,36 @@ function createRouter(deps) {
       },
       targets
     });
+    const remind = (nowMs) => {
+      if (nowMs - open.reminderAt < BREAKER_REMINDER_MS)
+        return;
+      open.reminderAt = nowMs;
+      deps.log(`WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`);
+    };
     try {
       for (;; ) {
         discard(outcome.response);
         const now = deps.now();
         const failures = outcome.capacity ?? [];
         const endsAt = startMs + holdLimitMs(config, body);
-        const reply = (retryAfterSec, message) => breakerAnswer({
+        const reply = (nowMs, retryAfterSec, message) => breakerAnswer({
           failures,
-          nowMs: now,
+          nowMs,
           sinceMs: open.since,
           slot,
           ...retryAfterSec === undefined ? {} : { retryAfterSec },
           ...message === undefined ? {} : { message }
         });
         if (stopping()) {
-          return answer(reply(BREAKER_SHUTDOWN_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: the router is restarting; ${slot} had no target answering. Ask again`));
+          return answer(reply(now, BREAKER_SHUTDOWN_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: the router is restarting; ${slot} had no target answering. Ask again`));
         }
         if (now >= endsAt) {
-          if (now - open.reminderAt >= BREAKER_REMINDER_MS) {
-            open.reminderAt = now;
-            deps.log(`WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), now)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`);
-          }
-          return answer(reply());
+          remind(now);
+          return answer(reply(now));
         }
         if (counted === null) {
           if (open.heldNow >= BREAKER_MAX_HELD)
-            return answer(reply());
+            return answer(reply(now));
           counted = open;
           open.heldNow += 1;
           open.held += 1;
@@ -8659,11 +8670,16 @@ function createRouter(deps) {
         const next = deps.getConfig();
         const route = resolveRoute(slot, next);
         if (route.kind !== "slot" || route.targets.length === 0) {
-          return answer(reply(BREAKER_RELEASED_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`));
+          return answer(reply(now, BREAKER_RELEASED_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`));
         }
         config = next;
         targets = targetsInUse(route.targets, fallbackOn(next, slot));
         const holds = breakerOn(next, slot);
+        const probingAt = deps.now();
+        if (holds && startMs + holdLimitMs(next, body) - probingAt < next.timeouts.firstByteMs) {
+          remind(probingAt);
+          return answer(reply(probingAt));
+        }
         outcome = await chain(req, url, config, body, targets, slot, false, asked, holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null);
         if (req.signal.aborted)
           return { outcome, targets };
@@ -8910,7 +8926,7 @@ function createRouter(deps) {
         const reason = maskedLine(result.failure, knownSecrets(req, config), SNIPPET_MAX);
         deps.log(`WARN anthropic did not answer a ${tool} request (${reason}); the router answered with a note naming Tavily instead`);
       }
-      const text = claudeSearchNotice(claudeUnavailableWords(status, limit));
+      const text = claudeSearchNotice(tool, claudeUnavailableWords(status, limit));
       const streamed = body.stream === true;
       return {
         fallbacks: 0,
