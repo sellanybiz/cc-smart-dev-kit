@@ -2903,7 +2903,8 @@ else the plan this session already leads, else the branch.
 
 **`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
 **returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
-polls or retries. In order:
+polls or retries. An opus-tier start with no 5-hour window reading adds one note line after it
+(D54). In order:
 
 1. **The refusals** (exit 1, a line and its `Fix:`), shared with `crew lead` (`caller.ts`): the
    caller is a crew session (`CC_SMART_DEV_KIT_CREW` set); the folder is not in a git project, or its

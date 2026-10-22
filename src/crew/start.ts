@@ -1,8 +1,9 @@
 /**
  * `cc-smart-dev-kit crew start <phase> --slug <s> --kind <kind> --brief <file|-> …`: starts one
  * crew session, a background Claude Code session in its own worktree, and **returns at once** (D25):
- * one line, `started …`, `queued …` or `failed …`. Nothing here waits on the crew session, polls, or
- * retries.
+ * one line, `started …`, `queued …` or `failed …`, and — for an opus-tier session that starts
+ * while no 5-hour window reading is stored — one note line after it (D54). Nothing here waits on
+ * the crew session, polls, or retries.
  *
  * In order:
  *   1. the shared checks (`readCaller`: not a crew session, crew sessions on, a Claude session, no bypass),

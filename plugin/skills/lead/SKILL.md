@@ -52,8 +52,9 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   wave, each later one with `--waits-for` the phases it builds on. You never keep a list of what
   is ready: the queue and the watch start each phase when what it waits for is merged and a
   place is free. Each call returns at once with one line: `started`, `queued` or `failed`, with
-  the reason. Your reply names each crew session with the model and effort its line shows (the
-  core instructions' "say it when you launch").
+  the reason (an opus start with no usage-window reading adds one note line). Your reply names
+  each crew session with the model and effort its line shows (the core instructions' "say it
+  when you launch").
 - **`queued` is not an error.** A cap, the free memory or `--waits-for` holds it, and it starts
   by itself when its place frees. Never start it a second time.
 - **`--waits-for <phase,...>`** holds a phase until each of those is merged. The
