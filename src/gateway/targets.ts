@@ -85,6 +85,52 @@ export function withoutContextSuffix(name: string): string {
   return name.replace(CONTEXT_SUFFIX, "");
 }
 
+/**
+ * The path a project's `ANTHROPIC_BASE_URL` carries to reach a profile: `…/p/<profile>`
+ * (owner D29, `docs/gateway.md` § Profiles). One home: the router strips it, and the
+ * commands that write a project's URL build it from this.
+ */
+export const PROFILE_PATH_PREFIX = "/p/";
+
+/**
+ * A profile name, as a URL segment and as a key in `gateway.json`'s `profiles`: lower-case
+ * letters, digits and `-`, at most 64. A name the pattern refuses is never a profile and is
+ * never looked up, so a hand-written config key such as `__proto__` cannot be reached from a
+ * path, and a typo answers as plain Claude instead of an error.
+ */
+const PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export function isProfileName(name: string): boolean {
+  return PROFILE_NAME.test(name);
+}
+
+/** What a request path says about a profile: the name it carries, and the path under it. */
+export interface ProfilePath {
+  /** The segment after `/p/`, exactly as the path carried it (check `isProfileName`); null: no prefix. */
+  name: null | string;
+  /** The path without the `/p/<name>` prefix: what the route branches read and Anthropic gets. */
+  path: string;
+}
+
+/**
+ * Split a request path (its query is not part of a path) into the profile it names and the
+ * path under it (owner D29):
+ *   - `/p/<name>/v1/messages` → name `<name>`, path `/v1/messages`;
+ *   - `/p/<name>` and `/p/<name>/` → name `<name>`, path `/`;
+ *   - no `/p/` prefix, or none with a name after it (`/p/`, `/p//…`) → no name, path as it came.
+ * The rest of the path is kept exactly as it came, so the bytes Anthropic gets are the bytes
+ * Claude Code sent minus the prefix. Pure: the caller decides what an unknown name means
+ * (plain Claude, never an error a session cannot read).
+ */
+export function profileFromPath(pathname: string): ProfilePath {
+  if (!pathname.startsWith(PROFILE_PATH_PREFIX)) return { name: null, path: pathname };
+  const rest = pathname.slice(PROFILE_PATH_PREFIX.length);
+  const slash = rest.indexOf("/");
+  const name = slash === -1 ? rest : rest.slice(0, slash);
+  if (name === "") return { name: null, path: pathname };
+  return { name, path: slash === -1 ? "/" : rest.slice(slash) };
+}
+
 /** The text of a target, the way the config and `gateway slot` spell it. */
 export function formatTarget(target: Target): string {
   return target.kind === "anthropic" ? target.model : `${target.backend}:${target.model}`;

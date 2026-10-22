@@ -7,6 +7,11 @@ An optional local router between Claude Code and the model providers
 - Each Claude model goes to the slot of its family when the person gave that slot a chain,
   and to Anthropic byte for byte, on the person's own login, when not. No model is chosen
   for anyone: a fresh setup gives no slot a chain.
+- **A project may use its own chains through a profile** (D29): its base URL ends in
+  `…/p/<name>`, the router strips that prefix once before every branch, and the request
+  answers with the profile's chains and switches over the machine's (`profiles` in
+  `gateway.json`, `profileView`). A name no profile holds answers as plain Claude, never an
+  error. The prefix is only there when a project needs it; `docs/gateway.md` § Profiles.
 - **No prompt text is ever changed.** An affordable backend gets two named, tested format
   translations and nothing else. A slot's Claude target that is not the model asked for gets one,
   `requestForClaudeFallback`: only the fields that Claude model refuses (Claude Code built

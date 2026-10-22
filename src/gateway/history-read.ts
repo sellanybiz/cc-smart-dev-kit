@@ -14,9 +14,9 @@
  *   - `recentRequests` pages the newest rows first, by id (`cursor` is the last id of the
  *     page before), with the same filters.
  *
- * Filters: `slot`, `target`, `model`, `session` (exact), and `status: "error"` (an HTTP status
- * of 400 or more). A row with no slot or no session is grouped under `(no slot)` /
- * `(no session)`.
+ * Filters: `slot`, `profile`, `target`, `model`, `session` (exact), and `status: "error"` (an
+ * HTTP status of 400 or more). A row with no slot or no session is grouped under
+ * `(no slot)` / `(no session)`. A row with no profile is the machine's default.
  */
 
 import { Database } from "bun:sqlite";
@@ -65,6 +65,8 @@ export const DEFAULT_HISTORY_BY: HistoryBy = "target";
 /** The filters both queries take. */
 export interface HistoryFilters {
   model?: string;
+  /** The profile a request's path named (`…/p/<profile>`); a row of the machine's default has none. */
+  profile?: string;
   session?: string;
   slot?: string;
   /** `"error"`: only rows whose status is 400 or more. */
@@ -116,6 +118,8 @@ export interface RecentRequestRow {
   outputTokens: null | number;
   cacheReadTokens: null | number;
   cacheWriteTokens: null | number;
+  /** The profile the request's path named (`…/p/<profile>`); null for the machine's default. */
+  profile: null | string;
   session: null | string;
   slot: null | string;
   status: number;
@@ -195,7 +199,7 @@ function groupExpression(by: HistoryBy): string {
 function filterClause(filters: HistoryFilters): { sql: string[]; values: (number | string)[] } {
   const parts: string[] = [];
   const values: (number | string)[] = [];
-  for (const column of ["slot", "target", "model", "session"] as const) {
+  for (const column of ["slot", "profile", "target", "model", "session"] as const) {
     const value = filters[column];
     if (value === undefined) continue;
     parts.push(`${column} = ?`);
@@ -435,6 +439,7 @@ function rowOf(row: StoredRow): RecentRequestRow {
     ms: row.ms,
     nextTarget: row.next_target,
     outputTokens: row.output_tokens,
+    profile: row.profile,
     session: row.session,
     slot: row.slot,
     status: row.status,

@@ -91,6 +91,67 @@ flowchart TD
   fallback.
 - The safety check is never routed by its model's family (§ The judge slot).
 
+## Profiles: a project's own chains (D29)
+
+A **profile** is a named set of slot chains and switches over the machine's, so one project
+(or one session) can use other targets per slot while every other session keeps the machine's.
+A project reaches its profile through its `ANTHROPIC_BASE_URL`:
+
+```
+http://127.0.0.1:20100/p/my-project
+```
+
+- **The shape** is `profiles` in `gateway.json`, by name:
+
+  ```json
+  "profiles": {
+    "my-project": {
+      "slots": {
+        "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"],
+        "cc-smart-dev-kit-scout": "claude"
+      },
+      "fallback": { "cc-smart-dev-kit-worker": false },
+      "breaker": { "cc-smart-dev-kit-worker": true }
+    }
+  }
+  ```
+
+  Per slot: **absent** keeps the machine's chain, **`"claude"`** turns that slot off for this
+  profile (plain Claude there, whatever the machine's chain is), and a **list** is the
+  profile's own chain, in the same shape and with the same checks as `slots`. `fallback` and
+  `breaker` are per profile too, and a slot the profile or the machine has no chain for is
+  refused, as at the top level. `kept` inside a profile saves a chain that is not in use there,
+  the way the top-level `kept` does.
+- **Everything else stays machine-wide**: `backends` and their keys, `port`, `timeouts`,
+  `aliases`, `judgeTested` and `history`. A project cannot bring its own backend key or its own
+  judge proof, and cannot move the router's port.
+- **The prefix is stripped once, before every branch**: a model call streamed or not,
+  `count_tokens`, `HEAD /api/hello`, the health page, a server-tool request and the judge all
+  read the path Claude Code itself would have sent, and that path is what Anthropic gets
+  (`profileFromPath`, `src/gateway/targets.ts`). Claude Code keeps the whole path on every
+  request, which is what makes the prefix work at all (`docs/claude-code-contract.md`).
+- **A name that is no profile answers as plain Claude**: every slot off and no alias applied
+  (an old name in `aliases` may point at a chain, and plain Claude reaches none), the request to
+  Anthropic as Claude Code sent it, one WARN naming the profile and the ones the config holds.
+  Never an error a session cannot read. The name is checked against a strict pattern first —
+  lower-case letters, digits and `-`, at most 64 — so a hand-written key a URL could never carry
+  is never looked up.
+- **A profile's chain is its own state**: a fallback record or an open breaker is kept under
+  `<profile>/<slot>` in the limit state file (`stateKeyFor`), and the profile's breaker holds
+  and answers on its own. A target's rest, and the one request at a time that probes it, stay
+  per target: a target that is down is down for every profile. `limits` stays per Claude model
+  too: the login, and so the plan limits, is one for every profile.
+- **The request history says which profile a row came from**: its `profile` column holds the
+  name the path carried, and null for the machine's default. A database from before the column
+  keeps every row, and those rows read as null. The history's reader filters by it
+  (`HistoryFilters.profile`).
+- **The health page names what this router knows**: `features: ["profiles"]`, and `profiles`
+  lists the configured names. A command or the portal reads it to tell a running router that
+  knows profiles from an older one, which carries no version.
+- **A project reaches its profile by its URL**: `ANTHROPIC_BASE_URL` with `/p/<name>` on the
+  end, in that project's own settings file (or passed to one session with `--settings`). It is
+  the only place a profile's name comes from; no request header names a project.
+
 ## Anthropic's server tools
 
 A **server tool** is a tool Anthropic's servers run, such as web search. Claude Code sends the
@@ -344,10 +405,13 @@ switches `--fallback-model` (a 529 does after three).
    at most every 10 minutes.
 
 **What a person sees.** `gateway status` (the router's health page, `breakers`): `! cc-smart-dev-kit-worker:
-all targets limited, holding requests since 21:05 (omniroute:a 429 until 21:07; …)`. The status line
+all targets limited, holding requests since 21:05 (omniroute:a 429 until 21:07; …)`; a profile's
+record is named by its key, `<profile>/cc-smart-dev-kit-worker`. The status line
 shows `<slot> slot: every target limited since 21:05 → gateway slot <slot> <targets>` while the
 record is fresh, and a turn that still stops gives the StopFailure alert once per opening
-(§ The limit state, the status line, the alert). The way out is in the answer:
+(§ The limit state, the status line, the alert); for a profile's breaker both name the profile
+and point at its key under `profiles` in the config, never at `gateway slot`, which would change
+the machine's chain. The way out is in the answer:
 `cc-smart-dev-kit gateway slot worker <targets>` (a changed chain is served
 within a second), or `gateway breaker worker off` for the old behaviour.
 
@@ -659,7 +723,9 @@ target answers (§ Model slots), the slots whose every target is limited or down
 their breaker holds requests (§ The breaker switch and its hold), and the Claude model ids
 Claude Code itself sent through it (`seenClaude`, with the last time each was seen; the
 portal's "Claude login" list, § The portal in `docs/design/portal.md`). Never a key, a
-header value or a word of a request. **`seenClaude` is written only when an id is new**: the
+header value or a word of a request. A profile's fallback and breaker records are keyed
+`<profile>/<slot>` (owner D29, § Profiles); the Claude models' limits are not, because the
+login is one for every profile. **`seenClaude` is written only when an id is new**: the
 router reads the file again first and changes only that field, so a change another program
 made to the rest (the CLI's `dropFallbackRecord`, say) is never written over. `limit-state.ts`
 reads it. The router reads it once when it
@@ -678,7 +744,8 @@ theirs: setup keeps it, and `restore` leaves it). Its parts: the model, a slot o
 fallback (`⚠ claude-opus-5-5 at its limit → <target> until 13:00`), a limit with no
 fallback (`⛔ claude-opus-5-5 at its plan limit until 13:00`), a slot whose breaker is open
 (`worker slot: every target limited since 21:05 → gateway slot worker <targets>`, from
-`currentBreakers`, so only while the router keeps the record fresh), and the plan usage
+`currentBreakers`, so only while the router keeps the record fresh; a profile's reads
+`worker slot in profile <name>: … → profiles.<name> in gateway.json`), and the plan usage
 `5h 23% · 7d 41%`, which warns from 85 %. The usage numbers come from the status line's
 own input, `rate_limits.five_hour` / `.seven_day` (`used_percentage`, `resets_at`), which
 Claude Code fills from the `anthropic-ratelimit-unified-*` headers the router passes on
@@ -740,8 +807,10 @@ opening hears nothing, a new opening alerts again, and a record the router stopp
 target with why it rests. On Linux its action runs
 `gateway slot <slot> <the backend targets of the person's other chains>` (`standInChains`;
 never a model the plugin picked); with none it offers no action and points at
-`gateway models`. The last words say "Then send a message to go on", or "Claude Code goes on
-by itself" when the retry watchdog's key is in the settings (`src/setup/retry-watchdog.ts`).
+`gateway models`. A profile's breaker names the profile and offers no action: its chain is the
+profile's, not the one `gateway slot` changes. The last words say "Then send a message to go on",
+or "Claude Code goes on by itself" when the retry watchdog's key is in the settings
+(`src/setup/retry-watchdog.ts`).
 While the opening is marked, the notifier stays out of a breaker stop too: the StopFailure
 hook owns every one of them (`stopFailureWillAlert`), so a marked stop never becomes the
 notifier's "the turn stopped" line.
@@ -799,11 +868,13 @@ routes come with the portal's pages).
   `~/.local/state/cc-smart-dev-kit/history.db` (`bun:sqlite`, Bun's built-in SQLite: no
   dependency; mode 600 in the owner-only state folder). A row holds the time; the Claude
   Code session id the request carried (`x-claude-code-session-id`, the header Claude Code
-  sends on every request); the model asked; the slot; the target that answered; the status;
-  the latency (until the answer's headers); the target that answered next on a fallback;
-  whether the breaker held it; the input, output, cache-read and cache-write tokens the
-  answer's `usage` reported; and an estimated USD cost. **Never** a prompt, a system text, a
-  tool, an answer or a key.
+  sends on every request); the model asked; the slot; the profile the path named
+  (`…/p/<profile>`, § Profiles), null for the machine's default; the target that answered;
+  the status; the latency (until the answer's headers); the target that answered next on a
+  fallback; whether the breaker held it; the input, output, cache-read and cache-write tokens
+  the answer's `usage` reported; and an estimated USD cost. **Never** a prompt, a system text,
+  a tool, an answer or a key. A database from before the `profile` column keeps every row;
+  those rows read as the machine's default.
 - **Not a safety check, not `count_tokens`, not another path.** Auto mode's checks are
   counted by day in `safety-checks.json` (§ The safety-check counts); the history is the
   model calls.

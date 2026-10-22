@@ -28,6 +28,7 @@ import {
   claudeFamily,
   FALLBACK_OFF_BY_DEFAULT,
   isBackendName,
+  isProfileName,
   isSlotKey,
   JUDGE_SLOT,
   MODEL_SLOTS,
@@ -87,6 +88,42 @@ const backendSchema = z.looseObject({
 const keptChainSchema = z.looseObject({
   fallback: z.boolean().optional(),
   targets: z.array(z.string().min(1)).min(1),
+});
+
+/**
+ * Why a profile name is refused, in the words the file's reader shows. A `z.record` key
+ * schema's own message never reaches the person ("Invalid key in record"), so the key is
+ * checked in the schema's own pass (`superRefine`) instead.
+ */
+export const PROFILE_NAME_RULE =
+  "a profile name is lower-case letters, digits and - (the /p/<name> of a project's URL), at most 64";
+
+/** Why a slot key is refused, in the words the file's reader shows (the same reason as above). */
+const SLOT_KEY_RULE = (slot: string) => `"${slot}" is not a slot key (cc-smart-dev-kit-<name>)`;
+
+/**
+ * One slot in a profile: a chain in use there, or `"claude"` — plain Claude for that slot in
+ * this profile, whatever the machine's chain is (the simplest shape, owner D29: a profile
+ * says what it changes, and a slot it does not name keeps the machine's chain).
+ */
+const profileSlotSchema = z.union([z.literal("claude"), z.array(z.string().min(1)).min(1)], {
+  error:
+    'a profile slot is "claude" (plain Claude for that slot there) or a chain: a list of one or more targets',
+});
+
+/**
+ * A profile: a named set of slot chains and switches over the machine's, reached by a
+ * project's URL `…/p/<name>` (`docs/gateway.md` § Profiles). Everything not named here is
+ * machine-wide: `backends`, `port`, `timeouts`, `aliases`, `judgeTested`, `history`. Loose,
+ * so a field a newer version adds is kept when a command saves the file. `kept` is a
+ * profile's own saved chains (same shape as the top level's), not in use; only commands
+ * write it.
+ */
+const profileSchema = z.looseObject({
+  breaker: z.record(z.string(), z.boolean()).optional(),
+  fallback: z.record(z.string(), z.boolean()).optional(),
+  kept: z.record(z.string(), keptChainSchema).optional(),
+  slots: z.record(z.string(), profileSlotSchema).optional(),
 });
 
 export const gatewayConfigSchema = z
@@ -162,10 +199,15 @@ export const gatewayConfigSchema = z
      */
     modelSlots: z.record(z.string(), z.string()).optional(),
     port: z.int().min(1).max(65_535).default(DEFAULT_PORT),
-    slots: z.record(
-      z.string().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"),
-      z.array(z.string()).min(1),
-    ),
+    /**
+     * A project's own chains and switches, by name: its `ANTHROPIC_BASE_URL` ends in
+     * `…/p/<name>` (owner D29, `docs/gateway.md` § Profiles). A slot a profile does not name
+     * keeps the machine's chain; `"claude"` turns it off for that profile. The names are the
+     * URL segments a project can carry, so the pattern is checked here too. Optional: a
+     * machine without profiles writes no key.
+     */
+    profiles: z.record(z.string(), profileSchema).optional(),
+    slots: z.record(z.string(), z.array(z.string()).min(1)),
     timeouts: z
       .looseObject({
         /**
@@ -187,22 +229,66 @@ export const gatewayConfigSchema = z
     version: z.literal(1),
   })
   .superRefine((config, ctx) => {
+    for (const slot of Object.keys(config.slots)) {
+      if (!isSlotKey(slot))
+        ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
+    }
     for (const [slot, targets] of Object.entries(config.slots)) {
-      targets.forEach((text, index) => {
-        const parsed = parseTarget(text);
-        if ("error" in parsed) {
-          ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-        } else if (
-          parsed.target.kind === "backend" &&
-          !Object.hasOwn(config.backends, parsed.target.backend)
-        ) {
+      chainIssues(config, targets, ["slots", slot], ctx);
+    }
+    for (const [name, profile] of Object.entries(config.profiles ?? {})) {
+      // The name is a URL segment, so it is checked before anything under it is read. A key
+      // no URL can carry is refused once, and its body is not checked further.
+      if (!isProfileName(name)) {
+        ctx.addIssue({ code: "custom", message: PROFILE_NAME_RULE, path: ["profiles", name] });
+        continue;
+      }
+      for (const field of ["slots", "kept"] as const) {
+        for (const slot of Object.keys(profile[field] ?? {})) {
+          if (isSlotKey(slot)) continue;
           ctx.addIssue({
             code: "custom",
-            message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
-            path: ["slots", slot, index],
+            message: SLOT_KEY_RULE(slot),
+            path: ["profiles", name, field, slot],
           });
         }
-      });
+      }
+      for (const [slot, chain] of Object.entries(profile.slots ?? {})) {
+        if (chain === "claude") continue;
+        chainIssues(config, chain, ["profiles", name, "slots", slot], ctx);
+      }
+      // The slots this profile has a chain for: its own, and the machine's for the rest
+      // (absent = the machine's chain; `"claude"` = no chain here, so nothing to fall back to).
+      const chained = new Set(
+        [...Object.keys(config.slots), ...Object.keys(profile.slots ?? {})].filter(
+          (slot) => profileSlotChain(config, profile, slot) !== null,
+        ),
+      );
+      for (const slot of Object.keys(profile.fallback ?? {})) {
+        // The judge's switch needs no judge chain, as at the top level (D44).
+        if (slot !== JUDGE_SLOT && !chained.has(slot)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `fallback names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has nothing to fall back to)`,
+            path: ["profiles", name, "fallback", slot],
+          });
+        }
+      }
+      for (const slot of Object.keys(profile.breaker ?? {})) {
+        if (slot === JUDGE_SLOT) {
+          ctx.addIssue({
+            code: "custom",
+            message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+            path: ["profiles", name, "breaker", slot],
+          });
+        } else if (!chained.has(slot)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `breaker names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has no request to hold)`,
+            path: ["profiles", name, "breaker", slot],
+          });
+        }
+      }
     }
     for (const [name, to] of Object.entries(config.aliases)) {
       const error = aliasError(name, to, config);
@@ -242,6 +328,55 @@ export const gatewayConfigSchema = z
       }
     }
   });
+
+/**
+ * Add an issue for each target of a chain that cannot be used: text that is not a target,
+ * or a backend the config does not hold. The same check at the top level and in a profile.
+ */
+function chainIssues(
+  config: Pick<GatewayConfig, "backends">,
+  targets: readonly string[],
+  path: (number | string)[],
+  ctx: z.RefinementCtx,
+): void {
+  targets.forEach((text, index) => {
+    const parsed = parseTarget(text);
+    if ("error" in parsed) {
+      ctx.addIssue({ code: "custom", message: parsed.error, path: [...path, index] });
+    } else if (
+      parsed.target.kind === "backend" &&
+      !Object.hasOwn(config.backends, parsed.target.backend)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
+        path: [...path, index],
+      });
+    }
+  });
+}
+
+/** One profile as the config holds it. */
+export type ProfileConfig = z.output<typeof profileSchema>;
+
+/**
+ * The chain a slot has in a profile: the profile's own chain, null when the profile says
+ * `"claude"`, and the machine's chain when the profile does not name the slot. Null too when
+ * neither has one (the slot is off there).
+ */
+export function profileSlotChain(
+  config: Pick<GatewayConfig, "slots">,
+  profile: ProfileConfig,
+  slot: string,
+): null | string[] {
+  const own =
+    profile.slots !== undefined && Object.hasOwn(profile.slots, slot)
+      ? profile.slots[slot]
+      : undefined;
+  if (own === "claude") return null;
+  if (own !== undefined) return own;
+  return Object.hasOwn(config.slots, slot) ? (config.slots[slot] ?? null) : null;
+}
 
 /**
  * Why a 0.4.x `modelSlots` entry cannot be read, or null when it can: the key is a Claude
@@ -383,6 +518,64 @@ export function keptChain(config: Pick<GatewayConfig, "kept">, slot: string): Ke
   const kept = config.kept;
   if (kept === undefined || !Object.hasOwn(kept, slot)) return null;
   return kept[slot] ?? null;
+}
+
+/** The profile names a config holds, sorted: what the health page lists. */
+export function profileNames(config: Pick<GatewayConfig, "profiles">): string[] {
+  return Object.keys(config.profiles ?? {}).sort();
+}
+
+/**
+ * What a request under profile `name` sees: the machine's config, with that profile's slot
+ * chains over the machine's (a slot it does not name keeps the machine's chain, `"claude"`
+ * turns it off there) and its fallback and breaker switches over the machine's. Everything
+ * else stays machine-wide: `backends`, `port`, `timeouts`, `aliases`, `judgeTested`,
+ * `history`. Null when the config holds no such profile; the caller then answers as plain
+ * Claude (`plainClaudeView`, owner D29).
+ *
+ * The view is a copy: every reader the router already has (`resolveRoute`, `fallbackOn`,
+ * `breakerOn`, `workerJudgeTargets`, `judgeTargetsOf`) works on it unchanged, and it is never
+ * saved. A name that is not lower-case letters, digits and `-` is not a profile.
+ */
+export function profileView(config: GatewayConfig, name: string): GatewayConfig | null {
+  if (!isProfileName(name)) return null;
+  const profile =
+    config.profiles !== undefined && Object.hasOwn(config.profiles, name)
+      ? config.profiles[name]
+      : undefined;
+  if (profile === undefined) return null;
+  const slots: Record<string, string[]> = { ...config.slots };
+  for (const slot of Object.keys(profile.slots ?? {})) {
+    const chain = profileSlotChain(config, profile, slot);
+    if (chain === null) delete slots[slot];
+    else slots[slot] = chain;
+  }
+  const view: GatewayConfig = { ...config, slots };
+  const fallback = { ...config.fallback, ...profile.fallback };
+  if (Object.keys(fallback).length === 0) delete view.fallback;
+  else view.fallback = fallback;
+  const breaker = { ...config.breaker, ...profile.breaker };
+  if (Object.keys(breaker).length === 0) delete view.breaker;
+  else view.breaker = breaker;
+  return view;
+}
+
+/**
+ * What a request under a name the config does not hold answers as (owner D29): plain Claude.
+ * Every slot is off, so each Claude model's request goes to Anthropic as Claude Code sent it,
+ * on the person's own login; a slot-named request gets the usual "this slot is off" 400, and
+ * the judge is Claude. Never an error a session cannot read.
+ *
+ * The aliases go too: a name in `aliases` may point at a slot, and plain Claude must not reach
+ * a chain through one. The rest of the config stays — backends and their keys (the log masks
+ * with them), the login's path — and an explicit `<backend>:<model>` is still the one-off try
+ * it is anywhere, since it is the request's own name, not a profile's chain.
+ */
+export function plainClaudeView(config: GatewayConfig): GatewayConfig {
+  const view: GatewayConfig = { ...config, aliases: {}, slots: {} };
+  delete view.breaker;
+  delete view.fallback;
+  return view;
 }
 
 /**

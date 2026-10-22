@@ -6076,6 +6076,9 @@ var stateSchema = object({
   seenClaude: record(string2(), number2()).optional(),
   version: literal(1)
 });
+function stateKeyFor(slot, profile) {
+  return profile === null ? slot : `${profile}/${slot}`;
+}
 function parseLimitState(text) {
   let raw;
   try {
@@ -6134,6 +6137,10 @@ function isSlotKey(name) {
 }
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
+}
+var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function isProfileName(name) {
+  return PROFILE_NAME.test(name);
 }
 function parseTarget(text) {
   const trimmed = text.trim();
@@ -6197,6 +6204,9 @@ var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 var BREAKER_REMINDER_MS = 10 * 60000;
 function slotShortName(slot) {
   return slot.startsWith(SLOT_PREFIX) ? slot.slice(SLOT_PREFIX.length) : slot;
+}
+function breakerChangeHint(slot, profile = null) {
+  return profile === null ? `${COMMAND} gateway slot ${slotShortName(slot)} <targets>` : `the chain of ${slotShortName(slot)} under profiles.${profile} in gateway.json`;
 }
 
 // src/gateway/config.ts
@@ -6271,6 +6281,17 @@ var keptChainSchema = looseObject({
   fallback: boolean2().optional(),
   targets: array(string2().min(1)).min(1)
 });
+var PROFILE_NAME_RULE = "a profile name is lower-case letters, digits and - (the /p/<name> of a project's URL), at most 64";
+var SLOT_KEY_RULE = (slot) => `"${slot}" is not a slot key (cc-smart-dev-kit-<name>)`;
+var profileSlotSchema = union([literal("claude"), array(string2().min(1)).min(1)], {
+  error: 'a profile slot is "claude" (plain Claude for that slot there) or a chain: a list of one or more targets'
+});
+var profileSchema = looseObject({
+  breaker: record(string2(), boolean2()).optional(),
+  fallback: record(string2(), boolean2()).optional(),
+  kept: record(string2(), keptChainSchema).optional(),
+  slots: record(string2(), profileSlotSchema).optional()
+});
 var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
@@ -6284,26 +6305,67 @@ var gatewayConfigSchema = looseObject({
   }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
-  slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
+  profiles: record(string2(), profileSchema).optional(),
+  slots: record(string2(), array(string2()).min(1)),
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
     firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
+  for (const slot of Object.keys(config.slots)) {
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
+  }
   for (const [slot, targets] of Object.entries(config.slots)) {
-    targets.forEach((text, index) => {
-      const parsed = parseTarget(text);
-      if ("error" in parsed) {
-        ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-      } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+    chainIssues(config, targets, ["slots", slot], ctx);
+  }
+  for (const [name, profile] of Object.entries(config.profiles ?? {})) {
+    if (!isProfileName(name)) {
+      ctx.addIssue({ code: "custom", message: PROFILE_NAME_RULE, path: ["profiles", name] });
+      continue;
+    }
+    for (const field of ["slots", "kept"]) {
+      for (const slot of Object.keys(profile[field] ?? {})) {
+        if (isSlotKey(slot))
+          continue;
         ctx.addIssue({
           code: "custom",
-          message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
-          path: ["slots", slot, index]
+          message: SLOT_KEY_RULE(slot),
+          path: ["profiles", name, field, slot]
         });
       }
-    });
+    }
+    for (const [slot, chain] of Object.entries(profile.slots ?? {})) {
+      if (chain === "claude")
+        continue;
+      chainIssues(config, chain, ["profiles", name, "slots", slot], ctx);
+    }
+    const chained = new Set([...Object.keys(config.slots), ...Object.keys(profile.slots ?? {})].filter((slot) => profileSlotChain(config, profile, slot) !== null));
+    for (const slot of Object.keys(profile.fallback ?? {})) {
+      if (slot !== JUDGE_SLOT && !chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `fallback names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has nothing to fall back to)`,
+          path: ["profiles", name, "fallback", slot]
+        });
+      }
+    }
+    for (const slot of Object.keys(profile.breaker ?? {})) {
+      if (slot === JUDGE_SLOT) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      } else if (!chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has no request to hold)`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      }
+    }
   }
   for (const [name, to] of Object.entries(config.aliases)) {
     const error = aliasError(name, to, config);
@@ -6341,6 +6403,28 @@ var gatewayConfigSchema = looseObject({
     }
   }
 });
+function chainIssues(config, targets, path, ctx) {
+  targets.forEach((text, index) => {
+    const parsed = parseTarget(text);
+    if ("error" in parsed) {
+      ctx.addIssue({ code: "custom", message: parsed.error, path: [...path, index] });
+    } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
+        path: [...path, index]
+      });
+    }
+  });
+}
+function profileSlotChain(config, profile, slot) {
+  const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
+  if (own === "claude")
+    return null;
+  if (own !== undefined)
+    return own;
+  return Object.hasOwn(config.slots, slot) ? config.slots[slot] ?? null : null;
+}
 function modelSlotError(model, slot, slots) {
   if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
     return `modelSlots key "${model}" is not a Claude model id`;
@@ -7415,7 +7499,7 @@ function lastClaudeModel(transcriptPath) {
 // src/hooks/stop-failure.ts
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
-var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+) is limited or down since `);
+var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+)(?: in profile (\\S+))? is limited or down since `);
 var BREAKER_ALERT_FILE = "breaker-alerted.json";
 var STATE_FRESH_MS = 2 * 60000;
 var ALERT_WORKER_COMMAND = "alert-worker";
@@ -7505,11 +7589,14 @@ function breakerOpening(input, ctx) {
   if (!ctx.gatewaySetUp || ctx.state === null)
     return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
-  const slot = BREAKER_TEXT.exec(text)?.[1] ?? null;
+  const match = BREAKER_TEXT.exec(text);
+  const slot = match?.[1] ?? null;
   if (slot === null)
     return null;
-  const found = currentBreakers(ctx.state, ctx.nowMs).find(([name]) => name === slot);
-  return found === undefined ? null : { record: found[1], slot };
+  const profile = match?.[2] ?? null;
+  const key = stateKeyFor(slot, profile);
+  const found = currentBreakers(ctx.state, ctx.nowMs).find(([name]) => name === key);
+  return found === undefined ? null : { profile, record: found[1], slot };
 }
 function failedTargets(record, nowMs, timeZone) {
   return record.targets.map((target) => {
@@ -7523,15 +7610,29 @@ function breakerAlert(input, ctx) {
   const opening = breakerOpening(input, ctx);
   if (opening === null)
     return null;
-  if (ctx.breakerAlerted[opening.slot] === opening.record.since)
+  const mark = stateKeyFor(opening.slot, opening.profile);
+  if (ctx.breakerAlerted[mark] === opening.record.since)
     return null;
-  const { record, slot } = opening;
+  const { profile, record, slot } = opening;
   const short = slotShortName(slot);
   const since = formatClock(Math.floor(record.since / 1000), ctx.nowMs, ctx.timeZone);
   const failures = failedTargets(record, ctx.nowMs, ctx.timeZone);
-  const head = `${slot}: every target limited or down since ${since}${failures === "" ? "" : ` (${failures})`}.`;
+  const where = profile === null ? slot : `${slot} in profile ${profile}`;
+  const head = `${where}: every target limited or down since ${since}${failures === "" ? "" : ` (${failures})`}.`;
   const goOn = ctx.watchdogOn ? "Claude Code goes on by itself." : "Then send a message to go on.";
   const title = "Gateway slot limited";
+  if (profile !== null) {
+    return {
+      alert: {
+        action: null,
+        body: `${head} Change it: ${breakerChangeHint(slot, profile)}. ${goOn}`,
+        title
+      },
+      mark,
+      since: record.since,
+      slot
+    };
+  }
   if (ctx.config === null) {
     return {
       alert: {
@@ -7539,6 +7640,7 @@ function breakerAlert(input, ctx) {
         body: `${head} The gateway config cannot be read, so no other target is offered: ${COMMAND} doctor says why. ${goOn}`,
         title
       },
+      mark,
       since: record.since,
       slot
     };
@@ -7551,6 +7653,7 @@ function breakerAlert(input, ctx) {
         body: `${head} To use another model, pick one: ${COMMAND} gateway models lists them. ${goOn}`,
         title
       },
+      mark,
       since: record.since,
       slot
     };
@@ -7564,6 +7667,7 @@ function breakerAlert(input, ctx) {
         body: `${head} To use another model, turn the gateway on first (${COMMAND} gateway on), then: ${shown}. ${goOn}`,
         title
       },
+      mark,
       since: record.since,
       slot
     };
@@ -7577,6 +7681,7 @@ function breakerAlert(input, ctx) {
       body: `${head} To use another model: ${shown}. ${goOn}`,
       title
     },
+    mark,
     since: record.since,
     slot
   };
@@ -7584,7 +7689,7 @@ function breakerAlert(input, ctx) {
 function rememberBreakerAlert(paths, alerted, opening) {
   try {
     mkdirSync3(paths.stateDir, { recursive: true, mode: 448 });
-    writeFileSync2(join8(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.slot]: opening.since }, null, 2)}
+    writeFileSync2(join8(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}
 `, { mode: 384 });
   } catch {}
 }

@@ -831,6 +831,8 @@ export type HistoryBy = "target" | "slot" | "model" | "session";
 /** `src/gateway/history-read.ts` › `HistoryFilters`: each exact, `status` the one word. */
 export interface HistoryFilters {
   model?: string;
+  /** The profile a request's path named (`…/p/<profile>`, owner D29). */
+  profile?: string;
   session?: string;
   slot?: string;
   status?: "error";

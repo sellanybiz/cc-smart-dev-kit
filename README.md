@@ -774,8 +774,8 @@ How it works: [docs/gateway.md](docs/gateway.md).
 | `cc-smart-dev-kit gateway serve` | Runs the router in the terminal. |
 
 **The request history.** The router logs one row per routed request — the time, the Claude
-Code session id, the model, slot, target and status, the latency, the tokens the answer
-reported and an estimated cost — in `~/.local/state/cc-smart-dev-kit/history.db`. It is
+Code session id, the model, slot, profile, target and status, the latency, the tokens the
+answer reported and an estimated cost — in `~/.local/state/cc-smart-dev-kit/history.db`. It is
 **never** a prompt, a system text, a tool, an answer or a key. Rows are kept 90 days by
 default: `"history": {"retentionDays": 7}` in `gateway.json` changes that, and `0` turns the
 log off. `gateway history` and the portal's Flow page read it; `doctor` and `gateway status`

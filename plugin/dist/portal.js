@@ -6986,7 +6986,7 @@ var HISTORY_FLUSH_MS = 250;
 var HISTORY_BATCH_MAX = 200;
 var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
 var HISTORY_RETRY_MS = 60 * 1000;
-var HISTORY_SCHEMA_VERSION = 1;
+var HISTORY_SCHEMA_VERSION = 2;
 var CREATE_REQUESTS = `
   CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -6994,6 +6994,7 @@ var CREATE_REQUESTS = `
     session TEXT,
     model TEXT NOT NULL,
     slot TEXT,
+    profile TEXT,
     target TEXT NOT NULL,
     status INTEGER NOT NULL,
     ms INTEGER NOT NULL,
@@ -7029,6 +7030,10 @@ function openDatabase(file) {
     throw new Error(`${file} was written by a newer cc-smart-dev-kit (schema ${String(version?.user_version)}, this one reads ${String(HISTORY_SCHEMA_VERSION)})`);
   }
   db.run(CREATE_REQUESTS);
+  const columns = db.query("PRAGMA table_info(requests)").all();
+  if (!columns.some((column) => column.name === "profile")) {
+    db.run("ALTER TABLE requests ADD COLUMN profile TEXT");
+  }
   if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
   }
@@ -7057,15 +7062,16 @@ function retentionWords(days) {
   return days === 1 ? "1 day" : `${String(days)} days`;
 }
 var INSERT_ROW = `INSERT INTO requests
-  (at, session, model, slot, target, status, ms, next_target, breaker,
+  (at, session, model, slot, profile, target, status, ms, next_target, breaker,
    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 function insertValues(row) {
   return [
     row.at,
     row.session,
     row.model,
     row.slot,
+    row.profile,
     row.target,
     row.status,
     row.ms,
@@ -7172,7 +7178,7 @@ function createHistoryWriter(options) {
     retentionDays: () => options.retentionDays()
   };
 }
-var HISTORY_COLUMNS = "id, at, session, model, slot, target, status, ms, next_target, breaker, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated";
+var HISTORY_COLUMNS = "id, at, session, model, slot, profile, target, status, ms, next_target, breaker, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated";
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -7191,6 +7197,21 @@ function isClaudeModelId(name) {
 }
 function withoutContextSuffix(name) {
   return name.replace(CONTEXT_SUFFIX, "");
+}
+var PROFILE_PATH_PREFIX = "/p/";
+var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function isProfileName(name) {
+  return PROFILE_NAME.test(name);
+}
+function profileFromPath(pathname) {
+  if (!pathname.startsWith(PROFILE_PATH_PREFIX))
+    return { name: null, path: pathname };
+  const rest = pathname.slice(PROFILE_PATH_PREFIX.length);
+  const slash = rest.indexOf("/");
+  const name = slash === -1 ? rest : rest.slice(0, slash);
+  if (name === "")
+    return { name: null, path: pathname };
+  return { name, path: slash === -1 ? "/" : rest.slice(slash) };
 }
 function formatTarget(target) {
   return target.kind === "anthropic" ? target.model : `${target.backend}:${target.model}`;
@@ -7403,6 +7424,17 @@ var keptChainSchema = looseObject({
   fallback: boolean2().optional(),
   targets: array(string2().min(1)).min(1)
 });
+var PROFILE_NAME_RULE = "a profile name is lower-case letters, digits and - (the /p/<name> of a project's URL), at most 64";
+var SLOT_KEY_RULE = (slot) => `"${slot}" is not a slot key (cc-smart-dev-kit-<name>)`;
+var profileSlotSchema = union([literal("claude"), array(string2().min(1)).min(1)], {
+  error: 'a profile slot is "claude" (plain Claude for that slot there) or a chain: a list of one or more targets'
+});
+var profileSchema = looseObject({
+  breaker: record(string2(), boolean2()).optional(),
+  fallback: record(string2(), boolean2()).optional(),
+  kept: record(string2(), keptChainSchema).optional(),
+  slots: record(string2(), profileSlotSchema).optional()
+});
 var gatewayConfigSchema = looseObject({
   aliases: record(string2(), string2()).default({}),
   anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
@@ -7416,26 +7448,67 @@ var gatewayConfigSchema = looseObject({
   }).optional(),
   modelSlots: record(string2(), string2()).optional(),
   port: int().min(1).max(65535).default(DEFAULT_PORT),
-  slots: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), array(string2()).min(1)),
+  profiles: record(string2(), profileSchema).optional(),
+  slots: record(string2(), array(string2()).min(1)),
   timeouts: looseObject({
     breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
     firstByteMs: int().positive().default(DEFAULT_FIRST_BYTE_MS)
   }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
   version: literal(1)
 }).superRefine((config, ctx) => {
+  for (const slot of Object.keys(config.slots)) {
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
+  }
   for (const [slot, targets] of Object.entries(config.slots)) {
-    targets.forEach((text, index) => {
-      const parsed = parseTarget(text);
-      if ("error" in parsed) {
-        ctx.addIssue({ code: "custom", message: parsed.error, path: ["slots", slot, index] });
-      } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+    chainIssues(config, targets, ["slots", slot], ctx);
+  }
+  for (const [name, profile] of Object.entries(config.profiles ?? {})) {
+    if (!isProfileName(name)) {
+      ctx.addIssue({ code: "custom", message: PROFILE_NAME_RULE, path: ["profiles", name] });
+      continue;
+    }
+    for (const field of ["slots", "kept"]) {
+      for (const slot of Object.keys(profile[field] ?? {})) {
+        if (isSlotKey(slot))
+          continue;
         ctx.addIssue({
           code: "custom",
-          message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
-          path: ["slots", slot, index]
+          message: SLOT_KEY_RULE(slot),
+          path: ["profiles", name, field, slot]
         });
       }
-    });
+    }
+    for (const [slot, chain] of Object.entries(profile.slots ?? {})) {
+      if (chain === "claude")
+        continue;
+      chainIssues(config, chain, ["profiles", name, "slots", slot], ctx);
+    }
+    const chained = new Set([...Object.keys(config.slots), ...Object.keys(profile.slots ?? {})].filter((slot) => profileSlotChain(config, profile, slot) !== null));
+    for (const slot of Object.keys(profile.fallback ?? {})) {
+      if (slot !== JUDGE_SLOT && !chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `fallback names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has nothing to fall back to)`,
+          path: ["profiles", name, "fallback", slot]
+        });
+      }
+    }
+    for (const slot of Object.keys(profile.breaker ?? {})) {
+      if (slot === JUDGE_SLOT) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      } else if (!chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has no request to hold)`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      }
+    }
   }
   for (const [name, to] of Object.entries(config.aliases)) {
     const error = aliasError(name, to, config);
@@ -7473,6 +7546,28 @@ var gatewayConfigSchema = looseObject({
     }
   }
 });
+function chainIssues(config, targets, path, ctx) {
+  targets.forEach((text, index) => {
+    const parsed = parseTarget(text);
+    if ("error" in parsed) {
+      ctx.addIssue({ code: "custom", message: parsed.error, path: [...path, index] });
+    } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
+        path: [...path, index]
+      });
+    }
+  });
+}
+function profileSlotChain(config, profile, slot) {
+  const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
+  if (own === "claude")
+    return null;
+  if (own !== undefined)
+    return own;
+  return Object.hasOwn(config.slots, slot) ? config.slots[slot] ?? null : null;
+}
 function modelSlotError(model, slot, slots) {
   if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
     return `modelSlots key "${model}" is not a Claude model id`;
@@ -7550,6 +7645,42 @@ function keptChain(config, slot) {
   if (kept === undefined || !Object.hasOwn(kept, slot))
     return null;
   return kept[slot] ?? null;
+}
+function profileNames(config) {
+  return Object.keys(config.profiles ?? {}).sort();
+}
+function profileView(config, name) {
+  if (!isProfileName(name))
+    return null;
+  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
+  if (profile === undefined)
+    return null;
+  const slots = { ...config.slots };
+  for (const slot of Object.keys(profile.slots ?? {})) {
+    const chain = profileSlotChain(config, profile, slot);
+    if (chain === null)
+      delete slots[slot];
+    else
+      slots[slot] = chain;
+  }
+  const view = { ...config, slots };
+  const fallback = { ...config.fallback, ...profile.fallback };
+  if (Object.keys(fallback).length === 0)
+    delete view.fallback;
+  else
+    view.fallback = fallback;
+  const breaker = { ...config.breaker, ...profile.breaker };
+  if (Object.keys(breaker).length === 0)
+    delete view.breaker;
+  else
+    view.breaker = breaker;
+  return view;
+}
+function plainClaudeView(config) {
+  const view = { ...config, aliases: {}, slots: {} };
+  delete view.breaker;
+  delete view.fallback;
+  return view;
 }
 var JUDGE_TEST_VERSION = 3;
 function judgeTestProof(target, backendUrl) {
@@ -8150,6 +8281,13 @@ function mergeSeenClaude(a, b) {
     merged.set(id, Math.max(merged.get(id) ?? at, at));
   return Object.fromEntries([...merged].sort(([idA, atA], [idB, atB]) => atB - atA || (idA < idB ? -1 : 1)).slice(0, SEEN_CLAUDE_MAX));
 }
+function stateKeyFor(slot, profile) {
+  return profile === null ? slot : `${profile}/${slot}`;
+}
+function scopeOfStateKey(key) {
+  const at = key.indexOf("/");
+  return at === -1 ? { profile: null, slot: key } : { profile: key.slice(0, at), slot: key.slice(at + 1) };
+}
 function emptyLimitState() {
   return { fallbacks: {}, limits: {}, version: 1 };
 }
@@ -8237,16 +8375,20 @@ function earliestRestSeconds(failures, nowMs) {
 function describeFailures(failures, nowMs) {
   return failures.map((failure) => `${failure.target}: ${failure.reason}, until ${formatClock(Math.ceil(failure.until / 1000), nowMs)}`).join("; ");
 }
-function breakerMessage(slot, sinceMs, failures, nowMs) {
+function breakerChangeHint(slot, profile = null) {
+  return profile === null ? `${COMMAND} gateway slot ${slotShortName(slot)} <targets>` : `the chain of ${slotShortName(slot)} under profiles.${profile} in gateway.json`;
+}
+function breakerMessage(slot, sinceMs, failures, nowMs, profile = null) {
   const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
   const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
-  return `cc-smart-dev-kit-router: every target of ${slot} is limited or down since ${since}${named}; change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`;
+  const where = profile === null ? slot : `${slot} in profile ${profile}`;
+  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile)}`;
 }
 function breakerAnswer(answer) {
   const retryAfter = clientRetryAfter(answer.retryAfterSec ?? earliestRestSeconds(answer.failures, answer.nowMs));
   return Response.json({
     error: {
-      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs),
+      message: answer.message ?? breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs, answer.profile ?? null),
       type: "rate_limit_error"
     },
     type: "error"
@@ -9100,6 +9242,7 @@ var BAD_SIGNATURE = "Invalid `signature`";
 var NO_HEADERS_IN_TIME = "no response headers in time";
 var NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 var HEALTH_PATH = "/__cc-smart-dev-kit/health";
+var ROUTER_FEATURES = ["profiles"];
 var RECENT_MAX = 200;
 var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
 var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -9584,6 +9727,7 @@ function createRouter(deps) {
   });
   const fellBack = new Set;
   const untestedLogged = new Set;
+  const unknownProfiles = new Set;
   const cleanedLogged = new Set;
   const markedLogged = new Set;
   const restoredLogged = new Set;
@@ -9653,32 +9797,33 @@ function createRouter(deps) {
     if (response.status >= 400 || !Object.hasOwn(limitState.limits, id))
       return null;
     delete limitState.limits[id];
-    for (const [slot, record] of Object.entries(limitState.fallbacks)) {
+    for (const [key, record] of Object.entries(limitState.fallbacks)) {
       if (record.model !== id)
         continue;
-      delete limitState.fallbacks[slot];
-      deps.log(`${slot}: ${id} answers again; its fallback is over`);
+      delete limitState.fallbacks[key];
+      deps.log(`${key}: ${id} answers again; its fallback is over`);
     }
     persist();
     return null;
   }
-  function noteFallback(slot, model, limit, outcome) {
+  function noteFallback(slot, model, limit, outcome, profile) {
     const now = deps.now();
-    const before = limitState.fallbacks[slot];
+    const key = stateKeyFor(slot, profile);
+    const before = limitState.fallbacks[key];
     const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
     const reset = resetsAt === null ? "no reset time given" : `resets ${new Date(resetsAt * 1000).toISOString()}`;
     const claim = printable(limit?.claim ?? "plan limit", 40);
     if (!outcome.response.ok) {
       if (before === undefined) {
-        deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`);
+        deps.log(`WARN ${key}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`);
       }
       return;
     }
     fellBack.add(model);
     if (before === undefined) {
-      deps.log(`WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`);
+      deps.log(`WARN ${key}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`);
     }
-    limitState.fallbacks[slot] = {
+    limitState.fallbacks[key] = {
       lastAt: now,
       model,
       resetsAt,
@@ -9689,27 +9834,51 @@ function createRouter(deps) {
       persist();
     }
   }
+  function configFor(profile) {
+    const machine = deps.getConfig();
+    if (profile === null)
+      return machine;
+    const view = profileView(machine, profile);
+    if (view !== null)
+      return view;
+    if (!unknownProfiles.has(profile)) {
+      unknownProfiles.add(profile);
+      const names = profileNames(machine);
+      deps.log(`WARN profile "${printable(profile, 64)}" is not in ${deps.configPath} (profiles: ${names.length > 0 ? names.join(", ") : "none"}); its requests answer as plain Claude`);
+    }
+    return plainClaudeView(machine);
+  }
   function dropRemovedFallbacks(config) {
     if (config === checkedConfig)
       return;
     checkedConfig = config;
+    const scopes = new Map([[null, config]]);
+    for (const name of profileNames(config)) {
+      const view = profileView(config, name);
+      if (view !== null)
+        scopes.set(name, view);
+    }
     let changed = false;
-    for (const slot of Object.keys(limitState.fallbacks)) {
-      if (Object.hasOwn(config.slots, slot) && fallbackOn(config, slot))
+    for (const key of Object.keys(limitState.fallbacks)) {
+      const { profile, slot } = scopeOfStateKey(key);
+      const view = scopes.get(profile);
+      if (view !== undefined && Object.hasOwn(view.slots, slot) && fallbackOn(view, slot))
         continue;
-      delete limitState.fallbacks[slot];
-      deps.log(`${slot}: removed from the config; its fallback record is dropped`);
+      delete limitState.fallbacks[key];
+      deps.log(`${key}: removed from the config; its fallback record is dropped`);
       changed = true;
     }
     if (changed)
       persist();
-    for (const slot of new Set([
+    for (const key of new Set([
       ...openBreakers.keys(),
       ...Object.keys(limitState.breakers ?? {})
     ])) {
-      if (Object.hasOwn(config.slots, slot) && breakerOn(config, slot))
+      const { profile, slot } = scopeOfStateKey(key);
+      const view = scopes.get(profile);
+      if (view !== undefined && Object.hasOwn(view.slots, slot) && breakerOn(view, slot))
         continue;
-      closeBreaker(slot, "removed from the config or switched off");
+      closeBreaker(slot, profile, "removed from the config or switched off");
     }
   }
   function judgeTargetsOf(config) {
@@ -10244,16 +10413,17 @@ function createRouter(deps) {
     };
     persist();
   }
-  function breakerFor(slot, failures, holdMs) {
+  function breakerFor(slot, profile, failures, holdMs) {
     const now = deps.now();
-    const existing = openBreakers.get(slot);
+    const key = stateKeyFor(slot, profile);
+    const existing = openBreakers.get(key);
     if (existing !== undefined) {
       existing.failures = failures;
       if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS)
-        recordBreaker(slot, existing);
+        recordBreaker(key, existing);
       return existing;
     }
-    const before = currentBreakers(limitState, now).find(([key]) => key === slot)?.[1];
+    const before = currentBreakers(limitState, now).find(([stored]) => stored === key)?.[1];
     const open = {
       failures,
       held: before?.held ?? 0,
@@ -10262,24 +10432,25 @@ function createRouter(deps) {
       savedAt: now,
       since: before?.since ?? now
     };
-    openBreakers.set(slot, open);
-    recordBreaker(slot, open);
+    openBreakers.set(key, open);
+    recordBreaker(key, open);
     const wait = clientRetryAfter(earliestRestSeconds(failures, now));
-    deps.log(`WARN ${slot}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`);
+    deps.log(`WARN ${key}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`);
     return open;
   }
-  function closeBreaker(slot, why) {
-    const open = openBreakers.get(slot);
-    const stored = limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, slot) ? limitState.breakers[slot] : undefined;
+  function closeBreaker(slot, profile, why) {
+    const key = stateKeyFor(slot, profile);
+    const open = openBreakers.get(key);
+    const stored = limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, key) ? limitState.breakers[key] : undefined;
     if (open === undefined && stored === undefined)
       return;
     const since = open?.since ?? stored?.since ?? deps.now();
     const held = open?.held ?? stored?.held ?? 0;
-    openBreakers.delete(slot);
-    delete limitState.breakers?.[slot];
+    openBreakers.delete(key);
+    delete limitState.breakers?.[key];
     withoutEmptyBreakers(limitState);
     persist();
-    deps.log(`${slot}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
+    deps.log(`${key}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
   }
   function breakersNow() {
     return Object.fromEntries([...openBreakers].map(([slot, open]) => [
@@ -10312,11 +10483,12 @@ function createRouter(deps) {
     });
   }
   async function holdRequest(ctx, config0, targets0, first) {
-    const { asked, body, probes, req, slot, startMs, url } = ctx;
+    const { asked, body, profile, probes, req, slot, startMs, url } = ctx;
+    const key = stateKeyFor(slot, profile);
     let config = config0;
     let targets = targets0;
     let outcome = first;
-    let open = breakerFor(slot, first.capacity ?? [], holdLimitMs(config, body));
+    let open = breakerFor(slot, profile, first.capacity ?? [], holdLimitMs(config, body));
     let counted = null;
     const stopping = () => deps.shutdown?.aborted === true;
     const answer = (response) => ({
@@ -10325,7 +10497,7 @@ function createRouter(deps) {
         fallbacks: 0,
         response,
         skipped: 0,
-        target: `breaker(${slot})`
+        target: `breaker(${key})`
       },
       targets
     });
@@ -10333,7 +10505,7 @@ function createRouter(deps) {
       if (nowMs - open.reminderAt < BREAKER_REMINDER_MS)
         return;
       open.reminderAt = nowMs;
-      deps.log(`WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`);
+      deps.log(`WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile)}`);
     };
     try {
       for (;; ) {
@@ -10344,6 +10516,7 @@ function createRouter(deps) {
         const reply = (nowMs, retryAfterSec, message) => breakerAnswer({
           failures,
           nowMs,
+          profile,
           sinceMs: open.since,
           slot,
           ...retryAfterSec === undefined ? {} : { retryAfterSec },
@@ -10369,7 +10542,7 @@ function createRouter(deps) {
         }
         if (stopping())
           continue;
-        const next = deps.getConfig();
+        const next = configFor(profile);
         const route = resolveRoute(slot, next);
         if (route.kind !== "slot" || route.targets.length === 0) {
           return answer(reply(now, BREAKER_RELEASED_RETRY_AFTER_SEC, `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`));
@@ -10382,19 +10555,19 @@ function createRouter(deps) {
           remind(probingAt);
           return answer(reply(probingAt));
         }
-        outcome = await chain(req, url, config, body, targets, slot, false, asked, holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null);
+        outcome = await chain(req, url, config, body, targets, slot, false, asked, holds ? holdMode(config, body, startMs, openBreakers.has(key), probes) : null);
         if (req.signal.aborted)
           return { outcome, targets };
         if (outcome.capacity === undefined)
           return { outcome, targets };
-        open = breakerFor(slot, outcome.capacity, holdLimitMs(config, body));
+        open = breakerFor(slot, profile, outcome.capacity, holdLimitMs(config, body));
       }
     } finally {
       if (counted !== null)
         counted.heldNow -= 1;
     }
   }
-  async function slotRequest(req, url, config, body, slot, chained, guard, asked) {
+  async function slotRequest(req, url, config, body, slot, chained, guard, asked, profile) {
     const startMs = deps.now();
     let targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
     if (url.pathname === COUNT_TOKENS_PATH) {
@@ -10411,15 +10584,15 @@ function createRouter(deps) {
     }
     const breaks = !guard && url.pathname === MESSAGES_PATH && breakerOn(config, slot);
     const probes = { count: 0 };
-    let outcome = await chain(req, url, config, body, targets, slot, guard, asked, breaks ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null);
+    let outcome = await chain(req, url, config, body, targets, slot, guard, asked, breaks ? holdMode(config, body, startMs, openBreakers.has(stateKeyFor(slot, profile)), probes) : null);
     if (breaks && outcome.capacity !== undefined && !req.signal.aborted) {
-      const held = await holdRequest({ asked, body, probes, req, slot, startMs, url }, config, targets, outcome);
+      const held = await holdRequest({ asked, body, probes, profile, req, slot, startMs, url }, config, targets, outcome);
       outcome = held.outcome;
       targets = held.targets;
     }
     const first = targets[0];
     if (breaks && outcome.breaker === undefined && !req.signal.aborted && outcome.response.ok) {
-      closeBreaker(slot, "answers again");
+      closeBreaker(slot, profile, "answers again");
     }
     if (req.signal.aborted || first === undefined || outcome.breaker !== undefined)
       return outcome;
@@ -10427,7 +10600,7 @@ function createRouter(deps) {
       const limited = withoutContextSuffix(first.model);
       const limit = currentLimits(limitState, deps.now()).find(([model]) => model === limited);
       if (limit !== undefined)
-        noteFallback(slot, limited, limit[1], outcome);
+        noteFallback(slot, limited, limit[1], outcome, profile);
     }
     if (asked === null || sameModel(outcome.target, asked.model))
       return outcome;
@@ -10556,9 +10729,9 @@ function createRouter(deps) {
       statusText: response.statusText
     });
   }
-  async function route(req, url, model) {
-    const config = deps.getConfig();
-    dropRemovedFallbacks(config);
+  async function route(req, url, model, profile) {
+    const config = configFor(profile);
+    dropRemovedFallbacks(deps.getConfig());
     const isMessages = req.method === "POST" && (url.pathname === MESSAGES_PATH || url.pathname === COUNT_TOKENS_PATH);
     if (isMessages) {
       const type = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
@@ -10616,7 +10789,7 @@ function createRouter(deps) {
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
     if (judgeTargets.length > 0)
       model.slot = JUDGE_SLOT;
-    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null) : (guard ? claudeFirstJudge() : null) ?? claudeRoute();
+    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null, profile) : (guard ? claudeFirstJudge() : null) ?? claudeRoute();
     return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
     async function serverToolRoute(tool) {
       const why = `server tool ${tool}`;
@@ -10679,10 +10852,7 @@ function createRouter(deps) {
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);
       if (found !== null && familyRoute?.kind === "slot" && familyRoute.targets.length > 0) {
         model.slot = found.slot;
-        return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, {
-          model: found.model,
-          sent
-        });
+        return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, { model: found.model, sent }, profile);
       }
       const decided = resolveRequestRoute(body, config, guard);
       if (decided.kind === "anthropic") {
@@ -10704,7 +10874,7 @@ function createRouter(deps) {
       }
       if (decided.kind === "slot") {
         model.slot = decided.slot;
-        return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null);
+        return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null, profile);
       }
       const target = decided.target;
       if (url.pathname === COUNT_TOKENS_PATH) {
@@ -10763,12 +10933,17 @@ function createRouter(deps) {
   return async function handle(req) {
     const startMs = deps.now();
     const url = new URL(req.url);
+    const profilePath = profileFromPath(url.pathname);
+    const profile = profilePath.name;
+    const requestedPath = url.pathname;
+    if (profile !== null)
+      url.pathname = profilePath.path;
     const model = {
       guard: false,
       name: "-",
       slot: null
     };
-    const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
+    const line = (outcome) => `${new Date(startMs).toISOString()} ${req.method} ${printable(requestedPath)} ${printable(model.name)} \u2192 ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${outcome.breaker === undefined ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}` : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`}`;
     const host = (req.headers.get("host") ?? "").toLowerCase();
     if (req.headers.has("origin") || !allowedHosts.has(host)) {
       const outcome = refusal("cc-smart-dev-kit-router accepts requests from this machine only");
@@ -10776,25 +10951,28 @@ function createRouter(deps) {
       return outcome.response;
     }
     if (req.method === "GET" && url.pathname === HEALTH_PATH) {
+      const machine = deps.getConfig();
       return Response.json({
         breakers: breakersNow(),
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
+        features: ROUTER_FEATURES,
         ok: true,
         port: deps.port,
+        profiles: profileNames(machine),
         recent,
         requests: stats.requests,
         seenClaude: limitState.seenClaude ?? {},
-        slots: deps.getConfig().slots,
+        slots: machine.slots,
         uptimeSec: Math.floor((deps.now() - startedAt) / 1000)
       });
     }
     stats.requests += 1;
     let outcome;
     try {
-      outcome = await route(req, url, model);
+      outcome = await route(req, url, model, profile);
     } catch (error) {
-      deps.log(`ERROR ${req.method} ${printable(url.pathname)}: ${messageOf(error)}`);
+      deps.log(`ERROR ${req.method} ${printable(requestedPath)}: ${messageOf(error)}`);
       outcome = {
         fallbacks: 0,
         response: anthropicError(500, "api_error", "cc-smart-dev-kit-router failed on this request; see its log"),
@@ -10822,6 +11000,7 @@ function createRouter(deps) {
         model: model.name,
         ms: deps.now() - startMs,
         nextTarget: answered.fallbacks > 0 ? printable(answered.target) : null,
+        profile: profile === null ? null : printable(profile, 64),
         session: sessionIdOf(req.headers),
         slot: model.slot,
         status: answered.response.status,
@@ -13667,7 +13846,7 @@ function groupExpression(by) {
 function filterClause(filters) {
   const parts = [];
   const values = [];
-  for (const column of ["slot", "target", "model", "session"]) {
+  for (const column of ["slot", "profile", "target", "model", "session"]) {
     const value = filters[column];
     if (value === undefined)
       continue;
@@ -13835,6 +14014,7 @@ function rowOf(row) {
     ms: row.ms,
     nextTarget: row.next_target,
     outputTokens: row.output_tokens,
+    profile: row.profile,
     session: row.session,
     slot: row.slot,
     status: row.status,

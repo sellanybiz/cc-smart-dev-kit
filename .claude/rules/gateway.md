@@ -68,6 +68,33 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 - A redirect from an affordable backend becomes a 502.
 - A `claude-…` name is never an alias, and never routed anywhere but Anthropic.
 
+## The path is stripped once, before every branch (owner D29)
+
+- **A project points at a profile through its URL: `…/p/<profile>`.** The router strips
+  `/p/<name>` once, in `handle`, before every branch a request can take — `POST /v1/messages`
+  streamed or not, `count_tokens`, `HEAD /api/hello`, the health page, a server-tool request,
+  the judge — and everything after that reads the path Claude Code itself would have sent.
+  That path, not the prefixed one, is also what Anthropic gets. **Never strip anywhere else**:
+  a second strip, or one inside a branch, would send Anthropic a path it does not serve. The
+  proof that Claude Code keeps the prefix on every request is in `docs/claude-code-contract.md`.
+- **A name is checked against a strict pattern before any lookup** (`isProfileName`:
+  lower-case letters, digits and `-`, at most 64; `profileFromPath` only splits). A name that
+  is no profile — malformed, or not in the config's `profiles` — answers as plain Claude
+  (`plainClaudeView`): every slot off, no alias applied, the request to Anthropic as Claude
+  Code sent it, one WARN per name. Never an error a session cannot read, never another
+  profile's chains.
+- **A profile is a view over the machine's config, never a second config**: `profileView`
+  returns the machine's config with the profile's chains (`"claude"` turns a slot off there; a
+  slot it does not name keeps the machine's chain) and its fallback and breaker switches over
+  the machine's, and every reader the router already has works on it unchanged. `backends`,
+  `port`, `timeouts`, `aliases`, `judgeTested` and `history` stay machine-wide. A view is
+  never saved.
+- **A profile's chain is its own state**: a `fallbacks` or `breakers` record goes under
+  `<profile>/<slot>` (`stateKeyFor`), and the breaker's hold and answer are the profile's.
+  A target's rest, and the one request at a time that probes it, stay per target: a target
+  that is down is down for every profile. `limits` stays per Claude model too: the login, and
+  so its plan limits, is one for every profile.
+
 ## Every slot the same way; no model chosen for anyone (owner)
 
 Five slots — scout (Haiku's), worker (Sonnet's), opus, fable, and judge (auto mode's

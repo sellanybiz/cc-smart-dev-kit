@@ -117,16 +117,30 @@ export function describeFailures(failures: readonly BreakerFailure[], nowMs: num
     .join("; ");
 }
 
+/**
+ * What to change when a chain's every target is limited or down, as the words after
+ * "change it:": the command for the machine's default, and for a profile the key its chains
+ * live under (a profile's chain is not the `gateway slot` one, so naming that command would
+ * change the wrong chain).
+ */
+export function breakerChangeHint(slot: string, profile: null | string = null): string {
+  return profile === null
+    ? `${COMMAND} gateway slot ${slotShortName(slot)} <targets>`
+    : `the chain of ${slotShortName(slot)} under profiles.${profile} in gateway.json`;
+}
+
 /** The text of the breaker's answer, and of the line `gateway status` prints. */
 export function breakerMessage(
   slot: string,
   sinceMs: number,
   failures: readonly BreakerFailure[],
   nowMs: number,
+  profile: null | string = null,
 ): string {
   const since = formatClock(Math.floor(sinceMs / 1000), nowMs);
   const named = failures.length === 0 ? "" : ` (${describeFailures(failures, nowMs)})`;
-  return `cc-smart-dev-kit-router: every target of ${slot} is limited or down since ${since}${named}; change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`;
+  const where = profile === null ? slot : `${slot} in profile ${profile}`;
+  return `cc-smart-dev-kit-router: every target of ${where} is limited or down since ${since}${named}; change it: ${breakerChangeHint(slot, profile)}`;
 }
 
 /**
@@ -138,6 +152,8 @@ export function breakerAnswer(answer: {
   /** Replaces the usual `retry-after` (whole seconds, capped and at least 1). */
   retryAfterSec?: number;
   slot: string;
+  /** The profile whose chain the slot's failure is about; null (or absent): the machine's. */
+  profile?: null | string;
   sinceMs: number;
   nowMs: number;
   /** Replaces the usual message: a request released before its hold ended says why. */
@@ -151,7 +167,13 @@ export function breakerAnswer(answer: {
       error: {
         message:
           answer.message ??
-          breakerMessage(answer.slot, answer.sinceMs, answer.failures, answer.nowMs),
+          breakerMessage(
+            answer.slot,
+            answer.sinceMs,
+            answer.failures,
+            answer.nowMs,
+            answer.profile ?? null,
+          ),
         type: "rate_limit_error",
       },
       type: "error",

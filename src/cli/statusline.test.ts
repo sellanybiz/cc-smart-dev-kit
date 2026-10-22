@@ -119,6 +119,21 @@ describe("statusline", () => {
     expect(statuslineText(input(null, null), state, NOW, "UTC")).toBe(
       "Opus 5.5 · worker slot: every target limited since 09:55 → gateway slot worker <targets>",
     );
+    // A profile's breaker (owner D29): its chain lives in the config, not at `gateway slot`.
+    const profile: LimitState = {
+      ...state,
+      breakers: {
+        "my-project/cc-smart-dev-kit-worker": state.breakers?.["cc-smart-dev-kit-worker"] ?? {
+          held: 0,
+          lastAt: 0,
+          since: 0,
+          targets: [],
+        },
+      },
+    };
+    expect(statuslineText(input(null, null), profile, NOW, "UTC")).toBe(
+      "Opus 5.5 · worker slot in profile my-project: every target limited since 09:55 → profiles.my-project in gateway.json",
+    );
     // A record the router stopped touching 15 minutes ago is stale: it goes with the breaker.
     const stale: LimitState = {
       ...state,

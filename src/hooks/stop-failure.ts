@@ -59,7 +59,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { slotShortName } from "../gateway/breaker";
+import { breakerChangeHint, slotShortName } from "../gateway/breaker";
 import { fallbackOn, type GatewayConfig, loadConfigFile } from "../gateway/config";
 import {
   type BreakerRecord,
@@ -69,6 +69,7 @@ import {
   type LimitRecord,
   type LimitState,
   parseLimitState,
+  stateKeyFor,
 } from "../gateway/limit-state";
 import { settingsReport } from "../gateway/settings";
 import {
@@ -102,7 +103,7 @@ const NOT_LIMIT_TEXT = /\(not your usage limit\)/;
  * start: under an API key the text is `Request rejected (429) · <message>`.
  */
 const BREAKER_TEXT = new RegExp(
-  `${PLUGIN}-router: every target of (\\S+) is limited or down since `,
+  `${PLUGIN}-router: every target of (\\S+)(?: in profile (\\S+))? is limited or down since `,
 );
 
 /**
@@ -320,6 +321,8 @@ function offerFor(
 
 /** A breaker opening that explains this stop: the slot, and the state's fresh record for it. */
 export interface BreakerOpening {
+  /** The profile whose chain it is; null for the machine's default (`stateKeyFor`). */
+  profile: null | string;
   record: BreakerRecord;
   /** The slot as the router names it: `cc-smart-dev-kit-worker`. */
   slot: string;
@@ -335,10 +338,15 @@ export function breakerOpening(input: unknown, ctx: AlertContext): BreakerOpenin
   if (!isJsonObject(input) || input.error !== "rate_limit") return null;
   if (!ctx.gatewaySetUp || ctx.state === null) return null;
   const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
-  const slot = BREAKER_TEXT.exec(text)?.[1] ?? null;
+  const match = BREAKER_TEXT.exec(text);
+  const slot = match?.[1] ?? null;
   if (slot === null) return null;
-  const found = currentBreakers(ctx.state, ctx.nowMs).find(([name]) => name === slot);
-  return found === undefined ? null : { record: found[1], slot };
+  // A profile's breaker is its own record, keyed `<profile>/<slot>` (owner D29); its 429
+  // names the profile in the same message, so the record it belongs to is exact.
+  const profile = match?.[2] ?? null;
+  const key = stateKeyFor(slot, profile);
+  const found = currentBreakers(ctx.state, ctx.nowMs).find(([name]) => name === key);
+  return found === undefined ? null : { profile, record: found[1], slot };
 }
 
 /** What the alert says about a breaker record's targets: `omniroute:a HTTP 429 until 21:07`. */
@@ -354,6 +362,8 @@ function failedTargets(record: BreakerRecord, nowMs: number, timeZone?: string):
 /** The breaker alert, with the opening it is about: the hook records it, so it never repeats. */
 export interface BreakerAlert {
   alert: Alert;
+  /** The record's key in the state file: `<profile>/<slot>`, or the slot alone (`stateKeyFor`). */
+  mark: string;
   /** The record's `since`, in milliseconds: what the mark keeps (`BREAKER_ALERT_FILE`). */
   since: number;
   /** The slot as the router names it. */
@@ -372,14 +382,30 @@ export function breakerAlert(input: unknown, ctx: AlertContext): BreakerAlert | 
   if (!ctx.alerts.events.value.includes("failed")) return null;
   const opening = breakerOpening(input, ctx);
   if (opening === null) return null;
-  if (ctx.breakerAlerted[opening.slot] === opening.record.since) return null;
-  const { record, slot } = opening;
+  const mark = stateKeyFor(opening.slot, opening.profile);
+  if (ctx.breakerAlerted[mark] === opening.record.since) return null;
+  const { profile, record, slot } = opening;
   const short = slotShortName(slot);
   const since = formatClock(Math.floor(record.since / 1000), ctx.nowMs, ctx.timeZone);
   const failures = failedTargets(record, ctx.nowMs, ctx.timeZone);
-  const head = `${slot}: every target limited or down since ${since}${failures === "" ? "" : ` (${failures})`}.`;
+  const where = profile === null ? slot : `${slot} in profile ${profile}`;
+  const head = `${where}: every target limited or down since ${since}${failures === "" ? "" : ` (${failures})`}.`;
   const goOn = ctx.watchdogOn ? "Claude Code goes on by itself." : "Then send a message to go on.";
   const title = "Gateway slot limited";
+  // A profile's chain is not the `gateway slot` one (owner D29): its alert points at the
+  // profile's key in the config, and the person's own chains offer no stand-in for it.
+  if (profile !== null) {
+    return {
+      alert: {
+        action: null,
+        body: `${head} Change it: ${breakerChangeHint(slot, profile)}. ${goOn}`,
+        title,
+      },
+      mark,
+      since: record.since,
+      slot,
+    };
+  }
   if (ctx.config === null) {
     return {
       alert: {
@@ -387,6 +413,7 @@ export function breakerAlert(input: unknown, ctx: AlertContext): BreakerAlert | 
         body: `${head} The gateway config cannot be read, so no other target is offered: ${COMMAND} doctor says why. ${goOn}`,
         title,
       },
+      mark,
       since: record.since,
       slot,
     };
@@ -399,6 +426,7 @@ export function breakerAlert(input: unknown, ctx: AlertContext): BreakerAlert | 
         body: `${head} To use another model, pick one: ${COMMAND} gateway models lists them. ${goOn}`,
         title,
       },
+      mark,
       since: record.since,
       slot,
     };
@@ -412,6 +440,7 @@ export function breakerAlert(input: unknown, ctx: AlertContext): BreakerAlert | 
         body: `${head} To use another model, turn the gateway on first (${COMMAND} gateway on), then: ${shown}. ${goOn}`,
         title,
       },
+      mark,
       since: record.since,
       slot,
     };
@@ -425,6 +454,7 @@ export function breakerAlert(input: unknown, ctx: AlertContext): BreakerAlert | 
       body: `${head} To use another model: ${shown}. ${goOn}`,
       title,
     },
+    mark,
     since: record.since,
     slot,
   };
@@ -444,7 +474,7 @@ export function rememberBreakerAlert(
     mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 });
     writeFileSync(
       join(paths.stateDir, BREAKER_ALERT_FILE),
-      `${JSON.stringify({ ...alerted, [opening.slot]: opening.since }, null, 2)}\n`,
+      `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}\n`,
       { mode: 0o600 },
     );
   } catch {

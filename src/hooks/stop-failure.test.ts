@@ -504,6 +504,7 @@ describe("the breaker's 429", () => {
         body: `${HEAD} To use another model: cc-smart-dev-kit gateway slot worker omniroute:ollama-cloud/deepseek-v4.1-flash. Then send a message to go on.`,
         title: "Gateway slot limited",
       },
+      mark: BREAKER_SLOT,
       since: BREAKER_SINCE,
       slot: BREAKER_SLOT,
     });
@@ -514,6 +515,44 @@ describe("the breaker's 429", () => {
         ctx({ breakerAlerted: { [BREAKER_SLOT]: BREAKER_SINCE }, state: breaker() }),
       ),
     ).toBeNull();
+  });
+
+  it("a profile's breaker is its own record: its message says the profile, its mark is its key", () => {
+    const text = `API Error: Server is temporarily limiting requests (not your usage limit) · cc-smart-dev-kit-router: every target of ${BREAKER_SLOT} in profile my-project is limited or down since 09:40 (omniroute:ollama-cloud/glm-5.3-flash: HTTP 429, until 10:07); change it: the chain of worker under profiles.my-project in gateway.json`;
+    const input = { ...BREAKER, last_assistant_message: text };
+    const state: LimitState = {
+      ...breaker(),
+      breakers: {
+        [`my-project/${BREAKER_SLOT}`]: breaker().breakers?.[BREAKER_SLOT] ?? {
+          held: 0,
+          lastAt: 0,
+          since: 0,
+          targets: [],
+        },
+      },
+    };
+    const alert = breakerAlert(input, ctx({ state }));
+    expect(alert).toEqual({
+      alert: {
+        // A profile's chain is not the machine's: no `gateway slot` action is offered.
+        action: null,
+        body: `cc-smart-dev-kit-worker in profile my-project: every target limited or down since 09:40 (omniroute:ollama-cloud/glm-5.3-flash HTTP 429 until 10:07; omniroute:ollama-cloud/deepseek-v4.1-flash HTTP 503 until 10:09). Change it: the chain of worker under profiles.my-project in gateway.json. Then send a message to go on.`,
+        title: "Gateway slot limited",
+      },
+      mark: `my-project/${BREAKER_SLOT}`,
+      since: BREAKER_SINCE,
+      slot: BREAKER_SLOT,
+    });
+    // The mark is the profile's key: the machine's own opening is a different one.
+    expect(
+      breakerAlert(
+        input,
+        ctx({ breakerAlerted: { [`my-project/${BREAKER_SLOT}`]: BREAKER_SINCE }, state }),
+      ),
+    ).toBeNull();
+    expect(
+      breakerAlert(input, ctx({ breakerAlerted: { [BREAKER_SLOT]: BREAKER_SINCE }, state }))?.mark,
+    ).toBe(`my-project/${BREAKER_SLOT}`);
   });
 
   it("a new opening alerts again, with its own since", () => {

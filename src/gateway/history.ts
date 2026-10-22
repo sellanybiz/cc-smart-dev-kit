@@ -3,7 +3,8 @@
  * `bun:sqlite` (Bun's built-in SQLite: no dependency), in the router's state folder.
  *
  * **Never the conversation.** A row holds the time, the Claude Code session id when the
- * request carried one, the model asked, the slot, the target that answered, the status, the
+ * request carried one, the model asked, the slot, the profile the request's path named
+ * (`…/p/<profile>`, owner D29), the target that answered, the status, the
  * latency, the next target on a fallback, whether the breaker held it, the four token counts
  * an answer's `usage` reported, and an estimated USD cost. Never a prompt, a system text, a
  * tool, an answer or a key. The safety checks auto mode sends are counted by day in
@@ -48,8 +49,12 @@ export const HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
 /** How long a writer that failed to open or write waits before trying again. */
 const HISTORY_RETRY_MS = 60 * 1000;
 
-/** The database's schema version (`PRAGMA user_version`); raise it when a column changes. */
-export const HISTORY_SCHEMA_VERSION = 1;
+/**
+ * The database's schema version (`PRAGMA user_version`); raise it when a column changes.
+ * 2 since 1.2.0: `profile`, the profile a request came through (owner D29); a database from
+ * version 1 keeps every row, and its rows read as the machine's default (`profile` null).
+ */
+export const HISTORY_SCHEMA_VERSION = 2;
 
 /** What a request did, as one row: metadata only, never a word of the conversation. */
 export interface HistoryRow {
@@ -68,6 +73,12 @@ export interface HistoryRow {
    * one tried); null when the request never left its first target.
    */
   nextTarget: null | string;
+  /**
+   * The profile the request's path named (`…/p/<profile>`, owner D29), as the path spelled
+   * it; null for the machine's default (no prefix). A name no profile matched is kept too:
+   * the row says where the request came from, and its target says what answered.
+   */
+  profile: null | string;
   /** The Claude Code session id the request carried (`x-claude-code-session-id`); null when none. */
   session: null | string;
   /** The slot that took it; null when no slot did (Anthropic as sent). */
@@ -122,6 +133,7 @@ interface StoredRow {
   ms: number;
   next_target: null | string;
   output_tokens: null | number;
+  profile: null | string;
   session: null | string;
   slot: null | string;
   status: number;
@@ -135,6 +147,7 @@ const CREATE_REQUESTS = `
     session TEXT,
     model TEXT NOT NULL,
     slot TEXT,
+    profile TEXT,
     target TEXT NOT NULL,
     status INTEGER NOT NULL,
     ms INTEGER NOT NULL,
@@ -180,6 +193,13 @@ function openDatabase(file: string): Database {
     );
   }
   db.run(CREATE_REQUESTS);
+  // A database from before profiles (schema 1) keeps every row: the column is added beside
+  // them, and those rows read as the machine's default (`profile` null). `CREATE TABLE IF NOT
+  // EXISTS` never changes an existing table, so the added column is checked for by name.
+  const columns = db.query("PRAGMA table_info(requests)").all() as { name: string }[];
+  if (!columns.some((column) => column.name === "profile")) {
+    db.run("ALTER TABLE requests ADD COLUMN profile TEXT");
+  }
   if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
   }
@@ -219,9 +239,9 @@ export function retentionWords(days: number): string {
 
 /** The row inserted, in the table's column order. */
 const INSERT_ROW = `INSERT INTO requests
-  (at, session, model, slot, target, status, ms, next_target, breaker,
+  (at, session, model, slot, profile, target, status, ms, next_target, breaker,
    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 function insertValues(row: HistoryRow): (null | number | string)[] {
   return [
@@ -229,6 +249,7 @@ function insertValues(row: HistoryRow): (null | number | string)[] {
     row.session,
     row.model,
     row.slot,
+    row.profile,
     row.target,
     row.status,
     row.ms,
@@ -361,6 +382,6 @@ export function noHistoryWriter(): HistoryWriter {
 
 /** The columns a read returns, in one place (the read side maps them, `history-read.ts`). */
 export const HISTORY_COLUMNS =
-  "id, at, session, model, slot, target, status, ms, next_target, breaker, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated";
+  "id, at, session, model, slot, profile, target, status, ms, next_target, breaker, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated";
 
 export type { StoredRow };

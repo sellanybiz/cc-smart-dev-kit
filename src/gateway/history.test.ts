@@ -38,6 +38,7 @@ function row(overrides: Partial<HistoryRow> = {}): HistoryRow {
     model: "claude-sonnet-5-5",
     ms: 12,
     nextTarget: null,
+    profile: null,
     session: "sess-1",
     slot: "cc-smart-dev-kit-worker",
     status: 200,
@@ -103,6 +104,7 @@ describe("the history writer", () => {
         inputTokens: 1000,
         model: "claude-sonnet-5-5",
         ms: 42,
+        profile: null,
         nextTarget: "claude-sonnet-5-5",
         outputTokens: 500,
         session: "sess-1",
@@ -179,7 +181,102 @@ describe("the history writer", () => {
     const db = new Database(file, { readonly: true });
     expect(db.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     expect(db.query("PRAGMA auto_vacuum").get()).toEqual({ auto_vacuum: 2 });
-    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+    db.close();
+  });
+
+  it("a database from schema 1 keeps every row: the profile column is added beside them", () => {
+    const file = historyFile();
+    // The version-1 table, exactly as 1.1.0 made it, with two rows already in it.
+    const old = new Database(file, { create: true });
+    old.run(`CREATE TABLE requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at INTEGER NOT NULL,
+      session TEXT,
+      model TEXT NOT NULL,
+      slot TEXT,
+      target TEXT NOT NULL,
+      status INTEGER NOT NULL,
+      ms INTEGER NOT NULL,
+      next_target TEXT,
+      breaker TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cache_read_tokens INTEGER,
+      cache_write_tokens INTEGER,
+      cost_usd REAL,
+      cost_estimated INTEGER NOT NULL DEFAULT 0
+    )`);
+    old.run("CREATE INDEX requests_at ON requests(at)");
+    old.run("CREATE INDEX requests_session_at ON requests(session, at)");
+    old.run(
+      `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        START - 2000,
+        "s-1",
+        "old-one",
+        "cc-smart-dev-kit-worker",
+        "claude-sonnet-5-5",
+        200,
+        12,
+        null,
+        null,
+        10,
+        20,
+        0,
+        0,
+        0.1,
+        1,
+      ],
+    );
+    old.run(
+      `INSERT INTO requests (at, session, model, slot, target, status, ms, next_target, breaker,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        START - 1000,
+        null,
+        "old-two",
+        null,
+        "anthropic",
+        500,
+        30,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        0,
+      ],
+    );
+    old.run("PRAGMA user_version = 1");
+    old.close();
+
+    // The writer opens it: the column is added, the two rows stay, and they read as the
+    // machine's default (no profile).
+    const writer = createHistoryWriter({
+      file,
+      flushAfterMs: 60_000,
+      log: () => {},
+      now: () => START,
+      retentionDays: () => 90,
+    });
+    writer.record(row({ at: START, model: "new-one", profile: "proj" }));
+    writer.flush();
+    writer.close();
+
+    const page = recentRequests(file, { limit: 10 });
+    expect(page.rows.map((entry) => [entry.model, entry.profile])).toEqual([
+      ["new-one", "proj"],
+      ["old-two", null],
+      ["old-one", null],
+    ]);
+    const db = new Database(file, { readonly: true });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     db.close();
   });
 
@@ -393,12 +490,35 @@ describe("the router's request history", () => {
         model: "claude-sonnet-5-5",
         ms: 42,
         nextTarget: null,
+        profile: null,
         session: "sess-1",
         slot: "cc-smart-dev-kit-worker",
         status: 200,
         target: "claude-sonnet-5-5",
         tokens: { cacheRead: 2000, cacheWrite: 100, input: 1000, output: 500 },
       },
+    ]);
+  });
+
+  it("a request under a profile's path writes the profile in its row; a plain one writes none", async () => {
+    const history = collector();
+    const config = testConfig({
+      profiles: { proj: { slots: { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] } } },
+    });
+    const { handle, settled } = routerWithHistory([answerWithUsage, answerWithUsage], {
+      config,
+      history: history.recorder,
+    });
+    const profiled = await handle(
+      request({ body: message("claude-sonnet-5-5"), path: "/p/proj/v1/messages", session: "s" }),
+    );
+    await profiled.text();
+    const plain = await handle(request({ body: message("claude-sonnet-5-5"), session: "s" }));
+    await plain.text();
+    await settled();
+    expect(history.rows.map((entry) => [entry.profile, entry.target])).toEqual([
+      ["proj", "claude-sonnet-5-5"],
+      [null, "claude-sonnet-5-5"],
     ]);
   });
 

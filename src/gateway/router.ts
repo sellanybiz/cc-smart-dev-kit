@@ -8,6 +8,11 @@
  *   Anthropic documents for gateways. That login must only ever reach Anthropic.
  *
  * WHAT IT DOES, PER REQUEST
+ *   - A path under `/p/<profile>` is split off first (`profileFromPath`), before every
+ *     branch below, and the request answers with that profile's chains and switches
+ *     (`profileView`); a name no profile holds answers as plain Claude, never an error
+ *     (owner D29; § Profiles in docs/gateway.md). Claude Code keeps the whole path on
+ *     every request, so this is the one place the prefix is known.
  *   - An old model name in the config's `aliases` is replaced by its slot or target
  *     first (`resolveAlias`), logged once per name.
  *   - `POST /v1/messages` (and `/count_tokens`) with a `claude-…` model whose family's slot
@@ -106,13 +111,13 @@ import {
   BREAKER_SHUTDOWN_RETRY_AFTER_SEC,
   type BreakerFailure,
   breakerAnswer,
+  breakerChangeHint,
   capRetryAfter,
   clientRetryAfter,
   describeFailures,
   earliestRestSeconds,
   formatDuration,
   isCapacityFailure,
-  slotShortName,
 } from "./breaker";
 import {
   BREAKER_HOLD_NON_STREAMING_MS,
@@ -123,6 +128,9 @@ import {
   historyRetentionDays,
   judgeTargetUsable,
   messageOf,
+  plainClaudeView,
+  profileNames,
+  profileView,
   watchConfig,
   workerJudgeTargets,
 } from "./config";
@@ -143,6 +151,8 @@ import {
   type LimitState,
   mergeSeenClaude,
   parseLimitState,
+  scopeOfStateKey,
+  stateKeyFor,
 } from "./limit-state";
 import { inheritedListenFd, innerSocketPath, LISTEN_VARS, listenOnFd, serveUnix } from "./listen";
 import type { RouterPaths } from "./paths";
@@ -185,6 +195,7 @@ import {
   type PlanLimit,
   parseTarget,
   planUsageLimit,
+  profileFromPath,
   resolveAlias,
   resolveRequestRoute,
   resolveRoute,
@@ -309,6 +320,14 @@ const NO_EVENT_IN_TIME = "no event in time (only heartbeats)";
 
 /** Path of the router's own health check, answered before anything is forwarded. */
 export const HEALTH_PATH = "/__cc-smart-dev-kit/health";
+
+/**
+ * What this router answers that a reader may rely on, as the health page's `features`. The
+ * router carries no version, so a command or the portal tells a running router that knows a
+ * feature from one that does not by this list, never by guessing. `profiles`: a project's
+ * `…/p/<profile>` path names its own chains (owner D29, `docs/gateway.md` § Profiles).
+ */
+export const ROUTER_FEATURES: readonly string[] = ["profiles"];
 
 /** How many routed requests the health answer lists (`recent`), the last ones first in. */
 export const RECENT_MAX = 200;
@@ -1155,6 +1174,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const fellBack = new Set<string>();
   /** Judge targets already named in a WARN as untested: once each. */
   const untestedLogged = new Set<string>();
+  /** Profile names the config does not hold, already named in a WARN: once each. */
+  const unknownProfiles = new Set<string>();
   /** What `cleanAnswer` changed, per slot and target: logged once each. */
   const cleanedLogged = new Set<string>();
   /** Claude models whose request lost the router's marked thinking blocks (`forClaude`): once each. */
@@ -1285,10 +1306,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     if (response.status >= 400 || !Object.hasOwn(limitState.limits, id)) return null;
     delete limitState.limits[id];
-    for (const [slot, record] of Object.entries(limitState.fallbacks)) {
+    for (const [key, record] of Object.entries(limitState.fallbacks)) {
       if (record.model !== id) continue;
-      delete limitState.fallbacks[slot];
-      deps.log(`${slot}: ${id} answers again; its fallback is over`);
+      delete limitState.fallbacks[key];
+      deps.log(`${key}: ${id} answers again; its fallback is over`);
     }
     persist();
     return null;
@@ -1305,9 +1326,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     model: string,
     limit: PlanLimit | null,
     outcome: Outcome,
+    profile: null | string,
   ): void {
     const now = deps.now();
-    const before = limitState.fallbacks[slot];
+    // A profile's chain is its own, so its fallback record is its own record (`stateKeyFor`).
+    const key = stateKeyFor(slot, profile);
+    const before = limitState.fallbacks[key];
     const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
     const reset =
       resetsAt === null
@@ -1317,7 +1341,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (!outcome.response.ok) {
       if (before === undefined) {
         deps.log(
-          `WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`,
+          `WARN ${key}: ${model} is at its plan usage limit (${claim}, ${reset}); its fallback ${outcome.target} answered ${outcome.response.status}`,
         );
       }
       return;
@@ -1325,10 +1349,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     fellBack.add(model);
     if (before === undefined) {
       deps.log(
-        `WARN ${slot}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`,
+        `WARN ${key}: ${model} is at its plan usage limit (${claim}, ${reset}); answering from ${outcome.target} until ${model} answers again`,
       );
     }
-    limitState.fallbacks[slot] = {
+    limitState.fallbacks[key] = {
       lastAt: now,
       model,
       resetsAt,
@@ -1346,28 +1370,60 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   }
 
   /**
-   * A slot taken out of the config (`gateway slot opus off`, a hand edit), or whose fallback
-   * switch went off, loses its fallback record, so the status line stops showing it.
-   * Checked once per config the router loads, before its first request.
+   * The config a request sees: the machine's when its path names no profile, and a profile's
+   * view of it (`profileView`) when it does (`…/p/<profile>`, owner D29). A name that is no
+   * profile — one the pattern refuses, or one the config does not hold — answers as plain
+   * Claude (D29): every slot off, one WARN per name. Never an error a session cannot read.
+   */
+  function configFor(profile: null | string): GatewayConfig {
+    const machine = deps.getConfig();
+    if (profile === null) return machine;
+    const view = profileView(machine, profile);
+    if (view !== null) return view;
+    if (!unknownProfiles.has(profile)) {
+      unknownProfiles.add(profile);
+      const names = profileNames(machine);
+      deps.log(
+        `WARN profile "${printable(profile, 64)}" is not in ${deps.configPath} (profiles: ${names.length > 0 ? names.join(", ") : "none"}); its requests answer as plain Claude`,
+      );
+    }
+    return plainClaudeView(machine);
+  }
+
+  /**
+   * A record for a slot a config no longer holds is dropped: `gateway slot opus off`, a hand
+   * edit, a fallback switch turned off, or a profile removed from the file. Every scope is
+   * checked against its own view — a profile's chain is not the machine's, so one can keep a
+   * slot the other turned off. Checked once per config the router loads, before its first
+   * request.
    */
   function dropRemovedFallbacks(config: GatewayConfig): void {
     if (config === checkedConfig) return;
     checkedConfig = config;
+    const scopes = new Map<null | string, GatewayConfig>([[null, config]]);
+    for (const name of profileNames(config)) {
+      const view = profileView(config, name);
+      if (view !== null) scopes.set(name, view);
+    }
     let changed = false;
-    for (const slot of Object.keys(limitState.fallbacks)) {
-      if (Object.hasOwn(config.slots, slot) && fallbackOn(config, slot)) continue;
-      delete limitState.fallbacks[slot];
-      deps.log(`${slot}: removed from the config; its fallback record is dropped`);
+    for (const key of Object.keys(limitState.fallbacks)) {
+      const { profile, slot } = scopeOfStateKey(key);
+      const view = scopes.get(profile);
+      if (view !== undefined && Object.hasOwn(view.slots, slot) && fallbackOn(view, slot)) continue;
+      delete limitState.fallbacks[key];
+      deps.log(`${key}: removed from the config; its fallback record is dropped`);
       changed = true;
     }
     if (changed) persist();
     // A breaker for a slot taken out of the config, or switched off, is over.
-    for (const slot of new Set([
+    for (const key of new Set([
       ...openBreakers.keys(),
       ...Object.keys(limitState.breakers ?? {}),
     ])) {
-      if (Object.hasOwn(config.slots, slot) && breakerOn(config, slot)) continue;
-      closeBreaker(slot, "removed from the config or switched off");
+      const { profile, slot } = scopeOfStateKey(key);
+      const view = scopes.get(profile);
+      if (view !== undefined && Object.hasOwn(view.slots, slot) && breakerOn(view, slot)) continue;
+      closeBreaker(slot, profile, "removed from the config or switched off");
     }
   }
 
@@ -2263,15 +2319,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * requests keep coming, so a router that stopped leaves a record that goes stale
    * (`currentBreakers`).
    */
-  function breakerFor(slot: string, failures: BreakerFailure[], holdMs: number): OpenBreaker {
+  function breakerFor(
+    slot: string,
+    profile: null | string,
+    failures: BreakerFailure[],
+    holdMs: number,
+  ): OpenBreaker {
     const now = deps.now();
-    const existing = openBreakers.get(slot);
+    // A profile's chain is its own, so its breaker and its record are its own (`stateKeyFor`).
+    const key = stateKeyFor(slot, profile);
+    const existing = openBreakers.get(key);
     if (existing !== undefined) {
       existing.failures = failures;
-      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS) recordBreaker(slot, existing);
+      if (now - existing.savedAt >= FALLBACK_SAVE_EVERY_MS) recordBreaker(key, existing);
       return existing;
     }
-    const before = currentBreakers(limitState, now).find(([key]) => key === slot)?.[1];
+    const before = currentBreakers(limitState, now).find(([stored]) => stored === key)?.[1];
     const open: OpenBreaker = {
       failures,
       held: before?.held ?? 0,
@@ -2280,11 +2343,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       savedAt: now,
       since: before?.since ?? now,
     };
-    openBreakers.set(slot, open);
-    recordBreaker(slot, open);
+    openBreakers.set(key, open);
+    recordBreaker(key, open);
     const wait = clientRetryAfter(earliestRestSeconds(failures, now));
     deps.log(
-      `WARN ${slot}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`,
+      `WARN ${key}: every target limited or down (${describeFailures(failures, now)}); holding requests up to ${Math.round(holdMs / 1000)} s, then asking Claude Code to retry (retry-after ${wait})`,
     );
     return open;
   }
@@ -2294,20 +2357,21 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * the slot left the config. Its record leaves the state, with one line. A record a restart
    * kept, for a breaker this router never opened, goes the same way.
    */
-  function closeBreaker(slot: string, why: string): void {
-    const open = openBreakers.get(slot);
+  function closeBreaker(slot: string, profile: null | string, why: string): void {
+    const key = stateKeyFor(slot, profile);
+    const open = openBreakers.get(key);
     const stored =
-      limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, slot)
-        ? limitState.breakers[slot]
+      limitState.breakers !== undefined && Object.hasOwn(limitState.breakers, key)
+        ? limitState.breakers[key]
         : undefined;
     if (open === undefined && stored === undefined) return;
     const since = open?.since ?? stored?.since ?? deps.now();
     const held = open?.held ?? stored?.held ?? 0;
-    openBreakers.delete(slot);
-    delete limitState.breakers?.[slot];
+    openBreakers.delete(key);
+    delete limitState.breakers?.[key];
     withoutEmptyBreakers(limitState);
     persist();
-    deps.log(`${slot}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
+    deps.log(`${key}: ${why} after ${formatDuration(deps.now() - since)}; ${held} requests held`);
   }
 
   /** The breakers open now, for the health page. */
@@ -2363,6 +2427,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     ctx: {
       asked: Asked | null;
       body: Record<string, unknown>;
+      profile: null | string;
       probes: { count: number };
       req: Request;
       slot: string;
@@ -2373,11 +2438,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     targets0: Target[],
     first: Outcome,
   ): Promise<{ outcome: Outcome; targets: Target[] }> {
-    const { asked, body, probes, req, slot, startMs, url } = ctx;
+    const { asked, body, profile, probes, req, slot, startMs, url } = ctx;
+    const key = stateKeyFor(slot, profile);
     let config = config0;
     let targets = targets0;
     let outcome = first;
-    let open = breakerFor(slot, first.capacity ?? [], holdLimitMs(config, body));
+    let open = breakerFor(slot, profile, first.capacity ?? [], holdLimitMs(config, body));
     let counted: OpenBreaker | null = null;
     /** The router was told to stop (SIGTERM). */
     const stopping = (): boolean => deps.shutdown?.aborted === true;
@@ -2387,7 +2453,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         fallbacks: 0,
         response,
         skipped: 0,
-        target: `breaker(${slot})`,
+        target: `breaker(${key})`,
       },
       targets,
     });
@@ -2396,7 +2462,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       if (nowMs - open.reminderAt < BREAKER_REMINDER_MS) return;
       open.reminderAt = nowMs;
       deps.log(
-        `WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`,
+        `WARN ${key}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${breakerChangeHint(slot, profile)}`,
       );
     };
     try {
@@ -2410,6 +2476,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           breakerAnswer({
             failures,
             nowMs,
+            profile,
             sinceMs: open.since,
             slot,
             ...(retryAfterSec === undefined ? {} : { retryAfterSec }),
@@ -2440,7 +2507,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           return answer(anthropicError(499, "api_error", "client closed the request"));
         }
         if (stopping()) continue;
-        const next = deps.getConfig();
+        // The profile's view of the config, read again: a changed chain is served at once,
+        // and a profile removed or turned off releases the request the same way.
+        const next = configFor(profile);
         const route = resolveRoute(slot, next);
         if (route.kind !== "slot" || route.targets.length === 0) {
           return answer(
@@ -2472,12 +2541,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           slot,
           false,
           asked,
-          holds ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+          holds ? holdMode(config, body, startMs, openBreakers.has(key), probes) : null,
         );
         if (req.signal.aborted) return { outcome, targets };
         // A target answered (or the switch went off): the request goes on the normal way.
         if (outcome.capacity === undefined) return { outcome, targets };
-        open = breakerFor(slot, outcome.capacity, holdLimitMs(config, body));
+        open = breakerFor(slot, profile, outcome.capacity, holdLimitMs(config, body));
       }
     } finally {
       if (counted !== null) counted.heldNow -= 1;
@@ -2505,6 +2574,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     chained: Target[],
     guard: boolean,
     asked: Asked | null,
+    /** The profile the path named; its chain, its rests and its records are its own. */
+    profile: null | string,
   ): Promise<Outcome> {
     const startMs = deps.now();
     let targets = guard ? chained : targetsInUse(chained, fallbackOn(config, slot));
@@ -2539,11 +2610,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       slot,
       guard,
       asked,
-      breaks ? holdMode(config, body, startMs, openBreakers.has(slot), probes) : null,
+      breaks
+        ? holdMode(config, body, startMs, openBreakers.has(stateKeyFor(slot, profile)), probes)
+        : null,
     );
     if (breaks && outcome.capacity !== undefined && !req.signal.aborted) {
       const held = await holdRequest(
-        { asked, body, probes, req, slot, startMs, url },
+        { asked, body, probes, profile, req, slot, startMs, url },
         config,
         targets,
         outcome,
@@ -2553,13 +2626,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
     const first = targets[0];
     if (breaks && outcome.breaker === undefined && !req.signal.aborted && outcome.response.ok) {
-      closeBreaker(slot, "answers again");
+      closeBreaker(slot, profile, "answers again");
     }
     if (req.signal.aborted || first === undefined || outcome.breaker !== undefined) return outcome;
     if (first.kind === "anthropic" && outcome.target !== formatTarget(first)) {
       const limited = withoutContextSuffix(first.model);
       const limit = currentLimits(limitState, deps.now()).find(([model]) => model === limited);
-      if (limit !== undefined) noteFallback(slot, limited, limit[1], outcome);
+      if (limit !== undefined) noteFallback(slot, limited, limit[1], outcome, profile);
     }
     if (asked === null || sameModel(outcome.target, asked.model)) return outcome;
     if (outcome.response.ok) fellBack.add(asked.model);
@@ -2736,9 +2809,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     req: Request,
     url: URL,
     model: { guard: boolean; name: string; slot: null | string },
+    /** The profile the path named (`…/p/<profile>`), or null for the machine's default. */
+    profile: null | string,
   ): Promise<Outcome> {
-    const config = deps.getConfig();
-    dropRemovedFallbacks(config);
+    const config = configFor(profile);
+    dropRemovedFallbacks(deps.getConfig());
     const isMessages =
       req.method === "POST" &&
       (url.pathname === MESSAGES_PATH || url.pathname === COUNT_TOKENS_PATH);
@@ -2851,7 +2926,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     if (judgeTargets.length > 0) model.slot = JUDGE_SLOT;
     const answered =
       judgeTargets.length > 0
-        ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null)
+        ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null, profile)
         : ((guard ? claudeFirstJudge() : null) ?? claudeRoute());
     // Auto mode's safety check, counted (`countedCheck`). A check is a `/v1/messages`
     // request: a `count_tokens` for one counts tokens, it judges nothing.
@@ -2975,10 +3050,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       const familyRoute = found === null ? null : resolveRoute(found.slot, config);
       if (found !== null && familyRoute?.kind === "slot" && familyRoute.targets.length > 0) {
         model.slot = found.slot;
-        return slotRequest(req, url, config, body, found.slot, familyRoute.targets, false, {
-          model: found.model,
-          sent,
-        });
+        return slotRequest(
+          req,
+          url,
+          config,
+          body,
+          found.slot,
+          familyRoute.targets,
+          false,
+          { model: found.model, sent },
+          profile,
+        );
       }
       const decided = resolveRequestRoute(body, config, guard);
       if (decided.kind === "anthropic") {
@@ -3008,7 +3090,17 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       if (decided.kind === "slot") {
         model.slot = decided.slot;
-        return slotRequest(req, url, config, body, decided.slot, decided.targets, guard, null);
+        return slotRequest(
+          req,
+          url,
+          config,
+          body,
+          decided.slot,
+          decided.targets,
+          guard,
+          null,
+          profile,
+        );
       }
       // An explicit `<backend>:<model>`: that backend alone.
       const target = decided.target;
@@ -3089,14 +3181,26 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
 
   return async function handle(req: Request): Promise<Response> {
     const startMs = deps.now();
+    // The strip happens once, here, before every branch (messages, `count_tokens`,
+    // `HEAD /api/hello`, the health page, server tools, the judge): a project's base URL is
+    // `…/p/<profile>`, and Claude Code keeps the whole path on every request (owner D29;
+    // docs/claude-code-contract.md). Claude Code's own path is what the branches read and
+    // what Anthropic gets; the log keeps the path as it came, so the profile shows there.
     const url = new URL(req.url);
+    const profilePath = profileFromPath(url.pathname);
+    const profile = profilePath.name;
+    /** The path as it came, for the log: the request itself keeps the stripped one. */
+    const requestedPath = url.pathname;
+    // The path property, not a URL rebuilt from a string: a path that begins `//` stays a
+    // path (never a host), and the search is the one that came.
+    if (profile !== null) url.pathname = profilePath.path;
     const model: { guard: boolean; name: string; slot: null | string } = {
       guard: false,
       name: "-",
       slot: null,
     };
     const line = (outcome: Outcome) =>
-      `${new Date(startMs).toISOString()} ${req.method} ${printable(url.pathname)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
+      `${new Date(startMs).toISOString()} ${req.method} ${printable(requestedPath)} ${printable(model.name)} → ${outcome.target} ${outcome.response.status} ${deps.now() - startMs}ms ${
         outcome.breaker === undefined
           ? `fallbacks=${outcome.fallbacks}${outcome.skipped > 0 ? ` skipped=${outcome.skipped}` : ""}`
           : `${outcome.breaker.held ? "held" : "not-held"} probes=${outcome.breaker.probes}`
@@ -3110,16 +3214,22 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
 
     if (req.method === "GET" && url.pathname === HEALTH_PATH) {
+      const machine = deps.getConfig();
       return Response.json({
         breakers: breakersNow(),
         cooling: coolingNow(),
         fallbacks: stats.fallbacks,
+        // What a reader can rely on (`ROUTER_FEATURES`), so an older running router is told
+        // apart from this one without guessing from a version it does not carry.
+        features: ROUTER_FEATURES,
         ok: true,
         port: deps.port,
+        // The profile names a project's URL may carry (`…/p/<name>`); empty: none set.
+        profiles: profileNames(machine),
         recent,
         requests: stats.requests,
         seenClaude: limitState.seenClaude ?? {},
-        slots: deps.getConfig().slots,
+        slots: machine.slots,
         uptimeSec: Math.floor((deps.now() - startedAt) / 1000),
       });
     }
@@ -3127,9 +3237,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     stats.requests += 1;
     let outcome: Outcome;
     try {
-      outcome = await route(req, url, model);
+      outcome = await route(req, url, model, profile);
     } catch (error) {
-      deps.log(`ERROR ${req.method} ${printable(url.pathname)}: ${messageOf(error)}`);
+      deps.log(`ERROR ${req.method} ${printable(requestedPath)}: ${messageOf(error)}`);
       outcome = {
         fallbacks: 0,
         response: anthropicError(
@@ -3171,6 +3281,9 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         model: model.name,
         ms: deps.now() - startMs,
         nextTarget: answered.fallbacks > 0 ? printable(answered.target) : null,
+        // The name the path carried, as it spelled it (an unknown one too): the row says
+        // where the request came from, and its target says what answered.
+        profile: profile === null ? null : printable(profile, 64),
         session: sessionIdOf(req.headers),
         slot: model.slot,
         status: answered.response.status,

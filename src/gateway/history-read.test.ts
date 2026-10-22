@@ -37,6 +37,7 @@ function row(overrides: Partial<HistoryRow>): HistoryRow {
     model: "claude-sonnet-5-5",
     ms: 100,
     nextTarget: null,
+    profile: null,
     session: "session-1",
     slot: "cc-smart-dev-kit-worker",
     status: 200,

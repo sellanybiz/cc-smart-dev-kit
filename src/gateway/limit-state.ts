@@ -116,6 +116,26 @@ export function mergeSeenClaude(
   );
 }
 
+/**
+ * The key a slot's `fallbacks` or `breakers` record goes under: the slot alone for the
+ * machine's default, `<profile>/<slot>` for a request that came through a profile (owner
+ * D29). A profile's chain is its own, so its breaker and its fallback record are its own
+ * too; a target's rest is not keyed this way (a target that is down is down for every
+ * profile), and neither is `limits`, because the Claude login, and so its plan limits, is one
+ * for every profile.
+ */
+export function stateKeyFor(slot: string, profile: null | string): string {
+  return profile === null ? slot : `${profile}/${slot}`;
+}
+
+/** The profile and slot a state key names (`stateKeyFor`); no `/`: the machine's default. */
+export function scopeOfStateKey(key: string): { profile: null | string; slot: string } {
+  const at = key.indexOf("/");
+  return at === -1
+    ? { profile: null, slot: key }
+    : { profile: key.slice(0, at), slot: key.slice(at + 1) };
+}
+
 export type LimitRecord = z.output<typeof limitSchema>;
 export type FallbackRecord = z.output<typeof fallbackSchema>;
 export type BreakerTarget = z.output<typeof breakerTargetSchema>;

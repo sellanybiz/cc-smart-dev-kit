@@ -2824,8 +2824,11 @@ describe("local-only guard", () => {
       breakers: {},
       cooling: {},
       fallbacks: 0,
+      // This router knows profiles (D29), and this config sets none.
+      features: ["profiles"],
       ok: true,
       port: 20100,
+      profiles: [],
       recent: [
         {
           at: Date.UTC(2026, 9, 15, 10, 0, 0),
@@ -6220,5 +6223,380 @@ describe("slot modes, seenClaude and recent (B0, B6b)", () => {
       "status",
       "target",
     ]);
+  });
+});
+
+// ─── Profiles: the /p/<profile> path (owner D29) ──────────────────────────────────────
+
+/**
+ * A project's base URL may carry a profile's name, `…/p/<profile>` (owner D29): the router
+ * strips the prefix once, before every branch, and answers with that profile's chains and
+ * switches. A name no profile holds answers as plain Claude, never an error a session cannot
+ * read. The pure parts (the pattern, `profileView`, the state key) are in `profiles.test.ts`.
+ */
+describe("profiles: the /p/<profile> path (D29)", () => {
+  const WORKER = "cc-smart-dev-kit-worker";
+  const SCOUT = "cc-smart-dev-kit-scout";
+  const OPUS = "cc-smart-dev-kit-opus";
+  const JUDGE = "cc-smart-dev-kit-judge";
+  const MESSAGES = "https://anthropic.test/v1/messages?beta=true";
+  const OMNI = "http://omni.test/v1/messages";
+  const OLLAMA = "https://ollama.test/v1/messages";
+  const T0 = Date.UTC(2026, 9, 15, 10, 0, 0);
+  const RESET = Date.UTC(2026, 9, 15, 13, 0, 0) / 1000;
+
+  const down = () => new Response("down", { status: 503 });
+  const ok = () => new Response("ok", { status: 200 });
+  const atLimit = () =>
+    Response.json(
+      { error: { message: "Rate limit exceeded", type: "rate_limit_error" }, type: "error" },
+      {
+        headers: {
+          "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          "anthropic-ratelimit-unified-reset": String(RESET),
+          "anthropic-ratelimit-unified-status": "rejected",
+        },
+        status: 429,
+      },
+    );
+
+  /**
+   * The machine's config with three profiles: `proj` gives the worker a backend and turns the
+   * scout off; `two` chains the worker with its fallback on; `held` chains it with the
+   * fallback off.
+   */
+  function profiled(): GatewayConfig {
+    return {
+      ...config(),
+      profiles: {
+        held: {
+          fallback: { [WORKER]: false },
+          slots: { [WORKER]: ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"] },
+        },
+        proj: {
+          slots: { [SCOUT]: "claude", [WORKER]: ["omniroute:glm-5.3-flash"] },
+        },
+        two: {
+          slots: { [WORKER]: ["ollama:deepseek-v4.1-flash", "omniroute:glm-5.3-flash"] },
+        },
+      },
+    };
+  }
+
+  it("a streamed model call takes the profile's chain; the upstream path has no prefix", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = message("claude-sonnet-5-5");
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(sent) }),
+    );
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.method, call.url])).toEqual([["POST", OMNI]]);
+    const body = JSON.parse(nth(calls, 0).body ?? "") as Record<string, unknown>;
+    expect(body.model).toBe("glm-5.3-flash");
+    expect(body.stream).toBe(true);
+    // The prompt is Claude Code's own: the same messages it sent.
+    expect(body.messages).toEqual(sent.messages);
+  });
+
+  it("a model call that does not stream takes it too", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = { ...message("claude-sonnet-5-5"), stream: false };
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(sent) }),
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(nth(calls, 0).body ?? "").stream).toBe(false);
+  });
+
+  it("count_tokens follows the profile's first target: a backend there is a 404, no upstream call", async () => {
+    const { calls, handle } = router([], { config: profiled() });
+    const res = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/proj/v1/messages/count_tokens?beta=true",
+      }),
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: {
+        message: `count_tokens is not available for ${WORKER}; Claude Code estimates instead`,
+        type: "not_found_error",
+      },
+      type: "error",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("HEAD /api/hello reaches Anthropic without the prefix", async () => {
+    const { calls, handle } = router([() => new Response(null, { status: 204 })], {
+      config: profiled(),
+    });
+    const res = await handle(clientRequest({ method: "HEAD", path: "/p/proj/api/hello" }));
+    expect(res.status).toBe(204);
+    expect(calls.map((call) => [call.method, call.url, call.body])).toEqual([
+      ["HEAD", "https://anthropic.test/api/hello", null],
+    ]);
+  });
+
+  it("the health page under a prefix answers health, naming what this router knows", async () => {
+    const { handle } = router([], { config: profiled() });
+    const res = await handle(
+      clientRequest({ method: "GET", path: "/p/proj/__cc-smart-dev-kit/health" }),
+    );
+    const body = (await res.json()) as {
+      features: string[];
+      ok: boolean;
+      profiles: string[];
+      slots: Record<string, string[]>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.features).toEqual(["profiles"]);
+    expect(body.profiles).toEqual(["held", "proj", "two"]);
+    // The slots are the machine's: the profile changes what its own requests see.
+    expect(body.slots[WORKER]).toEqual(["claude-sonnet-5-5"]);
+  });
+
+  it("a server-tool request under a prefix goes to Anthropic as sent", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = JSON.stringify({
+      ...message("claude-sonnet-5-5"),
+      tools: [{ name: "web_search", type: "web_search_20250305" }],
+    });
+    const res = await handle(clientRequest({ path: "/p/proj/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a safety check under a prefix reaches the profile's judge chain", async () => {
+    const judged: GatewayConfig = {
+      ...profiled(),
+      judgeTested: JUDGE_PROOFS,
+      profiles: { proj: { slots: { [JUDGE]: ["omniroute:glm-5.3-flash"] } } },
+    };
+    const check = {
+      max_tokens: 64,
+      messages: [{ content: "git push --force", role: "user" }],
+      model: "claude-sonnet-5",
+      system: "You are a security monitor for autonomous AI coding agents.\n\n## Context",
+    };
+    const { calls, handle } = router([ok], { config: judged });
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(check) }),
+    );
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual([OMNI]);
+    // The prompt is the check Claude Code shipped; only its route changed.
+    const body = JSON.parse(nth(calls, 0).body ?? "") as Record<string, unknown>;
+    expect(body.system).toEqual(check.system);
+    expect(body.messages).toEqual(check.messages);
+  });
+
+  it("a check under a prefix reaches the profile's worker stand-in while Claude cannot", async () => {
+    // No judge chain: Claude judges first (D44), and while Claude is at its limit the
+    // worker chain's tested target judges in its place. That chain is the profile's.
+    const judged: GatewayConfig = {
+      ...profiled(),
+      judgeTested: JUDGE_PROOFS,
+      profiles: { proj: { slots: { [WORKER]: ["omniroute:glm-5.3-flash"] } } },
+    };
+    const check = {
+      max_tokens: 64,
+      messages: [{ content: "git push --force", role: "user" }],
+      model: "claude-sonnet-5",
+      system: "You are a security monitor for autonomous AI coding agents.\n\n## Context",
+    };
+    const { calls, handle } = router([atLimit, ok], { config: judged });
+    const res = await handle(
+      clientRequest({ path: "/p/proj/v1/messages?beta=true", body: JSON.stringify(check) }),
+    );
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual([MESSAGES, OMNI]);
+  });
+
+  it("an unknown profile answers as plain Claude, with one WARN naming it", async () => {
+    const { calls, handle, logs } = router([ok], { config: profiled() });
+    // A Haiku request would take the machine's scout chain (its first target is a backend);
+    // a plain-Claude answer goes to Anthropic with the bytes as Claude Code sent them.
+    const sent = JSON.stringify(message("claude-haiku-4-5"));
+    const res = await handle(clientRequest({ path: "/p/typo/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+    // A slot-named request: every slot is off there, and the 400 says so (a name Claude Code
+    // reads, never a guess at a model).
+    const named = await handle(
+      clientRequest({
+        body: JSON.stringify(message(SCOUT)),
+        path: "/p/typo/v1/messages?beta=true",
+      }),
+    );
+    expect(named.status).toBe(400);
+    expect(((await named.json()) as { error: { message: string } }).error.message).toContain(
+      `${SCOUT} is off`,
+    );
+    expect(calls).toHaveLength(1);
+    expect(logs.filter((line) => line.startsWith("WARN profile"))).toEqual([
+      `WARN profile "typo" is not in ${CONFIG_PATH} (profiles: held, proj, two); its requests answer as plain Claude`,
+    ]);
+  });
+
+  it("an unknown profile reaches no chain through an alias either", async () => {
+    const aliased: GatewayConfig = {
+      ...config(),
+      aliases: { "old-worker": "omniroute:glm-5.3-flash" },
+      profiles: { proj: {} },
+    };
+    const { calls, handle } = router([ok], { config: aliased });
+    const sent = JSON.stringify(message("old-worker"));
+    const res = await handle(clientRequest({ path: "/p/typo/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a name the pattern refuses answers as plain Claude too, its path still stripped", async () => {
+    const { calls, handle, logs } = router([ok], { config: profiled() });
+    const sent = JSON.stringify(message("claude-haiku-4-5"));
+    const res = await handle(clientRequest({ path: "/p/Typo/v1/messages?beta=true", body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+    expect(logs.some((line) => line.startsWith('WARN profile "Typo"'))).toBe(true);
+  });
+
+  it("without a prefix the machine's config answers, profiles set or not", async () => {
+    // The machine's scout chain starts with a backend: no prefix, no profile, that target.
+    const { calls, handle } = router([ok], { config: profiled() });
+    await handle(clientRequest({ body: JSON.stringify(message("claude-haiku-4-5")) }));
+    expect(calls.map((call) => call.url)).toEqual([OMNI]);
+  });
+
+  it("the prompt's bytes are Claude Code's own under a prefix", async () => {
+    // A profile that names no slot keeps the machine's worker chain: a Claude model there.
+    const same: GatewayConfig = { ...config(), profiles: { same: {} } };
+    const { calls, handle } = router([ok], { config: same });
+    const sent = JSON.stringify(message("claude-sonnet-5-5"));
+    await handle(clientRequest({ path: "/p/same/v1/messages?beta=true", body: sent }));
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a profile's fallback switch: off, its first target alone answers; on, the next one does", async () => {
+    const off = router([down], { config: profiled() });
+    const refused = await off.handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/held/v1/messages?beta=true",
+      }),
+    );
+    expect(refused.status).toBe(503);
+    expect(off.calls.map((call) => call.url)).toEqual([OMNI]);
+
+    const on = router([down, ok], { config: profiled() });
+    const answered = await on.handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/two/v1/messages?beta=true",
+      }),
+    );
+    expect(answered.status).toBe(200);
+    expect(on.calls.map((call) => call.url)).toEqual([OLLAMA, OMNI]);
+  });
+
+  it("a profile turns a slot to plain Claude while the machine's chain stays", async () => {
+    const { calls, handle } = router([ok], { config: profiled() });
+    const sent = JSON.stringify(message("claude-haiku-4-5"));
+    await handle(clientRequest({ path: "/p/proj/v1/messages?beta=true", body: sent }));
+    expect(calls.map((call) => [call.url, call.body])).toEqual([[MESSAGES, sent]]);
+  });
+
+  it("a profile's fallback record is its own key in the limit state", async () => {
+    const states: string[] = [];
+    const { handle } = router([atLimit, ok], {
+      config: {
+        ...config(),
+        profiles: {
+          proj: {
+            fallback: { [OPUS]: true },
+            slots: { [OPUS]: ["claude-opus-5-5", "omniroute:glm-5.3-flash"] },
+          },
+        },
+      },
+      states,
+    });
+    const res = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-opus-5-5")),
+        path: "/p/proj/v1/messages?beta=true",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(states.at(-1) ?? "")).toEqual({
+      fallbacks: {
+        [`proj/${OPUS}`]: {
+          lastAt: T0,
+          model: "claude-opus-5-5",
+          resetsAt: RESET,
+          since: T0,
+          target: "omniroute:glm-5.3-flash",
+        },
+      },
+      limits: { "claude-opus-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 } },
+      seenClaude: { "claude-opus-5-5": T0 },
+      version: 1,
+    });
+  });
+
+  it("a profile's breaker is its own: one profile held, another answered, records apart", async () => {
+    const twoProfiles: GatewayConfig = {
+      ...config(),
+      profiles: {
+        down: {
+          slots: { [WORKER]: ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"] },
+        },
+        up: { slots: { [WORKER]: ["claude-sonnet-5-5"] } },
+      },
+      timeouts: { breakerHoldMs: 0, firstByteMs: 1000 },
+    };
+    const states: string[] = [];
+    const { calls, handle, logs } = router([down, down, ok], {
+      breaker: true,
+      config: twoProfiles,
+      states,
+    });
+    const held = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/down/v1/messages?beta=true",
+      }),
+    );
+    expect(held.status).toBe(429);
+    expect(held.headers.get("retry-after")).toBe("30");
+    expect(held.headers.get("x-should-retry")).toBe("true");
+    expect(((await held.json()) as { error: { message: string } }).error.message).toBe(
+      `cc-smart-dev-kit-router: every target of ${WORKER} in profile down is limited or down since 10:00 (omniroute:glm-5.3-flash: HTTP 503, until 10:00; ollama:deepseek-v4.1-flash: HTTP 503, until 10:00); change it: the chain of worker under profiles.down in gateway.json`,
+    );
+    expect(
+      logs.some((line) => line.startsWith(`WARN down/${WORKER}: every target limited or down`)),
+    ).toBe(true);
+    const state = JSON.parse(states.at(-1) ?? "") as {
+      breakers?: Record<string, { held: number; targets: { status: number; target: string }[] }>;
+    };
+    const record = state.breakers?.[`down/${WORKER}`];
+    // The hold is 0 ms here, so the answer came at once and no request waited in it; the
+    // record is still the profile's own, with its own chain's failures.
+    expect(record?.held).toBe(0);
+    expect(record?.targets.map((target) => [target.target, target.status])).toEqual([
+      ["omniroute:glm-5.3-flash", 503],
+      ["ollama:deepseek-v4.1-flash", 503],
+    ]);
+    // Another profile's request is not held: its own chain answers at once.
+    const other = await handle(
+      clientRequest({
+        body: JSON.stringify(message("claude-sonnet-5-5")),
+        path: "/p/up/v1/messages?beta=true",
+      }),
+    );
+    expect(other.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual([OMNI, OLLAMA, MESSAGES]);
+    // And the record under the profile's key is still the only breaker.
+    const after = JSON.parse(states.at(-1) ?? "") as { breakers?: Record<string, unknown> };
+    expect(Object.keys(after.breakers ?? {})).toEqual([`down/${WORKER}`]);
   });
 });

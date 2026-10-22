@@ -19,7 +19,9 @@
  *     router's state file (`limit-state.ts`) knows it;
  *   - a slot whose breaker is open (`worker slot: every target limited since 21:05 →
  *     gateway slot worker <targets>`, `currentBreakers`): every target is limited or down, so
- *     the router holds its requests and then asks Claude Code to retry;
+ *     the router holds its requests and then asks Claude Code to retry; a profile's record
+ *     reads `worker slot in profile <name>` and names its key in the config, never the
+ *     `gateway slot` command, which would change the machine's chain;
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
  *
  * It reads two small files and prints; no network. **The warning share is a setting**
@@ -46,6 +48,7 @@ import {
   formatClock,
   type LimitState,
   parseLimitState,
+  scopeOfStateKey,
 } from "../gateway/limit-state";
 import { JUDGE_SLOT } from "../gateway/targets";
 import type { AlertsHere } from "../workflow/alerts";
@@ -85,10 +88,18 @@ export function statuslineText(
       if (!covered.has(limited))
         parts.push(`⛔ ${limited} at its plan limit${until(record.resetsAt)}`);
     }
-    for (const [slot, record] of currentBreakers(state, nowMs)) {
+    for (const [key, record] of currentBreakers(state, nowMs)) {
+      // A profile's record is keyed `<profile>/<slot>` (owner D29): its chain is not the
+      // `gateway slot` one, so the line says where it lives instead.
+      const { profile, slot } = scopeOfStateKey(key);
       const short = slotShortName(slot);
+      const where = profile === null ? `${short} slot` : `${short} slot in profile ${profile}`;
+      const change =
+        profile === null
+          ? `gateway slot ${short} <targets>`
+          : `profiles.${profile} in gateway.json`;
       parts.push(
-        `${short} slot: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} → gateway slot ${short} <targets>`,
+        `${where}: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} → ${change}`,
       );
     }
   }
