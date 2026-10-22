@@ -138,10 +138,11 @@ export const workflowSchema = z.strictObject({
     })
     .optional(),
   /**
-   * Lead and crew sessions (decisions D34, D35, D37): the switch, the limits a lead keeps its
-   * crew sessions to, and the tag in their names. In the person's file it is every project's default;
-   * a project's file wins field by field. `crew lead` and `crew start` read `enabled`, `max`,
-   * `maxOpus`, `memoryGb` and `tag` (`src/crew/`); the rest is for the parts after them.
+   * Lead and crew sessions (decisions D34, D35, D54): the switch, one lead's caps, the machine's
+   * guards a start waits at, and the tag in their names. In the person's file it is every
+   * project's default; a project's file wins field by field. `crew lead` and `crew start` read
+   * `enabled`, `perLead`, `perLeadOpus`, `max`, `maxOpus`, `memoryGb`, `usagePercent` and `tag`
+   * (`src/crew/`); the rest is for the parts after them.
    */
   crew: z
     .strictObject({

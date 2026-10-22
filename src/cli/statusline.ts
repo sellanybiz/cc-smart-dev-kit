@@ -34,6 +34,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { COMMAND } from "../build-info/names";
 import { slotShortName } from "../gateway/breaker";
 import {
   currentBreakers,
@@ -129,7 +130,7 @@ export async function runStatusline(
   } catch (error) {
     // The line still prints; without the reading the crew's opus guard simply does not hold.
     console.error(
-      `cc-smart-dev-kit: the 5-hour usage window was not recorded (${error instanceof Error ? error.message : String(error)})`,
+      `${COMMAND}: the 5-hour usage window was not recorded (${error instanceof Error ? error.message : String(error)})`,
     );
   }
   let state: LimitState | null = null;
