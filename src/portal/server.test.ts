@@ -1413,9 +1413,9 @@ describe("the actions", () => {
       const answer = JSON.parse(saved.body) as { lines: string[]; ok: boolean };
       expect(answer.ok).toBe(true);
       expect(answer.lines).toEqual([
-        "cc-smart-dev-kit-opus: (new)",
+        "~ cc-smart-dev-kit-opus: (new)",
         "  now: omniroute:ollama-cloud/glm-5.3-flash  (fallback off)",
-        "The router uses it from its next request.",
+        "✓ The router uses it from its next request.",
       ]);
       const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         modelSlots?: unknown;
@@ -1457,7 +1457,7 @@ describe("the actions", () => {
       const on = await world.post("slot.fallback", { on: true, slot: "opus" }, csrf);
       const answer = JSON.parse(on.body) as { lines: string[]; ok: boolean };
       expect(answer.ok).toBe(true);
-      expect(answer.lines[0]).toBe("cc-smart-dev-kit-opus: fallback off → on");
+      expect(answer.lines[0]).toBe("~ cc-smart-dev-kit-opus: fallback off → on");
       const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         fallback?: Record<string, boolean>;
       };
