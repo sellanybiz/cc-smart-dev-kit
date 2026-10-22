@@ -284,7 +284,7 @@ export async function gatewayChecks(options: {
  *   - `start-limit`: systemd closed the socket because the router failed to start too often;
  *   - `other`: anything else, or not asked.
  */
-type SocketState = "open" | "start-limit" | "other";
+export type SocketState = "open" | "start-limit" | "other";
 
 /** The ✗ text of a router that does not answer, from what the service's listener says. */
 function notAnswering(
@@ -325,7 +325,7 @@ function notAnswering(
  * port across restarts), or the Windows task (which holds the port itself while its
  * router runs).
  */
-function portHolderCheck(
+export function portHolderCheck(
   options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
   port: number,
 ): { check: DoctorCheck; state: SocketState } {

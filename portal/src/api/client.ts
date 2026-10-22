@@ -230,7 +230,10 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     requests: (query) => get<Wire.RequestsAnswer>(`/api/requests?${historyQuery(query)}`),
     work: async () => adapt.workOf(await get<Wire.WorkAnswer>("/api/work")),
     flow: async (window) =>
-      adapt.flowOf(await get<Wire.FlowAnswer>(`/api/flow?range=${window === "24h" ? "1d" : "7d"}`)),
+      adapt.flowOf(
+        await get<Wire.FlowAnswer>(`/api/flow?range=${window === "24h" ? "1d" : "7d"}`),
+        window,
+      ),
     slots: async () => {
       const answer = await get<Wire.SlotsAnswer>("/api/slots");
       if (!answer.configured) {

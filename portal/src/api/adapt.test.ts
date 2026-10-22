@@ -6,8 +6,11 @@ import { describe, expect, test } from "bun:test";
 import {
   branchVerdictOf,
   crewOf,
+  flowOf,
   guardAsksOf,
   healthOf,
+  jobsOf,
+  machineOf,
   mergeCheckOf,
   NotSetUpError,
   needsOf,
@@ -23,7 +26,10 @@ import type { SettingsData } from "./types";
 import type {
   CrewAnswer,
   CrewSummary,
+  FlowAnswer,
   HealthAnswer,
+  JobsAnswer,
+  MachineAnswer,
   NeedsAnswer,
   OverviewAnswer,
   ProjectAnswer,
@@ -120,11 +126,17 @@ const CREW: CrewSummary = {
   branch: "crew/b6c",
   createdAt: "2026-10-22T10:00:00.000Z",
   effort: "high",
+  files: ["portal/src/**", "README.md"],
   id: "crew-1",
   kind: "ui",
+  lastEvent: { at: "2026-10-22T10:04:00.000Z", text: "tests-green", type: "step" },
   lastLine: null,
   leadName: "LEAD my-app plan",
   leadSessionId: "lead-1",
+  memory: [
+    { at: "2026-10-22T10:01:00.000Z", mb: 480 },
+    { at: "2026-10-22T10:06:00.000Z", mb: 512 },
+  ],
   memoryMb: 512,
   model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
   name: "C my-app B6c slots",
@@ -138,6 +150,7 @@ const CREW: CrewSummary = {
   stateSince: "2026-10-22T10:05:00.000Z",
   updatedAt: "2026-10-22T10:06:00.000Z",
   waitingFor: null,
+  waitsFor: [],
   worktree: "/home/user/my-app/.claude/worktrees/b6c",
 };
 
@@ -164,6 +177,7 @@ describe("the adapters", () => {
       dashboardUrl: null,
       error: null,
       fallbacks: [],
+      fiveHour: { percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" },
       jobs: { budgetGb: 8, heldGb: 2, waiting: 1 },
       limits: [],
       limitsRead: true,
@@ -200,14 +214,22 @@ describe("the adapters", () => {
         target: "omniroute:glm-5.3",
       },
     ]);
-    // Claude Code writes its usage down nowhere: no window is made up.
-    expect(data.usage).toEqual([]);
+    // The status line's own reading, with its reset as a time; the switches as the server says.
+    expect(data.fiveHour).toEqual({ percent: 61, resetsAt: Date.UTC(2026, 9, 23, 14, 0, 0) });
+    expect(data.switches.gateway).toBe(true);
+    expect(overviewOf({ ...answer, fiveHour: null }, work).fiveHour).toBe(null);
     expect(() =>
       overviewOf({ ...answer, configured: false, error: "the gateway is not set up" }, null),
     ).toThrow(NotSetUpError);
   });
 
-  test("Health: no socket fact is invented", () => {
+  test("Health: the port holder in doctor's words, and none where the machine runs no service", () => {
+    const holder = {
+      check: { ok: true as const, text: "the router's socket holds 127.0.0.1:20999" },
+      kind: "systemd" as const,
+      name: "cc-smart-dev-kit-router.socket",
+      state: "open" as const,
+    };
     const answer: HealthAnswer = {
       backends: [],
       configured: true,
@@ -215,14 +237,16 @@ describe("the adapters", () => {
       fallbacks: [],
       limits: [],
       log: { lines: [{ level: "WARN", text: "a backend failed", time: "10:00:00" }], note: null },
+      portHolder: holder,
       router: ROUTER,
     };
     const data = healthOf(answer);
-    expect(data.socket).toBe(null);
+    expect(data.socket).toEqual(holder);
+    expect(healthOf({ ...answer, portHolder: null }).socket).toBe(null);
     expect(data.log).toEqual([{ level: "WARN", text: "a backend failed", time: "10:00:00" }]);
   });
 
-  test("Work: the lead's crew, and a session with no end marker is open, not working", () => {
+  test("Work: the lead's crew, and each other session's state and model as the server read them", () => {
     const data = workOf({
       crew: [CREW],
       lead: {
@@ -241,21 +265,37 @@ describe("the adapters", () => {
       sessions: [
         {
           branch: "main",
-          endedCleanly: false,
           folder: "/home/user/my-app",
           id: "s1",
           lastWrite: 0,
+          model: "glm-5.3-flash",
           name: null,
+          state: "waiting",
         },
-        { branch: null, endedCleanly: true, folder: null, id: "s2", lastWrite: 0, name: "notes" },
+        {
+          branch: null,
+          folder: null,
+          id: "s2",
+          lastWrite: 0,
+          model: null,
+          name: "notes",
+          state: "ended",
+        },
       ],
     });
     expect(data.leads[0]?.crew[0]?.state).toBe("working");
+    // The files it owns, its newest step, and its memory line come from its summary.
+    expect(data.leads[0]?.crew[0]?.files).toEqual(["portal/src/**", "README.md"]);
+    expect(data.leads[0]?.lastStep["crew-1"]?.text).toBe("tests-green");
+    expect(data.memory["crew-1"]).toEqual([
+      { at: Date.UTC(2026, 9, 22, 10, 1, 0), mb: 480 },
+      { at: Date.UTC(2026, 9, 22, 10, 6, 0), mb: 512 },
+    ]);
     expect(data.leads).toHaveLength(1);
     expect(data.leads[0]?.crew[0]?.repo).toBe("/home/user/my-app");
     expect(data.others.map((one) => [one.sessionId, one.state, one.model])).toEqual([
-      ["s1", "open", null],
-      ["s2", "idle", null],
+      ["s1", "waiting", "glm-5.3-flash"],
+      ["s2", "ended", null],
     ]);
   });
 
@@ -640,13 +680,17 @@ describe("the adapters", () => {
   });
 
   test("a merge verdict, in the page's words: each kind has its tone and its reason", () => {
-    expect(branchVerdictOf({ kind: "allowed", reason: "reviewed at abc123" })).toEqual({
+    expect(
+      branchVerdictOf({ detail: null, kind: "allowed", reason: "reviewed at abc123" }),
+    ).toEqual({
       kind: "allowed",
       label: "allowed",
       reason: "reviewed at abc123",
       tone: "ok",
     });
-    expect(branchVerdictOf({ kind: "refused", number: 4, reason: "no review recorded" })).toEqual({
+    expect(
+      branchVerdictOf({ detail: null, kind: "refused", number: 4, reason: "no review recorded" }),
+    ).toEqual({
       kind: "refused",
       label: "refused",
       reason: "no review recorded",
@@ -682,7 +726,7 @@ describe("the adapters", () => {
           kind: "pr",
           number: 12,
           title: "Add the login page",
-          verdict: { kind: "allowed", reason: "reviewed at abc123" },
+          verdict: { detail: null, kind: "allowed", reason: "reviewed at abc123" },
         },
         {
           base: null,
@@ -791,5 +835,110 @@ describe("the page's requests", () => {
     await expect(
       postAction(async () => new Response("Forbidden", { status: 403 }), "slot.save", {}, "t"),
     ).rejects.toThrow("(403)");
+  });
+});
+
+describe("the B6d facts", () => {
+  const HOUR = 3_600_000;
+  const T0 = Date.UTC(2026, 9, 23, 0, 0, 0);
+
+  test("Machine: Claude Code, Bun, the MCP servers and doctor's time, as the server read them", () => {
+    const answer = {
+      autoMode: null,
+      browser: {
+        guide: { intro: "", notes: [], steps: [] },
+        notes: [],
+        state: {
+          extensionInstalled: false,
+          fileUrls: null,
+          profile: false,
+          profileDirName: "",
+          tokenSet: false,
+        },
+      },
+      bun: { minimum: "1.4.3", ok: true, version: "1.4.5" },
+      claudeCode: {
+        liveCheck: { claudeCode: "2.1.309", passedAt: "2026-10-20T08:00:00.000Z", plugin: "1.0.0" },
+        version: "2.1.312",
+        why: null,
+      },
+      companions: [],
+      doctor: {
+        at: 1_000,
+        checks: [{ group: "gateway", ok: false, fix: "run setup", text: "down" }],
+      },
+      jobs: null,
+      mcp: [{ name: "playwright", runsWhat: null, state: "ours" }],
+      omniroute: {
+        backend: null,
+        install: null,
+        newestVersion: null,
+        previous: null,
+        registryError: null,
+        state: "unknown",
+        unit: null,
+      },
+      project: {} as MachineAnswer["project"],
+      updates: { heldSince: null, installed: null, last: null, newest: null, summary: "" },
+      warp: { detail: "", installed: false },
+    } satisfies MachineAnswer;
+    const facts = {
+      platform: "linux" as const,
+      portalPort: 20_101,
+      router: null,
+      version: "1.1.0",
+    };
+    const data = machineOf(answer, facts);
+    expect(data.claudeCode).toEqual(answer.claudeCode);
+    expect(data.bun).toEqual({ minimum: "1.4.3", ok: true, version: "1.4.5" });
+    expect(data.mcp).toEqual([{ name: "playwright", runsWhat: null, state: "ours" }]);
+    expect(data.doctorAt).toBe(1_000);
+    expect(data.doctor).toEqual([
+      { fix: "run setup", mark: "fail", section: "gateway", text: "down" },
+    ]);
+    expect(machineOf({ ...answer, doctor: null }, facts).doctorAt).toBe(null);
+  });
+
+  test("the heavy jobs: the CPU and I/O weights travel, or why one is not set", () => {
+    const answer: JobsAnswer = {
+      budgetGb: 8,
+      freeGb: 12,
+      keptGb: 4,
+      memoryGb: 32,
+      stores: [],
+      weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is off" } },
+    };
+    expect(jobsOf(answer).weights).toEqual({
+      cpu: { value: 20 },
+      io: { value: null, why: "the io controller is off" },
+    });
+  });
+
+  test("Flow: 24 hours drawn per hour, 7 days per 6 hours, from the server's hours", () => {
+    const hours = Array.from({ length: 12 }, (_, index) => ({
+      launches: index,
+      promptMs: index * 1_000,
+      prompts: index === 0 ? 0 : 1,
+      replies: index,
+      t: T0 + index * HOUR,
+    }));
+    const answer = {
+      from: T0,
+      note: null,
+      range: "1d",
+      report: { hours } as unknown as FlowAnswer["report"],
+      to: T0 + 12 * HOUR,
+    } satisfies FlowAnswer;
+    const day = flowOf(answer, "24h");
+    expect(day.buckets.bucketMs).toBe(HOUR);
+    expect(day.buckets.points[3]).toEqual({ blockedMs: 3_000, launches: 3, t: T0 + 3 * HOUR });
+    expect(day.buckets.points).toHaveLength(12);
+    const week = flowOf(answer, "7d");
+    expect(week.buckets.bucketMs).toBe(6 * HOUR);
+    // Hours 0-5 and 6-11, each summed: 0+1+2+3+4+5 and 6+7+8+9+10+11.
+    expect(week.buckets.points).toEqual([
+      { blockedMs: 15_000, launches: 15, t: T0 },
+      { blockedMs: 51_000, launches: 51, t: T0 + 6 * HOUR },
+    ]);
   });
 });

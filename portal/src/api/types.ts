@@ -10,16 +10,22 @@
 
 import type {
   BackendRow,
+  BunFacts,
+  ClaudeCodeFacts,
   CrewReport,
   CrewReview,
   HistoryAnswer,
   HistoryRequest,
+  JobWeightsState,
+  McpServerRow,
   MergeVerdict,
   ModelRow,
   OpenBreaker,
+  PortHolder,
   ProjectInitPlan,
   RequestsAnswer,
   RouterFacts,
+  SessionSummary,
   SlotRow,
   SlotsAnswer,
   SlotTarget,
@@ -29,8 +35,13 @@ import type {
 
 export type {
   BackendRow,
+  BunFacts,
+  ClaudeCodeFacts,
+  JobWeightsState,
+  McpServerRow,
   ModelRow,
   OpenBreaker,
+  PortHolder,
   ProjectInitPlan,
   RouterFacts,
   SlotRow,
@@ -163,30 +174,26 @@ export interface FallbackRow {
 /** The Slots page draws the server's own answer (`GET /api/slots`). */
 export type SlotsData = SlotsAnswer;
 
-// ── Usage ──────────────────────────────────────────────────────────────────────────────
+// ── Overview ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Claude's own replies in one window, from `src/cli/usage.ts` › `SessionUsage` (main and
- * subagent replies by model), with the limit the router last saw in that window (`LimitRow`).
- * Claude Code's plan percentages are written down nowhere, so no page shows one.
+ * The plan's 5-hour window, as Claude Code's status line last recorded it
+ * (`src/cli/usage-window.ts`): the share used, and when it resets (ms; null when no time was
+ * named). The 7-day windows are recorded nowhere, so no page has a number for them.
  */
-export interface UsageWindow {
-  /** `5h` or `7d`. */
-  window: "5h" | "7d";
-  /** Replies written by a `claude-…` model. */
-  claudeReplies: number;
-  /** Of those, on an Opus or Fable model. */
-  premiumReplies: number;
-  limit: LimitRow | null;
+export interface PlanWindow {
+  percent: number;
+  resetsAt: null | number;
 }
-
-// ── Overview ───────────────────────────────────────────────────────────────────────────
 
 export interface OverviewData {
   health: RouterHealth;
   fallbacks: FallbackRow[];
   limits: LimitRow[];
-  usage: UsageWindow[];
+  /** Null with no reading, or one from a window that is over. */
+  fiveHour: null | PlanWindow;
+  /** The gateway's three switches, as the Slots page reads them too. */
+  switches: SwitchFacts;
   /** Crew sessions in a running state (`starting`, `working`, `blocked`, `paused`, `quiet`). */
   crewRunning: number;
   /** The heavy-job queue in one line: GB held of the budget, and jobs waiting. */
@@ -245,6 +252,8 @@ export interface CrewRecord {
   memoryMb: null | number;
   waitingFor?: WaitingFor;
   startedAt?: null | string;
+  /** When its state began (ISO 8601): its newest state event; absent where the answer does not say. */
+  stateSince?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -274,19 +283,19 @@ export interface CrewEvent {
   note?: null | string;
 }
 
-/**
- * A Claude session that is not a lead and not a crew session (planned: B6b's Work data hub,
- * from Claude Code's saved sessions, `src/sessions/`).
- */
+/** A Claude session that is not a lead and not a crew session (`SessionSummary`, `src/sessions/`). */
 export interface OtherSession {
   sessionId: string;
   name: null | string;
   project: string;
   branch: null | string;
-  /** Null when its record does not say. */
+  /** The model of its last reply; null when its file's tail holds none. */
   model: null | string;
-  /** `open`: Claude Code has not written its end marker (it runs, or it stopped hard). */
-  state: "working" | "waiting" | "idle" | "open";
+  /**
+   * `waiting`: a permission prompt of it is open; `working`: it wrote in the last two minutes;
+   * `ended`: Claude Code closed it; `idle`: between turns, or stopped hard.
+   */
+  state: SessionSummary["state"];
   /** ISO 8601: when it last wrote. */
   lastAt: string;
 }
@@ -357,8 +366,8 @@ export interface FlowReport {
   /** Why the report covers less than the range asked (it keeps 8 days); null when it covers it. */
   note?: null | string;
   /**
-   * The window over time (planned: from the report's hourly cache buckets, `src/sessions/flow.ts`
-   * › `FLOW_DAYS_KEPT`): launches and the time blocked on prompts per bucket.
+   * The window over time, from the report's own hours (`FlowReport.hours`): launches and the
+   * time blocked on prompts per bucket, an hour for 24 hours and six for 7 days.
    */
   buckets: { bucketMs: number; points: { t: number; launches: number; blockedMs: number }[] };
 }
@@ -367,16 +376,13 @@ export type FlowWindow = "24h" | "7d";
 
 // ── Health ─────────────────────────────────────────────────────────────────────────────
 
-/** The router's socket unit (`src/gateway/service.ts`): planned as a fact for B6d. */
-export interface SocketFacts {
-  unit: null | string;
-  listening: boolean;
-}
-
 export interface HealthData {
   router: RouterFacts;
-  /** Null until the server sends the socket unit's facts. */
-  socket: null | SocketFacts;
+  /**
+   * What holds the router's port across restarts (systemd's socket unit, or the Windows task),
+   * in doctor's words; null where this machine runs no service for it.
+   */
+  socket: null | PortHolder;
   backends: BackendRow[];
   breakers: Record<string, OpenBreaker>;
   /** The journal's own order, oldest first (`routerLog`); the page shows it newest first. */
@@ -414,13 +420,6 @@ export interface OmnirouteRow {
   unit: null | string;
 }
 
-/** `src/mcp/status.ts` › `McpServerStatus`. */
-export interface McpServerStatus {
-  name: string;
-  state: "ours" | "foreign" | "missing" | "unreadable" | "unknown";
-  runsWhat: null | string;
-}
-
 /** `src/browser/setup.ts` › `BrowserSetupState`. */
 export interface BrowserSetupState {
   extensionInstalled: boolean;
@@ -455,22 +454,24 @@ export interface DoctorLine {
   mark: "ok" | "warn" | "fail" | "info";
   section: string;
   text: string;
+  /** doctor's own `Fix:` line for a failure; null for any other line. */
+  fix: null | string;
 }
 
 export interface MachineData {
   facts: PortalFacts;
-  /**
-   * Claude Code's version, and the one the kit was last proved on (`.claude-code-version`).
-   * Null until the server sends it, as are `bun` and `mcp`.
-   */
-  claudeCode: null | { version: null | string; tested: string };
-  bun: null | string;
+  /** Claude Code's version (or why it is not known), and the last `doctor --live` proof. */
+  claudeCode: ClaudeCodeFacts;
+  /** The Bun the portal runs on, against the kit's minimum. */
+  bun: BunFacts;
   companions: CompanionRow[];
-  mcp: null | McpServerStatus[];
+  mcp: McpServerRow[];
   browser: BrowserCardData;
   omniroute: OmnirouteRow;
   warp: WarpRow;
   doctor: DoctorLine[];
+  /** When the doctor pass these lines came from ran (ms); null before the first. */
+  doctorAt: null | number;
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────────────────
@@ -483,7 +484,7 @@ export type SettingKind = "boolean" | "events" | "number" | "segment";
 
 /** `src/portal/settings.ts` › `SettingsRow` (`SettingSpec` with its value and source). */
 export interface SettingsRow {
-  card: "alerts" | "flow" | "switches";
+  card: "alerts" | "crew" | "flow" | "switches";
   choices?: readonly { label: string; value: string }[];
   help: string;
   id: string;
@@ -631,6 +632,8 @@ export interface JobsData {
   budgetGb: number;
   keptGb: number;
   stores: JobStore[];
+  /** Under load, a heavy job's CPU and disk I/O give way: the weights, or why one is not set. */
+  weights: JobWeightsState;
 }
 
 // ── Needs you (owner decision D52; planned: `GET /api/needs`) ─────────────────────────

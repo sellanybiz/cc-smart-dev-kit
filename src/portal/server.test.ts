@@ -3730,9 +3730,12 @@ describe("the JSON API", () => {
       expect(Object.keys(machine).sort()).toEqual([
         "autoMode",
         "browser",
+        "bun",
+        "claudeCode",
         "companions",
         "doctor",
         "jobs",
+        "mcp",
         "omniroute",
         "project",
         "updates",

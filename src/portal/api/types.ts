@@ -36,12 +36,17 @@ import type { MergeDetail } from "../../workflow/merge-check";
 import type { ActionName, ActionResult } from "../actions";
 import type {
   BackendRow,
+  BunFacts,
+  ClaudeCodeFacts,
   FallbackRow,
   LimitRow,
   LogLine,
+  McpServerRow,
   ModelRow,
   OpenBreaker,
+  PlanWindow,
   PortalFacts,
+  PortHolder,
   ProjectCardData,
   RecentEntry,
   RouterFacts,
@@ -57,6 +62,8 @@ export type {
   ActionResult,
   BackendRow,
   BreakerRecord,
+  BunFacts,
+  ClaudeCodeFacts,
   CrewEvent,
   DiffFile,
   DoctorCheck,
@@ -72,10 +79,13 @@ export type {
   LimitRecord,
   LimitRow,
   LogLine,
+  McpServerRow,
   MergeDetail,
   ModelRow,
   OpenBreaker,
+  PlanWindow,
   PortalFacts,
+  PortHolder,
   ProjectCardData,
   RecentEntry,
   RouterFacts,
@@ -98,9 +108,11 @@ export interface NotSetUp {
 
 /**
  * `GET /api/overview`: the Overview page. `jobs` is the queue at a glance (D52); the whole
- * queue is `/api/jobs`.
+ * queue is `/api/jobs`. `fiveHour` is the plan's 5-hour window as the status line last
+ * recorded it (null with no reading, or one from a window that is over).
  */
 export interface OverviewAnswer extends NotSetUp, OverviewData {
+  fiveHour: null | PlanWindow;
   jobs: { budgetGb: number; heldGb: number; waiting: number };
 }
 
@@ -109,8 +121,13 @@ export interface SlotsAnswer extends NotSetUp, SlotsData {
   switches: SwitchFacts;
 }
 
-/** `GET /api/health`: the Health page. */
-export interface HealthAnswer extends NotSetUp, HealthData {}
+/**
+ * `GET /api/health`: the Health page. `portHolder` is what holds the router's port across
+ * restarts, in doctor's words; null where this machine runs no service for it.
+ */
+export interface HealthAnswer extends NotSetUp, HealthData {
+  portHolder: null | PortHolder;
+}
 
 /** The update card, on Machine and on its own. */
 export interface UpdateAnswer {
@@ -127,8 +144,16 @@ export interface UpdateAnswer {
 /** The last background check, as the update files keep it (the Machine page's own shape). */
 export type MachineUpdate = MachineData["updates"];
 
-/** `GET /api/machine`: the Machine page. Needs no gateway config. */
-export interface MachineAnswer extends MachineData {}
+/**
+ * `GET /api/machine`: the Machine page. Needs no gateway config. Beside the server-rendered
+ * page's facts: Claude Code's version and live proof, the Bun the portal runs on, and the MCP
+ * servers setup registers (`mcp status`'s own reader).
+ */
+export interface MachineAnswer extends MachineData {
+  bun: BunFacts;
+  claudeCode: ClaudeCodeFacts;
+  mcp: McpServerRow[];
+}
 
 /** `GET /api/settings`: the Settings page. Needs no gateway config. */
 export interface SettingsAnswer extends SettingsData {}
@@ -206,13 +231,19 @@ export interface CrewSummary {
   branch: string;
   createdAt: string;
   effort: string;
+  /** The files its brief says it owns (globs). */
+  files: string[];
   id: string;
   kind: string;
+  /** Its newest event that said something: the step, the report's status, why it failed. */
+  lastEvent: null | { at: string; text: string; type: string };
   /** What it said at the end of its last turn; null before the first. */
   lastLine: null | string;
   leadName: string;
   /** The lead session that started it. */
   leadSessionId: string;
+  /** Its memory over time, oldest first: its newest `SUMMARY_MEMORY_POINTS` readings. */
+  memory: CrewMemoryPoint[];
   memoryMb: null | number;
   model: { named: string; resolved: string; slot: null | string; tier: null | string };
   name: string;
@@ -241,6 +272,8 @@ export interface CrewSummary {
     since?: string;
     slot?: string;
   };
+  /** The phases it waits for, while it is queued. */
+  waitsFor: string[];
   worktree: string;
 }
 
@@ -258,16 +291,22 @@ export interface LeadSummary {
   updatedAt: string;
 }
 
-/** One Claude Code session that is not a crew session. */
+/**
+ * One Claude Code session that is not a crew session. `state`: `waiting`, a permission prompt
+ * of it is open (the flow report's waits); `working`, its file was written in the last
+ * `SESSION_WORKING_MS`; `ended`, Claude Code wrote its end marker (a clean close, or `/exit`);
+ * `idle`, none of those (it waits for a prompt, or it was stopped hard).
+ */
 export interface SessionSummary {
   branch: null | string;
-  /** True: Claude Code wrote its end marker (a clean close, or `/exit`). */
-  endedCleanly: boolean;
   folder: null | string;
   id: string;
   /** When its file was last written (milliseconds since the epoch). */
   lastWrite: number;
+  /** The model of its last reply; null when its file's tail holds none. */
+  model: null | string;
   name: null | string;
+  state: "ended" | "idle" | "waiting" | "working";
 }
 
 /** `GET /api/work`: the lead, its crew nested, and the other sessions. */

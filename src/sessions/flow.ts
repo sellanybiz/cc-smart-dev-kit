@@ -145,6 +145,19 @@ export interface OpenWait {
   tool: string;
 }
 
+/** One hour of the report's window: what every session it counts did in it. */
+export interface FlowHour {
+  /** Agents launched. */
+  launches: number;
+  /** Time blocked on permission prompts answered in this hour (ms). */
+  promptMs: number;
+  /** Permission prompts answered in this hour. */
+  prompts: number;
+  replies: number;
+  /** The hour's start, in ms. */
+  t: number;
+}
+
 /** The whole report: the sessions, the totals, the open waits, and what could not be read. */
 export interface FlowReport {
   sinceMs: number;
@@ -179,6 +192,11 @@ export interface FlowReport {
     merges: { count: number; byAsker: Record<string, number>; byReason: Record<string, number> };
     skipped: number;
   };
+  /**
+   * The window hour by hour, oldest first: every hour it touches, an empty one too, summed over
+   * the sessions the report counts (the cache's own hourly buckets).
+   */
+  hours: FlowHour[];
   open: OpenWait[];
   /** Transcript records that could not be read, and ask-log lines that could not be read. */
   skipped: { askLog: number; records: number };
@@ -1010,6 +1028,27 @@ function bucketsIn(session: CachedSession, context: ReadContext): HourBucket[] {
   return out;
 }
 
+/** Every hour the window touches, oldest first, with the sessions' buckets of that hour added. */
+function hoursOf(sessions: readonly CachedSession[], context: ReadContext): FlowHour[] {
+  const first = Math.floor(context.sinceMs / HOUR_MS);
+  const last = Math.ceil(context.untilMs / HOUR_MS);
+  const hours: FlowHour[] = [];
+  for (let hour = first; hour < last; hour += 1) {
+    hours.push({ launches: 0, promptMs: 0, prompts: 0, replies: 0, t: hour * HOUR_MS });
+  }
+  for (const session of sessions) {
+    for (const [key, bucket] of Object.entries(session.hours)) {
+      const into = hours[Number(key) - first];
+      if (into === undefined) continue;
+      into.launches += bucket.launches;
+      into.promptMs += bucket.promptMs;
+      into.prompts += bucket.prompts;
+      into.replies += bucket.replies;
+    }
+  }
+  return hours;
+}
+
 /** The largest number of spans covering one instant; touching spans do not overlap. */
 export function maxOverlap(spans: { end: number; start: number }[]): number {
   const edges: { at: number; delta: number }[] = [];
@@ -1372,6 +1411,7 @@ export function readFlow(paths: FlowPaths, options: FlowOptions): FlowReport {
   sessions.sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || a.session.localeCompare(b.session));
   open.sort((a, b) => b.at - a.at || a.session.localeCompare(b.session));
   return {
+    hours: hoursOf(seenSessions, context),
     missing: missingMeasures(seenSessions),
     open,
     sessions,

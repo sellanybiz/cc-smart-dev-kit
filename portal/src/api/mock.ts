@@ -542,6 +542,47 @@ function settingsRows(project: boolean): SettingsRow[] {
       where: "personal",
       value: false,
     }),
+    row({
+      card: "crew",
+      help: "At most this many crew sessions run for one lead at once, in every repository.",
+      id: "set-crew-lead",
+      key: "crew.perLead",
+      kind: "number",
+      label: "Crew sessions per lead",
+      where: "personal",
+      value: 4,
+    }),
+    row({
+      card: "crew",
+      help: "Of one lead's crew sessions, at most this many on the opus tier.",
+      id: "set-crew-lead-opus",
+      key: "crew.perLeadOpus",
+      kind: "number",
+      label: "On Opus, per lead",
+      where: "personal",
+      value: 2,
+    }),
+    row({
+      card: "crew",
+      help: "The machine's ceiling: at most this many crew sessions at once, across every lead.",
+      id: "set-crew-max",
+      key: "crew.max",
+      kind: "number",
+      label: "On this machine, at most",
+      where: "personal",
+      source: "personal",
+      value: 12,
+    }),
+    row({
+      card: "crew",
+      help: "Past this share of the 5-hour usage window, a new opus crew session waits, unless the opus slot has a fallback chain.",
+      id: "set-crew-usage",
+      key: "crew.usagePercent",
+      kind: "number",
+      label: "Opus waits past",
+      where: "personal",
+      value: 85,
+    }),
   ];
 }
 
@@ -775,20 +816,8 @@ export function mockData(empty: boolean): MockData {
       health,
       fallbacks: fallbackRows,
       limits,
-      usage: [
-        {
-          window: "5h",
-          claudeReplies: empty ? 0 : 412,
-          premiumReplies: empty ? 0 : 131,
-          limit: limits[0] ?? null,
-        },
-        {
-          window: "7d",
-          claudeReplies: empty ? 0 : 6_284,
-          premiumReplies: empty ? 0 : 1_377,
-          limit: null,
-        },
-      ],
+      fiveHour: empty ? null : { percent: 61, resetsAt: now + 127 * MINUTE },
+      switches: slots.switches,
       crewRunning: empty ? 0 : 3,
       jobs: {
         heldGb: jobs.stores.reduce(
@@ -821,7 +850,15 @@ export function mockData(empty: boolean): MockData {
         uptimeSec: health.uptimeSec,
         why: null,
       },
-      socket: { unit: "cc-smart-dev-kit-router.socket", listening: true },
+      socket: {
+        check: {
+          ok: true,
+          text: "the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:20100",
+        },
+        kind: "systemd",
+        name: "cc-smart-dev-kit-router.socket",
+        state: "open",
+      },
       backends: [
         {
           name: "omniroute",
@@ -845,8 +882,17 @@ export function mockData(empty: boolean): MockData {
     },
     machine: {
       facts,
-      claudeCode: { version: "2.1.306", tested: "2.1.300" },
-      bun: "1.4.3",
+      claudeCode: {
+        liveCheck: {
+          claudeCode: "2.1.309",
+          passedAt: new Date(now - 3 * 24 * 60 * MINUTE).toISOString(),
+          plugin: "1.1.0",
+        },
+        version: "2.1.312",
+        why: null,
+      },
+      bun: { minimum: "1.4.3", ok: true, version: "1.4.5" },
+      doctorAt: now - 4 * MINUTE,
       companions: [
         {
           id: "claude-mem@thedotmack",
@@ -917,19 +963,32 @@ export function mockData(empty: boolean): MockData {
       },
       warp: { detail: "Warp is not installed. It is optional.", installed: false },
       doctor: [
-        { mark: "ok", section: "plugin", text: "cc-smart-dev-kit 1.1.0 is installed and enabled" },
-        { mark: "ok", section: "gateway", text: "the router answers on 127.0.0.1:20100" },
         {
+          fix: null,
+          mark: "ok",
+          section: "plugin",
+          text: "cc-smart-dev-kit 1.1.0 is installed and enabled",
+        },
+        {
+          fix: null,
+          mark: "ok",
+          section: "gateway",
+          text: "the router answers on 127.0.0.1:20100",
+        },
+        {
+          fix: null,
           mark: "warn",
           section: "omniroute",
           text: "OmniRoute 3.4.2 is out (3 days old): cc-smart-dev-kit omniroute update",
         },
         {
+          fix: "cc-smart-dev-kit setup",
           mark: "fail",
           section: "mcp",
-          text: "tavily-websearch is not registered: cc-smart-dev-kit setup",
+          text: "tavily-websearch is not registered",
         },
         {
+          fix: null,
           mark: "ok",
           section: "browser",
           text: "the claude-code Chrome profile has the extension and its token",

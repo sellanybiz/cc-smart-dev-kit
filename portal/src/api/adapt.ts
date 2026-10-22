@@ -17,6 +17,7 @@ import type {
   CrewRecord,
   CrewState,
   FlowReport,
+  FlowWindow,
   GuardAsksPage,
   HealthData,
   HistoryKeys,
@@ -130,10 +131,17 @@ export function overviewOf(answer: OverviewAnswer, work: WorkAnswer | null): Ove
       answer.router,
       Object.fromEntries(answer.slots.map((row) => [row.key, row.targets.map((t) => t.target)])),
     ),
+    fiveHour:
+      answer.fiveHour === null
+        ? null
+        : {
+            percent: answer.fiveHour.percent,
+            resetsAt:
+              answer.fiveHour.resetsAt === null ? null : Date.parse(answer.fiveHour.resetsAt),
+          },
     jobs: answer.jobs,
     limits: answer.limits,
-    // Claude Code writes its plan's usage down nowhere the portal can read: no window is known.
-    usage: [],
+    switches: answer.switches,
   };
 }
 
@@ -145,14 +153,14 @@ export function healthOf(answer: HealthAnswer): HealthData {
     breakers: answer.router.breakers,
     log: answer.log.lines,
     router: answer.router,
-    // The router's socket unit is not in the answer yet: the page says nothing about it.
-    socket: null,
+    socket: answer.portHolder,
   };
 }
 
 /** One doctor line, with the mark `doctor` prints for it. */
 function doctorLine(check: DoctorCheck): MachineData["doctor"][number] {
   return {
+    fix: check.ok ? null : check.fix,
     mark: check.info === true ? "info" : check.warn === true ? "warn" : check.ok ? "ok" : "fail",
     section: check.group ?? "",
     text: check.text,
@@ -163,13 +171,13 @@ function doctorLine(check: DoctorCheck): MachineData["doctor"][number] {
 export function machineOf(answer: MachineAnswer, facts: PortalFacts): MachineData {
   return {
     browser: answer.browser,
-    // Not in the answer yet: the page says it does not know.
-    bun: null,
-    claudeCode: null,
+    bun: answer.bun,
+    claudeCode: answer.claudeCode,
     companions: answer.companions,
     doctor: (answer.doctor?.checks ?? []).map(doctorLine),
+    doctorAt: answer.doctor?.at ?? null,
     facts,
-    mcp: null,
+    mcp: answer.mcp,
     omniroute: answer.omniroute,
     warp: answer.warp,
   };
@@ -261,7 +269,7 @@ function crewRecordOf(crew: CrewSummary, repo: string): CrewRecord {
     branch: crew.branch,
     createdAt: crew.createdAt,
     effort: crew.effort,
-    files: [],
+    files: crew.files,
     id: crew.id,
     kind: crew.kind,
     lastLine: crew.lastLine,
@@ -279,6 +287,7 @@ function crewRecordOf(crew: CrewSummary, repo: string): CrewRecord {
     shortId: crew.shortId,
     slug: crew.slug,
     state: crew.state,
+    stateSince: crew.stateSince,
     updatedAt: crew.updatedAt,
     waitingFor:
       crew.waitingFor === null
@@ -290,7 +299,7 @@ function crewRecordOf(crew: CrewSummary, repo: string): CrewRecord {
               model: crew.waitingFor.model ?? "",
               resetsAt: crew.waitingFor.resetsAt ?? null,
             },
-    waitsFor: [],
+    waitsFor: crew.waitsFor,
     worktree: crew.worktree,
   };
 }
@@ -343,18 +352,34 @@ export function workOf(answer: WorkAnswer): WorkData {
     }
     group.crew.push(crewRecordOf(crew, repo));
   }
+  const lastStep: Record<string, CrewEvent> = {};
+  const memory: WorkData["memory"] = {};
+  for (const crew of answer.crew) {
+    memory[crew.id] = crew.memory.map((point) => ({ at: Date.parse(point.at), mb: point.mb }));
+    if (crew.lastEvent !== null) {
+      lastStep[crew.id] = {
+        at: crew.lastEvent.at,
+        crew: crew.id,
+        lead: crew.leadSessionId,
+        name: crew.name,
+        state: crew.state,
+        text: crew.lastEvent.text,
+        type: crew.lastEvent.type,
+      };
+    }
+  }
+  for (const group of groups) group.lastStep = lastStep;
   return {
     leads: groups,
-    memory: {},
+    memory,
     others: answer.sessions.map((session) => ({
       branch: session.branch,
       lastAt: new Date(session.lastWrite).toISOString(),
-      model: null,
+      model: session.model,
       name: session.name,
       project: session.folder ?? "",
       sessionId: session.id,
-      // Claude Code's end marker is the one fact the record holds: open, or ended.
-      state: session.endedCleanly ? "idle" : "open",
+      state: session.state,
     })),
   };
 }
@@ -622,12 +647,30 @@ export function jobsOf(answer: JobsAnswer): JobsData {
       waiting: store.waiting.map(entry),
       where: store.where,
     })),
+    weights: answer.weights,
   };
 }
 
-/** The flow report: the server keeps no buckets over time yet, so the charts have no points. */
-export function flowOf(answer: FlowAnswer): FlowReport {
-  return { ...answer.report, buckets: { bucketMs: 0, points: [] }, note: answer.note };
+/** How many of the report's hours one bar of the chart holds, per window. */
+const HOURS_PER_BUCKET: Readonly<Record<FlowWindow, number>> = { "24h": 1, "7d": 6 };
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * The flow report, with its hours drawn as the window's buckets: one bar an hour for 24 hours,
+ * one per six hours for 7 days, each the sum of its hours (the server sends every hour).
+ */
+export function flowOf(answer: FlowAnswer, window: FlowWindow): FlowReport {
+  const size = HOURS_PER_BUCKET[window];
+  const points: FlowReport["buckets"]["points"] = [];
+  answer.report.hours.forEach((hour, index) => {
+    if (index % size === 0) points.push({ blockedMs: 0, launches: 0, t: hour.t });
+    const point = points.at(-1);
+    if (point === undefined) return;
+    point.launches += hour.launches;
+    point.blockedMs += hour.promptMs;
+  });
+  return { ...answer.report, buckets: { bucketMs: size * HOUR_MS, points }, note: answer.note };
 }
 
 /** The values a filter can take. */

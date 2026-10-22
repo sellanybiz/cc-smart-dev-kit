@@ -45,6 +45,7 @@ import {
   openWaits,
   readFlow,
 } from "../../sessions/flow";
+import type { SavedSession } from "../../sessions/saved-sessions";
 import {
   type MergeVerdict as CheckVerdict,
   checkBranch,
@@ -89,6 +90,27 @@ export const CREW_PAGE_EVENTS = 200;
 /** How far back the Work view looks for the other Claude Code sessions: two days, as `sessions`. */
 export const WORK_SESSIONS_MS = 2 * 86_400_000;
 
+/**
+ * A session whose file was written this recently counts as working: Claude Code appends to it
+ * with every message and tool result of a turn, so a quiet file is a session between turns.
+ */
+export const SESSION_WORKING_MS = 2 * 60_000;
+
+/**
+ * One session's state, from what its file and the flow report say (`SessionSummary`): its end
+ * marker first (a closed session waits on nothing), then an open permission prompt, then how
+ * recently it wrote.
+ */
+export function sessionStateOf(
+  session: Pick<SavedSession, "endedCleanly" | "id" | "lastWrite">,
+  waiting: ReadonlySet<string>,
+  now: number,
+): SessionSummary["state"] {
+  if (session.endedCleanly) return "ended";
+  if (waiting.has(session.id)) return "waiting";
+  return now - session.lastWrite <= SESSION_WORKING_MS ? "working" : "idle";
+}
+
 /** How many asks one page of the guard log answers unless the query says otherwise. */
 export const GUARD_ASKS_DEFAULT = 50;
 
@@ -105,19 +127,29 @@ function repoOf(deps: PageDataDeps): { repo: string } | { note: string } {
   }
 }
 
+/** How many memory readings a crew session's summary carries: its newest, for a sparkline. */
+export const SUMMARY_MEMORY_POINTS = 60;
+
 /** One crew session as a summary: no transcript, no prompt, no key. */
-function crewSummary(record: CrewRecord, events: readonly CrewEvent[]): CrewSummary {
+function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: number): CrewSummary {
   const open = [...record.questions].reverse().find((question) => question.answer === null);
+  const said = events.findLast((event) => event.crew === record.id && event.text !== null);
   return {
     base: record.base,
     branch: record.branch,
     createdAt: record.createdAt,
     effort: record.effort,
+    files: record.files,
     id: record.id,
     kind: record.kind,
+    lastEvent:
+      said === undefined || said.text === null
+        ? null
+        : { at: said.at, text: said.text, type: said.type },
     lastLine: record.lastLine,
     leadName: record.leadName,
     leadSessionId: record.leadSessionId,
+    memory: memoryOf(record, events, nowMs).slice(-SUMMARY_MEMORY_POINTS),
     memoryMb: record.memoryMb,
     model: record.model,
     name: record.name,
@@ -139,6 +171,7 @@ function crewSummary(record: CrewRecord, events: readonly CrewEvent[]): CrewSumm
     stateSince: stateSince(record, events),
     updatedAt: record.updatedAt,
     waitingFor: record.waitingFor ?? null,
+    waitsFor: record.waitsFor,
     worktree: record.worktree,
   };
 }
@@ -150,7 +183,7 @@ export function workAnswer(deps: PageDataDeps): WorkAnswer {
   const { repo } = found;
   const events = readCrewEvents(deps.action.portal.paths.stateDir, repo).events;
   const records = listCrew(deps.action.portal.paths.stateDir, repo).records;
-  const crew = records.map((record) => crewSummary(record, events));
+  const crew = records.map((record) => crewSummary(record, events, deps.action.portal.now()));
   const leads = listLeads(deps.action.portal.paths.stateDir, repo).records;
   const newestLead = [...leads].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const lead: LeadSummary | null =
@@ -173,20 +206,33 @@ export function workAnswer(deps: PageDataDeps): WorkAnswer {
     records.flatMap((record) => (record.sessionId === null ? [] : [record.sessionId])),
   );
   const leadIds = new Set(leads.map((one) => one.sessionId));
-  const sessions: SessionSummary[] = savedSessions(
+  const now = deps.action.portal.now();
+  const others = savedSessions(
     join(deps.action.portal.paths.claudeConfigDir, "projects"),
     repo,
-    deps.action.portal.now() - WORK_SESSIONS_MS,
-  )
-    .filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id))
-    .map((session) => ({
-      branch: session.branch,
-      endedCleanly: session.endedCleanly,
-      folder: session.folder,
-      id: session.id,
-      lastWrite: session.lastWrite,
-      name: session.name,
-    }));
+    now - WORK_SESSIONS_MS,
+  ).filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id));
+  // The open permission prompts, read once (the flow report's own cache), only when a session
+  // could be waiting on one.
+  const waiting = new Set(
+    others.some((session) => !session.endedCleanly)
+      ? openWaits(deps.action.portal.paths, {
+          nowMs: now,
+          project: null,
+          session: null,
+          sinceMs: now - OPEN_WAIT_MAX_AGE_MS,
+        }).map((wait) => wait.session)
+      : [],
+  );
+  const sessions: SessionSummary[] = others.map((session) => ({
+    branch: session.branch,
+    folder: session.folder,
+    id: session.id,
+    lastWrite: session.lastWrite,
+    model: session.model,
+    name: session.name,
+    state: sessionStateOf(session, waiting, now),
+  }));
   return { crew, lead, note: null, repo, sessions };
 }
 
@@ -289,7 +335,7 @@ export async function crewAnswerFor(
   );
   return {
     brief,
-    crew: crewSummary(record, allEvents),
+    crew: crewSummary(record, allEvents, deps.action.portal.now()),
     diff,
     events,
     memory: memoryOf(record, allEvents, deps.action.portal.now()),

@@ -4,7 +4,8 @@ import { ServerIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useResource } from "@/api/hooks";
 import { HEALTH_REFRESH, HISTORY_REFRESH } from "@/api/refresh";
-import type { BackendRow, HealthData, LogLine } from "@/api/types";
+import type { BackendRow, HealthData, LogLine, PortHolder } from "@/api/types";
+import { CommandLine } from "@/components/copy-button";
 import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { HistoryChart } from "@/components/history-chart";
@@ -78,6 +79,51 @@ function BackendItem({ backend }: { backend: BackendRow }) {
   );
 }
 
+/** The port holder's state, as the card's value and pill: doctor's verdict decides the tone. */
+function holderWords(holder: PortHolder): { tone: Tone; pill: string; value: string } {
+  if (!holder.check.ok) {
+    return holder.state === "start-limit"
+      ? { pill: "closed", tone: "bad", value: "Closed by systemd" }
+      : { pill: "fix", tone: "bad", value: "Not ready" };
+  }
+  return holder.state === "open"
+    ? { pill: "holds the port", tone: "ok", value: "Ready" }
+    : { pill: "set up", tone: "info", value: "Set up" };
+}
+
+/**
+ * What holds the router's port across restarts: systemd's socket unit, or the Windows task.
+ * Its words are doctor's own, and a failure carries doctor's fix to copy.
+ */
+function PortHolderCard({ holder }: { holder: HealthData["socket"] }) {
+  if (holder === null) {
+    return (
+      <StatCard
+        label="Port holder"
+        value="None"
+        badge={<TonePill tone="info">no service</TonePill>}
+        headline="No systemd and no Windows task here"
+        detail="So nothing holds the port while the router restarts"
+      />
+    );
+  }
+  const words = holderWords(holder);
+  return (
+    <StatCard
+      label={holder.kind === "systemd" ? "Socket unit" : "Windows task"}
+      value={words.value}
+      badge={<TonePill tone={words.tone}>{words.pill}</TonePill>}
+      headline={<span className="font-mono text-xs">{holder.name}</span>}
+      detail={
+        <span className="flex flex-col items-start gap-2">
+          <span className="text-pretty">{holder.check.text}</span>
+          {!holder.check.ok && <CommandLine command={holder.check.fix} label="Copy" />}
+        </span>
+      }
+    />
+  );
+}
+
 function HealthPage({ data }: { data: HealthData }) {
   const [now] = useState(() => Date.now());
   const { router, socket } = data;
@@ -108,19 +154,7 @@ function HealthPage({ data }: { data: HealthData }) {
           }
           detail={`On 127.0.0.1:${router.port}`}
         />
-        {socket !== null && (
-          <StatCard
-            label="Socket"
-            value={socket.listening ? "Listening" : "Closed"}
-            badge={
-              <TonePill tone={socket.listening ? "ok" : "warn"}>
-                {socket.listening ? "ready" : "closed"}
-              </TonePill>
-            }
-            headline="It starts the router on the first request"
-            detail={socket.unit ?? "No socket unit on this machine"}
-          />
-        )}
+        <PortHolderCard holder={socket} />
         <StatCard
           label="Backends answering"
           value={`${answering} of ${data.backends.length}`}
