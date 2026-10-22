@@ -10,13 +10,20 @@ import { beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { CREW_ENV } from "../crew/session";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { hookEnv, makeClone, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import type { HookInput, HookResult } from "./io";
 import { handleHook } from "./run";
-import { inEscapeDomain, sessionEscapeGuard, shellTargetPath } from "./session-escape-guard";
+import {
+  CREW_KIT_REFUSAL,
+  CREW_PORTAL_REFUSAL,
+  inEscapeDomain,
+  sessionEscapeGuard,
+  shellTargetPath,
+} from "./session-escape-guard";
 import { sessionEscapeGuardHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -1372,5 +1379,101 @@ describe("the direct call", () => {
     const env = hookEnv();
     const result = sessionEscapeGuard(shellInput(`sudo ${KIT} doctor`, "/"), cliPaths(env));
     expect(decisionOf(result)?.decision).toBe("deny");
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CC8: a crew session is never asked. Every ask this guard puts — a write into the kit's own
+// files, a computed write or kit command, and the portal — is a denial that names the step:
+// the question goes to its lead with `crew report --question` (D36). What it denies for
+// everyone stays the same denial; what it lets through stays silent.
+// ---------------------------------------------------------------------------------------
+
+describe("CC8: a crew session is never asked", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  let env: Record<string, string>;
+  let crew: Record<string, string>;
+  let paths: ReturnType<typeof cliPaths>;
+  let repo: string;
+  let projectFile: string;
+  beforeEach(() => {
+    env = hookEnv();
+    crew = { ...env, ...CREW };
+    paths = cliPaths(env);
+    repo = join(tempDir("app"), "app");
+    projectFile = writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, "{}\n");
+  });
+
+  /** The answer for one call, as a crew session and as the person's own session. */
+  async function both(
+    input: Record<string, unknown>,
+  ): Promise<
+    [{ decision: string; reason: string } | null, { decision: string; reason: string } | null]
+  > {
+    return [await run(input, crew), await run(input, env)];
+  }
+
+  test("an edit of the project's file: refused, where the person is asked", async () => {
+    const [refused, asked] = await both(editInput(projectFile, repo, "Write"));
+    expect(refused).toEqual({ decision: "deny", reason: CREW_KIT_REFUSAL });
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain("This edit changes");
+  });
+
+  test("a shell write into the kit's settings: refused, where the person is asked", async () => {
+    const [refused, asked] = await both(
+      shellInput(`echo '{}' > ${bashPath(paths.workflowConfigFile)}`, repo),
+    );
+    expect(refused).toEqual({ decision: "deny", reason: CREW_KIT_REFUSAL });
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain(paths.workflowConfigFile);
+  });
+
+  test("a write to a computed path that names the kit: refused, where the person is asked", async () => {
+    const command = `F=${bashPath(paths.workflowConfigFile)}; echo x > $F`;
+    const [refused, asked] = await both(shellInput(command, repo));
+    expect(refused).toEqual({ decision: "deny", reason: CREW_KIT_REFUSAL });
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain("writes to a path it works out when it runs");
+  });
+
+  test("a computed program whose words name the kit: refused, where the person is asked", async () => {
+    const command = `$(which ${KIT}) doctor`;
+    const [refused, asked] = await both(shellInput(command, repo));
+    expect(refused).toEqual({ decision: "deny", reason: CREW_KIT_REFUSAL });
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain("cannot tell whether it runs it");
+  });
+
+  test("the portal: refused, where the person is asked", async () => {
+    const command = `curl -s http://localhost:${DEFAULT_PORTAL_PORT}/api/health`;
+    const [refused, asked] = await both(shellInput(command, repo));
+    expect(refused).toEqual({ decision: "deny", reason: CREW_PORTAL_REFUSAL });
+    expect(asked?.decision).toBe("ask");
+    expect(asked?.reason).toContain("reaches the portal's port");
+  });
+
+  test("what it denies for everyone is the same denial in a crew session", async () => {
+    const input = shellInput(`${KIT} workflow review-done`, repo);
+    const [refused, denied] = await both(input);
+    expect(refused?.decision).toBe("deny");
+    expect(refused?.reason).toContain("records a review by hand");
+    expect(refused?.reason).toBe(denied?.reason ?? "");
+  });
+
+  test("a call outside its domain stays silent, and a broken file changes nothing", async () => {
+    expect(await run(shellInput("git status", repo), crew)).toBeNull();
+    expect(await run(shellInput("echo x > notes.txt", repo), crew)).toBeNull();
+    // The frame fails closed on a file that needs a newer plugin; the crew flag reaches that
+    // answer too, so the refusal holds instead of an ask.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99" });
+    const refused = await run(
+      shellInput(`echo '{}' > ${bashPath(paths.workflowConfigFile)}`, repo),
+      crew,
+    );
+    expect(refused).toEqual({ decision: "deny", reason: CREW_KIT_REFUSAL });
   });
 });

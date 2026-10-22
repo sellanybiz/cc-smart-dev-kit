@@ -471,19 +471,26 @@ export const agentGuardHook: HookSpec = {
  * broken or too new file, and a folder outside git, are judged the same way. And **`alwaysOn`**:
  * `ownHooks` cannot switch it off (it does not even accept the name), because the project's
  * file is one of the things this guard guards. A crash asks about the calls in its domain.
+ *
+ * A crew session is never asked (D36): each ask is a denial naming the step that reaches its
+ * lead, and the crew flag is passed into every path this guard answers through (`run`,
+ * `onConfigProblem`, `outsideGit`) — `alwaysOn` already makes them all reach a crew session,
+ * so no crew part is needed and no call is judged twice.
  */
 export const sessionEscapeGuardHook: HookSpec = {
   name: "session-escape-guard",
   events: ["PreToolUse"],
   alwaysOn: true,
   onConfigProblem: (_message, input, _event, _checkout, context) =>
-    sessionEscapeGuard(input, context.paths),
-  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths),
+    sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
+  outsideGit: (input, _event, _why, context) =>
+    sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
   onCrash: guardCrash(
     "whether this call goes around the limits set for the session",
     inEscapeDomain,
   ),
-  run: ({ input, paths }) => sessionEscapeGuard(input, paths),
+  run: ({ input, paths, env }) =>
+    sessionEscapeGuard(input, paths, process.platform, crewIdOf(env) !== null),
 };
 
 /**
