@@ -24,6 +24,8 @@ export interface WorkerContext {
   pid: number;
   processes: ProcessFacts;
   now: () => number;
+  /** Waits `ms` milliseconds: the polls of the watch and the self-watch (a test hands in its own). */
+  sleep: (ms: number) => Promise<void>;
   /** A short random suffix that keeps two workers of one phase and slug apart in the store. */
   randomSuffix: () => string;
   /** All of stdin, for `--brief -`. */
@@ -59,6 +61,7 @@ export function realWorkerContext(paths: CliPaths): WorkerContext {
     randomSuffix: () => randomBytes(3).toString("hex"),
     readStdin: () => Bun.stdin.text(),
     runProgram: realRunProgram,
+    sleep: (ms) => Bun.sleep(ms),
     which: (command) => Bun.which(command, { PATH: env.PATH ?? "" }),
   };
 }

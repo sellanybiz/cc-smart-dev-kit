@@ -44,6 +44,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -299,7 +300,7 @@ const workerFields = z.object({
   baseRef: text,
   /** The branch it started from and that branch's commit then; null until it starts. */
   base: z.looseObject({ ref: text, sha }).nullable(),
-  /** The phases it waits for (`--waits-for`): it stays queued until each is done or merged. */
+  /** The phases it waits for (`--waits-for`): it stays queued until each is merged (or removed). */
   waitsFor: z.array(text),
   /** The files its brief names. */
   files: z.array(text),
@@ -322,6 +323,18 @@ const workerFields = z.object({
    * `paused`: a kit that does not know the field changes the state and leaves it behind.
    */
   waitingFor: waitingForSchema.optional(),
+  /**
+   * When its session started (ISO 8601), not when it was recorded: a worker that waited in the
+   * queue for hours has not run for hours (the worker's own time caps count from here). Absent on
+   * a record an older kit wrote, and null before the session starts.
+   */
+  startedAt: text.nullable().optional(),
+  /**
+   * The id of the worker whose hand-off this one carries on (`worker start --continue`); null or
+   * absent for a first worker. The chain is recorded, never worked out from names and branches:
+   * a slug that ends in `-2` looks like a second worker.
+   */
+  continues: text.nullable().optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
@@ -382,6 +395,12 @@ const eventFields = z.object({
   state: word<WorkerState>(),
   /** One short line: the step, the report's status, why it failed; null when there is none. */
   text: z.string().nullable(),
+  /** The commit the step or the report happened at, when the worker named one. */
+  sha: sha.nullable().optional(),
+  /** What the worker did at its step, in its own words; null when it said nothing. */
+  note: z.string().nullable().optional(),
+  /** The memory the worker's process held, in MB, when the event happened. */
+  memoryMb: z.number().min(0).nullable().optional(),
 });
 
 export const workerEventSchema = eventFields.loose();
@@ -428,6 +447,8 @@ const reportFields = z.object({
   open: z.array(text),
   /** The question it is blocked on; null unless it is blocked. */
   question: text.nullable(),
+  /** The worker's own words about the phase, when it wrote prose instead of the fields. */
+  summary: text.nullable().optional(),
 });
 
 /** A blocked report must say what it waits on: the lead cannot answer a question it never saw. */
@@ -598,6 +619,9 @@ export async function createWorker(
  * does not know is kept, and so is a higher schema version. A changed state is one `state` event,
  * with `text` as its line; any other change is no event. Throws when the worker is not recorded,
  * its record is broken, or the result breaks the schema (then nothing is written).
+ *
+ * `memoryMb` is what the event carries about the worker's process (the watch reads it from
+ * `/proc`); it is null when nothing is known.
  */
 export async function updateWorker(
   stateDir: string,
@@ -606,10 +630,12 @@ export async function updateWorker(
   change: WorkerChange,
   atMs: number,
   text: null | string = null,
+  memoryMb: null | number = null,
 ): Promise<WorkerRecord> {
   return await changeWorker(stateDir, repo, id, atMs, (before, at) => ({
     change,
-    event: (after) => (after.state === before.state ? null : eventOf(after, at, "state", text)),
+    event: (after) =>
+      after.state === before.state ? null : eventOf(after, at, "state", text, memoryMb),
   }));
 }
 
@@ -637,6 +663,12 @@ export async function addWorkerQuestion(
 /**
  * Records the lead's answer to question `index` (counted from 0, in `questions`) of worker `id`.
  * Throws when there is no such question, or it has its answer already: an answer is given once.
+ *
+ * `resumes` is the state the answer brings the worker back to, when it was waiting for it — a
+ * `blocked` worker the answer reaches, or a `stopped` one resumed with it, is `working` again —
+ * written in the same hold, so the record never says `blocked` for a worker that has its answer
+ * (the watch stops a blocked worker that idles). A worker in any other state keeps its own. The
+ * state change is one `state` event; the answer alone is none.
  */
 export async function answerWorkerQuestion(
   stateDir: string,
@@ -645,6 +677,7 @@ export async function answerWorkerQuestion(
   index: number,
   answer: string,
   atMs: number,
+  resumes: null | WorkerState = null,
 ): Promise<WorkerRecord> {
   return await changeWorker(stateDir, repo, id, atMs, (before, at) => {
     const asked = before.questions[index];
@@ -655,7 +688,13 @@ export async function answerWorkerQuestion(
     const questions = before.questions.map((one, which) =>
       which === index ? { ...one, answer, answeredAt: at } : one,
     );
-    return { change: { questions }, event: () => null };
+    const waiting = before.state === "blocked" || before.state === "stopped";
+    const state = resumes !== null && waiting ? resumes : null;
+    return {
+      change: { questions, ...(state === null ? {} : { state }) },
+      event: (after) =>
+        state === null ? null : eventOf(after, at, "state", "an answer brought it back"),
+    };
   });
 }
 
@@ -665,10 +704,13 @@ function eventOf(
   at: string,
   type: WorkerEventType,
   text: null | string,
+  memoryMb: null | number = null,
 ): WorkerEvent {
   return {
     at,
     lead: worker.leadSessionId,
+    // The memory is in the line only when it is known: a line with nothing in it stays as it was.
+    ...(memoryMb === null ? {} : { memoryMb }),
     name: worker.name,
     state: worker.state,
     text,
@@ -842,7 +884,221 @@ export async function writeReport(
   return file;
 }
 
+/**
+ * Records the memory the worker's process holds, and nothing else: the record's `updatedAt`
+ * does not move (the watch reads it to know how long a blocked worker has waited), and no
+ * event is written (the memory is in the event the watch writes when the worker ends).
+ */
+export async function setWorkerMemory(
+  stateDir: string,
+  repo: string,
+  id: string,
+  memoryMb: number,
+): Promise<WorkerRecord> {
+  const file = workerFile(stateDir, repo, id);
+  return await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(workerRecordSchema, file);
+    if (before === null) {
+      throw new WorkerStoreError(`no worker "${id}" is recorded for ${repo} (${file})`);
+    }
+    const after = checked(workerRecordSchema, { ...before, memoryMb }, file);
+    writeRecord(file, after);
+    return after;
+  });
+}
+
+/**
+ * The state a report's status puts the worker in: the status names the same state, except
+ * `handoff`, which is its own. A status a newer kit wrote (the store reads one as itself) leaves
+ * the state as it is: the kit does not guess what a word it does not know means.
+ */
+export function stateForReport(status: string): null | WorkerState {
+  switch (status) {
+    case "done":
+      return "done";
+    case "failed":
+      return "failed";
+    case "blocked":
+      return "blocked";
+    case "handoff":
+      return "handoff";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Records a worker's hand-back report and the state it ends in, under one hold: the report
+ * file, the record (`reportPath` and the state), and one `report` event whose line is the
+ * status. Nothing is written when the report breaks the schema (then the worker keeps its
+ * state and the lead sees no event).
+ */
+export async function recordWorkerReport(
+  stateDir: string,
+  repo: string,
+  id: string,
+  report: HandBackReport,
+  atMs: number,
+): Promise<{ file: string; record: WorkerRecord }> {
+  const file = workerReportFile(stateDir, repo, id);
+  const value = checked(handBackReportSchema, report, file);
+  const state = stateForReport(report.status);
+  const recordFile = workerFile(stateDir, repo, id);
+  const record = await underStoreLock(stateDir, repo, () => {
+    const before = readRecord(workerRecordSchema, recordFile);
+    if (before === null) {
+      throw new WorkerStoreError(`no worker "${id}" is recorded for ${repo} (${recordFile})`);
+    }
+    const at = iso(atMs);
+    const after = checked(
+      workerRecordSchema,
+      {
+        ...before,
+        ...(state === null ? {} : { state }),
+        reportPath: file,
+        createdAt: before.createdAt,
+        id: before.id,
+        repo: before.repo,
+        updatedAt: at,
+        version: Math.max(before.version, WORKER_STORE_VERSION),
+      },
+      recordFile,
+    );
+    // The report file first: a record that names a report the file lacks is the worse half-write.
+    writeRecord(file, value);
+    writeRecord(recordFile, after);
+    appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
+    return after;
+  });
+  return { file, record };
+}
+
 /** The report in `file`: null when there is none; throws `WorkerStoreError` when it is broken. */
 export function readReport(file: string): HandBackReport | null {
   return readRecord(handBackReportSchema, file);
+}
+
+/**
+ * Where a lead's watch keeps what it has already said: `<store>/watch/<lead session id>.json`.
+ * One file per lead, so two leads watch their own workers and neither loses the other's lines.
+ */
+export function watchStateFile(stateDir: string, repo: string, leadSessionId: string): string {
+  return join(
+    workerStoreDir(stateDir, repo),
+    "watch",
+    `${fileId(leadSessionId, "session id")}.json`,
+  );
+}
+
+/**
+ * What a lead's watch has already read and already said: the byte in the events log it goes on
+ * from, and the last thing it said about each worker (so a line is said once, not every cycle).
+ */
+export interface WatchState {
+  /** The byte after the last whole line the watch read. */
+  offset: number;
+  /** What the watch last said about each worker, by its id. */
+  said: Record<string, string>;
+  /** True when the watch already told the lead that the monitors do not run here. */
+  noted: boolean;
+}
+
+const watchStateFields = z.object({
+  noted: z.boolean().default(false),
+  offset: count,
+  said: z.record(z.string(), z.string()),
+});
+
+/**
+ * The lead's watch state: where it goes on in the events log, and what it last said about each
+ * worker. Null when there is no state yet — the watch then starts at the log's end, because the
+ * lines before it are history the lead already saw (it started those workers itself).
+ */
+export function readWatchState(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+): WatchState | null {
+  try {
+    const raw = readFileSync(watchStateFile(stateDir, repo, leadSessionId), "utf8");
+    const parsed = watchStateFields.safeParse(JSON.parse(raw));
+    if (parsed.success) return parsed.data;
+  } catch {
+    // No state yet, or one that cannot be read: the watch starts fresh.
+  }
+  return null;
+}
+
+/**
+ * The byte the events log ends at, so a watch that starts now reads only what happens from
+ * here on. The log's size, read as it is: a line a writer has not finished is counted in, and
+ * the watch reads whole lines only, so it reads that line again.
+ */
+export function eventsEndOffset(stateDir: string, repo: string): number {
+  try {
+    return statSync(workerEventsFile(stateDir, repo)).size;
+  } catch {
+    // No log yet: the watch starts at the beginning, which is the same as the end.
+    return 0;
+  }
+}
+
+/** Writes the lead's watch state. */
+export function writeWatchState(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  state: WatchState,
+): void {
+  writeStoreFile(
+    watchStateFile(stateDir, repo, leadSessionId),
+    `${JSON.stringify(state, null, 2)}\n`,
+  );
+}
+
+/**
+ * Where a worker's own watch keeps what it last said: `<store>/self/<worker id>.json`. One file
+ * per worker, so two workers never speak for each other.
+ */
+export function selfWatchStateFile(stateDir: string, repo: string, id: string): string {
+  return join(workerStoreDir(stateDir, repo), "self", `${fileId(id, "worker id")}.json`);
+}
+
+/**
+ * What a worker's own watch last said to it, and when: the advice's kind and the time it was
+ * given, so the same advice is not repeated before its time is up.
+ */
+export interface SelfWatchState {
+  /** The advice's kind (`context`, `long`, `time`). */
+  kind: string;
+  /** When it was said, in ms. */
+  at: number;
+}
+
+const selfWatchStateFields = z.object({ at: z.number().int().min(0), kind: text });
+
+/** What the worker's own watch last said; null when it never said anything. */
+export function readSelfWatchState(
+  stateDir: string,
+  repo: string,
+  id: string,
+): SelfWatchState | null {
+  try {
+    const raw = readFileSync(selfWatchStateFile(stateDir, repo, id), "utf8");
+    const parsed = selfWatchStateFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    // Never said anything, or the file cannot be read: the worker says it now.
+    return null;
+  }
+}
+
+/** Writes what the worker's own watch said. */
+export function writeSelfWatchState(
+  stateDir: string,
+  repo: string,
+  id: string,
+  state: SelfWatchState,
+): void {
+  writeStoreFile(selfWatchStateFile(stateDir, repo, id), `${JSON.stringify(state, null, 2)}\n`);
 }

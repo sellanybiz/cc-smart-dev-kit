@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { git } from "../testing/temp";
 import { LEAD_SESSION, workerWorld } from "../testing/worker-world";
 import { runWorker } from "./command";
+import { WORKER_STEPS } from "./step";
 import { listLeads, readLead } from "./store";
 
 describe("D26: worker lead", () => {
@@ -152,6 +153,19 @@ describe("the usage", () => {
     expect(text).toContain("  architecture  opus: architecture and design");
     expect(text).toContain("  ui            opus: UI and UX judgment");
     expect(world.out[1]).toBe(text);
+  });
+
+  test("--help names every step of a worker's phase, in lines that fit the usage's width", async () => {
+    const world = workerWorld();
+    expect(await runWorker(["--help"], world.ctx())).toBe(0);
+    const text = world.out[0] ?? "";
+    for (const step of WORKER_STEPS) expect(text).toContain(step);
+    const stepLines = text
+      .split("\n")
+      .filter((line) => WORKER_STEPS.some((step) => line.includes(step)));
+    // The list is long enough to wrap, and no line of it runs past the usage's 80 columns.
+    expect(stepLines.length).toBeGreaterThan(2);
+    for (const line of stepLines) expect(line.length).toBeLessThanOrEqual(80);
   });
 
   test("no command: exit 2", async () => {

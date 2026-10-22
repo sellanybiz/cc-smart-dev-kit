@@ -79,7 +79,7 @@ describe("the workers that hold a place", () => {
 });
 
 describe("the phases a worker waits for", () => {
-  test("done, merged or removed is finished; anything else, or no worker yet, is not", () => {
+  test("merged or removed is finished; done is not, and anything else is not", () => {
     const records = [
       worker("A", "done"),
       worker("B", "merged"),
@@ -88,6 +88,7 @@ describe("the phases a worker waits for", () => {
       worker("E", "failed"),
     ];
     expect(unmetWaits(["A", "B", "C", "D", "E", "F"], records)).toEqual([
+      { phase: "A", state: "done" },
       { phase: "D", state: "working" },
       { phase: "E", state: "failed" },
       { phase: "F", state: null },
@@ -95,8 +96,8 @@ describe("the phases a worker waits for", () => {
   });
 
   test("a phase's newest worker counts: a hand-off's next worker, a second try", () => {
-    expect(unmetWaits(["A"], [worker("A", "handoff", 1), worker("A", "done", 2)])).toEqual([]);
-    expect(unmetWaits(["A"], [worker("A", "done", 2), worker("A", "working", 3)])).toEqual([
+    expect(unmetWaits(["A"], [worker("A", "handoff", 1), worker("A", "merged", 2)])).toEqual([]);
+    expect(unmetWaits(["A"], [worker("A", "merged", 2), worker("A", "working", 3)])).toEqual([
       { phase: "A", state: "working" },
     ]);
   });
@@ -165,7 +166,7 @@ describe("D25: start now, or queued with the reason", () => {
     ];
     expect(placeFor({ ...free, running: 6, unmet })).toEqual({
       start: false,
-      why: "waits for B6c (working), B7 (not started yet); it starts when each is done or merged",
+      why: "waits for B6c (working), B7 (not started yet); it starts when each is merged",
     });
   });
 });

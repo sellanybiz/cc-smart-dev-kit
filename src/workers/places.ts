@@ -39,8 +39,14 @@ export const RUNNING_STATES: readonly WorkerState[] = [
   "quiet",
 ];
 
-/** The states in which a phase another worker waits for counts as finished. */
-export const FINISHED_STATES: readonly WorkerState[] = ["done", "merged", "removed"];
+/**
+ * The states in which a phase another worker waits for counts as finished: **`merged` or
+ * `removed` only.** A worker that finished its phase (`done`) has not given the lead anything
+ * to merge yet, and a dependent phase that branched from the lead's branch before the merge
+ * would miss the work it waits for. So a phase counts as finished when the lead merged it (or
+ * the worker was removed, which only happens after the merge).
+ */
+export const FINISHED_STATES: readonly WorkerState[] = ["merged", "removed"];
 
 /** How long a start waits for another start's decision: a decision takes milliseconds. */
 export const PLACES_LOCK_WAIT_MS = 5_000;
@@ -115,7 +121,7 @@ export function placeFor(input: PlaceInput): Place {
     const phases = input.unmet
       .map((wait) => `${wait.phase} (${wait.state ?? "not started yet"})`)
       .join(", ");
-    return { start: false, why: `waits for ${phases}; it starts when each is done or merged` };
+    return { start: false, why: `waits for ${phases}; it starts when each is merged` };
   }
   if (input.running >= input.max) {
     return {

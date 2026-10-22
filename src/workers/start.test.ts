@@ -135,7 +135,7 @@ describe("D25: worker start returns at once", () => {
         "auto",
         "--settings",
         settingsFile,
-        `You are the worker W my-app B6b portal-live for the lead LEAD my-app master-plan. Read ${briefFile} first: it is your task, and it says how you report.`,
+        `You are the worker W my-app B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:worker. Read ${briefFile} first: it is your task, and it says how you report.`,
       ],
       ["agents", "--json", "--all"],
     ]);
@@ -143,6 +143,8 @@ describe("D25: worker start returns at once", () => {
       base: { ref: "main", sha: head },
       baseRef: "main",
       branch: "wk/B6b-portal-live",
+      // A first worker for its phase continues no one: only `--continue` records the old id.
+      continues: null,
       createdAt: "2026-10-21T10:00:00.000Z",
       effort: "high",
       files: ["src/a.ts", "src/b.ts"],
@@ -164,6 +166,8 @@ describe("D25: worker start returns at once", () => {
       sessionId: `${SHORT_ID}-0000-1111-2222-333333333333`,
       shortId: SHORT_ID,
       slug: "portal-live",
+      // When its session started: the worker's own time caps count from here.
+      startedAt: "2026-10-21T10:00:00.000Z",
       state: "working",
       updatedAt: "2026-10-21T10:00:00.000Z",
       version: 1,
@@ -546,17 +550,37 @@ describe("D25: the queue — still one line, at once", () => {
     const world = await ledWorld();
     expect(await runWorker(startArgs(world.brief, "--waits-for", "B6a,B7"), world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued W my-app B6b portal-live: waits for B6a (not started yet), B7 (not started yet); it starts when each is done or merged",
+      "queued W my-app B6b portal-live: waits for B6a (not started yet), B7 (not started yet); it starts when each is merged",
     ]);
     expect(onlyWorker(world.paths.stateDir, world.repo).waitsFor).toEqual(["B6a", "B7"]);
   });
 
-  test("--waits-for a phase that is done here: it starts", async () => {
+  test("--waits-for a phase that is done but not merged: it waits for the merge", async () => {
     const world = await ledWorld();
     expect(await runWorker(startArgs(world.brief), world.ctx())).toBe(0);
     const first = onlyWorker(world.paths.stateDir, world.repo);
     const { updateWorker } = await import("./store");
     await updateWorker(world.paths.stateDir, world.repo, first.id, { state: "done" }, T0);
+    const args = [
+      "start",
+      "B7",
+      "--slug",
+      "always-on",
+      "--kind",
+      "security",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runWorker([...args, "--waits-for", "B6b"], world.ctx())).toBe(0);
+    expect(world.out[1]).toStartWith("queued W my-app B7 always-on: waits for B6b (done)");
+  });
+
+  test("--waits-for a phase the lead merged: it starts", async () => {
+    const world = await ledWorld();
+    expect(await runWorker(startArgs(world.brief), world.ctx())).toBe(0);
+    const first = onlyWorker(world.paths.stateDir, world.repo);
+    const { updateWorker } = await import("./store");
+    await updateWorker(world.paths.stateDir, world.repo, first.id, { state: "merged" }, T0);
     const args = [
       "start",
       "B7",

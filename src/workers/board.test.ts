@@ -116,7 +116,7 @@ describe("worker list", () => {
       "W my-app B3 more — queued, 2 min ago",
       "  B3 · build · sonnet · high",
       "  wk/B3-more · memory - · lead LEAD my-app master-plan",
-      "  held: waits for B1 (working); it starts when each is done or merged",
+      "  held: waits for B1 (working); it starts when each is merged",
       "",
       "W my-app B2 api — queued, 5 min ago",
       "  B2 · build · sonnet · high",

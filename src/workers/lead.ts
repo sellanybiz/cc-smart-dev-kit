@@ -18,10 +18,10 @@
  */
 import { tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
-import { readCaller, reasonOf } from "./caller";
+import { readCaller, reasonOf, requireSession } from "./caller";
 import type { WorkerContext } from "./context";
 import { leadName, workerTag } from "./names";
-import { readLead, writeLead } from "./store";
+import { eventsEndOffset, readLead, readWatchState, writeLead, writeWatchState } from "./store";
 
 /** What `worker lead` was asked, already checked to be well formed (`command.ts`). */
 export interface LeadArgs {
@@ -39,7 +39,13 @@ export async function runWorkerLead(args: LeadArgs, ctx: WorkerContext): Promise
     for (const line of read.lines) ctx.error(line);
     return 1;
   }
-  const { checkout, repo, resolved, session } = read.caller;
+  const { checkout, repo, resolved } = read.caller;
+  const found = requireSession(read.caller, "lead");
+  if (!found.ok) {
+    for (const line of found.lines) ctx.error(line);
+    return 1;
+  }
+  const session = found.session;
   const refuse = (line: string, fix: string, code: 1 | 2): number => {
     ctx.error(`worker lead: ${line}`);
     ctx.error(`Fix: ${fix}`);
@@ -82,6 +88,20 @@ export async function runWorkerLead(args: LeadArgs, ctx: WorkerContext): Promise
   } catch (error) {
     ctx.error(`worker lead: ${reasonOf(error)}`);
     return 1;
+  }
+  // Where this lead's watch starts reading: the log's end as it is now. The lines before it are
+  // history the lead already saw (it started those workers itself); the ones after it are what
+  // the watch says.
+  if (readWatchState(ctx.paths.stateDir, repo, session.sessionId) === null) {
+    try {
+      writeWatchState(ctx.paths.stateDir, repo, session.sessionId, {
+        noted: false,
+        offset: eventsEndOffset(ctx.paths.stateDir, repo),
+        said: {},
+      });
+    } catch {
+      // The watch reads the log from its start then: the same lines, one more time.
+    }
   }
   ctx.print(
     `lead ${name} (${session.sessionId.slice(0, 8)}): the workers this session starts in ${tildify(repo, ctx.paths.home)} report to it; to show the name now, type the next line in this session`,

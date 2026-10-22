@@ -2185,6 +2185,8 @@ repository, under the state folder:
 <stateDir>/workers/<repo key>/reports/<worker id>.json   a worker's hand-back report
 <stateDir>/workers/<repo key>/files/<worker id>/         its brief.md and its settings.json
 <stateDir>/workers/<repo key>/events.jsonl               every change, one line each, append-only
+<stateDir>/workers/<repo key>/watch/<lead id>.json       where that lead's watch is in the log
+<stateDir>/workers/<repo key>/self/<worker id>.json      what that worker's own watch last said
 <stateDir>/workers/lock                                  the machine-wide lock of a start decision
 ```
 
@@ -2204,7 +2206,10 @@ repository, under the state folder:
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
   and where it is: its state, its last line, its report, its pull request, its memory, its
   questions, what it waits for while `paused` (`waitingFor`: a gateway slot, or Claude's own
-  limit), and when it was recorded and changed. The states are `queued`, `starting`,
+  limit), when its session started (`startedAt`, optional: the worker's own time caps count
+  from it, not from when it was recorded), the worker it continues (`continues`, optional: the id
+  of the old worker, set by a hand-off and by nothing else), and when it was recorded and
+  changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
   `removed` (`WORKER_STATES`, each one's meaning in the file). **A lead record** holds its session
   id, name, repository, plan, the tag its workers' names carry, and folder, and may hold
@@ -2271,7 +2276,9 @@ polls or retries. In order:
    (`starting` or `queued`) under the same hold. First the name must be free: no worker of this
    repository holds the branch (`holdsName`: every record but a `removed` one, and a `failed` one
    that never got a session and left no worktree), and neither the branch nor the folder exists. Then, in order: **its phases** (`--waits-for`) — each phase's newest worker here must be
-   `done`, `merged` or `removed` (`worker rm` refuses an unmerged branch); **the two caps** (D37)
+   `merged` or `removed`; **a worker that finished its phase (`done`) is not enough**, because
+   the lead has not merged it yet, and a dependent phase that branched before the merge would
+   miss the work it waits for; **the two caps** (D37)
    — the workers of every repository on this machine in `starting`, `working`, `blocked`,
    `paused` or `quiet` stay below `workflow.workers.max` (6), and, for a new opus-tier worker, the
    opus-tier ones among them stay below `workflow.workers.maxOpus` (2): the tier the model's name
@@ -2358,6 +2365,177 @@ session (`CC_SMART_DEV_KIT_WORKER` set) never runs `stop`, `rm` or `resume`.
   **Limit:** a branch the lead *squashed* is not an ancestor of the lead's branch, so `rm`
   refuses it; the lead merges a worker's branch with a merge commit (`workflow.mergeMethod`
   `merge`, the default).
+
+### The worker's steps, its report, and the lead's watch
+
+The lead never waits on a worker (D25). Everything a worker says arrives by itself: **the
+events log** for what the worker did, **the watch** for what the lead reads, and **the answer**
+for what the lead says back.
+
+**A step** — `cc-smart-dev-kit worker step <step> [--note <text>]` (`src/workers/step.ts`) — is
+one milestone of a worker's phase: a failing test, a passing one, the whole suite, the review
+that starts and ends, the fixes, the commit, the pull request, the hand-off
+(`WORKER_STEPS`, one list). **Only a worker records steps**: the worker is the one
+`CC_SMART_DEV_KIT_WORKER` names (its Bash tool carries it, L1a.1), and a session that names none
+is refused. The command reads HEAD's sha itself, so the worker never has to name its own commit,
+and appends **one** event (`type: "step"`, the step's name, the sha, the note, the time). A step
+the worker does not know is refused, with the list of the ones it does.
+
+**The hand-back report** — `cc-smart-dev-kit worker report --status done|blocked|failed|handoff
+[--file <file|->]` (`src/workers/report.ts`) — is what the worker gives its lead. **The command
+fills the mechanical facts**, so the worker never looks them up: the branch and its head, the
+base it started from, the diff counted against that base (`git diff --numstat -z --no-renames`,
+`diff.ts`), the files it changed that its brief did not name (the brief's `--files` globs; a brief
+that names none names no boundary), the review the record holds for its branch, and its pull
+request. A diff git cannot give — the base is gone, the folder is no worktree — is a refusal,
+never "no file changed". The worker gives the rest, and the command checks it against the store's
+report shape before it writes anything: the targeted tests and the whole suite, the other
+checks, the review's findings, the docs, what only the lead may do, and what is still open. The
+file holds that part as JSON, or as prose, which is kept as the report's `summary`; with no file
+the part is empty and the facts are still filled. A report that claims a review **the review
+record does not hold** is refused — so the lead's gate (D22) never has to doubt it. The report
+ends the worker's phase: its state becomes the status, and the report file, the record and the
+`report` event are written under one hold. **Only a `blocked` report carries a question** — the
+one it waits on, or else the newest the worker asked that nobody answered; a `done` report with
+an old open question in it would tell the lead the worker is blocked.
+
+**A question** — `worker report --question "<the question>" --option "<choice>" --option
+"<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the
+worker's `questions`, with a `question` event, and **the worker's state does not move**: it goes
+on with every part of the phase the question does not block. `--status blocked` says the worker
+has nothing left to do. A question needs two options at least, and a recommendation that is one
+of them; `--option` and `--recommend` without a `--question`, and a `--file` with one, are
+mistakes (exit 2).
+
+**The answer** — `cc-smart-dev-kit worker answer <worker> "<the answer>"` (`src/workers/answer.ts`)
+— comes back from the lead (an answer that starts with `--` is given after a bare `--`). A
+**running** worker gets it as a message: the CLI cannot send one itself (Claude Code's
+`SendMessage` is a tool only a session holds), so the command prints the one line the lead sends
+it with — `SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a
+quote or a line break in the answer is escaped and never changed — and records the answer, so the
+question is answered once. A **stopped** worker (D35: the watch stops a blocked worker that
+idles past `workflow.workers.idleStopMinutes`) is resumed with the answer as its next prompt:
+`claude --bg --resume <session id> "<text>"`, the form `claude --help` gives in 2.1.306 ("With
+--resume <session-id>, continues that session in the background under the same ID"), run in the
+worker's own worktree. **A worker the answer reaches or resumes is `working` again, in the same
+hold that records the answer**: a record that kept saying `blocked` would let the watch stop a
+worker that is busy. A stopped worker that ended its phase (a `done`, `failed` or `handoff`
+report) is not resumed by an answer, and a worker the store does not know is never answered: the
+store, not the name, says what is a worker.
+
+**The watch** — `cc-smart-dev-kit worker watch [--lead <session>] [--once] [--timeout
+<seconds>]` (`src/workers/watch.ts`) — is the lead's window. It prints **one line per change and
+nothing else**, from two readers:
+
+- **the store's events log** (`events.jsonl`), read from the byte after the last whole line the
+  last pass read (the store's own reader, `readWorkerEvents`; a line a writer has not finished is
+  left for the next read). A step, a report, a question and a state change are each one line, and
+  **a change of state is said from its event and from nowhere else**: the watch's own acts write
+  events too, and the pass reads the log a second time at its end, so a change it makes is said
+  once, in the same pass. A report's line names the review the record holds, the phases that wait
+  for this one and the report's file: `W kit B6b portal-live: done · review ✓ · unblocks B6c, B6d
+  · report <path>`; a `blocked` one says what it waits on, a `failed` one why. Where the watch
+  goes on is **per lead** (`<store>/watch/<lead session id>.json`), so two leads watch their own
+  workers and neither loses the other's lines; the mark is written when the lead records itself
+  (`worker lead`), so the lines before it are history the lead already saw.
+- **agent view** (`claude agents --json --all`), read on every pass. It raises three alerts, each
+  said once while it lasts and none of them an action: a worker that **needs the person** (a
+  permission prompt or an input), one whose transcript has not moved for
+  `workflow.workers.quietMinutes` (**quiet**), and one whose turn **ended with no report**. It
+  also keeps the store true, because the caps count the workers that hold a place
+  (`RUNNING_STATES`): a session that **failed** is recorded `failed`, and one the person
+  **stopped by hand** is recorded `stopped`; neither then holds a place and keeps a queued worker
+  waiting for ever. A permission wait does **not** make a worker `blocked`: the idle stop below
+  would kill a worker that only waits for the person to approve a call.
+
+The watch **acts** as well, because a worker never outlives its work (D35), and only on workers
+the store records — a session the kit does not know is the person's own:
+
+- it **starts the queued workers** of this lead when a place frees — through the launcher's own
+  path (`startQueued`, in `start.ts`: the same `launch` that `worker start` runs, never a second
+  launcher). A queued worker is cut from its `baseRef` when it starts, so a phase that waited for
+  another starts from the merged result, and the folder `claude -w` opens is the record's own
+  worktree, so a hand-off's numbered folder is the right one;
+- it **ends** a worker whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
+  the conversation stays; a session that crashed has nothing to stop), and a `blocked` one that
+  has idled past `workflow.workers.idleStopMinutes` (an answer brings it back). A stop that fails
+  is said once, not on every pass;
+- it **marks a worker `merged`** when the lead merged its branch, and the line says `worker rm`
+  removes it. The branch must hold a commit of its own (its tip is not the base it was cut from —
+  a worker that failed before it committed is an ancestor of the lead's branch for that reason
+  alone), and its tip must be an ancestor of the commit **the lead's own folder** is on (the
+  lead's record holds it; the main checkout when that is gone). A squash merge leaves no ancestor
+  and is not found: the lead merges with `git merge --no-ff`. The merge is looked for on every
+  worker whose work is over (`done`, `failed`, `handoff`, `stopped`): a worker stopped after its
+  turn ended is merged later, when the lead merges the branch.
+
+The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
+the worker's record without moving its `updatedAt` (the idle stop counts from it), where `worker
+list` and the portal read it, and into the event the watch writes when it ends the worker.
+
+`--once` ends on the next change: the fallback where monitors do not run (the lead runs it with
+`run_in_background: true`, re-armed per event, and the end of the run starts the lead's next
+turn); a pass with nothing to say waits for the next, so it never wakes the lead with no news.
+`--timeout <seconds>` bounds the wait.
+
+**The hand-off** — `worker start <phase> --continue <old worker>` — starts the next worker of a
+phase that ran out of room: the same phase and slug, cut from the **old worker's head** (not
+the lead's branch), with the old brief and what the old worker left behind as its brief — its
+report: the branch and the counts, the docs, the files outside the brief, what only the lead may
+do, what is open, and its own words (`summary`) — and the next number in its name (`W <tag>
+<phase> <slug> 2`, and ` 3` after that). Its branch and its worktree folder carry the same number
+as a suffix (`wk/<phase>-<slug>-2`), so the next worker never takes the branch or the folder of
+the one before it; its id keeps the one scheme (`<phase>-<slug>-<6 hex>`). It is a new launch, so
+it goes through the same launch policy a fresh start does (`chooseLaunch`): the old worker's model
+and effort are asked for again, and the Agent guard judges them now. **The old worker's session
+is stopped; its record stays `handoff`** — the store's word for "handed off to a next worker, and
+ended" — and so do its branch and its worktree, so the lead can read what it did and `worker rm`
+can clean it up. Only a worker that handed off can be continued, **once**: a second `--continue`
+of the same worker is refused while its next worker is not failed or removed, and a report that
+cannot be read is a refusal (a hand-off without it would lose what the next worker must know).
+**The chain is recorded, never worked out**: the next worker's record holds the old worker's id
+(`continues`), because a number at the end of a branch or a slug proves nothing — a phase whose
+slug is `step-2` has a branch that ends in `-2` too.
+
+**The worker's own line** — `cc-smart-dev-kit worker self-watch [--once]`
+(`src/workers/self-watch.ts`) — runs in the worker's own monitor, and **keeps running**: it looks
+every minute and prints a line only when the worker should act, so a worker that is fine sees
+nothing. It reads the worker's own transcript tail: the last reply's `usage` (its input, its cache
+written and its cache read) against the window of the model that wrote that reply
+(`transcript.ts`). **The kit knows no backend's window**: a Claude model — an id, or the family
+name a worker is launched with — has Claude Code's own 200 000 tokens, or 1 000 000 with the
+`[1m]` suffix (a family name that really has a larger window makes the worker hand off early,
+never late), and a model the kit does not know has no window and so no context line. At
+`workflow.workers.handoffPercent` (70 %) the worker is told to **hand off**: commit the work in
+progress and run `worker report --status handoff`. At `workflow.workers.softHours` (2) it gets a
+**note** (the phase is long); at `workflow.workers.maxHours` (4) it is told to hand off again —
+the hours count from when its session **started** (`startedAt` in the record), not from when it
+was recorded, because a worker that waited in the queue has not run for the hours it waited. The
+same line is not said again before 15 minutes have passed, so a worker that ignored it sees it
+again and a worker that acted does not; the loop ends when the worker's phase is over. A monitor
+is a process of the host, whose environment may not carry the settings' `env`, so this one command
+finds its worker by its worktree when `CC_SMART_DEV_KIT_WORKER` is not set; `--once` checks once
+and exits (for a hook, and for a host where monitors do not run).
+
+**The monitors** (`plugin/monitors/monitors.json`) arm the two of them: `worker-events` on the
+lead's skill (`on-skill-invoke:cc-smart-dev-kit:lead`) runs the watch, and `worker-self` on the
+worker's (`on-skill-invoke:cc-smart-dev-kit:worker`) runs the self-watch. The file is an array of
+monitors with exactly the four fields Claude Code's loader reads (`name`, `command`,
+`description`, `when`); `when` for a plugin's own skill is the namespaced
+`on-skill-invoke:<plugin>:<skill>` (the loader compares it with the name the skill is invoked by,
+`<plugin>:<skill>`). Each stdout line reaches the model as a task notification — **at most ten at
+once and then one every two seconds**; the host drops the rest with a notice — which is why the
+watch says only what is news. **They are session-scoped**: the host arms them as persistent tasks
+of the session, and they end with it, so the long-lived-parts rule of `bundles-and-releases.md` (a
+part that outlives a session must run from a copy in `~/.local/share/`) does not apply to them.
+**They do not run where telemetry is off** (`DISABLE_TELEMETRY`, or
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), and there the lead uses `worker watch --once` in the
+background instead — the fallback the lead skill names. The watch knows which case it is in (the
+environment and the user's settings' `env`, `telemetry.ts`) and says so once, so the lead knows to
+re-arm it; the watch's own help names the fallback too. **`claude plugin validate` does not read
+this file** (it checks a monitors path or an inline list in the manifest, not the default
+location), so `monitors.test.ts` is what keeps it to the loader's shape; one wrong key would stop
+the whole plugin from loading.
 
 ## Sessions and worktrees
 

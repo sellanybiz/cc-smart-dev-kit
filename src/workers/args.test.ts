@@ -10,6 +10,7 @@ describe("parseOptions", () => {
     const spaced = parseOptions(["B1", "--slug", "help", "--kind=build"], ["--slug", "--kind"]);
     expect(spaced).toEqual({
       flags: new Set(),
+      lists: new Map(),
       options: new Map([
         ["--slug", "help"],
         ["--kind", "build"],
@@ -22,18 +23,40 @@ describe("parseOptions", () => {
     const given = parseOptions(["--all", "--json"], [], ["--all", "--json"]);
     expect(given).toEqual({
       flags: new Set(["--all", "--json"]),
+      lists: new Map(),
       options: new Map(),
       positionals: [],
     });
     const none = parseOptions([], [], ["--all", "--json"]);
-    expect(none).toEqual({ flags: new Set(), options: new Map(), positionals: [] });
+    expect(none).toEqual({
+      flags: new Set(),
+      lists: new Map(),
+      options: new Map(),
+      positionals: [],
+    });
   });
 
   test("a flag after a positional still counts, and does not swallow the next word", () => {
     expect(parseOptions(["x", "--json", "y"], [], ["--json"])).toEqual({
       flags: new Set(["--json"]),
+      lists: new Map(),
       options: new Map(),
       positionals: ["x", "y"],
+    });
+  });
+
+  test("a repeatable option collects its values in order; a bare -- ends the options", () => {
+    const parsed = parseOptions(
+      ["--option", "a", "--option=b", "--", "--not-an-option", "x"],
+      ["--option"],
+      [],
+      ["--option"],
+    );
+    expect(parsed).toEqual({
+      flags: new Set(),
+      lists: new Map([["--option", ["a", "b"]]]),
+      options: new Map(),
+      positionals: ["--not-an-option", "x"],
     });
   });
 

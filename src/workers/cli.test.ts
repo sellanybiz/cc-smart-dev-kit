@@ -12,6 +12,7 @@ import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { SHORT_ID, workerWorld, writeSessionRecord } from "../testing/worker-world";
 import { listWorkers, readLead } from "./store";
+import { BOARD_COMMANDS } from "./usage";
 
 const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 
@@ -107,5 +108,27 @@ describe("worker through the CLI", () => {
     expect(mistake.err).toBe(
       `Say which worker: worker stop <name|id>\nSee: ${COMMAND} worker stop --help\n`,
     );
+  });
+
+  test("worker --help: every command is named, and the fallback where the monitors do not run", () => {
+    const home = tempDir("home");
+    const env = { HOME: home, PATH: dirname(process.execPath) };
+    const run = cli(["worker", "--help"], home, env);
+    expect(run.code).toBe(0);
+    for (const command of [
+      "lead",
+      "start",
+      "step",
+      "report",
+      "answer",
+      "watch",
+      "self-watch",
+      ...BOARD_COMMANDS.map((one) => one.name),
+    ]) {
+      expect(run.out).toContain(command);
+    }
+    // The fallback is named where the lead reads it: the watch's own help.
+    expect(run.out).toContain("worker watch --once");
+    expect(run.out).toContain("telemetry off");
   });
 });

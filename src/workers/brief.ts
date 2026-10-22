@@ -12,6 +12,7 @@
  * `.cmd` carries it on a `cmd.exe` line where a `"` or a `%` cannot go (`claude.ts`).
  */
 import { COMMAND } from "../build-info/names";
+import { WORKER_SKILL } from "./skills";
 
 /** What the frame names. */
 export interface BriefFacts {
@@ -29,6 +30,13 @@ export interface BriefFacts {
 /** The command a worker reports with (built in W1b), as its frame names it. */
 export const REPORT_COMMAND = `${COMMAND} worker report`;
 
+/**
+ * The mark between the lead's own brief and the frame every worker gets. A brief that
+ * continues another worker's carries the old brief and the old worker's report, and the frame
+ * is written again at its end — so the two parts are told apart by this mark.
+ */
+export const BRIEF_FRAME_MARK = "\n\n---\n\n## Your frame (written by";
+
 /** The frame after the lead's brief: the same for every worker. */
 export function briefFrame(facts: BriefFacts): string {
   const lines = [
@@ -43,6 +51,7 @@ export function briefFrame(facts: BriefFacts): string {
     );
   }
   lines.push(
+    `- Work by \`/${WORKER_SKILL}\`: it says how to build the phase, how to mark each step, and how to hand it back.`,
     "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",
     `- When the phase is ready, hand it back with \`${REPORT_COMMAND} --status done\`; when it cannot be done, with \`--status failed\` and why.`,
     `- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run \`${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report \`--status blocked\` only when nothing else is left; an answer arrives as your next message.`,
@@ -57,5 +66,5 @@ export function briefText(given: string, facts: BriefFacts): string {
 
 /** The line a worker's session starts with: who it is, and where its task is. */
 export function firstPrompt(workerName: string, leadName: string, briefFile: string): string {
-  return `You are the worker ${workerName} for the lead ${leadName}. Read ${briefFile} first: it is your task, and it says how you report.`;
+  return `You are the worker ${workerName} for the lead ${leadName}. Work by /${WORKER_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
 }

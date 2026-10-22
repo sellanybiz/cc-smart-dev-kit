@@ -154,13 +154,23 @@ describe("what claude prints", () => {
       ]),
     );
     expect(rows).toEqual([
-      { cwd: "/r", id: "11111111", pid: 7, sessionId: "11111111-aa", state: null },
+      {
+        cwd: "/r",
+        id: "11111111",
+        pid: 7,
+        sessionId: "11111111-aa",
+        state: null,
+        status: null,
+        waitingFor: null,
+      },
       {
         cwd: "/r/.claude/worktrees/wk-x",
         id: null,
         pid: null,
         sessionId: "a1b2c3d4-0000",
         state: "working",
+        status: null,
+        waitingFor: null,
       },
     ]);
     expect(agentRow(rows ?? [], "11111111")?.pid).toBe(7);
