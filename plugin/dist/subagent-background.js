@@ -8897,7 +8897,17 @@ function pushRulesFor(env, autoPushAsk) {
   return { crew: crewIdOf(env) !== null, autoPushAsk };
 }
 var CREW_PUSH_REFUSAL = "A crew session never pushes: it commits on its own branch, and the lead merges that branch " + "locally (`git merge`). Only the lead's final push reaches the remote, and the person " + "approves that one. Stop at your commit and say so in your report.";
-function crewPushAnswer(input, env, cwd) {
+var CREW_STEPS = {
+  discard: "A crew session never discards uncommitted changes with `git checkout`, `git switch -f` or " + "`git restore`: nobody is at the machine to answer the guard's question, and the changes " + "are lost for good. Commit the work in progress first. To undo a deliberate break, copy " + "the file before you break it (`cp path path.bak`), copy it back after " + "(`cp path.bak path`), delete the copy (`rm path.bak`), then check it with " + "`git diff --quiet -- path`.",
+  worktreeRemove: "A crew session never runs `git worktree remove --force`: it deletes a worktree even when " + "it holds uncommitted or untracked work, and nobody is at the machine to answer the " + "guard's question. Look in it first: commit or copy out what it holds, then run `git " + "worktree remove <path>` without `--force`, which refuses while anything is left.",
+  branchDelete: "A crew session never deletes a branch with `git branch -D`: it can drop commits that " + "were never merged, and nobody is at the machine to answer the guard's question. `git log " + "--oneline HEAD..<branch>` shows what would be lost: when it lists nothing, `git branch -d " + "<branch>` deletes it; when it lists commits, leave the branch and name it in your report.",
+  resetHard: "A crew session never runs `git reset --hard`: it throws away every uncommitted change in " + "this folder, and nobody is at the machine to answer the guard's question. Commit the " + "work in progress first; `git reset --soft <commit>` moves the branch and keeps the " + "changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak " + "path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
+  clean: "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody " + "is at the machine to answer the guard's question. Run `git clean -n` and read the list " + "first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
+  stashClear: "A crew session never runs `git stash clear`: it throws away every stash for good, and " + "nobody is at the machine to answer the guard's question. `git stash list` shows them " + "all; drop only your own by name (`git stash drop stash@{n}`) and leave the rest.",
+  stashDrop: "A crew session never runs `git stash drop` without a name: it drops the newest stash, " + "whoever made it, and nobody is at the machine to answer the guard's question. `git stash " + "list` shows them; `git stash drop stash@{n}` names the one you mean.",
+  stashShared: "A crew session never runs a bare `git stash`, or `git stash pop`: the stash is shared by " + "every worktree of the repo, and nobody is at the machine to answer the guard's question. " + "Use the tagged form: `git stash push -u -m <tag>`, then `git stash apply <its sha>`."
+};
+function crewGitAnswer(input, env, cwd) {
   if (crewIdOf(env) === null)
     return SILENT;
   const command = stringField(toolInput(input).command);
@@ -9090,29 +9100,64 @@ function pushQuestions(args, place, protectedBranches, autoPushAsk) {
   }
   return found;
 }
-function stashQuestions(args, sharedStash) {
+function answer2(ask, run) {
+  if (ask === null)
+    return [];
+  if (run.options.pushRules.crew) {
+    run.refusals.add(ask.crew);
+    return [];
+  }
+  return [ask.ask];
+}
+function discardAsk(sub) {
+  return {
+    ask: `\`git ${sub}\` here overwrites files in this folder with another version, and any ` + "uncommitted change in them is lost for good. Approve only if you want them gone; a " + "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.",
+    crew: CREW_STEPS.discard
+  };
+}
+var WORKTREE_REMOVE_ASK = {
+  ask: "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " + "untracked work, and git cannot bring that back. Look in it first.",
+  crew: CREW_STEPS.worktreeRemove
+};
+var BRANCH_DELETE_ASK = {
+  ask: "`git branch -D` deletes a branch even if it was never merged: its commits are then " + "only in the reflog. `git branch -d` deletes a merged branch, and does not ask.",
+  crew: CREW_STEPS.branchDelete
+};
+var RESET_HARD_ASK = {
+  ask: "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first.",
+  crew: CREW_STEPS.resetHard
+};
+var CLEAN_FORCE_ASK = {
+  ask: "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting.",
+  crew: CREW_STEPS.clean
+};
+var STASH_CLEAR_ASK = {
+  ask: "`git stash clear` throws away every stash for good: git cannot bring them back. " + "`git stash list` shows what they hold, `git stash show -p` one of them.",
+  crew: CREW_STEPS.stashClear
+};
+var STASH_DROP_ASK = {
+  ask: "`git stash drop` with no stash named drops the newest one, whoever made it. " + "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean.",
+  crew: CREW_STEPS.stashDrop
+};
+var STASH_SHARED_ASK = {
+  ask: "The git stash is shared by every worktree of this repo, so a bare `git stash` or " + "`git stash pop` can take or restore another session's work. A WIP commit is safer; " + "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
+  crew: CREW_STEPS.stashShared
+};
+function stashAsk(args, sharedStash) {
   const sub = args[0];
   const named = args.slice(1).some((arg) => !arg.startsWith("-"));
-  if (sub === "clear") {
-    return [
-      "`git stash clear` throws away every stash for good: git cannot bring them back. " + "`git stash list` shows what they hold, `git stash show -p` one of them."
-    ];
-  }
-  if (sub === "drop" && !named) {
-    return [
-      "`git stash drop` with no stash named drops the newest one, whoever made it. " + "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean."
-    ];
-  }
+  if (sub === "clear")
+    return STASH_CLEAR_ASK;
+  if (sub === "drop" && !named)
+    return STASH_DROP_ASK;
   if (!sharedStash)
-    return [];
+    return null;
   const tagged = args.some((arg) => longOption(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
   const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
   const saveWithoutMessage = sub === "save" && !named;
   if (sub !== "pop" && !untaggedPush && !saveWithoutMessage)
-    return [];
-  return [
-    "The git stash is shared by every worktree of this repo, so a bare `git stash` or " + "`git stash pop` can take or restore another session's work. A WIP commit is safer; " + "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`."
-  ];
+    return null;
+  return STASH_SHARED_ASK;
 }
 function discardsChanges(sub, rest) {
   if (sub === "switch") {
@@ -9243,39 +9288,27 @@ function callQuestions(call, folder, run) {
     }
     return pushQuestions(alias === null ? rest : [...alias, ...rest], place, options.protectedBranches, options.pushRules.autoPushAsk);
   }
-  if (sub === "stash")
-    return stashQuestions(rest, options.sharedStash);
+  if (sub === "stash") {
+    return answer2(stashAsk(rest, options.sharedStash || options.pushRules.crew), run);
+  }
   if (sub === "worktree" && rest[0] === "remove") {
     const force = rest.slice(1).some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
-    if (force) {
-      return [
-        "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " + "untracked work, and git cannot bring that back. Look in it first."
-      ];
-    }
+    if (force)
+      return answer2(WORKTREE_REMOVE_ASK, run);
   }
   if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return [
-      `\`git ${sub}\` here overwrites files in this folder with another version, and any ` + "uncommitted change in them is lost for good. Approve only if you want them gone; a " + "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask."
-    ];
+    return answer2(discardAsk(sub), run);
   }
-  if (sub === "branch" && forceDeletesBranch(rest)) {
-    return [
-      "`git branch -D` deletes a branch even if it was never merged: its commits are then " + "only in the reflog. `git branch -d` deletes a merged branch, and does not ask."
-    ];
-  }
+  if (sub === "branch" && forceDeletesBranch(rest))
+    return answer2(BRANCH_DELETE_ASK, run);
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
-    return [
-      "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first."
-    ];
+    return answer2(RESET_HARD_ASK, run);
   }
   if (sub === "clean") {
     const force = rest.some((arg) => longOption(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
     const dryRun = rest.some((arg) => longOption(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
-    if (force && !dryRun) {
-      return [
-        "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting."
-      ];
-    }
+    if (force && !dryRun)
+      return answer2(CLEAN_FORCE_ASK, run);
   }
   return [];
 }
@@ -16529,7 +16562,9 @@ function commandOf3(input) {
 var gitGuardHook = {
   name: "git-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
+  onConfigProblem: (message, input, _event, _checkout, context) => {
+    if (crewIdOf(context.env) !== null)
+      return SILENT;
     const command = stringField(toolInput(input).command);
     return command !== null && runsGit(command) ? toolDecision("ask", cannotCheck("this git command", message)) : SILENT;
   },
@@ -16541,7 +16576,7 @@ var gitGuardHook = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
-  crewLimits: (input, _checkout, { env }) => crewPushAnswer(input, env, stringField(input.cwd) ?? ""),
+  crewLimits: (input, _checkout, { env }) => crewGitAnswer(input, env, stringField(input.cwd) ?? ""),
   run: (context) => {
     const { project, input, cwd, env } = context;
     const config = project.config;
