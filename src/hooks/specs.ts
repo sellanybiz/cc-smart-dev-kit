@@ -18,6 +18,8 @@
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
+ * | crew-role | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop | machine-wide: the card, the ask refused, the report block (`crew-role.ts`) |
+ * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once (`lead-notes.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
  * the person, not a project, so they never enter the frame and need no `cc-smart-dev-kit.json`
@@ -33,6 +35,7 @@
  * (`src/hooks/settings-hooks.ts`).
  */
 
+import { crewIdOf } from "../crew/session";
 import { classifyHeavyCommand } from "../jobs/classify";
 import { mergeKinds } from "../jobs/kinds";
 import { programsOf } from "../shell/command";
@@ -40,6 +43,7 @@ import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsMerge } from "./after-merge";
 import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
+import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
@@ -53,6 +57,7 @@ import {
   toolInput,
 } from "./io";
 import { jobRoute, routeFacts } from "./job-route";
+import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
 import { messageGuard } from "./message-guard";
@@ -264,6 +269,65 @@ export const sessionNameHook: HookSpec = {
 };
 
 /**
+ * The crew session's own hook (`crew-role.ts`): the role card at a start, a resume or a compaction;
+ * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); the last line recorded at
+ * a stop, and one block when the turn ended on a step with no report. **Machine-wide**: it is silent
+ * unless `CC_SMART_DEV_KIT_CREW` names a crew session, and its answer never depends on the project's
+ * file — the PreToolUse deny reads no store at all, so a broken or too new file, and a folder
+ * outside git, are judged the same way. It is in `PLUGIN_HOOK_NAMES`, so a project that runs its own
+ * copy silences it through `ownHooks`. A crash asks about the calls in its domain (the two tools),
+ * and is silent outside a crew session: a plain session must never be asked because of this hook.
+ */
+export const crewRoleHook: HookSpec = {
+  name: "crew-role",
+  events: ["SessionStart", "PreToolUse", "Stop"],
+  onConfigProblem: (_message, input, event, checkout, context) =>
+    crewRoleAnswer(
+      input,
+      event,
+      context.env,
+      context.paths,
+      checkout.mainCheckout ?? checkout.root,
+    ),
+  outsideGit: (input, event, _why, context) =>
+    crewRoleAnswer(input, event, context.env, context.paths, null),
+  onCrash: (why, input, event, context) => {
+    if (crewIdOf(context.env) === null) return SILENT;
+    if (event !== "" && event !== "PreToolUse") return SILENT;
+    const tool = input === null ? null : stringField(input.tool_name);
+    if (
+      input !== null &&
+      (tool === null || !(CREW_ASK_TOOLS as readonly string[]).includes(tool))
+    ) {
+      return SILENT;
+    }
+    return toolDecision(
+      "ask",
+      cannotCheck("whether this crew session asks the person itself", why),
+    );
+  },
+  run: ({ input, event, project, env, paths }) =>
+    crewRoleAnswer(input, event, env, paths, project.mainCheckout ?? project.root),
+};
+
+/**
+ * The lead's notes (`lead-notes.ts`): on a turn a registered lead starts, one line about what
+ * changed among its crew sessions since its last turn — the store's events from a per-lead cursor,
+ * rendered by the watch's own `eventLine`, said once. **Machine-wide**: it is silent unless the
+ * input's `session_id` is a lead recorded in this repository, and it reads no project file. A crash
+ * is one line on stderr and exit 0: a note never stops a lead's turn.
+ */
+export const leadNotesHook: HookSpec = {
+  name: "lead-notes",
+  events: ["SessionStart", "UserPromptSubmit"],
+  onConfigProblem: (_message, input, event, checkout, context) =>
+    leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root),
+  outsideGit: () => SILENT,
+  run: ({ input, event, project, paths }) =>
+    leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root),
+};
+
+/**
  * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`), and PostToolUse
  * for the record. **Machine-wide**: it runs with or without cc-smart-dev-kit.json (like
  * `update-check`), and its answer never depends on the project's file — it judges the model
@@ -392,6 +456,8 @@ export const HOOKS: readonly HookSpec[] = [
   reviewRecordHook,
   worktreeLeftoversHook,
   sessionNameHook,
+  crewRoleHook,
+  leadNotesHook,
 ];
 
 /**
@@ -429,14 +495,17 @@ export const USER_HOOKS: readonly string[] = [
  * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles
  * (no project file is needed for them to act) and the plugin hooks whose answer does not
  * depend on the project's file either — `agent-guard` (the model a launch runs on),
- * `fable-session` (the model this session runs on) and `session-escape-guard` (whether a call
- * goes around the limits set for the session). `doctor`'s project checks never warn about
- * a project hook that runs beside one of these: it is the person's own business, not a second
- * copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
+ * `fable-session` (the model this session runs on), `session-escape-guard` (whether a call
+ * goes around the limits set for the session), `crew-role` (a crew session's own card, ask and
+ * report) and `lead-notes` (a lead's missed crew news). `doctor`'s project checks never warn
+ * about a project hook that runs beside one of these: it is the person's own business, not a
+ * second copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
  */
 export const MACHINE_WIDE_HOOKS: readonly string[] = [
   ...USER_HOOKS,
   "agent-guard",
   "fable-session",
   "session-escape-guard",
+  "crew-role",
+  "lead-notes",
 ];

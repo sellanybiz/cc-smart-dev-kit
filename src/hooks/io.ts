@@ -38,6 +38,12 @@ export interface HookInput {
   tool_use_id?: unknown;
   /** UserPromptSubmit. */
   prompt?: unknown;
+  /** Stop: true when a Stop hook made this turn go on, so the next stop must not block again. */
+  stop_hook_active?: unknown;
+  /** Stop: the last assistant message before stopping, when Claude Code names it. */
+  last_assistant_message?: unknown;
+  /** Stop: the background work still running or waiting to wake this session (an array). */
+  background_tasks?: unknown;
   /** The session's transcript: every event carries it (StopFailure, PreToolUse, …). */
   transcript_path?: unknown;
 }

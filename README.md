@@ -1700,7 +1700,8 @@ and optional shared folders for containers or users on one host, in
 
 The plugin's hooks run in every project. Most stay silent in a **project without
 `.claude/cc-smart-dev-kit.json`**; the ones that are about your machine, not a project —
-`agent-guard`, `fable-session`, `notify` and `playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
+`agent-guard`, `session-escape-guard`, `fable-session`, `crew-role`, `lead-notes`, `notify` and
+`playwright-output` — run there too (§ Notifications below). The plugin ships no worktree hook:
 every project uses Claude Code's own worktrees (§ Worktrees); the retired engine's three hook
 names only print the fix where a project still wires them. Each hook runs through `bin/cc-smart-dev-kit-bun.sh`, which finds bun even when your
 PATH has none: the bun `cc-smart-dev-kit setup` saved in the launcher first, then
@@ -1726,6 +1727,8 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `review-record` | when a subagent starts, and when it finishes | When the agent is one `reviewAgents` lists (the plugin's reviewer by default): notes the commit the session's working folder is on at its start, and its branch, and records that start commit on that branch at its end: commits made while it read count as change after the review. It is the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree. |
 | `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`, `worktrees.autoClean`). It removes nothing itself. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
+| `crew-role` | a crew session starts, resumes or compacts; before `AskUserQuestion` and `ExitPlanMode`; each answer ends | **Machine-wide**, and silent unless the session is a crew session (`CC_SMART_DEV_KIT_CREW`, set by `crew start`). At a start it adds the **role card**: its name, phase, owned files, its brief's path, the report line, the `crew tell` line and the git rule (commit on its branch, never push). It **refuses** `AskUserQuestion` and `ExitPlanMode` with the `crew report --question …` step: a crew session asks its lead, never you. At the end of a turn it keeps the session's last line on its record, and blocks **once** with the report line when the turn ended on a step with no report; it gives Claude no context (a Stop hook's context starves hand-backs), and stays out of a turn that waits on background work. |
+| `lead-notes` | a session starts; each prompt | **Machine-wide**, and silent unless the session is a lead recorded in this repository (`crew lead`). Each turn adds **one line** about what changed among its crew sessions since its last turn — the newest store event, as the watch prints it, and how many more there were — from a per-lead cursor, so nothing is said twice, even after a restart. |
 
 **A project that still has its own copy of a hook says so**: `ownHooks` in its
 `.claude/cc-smart-dev-kit.json` lists the plugin hooks that copy replaces (`["git-guard"]`), and

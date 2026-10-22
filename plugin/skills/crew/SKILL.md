@@ -17,6 +17,8 @@ branch, how you report and ask).
 
 - **Work only in your worktree, on your branch.** Anything slow it needs first, such as a
   dependency install, is your first step.
+- **Your role card** comes at the start, and again on a resume and after a compaction: it names
+  your phase, the files it owns, your brief's path, how you report and ask, and the git rule.
 - **Write your task list** from the brief (`/cc-smart-dev-kit:memory-routing`): each part and
   its done-check. You resume from it, and from your commits, after a compaction.
 - **Your own subagents** — a search, a separable piece — run in the background
@@ -66,12 +68,14 @@ your brief and the review record. You give the rest:
 - anything worth keeping in memory: the lead saves it.
 
 `--status failed` with the reason when the phase cannot be done. The report is your last act:
-end the turn after it.
+end the turn after it. If a turn ends on a step with no report, the `crew-role` hook blocks it
+once with the report line — report, then end the turn.
 
 ## 5. Questions
 
-**Never ask the person:** no `AskUserQuestion`, no `ExitPlanMode`. The brief, the plan and the
-code settle most questions, and a technical detail inside your phase is yours to decide —
+**Never ask the person:** no `AskUserQuestion`, no `ExitPlanMode`. The `crew-role` hook refuses
+both with the `crew report --question` line below, so it is not a suggestion. The brief, the plan
+and the code settle most questions, and a technical detail inside your phase is yours to decide —
 decide it, and say so in the report.
 
 A decision you cannot make goes to the lead:

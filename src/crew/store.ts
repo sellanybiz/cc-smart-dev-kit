@@ -5,6 +5,7 @@
  *   <stateDir>/crew/<repo key>/leads/<session id>.json    one record per lead
  *   <stateDir>/crew/<repo key>/reports/<crew id>.json   a crew session's hand-back report
  *   <stateDir>/crew/<repo key>/files/<crew id>/         its brief and its settings file
+ *   <stateDir>/crew/<repo key>/notes/<lead id>.json      where that lead's notes hook is in the log
  *   <stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
  *   <stateDir>/crew/<repo key>/lock                       held for a moment by each write
  *
@@ -1057,6 +1058,58 @@ export function writeWatchState(
 ): void {
   writeStoreFile(
     watchStateFile(stateDir, repo, leadSessionId),
+    `${JSON.stringify(state, null, 2)}\n`,
+  );
+}
+
+/**
+ * Where a lead's notes hook keeps how far it has read: `<store>/notes/<lead session id>.json`.
+ * One file per lead, so two leads of one repository never move each other's cursor.
+ */
+export function notesStateFile(stateDir: string, repo: string, leadSessionId: string): string {
+  return join(crewStoreDir(stateDir, repo), "notes", `${fileId(leadSessionId, "session id")}.json`);
+}
+
+/**
+ * What the lead's notes hook last read: the byte in the events log it goes on from. One write per
+ * turn, so a line the person already saw is never said twice (`src/hooks/lead-notes.ts`).
+ */
+export interface NotesState {
+  /** The byte after the last whole line the notes hook read. */
+  offset: number;
+}
+
+const notesStateFields = z.object({ offset: count });
+
+/**
+ * The lead's notes cursor: null when there is none yet (the hook then seeds it at the log's end,
+ * because the lines before it are history the lead already saw), or when the file cannot be
+ * read. Never throws: a cursor that cannot be read starts fresh, never stops a turn.
+ */
+export function readNotesState(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+): NotesState | null {
+  try {
+    const raw = readFileSync(notesStateFile(stateDir, repo, leadSessionId), "utf8");
+    const parsed = notesStateFields.safeParse(JSON.parse(raw));
+    if (parsed.success) return parsed.data;
+  } catch {
+    // No cursor yet, or one that cannot be read: the notes hook starts fresh.
+  }
+  return null;
+}
+
+/** Writes the lead's notes cursor. */
+export function writeNotesState(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  state: NotesState,
+): void {
+  writeStoreFile(
+    notesStateFile(stateDir, repo, leadSessionId),
     `${JSON.stringify(state, null, 2)}\n`,
   );
 }

@@ -101,6 +101,10 @@ settings file's `env`), run `cc-smart-dev-kit crew watch --once` with
 `run_in_background: true`. It ends on the next change, and its end starts your next turn. Act
 on the line, then start the next `--once` in the same turn.
 
+**A line the monitor could not deliver reaches you at your next turn**: the `lead-notes` hook
+adds the newest news since your last turn, plus how many more there were. It never repeats one,
+so take it as news, not as a summary of everything.
+
 One `cc-smart-dev-kit crew list` or `crew status <name>` when you need a look is fine; a
 repeat of it is a poll.
 

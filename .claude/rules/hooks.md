@@ -154,7 +154,8 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 ## A machine-wide hook
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
-on), `fable-session` (the model the session itself runs on) and `notify` (the alerts).
+on), `fable-session` (the model the session itself runs on), `crew-role` (a crew session's own
+card, ask and report), `lead-notes` (a lead's missed crew news) and `notify` (the alerts).
 `playwright-output` is machine-wide too — it puts a file the
 CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),
@@ -339,11 +340,11 @@ A bug in an informational hook must never stop a user's work. A bug in a **guard
 let a call through. Each hook's answer to its own failure, in one table (the same in
 `docs/design.md` § One frame for every hook):
 
-| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard`, `session-escape-guard` | Any other plugin hook | `cc-smart-dev-kit hook notify` |
+| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard`, `session-escape-guard`, `crew-role` | Any other plugin hook | `cc-smart-dev-kit hook notify` |
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call in the guard's domain (a call outside it: silent; on PostToolUse: silent, one stderr line) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard` and `session-escape-guard` judge the call anyway) | one line of context, or on stderr | not read |
+| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard`, `session-escape-guard`, `crew-role` and `lead-notes` judge the call anyway) | one line of context, or on stderr | not read |
 | No bun, or one older than `MIN_BUN` | the shim's `--missing=ask`: **ask** | the shim's `--missing=quiet`: one stderr line, exit 0 | the launcher's line on stderr, exit 1 (Claude Code reads exit 1 as a failure that goes on) |
 | The bundle file is gone (an update removed the version folder) | the shim **asks** | bun's own error, exit 1 | not applicable: the launcher runs the installed version |
 | The hook cannot start, times out, or fails (an exit code other than 0 and 2) | `"onFailure": "block"` in `hooks.json`: Claude Code **blocks** the call | Claude Code goes on | Claude Code goes on |
@@ -391,7 +392,8 @@ Those happen only in a manual `cc-smart-dev-kit setup` run that shows the change
 must stay quick: no fetch.
 
 The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the Fable-session note
-(`fable-session`, machine-wide) and the
+(`fable-session`, machine-wide), the crew session's role card (`crew-role`, machine-wide), the
+lead's notes (`lead-notes`, machine-wide) and the
 background self-update (`src/update/`, the owner's decision of 2026-10-15). `update-check`
 also brings the managed instructions copy up to this version when it is behind
 (`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the

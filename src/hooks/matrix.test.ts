@@ -15,6 +15,8 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { CREW_ENV } from "../crew/session";
+import { crewEventsFile, leadFile, notesStateFile, writeStoreFile } from "../crew/store";
 import { PLUGIN_HOOK_NAMES } from "../project/config";
 import {
   hookEnv,
@@ -30,10 +32,12 @@ import type { HookSpec } from "./run";
 import {
   afterMergeHook,
   agentGuardHook,
+  crewRoleHook,
   fableSessionHook,
   gitGuardHook,
   HOOKS,
   jobRouteHook,
+  leadNotesHook,
   mainFolderGuardHook,
   mergeGuardHook,
   messageGuardHook,
@@ -50,6 +54,49 @@ const FULL_CONFIG = {
   worktrees: { base: "main", guardMainFolder: true },
   sessionNames: true,
 };
+
+/** The crew session a hook test runs as; `crew-role` is silent without one. */
+const CREW_ID = "W2-x-1a2b3c";
+/** What a `step` event carries, so its watch line ends with the short sha. */
+const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const AT = "2026-10-21T10:00:00.000Z";
+
+/**
+ * A lead record, a crew step event, and a notes cursor before it: the three files that make
+ * `lead-notes` speak. Written by hand, so the note's expected line is not computed by the code
+ * under test.
+ */
+function seedLeadNotes(stateDir: string, repo: string): void {
+  writeStoreFile(
+    leadFile(stateDir, repo, SESSION),
+    `${JSON.stringify({
+      cwd: repo,
+      createdAt: AT,
+      name: "LEAD app plan",
+      plan: "plan",
+      repo,
+      sessionId: SESSION,
+      tag: "app",
+      updatedAt: AT,
+      version: 1,
+    })}\n`,
+  );
+  writeStoreFile(notesStateFile(stateDir, repo, SESSION), `${JSON.stringify({ offset: 0 })}\n`);
+  writeStoreFile(
+    crewEventsFile(stateDir, repo),
+    `${JSON.stringify({
+      at: AT,
+      crew: CREW_ID,
+      lead: SESSION,
+      name: "C app W2 hooks",
+      sha: SHA,
+      state: "working",
+      text: "tests-green",
+      type: "step",
+      version: 1,
+    })}\n`,
+  );
+}
 
 interface Case {
   spec: HookSpec;
@@ -354,6 +401,56 @@ const CASES: Case[] = [
     failsClosed: (result) => {
       expect(result.stdout).toBeUndefined();
       expect(result.stderr).toStartWith("cc-smart-dev-kit session-name: ");
+    },
+  },
+  {
+    spec: crewRoleHook,
+    own: { event: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
+    // Machine-wide: the ask is denied the same way with no file, a broken one, or one from a
+    // newer plugin, because the answer reads no store at all.
+    machineWide: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "AskUserQuestion",
+        tool_input: { questions: [] },
+      },
+      env: { ...hookEnv(), [CREW_ENV]: CREW_ID },
+    }),
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("deny");
+      expect(output.permissionDecisionReason).toBe(
+        'cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>',
+      );
+    },
+  },
+  {
+    spec: leadNotesHook,
+    own: { event: "UserPromptSubmit" },
+    // Machine-wide: a registered lead hears its news with no file and with a broken one alike.
+    machineWide: true,
+    setup: (config) => {
+      const repo = project(config);
+      const env = hookEnv();
+      seedLeadNotes(cliPaths(env).stateDir, repo);
+      return {
+        input: {
+          hook_event_name: "UserPromptSubmit",
+          session_id: SESSION,
+          cwd: repo,
+          prompt: "go on",
+        },
+        env,
+      };
+    },
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
+      expect(text).toBe("C app W2 hooks: tests-green · a1b2c3d");
     },
   },
 ];

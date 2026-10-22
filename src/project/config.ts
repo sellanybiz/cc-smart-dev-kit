@@ -23,6 +23,8 @@ export const PLUGIN_HOOK_NAMES = [
   "review-record",
   "worktree-leftovers",
   "session-name",
+  "crew-role",
+  "lead-notes",
 ] as const;
 
 /**

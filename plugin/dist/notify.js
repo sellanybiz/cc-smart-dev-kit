@@ -6391,7 +6391,9 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "worktree-leftovers",
-  "session-name"
+  "session-name",
+  "crew-role",
+  "lead-notes"
 ];
 var RETIRED_HOOK_NAMES = ["serena-root"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];

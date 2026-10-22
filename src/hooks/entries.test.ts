@@ -14,9 +14,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { CREW_ENV } from "../crew/session";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
+import { CREW_ASK_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { GH_TIMEOUT_MS } from "./merge-guard";
 import { HOOK_LOG_ENV } from "./run";
@@ -226,6 +228,15 @@ esac
     expect(matcher).toBe("Edit|Write|NotebookEdit");
   });
 
+  test("the crew-role matcher is exactly the tools a crew session never calls", () => {
+    const matcher = wired.find(
+      ({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role",
+    )?.matcher;
+    expect(matcher).toBe(CREW_ASK_TOOLS.join("|"));
+    // Written by hand too, so a changed list is seen here and not only in the constant.
+    expect(matcher).toBe("AskUserQuestion|ExitPlanMode");
+  });
+
   test("the session-escape-guard matcher is exactly the tools it judges: the shell tools and the edit tools", () => {
     const matcher = wired.find(
       ({ handler }) => bundleOf(handler) === "session-escape-guard",
@@ -248,6 +259,8 @@ esac
     expect(timeout("message-guard")).toBe(10);
     expect(timeout("agent-guard")).toBe(10);
     expect(timeout("session-escape-guard")).toBe(10);
+    // The crew session's ask is denied by a guard too, on the two tools that ask the person.
+    expect(timeout("crew-role")).toBe(10);
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {
@@ -300,6 +313,7 @@ describe("the entries, run as Claude Code runs them", () => {
   // judge a call asks (written by hand, one per guard in `GUARD_BUNDLES`).
   const CANNOT_CHECK: Record<string, string> = {
     "agent-guard": "the model this launch runs on",
+    "crew-role": "whether this crew session asks the person itself",
     "git-guard": "this git command",
     "job-route": "whether this project routes heavy commands through its job queue",
     "main-folder-guard": "whether this edit belongs in a worktree",
@@ -325,10 +339,16 @@ describe("the entries, run as Claude Code runs them", () => {
     });
   });
 
+  // A guard that is silent outside its own sessions (crew-role is silent unless a crew session's
+  // environment names it) is proved as a guard where it IS one: the crew env is part of the input.
+  const GUARD_ENV: Record<string, Record<string, string>> = {
+    "crew-role": { [CREW_ENV]: "W2-x-1a2b3c" },
+  };
+
   test.each([...GUARD_BUNDLES])(
     "%s: input that is not JSON is an ask, never a pass: a guard that cannot read a call does not let it through",
     (name) => {
-      const run = runEntry(name, "not json", hookEnv());
+      const run = runEntry(name, "not json", { ...hookEnv(), ...(GUARD_ENV[name] ?? {}) });
       expect(run).toEqual({
         exitCode: 0,
         stdout: JSON.stringify({

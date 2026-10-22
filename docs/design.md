@@ -1212,11 +1212,11 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
 
 Each hook's answer when it fails (the same table is in `.claude/rules/hooks.md` § Fail safe):
 
-| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape) | Any other plugin hook | `hook notify` |
+| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, crew-role) | Any other plugin hook | `hook notify` |
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | **ask** (`agent-guard` and `session-escape-guard` judge the call anyway) | one line of context or stderr | not read |
+| `cc-smart-dev-kit.json` broken or too new | **ask** (`agent-guard`, `session-escape-guard`, `crew-role` and `lead-notes` judge the call anyway) | one line of context or stderr | not read |
 | No bun, or one too old | the shim's `--missing=ask`: **ask** | `--missing=quiet`: stderr, exit 0 | the launcher's line, exit 1 (Claude Code goes on) |
 | The bundle file is gone | the shim **asks** | bun's error, exit 1 | not applicable |
 | Cannot start, times out, fails (exit code other than 0 and 2) | `"onFailure": "block"`: the call is **blocked** | Claude Code goes on | Claude Code goes on |
@@ -1336,10 +1336,12 @@ that, so the plugin ships no worktree hook at all.
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
+| `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. § Lead and the crew › The crew session's and the lead's hooks. |
+| `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
 
-Without `cc-smart-dev-kit.json` every one of them is silent — except the four machine-wide
+Without `cc-smart-dev-kit.json` every one of them is silent — except the six machine-wide
 ones: `agent-guard` (§ The Agent guard), `session-escape-guard` (§ The session-escape guard),
-`fable-session` (§ The Fable-session note) and
+`fable-session` (§ The Fable-session note), `crew-role` and `lead-notes` (§ Lead and the crew), and
 `playwright-output`, which reads no project file at all — so a project that never opted in
 sees only Claude Code's own worktrees and the limits a session may not get around. The machine-wide `notify` hook needs no project file
 and acts without one; the
@@ -2270,13 +2272,13 @@ sessions win over subagents alone (every hand-back lands in the lead's context, 
 rots it) and over agent teams (no worktree isolation, no resume).
 
 This section holds the contracts every part of it builds on — the switch, the kinds, the names
-and the store — and the commands that act on them so far: `crew lead` and the launcher,
+and the store — and the commands that act on them: `crew lead` and the launcher,
 `crew start` (§ The lead and the launch, below), the board and the end of a crew session, `crew
 list`, `status`, `kinds`, `attach`, `stop`, `resume` and `rm` (§ The board and the end of a
-crew session), and what a crew session says: its steps, its report, its question, the lead's
+crew session), what a crew session says: its steps, its report, its question, the lead's
 answer, the lead's watch, the hand-off, its own time line, and a note to another crew session
-(§ The crew session's steps, its report, and the lead's watch, § The crew talks). The crew
-session and lead hooks are later parts, and extend this section.
+(§ The crew session's steps, its report, and the lead's watch, § The crew talks), and the crew
+session's and the lead's hooks (§ The crew session's and the lead's hooks).
 
 **The instructions** say when a phase goes to a crew session (`core.md` § Lead the work: a phase with
 its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
@@ -2341,6 +2343,7 @@ repository, under the state folder:
 <stateDir>/crew/<repo key>/files/<crew id>/         its brief.md and its settings.json
 <stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
 <stateDir>/crew/<repo key>/watch/<lead id>.json       where that lead's watch is in the log
+<stateDir>/crew/<repo key>/notes/<lead id>.json       where that lead's notes hook is in the log
 <stateDir>/crew/<repo key>/self/<crew id>.json      what that crew session's own watch last said
 <stateDir>/crew/lock                                  the machine-wide lock of a start decision
 ```
@@ -2749,6 +2752,40 @@ is answered with `crew answer`, the person's question goes to `AskUserQuestion`,
 `claude attach <name>` — and between lines it does the integration work that is its own and stays
 free for the person. **It never polls, waits or sleeps**, and a turn that ends with a ready phase
 not started is a fault (an eval case, `evals/cases/lead-starts-the-whole-plan`).
+
+### The crew session's and the lead's hooks
+
+Two hooks make the store and the sessions meet. Both are **machine-wide** (`MACHINE_WIDE_HOOKS`):
+each is silent unless its own session is the one it is about, and neither reads
+`.claude/cc-smart-dev-kit.json` for its answer.
+
+- **`crew-role`** (`src/hooks/crew-role.ts`) is silent unless `CC_SMART_DEV_KIT_CREW` names a crew
+  session in its environment (the settings file `crew start` launches the session with, L1a.1). At
+  **SessionStart** (startup, resume, compact) it adds the **role card**: the name
+  (`C <tag> <phase> <slug>`), the phase and plan, the files the phase owns, the brief's path, the
+  report line, the `crew tell` line, and the git rule (commit on its branch, never push). A
+  resumed or compacted crew session gets it again, because its first prompt is gone from its
+  context. At **PreToolUse** on `AskUserQuestion` and `ExitPlanMode` it **denies** the call with the
+  `crew report --question …` step (D36): a crew session never asks the person. The deny reads no
+  store and no project file, so it is the same with no `cc-smart-dev-kit.json`, a broken or too new
+  one, and outside git. At **Stop** it records the session's last line on its record (`lastLine`,
+  masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
+  going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew
+  session is a `step`, the turn ended mid-phase with no report: it **blocks once** with the report
+  line as its reason (`{"decision":"block","reason":…}`), and never again while `stop_hook_active`
+  is true. Claude Code shows each block as a `stop-hook-error` notification and caps consecutive
+  blocks at 9; this hook blocks at most once per turn. Nothing runs while `background_tasks` is not
+  empty: that turn is not over, and Claude Code wakes the session when the work lands. A store that
+  cannot be read is one line on stderr and no block.
+- **`lead-notes`** (`src/hooks/lead-notes.ts`) is silent unless the input's `session_id` is a lead
+  recorded in this repository. Each turn a lead starts — `UserPromptSubmit` (which also fires on a
+  hand-back turn, L1a.1) and SessionStart — it reads the events log from a per-lead cursor
+  (`<store>/notes/<lead id>.json`, seeded at the log's end the first time), keeps this lead's
+  events, and adds **one line**: the newest news, rendered by the watch's own `eventLine`, plus
+  `(and N more…)` when there is older news in the same turn. The cursor moves past every event
+  read, whether or not a line came of it, so a restart never says the same thing twice. The review
+  mark on a report line uses the built-in review agents: this hook reads no project file, and the
+  watch's own line is the one that resolves a project's list.
 
 ## Sessions and worktrees
 

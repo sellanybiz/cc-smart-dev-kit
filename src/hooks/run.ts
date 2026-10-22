@@ -104,14 +104,14 @@ export interface HookSpec {
     event: string,
     checkout: Checkout,
     context: HookEnvContext,
-  ) => HookResult;
+  ) => HookResult | Promise<HookResult>;
   /** The answer when `cwd` is missing, not a folder, or outside git. Default: silent. */
   outsideGit?: (
     input: HookInput,
     event: string,
     why: string,
     context: HookEnvContext,
-  ) => HookResult;
+  ) => HookResult | Promise<HookResult>;
   /**
    * Facts for the hook log only (`CC_SMART_DEV_KIT_HOOK_LOG`), never part of the answer: what the
    * hook's own parser read in the input, and — where the answer is a judgement — what it
@@ -228,15 +228,16 @@ async function answer(
     event = named;
     const cwd = stringField(input.cwd);
     const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null) return outside(input, event, "the hook input has no cwd", context);
+    if (cwd === null) return await outside(input, event, "the hook input has no cwd", context);
 
     let checkout: Checkout | null;
     try {
       checkout = locateCheckout(cwd, { env });
     } catch (error) {
-      return outside(input, event, errorMessage(error), context);
+      return await outside(input, event, errorMessage(error), context);
     }
-    if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`, context);
+    if (checkout === null)
+      return await outside(input, event, `${cwd} is not in a git checkout`, context);
 
     if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
@@ -245,7 +246,7 @@ async function answer(
       project = loadProjectConfig(checkout);
     } catch (error) {
       if (error instanceof CcSmartDevKitConfigError) {
-        return spec.onConfigProblem(error.message, input, event, checkout, context);
+        return await spec.onConfigProblem(error.message, input, event, checkout, context);
       }
       throw error;
     }

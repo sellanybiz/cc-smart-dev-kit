@@ -1,0 +1,95 @@
+/**
+ * The lead's notes: what changed among this lead's crew sessions since its last turn, said **once**
+ * (`src/crew/store.ts` › `readNotesState`). A lead hears its crew through `crew watch`, but a
+ * monitor line can land while the lead is busy, and a compaction takes the lead's context with it.
+ * So each turn the lead starts (UserPromptSubmit, which also fires on a hand-back turn, and
+ * SessionStart: a start, a resume after a restart, a compaction) this hook reads the crew store's
+ * events log from a per-lead cursor and adds the newest line it has not said yet — the same line
+ * the watch prints (`eventLine`, one home), plus how many more there were.
+ *
+ * - **Only a registered lead** (`readLead` by the input's `session_id`) hears anything: any other
+ *   session, and a folder outside git, is silence.
+ * - **Never twice**: the cursor moves past every event read, whether or not a line came of it, and
+ *   it is seeded at the log's end the first time (the lines before it are history the lead already
+ *   saw — it started those crew sessions itself). A restart reads the same cursor file, so a lead
+ *   that comes back is not told the same news again.
+ * - **Never a question and never a block**: one `additionalContext` line, or nothing. A store that
+ *   cannot be read is one line on stderr (the frame's own answer): a lead's turn goes on, because a
+ *   note is never worth stopping work.
+ *
+ * The review mark on a report line is judged with the built-in review agents
+ * (`workflowDefaults.reviewAgents`): this hook reads no project file, so its answer is the same
+ * with or without one (`MACHINE_WIDE_HOOKS`). A project that adds a review agent hears its own
+ * watch's line, which resolves the project's list.
+ */
+import type { CliPaths } from "../cli/paths";
+import {
+  eventsEndOffset,
+  listCrew,
+  readCrewEvents,
+  readLead,
+  readNotesState,
+  writeNotesState,
+} from "../crew/store";
+import { eventLine, phasesWaitingFor } from "../crew/watch";
+import { reviewsFile, reviewsOn } from "../workflow/reviews";
+import { workflowDefaults } from "../workflow/schema";
+import { addContext, type HookInput, type HookResult, SILENT } from "./io";
+import { isSessionId } from "./session-name";
+
+/** The one note: the newest line, and how many older ones this turn did not print. */
+export function notesLine(lines: readonly string[]): string | null {
+  const newest = lines.at(-1);
+  if (newest === undefined) return null;
+  const more = lines.length - 1;
+  return more === 0 ? newest : `${newest} (and ${more} more…)`;
+}
+
+/**
+ * The note this turn adds, or SILENT. `repo` is null outside a git checkout: a lead record lives in
+ * a repository's store, so there is nothing to read then.
+ */
+export function leadNotesAnswer(
+  input: HookInput,
+  event: string,
+  paths: CliPaths,
+  repo: null | string,
+): HookResult {
+  const sessionId = input.session_id;
+  if (repo === null || !isSessionId(sessionId)) return SILENT;
+  const lead = readLead(paths.stateDir, repo, sessionId);
+  if (lead === null) return SILENT;
+  const cursor = readNotesState(paths.stateDir, repo, sessionId);
+  if (cursor === null) {
+    // First turn in this lead: the log's history is what the lead already saw. From here on, new.
+    writeNotesState(paths.stateDir, repo, sessionId, {
+      offset: eventsEndOffset(paths.stateDir, repo),
+    });
+    return SILENT;
+  }
+  const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
+  const mine = listCrew(paths.stateDir, repo).records.filter(
+    (one) => one.leadSessionId === sessionId,
+  );
+  const reviewFile = reviewsFile(paths.stateDir, repo);
+  const lines: string[] = [];
+  for (const crewEvent of read.events) {
+    // Another lead's crew sessions are that lead's news, not this one's.
+    if (crewEvent.lead !== sessionId) continue;
+    const record = mine.find((one) => one.id === crewEvent.crew) ?? null;
+    const reviewed =
+      record !== null &&
+      reviewsOn(reviewFile, record.branch, workflowDefaults.reviewAgents).length > 0;
+    const line = eventLine(
+      crewEvent,
+      record,
+      record === null ? [] : phasesWaitingFor(record, mine),
+      reviewed,
+    );
+    if (line !== null) lines.push(line);
+  }
+  // Past every event read, spoken or not: the next turn says only what is newer.
+  writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
+  const note = notesLine(lines);
+  return note === null ? SILENT : addContext(event, note);
+}
