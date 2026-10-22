@@ -16,6 +16,8 @@ import {
   type NewCrew,
   readCrew,
   readCrewEvents,
+  readStopState,
+  writeStopState,
 } from "../crew/store";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
@@ -370,6 +372,39 @@ describe("Stop: the last line, one block, never context", () => {
   test("a step after the report is the newest word again: it blocks", async () => {
     const world = await crewWorld();
     await report(world.stateDir, world.repo);
+    await step(world.stateDir, world.repo);
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual(blockAnswer());
+  });
+
+  test("F3: the Stop reads the log from its saved byte, and remembers the newest step or report", async () => {
+    const world = await crewWorld();
+    await step(world.stateDir, world.repo);
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual(blockAnswer());
+    // The cursor is at the log's end, with the signal it read: the next Stop reads only what is new.
+    expect(readStopState(world.stateDir, world.repo, CREW_ID)).toEqual({
+      last: "step",
+      offset: readCrewEvents(world.stateDir, world.repo).offset,
+    });
+    // Nothing new since: the newest word of the whole session is still the step, so it blocks.
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual(blockAnswer());
+    await report(world.stateDir, world.repo);
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual({});
+    expect(readStopState(world.stateDir, world.repo, CREW_ID)).toMatchObject({ last: "report" });
+    await step(world.stateDir, world.repo);
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual(blockAnswer());
+  });
+
+  test("F3: only events after the saved byte decide the block", async () => {
+    const world = await crewWorld();
+    await step(world.stateDir, world.repo);
+    // A cursor already past that step, whose newest word it read was a report: the step is
+    // history the Stop before it already read, not news for this one.
+    writeStopState(world.stateDir, world.repo, CREW_ID, {
+      last: "report",
+      offset: readCrewEvents(world.stateDir, world.repo).offset,
+    });
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual({});
+    // A step after the cursor is news: the turn ended mid-phase, with no report.
     await step(world.stateDir, world.repo);
     expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual(blockAnswer());
   });

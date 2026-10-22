@@ -48,10 +48,14 @@ describe("anthropicServerTool", () => {
   });
 });
 
-describe("the note that stands in for a search", () => {
-  it("says it is the router's, why web search needs Claude, and names the Tavily server's tools", () => {
-    expect(claudeSearchNotice("is down")).toBe(
-      "The cc-smart-dev-kit router answered this search, not a search engine: web search runs on Claude, and Claude is down. Use the search tool of the Tavily MCP server instead (its tools are named mcp__tavily-websearch__…), if it is set up.",
+describe("the note that stands in for a server tool that could not run", () => {
+  it("says it is the router's, names the tool that failed and why it needs Claude, and names the Tavily server's tools", () => {
+    expect(claudeSearchNotice("web_search", "is down")).toBe(
+      "The cc-smart-dev-kit router answered this web_search request, not Anthropic: web_search runs on Claude, and Claude is down. Use the Tavily MCP server instead (its tools are named mcp__tavily-websearch__…), if it is set up.",
+    );
+    // Never "this search" for a fetch: the note names the tool that failed.
+    expect(claudeSearchNotice("web_fetch", "could not answer now (HTTP 529)")).toBe(
+      "The cc-smart-dev-kit router answered this web_fetch request, not Anthropic: web_fetch runs on Claude, and Claude could not answer now (HTTP 529). Use the Tavily MCP server instead (its tools are named mcp__tavily-websearch__…), if it is set up.",
     );
   });
 

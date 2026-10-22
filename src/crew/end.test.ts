@@ -559,6 +559,75 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     expect(world.err).toEqual(["crew rm: C my-app B1 help is removed already"]);
     expect(world.claudeCalls()).toEqual([]);
   });
+
+  test("F3: a removal keeps whether the lead had merged, so only a merged phase releases its dependents", async () => {
+    const world = await boardWorld();
+    // The lead merged this one: the watch recorded it `merged` before `crew rm` ran.
+    const merged = await world.addCrew({ state: "merged" });
+    expect(await runCrew(["rm", merged.id], world.ctx())).toBe(0);
+    expect(await readCrew(world.paths.stateDir, world.repo, merged.id)).toMatchObject({
+      mergedBeforeRemoval: true,
+      state: "removed",
+    });
+
+    // A queued crew session removed before anything was built: no work of it was ever merged.
+    const queued = await world.addCrew({
+      phase: "B2",
+      shortId: null,
+      slug: "api",
+      state: "queued",
+      worktree: false,
+    });
+    expect(await runCrew(["rm", queued.id], world.ctx())).toBe(0);
+    expect(await readCrew(world.paths.stateDir, world.repo, queued.id)).toMatchObject({
+      mergedBeforeRemoval: false,
+      state: "removed",
+    });
+  });
+
+  test("F3: a refusal after the unlock locks the worktree again, with the same reason", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    const { branch, worktree } = places(world.repo);
+    commitWork(worktree);
+    leadMerges(world.repo, branch);
+    // Claude Code's own lock, as its session leaves it behind (L1a.1).
+    git(
+      world.repo,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude session crew-B1-help (pid 4242 start 99)",
+      worktree,
+    );
+
+    expect(
+      await runCrew(
+        ["rm", record.id],
+        world.ctx({
+          scanFacts: {
+            ...QUIET_MACHINE,
+            programs: [{ cwd: worktree, path: "/usr/bin/bun dev", pid: 9 }],
+          },
+        }),
+      ),
+    ).toBe(1);
+    expect(world.err).toEqual([
+      "crew rm: .claude/worktrees/crew-B1-help is kept: a program runs from its files: bun",
+      "Fix: clear that, then run crew rm again; it never forces",
+    ]);
+    // It was unlocked to be judged, and locked again when the verdict kept it: the lock is what
+    // keeps `worktrees --clean` and the background clean off the worktree.
+    expect(world.out).toEqual([
+      "stopped session a1b2c3d4",
+      "unlocked .claude/worktrees/crew-B1-help",
+      "locked .claude/worktrees/crew-B1-help again, with the same reason",
+    ]);
+    expect(git(world.repo, "worktree", "list", "--porcelain")).toContain(
+      "locked claude session crew-B1-help (pid 4242 start 99)",
+    );
+    expect(existsSync(worktree)).toBe(true);
+  });
 });
 
 describe("crew resume", () => {

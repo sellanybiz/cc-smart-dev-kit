@@ -6,6 +6,7 @@
  *   <stateDir>/crew/<repo key>/reports/<crew id>.json   a crew session's hand-back report
  *   <stateDir>/crew/<repo key>/files/<crew id>/         its brief and its settings file
  *   <stateDir>/crew/<repo key>/notes/<lead id>.json      where that lead's notes hook is in the log
+ *   <stateDir>/crew/<repo key>/stop/<crew id>.json        where that crew session's Stop hook is in the log
  *   <stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
  *   <stateDir>/crew/<repo key>/lock                       held for a moment by each write
  *
@@ -353,6 +354,14 @@ const crewFields = z.object({
    * a slug that ends in `-2` looks like a second crew session.
    */
   continues: text.nullable().optional(),
+  /**
+   * Set when the crew session is `removed`: true when the lead had merged its work first (the
+   * record was `merged`), false when it was removed before that. A phase that waits for a
+   * `removed` crew session starts only on true — `crew rm` also removes a phase whose work was
+   * never merged, and that removal releases nothing (`finishesWait`, `places.ts`). Kept by the
+   * store (`changeCrew`), so no command can set a state that disagrees with it.
+   */
+  mergedBeforeRemoval: z.boolean().optional(),
   /** When it was recorded, and last changed (ISO 8601). */
   createdAt: text,
   updatedAt: text,
@@ -784,6 +793,13 @@ async function changeCrew(
     // goes on in clears it here, so no path — an answer, a resume, a report — can leave a wait
     // behind on a crew session that is running again (D42). `lastPause` stays: a re-pause reads it.
     if (merged.state !== "paused") delete merged.waitingFor;
+    // A crew session removed after the lead merged its work keeps that fact here, and one removed
+    // before the merge keeps the false: a phase that waits for it starts on the merge alone
+    // (`finishesWait`, `places.ts`), never on the removal. Set from the record as it is now, under
+    // this hold, so no caller can record a removal that disagrees with the state before it.
+    if (merged.state === "removed") {
+      merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
+    }
     const after = checked(crewRecordSchema, merged, file);
     writeRecord(file, after);
     const line = event(after);
@@ -1135,6 +1151,55 @@ export function writeNotesState(
     notesStateFile(stateDir, repo, leadSessionId),
     `${JSON.stringify(state, null, 2)}\n`,
   );
+}
+
+/**
+ * Where a crew session's Stop hook keeps how far it has read: `<store>/stop/<crew id>.json`.
+ * One file per crew session, so two crew sessions never move each other's cursor, and a Stop
+ * costs the same on day 30 as on day 1 — the log only grows.
+ */
+export function stopStateFile(stateDir: string, repo: string, id: string): string {
+  return join(crewStoreDir(stateDir, repo), "stop", `${fileId(id, "crew id")}.json`);
+}
+
+/**
+ * What a crew session's Stop hook last read of the events log (`src/hooks/crew-role.ts`): the
+ * byte it goes on from, and whether the newest `step` or `report` event of the crew session it
+ * has seen is a `step` (the turn ended mid-phase with no report) or a `report`. The two facts
+ * together answer the same question a read from the log's start answered, without reading the
+ * history the hook already read (`readCrewEvents`).
+ */
+export interface StopState {
+  /** The byte after the last whole line the Stop read. */
+  offset: number;
+  /** The newest `step` or `report` event the Stop has seen: its type, or null before either. */
+  last: "report" | "step" | null;
+}
+
+const stopStateFields = z.object({
+  last: z.enum(["report", "step"]).nullable(),
+  offset: count,
+});
+
+/**
+ * The crew session's Stop cursor: null when there is none yet (the Stop then reads from the log's
+ * start once, and remembers), or when the file cannot be read. Never throws: a cursor that
+ * cannot be read starts fresh, and never stops a turn.
+ */
+export function readStopState(stateDir: string, repo: string, id: string): StopState | null {
+  try {
+    const raw = readFileSync(stopStateFile(stateDir, repo, id), "utf8");
+    const parsed = stopStateFields.safeParse(JSON.parse(raw));
+    if (parsed.success) return parsed.data;
+  } catch {
+    // No cursor yet, or one that cannot be read: the Stop reads the log from its start once.
+  }
+  return null;
+}
+
+/** Writes the crew session's Stop cursor. */
+export function writeStopState(stateDir: string, repo: string, id: string, state: StopState): void {
+  writeStoreFile(stopStateFile(stateDir, repo, id), `${JSON.stringify(state, null, 2)}\n`);
 }
 
 /**

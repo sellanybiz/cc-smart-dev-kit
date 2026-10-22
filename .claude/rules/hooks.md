@@ -131,20 +131,42 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 - `setup` writes the line into the person's own settings (`src/setup/user-notify-hook.ts`);
   what the hook does is in § The notifier.
 - The worktree engine's names are retired: `cc-smart-dev-kit hook worktree-create` and the
-  other two print the fix and exit 2 (`src/hooks/settings-hooks.ts`).
+  other two print the fix and exit 1 — never 2, which blocks a `SubagentStop` and would loop
+  every subagent (`src/hooks/settings-hooks.ts`).
 
 ## The frame: every hook runs through `run.ts`
 
 `handleHook` runs each hook in this order; never skip a step in a new hook.
 
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
-2. **`ownHooks`** (below).
-3. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (below).
-4. **Run.** A guard's crash answers through `onCrash` (§ Fail safe).
-5. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`.
+2. **A guard's crew part** (`HookSpec.crewLimits`), before `ownHooks` and before the file (§ A
+   crew session's own limits).
+3. **`ownHooks`** (below).
+4. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (below).
+5. **Run.** A guard's crash answers through `onCrash` (§ Fail safe).
+6. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`.
 
 The frame stays general: later hooks (notifications, the routing of heavy jobs) are new
 specs in it.
+
+## A crew session's own limits
+
+D24 and D47 give a crew session three refusals that **no project can switch off**: it never
+pushes, it opens no pull request, and its message to another crew session carries the
+`crew tell` tag (and its message to its own lead goes through `crew report`). They are the
+**crew part** of the three guards that own their detectors — `crewPushAnswer`
+(`git-guard.ts`), `crewPrAnswer` (`merge-guard.ts`), `crewMessageAnswer`
+(`message-guard.ts`) — and the frame runs each before `ownHooks` and before
+`cc-smart-dev-kit.json` is read. So the refusal holds in a project that never opted in, in
+one whose file is broken or too new, and in one whose `ownHooks` lists its own copy of the
+guard. Without `CC_SMART_DEV_KIT_CREW` the part is silent: an ordinary session pays nothing,
+and the guard's other answers are exactly as they were.
+
+This is the same reason `alwaysOn` exists for `job-route` and `session-escape-guard`: a
+limit on what the session itself may do cannot live behind a switch the session can reach.
+The difference is that these three guards keep a project part the project may still replace;
+only the crew part is fixed. The detectors are shared with each guard's own `run` (one
+function, never a copy), so a spelling that gets past one gets past both.
 
 ## Find the project from the input's `cwd`
 
@@ -268,6 +290,10 @@ Where both exist, **the project says which plugin hooks to keep quiet**: `ownHoo
   plugin hook: it may be a logger, a different check, or a copy that does not cover the same
   commands — and a guard that goes quiet for something that does not replace it leaves the
   person unguarded.
+- **A listed name silences a guard's project part only.** A crew session's three refusals —
+  its push, its pull request, its peer message without the tag — are the guard's crew part,
+  which the frame has already run before this step (§ A crew session's own limits): no
+  `ownHooks` list, and no missing file, can switch them off.
 - Only `ownHooks` is read there (`ownHooksOf` in `src/project/resolve.ts`, on its own, like
   `requires`), so it works even when the rest of the file is broken or needs a newer plugin.
 - The names are validated against the plugin's own (`PLUGIN_HOOK_NAMES` in
@@ -301,8 +327,10 @@ the message (which names the update command, the file and field) reaches someone
 | A guard (PreToolUse) | **asking** the person before every call in its domain: every command that runs git, every edit in the repo, every message |
 | An informational hook | one line of context (`cc-smart-dev-kit: <message>`); `after-merge` only after a merge, `session-name` only on stderr |
 
-For a plugin hook `ownHooks` still comes first: a project that lists its own copy there keeps
-it running.
+For a plugin hook's project part `ownHooks` still comes first: a project that lists its own
+copy there keeps it running. A guard's crew part has already run before both (§ A crew
+session's own limits), so a broken or too new file never lets a crew session push, open a
+pull request or send an untagged peer message.
 
 ## Quiet output
 
@@ -332,6 +360,11 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
 - **A guard reads every way a line may run**: both dialects when unknown, joined at a
   trailing escape and not, and blind when a quote never closes. A check for something
   that RAN (the after-merge note) reads the open quote as text.
+- **The reader steps over every wrapper it knows** (`isWrapper`: `env`, `sudo`, `timeout`,
+  `setsid`, `flock`, `script -c`, `busybox`, …) and reads the command inside, and a program
+  named at run time (`$GIT`, `$(which git)`) comes back `computed`. **A guard whose domain
+  words are in a computed command asks** rather than stay silent. A new wrapper or spelling
+  goes in this one reader, never in a guard.
 - **A new spelling that gets past a guard is fixed in the reader**, with a test named after
   the finding, never with a special case in one guard.
 - A 64 KB line stays well inside the guard's time (`git-guard.test.ts`): no step may cost
@@ -392,8 +425,11 @@ a command must never report success when it did not run.
 - No informational plugin hook exits 1 (`crashExitCode`): a bug never stops a person's work.
 - **`subagent-background` never blocks on a failure.** A broken input, a broken or too new
   `cc-smart-dev-kit.json`, and a transcript it cannot read are no block (one stderr line where
-  the frame says one, exit 0): it can only block when it has read the agent's own transcript and
-  found that agent's background task in it, so a subagent can always finish.
+  the frame says one, exit 0): it can only block when it has read the agent's own transcript
+  (JSONL, line by line) and found that agent's background task in a **tool result of its own
+  Bash or Agent call** (`Command running in background with ID: <id>`, `agentId: <id>`) — never
+  an id in its brief or in a file it read, so a subagent can always finish and a parent's task
+  is never mistaken for its own.
 - **Every ask is recorded.** The frame appends one JSON line to `guard-asks.jsonl` in the state
   folder (`src/hooks/ask-log.ts`: the time, the hook, the session, the tool, a short reason put
   through `maskedLine`), kept small by the same rule as `update.log`. A write that fails is one
@@ -409,8 +445,10 @@ a command must never report success when it did not run.
   The judgment itself is `src/workflow/merge-check.ts`, shared with `workflow merge-check`.
 - A guard asks rather than denies when the person may mean it (a force-push); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
-  to another project's session, a crew session's push or pull request — D24: the lead
-  merges locally).
+  to another project's session, a crew session's push, pull request or raw message to its
+  lead — D24, D47: the lead merges locally and hears its crew through `crew report`).
+  The crew refusals are the guard's crew part: they hold with no file and whatever
+  `ownHooks` says (§ A crew session's own limits).
 - **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching
   call: "Yes, don't ask again" leaves no rule a PreToolUse hook's answer respects (proved
   live 2026-10-19, on the main-folder guard's Serena branch, retired in 0.6.0). So a guard

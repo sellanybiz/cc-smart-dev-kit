@@ -111,12 +111,13 @@ affordable backend can run it, and one that answered it would return text a mode
   to summarize it, a request with no tools, which follows its slot as any request does.
 - **The answer at a Claude limit (D44).** When Anthropic answers that request with a capacity
   failure (`capacityFailureStatus`: 408, 429, any 5xx, 529), or gives no answer (a network error),
-  the search would fail or be retried for minutes. The router answers instead with one plain text
+  the request would fail or be retried for minutes. The router answers instead with one plain text
   block in Anthropic's message format (`claudeSearchNotice`), saying it comes from the router,
-  that web search runs on Claude, which is at its usage limit (with the window and the reset
-  time when the headers give them) or down, and to use the search tool of the Tavily MCP
-  server "if it is set up". The server's name comes from `src/mcp/names.ts`; the router does not
-  read Claude Code's config to see whether it is registered. The log has the upstream's reason
+  naming the server tool that failed (`web_search` or `web_fetch`), saying that tool runs on
+  Claude, which is at its usage limit (with the window and the reset time when the headers give
+  them) or down, and pointing to the Tavily MCP server "if it is set up". The server's name
+  comes from `src/mcp/names.ts`; the router does not read Claude Code's config to see whether
+  it is registered. The log has the upstream's reason
   as a WARN. This is the one place the router writes words of its own to a model, and it is a
   whole answer in Claude's place, never an edit of Claude Code's text. Any other status (a 400,
   a 401, a 422) passes unchanged: since Claude Code 2.1.304 an unrecognised 400 or 422 makes it
@@ -262,7 +263,7 @@ was (`config.ts`, tested in `config.test.ts`).
   does not know the field ignores it. `currentBreakers` counts a record for 15 minutes after
   `lastAt`, the way a limit without a reset time counts, so a record a stopped router left
   behind goes stale.
-- **In a worker's record** (`src/workers/store.ts`, § Lead and workers in `docs/design.md`) a
+- **In a worker's record** (`src/crew/store.ts`, § Lead and the crew in `docs/design.md`) a
   `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` or `{kind:
   "claude-limit", model, resetsAt}`, and a lead's record may carry `pausedAgents`, the ids of its
   own subagents waiting to be woken. Both are optional.
@@ -305,7 +306,12 @@ switches `--fallback-model` (a 529 does after three).
    closed breaker asks the last target even while it rests). Each target has one **probe** at a
    time: the request that finds its rest over asks it, and the others wait behind that call.
    A probe that fails rests the target again (`cooldownSeconds`); one that answers closes the
-   breaker, and the held requests go on the normal chain.
+   breaker, and the held requests go on the normal chain. A probe is made only while what is
+   left of the hold is at least `timeouts.firstByteMs`: with less it could only fail on the
+   hold's own deadline, so the request is answered at once instead. A probe's wait is capped by
+   what is left of the hold, and a probe of a request that does not stream gets `firstByteMs`
+   too (or a hung one would block its target's only probe for ever). A probe whose wait the
+   hold's end cut short rests nothing: that timeout is the router's, not the target's.
 3. **The hold.** Each held request polls once a second: it reads the config, and a changed
    chain is served at once. A slot taken out of the config releases the request with a 429
    `retry-after: 1`, so the retry routes it the way a new request goes; a switch turned off
@@ -390,8 +396,10 @@ may give the judge slot a chain of their own, and that wins.
   form's `thinking: disabled` is refused by Claude Sonnet 5.5 (the contract row), so name in
   the chain the model the check names. Its first usable target judges, the next only while the
   judge's fallback switch is on (it is, by default), and then each one that passed the test,
-  in order. An untested backend target is ignored with one WARN; with none usable, Claude
-  judges alone, and the worker's targets are not used. There is no hidden Claude step: when
+  in order. **With the switch off, only the chain's first target is considered:** an untested
+  first target leaves Claude judging alone, even when a tested target follows it. An untested
+  backend target is ignored with one WARN; with none usable, Claude judges alone, and the
+  worker's targets are not used. There is no hidden Claude step: when
   the chain's targets fail, their answer goes back to Claude Code, as any failed check does.
 
 ```sh
@@ -1476,6 +1484,6 @@ Start with `cc-smart-dev-kit gateway status`, then `cc-smart-dev-kit doctor`.
 | A target answers 400 for a long or rich Opus conversation | the `WARN cc-smart-dev-kit-opus: … refused this … conversation` line | `/compact`, a new session, or put a target with a larger window first |
 | A judge target is ignored ("has not passed the judge test") | `gateway status` marks it NOT TESTED; `doctor` fails. After an update to 0.5.0 every judge set before it is: the test version moved with the judge's new role | `cc-smart-dev-kit gateway slot judge <targets>` tests and sets it |
 | A worker target never judges ("not tested, so never judging") | `gateway status`: the judge row names it. It failed the judge test, or nothing has tested it yet. `doctor` shows the line and does not fail | `cc-smart-dev-kit gateway setup` runs the test again; a model that fails stays a worker model, and never judges |
-| WebSearch answers "The cc-smart-dev-kit router answered this search, not a search engine" | Claude is at its usage limit or down; the router's log has the `WARN anthropic answered … to a web_search request` line | wait for the reset, or use the Tavily MCP server's search tool |
+| WebSearch answers "The cc-smart-dev-kit router answered this web_search request, not Anthropic" | Claude is at its usage limit or down; the router's log has the `WARN anthropic answered … to a web_search request` line | wait for the reset, or use the Tavily MCP server's search tool |
 | Claude answers 401 | a 401 may also be a login token that expired | sign in again in Claude Code (`/login`) when it keeps failing |
 | The status line shows nothing about usage | `rate_limits` is only in Claude Code's input for a Claude subscription, after the first answer | nothing to fix |

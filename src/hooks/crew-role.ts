@@ -18,7 +18,9 @@
  *   keeps the turn going and starves hand-backs (L1a.1). When the newest `step` or `report` event
  *   of this crew session is a `step`, the turn ended mid-phase with no report: it blocks **once**
  *   with the report step as its reason (`{"decision":"block","reason":…}`; Claude Code runs no
- *   second block while `stop_hook_active` is true). Nothing runs while `background_tasks` is not
+ *   second block while `stop_hook_active` is true). The events log is read from the crew session's
+ *   own cursor (`readStopState`: the byte after the last line read, and the newest `step` or
+ *   `report` seen), so a Stop costs the same on day 30 as on day 1 — the log only grows. Nothing runs while `background_tasks` is not
  *   empty: that turn is not over, and Claude Code wakes the session when the work lands.
  * - **StopFailure (D42)**: marks the crew session `paused` when a model limit ended its turn
  *   (`rate_limit`, `overloaded`, `server_error`), with what it waits for taken from the router's
@@ -40,7 +42,9 @@ import {
   crewBriefFile,
   readCrew,
   readCrewEvents,
+  readStopState,
   updateCrew,
+  writeStopState,
 } from "../crew/store";
 import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
 import { maskedLine } from "../gateway/plain-text";
@@ -162,16 +166,30 @@ async function stopAnswer(
       return storeProblem(reasonOf(error));
     }
   }
+  // From the byte the Stop before this one read: the log grows with every step, report and
+  // state change of every crew session, so a read from its start would cost more each day.
+  const cursor = readStopState(paths.stateDir, repo, id);
   let events: ReturnType<typeof readCrewEvents>;
   try {
-    events = readCrewEvents(paths.stateDir, repo, 0);
+    events = readCrewEvents(paths.stateDir, repo, cursor?.offset ?? 0);
   } catch (error) {
     return storeProblem(reasonOf(error));
   }
+  // The newest step or report of the whole session: one in this read's window, else the one the
+  // cursor remembers. Read this way, a Stop answers what a read from the log's start answered,
+  // and a cursor that cannot be written is only a slower next Stop — never a wrong answer.
   const newest = events.events
     .filter((event) => event.crew === id && (event.type === "step" || event.type === "report"))
     .at(-1);
-  return newest?.type === "step"
+  const fresh: "report" | "step" | null =
+    newest?.type === "step" ? "step" : newest?.type === "report" ? "report" : null;
+  const last = fresh ?? cursor?.last ?? null;
+  try {
+    writeStopState(paths.stateDir, repo, id, { last, offset: events.offset });
+  } catch (error) {
+    return storeProblem(reasonOf(error));
+  }
+  return last === "step"
     ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) }
     : SILENT;
 }

@@ -1028,6 +1028,11 @@ interface HoldMode {
    * deadline.
    */
   lastWaitMs: null | number;
+  /**
+   * Milliseconds left of the hold, from its start: a probe's wait is capped by it, so a hold
+   * never outlasts its limit. `Infinity` when there is no hold to stay within (`0`).
+   */
+  leftMs: number;
   /** Upstream calls made as a probe, counted for the request's log line. */
   probes: { count: number };
 }
@@ -1959,16 +1964,35 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       // With the breaker on, the last backend of a streaming request gets one too, a long one:
       // a stream of heartbeats only would stall Claude Code for 5 minutes, and a target that
       // never gives a real event opens the breaker instead.
+      const firstByteWait =
+        target.kind === "backend" && (guard || (!last && body.stream === true))
+          ? config.timeouts.firstByteMs
+          : null;
       const lastWaitMs =
         hold !== null && last && target.kind === "backend" && body.stream === true
           ? hold.lastWaitMs
           : null;
-      const deadlineAt =
-        target.kind === "backend" && (guard || (!last && body.stream === true))
-          ? deps.now() + config.timeouts.firstByteMs
-          : lastWaitMs !== null
-            ? deps.now() + lastWaitMs
-            : null;
+      // While the breaker is open a call is a probe: one request at a time asks each target.
+      // Its wait is capped by what is left of the hold, so a probe cannot outlive the hold (a
+      // hold never exceeds its limit), keep its target blocked for every other request after
+      // it, or rest a target that works because the router's own deadline cut it short. A
+      // probe of a request that does not stream gets a deadline too (`firstByteMs`): with
+      // none, a hung probe would block every other request's probe of that target for ever,
+      // and the breaker could never close. Anthropic keeps its own wait: its answers always
+      // pass unchanged.
+      const budgetMs =
+        last && target.kind === "backend" && body.stream === true && hold !== null
+          ? BREAKER_HEARTBEAT_WAIT_MS
+          : (firstByteWait ?? config.timeouts.firstByteMs);
+      const probeWaitMs =
+        hold?.holding === true && target.kind === "backend"
+          ? Math.min(budgetMs, hold.leftMs)
+          : null;
+      const waitMs = probeWaitMs ?? lastWaitMs ?? firstByteWait;
+      const deadlineAt = waitMs === null ? null : deps.now() + waitMs;
+      /** The hold's end, not the target, set this wait: a timeout then says nothing of it. */
+      const holdCutShort =
+        hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
       const built = targetUpstream(req, url, config, body, target, guard, asked);
       // A call made while a breaker is open is a probe: it is the only one for this target.
       const probe = hold?.holding === true && !("error" in built);
@@ -2018,7 +2042,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       }
       // Only a model's answer says whether a target can answer: a `count_tokens` answer
       // neither starts nor ends a rest (its 200 during a plan limit says nothing of it).
-      if (url.pathname === MESSAGES_PATH) noteCooldown(label, result);
+      // A probe whose wait the hold's end cut short timed out on the router's deadline, not
+      // the target's: it must not rest a target that works for every other session.
+      const timeoutCutShort =
+        holdCutShort &&
+        "failure" in result &&
+        (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
+      if (url.pathname === MESSAGES_PATH && !timeoutCutShort) noteCooldown(label, result);
       if ("failure" in result) {
         lastTimedOut =
           last && (result.failure === NO_HEADERS_IN_TIME || result.failure === NO_EVENT_IN_TIME);
@@ -2060,17 +2090,18 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         if (target.kind === "backend" && (status === 401 || status === 403)) {
           // A backend refusing its own key. Passed on, Claude Code would read it as its own
           // login failing ("Please run /login"), which cannot fix a backend key. A 5xx would
-          // be retried up to 10 times, each one refused again. A 400 is neither: Claude Code
-          // shows its message and does not retry it (code.claude.com/docs/en/errors,
-          // § Automatic retries), and `x-should-retry: false` says so to its API client too.
+          // be retried up to 10 times, each one refused again. A 424 is neither retried nor
+          // sent again (`./refusal.ts`), and `x-should-retry: false` says so to its API
+          // client too; a safety check, which carries no deferred tools, keeps the 400.
+          const refused = backendKeyRefused(label, target.backend, status, !guard);
           logErrorAnswer(
             result.response,
             knownSecrets(req, config),
-            `WARN ${label} answered ${status}; returned as a 400 (the backend refused its key)`,
+            `WARN ${label} answered ${status}; returned as a ${refused.status} (the backend refused its key)`,
           );
           return {
             fallbacks,
-            response: backendKeyRefused(label, target.backend, status, !guard),
+            response: refused,
             skipped,
             target: label,
           };
@@ -2195,10 +2226,12 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   ): HoldMode {
     const limit = holdLimitMs(config, body);
     // The wait counts from the request's start, so it and the hold stay under the ceiling.
-    const left = Math.max(startMs + limit - deps.now(), 1);
+    // With no hold (`0`) there is no limit to stay within: a probe gets its own wait.
+    const left = limit === 0 ? Number.POSITIVE_INFINITY : Math.max(startMs + limit - deps.now(), 0);
     return {
       holding,
-      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, left),
+      lastWaitMs: limit === 0 ? null : Math.min(BREAKER_HEARTBEAT_WAIT_MS, Math.max(left, 1)),
+      leftMs: left,
       probes,
     };
   }
@@ -2358,6 +2391,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       },
       targets,
     });
+    /** The WARN that the slot is still limited, at most once every `BREAKER_REMINDER_MS`. */
+    const remind = (nowMs: number): void => {
+      if (nowMs - open.reminderAt < BREAKER_REMINDER_MS) return;
+      open.reminderAt = nowMs;
+      deps.log(
+        `WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), nowMs)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`,
+      );
+    };
     try {
       for (;;) {
         // The answer a pass would have given is not used: drop its body.
@@ -2365,10 +2406,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         const now = deps.now();
         const failures = outcome.capacity ?? [];
         const endsAt = startMs + holdLimitMs(config, body);
-        const reply = (retryAfterSec?: number, message?: string): Response =>
+        const reply = (nowMs: number, retryAfterSec?: number, message?: string): Response =>
           breakerAnswer({
             failures,
-            nowMs: now,
+            nowMs,
             sinceMs: open.since,
             slot,
             ...(retryAfterSec === undefined ? {} : { retryAfterSec }),
@@ -2377,22 +2418,18 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         if (stopping()) {
           return answer(
             reply(
+              now,
               BREAKER_SHUTDOWN_RETRY_AFTER_SEC,
               `cc-smart-dev-kit-router: the router is restarting; ${slot} had no target answering. Ask again`,
             ),
           );
         }
         if (now >= endsAt) {
-          if (now - open.reminderAt >= BREAKER_REMINDER_MS) {
-            open.reminderAt = now;
-            deps.log(
-              `WARN ${slot}: still limited or down since ${formatClock(Math.floor(open.since / 1000), now)}; ${open.held} requests held so far. Change it: ${COMMAND} gateway slot ${slotShortName(slot)} <targets>`,
-            );
-          }
-          return answer(reply());
+          remind(now);
+          return answer(reply(now));
         }
         if (counted === null) {
-          if (open.heldNow >= BREAKER_MAX_HELD) return answer(reply());
+          if (open.heldNow >= BREAKER_MAX_HELD) return answer(reply(now));
           counted = open;
           open.heldNow += 1;
           open.held += 1;
@@ -2408,6 +2445,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         if (route.kind !== "slot" || route.targets.length === 0) {
           return answer(
             reply(
+              now,
               BREAKER_RELEASED_RETRY_AFTER_SEC,
               `cc-smart-dev-kit-router: ${slot} has no chain any more; ask again`,
             ),
@@ -2416,6 +2454,15 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         config = next;
         targets = targetsInUse(route.targets, fallbackOn(next, slot));
         const holds = breakerOn(next, slot);
+        // What is left of the hold is under a target's first-byte time: a probe now could
+        // only fail on the hold's own deadline, and rest a target that works. Answer the 429
+        // now, as at the hold's end (its reminder included). A switch turned off is served
+        // the normal way instead, below.
+        const probingAt = deps.now();
+        if (holds && startMs + holdLimitMs(next, body) - probingAt < next.timeouts.firstByteMs) {
+          remind(probingAt);
+          return answer(reply(probingAt));
+        }
         outcome = await chain(
           req,
           url,
@@ -2817,10 +2864,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
      *
      * When Claude cannot answer a `/v1/messages` call (D44: a capacity failure, 429, 5xx or
      * no answer at all), the router answers instead, in Anthropic's message format with one
-     * plain text block that says it is the router's and names the Tavily MCP server's search
-     * tool. Claude Code takes such an answer as the tool's result at once; the failure itself
-     * would be retried for minutes. Any other status passes unchanged. The breaker (BR1)
-     * never holds such a request: it is answered or refused at once.
+     * plain text block that says it is the router's, names the server tool that failed, and
+     * points to the Tavily MCP server. Claude Code takes such an answer as the tool's result
+     * at once; the failure itself would be retried for minutes. Any other status passes
+     * unchanged. The breaker (BR1) never holds such a request: it is answered or refused at
+     * once.
      */
     async function serverToolRoute(tool: string): Promise<Outcome> {
       const why = `server tool ${tool}`;
@@ -2848,7 +2896,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           `WARN anthropic did not answer a ${tool} request (${reason}); the router answered with a note naming Tavily instead`,
         );
       }
-      const text = claudeSearchNotice(claudeUnavailableWords(status, limit));
+      const text = claudeSearchNotice(tool, claudeUnavailableWords(status, limit));
       const streamed = body.stream === true;
       return {
         fallbacks: 0,

@@ -1364,6 +1364,14 @@ describe("the merge reader's bypasses of the 0.6.0 audit: each spelling asks abo
     const queued = `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind test -- bash -c 'bun test && gh pr merge --admin 7'`;
     expect(await reason(queued)).toContain("--admin");
   });
+
+  test("F2a-1: a program worked out at run time whose words name a merge asks", async () => {
+    for (const command of ["$(which gh) pr merge --admin 7", "G=gh; $G pr merge 7"]) {
+      expect(await reason(command)).toContain("cannot tell whether it merges a pull request");
+    }
+    // A computed program with no merge word is left alone.
+    expect(await reason("$(which gh) pr list")).toBeUndefined();
+  });
 });
 
 describe("the guard's own deadline", () => {

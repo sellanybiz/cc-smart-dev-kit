@@ -17,7 +17,8 @@
  *      could use it. **Asks.**
  *   4. An Edit or Write to the kit's own settings: any `.claude/cc-smart-dev-kit.json` (the
  *      project's gate and `ownHooks`), the kit's settings folder (`workflow.json`,
- *      `gateway.json`) and its state folder (the review record). **Asks.** The merge guard reads
+ *      `gateway.json`), its state folder (the review record) and its installed plugin folder
+ *      (the guards and hooks Claude Code runs). **Asks.** The merge guard reads
  *      its gate from the base branch, but the person's own `workflow.json` and the record are
  *      read from these files.
  *
@@ -27,23 +28,29 @@
  * of the things it guards, so a session could otherwise list the guard there first.
  *
  * It asks rather than denies where the person may mean it (the portal, an edit of a settings
- * file); it denies what is never right from inside a session (1 and 2). A same-user process set
- * on getting past it can (a script file, a path built at run time): it stops mistakes and
- * shortcuts, like the review gate it protects (`docs/design.md` § The session-escape guard).
+ * file or of the installed plugin); it denies what is never right from inside a session (1 and
+ * 2). A same-user process set on getting past it can (a script file, a path built at run time):
+ * it stops mistakes and shortcuts, like the review gate it protects (`docs/design.md` § The
+ * session-escape guard).
  *
  * A shell line that **writes** into those files asks too, like an Edit would: a redirect (`>`,
  * `>>`, `>|`), `tee`, `sed -i` / `perl -i`, `cp` / `mv` / `install` / `ln` onto the path, `dd of=`,
  * and PowerShell's `Set-Content`, `Add-Content`, `Out-File`, `Tee-Object`, `Copy-Item` and
  * `Move-Item`. A read (`cat workflow.json`) passes. Each target is resolved as written (the
  * `~`, and a relative path against the folder the line is in, `cd` followed) and as a real
- * path, so a link cannot hide it. A target the line works out when it runs (`> $FILE`) cannot
- * be resolved: it asks only when the line also names one of the protected files or folders by
- * text (`cc-smart-dev-kit.json`, `~/.config/cc-smart-dev-kit`, …), and passes otherwise.
+ * path, and each protected folder is compared both as written and by its real path, so a link
+ * cannot hide it. A target the line works out when it runs (`> $FILE`) cannot be resolved: it
+ * asks only when the line also names one of the protected files or folders by text
+ * (`cc-smart-dev-kit.json`, `~/.config/cc-smart-dev-kit`, …), and passes otherwise.
  *
- * Not read: a script file's content (`env -u CLAUDECODE sh run.sh`), a program or a port named
- * at run time (`curl localhost:$PORT`), a portal started on another port, a write by a program
- * this file does not know (`python -c "open(…, 'w')"`, `rsync`, `truncate`), and a computed
- * target in a line that never names the protected files. Reading the shell line is
+ * A program the line **computes** (`$KIT`, `$(which cc-smart-dev-kit)`) cannot be named: when
+ * the line also names the kit command, the guard asks rather than stay silent. `Start-Process`
+ * is read by its `-FilePath`/`-ArgumentList`, and `-UseNewEnvironment` is a fresh environment.
+ *
+ * Not read: a script file's content (`env -u CLAUDECODE sh run.sh`), a port named at run time
+ * (`curl localhost:$PORT`), a portal started on another port, a write by a program this file
+ * does not know (`python -c "open(…, 'w')"`, `rsync`, `truncate`), and a computed target in a
+ * line that never names the protected files. Reading the shell line is
  * `src/shell/command.ts`'s job; this file adds no lexer of its own.
  */
 
@@ -55,7 +62,9 @@ import { DEFAULT_PORTAL_PORT } from "../ports";
 import {
   dialectOfTool,
   invocationOf,
+  isAssignmentOnly,
   isShort,
+  isWrapper,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
@@ -189,6 +198,8 @@ function prefixDrop(prefix: readonly string[], program: string): string | null {
   if (program === "-" && programName(prefix.at(-1) ?? "") === "env") return CLEARED;
   if (prefix.some((word) => ASSIGNS_CLAUDECODE.test(word))) return OVERWRITTEN;
   if (prefix.some((word) => RESETTERS.has(programName(word)))) return RESET;
+  // `Start-Process … -UseNewEnvironment` (the reader puts both words in the prefix).
+  if (prefix.some((word, at) => isFreshEnvironment(prefix[at - 1] ?? "", word))) return RESET;
   for (let at = 0; at < prefix.length; at++) {
     if (programName(prefix[at] ?? "") !== "env") continue;
     for (let index = at + 1; index < prefix.length; index++) {
@@ -216,6 +227,17 @@ function prefixDrop(prefix: readonly string[], program: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * True for `Start-Process`'s `-UseNewEnvironment`, after the reader put `Start-Process` before
+ * it: PowerShell takes any prefix of a parameter name, and only that parameter starts with
+ * `u`.
+ */
+function isFreshEnvironment(before: string, parameter: string): boolean {
+  if (programName(before) !== "start-process") return false;
+  const given = /^-([a-z]+)$/i.exec(parameter)?.[1]?.toLowerCase() ?? "";
+  return given !== "" && "usenewenvironment".startsWith(given);
 }
 
 /** PowerShell: a write to the `CLAUDECODE` environment variable. */
@@ -416,10 +438,12 @@ function movedTo(
 /** The places in the text of a command that name the protected files, normalised for `includes`. */
 function protectedNeedles(paths: CliPaths): string[] {
   const settings = dirname(paths.workflowConfigFile);
-  const needles = [PROJECT_FILE, settings, paths.stateDir];
-  for (const folder of [settings, paths.stateDir]) {
+  const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
+  for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative(paths.home, folder);
     if (!underHome.startsWith("..") && !isAbsolute(underHome)) needles.push(underHome);
+    // The real path behind a linked folder (`~/.config` → somewhere else) names the same files.
+    needles.push(realPath(folder));
   }
   return needles.map((needle) => needle.replace(/\\/g, "/").toLowerCase());
 }
@@ -429,6 +453,33 @@ function namesProtected(text: string, paths: CliPaths): boolean {
   const lower = text.replace(/\\/g, "/").toLowerCase();
   return protectedNeedles(paths).some((needle) => lower.includes(needle));
 }
+
+/**
+ * The words before a kit word that sits inside another program's arguments, read as a prefix
+ * (`find . -exec env -u CLAUDECODE <kit> …`): from the first wrapper word among the
+ * program's own words to the kit word. `env -u CLAUDECODE` and the like are there, so
+ * `prefixDrop` sees the same drop a kit command at the start of the line would show.
+ */
+function innerKitPrefix(program: string, operands: readonly string[]): string[] {
+  const words = [program, ...operands];
+  const atKit = words.findIndex(isKitWord);
+  if (atKit === -1) return [];
+  // A wrapper runs what follows it; an assignment before the kit word (`CLAUDECODE= …`) is a
+  // drop of its own.
+  const atStart = words
+    .slice(0, atKit)
+    .findIndex((word) => isWrapper(word) || isAssignmentOnly([word]));
+  return atStart === -1 ? [] : words.slice(atStart, atKit);
+}
+
+/** The question when the line names the kit command but its program is worked out at run time. */
+const COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
+
+/** The kit command as a word of a line's text (`K=${COMMAND}; $(which $K) …` names it too). */
+const KIT_WORD = new RegExp(
+  `(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`,
+  "i",
+);
 
 /** Why a question about a kit file is asked at all: the same sentence for an Edit and a command. */
 const SETTINGS_TAIL =
@@ -516,7 +567,14 @@ function readLine(
       const resets = RESETTERS.has(program) ? RESET : null;
       const here = dropped ?? prefixDrop(prefix, program) ?? resets;
       const kit = kitArguments(program, operands);
-      if (kit !== null) judgeKitCommand(kit, here, found);
+      if (kit !== null) {
+        // The kit word may sit inside another program's arguments (`find … -exec env -u
+        // CLAUDECODE <kit>`): the words before it hold the drop too.
+        const inside = prefixDrop(innerKitPrefix(program, operands), program);
+        judgeKitCommand(kit, here ?? inside, found);
+      }
+      // A computed program cannot be named: if the line names the kit command, ask.
+      if (invocation.computed && KIT_WORD.test(ctx.text)) found.asks.add(COMPUTED_KIT_ASK);
       if (depth < MAX_NESTING) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {
@@ -582,10 +640,21 @@ function judgeShell(input: HookInput, paths: CliPaths): HookResult {
 const PROJECT_FILE_WHAT = `the project's ${COMMAND} settings (the workflow gate, which hooks run)`;
 const SETTINGS_WHAT = "the kit's own settings folder (the person's workflow and gateway settings)";
 const STATE_WHAT = "the kit's own state folder (the review record, the ask log)";
+const PLUGIN_WHAT =
+  "the kit's own installed plugin folder (the guards and hooks Claude Code runs from it)";
 
 /** `~` and `~/…` mean the home folder, as the shell and most tools read them. */
 function expanded(path: string, home: string): string {
   return /^~(?=$|[\\/])/.test(path) ? `${home}${path.slice(1)}` : path;
+}
+
+/**
+ * Every spelling of a protected folder a target may match: the path as written and its real
+ * path. A home folder whose `~/.config` is a link writes the same file by the real path, and
+ * the written one must not be the only one compared.
+ */
+function folderForms(folder: string): string[] {
+  return [folder, realPath(folder)];
 }
 
 /**
@@ -603,8 +672,13 @@ function kitFileKind(path: string, paths: CliPaths): string | null {
     return PROJECT_FILE_WHAT;
   }
   const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname);
-  if (settingsFolders.some((folder) => isInside(path, folder, true))) return SETTINGS_WHAT;
-  return isInside(path, paths.stateDir, true) ? STATE_WHAT : null;
+  const inside = (folder: string) => folderForms(folder).some((form) => isInside(path, form, true));
+  if (settingsFolders.some(inside)) return SETTINGS_WHAT;
+  if (inside(paths.stateDir)) return STATE_WHAT;
+  // Claude Code runs the guards and hooks from its copy of this plugin: a write into it
+  // changes them, so it asks. The person may mean it (a hand edit before an update), so never
+  // a deny.
+  return inside(paths.pluginCacheDir) ? PLUGIN_WHAT : null;
 }
 
 /**

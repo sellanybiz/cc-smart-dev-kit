@@ -44,8 +44,10 @@
  * `pwsh -Command`, `eval`, `iex` and `cc-smart-dev-kit job run -- …` is a line of its own
  * (`nestedCommand`), read in its own dialect (`nestedDialect`), three levels deep.
  *
- * Not read: brace expansion (`{git,push}`), a program named at run time (`$(…)`, a
- * variable), `-EncodedCommand`, `ssh`, a script file; `cmd /c` is read with Bash's quoting.
+ * Not read: brace expansion (`{git,push}`), `-EncodedCommand`, `ssh`, a script file; `cmd /c`
+ * is read with Bash's quoting. **A program named at run time** (`$GIT`, `$(which git)`, a
+ * backtick) is read as what it is: `invocationOf` marks it `computed`, and a guard whose
+ * domain words are in that command asks about it rather than let it through unseen.
  *
  * Pure: no file, no environment, no process.
  */
@@ -341,7 +343,7 @@ function lex(text: string, options: LexOptions): Lexed {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
-          raw += `$(${read(true)}`;
+          raw += `$(${read(true).raw}`;
         } else {
           raw += readArithmetic(end);
         }
@@ -401,9 +403,13 @@ function lex(text: string, options: LexOptions): Lexed {
 
   /**
    * Reads commands to the end of the text, or (`nested`) to the `)` that closes a `$(`.
-   * Returns the text read, bodies cut: what the enclosing quoted word holds.
+   * Returns the text read, bodies cut, and whether that `)` closed it: what the enclosing
+   * quoted word holds, and whether the substitution it was reading is whole. `substitutions`
+   * counts the `$(` this text is inside: past `MAX_INNER` its parentheses split as plain
+   * separators, so a line of 10,000 nested ones is still read in linear time (its commands
+   * are still read, one level at a time).
    */
-  function read(nested: boolean): string {
+  function read(nested: boolean, substitutions = 0): { closed: boolean; raw: string } {
     let raw = "";
     let current = "";
     let depth = 0;
@@ -461,6 +467,19 @@ function lex(text: string, options: LexOptions): Lexed {
         const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
         if (arithmetic !== -1) {
           take(readArithmetic(arithmetic));
+          continue;
+        }
+        // `$( … )` outside quotes is part of the word it stands in (`$(which git) push` runs
+        // one word and `push`): its commands are read, and the word keeps the substitution, so
+        // a guard sees a program it cannot name (`invocationOf` marks it `computed`) instead of
+        // the word after it. An unclosed `$(` runs nothing, and is read blind past. Past
+        // `MAX_INNER` levels its parentheses split as plain separators (linear time), and the
+        // commands inside are still read.
+        if (char === "$" && next === "(" && substitutions < MAX_INNER) {
+          at += 2;
+          const substitution = read(true, substitutions + 1);
+          if (!substitution.closed) open = true;
+          take(`$(${substitution.raw}`);
           continue;
         }
         if (char === "#" && wordStart && !afterClose) {
@@ -532,7 +551,7 @@ function lex(text: string, options: LexOptions): Lexed {
         afterPipe = char === "|";
         if (nested && char === ")" && depth === 0) {
           at++;
-          return `${raw})`;
+          return { closed: true, raw: `${raw})` };
         }
         if (nested && char === "(") depth++;
         if (nested && char === ")") depth--;
@@ -550,7 +569,7 @@ function lex(text: string, options: LexOptions): Lexed {
     }
     // The end of the text. A `$(` that never closed: `readDouble` marks its quote open.
     push(current, afterPipe ? (segments[segments.length - 1] ?? null) : null);
-    return raw;
+    return { closed: false, raw };
   }
 
   if (options.body === true) readDouble(false);
@@ -788,13 +807,39 @@ interface WrapperSpec {
   inert?: string[];
   /** `env -S '…'`: the option whose value is split into the words of the command. */
   split?: { long: string; short: string };
+  /**
+   * `script -c '…'`, `flock <file> -c '…'`: the option whose value is the command line the
+   * wrapper runs, after its own words (`from` to `to`, the value).
+   */
+  runs?: { long: string; short: string };
 }
 
 /** A duration, as `timeout` takes one (`60`, `30s`, `1.5m`). */
 const DURATION = (word: string) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
 
+/** A CPU mask, as `taskset` takes one (`0x3`, `1,2`). */
+const CPU_MASK = (word: string) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
+
+/**
+ * Wrappers that run the command after them. `setsid`, `flock`, `chrt`, `taskset`, `unbuffer`,
+ * `nsenter` and `busybox` are here for the guards: `setsid git push -f` runs git, and a
+ * reader that stopped at `setsid` let it through. `script -c` and `flock -c` name the command
+ * in an option (`runs`), `busybox sh` names a shell whose script is read.
+ */
 const WRAPPERS: Record<string, WrapperSpec> = {
   builtin: { long: [], short: "" },
+  busybox: { long: [], short: "" },
+  chrt: {
+    long: [
+      "--sched-runtime",
+      "--sched-period",
+      "--sched-deadline",
+      "--sched-priority",
+      "--reset-on-fork",
+    ],
+    short: "PT",
+    skip: (word) => /^-?\d+$/.test(word),
+  },
   command: { inert: ["-v", "-V"], long: [], short: "" },
   doas: { long: [], short: "uC" },
   env: {
@@ -803,9 +848,28 @@ const WRAPPERS: Record<string, WrapperSpec> = {
     split: { long: "--split-string", short: "S" },
   },
   exec: { long: [], short: "a" },
+  flock: {
+    long: ["--timeout", "--conflict-exit-code", "--command"],
+    short: "wEc",
+    // The lock file (or descriptor) comes before the command: `flock /tmp/l git push`.
+    skip: () => true,
+    runs: { long: "--command", short: "c" },
+  },
   ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
   nice: { long: ["--adjustment"], short: "n" },
   nohup: { long: [], short: "" },
+  nsenter: {
+    long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
+    short: "tSG",
+  },
+  script: {
+    long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
+    short: "cEOI",
+    // The typescript file comes before the command (`script /tmp/log git push`, macOS).
+    skip: () => true,
+    runs: { long: "--command", short: "c" },
+  },
+  setsid: { long: [], short: "" },
   stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
   sudo: {
     long: [
@@ -821,8 +885,10 @@ const WRAPPERS: Record<string, WrapperSpec> = {
     ],
     short: "ughpCDRTU",
   },
+  taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
   time: { long: [], short: "" },
   timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+  unbuffer: { long: [], short: "" },
   xargs: {
     long: [
       "--arg-file",
@@ -840,7 +906,61 @@ const WRAPPERS: Record<string, WrapperSpec> = {
 };
 
 /** The shells whose script this module reads (`-c`, a here-doc, a here-string, a pipe). */
-const SHELLS = new Set(["bash", "dash", "sh", "zsh"]);
+const SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
+
+/** True when `word` names a wrapper (`env`, `sudo`, `setsid`, …), which runs the command after it. */
+export function isWrapper(word: string): boolean {
+  return WRAPPERS[programName(word)] !== undefined;
+}
+
+/** A package whose binary is Claude Code's own `claude` (`@anthropic-ai/claude-code@2.1.3`). */
+const CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
+
+/** The programs that run a named package's binary: `npx @scope/pkg`, `bunx`, `pnpx`. */
+const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(["bunx", "npx", "pnpx"]);
+
+/**
+ * The command a package runner runs, when the package is Claude Code's: `npx
+ * @anthropic-ai/claude-code --bg x` runs `claude`. Null for any other program or package.
+ * `-p`/`--package` names the package and the command word after it (`npx -p
+ * @anthropic-ai/claude-code claude --bg`); without a command word, the package's own binary
+ * runs, which is `claude`.
+ */
+function packageCommand(
+  program: string,
+  args: readonly string[],
+): { args: string[]; program: string } | null {
+  let rest: readonly string[];
+  if (PACKAGE_RUNNERS.has(program)) rest = args;
+  else if (program === "pnpm" && args[0] === "dlx") rest = args.slice(1);
+  else return null;
+  for (let index = 0; index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      const pkg = rest[index + 1];
+      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg)
+        ? { args: rest.slice(index + 2), program: "claude" }
+        : null;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (name === "-p" || name === "--package") {
+      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
+      const pkg = inline ?? rest[index + 1];
+      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg)) return null;
+      const after = rest.slice(index + (inline === undefined ? 2 : 1));
+      const command = after[0] === "claude" ? after.slice(1) : after;
+      return { args: [...command], program: "claude" };
+    }
+    if (word.startsWith("-")) {
+      // A runner option with a value this reader does not know: the next word may be the
+      // package, so skip the option alone (`npx -y …`, `npx --registry x …`).
+      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
+      continue;
+    }
+    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
+  }
+  return null;
+}
 
 /** `git.exe` → `git`, `C:\Program Files\Git\cmd\git` → `git`. */
 export function programName(word: string): string {
@@ -873,6 +993,8 @@ export interface Invocation {
   args: string[];
   /** The words before the program that start nothing of their own: `CI=1`, `sudo -u me`, `env`. */
   prefix: string[];
+  /** The program is worked out when the line runs (`$GIT`, `$(which git)`, a backtick). */
+  computed: boolean;
 }
 
 /** Where a wrapper's options end, and the words of an `env -S` string found among them. */
@@ -883,6 +1005,11 @@ interface AfterWrapper {
    * before the `S` (`-iS` keeps `-i`), or null.
    */
   split?: { from: number; to: number; value: string; keep: string | null };
+  /**
+   * `script -c 'git push'`, `flock <file> -c 'env …'`: the words from `from` to `to` become
+   * the words of the command the wrapper runs.
+   */
+  runs?: { from: number; to: number; value: string };
 }
 
 /** The index after a wrapper's options: where the command it runs starts. */
@@ -892,10 +1019,21 @@ function afterWrapper(
   spec: WrapperSpec,
 ): AfterWrapper | undefined {
   let index = from;
+  /** A non-option word the wrapper takes before the command (`timeout 60 …`) was skipped. */
+  let skipped = false;
   while (index < words.length) {
     const word = words[index] ?? "";
     if (word === "--") return { index: index + 1 };
-    if (!isShort(word) && !word.startsWith("--")) break;
+    if (!isShort(word) && !word.startsWith("--")) {
+      // Only one such word belongs to the wrapper; the rest is its command, which may start
+      // with a word no option reader knows (`flock <file> -c '…'` names the command in `-c`).
+      if (!skipped && spec.skip?.(word) === true) {
+        skipped = true;
+        index++;
+        continue;
+      }
+      break;
+    }
     const name = word.split("=")[0] ?? word;
     if (spec.inert?.some((inert) => inert === name || inert === word) === true) return undefined;
     if (word.startsWith("--")) {
@@ -904,6 +1042,10 @@ function afterWrapper(
         const value = valued ? (words[index + 1] ?? "") : word.slice(name.length + 1);
         const to = index + (valued ? 2 : 1);
         return { index, split: { from: index, to, value, keep: null } };
+      }
+      if (spec.runs !== undefined && name === spec.runs.long) {
+        const value = valued ? (words[index + 1] ?? "") : word.slice(name.length + 1);
+        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
       }
       index += valued ? 2 : 1;
       continue;
@@ -918,9 +1060,13 @@ function afterWrapper(
         split: { from: index, to, value, keep: before === "" ? null : `-${before}` },
       };
     }
+    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
+      const value = wantsNext ? (words[index + 1] ?? "") : word.slice(flags.length + 1);
+      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
+    }
     index += wantsNext ? 2 : 1;
   }
-  return { index: spec.skip?.(words[index] ?? "") === true ? index + 1 : index };
+  return { index };
 }
 
 /**
@@ -929,6 +1075,10 @@ function afterWrapper(
  * their options) are stepped over first, so the program is what actually runs:
  * `sudo -u me git push` is `git`, and so is `env -S 'git push'`. Undefined when nothing runs
  * (`command -v git`).
+ *
+ * `computed` says the program is worked out when the line runs (`$GIT`, `$(which git)`, a
+ * backtick): the guards cannot name it, so each one asks about a line whose words are in its
+ * domain instead of staying silent.
  */
 export function invocationOf(words: readonly string[]): Invocation | undefined {
   let list = [...words];
@@ -959,12 +1109,140 @@ export function invocationOf(words: readonly string[]): Invocation | undefined {
       splits++;
       continue;
     }
+    if (after.runs !== undefined && splits < MAX_NESTING) {
+      // `script -c 'git push'`: the option's value holds the words of the command. Read on at
+      // them: the wrapper's own words before them (its lock file, `-c`) stay the prefix.
+      const { from, to, value } = after.runs;
+      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
+      index = from;
+      splits++;
+      continue;
+    }
     index = after.split === undefined ? after.index : after.split.to;
   }
   const first = list[index];
   if (first === undefined) return undefined;
-  return { args: list.slice(index + 1), prefix: list.slice(0, index), program: programName(first) };
+  const program = programName(first);
+  const ran = packageCommand(program, list.slice(index + 1));
+  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
+  const command = started ?? ran;
+  return {
+    args: command?.args ?? list.slice(index + 1),
+    computed: isComputedWord(first),
+    prefix: [...list.slice(0, index), ...(started?.prefix ?? [])],
+    program: command?.program ?? program,
+  };
 }
+
+/**
+ * True when a word is a program the shell works out when the line runs (`$GIT`,
+ * `$(which git)`, a backtick). A path whose name is plain is not one: `$HOME/.local/bin/cc-smart-dev-kit`
+ * names the command `cc-smart-dev-kit`, whatever folder it is in.
+ */
+export function isComputedWord(word: string): boolean {
+  if (!word.startsWith("$") && !word.startsWith("`")) return false;
+  return /[$`(){}[\]\s]/.test(programName(word));
+}
+
+/**
+ * `Start-Process`'s parameters this reader knows: the name, and whether it takes a value
+ * (`-FilePath`, `-ArgumentList`) or is a switch (`-UseNewEnvironment`). PowerShell accepts any
+ * prefix that still names one parameter; a prefix naming none or several is skipped alone.
+ */
+const START_PROCESS_PARAMETERS: ReadonlyMap<string, boolean> = new Map([
+  ["argumentlist", true],
+  ["credential", true],
+  ["erroraction", true],
+  ["errorvariable", true],
+  ["filepath", true],
+  ["informationaction", true],
+  ["informationvariable", true],
+  ["loaduserprofile", false],
+  ["nonewwindow", false],
+  ["outbuffer", true],
+  ["outvariable", true],
+  ["passthru", false],
+  ["pipelinevariable", true],
+  ["redirectstandarderror", true],
+  ["redirectstandardinput", true],
+  ["redirectstandardoutput", true],
+  ["usenewenvironment", false],
+  ["verb", true],
+  ["wait", false],
+  ["warningaction", true],
+  ["warningvariable", true],
+  ["windowstyle", true],
+  ["workingdirectory", true],
+]);
+
+/** The parameter a `-Name` / `-Name:value` word names, or null when it names none or several. */
+function startProcessParameter(
+  word: string,
+): { name: string; takesValue: boolean; value: string | undefined } | null {
+  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
+  const given = match?.[1]?.toLowerCase() ?? "";
+  if (given === "") return null;
+  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
+  const [name] = names;
+  if (names.length !== 1 || name === undefined) return null;
+  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
+}
+
+/**
+ * The command `Start-Process` runs: its `-FilePath` (`-F`, or any prefix PowerShell accepts)
+ * or the first positional word names the program, and `-ArgumentList` (`-A`) or the second
+ * positional word its arguments (`Start-Process -FilePath git -ArgumentList 'push -f'`).
+ * Null for anything else (no program named).
+ *
+ * `-UseNewEnvironment` starts the command with a fresh environment. The prefix then carries
+ * `Start-Process` and the flag, where the escape guard reads them like `sudo` (`prefixDrop`).
+ */
+function startProcess(
+  args: readonly string[],
+): { args: string[]; prefix: string[]; program: string } | null {
+  let file: string | null = null;
+  let list: string[] | null = null;
+  let fresh: string | null = null;
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(index + 1));
+      break;
+    }
+    const parameter = startProcessParameter(arg);
+    if (parameter === null) {
+      if (!arg.startsWith("-")) positional.push(arg);
+      continue;
+    }
+    const { name, takesValue } = parameter;
+    let value = parameter.value;
+    if (takesValue && value === undefined) {
+      value = args[index + 1];
+      index++;
+    }
+    if (name === "filepath" && value !== undefined) file = value;
+    else if (name === "argumentlist" && value !== undefined) {
+      // `-ArgumentList 'a b'` is one command line; `-ArgumentList a,b` is the array
+      // PowerShell joins with spaces for the program.
+      list = value
+        .split(",")
+        .flatMap((part) => wordsOf(part))
+        .filter((one) => one !== "");
+    } else if (name === "usenewenvironment") fresh = arg;
+  }
+  file ??= positional[0] ?? null;
+  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  if (file === null) return null;
+  return {
+    args: list,
+    prefix: fresh === null ? [] : [START_PROCESS, fresh],
+    program: programName(file),
+  };
+}
+
+/** PowerShell's cmdlet that starts a program in its own process, as `programName` gives it. */
+export const START_PROCESS = "start-process";
 
 /**
  * A command's arguments without its redirections (`git push origin >log 2>&1` gives `push`,

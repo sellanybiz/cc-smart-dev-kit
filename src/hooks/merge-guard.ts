@@ -57,7 +57,10 @@
  * one that opens ready (no `--draft`) and for every `gh pr ready`, `ready` is silent. The
  * policy is read as a merge's is (`resolveGate`, below). **And a crew session opens no pull
  * request at all** (D24): `gh pr create` pushes the branch, so it is denied, whatever `openPr`
- * says (`CC_SMART_DEV_KIT_CREW` is set in a crew session's environment).
+ * says (`CC_SMART_DEV_KIT_CREW` is set in a crew session's environment). That refusal is the
+ * guard's **crew part** (`crewPrAnswer`, `HookSpec.crewLimits`): the frame runs it before
+ * `ownHooks` and before the project's file, so no project — one with no file, or one whose
+ * `ownHooks` names `merge-guard` — can lose it.
  *
  * Every merge in the command is judged, in the order it runs them — `gh pr merge 5 && gh pr
  * merge 6` checks both — and the first the policy does not allow asks, naming its pull
@@ -98,6 +101,8 @@ import {
 import { openPrRefusal } from "../workflow/pr-switches";
 import { type GateRead, resolveGate } from "../workflow/resolve";
 import {
+  COMPUTED_MERGE,
+  computedMergeRisk,
   exactMergeOf,
   isMerge,
   type MergeCall,
@@ -109,7 +114,14 @@ import {
 } from "./after-merge";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
-import { type HookResult, SILENT, stringField, toolDecision, toolInput } from "./io";
+import {
+  type HookInput,
+  type HookResult,
+  SILENT,
+  stringField,
+  toolDecision,
+  toolInput,
+} from "./io";
 import type { Env, HookContext } from "./run";
 
 /** How long the alias lookup may take inside the budget: the same cap it has on its own. */
@@ -120,6 +132,32 @@ export const CREW_PR_REFUSAL =
   "A crew session opens no pull request: `gh pr create` pushes the branch, and a crew session " +
   "never pushes. It commits on its own branch, and the lead merges that branch locally. Stop " +
   "at your commit and say so in your report.";
+
+/**
+ * The guard's crew part (D24): a crew session opens no pull request, whatever `openPr` says.
+ * The forms are the guard's own reader's (`pullRequestOpenings`, and the aliases
+ * `pullRequestCallsWithAliases` expands), so an alias that expands to `gh pr create` is
+ * denied here exactly as it is denied in `mergeGuard`. The frame runs this before `ownHooks`
+ * and before the project's file, so a project with no `cc-smart-dev-kit.json`, or one whose
+ * `ownHooks` names `merge-guard`, keeps the refusal.
+ *
+ * A merge is none of this part's business: `mergeGuard` judges it (and a crew session is
+ * never answered `allow` for one). Not a crew session, or a line with no opening: silence.
+ */
+export function crewPrAnswer(input: HookInput, env: Env, cwd: string): HookResult {
+  if (crewIdOf(env) === null) return SILENT;
+  const command = stringField(toolInput(input).command);
+  if (command === null) return SILENT;
+  // The cheap pure read first, as `mergeGuard` does: an ordinary call finds nothing and pays
+  // nothing, and `gh alias list` is read only for a word that may be an alias.
+  const dialect = dialectOfTool(input.tool_name);
+  if (!requestsPullRequestChange(command, dialect)) return SILENT;
+  if (pullRequestOpenings(command, null, dialect).length > 0) {
+    return toolDecision("deny", CREW_PR_REFUSAL);
+  }
+  const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect);
+  return calls.some((one) => !isMerge(one)) ? toolDecision("deny", CREW_PR_REFUSAL) : SILENT;
+}
 
 /** The question when `openPr` (or something unreadable) does not let this pull request be opened. */
 export function notOpenedByItself(opening: MergeCall, reason: string): string {
@@ -190,18 +228,23 @@ export function mergeGuard(context: HookContext): HookResult {
   const command = stringField(toolInput(input).command);
   // The line in the dialect of the tool that runs it: Bash and PowerShell quote differently.
   const dialect = dialectOfTool(input.tool_name);
+  if (command === null) return SILENT;
   // The cheap pure read first: an ordinary Bash call finds nothing here and pays nothing.
-  if (command === null || !requestsPullRequestChange(command, dialect)) return SILENT;
+  // A computed program whose words name a merge counts (`$GH pr merge 5`).
+  if (!requestsPullRequestChange(command, dialect)) return SILENT;
   const config: CcSmartDevKitConfig | null = project.config;
   // A project that never opted in must not notice the plugin (`.claude/rules/hooks.md`):
-  // the policy it would judge with lives in the project's own file.
+  // the policy it would judge with lives in the project's own file. (A crew session's
+  // opening refusal is not here: the guard's crew part already answered it before the file,
+  // `crewPrAnswer`.)
   if (config === null) return SILENT;
-  // A crew session opens no pull request (D24): denied before any policy is read. The aliases
-  // are read below, and an opening one expands to is denied there.
-  const crew = crewIdOf(env) !== null;
-  if (crew && pullRequestOpenings(command, null, dialect).length > 0) {
-    return toolDecision("deny", CREW_PR_REFUSAL);
+  // A program the line works out when it runs cannot be named: the guard asks.
+  if (computedMergeRisk(command, dialect)) {
+    return toolDecision("ask", notByItself(COMPUTED_MERGE));
   }
+  // The crew bit here is only for the `allow` below: a crew session never merges by itself
+  // (D24), and an `allow` skips auto mode's own rule.
+  const crew = crewIdOf(env) !== null;
   // `--admin` asks whatever the policy says, so it is read first, from the line alone: no
   // policy, no gh, and the question names the real risk even where the policy would ask anyway.
   // (A merge an alias runs is read below, once its expansion is known.)
@@ -234,8 +277,6 @@ export function mergeGuard(context: HookContext): HookResult {
   const calls = pullRequestCallsWithAliases(command, cwd, env, timeFor(ALIAS_LIMIT_MS), dialect);
   const merges = calls.filter((one) => isMerge(one) && !one.disarms);
   const openings = calls.filter((one) => !isMerge(one));
-  // An alias that expands to `gh pr create` is an opening a crew session may not run.
-  if (crew && openings.length > 0) return toolDecision("deny", CREW_PR_REFUSAL);
 
   // The merge policy first, from the base this checkout names: it needs no gh, so a machine
   // without gh hears the real reason — and a command the guard cannot judge at all costs no gh

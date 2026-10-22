@@ -27,10 +27,18 @@
  *   - **a crew session starting crew sessions** (`crew start` while `CC_SMART_DEV_KIT_CREW` is
  *     set) is denied: a crew session hands the need to its lead (D36, D45), in the launcher's
  *     own words (`CREW_NEVER_DOES`).
- *   - **polling** — a `crew list` / `crew status` read or a `claude agents --json` read inside a
- *     `while`/`until`/`for` loop or a `watch`, or next to a `sleep` — is denied: a crew
- *     session's news arrives by itself, through the lead's watch and the monitors, and a loop
- *     spends turns on nothing the watch does not already say.
+ *   - **polling** — a `crew list` / `crew status` read or a `claude agents --json` read that
+ *     repeats over time: inside a `while`/`until`/`do` loop (bash, its condition included) or a
+ *     PowerShell `while`/`do`, or a `watch`, or next to a `sleep`/`Start-Sleep` — is denied: a
+ *     crew session's news arrives by itself, through the lead's watch and the monitors, and a
+ *     loop spends turns on nothing the watch does not already say. A `for`/`foreach` over a
+ *     fixed list with no wait, and a read whose output a later loop walks, are not polls.
+ *
+ * **A launch behind a wrapper or a computed program is judged too.** The reader steps over
+ * `setsid`, `flock` and the other wrappers, and reads `npx`/`bunx`/`pnpm dlx` of
+ * `@anthropic-ai/claude-code` as `claude`. A program the line works out when it runs
+ * (`$(which claude) --bg`, `$CLAUDE -p`) is read from its own words: `--bg` is a background
+ * launch, and `-p` counts only when a word names Claude Code (`cp -p` is no launch).
  *
  * What it never judges: a `claude` subcommand (`claude agents`, `claude stop`, …), a `crew`
  * command that is not `start` or a status read, a `sleep` on its own, and a session's own work.
@@ -61,6 +69,10 @@ import type { Env } from "./run";
 /** One command a line runs: its program, its arguments, and its own words. */
 export interface Step {
   args: string[];
+  /** The program is worked out when the line runs (`$CLAUDE`, `$(which claude)`). */
+  computed: boolean;
+  /** The step is inside a repeating loop (`while`, `until`, `do`) or a `watch`. */
+  inRepeat: boolean;
   program: string;
   words: string[];
 }
@@ -81,13 +93,19 @@ export interface BashReading {
   crewStarts: number;
   /** The `claude` launches it starts, in order. */
   launches: ClaudeLaunch[];
+  /**
+   * The line polls: a status read that repeats (a `while`/`until`/`do` loop or a `watch`),
+   * or a status read next to a wait program (`sleep`, `Start-Sleep`). A `for`/`foreach` over
+   * a fixed list with no wait is not a poll.
+   */
+  poll: boolean;
   /** The crew-status reads it runs: `crew list`, `crew status`, `claude agents --json`. */
   statusReads: number;
   /** Every command the line runs, its inner shell text included (three levels). */
   steps: Step[];
   /** The commands of the line itself, without the inner text of a shell it runs. */
   top: Step[];
-  /** True for a loop keyword (`while`, `until`, `for`) or a `sleep`, anywhere in the line. */
+  /** True for a loop keyword (`while`, `until`, `for`, `foreach`, `do`) or a `sleep`, anywhere in the line (the hook log). */
   waits: boolean;
 }
 
@@ -251,6 +269,44 @@ function startsLoop(words: readonly string[]): boolean {
   return LOOP_KEYWORDS.has((words[0] ?? "").toLowerCase());
 }
 
+/** An open shell loop: a `while`/`until`/`do` repeats; a `for`/`foreach` runs a fixed list. */
+type LoopKind = "fixed" | "repeat";
+
+/** What a walk of one line has open and seen so far. */
+interface WalkState {
+  /** The line holds a loop keyword (`while`, `until`, `for`, `foreach`, `do`). */
+  loops: boolean;
+  /** The bash loops open at this point, innermost last (`done` closes one). */
+  open: LoopKind[];
+  /**
+   * A PowerShell `while` / `do` was seen. Braces cut the line into steps and there is no
+   * `done`, so it holds for the rest of the line: a rare extra poll, never a miss.
+   */
+  powershellRepeat: boolean;
+}
+
+/**
+ * Whether this step runs inside a repeating loop, and the loop state after it. Bash loops
+ * open at `while`/`until`/`for`/`foreach` and close at `done`, so a status read in the
+ * condition (`until <read>; do …`) and in the body both count; a `for`/`foreach` over a
+ * fixed list does not repeat on its own (`F2a-6`). PowerShell has no `done`: its `while` and
+ * `do` count from there to the end of the line.
+ */
+function loopMark(words: readonly string[], dialect: Dialect, state: WalkState): boolean {
+  const first = (words[0] ?? "").toLowerCase();
+  if (dialect === "powershell") {
+    if (first === "while" || first === "do") state.powershellRepeat = true;
+    return state.powershellRepeat;
+  }
+  if (first === "done") {
+    state.open.pop();
+    return state.open.includes("repeat");
+  }
+  if (first === "while" || first === "until") state.open.push("repeat");
+  else if (first === "for" || first === "foreach") state.open.push("fixed");
+  return state.open.includes("repeat");
+}
+
 /** A `cd`, an assignment, or nothing: the shell's own step, never the work a line does. */
 function isShellStep(step: Step): boolean {
   return isAssignmentOnly(step.words) || CHANGE_DIR.has(step.program);
@@ -268,15 +324,23 @@ function walk(
   depth: number,
   top: Step[],
   all: Step[],
-  state: { loops: boolean },
+  state: WalkState,
 ): void {
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
     const words = wordsOf(step.text, dialect);
     if (words.length === 0) continue;
+    // The loop state is read before the program: `done` has none, and it closes a loop.
+    const inRepeat = loopMark(words, dialect, state);
     if (startsLoop(words)) state.loops = true;
     const invocation = invocationOf(words);
     if (invocation === undefined) continue;
-    const read = { args: invocation.args, program: invocation.program, words };
+    const read = {
+      args: invocation.args,
+      computed: invocation.computed,
+      inRepeat,
+      program: invocation.program,
+      words,
+    };
     if (depth === 0) top.push(read);
     all.push(read);
     const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
@@ -286,32 +350,65 @@ function walk(
   }
 }
 
+/** The `claude` launch a computed program's words name, or null. */
+function computedLaunch(step: Step): ClaudeLaunch | null {
+  if (!step.computed) return null;
+  const lower = step.words.map((word) => word.toLowerCase());
+  // `--bg` is Claude Code's own flag; `-p` is common elsewhere (`cp -p`, `mkdir -p`), so it
+  // counts only when a word names Claude Code too (`$(which claude) -p …`).
+  const bg = lower.some((word) => word === "--bg" || word === "--background");
+  const print =
+    lower.some((word) => word === "-p" || word === "--print") &&
+    lower.some((word) => word.includes("claude"));
+  if (!bg && !print) return null;
+  return {
+    effort: optionValue(step.args, "--effort"),
+    form: bg ? "bg" : "print",
+    model: optionValue(step.args, "--model"),
+    prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" "),
+  };
+}
+
 /** What the line does, as the judge reads it. Pure. `dialect` is the tool that runs it. */
 export function readBash(command: string, dialect: Dialect = "bash"): BashReading {
   const top: Step[] = [];
   const steps: Step[] = [];
-  const state = { loops: false };
+  const state: WalkState = { loops: false, open: [], powershellRepeat: false };
   walk(command, dialect, 0, top, steps, state);
   let crewStarts = 0;
   let statusReads = 0;
+  let statusReadsInLoop = 0;
   let waits = state.loops;
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
     if (isCrewStart(step.program, step.args)) crewStarts++;
-    if (isStatusRead(step.program, step.args)) statusReads++;
+    if (isStatusRead(step.program, step.args)) {
+      statusReads++;
+      if (step.inRepeat) statusReadsInLoop++;
+    }
     if (WAIT_PROGRAMS.has(step.program)) waits = true;
     const target = step.program === "watch" ? watchTarget(step.args) : null;
     if (target !== null) {
       const watched = invocationOf(target);
       if (watched !== undefined && isStatusRead(watched.program, watched.args)) {
         statusReads++;
+        // `watch` runs its command again and again: that is the repetition, not a loop.
+        statusReadsInLoop++;
         waits = true;
       }
     }
-    const launch = claudeLaunch(step);
+    const launch = claudeLaunch(step) ?? computedLaunch(step);
     if (launch !== null) launches.push(launch);
   }
-  return { crewStarts, launches, statusReads, steps, top, waits };
+  // A status read repeats over time, or sits next to a wait: a `for`/`foreach` over a fixed
+  // list with no wait is neither, so a `for id in a b; do … status …; done` passes (F2a-6).
+  const poll = statusReadsInLoop > 0 || (sleepsIn(steps) && statusReads > 0);
+  return { crewStarts, launches, poll, statusReads, steps, top, waits };
+}
+
+/** True when the line runs a program that waits (`sleep`, `Start-Sleep`). */
+function sleepsIn(steps: readonly Step[]): boolean {
+  return steps.some((step) => WAIT_PROGRAMS.has(step.program));
 }
 
 /** What a lead never waits on: the project's full check, a CI watch, or a queued job. */
@@ -429,7 +526,7 @@ export function judgeBash(reading: BashReading, context: JudgeContext): BashVerd
     ask ??= verdict;
   }
   if (ask !== null) return ask;
-  if (reading.statusReads > 0 && reading.waits) {
+  if (reading.poll) {
     return { decision: "deny", reason: pollReason(), why: "poll" };
   }
   return null;
@@ -449,9 +546,5 @@ export function commandOf(input: HookInput): null | string {
 
 /** True when the judge judges this line: a launch, a crew start or a poll — its crash domain. */
 export function judgedDomain(reading: BashReading): boolean {
-  return (
-    reading.crewStarts > 0 ||
-    reading.launches.length > 0 ||
-    (reading.statusReads > 0 && reading.waits)
-  );
+  return reading.crewStarts > 0 || reading.launches.length > 0 || reading.poll;
 }

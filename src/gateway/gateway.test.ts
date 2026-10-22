@@ -673,7 +673,7 @@ describe("fallback", () => {
       });
       expect(calls).toHaveLength(1);
       expect(logs).toContain(
-        `WARN omniroute:glm-5.3-flash answered ${status}; returned as a 400 (the backend refused its key) — {"error":{"message":"invalid api key"}}`,
+        `WARN omniroute:glm-5.3-flash answered ${status}; returned as a 424 (the backend refused its key) — {"error":{"message":"invalid api key"}}`,
       );
     }
   });
@@ -1495,6 +1495,201 @@ describe("auto mode's safety check", () => {
       "WARN cc-smart-dev-kit-judge: omniroute:glm-5.3-flash has not passed the judge test, so it judges nothing. Test and set it: cc-smart-dev-kit gateway slot judge <targets>",
       "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5 (safety check) → anthropic 200 0ms fallbacks=0",
     ]);
+  });
+
+  // ─── The default judge: Claude first, the worker's tested targets while it cannot (D44) ───
+
+  /**
+   * No judge chain of the person's. The worker chain holds GLM (first) and DeepSeek, and
+   * `tested` names which of the two passed the judge test.
+   */
+  function claudeFirst(tested: (keyof typeof JUDGE_PROOFS)[], fallback?: boolean): GatewayConfig {
+    const cfg = config();
+    return {
+      ...cfg,
+      ...(fallback === undefined ? {} : { fallback: { "cc-smart-dev-kit-judge": fallback } }),
+      judgeTested: Object.fromEntries(tested.map((target) => [target, JUDGE_PROOFS[target]])),
+      slots: {
+        ...cfg.slots,
+        "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+      },
+    };
+  }
+  const BOTH = ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"] as const;
+
+  it("D44: Claude judges first; its 200 is the answer, byte for byte, and no stand-in is asked", async () => {
+    const { calls, handle } = router([ok], { config: claudeFirst([...BOTH]) });
+    const sent = JSON.stringify(guardBody());
+    const res = await handle(clientRequest({ body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(nth(calls, 0).body).toBe(sent);
+  });
+
+  it("D44: Claude at its limit: the first tested worker target judges, reasoning off, no login", async () => {
+    const { calls, handle, logs } = router([atLimit, ok], { config: claudeFirst([...BOTH]) });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
+    expect(JSON.parse(nth(calls, 1).body ?? "")).toMatchObject({
+      model: "glm-5.3-flash",
+      thinking: { type: "disabled" },
+    });
+    expectNoLogin(nth(calls, 1));
+    expect(logs).toContain(
+      "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5 (safety check) → omniroute:glm-5.3-flash 200 0ms fallbacks=1",
+    );
+  });
+
+  it("D44: Claude down (a 529): the stand-ins judge in the worker chain's order", async () => {
+    const overloaded = () => new Response("busy", { status: 529 });
+    const { calls, handle } = router([overloaded, down, ok], { config: claudeFirst([...BOTH]) });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL, OLLAMA_URL]);
+  });
+
+  it("D44: a worker target that did not pass the judge test never judges", async () => {
+    const { calls, handle } = router([atLimit, ok], {
+      config: claudeFirst(["ollama:deepseek-v4.1-flash"]),
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OLLAMA_URL]);
+  });
+
+  it("D44: no tested worker target: Claude's error goes back as it is", async () => {
+    const { calls, handle } = router([atLimit], { config: claudeFirst([]) });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(429);
+    expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+  });
+
+  it("D44: `fallback judge off` keeps Claude alone, though a worker target passed", async () => {
+    const { calls, handle } = router([atLimit], { config: claudeFirst([...BOTH], false) });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+  });
+
+  it("D44: an error that is not a capacity failure (a 400) is Claude's answer, no stand-in", async () => {
+    const refused = () => new Response("bad request", { status: 400 });
+    const { calls, handle } = router([refused], { config: claudeFirst([...BOTH]) });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("bad request");
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+  });
+
+  it("D44: after Claude failed it rests: the next check goes straight to the stand-in", async () => {
+    const { calls, handle } = router([atLimit, ok, ok], { config: claudeFirst([...BOTH]) });
+    await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL, OMNI_URL]);
+  });
+
+  it("D44: a count_tokens for a check counts tokens on Claude, as before", async () => {
+    const { calls, handle } = router([ok], { config: claudeFirst([...BOTH]) });
+    await handle(
+      clientRequest({
+        body: JSON.stringify(guardBody()),
+        path: "/v1/messages/count_tokens?beta=true",
+      }),
+    );
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://anthropic.test/v1/messages/count_tokens?beta=true",
+    ]);
+  });
+
+  it("D44: a judge chain the person set wins: the worker's tested targets are not used", async () => {
+    const cfg = claudeFirst([...BOTH]);
+    const own: GatewayConfig = {
+      ...cfg,
+      slots: { ...cfg.slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"] },
+    };
+    const { calls, handle } = router([down], { config: own });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(503);
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+  });
+
+  it("D44: a judge chain of the person's with no usable target still wins: Claude alone, the worker's targets stay out", async () => {
+    const cfg = claudeFirst(["omniroute:glm-5.3-flash"]);
+    // The judge chain's one target never passed the test, so it judges nothing (one WARN).
+    const own: GatewayConfig = {
+      ...cfg,
+      slots: { ...cfg.slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"] },
+    };
+    const { calls, handle } = router([atLimit], { config: own });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+  });
+
+  it("D44: a judge chain may hold a claude-… target: Claude judges first, the next target when it cannot", async () => {
+    const cfg = claudeFirst([...BOTH]);
+    const own: GatewayConfig = {
+      ...cfg,
+      slots: {
+        ...cfg.slots,
+        "cc-smart-dev-kit-judge": ["claude-sonnet-5-5", "ollama:deepseek-v4.1-flash"],
+      },
+    };
+    expect(parseConfig(own)).toEqual({ config: own });
+    const first = router([ok], { config: own });
+    const sent = JSON.stringify({ ...guardBody(), model: "claude-sonnet-5-5" });
+    expect((await first.handle(clientRequest({ body: sent }))).status).toBe(200);
+    expect(first.calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(nth(first.calls, 0).body).toBe(sent);
+    const limited = router([atLimit, ok], { config: own });
+    const res = await limited.handle(clientRequest({ body: sent }));
+    expect(res.status).toBe(200);
+    expect(limited.calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OLLAMA_URL]);
+  });
+
+  it("D44: `fallback judge off` considers only the chain's first target: an untested first leaves Claude alone though a tested target follows", async () => {
+    const cfg = claudeFirst(["ollama:deepseek-v4.1-flash"]);
+    // GLM comes first and never passed the test; DeepSeek behind it did. With the switch off
+    // only the first target is in use, so nothing may judge and Claude judges alone.
+    const own: GatewayConfig = {
+      ...cfg,
+      fallback: { "cc-smart-dev-kit-judge": false },
+      slots: {
+        ...cfg.slots,
+        "cc-smart-dev-kit-judge": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+      },
+    };
+    const { calls, handle, logs } = router([atLimit], { config: own });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(logs).toContain(
+      "WARN cc-smart-dev-kit-judge: omniroute:glm-5.3-flash has not passed the judge test, so it judges nothing. Test and set it: cc-smart-dev-kit gateway slot judge <targets>",
+    );
+    // With the switch on, the first tested target (the second in the chain) judges.
+    const on: GatewayConfig = { ...own, fallback: { "cc-smart-dev-kit-judge": true } };
+    const second = router([ok], { config: on });
+    const answered = await second.handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(answered.status).toBe(200);
+    expect(second.calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+  });
+
+  it("D44: a judge backend refusing its key answers a 400 (a check has no deferred tools), and the log says 400", async () => {
+    const cfg = withJudge();
+    const lone: GatewayConfig = {
+      ...cfg,
+      slots: { ...cfg.slots, "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"] },
+    };
+    const { calls, handle, logs } = router([() => new Response("no key", { status: 401 })], {
+      config: lone,
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(400);
+    expect(calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+    expect(logs).toContain(
+      "WARN ollama:deepseek-v4.1-flash answered 401; returned as a 400 (the backend refused its key) — no key",
+    );
   });
 
   it("a request that offers tools is never taken for the check, whatever its system prompt", () => {
@@ -4658,8 +4853,8 @@ describe("Anthropic server tools: the WebSearch request", () => {
     );
 
   /** The router's note, written out by hand; `why` finishes "Claude …". */
-  const noteFor = (why: string) =>
-    `The cc-smart-dev-kit router answered this search, not a search engine: web search runs on Claude, and Claude ${why}. Use the search tool of the Tavily MCP server instead (its tools are named mcp__tavily-websearch__…), if it is set up.`;
+  const noteFor = (tool: string, why: string) =>
+    `The cc-smart-dev-kit router answered this ${tool} request, not Anthropic: ${tool} runs on Claude, and Claude ${why}. Use the Tavily MCP server instead (its tools are named mcp__tavily-websearch__…), if it is set up.`;
 
   /** The text of a streamed answer's one text block, with the events' order checked. */
   function streamedText(stream: string): string {
@@ -4719,6 +4914,21 @@ describe("Anthropic server tools: the WebSearch request", () => {
     expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, ANTHROPIC_URL]);
   });
 
+  it("a web_fetch that cannot run: the note names web_fetch, not a search", async () => {
+    const { handle } = router([() => new Response("busy", { status: 529 })], {
+      config: withChains(),
+    });
+    const res = await handle(
+      clientRequest({
+        body: JSON.stringify(searchBody("claude-sonnet-5-5", "web_fetch_20250910")),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(streamedText(await res.text())).toBe(
+      noteFor("web_fetch", "could not answer now (HTTP 529)"),
+    );
+  });
+
   it("an ordinary request of the same model stays on its slot", async () => {
     const { calls, handle } = router([ok], { config: withChains() });
     await handle(clientRequest({ body: JSON.stringify(chatBody("claude-sonnet-5-5")) }));
@@ -4749,7 +4959,7 @@ describe("Anthropic server tools: the WebSearch request", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream");
     expect(streamedText(await res.text())).toBe(
-      noteFor("is at its usage limit (five_hour); it resets at 2026-10-15 19:00 UTC"),
+      noteFor("web_search", "is at its usage limit (five_hour); it resets at 2026-10-15 19:00 UTC"),
     );
     expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
     expect(logs).toEqual([
@@ -4772,7 +4982,10 @@ describe("Anthropic server tools: the WebSearch request", () => {
     expect(answer).toMatchObject({
       content: [
         {
-          text: noteFor("is at its usage limit (five_hour); it resets at 2026-10-15 19:00 UTC"),
+          text: noteFor(
+            "web_search",
+            "is at its usage limit (five_hour); it resets at 2026-10-15 19:00 UTC",
+          ),
           type: "text",
         },
       ],
@@ -4801,10 +5014,10 @@ describe("Anthropic server tools: the WebSearch request", () => {
       texts.push(streamedText(await res.text()));
     }
     expect(texts).toEqual([
-      noteFor("could not answer now (HTTP 429)"),
-      noteFor("could not answer now (HTTP 529)"),
-      noteFor("could not answer now (HTTP 502)"),
-      noteFor("could not answer now (HTTP 524)"),
+      noteFor("web_search", "could not answer now (HTTP 429)"),
+      noteFor("web_search", "could not answer now (HTTP 529)"),
+      noteFor("web_search", "could not answer now (HTTP 502)"),
+      noteFor("web_search", "could not answer now (HTTP 524)"),
     ]);
   });
 
@@ -4817,7 +5030,9 @@ describe("Anthropic server tools: the WebSearch request", () => {
       clientRequest({ body: JSON.stringify(searchBody("claude-sonnet-5-5")) }),
     );
     expect(res.status).toBe(200);
-    expect(streamedText(await res.text())).toBe(noteFor("could not be reached (no answer came)"));
+    expect(streamedText(await res.text())).toBe(
+      noteFor("web_search", "could not be reached (no answer came)"),
+    );
     expect(logs).toEqual([
       "WARN anthropic did not answer a web_search request (connection reset); the router answered with a note naming Tavily instead",
       "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5-5 → router (server tool web_search; anthropic did not answer) 200 0ms fallbacks=0",
@@ -5329,9 +5544,106 @@ describe("the breaker", () => {
     });
     const res = await drive(clock, handle(sonnet({ stream: false })));
     expect(res.status).toBe(429);
+    // One probe: ollama's rest ended 30 s in. The pass at the hold's own end is not made:
+    // what is left of the hold (0 ms) is under the first-byte time, so it could only rest a
+    // target that works.
     expect(logs).toContain(
-      "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5-5 → breaker(cc-smart-dev-kit-worker) 429 60000ms held probes=2",
+      "2026-10-15T10:00:00.000Z POST /v1/messages claude-sonnet-5-5 → breaker(cc-smart-dev-kit-worker) 429 60000ms held probes=1",
     );
+  });
+
+  it("BREAKER: the last probe of a hold does not rest the target the hold's end cut short", async () => {
+    // Ollama's rest is 0, so it is probed once the hold is a second in. That probe's deadline
+    // is what is left of the hold: its timeout is the router's, not ollama's, and must not
+    // rest a working target for 30 s machine-wide. The first-byte time is short, so the poll
+    // is safely inside the hold.
+    let ollamaCalls = 0;
+    const hanging = () => new Promise<Response>(() => undefined);
+    const { handle } = router(
+      byTarget({
+        [OMNI]: busy("60"),
+        [OLLAMA]: () => {
+          ollamaCalls += 1;
+          return ollamaCalls === 1
+            ? new Response("down", { headers: { "retry-after": "0" }, status: 503 })
+            : hanging();
+        },
+      }),
+      {
+        breaker: true,
+        config: { ...breakerConfig(2000), timeouts: { breakerHoldMs: 2000, firstByteMs: 200 } },
+        now: () => Date.now(),
+      },
+    );
+    const res = await handle(sonnet());
+    expect(res.status).toBe(429);
+    expect(ollamaCalls).toBe(2);
+    const health = (await (
+      await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
+    ).json()) as { cooling: Record<string, number> };
+    expect(Object.keys(health.cooling)).toEqual(["omniroute:glm-5.3-flash"]);
+  });
+
+  it("BREAKER: a probe of a request that does not stream gets a deadline, so a hung target cannot block the breaker", async () => {
+    // Request A opens the breaker with a hold of 0: it answers at once and probes nothing.
+    // Request B does not stream; its last target hangs. Without a deadline, B would hold that
+    // target's one probe for ever, and no request could close it.
+    let current = breakerConfig(0);
+    let ollamaCalls = 0;
+    const hanging = () => new Promise<Response>(() => undefined);
+    const { handle } = router(
+      byTarget({
+        [OMNI]: busy("60"),
+        [OLLAMA]: () => {
+          ollamaCalls += 1;
+          return ollamaCalls === 1
+            ? new Response("down", { headers: { "retry-after": "0" }, status: 503 })
+            : hanging();
+        },
+      }),
+      { breaker: true, getConfig: () => current, now: () => Date.now() },
+    );
+    expect((await handle(sonnet())).status).toBe(429);
+    current = breakerConfig(100);
+    const pending = handle(sonnet({ stream: false }));
+    const answer = await Promise.race([
+      pending,
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 1500)),
+    ]);
+    expect(answer).not.toBe("hung");
+    if (answer !== "hung") expect(answer.status).toBe(429);
+  });
+
+  it("BREAKER: a probe's deadline never passes the end of the hold", async () => {
+    // A target that is not last got `firstByteMs` whatever was left of the hold, so a probe
+    // could outlast the hold by that much. A opens the breaker with a hold of 0 (no probe);
+    // B's hold is 100 ms, and its first target never answers: the probe must be cut inside
+    // that hold, not a second later.
+    let current = breakerConfig(0);
+    let omniCalls = 0;
+    const hanging = () => new Promise<Response>(() => undefined);
+    const { handle } = router(
+      byTarget({
+        [OMNI]: () => {
+          omniCalls += 1;
+          return omniCalls === 1 ? busy("0")() : hanging();
+        },
+        [OLLAMA]: () => new Response("down", { headers: { "retry-after": "60" }, status: 503 }),
+      }),
+      { breaker: true, getConfig: () => current, now: () => Date.now() },
+    );
+    expect((await handle(sonnet())).status).toBe(429);
+    current = breakerConfig(100);
+    // B probes omniroute (first, not last), which never answers.
+    const started = Date.now();
+    const pending = handle(sonnet());
+    const answer = await Promise.race([
+      pending,
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 1500)),
+    ]);
+    expect(answer).not.toBe("hung");
+    expect(Date.now() - started).toBeLessThan(800);
+    if (answer !== "hung") expect(answer.status).toBe(429);
   });
 
   it("a backend that refuses its key, or the request, is not held: the person must fix it", async () => {

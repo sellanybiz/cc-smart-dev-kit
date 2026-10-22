@@ -126,6 +126,48 @@ describe("a raw background session (`claude --bg`)", () => {
   });
 });
 
+describe("F2a-1: a launch behind a wrapper, a package runner or a computed program", () => {
+  test("the wrapper and the package runner are read through", async () => {
+    const { env, repo } = project({});
+    for (const command of [
+      "setsid claude --bg x",
+      "flock /tmp/l claude --bg x",
+      "unbuffer claude --bg x",
+      "npx @anthropic-ai/claude-code --bg x",
+      "bunx @anthropic-ai/claude-code --bg x",
+      "pnpm dlx @anthropic-ai/claude-code --bg x",
+    ]) {
+      const answer = await judge(repo, command, env);
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: "ask" });
+      expect(answer.reason).toContain("cc-smart-dev-kit crew start");
+    }
+  });
+
+  test("a computed program whose words name `--bg` asks, and is refused where nobody answers", async () => {
+    const { env, repo } = project({});
+    const answer = await judge(repo, "$(which claude) --bg x", env);
+    expect(answer.decision).toBe("ask");
+    expect(answer.reason).toContain("cc-smart-dev-kit crew start");
+    const quiet = await judge(repo, "GIT=git; $(which claude) --bg x", {
+      ...env,
+      CLAUDE_CODE_SESSION_ATTENDED: "0",
+    });
+    expect(quiet.decision).toBe("deny");
+    expect(quiet.reason).toContain("Nobody answers a question in `claude -p`");
+  });
+
+  test("a computed program whose words name a print run asks or denies by the model policy", async () => {
+    const { env, repo } = project({});
+    // No model or effort in the words: the policy refuses, exactly as `claude -p` does.
+    expect((await judge(repo, "$(which claude) -p 'do it'", env)).decision).toBe("deny");
+    expect(
+      (await judge(repo, "$(which claude) -p --model opus --effort max 'go'", env)).decision,
+    ).toBe("ask");
+    // `-p` alone belongs to many programs (`cp -p`, `mkdir -p`): not a launch without claude.
+    expect((await judge(repo, "$(which mkdir) -p out", env)).decision).toBeUndefined();
+  });
+});
+
 describe("a print run (`claude -p`) is judged by the launch policy", () => {
   test("no model: denied, naming `--model` and `--effort`", async () => {
     const { env, repo } = project({});
@@ -211,7 +253,6 @@ describe("polling for crew news", () => {
   const denied = [
     "while true; do cc-smart-dev-kit crew list; sleep 10; done",
     "until cc-smart-dev-kit crew status app; do sleep 5; done",
-    "for i in 1 2 3; do cc-smart-dev-kit crew list; done",
     "watch -n 5 cc-smart-dev-kit crew status app",
     "sleep 30 && cc-smart-dev-kit crew list",
     "cc-smart-dev-kit crew list; sleep 60; cc-smart-dev-kit crew list",
@@ -233,6 +274,26 @@ describe("polling for crew news", () => {
     expect((await judge(repo, "cc-smart-dev-kit crew list", env)).decision).toBeUndefined();
     expect((await judge(repo, "claude agents --json", env)).decision).toBeUndefined();
     expect((await judge(repo, "sleep 2", env)).decision).toBeUndefined();
+  });
+
+  test("F2a-6: a `for`/`foreach` over a fixed list with no wait is not a poll", async () => {
+    const { env, repo } = project({});
+    for (const command of [
+      "for id in a b; do cc-smart-dev-kit crew status $id; done",
+      "for i in 1 2 3; do cc-smart-dev-kit crew list; done",
+      // The read feeds the loop, it is not repeated by it.
+      "claude agents --json | jq -r '.[]' | while read id; do echo $id; done",
+    ]) {
+      expect({ command, decision: (await judge(repo, command, env)).decision }).toEqual({
+        command,
+        decision: undefined,
+      });
+    }
+    // A wait in the same fixed loop still makes it a poll.
+    expect(
+      (await judge(repo, "for i in 1 2 3; do cc-smart-dev-kit crew list; sleep 5; done", env))
+        .decision,
+    ).toBe("deny");
   });
 
   test("`crew watch` is the way to wait, not a poll", async () => {
@@ -314,12 +375,22 @@ describe("the judge reads the PowerShell tool too (native Windows)", () => {
     for (const command of [
       "while ($true) { cc-smart-dev-kit crew list }",
       "while ($true) { cc-smart-dev-kit crew list; Start-Sleep 5 }",
-      "foreach ($i in 1..3) { cc-smart-dev-kit crew status app }",
     ]) {
       const answer = await judge(repo, command, env, "PowerShell");
       expect(answer.decision).toBe("deny");
       expect(answer.reason).toContain("polls for crew news");
     }
+    // F2a-6: a `foreach` over a fixed list, with no wait, is not a poll.
+    expect(
+      (
+        await judge(
+          repo,
+          "foreach ($i in 1..3) { cc-smart-dev-kit crew status app }",
+          env,
+          "PowerShell",
+        )
+      ).decision,
+    ).toBeUndefined();
     expect(await judge(repo, "cc-smart-dev-kit crew list", env, "PowerShell")).toEqual({
       decision: undefined,
       reason: "",

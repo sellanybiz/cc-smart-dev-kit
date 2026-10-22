@@ -15,9 +15,10 @@ import { COMMAND } from "../build-info/names";
 /**
  * The hooks the plugin's worktree engine had a project wire itself, as
  * `cc-smart-dev-kit hook <name>`. They retired with the engine (`WORKTREE_ENGINE_RETIRED_IN`
- * in `src/project/config.ts`): `cc-smart-dev-kit hook <name>` now prints the fix and exits 2,
- * `doctor` names a leftover line, and `project init` removes it. Known by name here: the
- * engine's own specs are gone.
+ * in `src/project/config.ts`): `cc-smart-dev-kit hook <name>` now prints the fix and exits 1 —
+ * a non-blocking error on every event, so a leftover `subagent-stop` line never blocks a
+ * subagent's stop (`src/entries/cli.ts`) — `doctor` names a leftover line, and `project init`
+ * removes it. Known by name here: the engine's own specs are gone.
  */
 export const RETIRED_ENGINE_HOOKS = [
   "worktree-create",

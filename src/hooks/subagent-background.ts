@@ -12,11 +12,20 @@
  * offline on 2.1.308 (fake Anthropic, throwaway HOME): a subagent launched in the background
  * appears in its own stop's list, and a foreground subagent's stop lists the main session's
  * own background shell. So the hook keeps only the tasks the ending agent itself started: the
- * ids that appear in its own transcript (`agent_transcript_path`), where a Bash tool result
- * names the background task id and an Agent tool result names the child agent id. The ending
+ * ids its own transcript (`agent_transcript_path`) names in a **tool result of its own tool
+ * call**, where a Bash call's background result says `Command running in background with ID:
+ * <id>` and an Agent call's result says `agentId: <id>` (the contract's row, proved on
+ * 2.1.308). The ending
  * agent's own id is dropped first: every line of its transcript carries it as `agentId`, so a
- * background subagent would otherwise match itself. A task whose id is not in that transcript
- * belongs to another agent, and is none of this one's business.
+ * background subagent would otherwise match itself.
+ *
+ * **The transcript is JSONL, read line by line, and only a tool result counts.** A plain
+ * substring over the whole file is wrong twice over: the parent's background id can appear in
+ * the agent's text (its brief quotes the task it waits on, a file it read names it), and an
+ * id in prose is not work the agent started. So a line is parsed as JSON, a `tool_use` is
+ * remembered by its id and tool name, and a `tool_result` is matched only against the phrase
+ * its own tool writes: a Bash background launch, or an Agent launch's child. A line that is
+ * not JSON is skipped; an unreadable transcript is no block at all.
  *
  * **One block, never two**: the stop a block caused carries `stop_hook_active: true`, and the
  * hook is silent there. The answer is `decision: "block"` with a plain reason and **no
@@ -28,12 +37,22 @@
  * must always be able to finish.
  */
 import { readFileSync } from "node:fs";
+import { AGENT_TOOLS } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { HookContext } from "./run";
 
 /** What the subagent reads when it hands back too early. */
 export const HAND_BACK_REASON =
   "Your background work is still running: wait for it or stop it, then report.";
+
+/**
+ * The id a background Bash call's tool result names (2.1.308: "Command running in background
+ * with ID: bp3zidk61. Output is being written to: …").
+ */
+const BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
+
+/** The id an Agent call's background result names ("… agentId: <id> (internal ID …)"). */
+const AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
 
 /**
  * The ids of the in-flight background tasks the input lists, in order. The contract says the
@@ -51,9 +70,82 @@ export function backgroundTaskIds(input: HookInput): string[] {
   return ids;
 }
 
-/** True when `text` names any of `ids`: the agent itself started those tasks. */
+/** One transcript line as an object, or null when it is blank or not a JSON object. */
+function lineObject(line: string): Record<string, unknown> | null {
+  if (line.trim() === "") return null;
+  try {
+    const value: unknown = JSON.parse(line);
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `message.content` blocks of a transcript line, when it has them. */
+function contentBlocks(line: Record<string, unknown>): Array<Record<string, unknown>> {
+  const message = line.message;
+  if (typeof message !== "object" || message === null || Array.isArray(message)) return [];
+  const content = (message as Record<string, unknown>).content;
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (block): block is Record<string, unknown> =>
+      typeof block === "object" && block !== null && !Array.isArray(block),
+  );
+}
+
+/** A tool result's text: its `content` as a string, or the text blocks of its array. */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => {
+      if (typeof block !== "object" || block === null || Array.isArray(block)) return "";
+      const text = (block as Record<string, unknown>).text;
+      return typeof text === "string" ? text : "";
+    })
+    .join("\n");
+}
+
+/**
+ * True when the agent itself started one of `ids`: an id is counted only in a `tool_result`
+ * of the agent's own Bash call (a background launch's `Command running in background with ID:
+ * <id>`) or Agent call (a launched child's `agentId: <id>`). Nothing else in the transcript
+ * counts — not the brief, not a file it read, and not its own `agentId` on every line.
+ */
 function startedByAgent(text: string, ids: readonly string[]): boolean {
-  return ids.some((id) => text.includes(id));
+  const wanted = new Set(ids);
+  if (wanted.size === 0) return false;
+  /** The tool each `tool_use` named, by its id: only that call's own result can count. */
+  const tools = new Map<string, string>();
+  const results: Array<{ text: string; tool: string | undefined }> = [];
+  for (const raw of text.split("\n")) {
+    const line = lineObject(raw);
+    if (line === null) continue;
+    for (const block of contentBlocks(line)) {
+      if (block.type === "tool_use") {
+        const id = stringField(block.id);
+        const name = stringField(block.name);
+        if (id !== null && name !== null) tools.set(id, name);
+      } else if (block.type === "tool_result") {
+        results.push({
+          text: resultText(block.content),
+          tool: tools.get(stringField(block.tool_use_id) ?? ""),
+        });
+      }
+    }
+  }
+  for (const result of results) {
+    const found =
+      result.tool === "Bash"
+        ? BACKGROUND_ID.exec(result.text)?.[1]
+        : result.tool !== undefined &&
+          (AGENT_TOOLS as readonly string[]).includes(result.tool) &&
+          AGENT_ID.exec(result.text)?.[1];
+    if (typeof found === "string" && wanted.has(found)) return true;
+  }
+  return false;
 }
 
 export function subagentBackground(context: HookContext): HookResult {

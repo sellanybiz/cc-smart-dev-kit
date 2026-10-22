@@ -6,6 +6,12 @@ import { join as join9 } from "path";
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
 
+// src/build-info/names.ts
+var MARKETPLACE = "cc-smart-dev-kit";
+var PLUGIN = "cc-smart-dev-kit";
+var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "cc-smart-dev-kit";
+
 // src/gateway/paths.ts
 import { homedir } from "os";
 import { join } from "path";
@@ -52,6 +58,7 @@ function cliPaths(env = process.env) {
     claudeConfigDir,
     settingsFile: join2(claudeConfigDir, "settings.json"),
     installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
+    pluginCacheDir: join2(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
     knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
     projectsDir: join2(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),
@@ -194,12 +201,6 @@ function startDetached(platform, argv, options) {
 // src/hooks/stop-failure.ts
 import { existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync2 } from "fs";
 import { join as join8 } from "path";
-
-// src/build-info/names.ts
-var MARKETPLACE = "cc-smart-dev-kit";
-var PLUGIN = "cc-smart-dev-kit";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "cc-smart-dev-kit";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {

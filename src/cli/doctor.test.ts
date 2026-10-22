@@ -178,6 +178,19 @@ describe("doctor: claude-mem's start blocks (D23)", () => {
     ]);
   });
 
+  test("F4: a settings file saved with a byte-order mark reads like any other: setup's key is seen", () => {
+    // An editor on Windows saves UTF-8 with a byte order mark, which `JSON.parse` refuses.
+    // Setup reads the file through `readUserJson` and sees the key, so doctor must too — or
+    // it says the key is missing while setup says it is there.
+    const w = world(SEEDED);
+    afterSetup(w.paths);
+    writeFileSync(w.paths.settingsFile, `\uFEFF${readFileSync(w.paths.settingsFile, "utf8")}`);
+    expect(lines(w.paths)).toEqual([
+      `✓ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)`,
+      `✓ Claude Code's task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ${SETTINGS}`,
+    ]);
+  });
+
   test("D23: a person's own value is information, never a failure", () => {
     const w = world(SEEDED);
     afterSetup(w.paths);

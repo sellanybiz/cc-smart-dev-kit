@@ -1,10 +1,13 @@
 import { join, sep } from "node:path";
+import { MARKETPLACE, PLUGIN } from "../build-info/names";
 import { type RouterPaths, routerPaths } from "../gateway/paths";
 
 export interface CliPaths extends RouterPaths {
   claudeConfigDir: string;
   settingsFile: string;
   installedPluginsFile: string;
+  /** Claude Code's installed copy of THIS plugin: `<config dir>/plugins/cache/<marketplace>/<plugin>`. */
+  pluginCacheDir: string;
   /** Claude Code's list of added marketplaces, with where each comes from. */
   knownMarketplacesFile: string;
   /** Claude Code's saved sessions: `<config folder>/projects/<folder>/<session id>.jsonl`. */
@@ -104,6 +107,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     claudeConfigDir,
     settingsFile: join(claudeConfigDir, "settings.json"),
     installedPluginsFile: join(claudeConfigDir, "plugins", "installed_plugins.json"),
+    pluginCacheDir: join(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
     knownMarketplacesFile: join(claudeConfigDir, "plugins", "known_marketplaces.json"),
     projectsDir: join(claudeConfigDir, "projects"),
     userConfigFile: userConfigFile(env, router.home),

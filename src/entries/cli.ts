@@ -400,11 +400,21 @@ async function main(argv: string[]): Promise<number> {
       }
       // A line the retired worktree engine had a project wire: the fix, never the old answer.
       // Read nothing: whatever Claude Code sent on stdin does not change it.
+      //
+      // Exit 1, never 2. Exit 2 is Claude Code's blocking exit (its hooks reference): on
+      // `SubagentStop` it blocks the stop, and nothing here reads `stop_hook_active`, so a
+      // leftover `hook subagent-stop` line would block every subagent's stop for ever. Exit 1
+      // is a non-blocking error on `SubagentStop` (the subagent stops) and on `WorktreeRemove`
+      // (the worktree is kept and the session goes on), and on `WorktreeCreate` any non-zero
+      // exit still fails the creation and shows this line. The rows:
+      // `docs/claude-code-contract.md` § Hooks — the SubagentStop row (its blocking answer
+      // repeats with `stop_hook_active`), the WorktreeCreate row (a failing line stops the
+      // creation and shows its stderr) and the WorktreeRemove row (exit 1 keeps the worktree).
       if (RETIRED_ENGINE_HOOKS.some((retired) => retired === name)) {
         console.error(
           `${COMMAND} hook ${name}: this hook was retired in ${WORKTREE_ENGINE_RETIRED_IN}: remove its line from your settings — \`${COMMAND} project init\` does it`,
         );
-        return 2;
+        return 1;
       }
       // The only hook left is the notifier, which ran above. Every other name is unknown.
       console.error(

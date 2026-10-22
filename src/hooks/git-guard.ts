@@ -30,7 +30,11 @@
  * "ask", never "deny": the person may mean it, and a hook cannot tell. **One exception: a crew
  * session never pushes** (D24). A session the crew launcher started (`CC_SMART_DEV_KIT_CREW`
  * is set in its environment) commits on its own branch and the lead merges it locally, so any
- * `git push` from it is denied, whatever `autoPush` says. Claude Code's background sessions
+ * `git push` from it is denied, whatever `autoPush` says. The refusal is the guard's **crew
+ * part** (`crewPushAnswer`, `HookSpec.crewLimits`): the frame runs it before `ownHooks` and
+ * before the project's file is read, so a project that lists its own `git-guard` in
+ * `ownHooks`, and a project with no `cc-smart-dev-kit.json` at all, cannot lose it. Claude
+ * Code's background sessions
  * push a worktree's branch on their own when the repository has a remote, which is the reason
  * for the rule (`docs/claude-code-contract.md`). Every command of a
  * line is read on its own, through the one shell reader (`src/shell/command.ts`), in the
@@ -41,18 +45,22 @@
  * standard input (`sh <<'EOF' … EOF`, `echo "git push -f" | sh`) are commands. git's own
  * options before the subcommand are read as git reads them (`--config-env x=y`), and one
  * this guard does not know (a newer git's) makes every word after it a possible subcommand.
+ * `git send-pack` and a `git -c alias.x=push x` on the line are pushes, and a program the
+ * line works out when it runs (`$(which git) push`, `$GIT push`) asks when its words name a
+ * push: the guard cannot name the program, so it never stays silent about the push.
  *
- * Known limits: a git alias (`-c alias.x=… x`, or one in the user's config), a `branch -f`,
- * a `checkout -B` and a `switch -C` (they move a branch), brace expansion (`{git,push}`), a
- * program named at run time (`$(…)`, a variable), `-EncodedCommand`, `ssh`, a script file,
- * a `cd` it cannot follow (`cd -`, `cd ~/x`, `cd $DIR`) and a branch it cannot read are not
- * asked about; `git checkout <name>` cannot tell a file from a branch, so it stays silent.
+ * Known limits: a git alias from the person's own config (one set with `-c` on the line is
+ * read), a `branch -f`, a `checkout -B` and a `switch -C` (they move a branch), brace
+ * expansion (`{git,push}`), `-EncodedCommand`, `ssh`, a script file, a `cd` it cannot follow
+ * (`cd -`, `cd ~/x`, `cd $DIR`) and a branch it cannot read are not asked about; `git
+ * checkout <name>` cannot tell a file from a branch, so it stays silent.
  */
 import { isAbsolute, resolve } from "node:path";
 import { crewIdOf } from "../crew/session";
 import {
   CHANGE_DIR,
   type Dialect,
+  dialectOfTool,
   invocationOf,
   isShort,
   MAX_NESTING,
@@ -67,6 +75,14 @@ import {
   wordsOf,
 } from "../shell/command";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
+import {
+  type HookInput,
+  type HookResult,
+  SILENT,
+  stringField,
+  toolDecision,
+  toolInput,
+} from "./io";
 import type { Env } from "./run";
 
 /** The branches asked about when cc-smart-dev-kit.json names none. */
@@ -99,6 +115,31 @@ export const CREW_PUSH_REFUSAL =
   "A crew session never pushes: it commits on its own branch, and the lead merges that branch " +
   "locally (`git merge`). Only the lead's final push reaches the remote, and the person " +
   "approves that one. Stop at your commit and say so in your report.";
+
+/**
+ * The guard's crew part (D24): a crew session's `git push`, in any form the guard's own
+ * detector reads, is denied. One detector — the same `guardVerdict` the guard's `run` uses,
+ * with only the crew rule on — so a spelling that gets past one gets past both; a question
+ * the same line would raise (a `reset --hard` beside it, say) is none of this part's, and
+ * the guard's `run` asks it when the project lets the guard answer at all.
+ *
+ * Not a crew session, or a line with no push: silence, so an ordinary session pays nothing
+ * and every other call goes on through the frame's usual steps.
+ */
+export function crewPushAnswer(input: HookInput, env: Env, cwd: string): HookResult {
+  if (crewIdOf(env) === null) return SILENT;
+  const command = stringField(toolInput(input).command);
+  if (command === null) return SILENT;
+  const verdict = guardVerdict(command, cwd, {
+    // Only the crew rule is on: these values are never reached for a push with `crew` set.
+    protectedBranches: [],
+    pushRules: { crew: true, autoPushAsk: () => null },
+    sharedStash: false,
+    env,
+    dialect: dialectOfTool(input.tool_name),
+  });
+  return verdict.refuse.length === 0 ? SILENT : toolDecision("deny", verdict.refuse.join("\n"));
+}
 
 export interface GuardOptions {
   protectedBranches: string[];
@@ -568,14 +609,55 @@ export function gitCalls(args: readonly string[]): GitCall[] {
   return [];
 }
 
+/**
+ * The question when the line's program is worked out when it runs (`$GIT`, `$(which git)`)
+ * and its words name a push: the guard cannot tell whether it pushes, so it asks.
+ */
+const COMPUTED_PUSH_ASK =
+  "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push …`) if you meant it.";
+
+/** True when a command's words name a push, for a program the reader cannot name. */
+function namesPush(words: readonly string[]): boolean {
+  return words.some((word) => word === "push" || word === "send-pack");
+}
+
+/** True when a command's program is computed and the words of that command name a push. */
+function computedPushIn(command: string, dialect?: Dialect): boolean {
+  return readingsOf(command, dialect).some((reading) =>
+    shellSteps(command, {
+      blindWhenOpen: true,
+      dialect: reading.dialect,
+      joinLines: reading.joinLines,
+    }).some((step) => {
+      const words = wordsOf(step.text, reading.dialect);
+      const invocation = invocationOf(words);
+      return invocation?.computed === true && namesPush(words);
+    }),
+  );
+}
+
 function gitQuestions(args: string[], folder: Folder, run: GuardRun): string[] {
   return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+}
+
+/**
+ * The words a `-c alias.<name>=push` (or `=send-pack`) gives the subcommand it names, or
+ * null when the subcommand is no push alias. `git -c alias.p=push p origin main` pushes.
+ */
+function pushAlias(call: GitCall): string[] | null {
+  const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
+  if (value === null || value === undefined) return null;
+  const words = wordsOf(value);
+  const first = words[0] ?? "";
+  return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 
 function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
   const { options } = run;
   const { rest, sub } = call;
-  if (sub === "push") {
+  const alias = pushAlias(call);
+  // `git send-pack` pushes, and so does an alias a `-c` on the line expands to a push.
+  if (sub === "push" || sub === "send-pack" || alias !== null) {
     const where = folder === null ? null : resolve(folder, ...call.dirs);
     const place: PushPlace = {
       branch: () => (where === null ? undefined : currentBranch(where, run)),
@@ -590,7 +672,12 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
       run.refusals.add(CREW_PUSH_REFUSAL);
       return [];
     }
-    return pushQuestions(rest, place, options.protectedBranches, options.pushRules.autoPushAsk);
+    return pushQuestions(
+      alias === null ? rest : [...alias, ...rest],
+      place,
+      options.protectedBranches,
+      options.pushRules.autoPushAsk,
+    );
   }
   if (sub === "stash") return stashQuestions(rest, options.sharedStash);
   if (sub === "worktree" && rest[0] === "remove") {
@@ -663,12 +750,16 @@ function inspect(
   const { dialect, joinLines } = reading;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
-    const invocation = invocationOf(wordsOf(step.text, dialect));
+    const words = wordsOf(step.text, dialect);
+    const invocation = invocationOf(words);
     if (invocation === undefined) continue;
     const { args, program } = invocation;
     // A redirection (`>log`, `2>&1`) is the shell's: git never sees it as a refspec.
     const operands = withoutRedirections(args);
     if (program === "git") found.push(...gitQuestions(operands, folder, run));
+    // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
+    // guard cannot name it, so a line whose words name a push asks, never stays silent.
+    if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
     if (CHANGE_DIR.has(program)) folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
@@ -715,8 +806,9 @@ export function guardVerdict(command: string, cwd: string, options: GuardOptions
 
 /**
  * True when the command line runs git at all (what the guard asks about when it cannot read
- * its config), in the tool's dialect, or in both when it is not given.
+ * its config), in the tool's dialect, or in both when it is not given. A `$GIT push` counts:
+ * the guard cannot name the program, but a push's words are there.
  */
 export function runsGit(command: string, dialect?: Dialect): boolean {
-  return programsOf(command, dialect).includes("git");
+  return programsOf(command, dialect).includes("git") || computedPushIn(command, dialect);
 }

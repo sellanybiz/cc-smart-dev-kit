@@ -73,26 +73,63 @@ not a project hook: it needs no settings from a project, and it works in every f
     expect(run.stderr).toStartWith("Unknown hook: git-guard\n\nUsage: cc-smart-dev-kit hook <");
   });
 
-  test.each(["worktree-create", "worktree-remove", "subagent-stop"])(
-    "D20: %s was retired: the fix on stderr, nothing on stdout, exit 2",
-    (name) => {
-      const repo = makeRepo();
-      expect(
-        cli(["hook", name], {
-          cwd: repo,
-          stdin: JSON.stringify({ hook_event_name: "WorktreeCreate", cwd: repo, name: "fix/x" }),
-        }),
-      ).toMatchObject({
-        exitCode: 2,
-        stdout: "",
-        stderr: `cc-smart-dev-kit hook ${name}: this hook was retired in 1.0.0: remove its line from your settings — \`cc-smart-dev-kit project init\` does it\n`,
-      });
-      // Nothing was made: Claude Code's creation fails, and says why.
-      expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
-    },
-  );
+  /** The stderr line every retired name prints, whatever event Claude Code ran it on. */
+  const retiredLine = (name: string) =>
+    `cc-smart-dev-kit hook ${name}: this hook was retired in 1.0.0: remove its line from your settings — \`cc-smart-dev-kit project init\` does it\n`;
 
-  test("D20: the exact line a project still wires: through sh, $HOME and the launcher, the fix, exit 2", () => {
+  /** Runs a retired name with the input of one event, in a new repo. */
+  function retired(name: string, event: string, extra: Record<string, unknown>) {
+    const repo = makeRepo();
+    return {
+      repo,
+      run: cli(["hook", name], {
+        cwd: repo,
+        stdin: JSON.stringify({ hook_event_name: event, cwd: repo, ...extra }),
+      }),
+    };
+  }
+
+  // F4: exit 1, never 2. Exit 2 is Claude Code's blocking exit: on `SubagentStop` it blocks
+  // the stop, and nothing here reads `stop_hook_active`, so a leftover `subagent-stop` line
+  // would loop every subagent for ever. Exit 1 is a non-blocking error on `SubagentStop` and
+  // `WorktreeRemove`, and any non-zero exit still fails `WorktreeCreate`
+  // (`docs/claude-code-contract.md` § Hooks: the SubagentStop, WorktreeCreate and
+  // WorktreeRemove rows).
+  test("F4: a retired worktree-create line: exit 1 and the fix on stderr — non-zero still fails the creation", () => {
+    const { repo, run } = retired("worktree-create", "WorktreeCreate", { name: "fix/x" });
+    expect(run).toMatchObject({
+      exitCode: 1,
+      stdout: "",
+      stderr: retiredLine("worktree-create"),
+    });
+    // Nothing was made: Claude Code's creation fails, and says why.
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
+  });
+
+  test("F4: a retired worktree-remove line: exit 1, a non-blocking error — the session goes on", () => {
+    const { run } = retired("worktree-remove", "WorktreeRemove", {
+      worktree_path: "/tmp/app-wt-fix",
+    });
+    expect(run).toMatchObject({
+      exitCode: 1,
+      stdout: "",
+      stderr: retiredLine("worktree-remove"),
+    });
+  });
+
+  test("F4: a retired subagent-stop line never blocks a subagent's stop: exit 1 and the fix on stderr", () => {
+    const { run } = retired("subagent-stop", "SubagentStop", {
+      agent_id: "a1",
+      stop_hook_active: false,
+    });
+    expect(run).toMatchObject({
+      exitCode: 1,
+      stdout: "",
+      stderr: retiredLine("subagent-stop"),
+    });
+  });
+
+  test("F4: the exact line a project still wires: through sh, $HOME and the launcher, the fix, exit 1", () => {
     const repo = makeRepo();
     const home = tempDir("wired-home");
     const configDir = join(home, ".claude");
@@ -147,7 +184,7 @@ not a project hook: it needs no settings from a project, and it works in every f
     expect(run.stderr.toString()).toBe(
       "cc-smart-dev-kit hook worktree-create: this hook was retired in 1.0.0: remove its line from your settings — `cc-smart-dev-kit project init` does it\n",
     );
-    expect(run.exitCode).toBe(2);
+    expect(run.exitCode).toBe(1);
   });
 });
 

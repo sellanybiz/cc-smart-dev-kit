@@ -102,7 +102,7 @@ describe("D33: the repos that still carry a retired piece", () => {
     ]);
   });
 
-  test("D33: sessions in the main checkout and in its worktree count as one repo, read from the main checkout", () => {
+  test("D33: a session in a worktree also has its main checkout read, and only the main one is listed", () => {
     const m = machine();
     const main = repo({
       "cc-smart-dev-kit.json": JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" } }),
@@ -113,6 +113,46 @@ describe("D33: the repos that still carry a retired piece", () => {
     m.session(worktree);
     expect(reposWithRetiredParts(m.paths, cleanGitEnv()).map((found) => found.repo)).toEqual([
       main,
+    ]);
+  });
+
+  test("F4: a worktree's own cc-smart-dev-kit.json and settings are read, and the worktree is named", () => {
+    // A long-lived worktree on an older branch: its file wins over the main checkout's
+    // (`loadProjectConfig`), so its retired field and its engine line are its own findings.
+    const m = machine();
+    const main = repo({
+      "cc-smart-dev-kit.json": JSON.stringify({ worktrees: { base: "main" } }),
+    });
+    const worktree = join(main, ".claude", "worktrees", "topic");
+    git(main, "worktree", "add", "-q", "-b", "topic", worktree);
+    mkdirSync(join(worktree, ".claude"), { recursive: true });
+    writeFileSync(
+      join(worktree, ".claude", "cc-smart-dev-kit.json"),
+      JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" } }),
+    );
+    writeFileSync(join(worktree, ".claude", "settings.json"), JSON.stringify(ENGINE_LINE));
+    m.session(worktree);
+    expect(retiredRepoLines(m.paths, cleanGitEnv())).toEqual([
+      `! ${worktree} (a worktree of ${main}) still has worktrees.prefix in .claude/cc-smart-dev-kit.json and an engine hook line in .claude/settings.json, retired in 1.0.0: cd ${worktree} && cc-smart-dev-kit project init`,
+    ]);
+  });
+
+  test("F4: a project file saved with a byte-order mark reads like any other", () => {
+    // An editor on Windows saves UTF-8 with a byte order mark, which `JSON.parse` refuses.
+    // The one reader, `parseUserJson`, skips it (`src/setup/user-json.ts`): a retired field
+    // in such a file is reported, and a clean one is not called "cannot be read".
+    const m = machine();
+    const bom = "\uFEFF";
+    const retired = repo({
+      "cc-smart-dev-kit.json": `${bom}${JSON.stringify({ worktrees: { base: "main", prefix: "app-wt-" } })}`,
+    });
+    const clean = repo({
+      "cc-smart-dev-kit.json": `${bom}${JSON.stringify({ worktrees: { base: "main" } })}`,
+    });
+    m.session(retired);
+    m.session(clean);
+    expect(retiredRepoLines(m.paths, cleanGitEnv())).toEqual([
+      `! ${retired} still has worktrees.prefix in .claude/cc-smart-dev-kit.json, retired in 1.0.0: cd ${retired} && cc-smart-dev-kit project init`,
     ]);
   });
 

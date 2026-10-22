@@ -72,6 +72,7 @@ import {
   tmuxLineIn,
   tmuxPassthroughOf,
 } from "../setup/tmux";
+import { readUserJson } from "../setup/user-json";
 import { USER_NOTIFY_COMMAND, userNotifyHookState } from "../setup/user-notify-hook";
 import { realTarget } from "../setup/write";
 import { isOlder } from "../update/check";
@@ -113,7 +114,10 @@ type Env = Record<string, string | undefined>;
 function readSettings(file: string): Record<string, unknown> | null {
   if (!existsSync(file)) return null;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    // The one reader of a JSON file a person may have edited: it skips a byte order mark that
+    // an editor on Windows writes, which `JSON.parse` refuses. Setup reads the same file with
+    // it, so doctor and setup can never disagree about a key (`src/setup/user-json.ts`).
+    const parsed: unknown = readUserJson(file);
     return typeof parsed === "object" && parsed !== null
       ? (parsed as Record<string, unknown>)
       : null;

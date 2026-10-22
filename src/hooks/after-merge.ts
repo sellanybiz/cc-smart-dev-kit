@@ -1207,12 +1207,42 @@ export function requestsMerge(command: string, dialect?: Dialect): boolean {
 }
 
 /**
+ * The question when a line's program is worked out when it runs (`$GH`, `$(which gh)`) and
+ * its words name a merge: the guard cannot tell whether it merges a pull request.
+ */
+export const COMPUTED_MERGE =
+  "This command runs a program it works out when it runs, and its words name a merge, so this guard cannot tell whether it merges a pull request. Write the command out in full if you meant it.";
+
+/**
+ * True when a command's program is computed (`$GH`, `$(which gh)`) and the words of that
+ * command name a merge. The one reader of a merge command line answers it for the merge
+ * guard, its fail-closed answers, and every other caller.
+ */
+export function computedMergeRisk(command: string, dialect?: Dialect): boolean {
+  return readingsOf(command, dialect).some((reading) =>
+    shellSteps(command, {
+      blindWhenOpen: true,
+      dialect: reading.dialect,
+      joinLines: reading.joinLines,
+    }).some((step) => {
+      const words = wordsOf(step.text, reading.dialect);
+      const invocation = invocationOf(words);
+      return invocation?.computed === true && words.some((word) => /merge/i.test(word));
+    }),
+  );
+}
+
+/**
  * Did this shell command ask GitHub to merge a pull request, or open or ready one? What the
  * merge guard watches (D16): one cheap read, so an ordinary Bash call finds nothing and pays
- * nothing.
+ * nothing. A computed program whose words name a merge counts: the guard asks rather than
+ * stay silent.
  */
 export function requestsPullRequestChange(command: string, dialect?: Dialect): boolean {
-  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms);
+  return (
+    pullRequestCalls(command, null, dialect).some((one) => !one.disarms) ||
+    computedMergeRisk(command, dialect)
+  );
 }
 
 /**

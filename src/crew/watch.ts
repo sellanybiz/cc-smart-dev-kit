@@ -22,7 +22,9 @@
  * records — a session the kit does not know is the person's own:
  *
  * - it starts the **queued** crew sessions of this lead when a place frees — through the launcher's own
- *   path (`startQueued`), never a second launcher;
+ *   path (`startQueued`), never a second launcher. A queued crew session held by a phase that was
+ *   removed before its work was merged never starts by itself: the watch says so once, and names
+ *   the way to drop the wait;
  * - it **resumes the paused** crew sessions of this lead once the gateway answers again (D42):
  *   one first, the others 30 s apart and only after the router answered a request since, never
  *   while a slot's breaker is open or a Claude limit is current (`src/crew/wait.ts`);
@@ -35,6 +37,7 @@
  * `--once` ends on the next change: where the plugin's monitors do not run, the lead runs it in
  * the background and its end starts the lead's next turn.
  */
+import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
@@ -45,7 +48,7 @@ import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
 import { memoryMbOf } from "./memory";
-import { runningCrew } from "./places";
+import { runningCrew, unmetWaits } from "./places";
 import { startQueued } from "./start";
 import {
   type CrewEvent,
@@ -194,6 +197,26 @@ export function phasesWaitingFor(record: CrewRecord, records: readonly CrewRecor
     if (one.waitsFor.includes(record.phase)) phases.add(one.phase);
   }
   return [...phases].sort();
+}
+
+/**
+ * The one line for a queued crew session held by a phase that was removed before the lead merged
+ * its work; null when no wait of it is such a phase. Nothing releases that wait by itself — the
+ * work it waits for is not on the lead's branch — so the line says so once, and gives the way to
+ * drop the wait: a queued crew session is removed at once, and the phase starts again without it.
+ */
+export function stuckWaitLine(record: CrewRecord, records: readonly CrewRecord[]): null | string {
+  const stuck = unmetWaits(record.waitsFor, records).filter(
+    (wait) => wait.removedUnmerged !== undefined,
+  );
+  if (stuck.length === 0) return null;
+  const phases = stuck
+    .map(
+      (wait) =>
+        `${wait.phase} (${wait.removedUnmerged?.name ?? wait.phase} was removed before its work was merged)`,
+    )
+    .join(", ");
+  return `${record.name}: still waits for ${phases}; it will not start by itself — to drop the wait: ${COMMAND} crew rm "${record.name}", then start ${record.phase} again`;
 }
 
 /** True when `record` holds a place: its session lives and its phase is open. */
@@ -560,10 +583,24 @@ export async function watchPass(
   }
 
   // Crew sessions that wait for a place: start them, oldest first. Each start is state events.
-  const queued = listCrew(ctx.paths.stateDir, repo)
-    .records.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
+  const here = listCrew(ctx.paths.stateDir, repo).records;
+  const queued = here
+    .filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  for (const record of queued) await startQueued(record, ctx, resolved);
+  for (const record of queued) {
+    await startQueued(record, ctx, resolved);
+    // A phase that was removed before its work was merged releases nothing, so this one never
+    // starts by itself: say it once, with the way to drop the wait (a phase that was merged
+    // before its removal started it, and the start's own state event is its line).
+    const waitKey = `${record.id}:wait`;
+    const stuck = stuckWaitLine(record, here);
+    if (stuck !== null && said[waitKey] !== stuck) {
+      say(stuck);
+      said[waitKey] = stuck;
+    } else if (stuck === null) {
+      delete said[waitKey];
+    }
+  }
 
   // Crew sessions that wait out a limit: resume them once the gateway answers again (D42), one
   // at a time, and never while a breaker is open or a limit is current.

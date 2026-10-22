@@ -56,9 +56,13 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   core instructions' "say it when you launch").
 - **`queued` is not an error.** A cap, the free memory or `--waits-for` holds it, and it starts
   by itself when its place frees. Never start it a second time.
-- **`--waits-for <phase,...>`** holds a phase until each of those is merged (or removed). The
+- **`--waits-for <phase,...>`** holds a phase until each of those is merged. The
   watch marks a merged branch and starts the waiting session by itself, cut from your branch
   with the merge in it. A phase the plan adds later is started the moment it is written.
+  **A phase whose crew session you removed before merging its work releases nothing**: the
+  watch tells you once, and the dependent stays queued. Start that phase again and merge it, or
+  drop the wait: `cc-smart-dev-kit crew rm "<waiting crew session>"` (a queued one goes at
+  once), then start the waiting phase again without `--waits-for` it.
 - **`failed`:** read the reason and fix that. `Workspace not trusted`: the person opens the
   repository once with `claude` and accepts the trust prompt.
 

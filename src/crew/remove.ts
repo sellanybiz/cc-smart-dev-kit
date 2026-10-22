@@ -15,7 +15,9 @@
  *      fails does not end the command: the verdict below stops the removal if anything still
  *      works in the worktree;
  *   5. Claude Code's own lock on the worktree is released — it locks the worktree of a session it
- *      started and leaves the lock behind (proved live, L1a.1);
+ *      started and leaves the lock behind (proved live, L1a.1). The lock is what keeps
+ *      `worktrees --clean` and the auto-clean off it, so a refusal after this point locks it
+ *      again with the same reason, and says so when that cannot be done;
  *   6. the kit's own finished-worktree verdict judges the worktree (`src/worktrees/scan.ts`, the
  *      one `worktrees --clean` uses) against the lead's branch, not `origin/<base>`: a crew session's
  *      work is merged locally and never pushed. A worktree that is not finished is kept, with the
@@ -39,8 +41,9 @@ import {
   type WorkOnRef,
   workOnRef,
 } from "../worktrees/scan";
-import { isRefusal } from "./board";
+import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
+import { lastLine } from "./display";
 import {
   actOn,
   CLAUDE_LOCK_PREFIX,
@@ -175,6 +178,7 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
   }
 
   // 5. Claude Code's own lock goes.
+  let releasedReason: null | string = null;
   if (listed !== undefined && locked) {
     const unlock = runGit(repo, ["worktree", "unlock", listed.path], ctx.env, GIT_TIMEOUT_MS);
     if (!unlock.ok) {
@@ -186,8 +190,31 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
         ctx,
       );
     }
+    releasedReason = listed.lockReason ?? "";
     ctx.print(`unlocked ${shown}`);
   }
+
+  // The lock is what keeps `worktrees --clean` and the background clean off the worktree. A
+  // refusal after it was released must not leave the worktree unlocked: lock it again with the
+  // same reason, and say so when that fails. The refusal still stands, and nothing is called gone.
+  const refuseKept = (refusal: Refusal): number => {
+    if (releasedReason !== null && listed !== undefined) {
+      const again = runGit(
+        repo,
+        ["worktree", "lock", "--reason", releasedReason, listed.path],
+        ctx.env,
+        GIT_TIMEOUT_MS,
+      );
+      if (again.ok) {
+        ctx.print(`locked ${shown} again, with the same reason`);
+      } else {
+        ctx.error(
+          `note: ${shown} could not be locked again (${lastLine(again.err)}); lock it yourself if you mean to keep it: git worktree lock ${record.worktree}`,
+        );
+      }
+    }
+    return refuse(refusal, ctx);
+  };
 
   // 6. and 7. The kit's own verdict and removal, judged against the lead's branch.
   if (listed !== undefined) {
@@ -202,23 +229,22 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
         idleLimit: 0,
       }).find((one) => one.state !== "main" && samePath(one.listed.path, record.worktree));
     } catch (error) {
-      return refuse(failure(`crew rm: ${reasonOf(error)}`), ctx);
+      return refuseKept(failure(`crew rm: ${reasonOf(error)}`));
     }
     if (judged === undefined || judged.state === "main") {
       // git lists it and the scan does not: nothing may be called gone that is not.
-      return refuse(failure(`crew rm: ${shown} is listed by git but could not be judged`), ctx);
+      return refuseKept(failure(`crew rm: ${shown} is listed by git but could not be judged`));
     }
     if (judged.state === "gone") {
       pruneWorktrees(repo, ctx.env);
       ctx.print(`forgot ${shown} (its folder was already gone)`);
     } else {
       if (!judged.state.finished) {
-        return refuse(
+        return refuseKept(
           failure(
             `crew rm: ${shown} is kept: ${judged.state.why}`,
             "Fix: clear that, then run crew rm again; it never forces",
           ),
-          ctx,
         );
       }
       const removal = removeWorktree(repo, judged.listed, {
@@ -233,12 +259,11 @@ export async function runCrewRm(ref: string, ctx: CrewContext): Promise<number> 
       });
       for (const said of removal.said) ctx.print(said);
       if (removal.status !== "removed") {
-        return refuse(
+        return refuseKept(
           failure(
             `crew rm: ${shown} was not removed`,
             "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces",
           ),
-          ctx,
         );
       }
     }

@@ -141,6 +141,12 @@ describe("a kit command with CLAUDECODE removed: denied", () => {
     ["dropped for xargs", `echo x | env -u CLAUDECODE xargs ${KIT_LINE}`],
     ["dropped for find -exec", `env -u CLAUDECODE find . -maxdepth 0 -exec ${KIT_LINE} \\;`],
     ["behind time and nohup", `env -u CLAUDECODE nohup time ${KIT_LINE}`],
+    // F2a-2: the drop sits inside another program's arguments, not before the program.
+    ["setsid, the drop inside", `setsid env -u CLAUDECODE ${KIT_LINE}`],
+    ["flock, the drop inside", `flock /tmp/l env -u CLAUDECODE ${KIT_LINE}`],
+    ["find -exec, the drop inside", `find . -maxdepth 0 -exec env -u CLAUDECODE ${KIT_LINE} \\;`],
+    ["find -exec, an assignment inside", `find . -maxdepth 0 -exec CLAUDECODE= ${KIT_LINE} \\;`],
+    ["watch, the drop inside", `watch -n1 env -u CLAUDECODE ${KIT_LINE}`],
     ["sudo resets the environment", `sudo ${KIT_LINE}`],
     ["sudo -E", `sudo -E ${KIT_LINE}`],
     ["su -c", `su -c '${KIT_LINE}' root`],
@@ -212,6 +218,58 @@ describe("a kit command with CLAUDECODE removed: denied", () => {
     expect(answer?.reason).toBe(
       "This runs a cc-smart-dev-kit command with CLAUDECODE removed: it is unset. Claude Code sets CLAUDECODE for the commands it runs, and the commands that change this machine's settings (the workflow gate, the portal, updates) refuse to run while it is set, because they are for the person in their own terminal. Dropping it to get past that is not allowed. If the person wants the command run, they run it themselves.",
     );
+  });
+});
+
+describe("F2a-1: the kit command behind a computed program: asked", () => {
+  const { repo } = makeClone();
+  test.each([
+    `$(which ${KIT}) portal --no-open`,
+    `$(which ${KIT}) workflow set reviewBeforePush false`,
+    `K=${KIT}; $(which $K) doctor`,
+  ])("%s", async (command) => {
+    const answer = await run(shellInput(command, repo));
+    expect(answer?.decision).toBe("ask");
+    expect(answer?.reason).toContain("cannot tell whether it runs it");
+  });
+
+  test("a computed program that names no kit command passes", async () => {
+    expect(await run(shellInput("$(which git) status", repo))).toBeNull();
+  });
+});
+
+describe("F2a-3: PowerShell Start-Process", () => {
+  const { repo } = makeClone();
+  const KIT_LINE = `${KIT} workflow set reviewBeforePush false`;
+  test("the command it runs is read, and a dropped CLAUDECODE is denied", async () => {
+    const dropped = await run(
+      shellInput(
+        `Start-Process -FilePath env -ArgumentList '-u CLAUDECODE ${KIT_LINE}'`,
+        repo,
+        "PowerShell",
+      ),
+    );
+    expect(dropped?.decision).toBe("deny");
+    expect(dropped?.reason).toContain("with CLAUDECODE removed");
+  });
+
+  test("-UseNewEnvironment starts a fresh environment: denied", async () => {
+    for (const command of [
+      `Start-Process -FilePath ${KIT} -ArgumentList 'portal --no-open' -UseNewEnvironment`,
+      `Start-Process ${KIT} 'portal --no-open' -UseNewEnvironment`,
+    ]) {
+      const answer = await run(shellInput(command, repo, "PowerShell"));
+      expect({ command, decision: answer?.decision }).toEqual({ command, decision: "deny" });
+      expect(answer?.reason).toContain("fresh environment");
+    }
+  });
+
+  test("without it, the same command passes", async () => {
+    expect(
+      await run(
+        shellInput(`Start-Process -FilePath ${KIT} -ArgumentList 'doctor'`, repo, "PowerShell"),
+      ),
+    ).toBeNull();
   });
 });
 
@@ -785,6 +843,45 @@ describe("a shell line that writes into the kit's own files: asked", () => {
       const link = join(tempDir("links"), "alias.txt");
       symlinkSync(normal, link);
       expect(await ask(`echo x > ${link}`)).toBeNull();
+    });
+  });
+
+  describe("F2a-4: a folder that is itself a link", () => {
+    test("a write by the real path behind a linked ~/.config asks", async () => {
+      const linked = hookEnv();
+      const real = join(tempDir("real-config"), "config");
+      mkdirSync(join(real, KIT), { recursive: true });
+      const realFile = join(real, KIT, "workflow.json");
+      writeFileSync(realFile, "{}\n");
+      // `~/.config` is a link to `real`, as a dotfiles setup makes it.
+      symlinkSync(real, join(linked.HOME ?? "", ".config"), "dir");
+      const answer = await run(shellInput(`echo '{}' > ${realFile}`, repo), linked);
+      expect(answer?.decision).toBe("ask");
+      expect(answer?.reason).toContain(realFile);
+      const edit = await run(editInput(realFile, repo, "Write"), linked);
+      expect(edit?.decision).toBe("ask");
+    });
+  });
+
+  describe("F2a-5: the installed plugin's own folder", () => {
+    test("a write into it asks, and names it", async () => {
+      const guardFile = join(paths.pluginCacheDir, "1.0.0", "dist", "merge-guard.js");
+      mkdirSync(dirname(guardFile), { recursive: true });
+      writeFileSync(guardFile, "// the guard\n");
+      for (const command of [
+        `cp /tmp/x ${guardFile}`,
+        `echo x > ${guardFile}`,
+        `sed -i s/a/b/ ${guardFile}`,
+      ]) {
+        const answer = await ask(command);
+        expect({ command, decision: answer?.decision }).toEqual({ command, decision: "ask" });
+        expect(answer?.reason).toContain("installed plugin folder");
+        expect(answer?.reason).toContain(guardFile);
+      }
+      const edit = await run(editInput(guardFile, repo, "Write"), env);
+      expect(edit?.decision).toBe("ask");
+      // Claude Code's own commands are how the plugin is installed and updated: never blocked.
+      expect(await ask(`claude plugin update ${KIT}`)).toBeNull();
     });
   });
 

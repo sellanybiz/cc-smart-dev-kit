@@ -79,7 +79,7 @@ describe("shellSegments — where a command ends", () => {
     expect(shellSegments("echo a#b; ls")).toEqual(["echo a#b", " ls"]);
     expect(shellSegments("echo $#; ls")).toEqual(["echo $#", " ls"]);
     // `$(x)#y` is one word: the `#` after its `)` starts no comment.
-    expect(shellSegments("echo $(x)#; ls")).toEqual(["echo $", "x", "#", " ls"]);
+    expect(shellSegments("echo $(x)#; ls")).toEqual(["x", "echo $(x)#", " ls"]);
   });
 
   test("PowerShell: a block comment, a typographic quote, and `--%`", () => {
@@ -346,6 +346,7 @@ describe("invocationOf", () => {
   test("finds the program behind assignments, keywords, redirections and wrappers", () => {
     expect(invocationOf(["CI=1", "sudo", "/usr/bin/gh.exe", "pr"])).toEqual({
       args: ["pr"],
+      computed: false,
       prefix: ["CI=1", "sudo"],
       program: "gh",
     });
@@ -375,12 +376,113 @@ describe("invocationOf", () => {
   test("HK-9: `env -S` splits its string into the command's words", () => {
     expect(invocationOf(["env", "-S", "git push -f", "origin"])).toEqual({
       args: ["push", "-f", "origin"],
+      computed: false,
       prefix: ["env"],
       program: "git",
     });
     expect(invocationOf(["env", "-S-i FOO=1 git push"])?.args).toEqual(["push"]);
     expect(invocationOf(["env", "-iS", "git push"])?.prefix).toEqual(["env", "-i"]);
     expect(invocationOf(["env", "--split-string=git push"])?.program).toBe("git");
+  });
+
+  test("F2a-1: setsid, flock, chrt, taskset, unbuffer and nsenter run the program after them", () => {
+    for (const words of [
+      ["setsid", "git", "push", "-f"],
+      ["flock", "/tmp/l", "git", "push", "-f"],
+      ["flock", "42", "git", "push"],
+      ["chrt", "-f", "50", "git", "push"],
+      ["chrt", "--sched-runtime", "1000", "50", "git", "push"],
+      ["taskset", "-c", "0-3", "git", "push"],
+      ["taskset", "0x3", "git", "push"],
+      ["unbuffer", "git", "push"],
+      ["nsenter", "-t", "1", "-m", "git", "push"],
+    ]) {
+      expect({ program: invocationOf(words)?.program, words }).toEqual({ program: "git", words });
+    }
+  });
+
+  test("F2a-1: `script -c`, `flock -c` and `busybox` read the command inside them", () => {
+    expect(invocationOf(["script", "-qc", "git push -f origin main"])).toEqual({
+      args: ["push", "-f", "origin", "main"],
+      computed: false,
+      prefix: ["script"],
+      program: "git",
+    });
+    expect(invocationOf(["flock", "/tmp/l", "-c", "git push -f"])).toEqual({
+      args: ["push", "-f"],
+      computed: false,
+      prefix: ["flock", "/tmp/l"],
+      program: "git",
+    });
+    expect(invocationOf(["script", "/tmp/log", "git", "push"])?.program).toBe("git");
+    expect(invocationOf(["busybox", "sh", "-c", "git push -f"])?.program).toBe("sh");
+    expect(invocationOf(["busybox", "--list"])).toBeUndefined();
+  });
+
+  test("F2a-1: ksh, mksh and fish run the script they are given with -c", () => {
+    for (const shell of ["ksh", "mksh", "fish"]) {
+      expect(programsOf(`${shell} -c 'git push -f origin main'`)).toEqual([shell, "git"]);
+      expect(programsOf(`busybox ${shell} -c 'git push -f origin main'`)).toEqual([shell, "git"]);
+    }
+  });
+
+  test("F2a-1: npx, bunx and pnpm dlx of @anthropic-ai/claude-code are claude", () => {
+    expect(invocationOf(["npx", "@anthropic-ai/claude-code", "--bg", "x"])).toEqual({
+      args: ["--bg", "x"],
+      computed: false,
+      prefix: [],
+      program: "claude",
+    });
+    expect(invocationOf(["npx", "-y", "@anthropic-ai/claude-code", "--bg"])?.program).toBe(
+      "claude",
+    );
+    expect(invocationOf(["bunx", "@anthropic-ai/claude-code", "--bg"])?.program).toBe("claude");
+    expect(invocationOf(["pnpm", "dlx", "@anthropic-ai/claude-code", "--bg"])?.program).toBe(
+      "claude",
+    );
+    expect(invocationOf(["npx", "-p", "@anthropic-ai/claude-code", "claude", "--bg"])).toEqual({
+      args: ["--bg"],
+      computed: false,
+      prefix: [],
+      program: "claude",
+    });
+    // Any other package is the runner's own: the reader does not guess at what it runs.
+    expect(invocationOf(["npx", "tsc", "--noEmit"])?.program).toBe("npx");
+  });
+
+  test("F2a-1: a program named by an expansion or a substitution is marked computed", () => {
+    expect(invocationOf(wordsOf("$GIT push origin HEAD"))).toEqual({
+      args: ["push", "origin", "HEAD"],
+      computed: true,
+      prefix: [],
+      program: "$git",
+    });
+    expect(invocationOf(wordsOf("$(which git) push --force"))?.computed).toBe(true);
+    expect(invocationOf(wordsOf(`\${GIT} push`))?.computed).toBe(true);
+    expect(invocationOf(wordsOf("`which git` push"))?.computed).toBe(true);
+    expect(invocationOf(wordsOf("echo $(which git)"))?.computed).toBe(false);
+  });
+
+  test("F2a-3: Start-Process runs what -FilePath and -ArgumentList name", () => {
+    const one = (line: string) => invocationOf(wordsOf(line, "powershell"));
+    expect(one("Start-Process -FilePath git -ArgumentList 'push -f origin main'")).toEqual({
+      args: ["push", "-f", "origin", "main"],
+      computed: false,
+      prefix: [],
+      program: "git",
+    });
+    expect(one("Start-Process git 'push -f origin main'")).toEqual({
+      args: ["push", "-f", "origin", "main"],
+      computed: false,
+      prefix: [],
+      program: "git",
+    });
+    expect(one("Start-Process cc-smart-dev-kit -ArgumentList portal -UseNewEnvironment")).toEqual({
+      args: ["portal"],
+      computed: false,
+      prefix: ["start-process", "-UseNewEnvironment"],
+      program: "cc-smart-dev-kit",
+    });
   });
 });
 
