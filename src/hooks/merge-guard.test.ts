@@ -21,6 +21,7 @@ import {
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
+import { locateCheckout } from "../project/resolve";
 import {
   commitConfig,
   hookEnv,
@@ -2136,6 +2137,32 @@ describe("CC8: a crew session is never asked before a merge", () => {
       reason: CREW_MERGE_REFUSAL,
     });
     expect((await decide(env, prepared.repo, "gh mg"))?.decision).toBe("ask");
+  });
+
+  test("a broken or too new file: a person is asked, a crew session gets silence, never a question", async () => {
+    // The belt behind the crew part: the crew part has already refused every merge it can
+    // read, so a line left over (one that lands nothing) must not fall into the fail-closed
+    // ask — nobody is at the machine to answer it.
+    const { env, repo } = ready();
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const context = { env, nowMs: 0, paths: cliPaths(env) };
+    const call = input(repo, "gh pr merge 7");
+    const reason = "the project's file needs a newer plugin";
+    const asked = await mergeGuardHook.onConfigProblem?.(
+      reason,
+      call,
+      "PreToolUse",
+      checkout,
+      context,
+    );
+    expect(JSON.parse(asked?.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    expect(
+      await mergeGuardHook.onConfigProblem?.(reason, call, "PreToolUse", checkout, {
+        ...context,
+        env: { ...env, ...CREW },
+      }),
+    ).toEqual({});
   });
 });
 

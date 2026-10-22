@@ -908,7 +908,7 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
   });
 
   test("a file that needs a newer plugin does not soften them either", async () => {
-    const { crew, repo } = await world({ requires: ">=99" });
+    const { crew, env, repo } = await world({ requires: ">=99" });
     await expectRefused(crew, repo);
     // CC8: a heavy command beside that same file is refused, not asked (`job-route`'s own
     // answer, which is `alwaysOn` and reads the file only for the route).
@@ -919,6 +919,11 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
       "cannot check whether this project routes heavy commands",
     );
     expect(output.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
+    // A line the merge guard leaves alone (a `--disable-auto` lands nothing) gets silence: it
+    // is no merge request for either answer, so no question goes to anyone.
+    const disable = shell(repo, "gh pr merge 7 --disable-auto");
+    expect(await runHook(mergeGuardHook, disable, crew)).toEqual({});
+    expect(await runHook(mergeGuardHook, disable, env)).toEqual({});
   });
 
   test("a computed `$GH pr create` and `$GIT push` are denied too: no file, and whatever ownHooks says (F5-1)", async () => {

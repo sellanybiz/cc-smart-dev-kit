@@ -206,7 +206,12 @@ export const gitGuardHook: HookSpec = {
 export const mergeGuardHook: HookSpec = {
   name: "merge-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
+  onConfigProblem: (message, input, _event, _checkout, context) => {
+    // A crew session is never asked (D36). Its crew part has already refused every merge and
+    // opening it can read; a line left over may run (a `--disable-auto`, which merges
+    // nothing), and no merge this guard would stop can be silent there. So a broken or too
+    // new file gives a crew session silence, never a question nobody answers.
+    if (crewIdOf(context.env) !== null) return SILENT;
     const command = stringField(toolInput(input).command);
     return command !== null && requestsPullRequestChange(command)
       ? toolDecision("ask", cannotCheck("whether this merge may happen by itself", message))
