@@ -74,6 +74,8 @@ even then.
 One function runs them, in this order, for every reader (`checkCcSmartDevKitConfig`: a file on
 disk, the file committed on a branch, the object `workflow set --project` writes):
 
+(The file committed on a branch is read by `readCommittedConfig` in `src/project/resolve.ts`: from `origin/<branch>` through git, never a working copy, so a session cannot change the policy a guard judges by editing a file; a ref that is not there is `found: false`, and the caller asks the person.)
+
 1. Read only `requires`. When the running plugin is outside the range, throw
    `CcSmartDevKitVersionError`, whose message names the update command.
 2. Then the retired fields (`RETIRED_WORKTREE_FIELDS`): each one present is named, with the

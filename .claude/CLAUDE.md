@@ -69,6 +69,7 @@ the first time you use it.
 | `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`; the servers' names alone in `names.ts`, which the router bundle reads), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), what `mcp status` reports (`status.ts`), `doctor`'s lines (`doctor.ts`), and what setup takes back of a server it retired — Serena's registration, context file and records (`retired.ts`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
 | `src/crew/` | The lead and its crew (`docs/design.md` § Lead and the crew): the command and its arguments (`command.ts`, `args.ts`, `usage.ts`), the store (`store.ts`), the start with its brief, the caps and the queue (`start.ts`, `brief.ts`, `places.ts`), what a crew session says (`step.ts`, `report.ts`, `diff.ts`, `self-watch.ts`, `memory.ts`, `transcript.ts`, `telemetry.ts`), what the lead hears and answers (`watch.ts`, `answer.ts`), the board and the end of a crew session (`board.ts`, `end.ts`, `remove.ts`), and the view of Claude Code's own commands (`claude.ts`, `agents.ts`). |
+| `src/models/` | The launch policy's one home (`launch-policy.ts`): which model and effort a subagent or a crew session runs on, the crew kinds, `UI_POLICY` (D50), the premium tiers the agent guard judges. |
 | `src/worktrees/` | The `cc-smart-dev-kit worktrees` command: the finished-worktree verdict (`verdict.ts`), the machine's facts (`machine-facts.ts`), the scan and removal (`scan.ts`), and the `.worktreeinclude` copy the crew launcher uses (`include.ts`). |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
 | `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the StopFailure usage-limit alert, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the shape of a subagent's worktree (`subagent-worktree.ts`); `specs.ts` lists them all. Each hook's entry is in `src/entries/`. |
@@ -131,6 +132,7 @@ Each rule loads itself when you touch a file it covers.
 - `README.md` — for users: install, commands, `cc-smart-dev-kit.json`.
 - `docs/design.md` — how the parts fit, and why.
 - `docs/roadmap.md` — the phases, done and ahead.
+- `.claude/plans/` and `.claude/research/` — the plan being built and the research behind it; each moves to its `archive/` folder when it is decided or done.
 - `docs/claude-code-contract.md` — every Claude Code behaviour the plugin relies on, the
   version it was last proved on, and how.
 - `docs/gateway.md` — the AI gateway: how it routes, what it changes and never changes,
