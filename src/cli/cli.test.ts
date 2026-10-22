@@ -1003,7 +1003,9 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ MCP servers        2 passed, 1 note",
         // Tavily is optional: without a key its server is skipped, never a failure.
         `  ${tavilyDoctorSkipped(home)}`,
-        "✓ Browser            6 passed",
+        "✓ Browser            6 passed, 1 note",
+        // Chrome closed is the state a restart leaves: the first browser call starts it.
+        '  · Google Chrome is not running: the first browser call starts it in the "claude-code" profile',
         "✓ Alerts and limits  1 passed, 1 note",
         "  · retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
         // The gateway is optional: never set up is information, not a failure.

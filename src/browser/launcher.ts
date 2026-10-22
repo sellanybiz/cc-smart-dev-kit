@@ -23,6 +23,15 @@
  *   comes from the person's own file (`browser/token.ts`) and goes into the child's ENVIRONMENT
  *   only: `argv` is world-readable (`/proc`), and `~/.claude.json` reaches no secret.
  *
+ * IT STARTS THE PERSON'S CHROME WHEN NONE IS RUNNING
+ *   Extension mode connects by handing a page to Chrome, and the MCP starts Chrome itself only
+ *   when it finds it closed — detached, with its output ignored, and with no check of whether it
+ *   came up. A machine restart leaves Chrome closed, and a session the Claude daemon starts has no
+ *   `DISPLAY` (measured 2026-10-23), so that start died unseen and the MCP waited its full 30 s.
+ *   So this launcher starts the Chrome `chrome.ts` finds, with the `claude-code` profile, on the
+ *   person's desktop (`chrome-start.ts`), and goes on once Chrome's singleton lock is there. What
+ *   cannot start is one plain line naming the one step — never a 30-second wait.
+ *
  * THE COSTS THE OWNER ACCEPTED (both upstream, neither planned to change)
  *   - Every connection brings the `claude-code` window to the front and switches its active tab:
  *     microsoft/playwright#42343, closed as not planned.
@@ -46,7 +55,8 @@ import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { ensurePrivateDir } from "../machine/private-dir";
 import { MCP_VERSIONS } from "../mcp/versions";
-import { type ChromeDeps, CLAUDE_CODE_PROFILE, claudeCodeProfileOn } from "./chrome";
+import { type ChromeDeps, connectPrerequisites } from "./chrome";
+import { type DesktopEnvironment, ensureChromeRunning, type StartChrome } from "./chrome-start";
 import { BROWSER_TOKEN_ENV, type BrowserToken, readBrowserToken } from "./token";
 
 /** Oldest files are deleted once the output folder grows past this (the MCP's own limit). */
@@ -76,6 +86,18 @@ export interface BrowserMcpDeps {
   ) => McpChild;
   /** Chrome's files on this machine: where the `claude-code` profile is (`claudeCodeProfileOn`). */
   chrome: ChromeDeps & { home: string; platform: NodeJS.Platform };
+  /**
+   * This process's environment: the environment of a Chrome this launcher starts (it inherits
+   * HOME, PATH and the rest, as a program the person starts does).
+   */
+  env: Record<string, string | undefined>;
+  /**
+   * The person's desktop: `desktopEnvironment` from this environment and the user manager's. It is
+   * built by the caller, so its system call is the caller's bounded one (`runDesktopLookup`).
+   */
+  desktop: () => DesktopEnvironment;
+  /** Starts the person's Chrome, detached; the launcher waits for its singleton lock. */
+  startChrome: StartChrome;
   log: (line: string) => void;
   /** Finds `bunx` (or any command) on PATH. */
   which: (command: string) => null | string;
@@ -83,6 +105,10 @@ export interface BrowserMcpDeps {
   readToken?: (paths: CliPaths) => BrowserToken;
   /** The pinned `@playwright/mcp` package, `name@version`. */
   package?: string;
+  /** How long a started Chrome gets to come up; a test makes it short. */
+  chromeLimitMs?: number;
+  /** Waits between readiness questions; a test hands in its own. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** One of the launcher's own options, or undefined. */
@@ -170,6 +196,36 @@ export async function runBrowserMcp(
     return 2;
   }
 
+  // What the connect step needs, from the files — Chrome, the profile, the extension in it — is
+  // answered here first. One of them missing is one plain line; without this the MCP waits its own
+  // 30-second deadline and ends in a message about the extension and the token, naming neither
+  // what is really missing nor the one command that fixes it.
+  const ready = connectPrerequisites(deps.chrome);
+  if (!ready.ok) {
+    deps.log(ready.why);
+    return 2;
+  }
+
+  // Chrome not running — the state a machine restart leaves — is started here, on the person's
+  // desktop, and the MCP is started once Chrome's singleton lock is there. A session the Claude
+  // daemon starts has no DISPLAY, and the MCP's own Chrome start would die unseen and end in its
+  // generic 30-second failure; a start that cannot work is one plain line instead.
+  const chrome = await ensureChromeRunning(
+    { chrome: ready.chrome, profileDirName: ready.profile.dirName, userDataDir: ready.userDataDir },
+    {
+      chrome: deps.chrome,
+      desktop: deps.desktop,
+      env: deps.env,
+      startChrome: deps.startChrome,
+      ...(deps.chromeLimitMs === undefined ? {} : { limitMs: deps.chromeLimitMs }),
+      ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
+    },
+  );
+  if (!chrome.ok) {
+    deps.log(chrome.why);
+    return 2;
+  }
+
   // Everything the browser saves goes here, and it can hold a page of a signed-in session: its
   // owner only. The MCP writes into this folder; it is made private before it starts.
   ensurePrivateDir(options.outputDir, deps.log);
@@ -177,10 +233,7 @@ export async function runBrowserMcp(
   const bunx = deps.which("bunx");
   const head = bunx === null ? [process.execPath, "x"] : [bunx];
   const packageName = deps.package ?? `@playwright/mcp@${MCP_VERSIONS.playwright}`;
-  // The folder `doctor` names. No profile yet: the plugin's own name, so the MCP's own error
-  // names the profile `browser setup` makes.
-  const profileDirName = claudeCodeProfileOn(deps.chrome)?.dirName ?? CLAUDE_CODE_PROFILE;
-  const child = deps.spawn(browserMcpArgv(head, options, packageName, profileDirName), {
+  const child = deps.spawn(browserMcpArgv(head, options, packageName, ready.profile.dirName), {
     // A folder the plugin owns, never the session's: no project's bunfig.toml, `.env` or
     // node_modules reaches the child that holds the token.
     cwd: options.outputDir,

@@ -33,6 +33,7 @@ import {
   type ChromeDeps,
   CLAUDE_CODE_PROFILE,
   chromeCandidates,
+  chromeMayBeRunning,
   chromeUserDataDir,
   extensionVersion,
   findChrome,
@@ -156,6 +157,23 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
       ok: true,
       text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is at ${profile.dir} (found by ${how})`,
     }),
+  );
+
+  // Chrome closed is the state a machine restart leaves, and it is no longer a failure: the first
+  // browser call starts Chrome itself (the launcher, `chrome-start.ts`). The same answer the
+  // launcher asks, so `doctor` and a session can never disagree about it.
+  checks.push(
+    chromeMayBeRunning(userDataDir, deps.platform, deps)
+      ? line({
+          ok: true,
+          info: true,
+          text: "Google Chrome is running: the browser connects to it",
+        })
+      : line({
+          ok: true,
+          info: true,
+          text: `Google Chrome is not running: the first browser call starts it in the "${profile.dirName}" profile`,
+        }),
   );
 
   const installed = isExtensionInstalledInProfile(profile.dir, deps);
