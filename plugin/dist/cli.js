@@ -26576,14 +26576,19 @@ function jobsPaths(home) {
 }
 var DEFAULT_RESERVE_GB = 22;
 var DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
+var DEFAULT_CPU_WEIGHT = 20;
+var DEFAULT_IO_WEIGHT = 20;
 var absolutePath = string2().min(1).refine((path) => isAbsolute3(path), "must be an absolute path");
+var weightSchema = union([literal(0), literal("off"), number2().int().min(1).max(1e4)]);
 var jobsMachineConfigSchema = strictObject({
   stateDir: absolutePath.optional(),
   budgetGb: number2().int().min(1).optional(),
   reserveGb: number2().int().min(0).optional(),
   sharedDirs: array(absolutePath).optional(),
   launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional()
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
+  cpuWeight: weightSchema.optional(),
+  ioWeight: weightSchema.optional()
 });
 
 class JobsConfigError extends Error {
@@ -26608,6 +26613,17 @@ function loadJobsConfig(file) {
     throw new JobsConfigError(`Invalid ${file}: ${issues.join("; ")}`);
   }
   return parsed.data;
+}
+function weightOf(value, fallback) {
+  if (value === "off")
+    return 0;
+  return value ?? fallback;
+}
+function cpuWeightOf(config) {
+  return weightOf(config.cpuWeight, DEFAULT_CPU_WEIGHT);
+}
+function ioWeightOf(config) {
+  return weightOf(config.ioWeight, DEFAULT_IO_WEIGHT);
 }
 
 // src/jobs/memory.ts
@@ -26709,10 +26725,21 @@ function machineMemory(facts) {
 function machineBudgetGb(totalBytes, reserveGb, largestGb) {
   return Math.max(largestGb, Math.floor(totalBytes / GIB) - reserveGb);
 }
-function userSliceCgroup(uid, slice) {
+function sliceChain(slice) {
   const parts = slice.replace(/\.slice$/, "").split("-");
-  const chain = parts.map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`);
-  return `/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service/${chain.join("/")}`;
+  return parts.map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`);
+}
+function userManagerCgroup(uid) {
+  return `/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service`;
+}
+function userSliceCgroup(uid, slice) {
+  return `${userManagerCgroup(uid)}/${sliceChain(slice).join("/")}`;
+}
+function userManagerControllers(read, uid) {
+  const text = read(`/sys/fs/cgroup${userManagerCgroup(uid)}/cgroup.controllers`);
+  if (text === null)
+    return null;
+  return text.trim().split(/\s+/).filter((name) => name !== "");
 }
 function sliceBytes(read, uid, slice) {
   return cgroupNumber(read(`/sys/fs/cgroup${userSliceCgroup(uid, slice)}/memory.current`));
@@ -38113,13 +38140,13 @@ function chooseLaunch2(facts) {
   if (!facts.hasSystemdRun) {
     return {
       mode: "choom",
-      note: "no `systemd-run` here: the job runs with its kill mark only, no memory group"
+      note: "no `systemd-run` here: the job runs with its kill mark only, no memory group or CPU and I/O priority"
     };
   }
   if (!facts.hasUserRuntimeDir) {
     return {
       mode: "choom",
-      note: "no systemd user manager here: the job runs with its kill mark only, no memory group"
+      note: "no systemd user manager here: the job runs with its kill mark only, no memory group or CPU and I/O priority"
     };
   }
   if (facts.probeScope(true))
@@ -38128,7 +38155,7 @@ function chooseLaunch2(facts) {
     return { mode: "scope", oomPolicy: false };
   return {
     mode: "choom",
-    note: "systemd could not start a scope here (no user session bus?): the job runs with its kill mark only, no memory group"
+    note: "systemd could not start a scope here (no user session bus?): the job runs with its kill mark only, no memory group or CPU and I/O priority"
   };
 }
 function scopeSwitches(slice, oomPolicy) {
@@ -38212,15 +38239,17 @@ function sliceMemoryMax(budgetGb, jobGb) {
   return `${String(Math.max(Math.floor(budgetGb), Math.ceil(jobGb)))}G`;
 }
 function ceilingArgv(slice, memoryMax) {
-  return [
-    "systemctl",
-    "--user",
-    "set-property",
-    "--runtime",
-    slice,
-    `MemoryMax=${memoryMax}`,
-    "MemorySwapMax=0"
+  return setPropertyArgv(slice, `MemoryMax=${memoryMax}`, "MemorySwapMax=0");
+}
+function setPropertyArgv(slice, ...properties) {
+  return ["systemctl", "--user", "set-property", "--runtime", slice, ...properties];
+}
+function weightsArgv(slice, weights) {
+  const properties = [
+    ...weights.cpu === undefined ? [] : [`CPUWeight=${String(weights.cpu)}`],
+    ...weights.io === undefined ? [] : [`IOWeight=${String(weights.io)}`]
   ];
+  return properties.length === 0 ? null : setPropertyArgv(slice, ...properties);
 }
 var FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"];
 var LEFTOVER_GRACE_MS = 2000;
@@ -38323,6 +38352,14 @@ function realLaunchFacts(slice, timeoutMs = SYSTEMD_TIMEOUT_MS) {
 function realSliceControl(read, timeoutMs = SYSTEMD_TIMEOUT_MS) {
   return {
     setMemoryMax: (slice, value) => exitsZero(ceilingArgv(slice, value), timeoutMs),
+    setWeights: (slice, weights) => {
+      const argv = weightsArgv(slice, weights);
+      return argv === null || exitsZero(argv, timeoutMs);
+    },
+    controllers: () => {
+      const uid = process.getuid?.();
+      return uid === undefined ? null : userManagerControllers(read, uid);
+    },
     controlGroup: (slice) => {
       const uid = process.getuid?.();
       return uid === undefined ? null : userSliceCgroup(uid, slice);
@@ -38381,6 +38418,23 @@ async function runNested(request, deps) {
     reservation.release();
   }
 }
+function setSliceWeights(request, deps) {
+  if (request.cpuWeight <= 0 && request.ioWeight <= 0)
+    return;
+  const controllers = deps.slice.controllers();
+  const weights = {
+    ...request.cpuWeight > 0 && controllers?.includes("cpu") === true ? { cpu: request.cpuWeight } : {},
+    ...request.ioWeight > 0 && controllers?.includes("io") === true ? { io: request.ioWeight } : {}
+  };
+  if (weights.cpu === undefined && weights.io === undefined)
+    return;
+  const named = weights.cpu !== undefined && weights.io !== undefined ? "CPU and I/O weights" : weights.cpu !== undefined ? "CPU weight" : "I/O weight";
+  for (const slice of sliceChain(request.slice)) {
+    if (!deps.slice.setWeights(slice, weights)) {
+      deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
+    }
+  }
+}
 async function runJob(request, deps) {
   const { command, gb, kind, pid, spec } = request;
   if (await deps.isNested())
@@ -38409,6 +38463,7 @@ async function runJob(request, deps) {
       if (!deps.slice.setMemoryMax(request.slice, memoryMax)) {
         deps.say(`could not set ${request.slice} MemoryMax=${memoryMax}: the job runs without the slice's ceiling`);
       }
+      setSliceWeights(request, deps);
       const group = deps.slice.controlGroup(request.slice);
       eventsPath = group === null ? null : `/sys/fs/cgroup${group}/memory.events`;
       scopeUnit = unitName(request.slice, kind, pid, request.startedAt);
@@ -38436,6 +38491,33 @@ function machineBudget(config, memory) {
   return {
     gb,
     why: `${Math.floor(total / GIB)} GB of memory less ${reserve} GB kept for everything else`
+  };
+}
+function weightState(controller, value, config, platform, controllers) {
+  if (value === 0)
+    return { value: null, why: "jobs.json turns it off." };
+  if (platform !== "linux") {
+    return { value: null, why: "only a Linux systemd user manager has weights." };
+  }
+  if (config.launch === "plain") {
+    return { value: null, why: "jobs.json sets launch: plain." };
+  }
+  if (controllers === null)
+    return { value: null, why: "no systemd user manager answers here." };
+  if (!controllers.includes(controller)) {
+    return {
+      value: null,
+      why: `the user manager was not given the ${controller} controller. An administrator adds ${controller} to Delegate= for user@.service, then restarts the user manager.`
+    };
+  }
+  return { value };
+}
+function weightsState(config, ctx) {
+  const uid = process.getuid?.();
+  const controllers = ctx.memory.platform === "linux" && uid !== undefined ? userManagerControllers(ctx.memory.read, uid) : null;
+  return {
+    cpu: weightState("cpu", cpuWeightOf(config), config, ctx.memory.platform, controllers),
+    io: weightState("io", ioWeightOf(config), config, ctx.memory.platform, controllers)
   };
 }
 function openStores(ctx, config, onNote) {
@@ -38527,10 +38609,22 @@ async function readJobs(ctx) {
       totalGb: memory.totalBytes / GIB
     },
     notes: [...notes, ...opened.notes],
-    stores
+    slice: config.slice ?? DEFAULT_SLICE,
+    stores,
+    weights: weightsState(config, ctx)
   };
 }
 var WINDOWS_NO_CEILING = "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
+function weightLines(read) {
+  const lines = [];
+  for (const [name, state] of [
+    ["CPU priority", read.weights.cpu],
+    ["Disk I/O priority", read.weights.io]
+  ]) {
+    lines.push(state.value === null ? `${name}: not set: ${state.why ?? "no weight is in force."}` : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; the desktop and the sessions go first under load).`);
+  }
+  return lines;
+}
 function statusLines2(read, home, now) {
   const lines = [];
   const limit = read.memory.limitDir === null ? "" : ` (a memory limit of its group: ${tildify(read.memory.limitDir, home)})`;
@@ -38539,6 +38633,7 @@ function statusLines2(read, home, now) {
   lines.push(`Budget for heavy jobs here: ${read.budget.gb} GB (${read.budget.why}).`);
   if (read.memory.platform === "win32")
     lines.push(WINDOWS_NO_CEILING);
+  lines.push(...weightLines(read));
   for (const store of read.stores) {
     const title = store.label === "this machine" ? `This machine (${tildify(store.dir, home)})` : `Shared folder ${store.dir}`;
     if (store.note !== undefined) {
@@ -38567,7 +38662,8 @@ Commands:
                  Its output, exit code and signals pass through. --exclusive: at
                  most one job with that name at a time, in order. --kind, or
                  --exclusive, or both.
-  status         Who holds memory, who waits, and how much is free.
+  status         Who holds memory, who waits, how much is free, and the CPU
+                 and disk I/O weights of the heavy slices (or why one is not set).
   kinds          The kinds of heavy job, and what each reserves.
 
 How it works: docs/jobs.md in the plugin's repo.`;
@@ -38700,6 +38796,8 @@ ${USAGE3}`);
       pid: process.pid,
       checkout: ctx.cwd,
       slice,
+      cpuWeight: cpuWeightOf(config),
+      ioWeight: ioWeightOf(config),
       startedAt: now()
     }, {
       isNested: () => nestedIn(),

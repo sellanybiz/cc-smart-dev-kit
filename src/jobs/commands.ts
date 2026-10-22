@@ -15,7 +15,14 @@ import { COMMAND } from "../build-info";
 import { resolveProject } from "../project/resolve";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
 import { toolCallOfArgv } from "./classify";
-import { DEFAULT_SLICE, type JobsMachineConfig, jobsPaths, loadJobsConfig } from "./config";
+import {
+  cpuWeightOf,
+  DEFAULT_SLICE,
+  ioWeightOf,
+  type JobsMachineConfig,
+  jobsPaths,
+  loadJobsConfig,
+} from "./config";
 import { type Kinds, mergeKinds, reservedGb, workerCount } from "./kinds";
 import {
   exitCodeOf,
@@ -39,7 +46,8 @@ Commands:
                  Its output, exit code and signals pass through. --exclusive: at
                  most one job with that name at a time, in order. --kind, or
                  --exclusive, or both.
-  status         Who holds memory, who waits, and how much is free.
+  status         Who holds memory, who waits, how much is free, and the CPU
+                 and disk I/O weights of the heavy slices (or why one is not set).
   kinds          The kinds of heavy job, and what each reserves.
 
 How it works: docs/jobs.md in the plugin's repo.`;
@@ -194,6 +202,8 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         pid: process.pid,
         checkout: ctx.cwd,
         slice,
+        cpuWeight: cpuWeightOf(config),
+        ioWeight: ioWeightOf(config),
         startedAt: now(),
       },
       {

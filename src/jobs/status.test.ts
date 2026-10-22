@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
+import { userManagerCgroup } from "./memory";
 import { holderText } from "./queue";
 import type { JobContext } from "./status";
 import { jobsAnswer, jobsFingerprint, readJobs, statusLines } from "./status";
@@ -16,14 +17,21 @@ import { leaseStore } from "./store";
 /** The memory this machine reports: Linux's own fields, so the numbers are fixed. */
 const MEMINFO = "MemTotal: 33554432 kB\nMemAvailable: 16777216 kB\n";
 
+/** The user manager's delegated controllers, as this machine's file lists them: no io. */
+const CONTROLLERS = `/sys/fs/cgroup${userManagerCgroup(process.getuid?.() ?? 0)}/cgroup.controllers`;
+
 /** A job context on a temp home worth 32 GB, with 16 GB free. */
-function world(): { ctx: JobContext; dir: string; home: string } {
+function world(config: Record<string, unknown> = {}): {
+  ctx: JobContext;
+  dir: string;
+  home: string;
+} {
   const home = tempDir("jobs-status");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
   writeFileSync(
     join(home, ".config", "cc-smart-dev-kit", "jobs.json"),
-    `${JSON.stringify({ budgetGb: 10 })}\n`,
+    `${JSON.stringify({ budgetGb: 10, ...config })}\n`,
   );
   const dir = join(home, ".local", "share", "cc-smart-dev-kit", "jobs");
   mkdirSync(join(dir, "leases"), { recursive: true });
@@ -34,7 +42,11 @@ function world(): { ctx: JobContext; dir: string; home: string } {
     memory: {
       freemem: () => 16 * 1024 ** 3,
       platform: "linux",
-      read: (path) => (path === "/proc/meminfo" ? MEMINFO : null),
+      read: (path) => {
+        if (path === "/proc/meminfo") return MEMINFO;
+        if (path === CONTROLLERS) return "cpu memory pids\n";
+        return null;
+      },
       totalmem: () => 32 * 1024 ** 3,
     },
     paths,
@@ -105,6 +117,13 @@ describe("the jobs reader", () => {
           where: "machine",
         },
       ],
+      weights: {
+        cpu: { value: 20 },
+        io: {
+          value: null,
+          why: "the user manager was not given the io controller. An administrator adds io to Delegate= for user@.service, then restarts the user manager.",
+        },
+      },
     });
   });
 
@@ -121,12 +140,54 @@ describe("the jobs reader", () => {
     const lines = statusLines(read, world1.home, Date.UTC(2026, 9, 22, 12, 0, 0));
     expect(lines[0]).toBe("Memory: 32 GB, 16 GB free now.");
     expect(lines[1]).toBe("Budget for heavy jobs here: 10 GB (set in jobs.json).");
-    expect(lines[2]).toContain(": 6 of 10 GB free");
-    expect(lines[3]).toContain(
+    expect(lines[2]).toBe(
+      "CPU priority: weight 20 on cc-smart-dev-kit-heavy.slice and the slices above it (systemd's default is 100; the desktop and the sessions go first under load).",
+    );
+    expect(lines[3]).toBe(
+      "Disk I/O priority: not set: the user manager was not given the io controller. An administrator adds io to Delegate= for user@.service, then restarts the user manager.",
+    );
+    expect(lines[4]).toContain(": 6 of 10 GB free");
+    expect(lines[5]).toContain(
       "4 GB held by my-host: build, bunx tsc --noEmit in /home/user/my-app",
     );
-    expect(lines[3]).toContain("(pid 4242)");
-    expect(lines).toHaveLength(4);
+    expect(lines[5]).toContain("(pid 4242)");
+    expect(lines).toHaveLength(6);
+  });
+
+  test("a jobs.json weight overrides the default, and 0 or off leaves systemd's own", async () => {
+    const overridden = world({ cpuWeight: 50, ioWeight: 5 });
+    const read = await readJobs(overridden.ctx);
+    expect(read.weights.cpu).toEqual({ value: 50 });
+    // io has no controller here, so its own value is not in force: the controller wins.
+    expect(read.weights.io.value).toBeNull();
+    const off = world({ cpuWeight: 0, ioWeight: "off" });
+    const offRead = await readJobs(off.ctx);
+    expect(offRead.weights.cpu).toEqual({ value: null, why: "jobs.json turns it off." });
+    expect(offRead.weights.io).toEqual({ value: null, why: "jobs.json turns it off." });
+    const plain = world({ launch: "plain" });
+    expect((await readJobs(plain.ctx)).weights.cpu).toEqual({
+      value: null,
+      why: "jobs.json sets launch: plain.",
+    });
+  });
+
+  test("no user manager: the weights are not set, and the line says so", async () => {
+    const world1 = world();
+    const noManager: JobContext = {
+      ...world1.ctx,
+      memory: {
+        ...world1.ctx.memory,
+        read: (path) => (path === "/proc/meminfo" ? MEMINFO : null),
+      },
+    };
+    const read = await readJobs(noManager);
+    expect(read.weights).toEqual({
+      cpu: { value: null, why: "no systemd user manager answers here." },
+      io: { value: null, why: "no systemd user manager answers here." },
+    });
+    expect(statusLines(read, world1.home, Date.now())).toContain(
+      "CPU priority: not set: no systemd user manager answers here.",
+    );
   });
 
   test("a store that cannot be read is one note, never a crash", async () => {

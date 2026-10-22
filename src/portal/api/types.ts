@@ -28,7 +28,7 @@ import {
 } from "../../gateway/history-read";
 import type { BreakerRecord, FallbackRecord, LimitRecord } from "../../gateway/limit-state";
 import type { GuardAsk } from "../../hooks/ask-log";
-import type { JobsAnswer } from "../../jobs/status";
+import type { JobsAnswer, JobWeightState, JobWeightsState } from "../../jobs/status";
 import type { FlowReport } from "../../sessions/flow";
 import type { LastCheck } from "../../update/state";
 import type { ActionName, ActionResult } from "../actions";
@@ -63,6 +63,8 @@ export type {
   GuardAsk,
   HistoryKeys,
   JobsAnswer,
+  JobWeightState,
+  JobWeightsState,
   LastCheck,
   LimitRecord,
   LimitRow,

@@ -34,6 +34,7 @@ import {
   sliceMemoryMax,
   spawnAndWait,
   unitName,
+  weightsArgv,
 } from "./launch";
 import { type JobDeps, type JobRequest, runJob } from "./run";
 import type { WindowsFacts } from "./windows";
@@ -73,7 +74,7 @@ describe("chooseLaunch", () => {
     const { facts: f, probes } = facts({}, () => false);
     expect(chooseLaunch(f)).toEqual({
       mode: "choom",
-      note: "systemd could not start a scope here (no user session bus?): the job runs with its kill mark only, no memory group",
+      note: "systemd could not start a scope here (no user session bus?): the job runs with its kill mark only, no memory group or CPU and I/O priority",
     });
     expect(probes).toEqual([true, false]);
   });
@@ -82,7 +83,7 @@ describe("chooseLaunch", () => {
     const noDir = facts({ hasUserRuntimeDir: false }, () => true);
     expect(chooseLaunch(noDir.facts)).toEqual({
       mode: "choom",
-      note: "no systemd user manager here: the job runs with its kill mark only, no memory group",
+      note: "no systemd user manager here: the job runs with its kill mark only, no memory group or CPU and I/O priority",
     });
     expect(noDir.probes).toEqual([]);
     const noRun = facts({ hasSystemdRun: false }, () => true);
@@ -525,11 +526,23 @@ describe("systemd probes never hang", () => {
       const started = Date.now();
       expect(realLaunchFacts(SLICE, 200).probeScope(true)).toBe(false);
       expect(realSliceControl(() => null, 200).setMemoryMax(SLICE, "8G")).toBe(false);
+      expect(realSliceControl(() => null, 200).setWeights(SLICE, { cpu: 20 })).toBe(false);
+      // No weight to set: no call, and no failure.
+      expect(realSliceControl(() => null, 200).setWeights(SLICE, {})).toBe(true);
       realScope(SLICE, "cc-smart-dev-kit-heavy-tsc-1-a.scope", () => null, 200)?.kill("SIGTERM");
-      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(Date.now() - started).toBeLessThan(4_000);
     } finally {
       restore();
     }
+  });
+
+  test("the controllers come from the user manager's own cgroup file", () => {
+    const uid = process.getuid?.();
+    if (uid === undefined) return; // Windows: no user manager and no getuid
+    const path = `/sys/fs/cgroup/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service/cgroup.controllers`;
+    const control = realSliceControl((read) => (read === path ? "cpu memory pids\n" : null), 200);
+    expect(control.controllers()).toEqual(["cpu", "memory", "pids"]);
+    expect(realSliceControl(() => null, 200).controllers()).toBeNull();
   });
 });
 
@@ -591,6 +604,7 @@ function deps(
     },
     say: (line) => r.said.push(line),
     slice: {
+      controllers: () => ["cpu", "memory", "pids"],
       controlGroup: (slice) => `/user.slice/x/${slice}`,
       readFile: (path) => {
         r.events.push(`read ${path}`);
@@ -601,6 +615,14 @@ function deps(
       },
       setMemoryMax: (slice, value) => {
         r.events.push(`set ${slice} MemoryMax=${value}`);
+        return true;
+      },
+      setWeights: (slice, weights) => {
+        const properties = [
+          ...(weights.cpu === undefined ? [] : [`CPUWeight=${String(weights.cpu)}`]),
+          ...(weights.io === undefined ? [] : [`IOWeight=${String(weights.io)}`]),
+        ];
+        r.events.push(`weights ${slice} ${properties.join(" ")}`);
         return true;
       },
     },
@@ -618,7 +640,9 @@ function testRun(): KindSpec {
 const request: JobRequest = {
   checkout: "/home/user/app-wt-x",
   command: ["vitest", "run", "src/a.test.ts"],
+  cpuWeight: 20,
   gb: 8,
+  ioWeight: 20,
   kind: "test:run",
   spec: testRun(),
   pid: 4242,
@@ -629,13 +653,18 @@ const request: JobRequest = {
 const tsc: Partial<JobRequest> = { command: ["tsgo"], kind: "tsc", spec: { gb: 8 } };
 
 describe("runJob", () => {
-  test("reserves, probes, sets the ceiling, runs once in the scope, then gives back", async () => {
+  test("reserves, probes, sets the ceiling and the weights, runs once in the scope, then gives back", async () => {
     const r = recorder();
     expect(await runJob(request, deps(r, { code: 0, oom: [2, 2] }))).toBe(0);
     expect(r.events).toEqual([
       "acquire test:run 8 GB pid 4242 in /home/user/app-wt-x: vitest run src/a.test.ts",
       "probe",
       "set cc-smart-dev-kit-heavy.slice MemoryMax=40G",
+      "weights cc.slice CPUWeight=20",
+      "weights cc-smart.slice CPUWeight=20",
+      "weights cc-smart-dev.slice CPUWeight=20",
+      "weights cc-smart-dev-kit.slice CPUWeight=20",
+      "weights cc-smart-dev-kit-heavy.slice CPUWeight=20",
       "read /sys/fs/cgroup/user.slice/x/cc-smart-dev-kit-heavy.slice/memory.events",
       "run in cc-smart-dev-kit-heavy-test-run-4242-zzz.scope",
       "read /sys/fs/cgroup/user.slice/x/cc-smart-dev-kit-heavy.slice/memory.events",
@@ -790,11 +819,14 @@ describe("runJob", () => {
     });
     await runJob({ ...request, ...tsc }, noManager);
     expect(r.runs).toEqual([["choom", "-n", "900", "--", "tsgo"]]);
-    expect(r.events.some((event) => event.startsWith("set ") || event.startsWith("read "))).toBe(
-      false,
-    );
+    expect(
+      r.events.some(
+        (event) =>
+          event.startsWith("set ") || event.startsWith("weights ") || event.startsWith("read "),
+      ),
+    ).toBe(false);
     expect(r.said).toContain(
-      "no systemd user manager here: the job runs with its kill mark only, no memory group",
+      "no systemd user manager here: the job runs with its kill mark only, no memory group or CPU and I/O priority",
     );
   });
 
@@ -832,5 +864,145 @@ describe("runJob", () => {
     const failing = deps(r, { run: () => Promise.reject(new Error("spawn exploded")) });
     await expect(runJob(request, failing)).rejects.toThrow("spawn exploded");
     expect(r.events.at(-1)).toBe("release");
+  });
+});
+
+// A weight, never a quota: the slice keeps a low share of CPU and disk I/O while the
+// machine is busy, and every core of an idle one. systemd shares them between sibling
+// slices, so the whole chain carries the weight.
+describe("the heavy slices' CPU and I/O weights", () => {
+  test("one set-property call carries both weights, in systemd's own form", () => {
+    expect(weightsArgv(SLICE, { cpu: 20, io: 20 })).toEqual([
+      "systemctl",
+      "--user",
+      "set-property",
+      "--runtime",
+      "cc-smart-dev-kit-heavy.slice",
+      "CPUWeight=20",
+      "IOWeight=20",
+    ]);
+    expect(weightsArgv(SLICE, { io: 7 })).toEqual([
+      "systemctl",
+      "--user",
+      "set-property",
+      "--runtime",
+      "cc-smart-dev-kit-heavy.slice",
+      "IOWeight=7",
+    ]);
+    expect(weightsArgv(SLICE, {})).toBeNull();
+  });
+
+  test("every slice of the chain carries both weights when both controllers are there", async () => {
+    const r = recorder();
+    const base = deps(r);
+    await runJob(
+      { ...request, ...tsc },
+      { ...base, slice: { ...base.slice, controllers: () => ["cpu", "io", "memory", "pids"] } },
+    );
+    expect(r.events.filter((event) => event.startsWith("weights "))).toEqual([
+      "weights cc.slice CPUWeight=20 IOWeight=20",
+      "weights cc-smart.slice CPUWeight=20 IOWeight=20",
+      "weights cc-smart-dev.slice CPUWeight=20 IOWeight=20",
+      "weights cc-smart-dev-kit.slice CPUWeight=20 IOWeight=20",
+      "weights cc-smart-dev-kit-heavy.slice CPUWeight=20 IOWeight=20",
+    ]);
+  });
+
+  test("a controller the user manager was not given skips its weight, and the job still runs", async () => {
+    // The user manager systemd ships delegates pids, memory and cpu: no io.
+    const r = recorder();
+    const base = deps(r);
+    await runJob(
+      { ...request, ...tsc },
+      { ...base, slice: { ...base.slice, controllers: () => ["cpu", "memory", "pids"] } },
+    );
+    expect(r.events.filter((event) => event.startsWith("weights "))).toEqual([
+      "weights cc.slice CPUWeight=20",
+      "weights cc-smart.slice CPUWeight=20",
+      "weights cc-smart-dev.slice CPUWeight=20",
+      "weights cc-smart-dev-kit.slice CPUWeight=20",
+      "weights cc-smart-dev-kit-heavy.slice CPUWeight=20",
+    ]);
+    expect(r.runs[0]?.[0]).toBe("systemd-run");
+    const noCpu = recorder();
+    const noCpuBase = deps(noCpu);
+    await runJob(
+      { ...request, ...tsc },
+      { ...noCpuBase, slice: { ...noCpuBase.slice, controllers: () => ["io", "memory", "pids"] } },
+    );
+    expect(noCpu.events.filter((event) => event.startsWith("weights "))[0]).toBe(
+      "weights cc.slice IOWeight=20",
+    );
+  });
+
+  test("no controller at all (no user manager) sets no weight, and the job still runs", async () => {
+    const r = recorder();
+    const base = deps(r);
+    await runJob(
+      { ...request, ...tsc },
+      { ...base, slice: { ...base.slice, controllers: () => null } },
+    );
+    expect(r.events.some((event) => event.startsWith("weights "))).toBe(false);
+    expect(r.runs[0]?.[0]).toBe("systemd-run");
+  });
+
+  test("a jobs.json value overrides the default; 0 leaves systemd's own default", async () => {
+    const overridden = recorder();
+    await runJob({ ...request, ...tsc, cpuWeight: 50, ioWeight: 7 }, deps(overridden));
+    // 50 is not the default 20: the request carries what jobs.json resolved.
+    expect(overridden.events.filter((event) => event.startsWith("weights "))[0]).toBe(
+      "weights cc.slice CPUWeight=50",
+    );
+    expect(overridden.events.filter((event) => event.startsWith("weights "))[1]).toBe(
+      "weights cc-smart.slice CPUWeight=50",
+    );
+    const off = recorder();
+    const offBase = deps(off);
+    await runJob(
+      { ...request, ...tsc, cpuWeight: 0, ioWeight: 7 },
+      {
+        ...offBase,
+        slice: { ...offBase.slice, controllers: () => ["cpu", "io", "memory", "pids"] },
+      },
+    );
+    expect(off.events.filter((event) => event.startsWith("weights "))[0]).toBe(
+      "weights cc.slice IOWeight=7",
+    );
+    const bothOff = recorder();
+    await runJob({ ...request, ...tsc, cpuWeight: 0, ioWeight: 0 }, deps(bothOff));
+    expect(bothOff.events.some((event) => event.startsWith("weights "))).toBe(false);
+  });
+
+  test("a weight systemd refuses is one line, and the job runs without priority there", async () => {
+    const r = recorder();
+    const base = deps(r);
+    await runJob(
+      { ...request, ...tsc },
+      { ...base, slice: { ...base.slice, setWeights: () => false } },
+    );
+    expect(r.said).toContain(
+      "could not set the CPU weight on cc-smart-dev-kit-heavy.slice: the job runs without priority there",
+    );
+    expect(r.runs).toHaveLength(1);
+  });
+
+  test("a choom or plain launch carries no weight at all", async () => {
+    const choom = recorder();
+    await runJob(
+      { ...request, ...tsc },
+      deps(choom, {
+        launchFacts: () => ({
+          hasChoom: true,
+          hasSystemdRun: true,
+          hasUserRuntimeDir: false,
+          platform: "linux",
+          probeScope: () => true,
+        }),
+      }),
+    );
+    expect(choom.events.some((event) => event.startsWith("weights "))).toBe(false);
+    const plain = recorder();
+    await runJob({ ...request, ...tsc }, deps(plain, { launchFacts: () => null }));
+    expect(plain.events.some((event) => event.startsWith("weights "))).toBe(false);
   });
 });

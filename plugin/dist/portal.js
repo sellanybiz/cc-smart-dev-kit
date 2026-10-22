@@ -23988,14 +23988,19 @@ function jobsPaths(home) {
 }
 var DEFAULT_RESERVE_GB = 22;
 var DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
+var DEFAULT_CPU_WEIGHT = 20;
+var DEFAULT_IO_WEIGHT = 20;
 var absolutePath = string2().min(1).refine((path) => isAbsolute3(path), "must be an absolute path");
+var weightSchema = union([literal(0), literal("off"), number2().int().min(1).max(1e4)]);
 var jobsMachineConfigSchema = strictObject({
   stateDir: absolutePath.optional(),
   budgetGb: number2().int().min(1).optional(),
   reserveGb: number2().int().min(0).optional(),
   sharedDirs: array(absolutePath).optional(),
   launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional()
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
+  cpuWeight: weightSchema.optional(),
+  ioWeight: weightSchema.optional()
 });
 
 class JobsConfigError extends Error {
@@ -24020,6 +24025,17 @@ function loadJobsConfig(file) {
     throw new JobsConfigError(`Invalid ${file}: ${issues.join("; ")}`);
   }
   return parsed.data;
+}
+function weightOf(value, fallback) {
+  if (value === "off")
+    return 0;
+  return value ?? fallback;
+}
+function cpuWeightOf(config) {
+  return weightOf(config.cpuWeight, DEFAULT_CPU_WEIGHT);
+}
+function ioWeightOf(config) {
+  return weightOf(config.ioWeight, DEFAULT_IO_WEIGHT);
 }
 
 // src/jobs/memory.ts
@@ -24121,10 +24137,21 @@ function machineMemory(facts) {
 function machineBudgetGb(totalBytes, reserveGb, largestGb) {
   return Math.max(largestGb, Math.floor(totalBytes / GIB) - reserveGb);
 }
-function userSliceCgroup(uid, slice) {
+function sliceChain(slice) {
   const parts = slice.replace(/\.slice$/, "").split("-");
-  const chain = parts.map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`);
-  return `/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service/${chain.join("/")}`;
+  return parts.map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`);
+}
+function userManagerCgroup(uid) {
+  return `/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service`;
+}
+function userSliceCgroup(uid, slice) {
+  return `${userManagerCgroup(uid)}/${sliceChain(slice).join("/")}`;
+}
+function userManagerControllers(read, uid) {
+  const text = read(`/sys/fs/cgroup${userManagerCgroup(uid)}/cgroup.controllers`);
+  if (text === null)
+    return null;
+  return text.trim().split(/\s+/).filter((name) => name !== "");
 }
 function sliceBytes(read, uid, slice) {
   return cgroupNumber(read(`/sys/fs/cgroup${userSliceCgroup(uid, slice)}/memory.current`));
@@ -31097,6 +31124,33 @@ function machineBudget(config, memory) {
     why: `${Math.floor(total / GIB)} GB of memory less ${reserve} GB kept for everything else`
   };
 }
+function weightState(controller, value, config, platform, controllers) {
+  if (value === 0)
+    return { value: null, why: "jobs.json turns it off." };
+  if (platform !== "linux") {
+    return { value: null, why: "only a Linux systemd user manager has weights." };
+  }
+  if (config.launch === "plain") {
+    return { value: null, why: "jobs.json sets launch: plain." };
+  }
+  if (controllers === null)
+    return { value: null, why: "no systemd user manager answers here." };
+  if (!controllers.includes(controller)) {
+    return {
+      value: null,
+      why: `the user manager was not given the ${controller} controller. An administrator adds ${controller} to Delegate= for user@.service, then restarts the user manager.`
+    };
+  }
+  return { value };
+}
+function weightsState(config, ctx) {
+  const uid = process.getuid?.();
+  const controllers = ctx.memory.platform === "linux" && uid !== undefined ? userManagerControllers(ctx.memory.read, uid) : null;
+  return {
+    cpu: weightState("cpu", cpuWeightOf(config), config, ctx.memory.platform, controllers),
+    io: weightState("io", ioWeightOf(config), config, ctx.memory.platform, controllers)
+  };
+}
 function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
   try {
@@ -31211,7 +31265,9 @@ async function readJobs(ctx) {
       totalGb: memory.totalBytes / GIB
     },
     notes: [...notes, ...opened.notes],
-    stores
+    slice: config.slice ?? DEFAULT_SLICE,
+    stores,
+    weights: weightsState(config, ctx)
   };
 }
 function jobsAnswer(read) {
@@ -31227,13 +31283,24 @@ function jobsAnswer(read) {
       ...store.note === undefined ? {} : { note: store.note },
       waiting: store.waiting.map(itemOf),
       where: store.label === "this machine" ? "machine" : store.dir
-    }))
+    })),
+    weights: read.weights
   };
 }
 function round(gb) {
   return Math.round(gb * 10) / 10;
 }
 var WINDOWS_NO_CEILING = "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
+function weightLines(read) {
+  const lines = [];
+  for (const [name, state] of [
+    ["CPU priority", read.weights.cpu],
+    ["Disk I/O priority", read.weights.io]
+  ]) {
+    lines.push(state.value === null ? `${name}: not set: ${state.why ?? "no weight is in force."}` : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; the desktop and the sessions go first under load).`);
+  }
+  return lines;
+}
 function statusLines(read, home, now) {
   const lines = [];
   const limit = read.memory.limitDir === null ? "" : ` (a memory limit of its group: ${tildify(read.memory.limitDir, home)})`;
@@ -31242,6 +31309,7 @@ function statusLines(read, home, now) {
   lines.push(`Budget for heavy jobs here: ${read.budget.gb} GB (${read.budget.why}).`);
   if (read.memory.platform === "win32")
     lines.push(WINDOWS_NO_CEILING);
+  lines.push(...weightLines(read));
   for (const store of read.stores) {
     const title = store.label === "this machine" ? `This machine (${tildify(store.dir, home)})` : `Shared folder ${store.dir}`;
     if (store.note !== undefined) {

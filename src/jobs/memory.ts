@@ -170,14 +170,42 @@ export function machineBudgetGb(totalBytes: number, reserveGb: number, largestGb
 }
 
 /**
+ * The slices a slice nests in, outermost first. systemd reads every dash in a slice name
+ * as nesting: `cc-smart-dev-kit-heavy.slice` sits inside `cc-smart-dev-kit.slice`, which
+ * sits inside `cc-smart-dev.slice`, and so on up to `cc.slice`. One home for that rule, so
+ * the launcher, the live check, the weights and the controller read all agree.
+ */
+export function sliceChain(slice: string): string[] {
+  const parts = slice.replace(/\.slice$/, "").split("-");
+  return parts.map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`);
+}
+
+/** The cgroup of user `uid`'s systemd manager, under `/sys/fs/cgroup`. */
+export function userManagerCgroup(uid: number): string {
+  return `/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service`;
+}
+
+/**
  * The cgroup path (under `/sys/fs/cgroup`) of a slice of user `uid`'s systemd manager.
- * systemd reads every dash in a slice name as nesting: `cc-smart-dev-kit-heavy.slice` sits inside
- * `cc-smart-dev-kit.slice`. One home for that rule, so the launcher and the live check agree.
+ * One home for that rule, so the launcher, the live check and the weights agree.
  */
 export function userSliceCgroup(uid: number, slice: string): string {
-  const parts = slice.replace(/\.slice$/, "").split("-");
-  const chain = parts.map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`);
-  return `/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service/${chain.join("/")}`;
+  return `${userManagerCgroup(uid)}/${sliceChain(slice).join("/")}`;
+}
+
+/**
+ * The controllers this machine's user manager was given (`cgroup.controllers`), or null
+ * when that file cannot be read: no user manager there, or not Linux at all. A controller
+ * that is missing cannot carry a weight: systemd records the property and writes nothing
+ * to the cgroup, so the job would carry no priority while `job status` claimed one.
+ */
+export function userManagerControllers(read: ReadText, uid: number): string[] | null {
+  const text = read(`/sys/fs/cgroup${userManagerCgroup(uid)}/cgroup.controllers`);
+  if (text === null) return null;
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter((name) => name !== "");
 }
 
 /** What every heavy job of this user uses right now: the slice's `memory.current`. */

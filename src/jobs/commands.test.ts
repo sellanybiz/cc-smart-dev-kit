@@ -445,8 +445,12 @@ describe("job status", () => {
     expect(result.code).toBe(0);
     const lines = result.stdout.split("\n");
     expect(lines[0]).toStartWith("Memory: ");
-    expect(lines.slice(1)).toEqual([
-      "Budget for heavy jobs here: 10 GB (set in jobs.json).",
+    expect(lines[1]).toBe("Budget for heavy jobs here: 10 GB (set in jobs.json).");
+    // The two priority lines depend on the machine's own user manager (its delegated
+    // controllers); their exact words are locked by `status.test.ts`.
+    expect(lines[2]).toStartWith("CPU priority: ");
+    expect(lines[3]).toStartWith("Disk I/O priority: ");
+    expect(lines.slice(4)).toEqual([
       "This machine (~/.local/share/cc-smart-dev-kit/jobs): 2 of 10 GB free",
       `  this machine: 8 GB held by ${hostname()}: build, next build in /home/user/app, since 2026-10-11 09:05 (pid ${holder.pid})`,
       `Shared folder ${shared}: 30 of 30 GB free`,
@@ -571,6 +575,8 @@ describe("job status on Windows", () => {
       "Memory: 32 GB, 11 GB free now.",
       "Budget for heavy jobs here: 14 GB (32 GB of memory less 22 GB kept for everything else).",
       "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.",
+      "CPU priority: not set: only a Linux systemd user manager has weights.",
+      "Disk I/O priority: not set: only a Linux systemd user manager has weights.",
       "This machine (~/.local/share/cc-smart-dev-kit/jobs): 14 of 14 GB free",
       "  nothing held, nobody waits",
     ]);
@@ -584,6 +590,8 @@ describe("job status on Windows", () => {
     expect(printed).toEqual([
       "Memory: 32 GB, free memory cannot be read on this system (no live check).",
       "Budget for heavy jobs here: 14 GB (32 GB of memory less 22 GB kept for everything else).",
+      "CPU priority: not set: no systemd user manager answers here.",
+      "Disk I/O priority: not set: no systemd user manager answers here.",
       "This machine (~/.local/share/cc-smart-dev-kit/jobs): 14 of 14 GB free",
       "  nothing held, nobody waits",
     ]);

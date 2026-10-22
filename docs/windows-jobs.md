@@ -70,9 +70,10 @@ Windows has neither, so:
 
 ## Running a job
 
-- **No memory group and no kill mark.** Windows has no cgroup and no `choom`, so a job runs
-  as a plain child with its lease, the same as macOS. The queue applies in full: the budget,
-  the oldest-ticket line, the fair share, the live check, `--exclusive`.
+- **No memory group, no kill mark, no CPU or I/O weight.** Windows has no cgroup and no
+  `choom`, so a job runs as a plain child with its lease, the same as macOS. There is no
+  slice to carry a weight, and `job status` says both are not set. The queue applies in
+  full: the budget, the oldest-ticket line, the fair share, the live check, `--exclusive`.
 - **No "killed for memory" line.** That line reads the heavy-job slice's `memory.events`,
   which only Linux has.
 - **Stopping a job ends its process tree with `taskkill`.** Windows has no signals, so
@@ -99,8 +100,8 @@ Windows has neither, so:
 
 ## Limits
 
-- No memory ceiling, no kill mark, no "killed for memory" line: the queue is what keeps
-  heavy jobs apart, and nothing caps one job's memory.
+- No memory ceiling, no kill mark, no CPU or I/O weight, no "killed for memory" line: the
+  queue is what keeps heavy jobs apart, and nothing caps one job's memory or its CPU share.
 - The live check uses Windows' free memory, which counts the standby cache as used: it can
   make a job wait longer than the machine needs.
 - A worker a job leaves behind is not seen when `job run` ends: its memory is given back

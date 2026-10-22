@@ -44,13 +44,15 @@ async function until(check: () => boolean, ms: number): Promise<boolean> {
 
 afterAll(() => {
   if (!LIVE) return;
-  // Stop what is left, and drop the ceiling `set-property --runtime` wrote.
+  // Stop what is left, and drop the ceiling and the weights `set-property --runtime` wrote.
   systemctl("stop", SLICE, PARENT);
   systemctl("revert", SLICE, PARENT);
   const left = systemctl("list-units", "--all", "--plain", "--no-legend", `${prefix}*`).out;
   if (left !== "") throw new Error(`live test units left behind: ${left}`);
-  const dropIns = `/run/user/${String(uid)}/systemd/user.control/${SLICE}.d`;
-  if (existsSync(dropIns)) throw new Error(`live test drop-ins left behind: ${dropIns}`);
+  for (const unit of [SLICE, PARENT]) {
+    const dropIns = `/run/user/${String(uid)}/systemd/user.control/${unit}.d`;
+    if (existsSync(dropIns)) throw new Error(`live test drop-ins left behind: ${dropIns}`);
+  }
 });
 
 describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=1)", () => {
@@ -100,7 +102,9 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
         kind: "tsc",
         spec,
         command: hog,
+        cpuWeight: 20,
         gb: 1,
+        ioWeight: 20,
         pid: process.pid,
         checkout: process.cwd(),
         slice: SLICE,

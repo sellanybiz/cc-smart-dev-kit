@@ -1923,17 +1923,20 @@ in its `cc-smart-dev-kit.json` (`autoMode`), and `cc-smart-dev-kit setup`, run i
 When many Claude sessions and agents run on one machine, type checks, typed lints, test
 runs and builds start together and the machine runs out of memory. `cc-smart-dev-kit job run`
 reserves the memory a job needs, waits while it is not free (oldest first, saying who
-holds it), runs the job, and gives the memory back however the job ends. How it works,
-the kinds, the config and the limits: [docs/jobs.md](docs/jobs.md).
+holds it), runs the job, and gives the memory back however the job ends. Under load a job
+also gives way on CPU and disk I/O, so the desktop, your sessions and your own work stay
+responsive; an idle machine still gives the job every core. How it works, the kinds, the
+config and the limits: [docs/jobs.md](docs/jobs.md).
 
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit job run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command…>` | Waits until this machine (and any shared folder) has the memory, then runs the command. Its stdin, stdout, stderr and exit code pass through; SIGINT, SIGTERM and SIGHUP are sent on to the whole job. `--exclusive <name>`: at most one job with that name at a time, in order (with a kind, or alone). |
-| `cc-smart-dev-kit job status` | The memory, the budget, and who holds or waits, here and on each shared folder. |
+| `cc-smart-dev-kit job status` | The memory, the budget, the CPU and I/O weights (or why one is not set), and who holds or waits, here and on each shared folder. |
 | `cc-smart-dev-kit job kinds` | The kinds (`tsc`, `lint:typed`, `test:run`, `test:coverage`, `build`, `image:build`, and the project's own) and what each reserves. |
 
-The state is per user, in `~/.local/share/cc-smart-dev-kit/jobs/`. A machine sets its limits,
-and optional shared folders for containers or users on one host, in
+The state is per user, in `~/.local/share/cc-smart-dev-kit/jobs/`. A machine sets its limits
+(`budgetGb`, `reserveGb`, `launch`, `slice`, `cpuWeight`, `ioWeight`), and optional shared
+folders for containers or users on one host, in
 `~/.config/cc-smart-dev-kit/jobs.json`.
 ## The hooks
 

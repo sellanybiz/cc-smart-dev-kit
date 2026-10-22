@@ -478,8 +478,11 @@ One queue for the whole machine (`src/jobs/`, design and limits in `jobs.md`):
   users on one host), taken in a fixed order and given back in reverse, so they never
   wait on each other in a circle. Oldest first, fair share on shared folders, a live check
   against real free memory (cgroup-aware), and no give-up timeout.
-- **The launch** puts a job in its own systemd memory group with a kill mark where Linux
-  allows it, so that if memory still runs out, a heavy job dies first.
+- **The launch** puts a job in its own systemd memory group with a kill mark and a low CPU
+  and disk I/O weight where Linux allows it, so that under load the desktop and the sessions
+  go first, and if memory still runs out, a heavy job dies first. A weight needs its
+  controller delegated to the user manager; one that is missing is skipped and `job status`
+  says why.
 - **The state is per user** (`~/.local/share/cc-smart-dev-kit/jobs/`): nothing in it outlives
   its writers, and no service runs.
 - A pure classifier (`classifyHeavyCommand`) says which kind a Bash command runs; a later

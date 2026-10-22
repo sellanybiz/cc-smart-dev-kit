@@ -12474,13 +12474,16 @@ var CREW_NEVER_DOES = {
 // src/jobs/config.ts
 import { isAbsolute as isAbsolute3, join as join18 } from "path";
 var absolutePath = string2().min(1).refine((path) => isAbsolute3(path), "must be an absolute path");
+var weightSchema = union([literal(0), literal("off"), number2().int().min(1).max(1e4)]);
 var jobsMachineConfigSchema = strictObject({
   stateDir: absolutePath.optional(),
   budgetGb: number2().int().min(1).optional(),
   reserveGb: number2().int().min(0).optional(),
   sharedDirs: array(absolutePath).optional(),
   launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional()
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
+  cpuWeight: weightSchema.optional(),
+  ioWeight: weightSchema.optional()
 });
 
 // src/jobs/memory.ts

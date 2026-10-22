@@ -633,6 +633,16 @@ export interface JobHolderItem {
   unknown?: true;
 }
 
+export interface JobWeightState {
+  value: null | number;
+  why?: string;
+}
+
+export interface JobWeightsState {
+  cpu: JobWeightState;
+  io: JobWeightState;
+}
+
 export interface JobsAnswer {
   budgetGb: number;
   freeGb: null | number;
@@ -646,6 +656,7 @@ export interface JobsAnswer {
     waiting: JobHolderItem[];
     where: string;
   }[];
+  weights: JobWeightsState;
 }
 
 // ── The request history (H1) ───────────────────────────────────────────────────────────

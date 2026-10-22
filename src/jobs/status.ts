@@ -1,6 +1,6 @@
 /**
- * The heavy-job queue as data: who holds memory, who waits, and how much is free — on this
- * machine and on each shared folder.
+ * The heavy-job queue as data: who holds memory, who waits, how much is free, and the CPU
+ * and disk I/O weights the heavy slices carry — on this machine and on each shared folder.
  *
  * One reader, three readers of it: `job status` prints its lines, `GET /api/jobs` answers its
  * shape, and the Machine page shows the same lines the command prints. Before this module,
@@ -17,10 +17,24 @@
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { type CliPaths, tildify } from "../cli/paths";
-import type { JobsMachineConfig } from "./config";
-import { DEFAULT_RESERVE_GB, DEFAULT_SLICE, jobsPaths, loadJobsConfig } from "./config";
+import {
+  cpuWeightOf,
+  DEFAULT_RESERVE_GB,
+  DEFAULT_SLICE,
+  ioWeightOf,
+  type JobsMachineConfig,
+  jobsPaths,
+  loadJobsConfig,
+} from "./config";
 import { DEFAULT_KINDS, largestJobGb } from "./kinds";
-import { GIB, type MemoryFacts, machineBudgetGb, machineMemory, sliceBytes } from "./memory";
+import {
+  GIB,
+  type MemoryFacts,
+  machineBudgetGb,
+  machineMemory,
+  sliceBytes,
+  userManagerControllers,
+} from "./memory";
 import {
   formatSince,
   holderLines,
@@ -77,6 +91,20 @@ export interface JobStoreState {
   where: string;
 }
 
+/** One cgroup weight on the heavy slices: its value, or why it is not in force. */
+export interface JobWeightState {
+  /** The weight a scope launch sets, 1 to 10000; null when it sets none. */
+  value: null | number;
+  /** Why no weight is in force; absent when one is. */
+  why?: string;
+}
+
+/** The heavy slices' CPU and disk I/O weights: what the queue protects besides memory. */
+export interface JobWeightsState {
+  cpu: JobWeightState;
+  io: JobWeightState;
+}
+
 /** `GET /api/jobs`'s answer: the queue, as data. */
 export interface JobsAnswer {
   budgetGb: number;
@@ -86,6 +114,8 @@ export interface JobsAnswer {
   keptGb: number;
   memoryGb: number;
   stores: JobStoreState[];
+  /** Under load, a job's CPU and disk I/O give way: the weights, or why one is not set. */
+  weights: JobWeightsState;
 }
 
 /** One store as the reader found it (the private side of `JobStoreState`). */
@@ -104,7 +134,10 @@ export interface JobsRead {
   budget: { gb: number; keptGb: number; why: string };
   memory: { freeGb: null | number; limitDir: null | string; platform: string; totalGb: number };
   notes: string[];
+  /** The heavy-job slice the config names, for the weight lines. */
+  slice: string;
   stores: JobStoreRead[];
+  weights: JobWeightsState;
 }
 
 /** The stores this machine uses: its own, then each shared folder, in that order. */
@@ -126,6 +159,49 @@ function machineBudget(
   return {
     gb,
     why: `${Math.floor(total / GIB)} GB of memory less ${reserve} GB kept for everything else`,
+  };
+}
+
+/** One weight as the machine would carry it, and why it would not. */
+function weightState(
+  controller: "cpu" | "io",
+  value: number,
+  config: JobsMachineConfig,
+  platform: string,
+  controllers: string[] | null,
+): JobWeightState {
+  if (value === 0) return { value: null, why: "jobs.json turns it off." };
+  if (platform !== "linux") {
+    return { value: null, why: "only a Linux systemd user manager has weights." };
+  }
+  if (config.launch === "plain") {
+    return { value: null, why: "jobs.json sets launch: plain." };
+  }
+  if (controllers === null) return { value: null, why: "no systemd user manager answers here." };
+  if (!controllers.includes(controller)) {
+    return {
+      value: null,
+      why: `the user manager was not given the ${controller} controller. An administrator adds ${controller} to Delegate= for user@.service, then restarts the user manager.`,
+    };
+  }
+  return { value };
+}
+
+/**
+ * The weights a scope launch puts on the slice chain, read from the machine: the user
+ * manager's `cgroup.controllers` says whether the controller a weight needs was delegated.
+ * A weight whose controller is missing is skipped at launch — systemd records the property
+ * and writes nothing to the cgroup — so it is not reported as in force here.
+ */
+function weightsState(config: JobsMachineConfig, ctx: JobContext): JobWeightsState {
+  const uid = process.getuid?.();
+  const controllers =
+    ctx.memory.platform === "linux" && uid !== undefined
+      ? userManagerControllers(ctx.memory.read, uid)
+      : null;
+  return {
+    cpu: weightState("cpu", cpuWeightOf(config), config, ctx.memory.platform, controllers),
+    io: weightState("io", ioWeightOf(config), config, ctx.memory.platform, controllers),
   };
 }
 
@@ -265,7 +341,9 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
       totalGb: memory.totalBytes / GIB,
     },
     notes: [...notes, ...opened.notes],
+    slice: config.slice ?? DEFAULT_SLICE,
     stores,
+    weights: weightsState(config, ctx),
   };
 }
 
@@ -284,6 +362,7 @@ export function jobsAnswer(read: JobsRead): JobsAnswer {
       waiting: store.waiting.map(itemOf),
       where: store.label === "this machine" ? "machine" : store.dir,
     })),
+    weights: read.weights,
   };
 }
 
@@ -295,6 +374,26 @@ function round(gb: number): number {
 /** What `job status` says where no memory group can be made (Windows). */
 const WINDOWS_NO_CEILING =
   "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
+
+/**
+ * `job status`'s two priority lines: the weight a scope launch sets on the slice chain, or
+ * why no weight is in force there. Weights, never quotas: an idle machine still gives a
+ * job every core; under load the desktop, the sessions and the person's own work go first.
+ */
+function weightLines(read: JobsRead): string[] {
+  const lines: string[] = [];
+  for (const [name, state] of [
+    ["CPU priority", read.weights.cpu],
+    ["Disk I/O priority", read.weights.io],
+  ] as const) {
+    lines.push(
+      state.value === null
+        ? `${name}: not set: ${state.why ?? "no weight is in force."}`
+        : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; the desktop and the sessions go first under load).`,
+    );
+  }
+  return lines;
+}
 
 /**
  * `job status`'s lines, from the read: one home, so the command and the Machine page say the
@@ -313,6 +412,7 @@ export function statusLines(read: JobsRead, home: string, now: number): string[]
   lines.push(`Memory: ${oneDecimal(read.memory.totalGb)} GB${limit}, ${free}.`);
   lines.push(`Budget for heavy jobs here: ${read.budget.gb} GB (${read.budget.why}).`);
   if (read.memory.platform === "win32") lines.push(WINDOWS_NO_CEILING);
+  lines.push(...weightLines(read));
   for (const store of read.stores) {
     const title =
       store.label === "this machine"

@@ -60,7 +60,14 @@ function world(options: { recent?: () => unknown[]; routerUp?: boolean } = {}) {
   const home = tempDir("live");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const published: Published[] = [];
-  let jobs: JobsAnswer = { budgetGb: 8, freeGb: 8, keptGb: 22, memoryGb: 32, stores: [] };
+  let jobs: JobsAnswer = {
+    budgetGb: 8,
+    freeGb: 8,
+    keptGb: 22,
+    memoryGb: 32,
+    stores: [],
+    weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is not delegated" } },
+  };
   const sources = createLiveSources({
     cwd: home,
     fetch: async () =>
@@ -191,7 +198,17 @@ describe("the live stream's sources", () => {
     writeFileSync(join(leases, "job-1"), JSON.stringify({ gb: 4, v: 1 }));
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 1);
-    world1.setJobs({ budgetGb: 8, freeGb: 4, keptGb: 22, memoryGb: 32, stores: [] });
+    world1.setJobs({
+      budgetGb: 8,
+      freeGb: 4,
+      keptGb: 22,
+      memoryGb: 32,
+      stores: [],
+      weights: {
+        cpu: { value: 20 },
+        io: { value: null, why: "the io controller is not delegated" },
+      },
+    });
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 1);
     writeFileSync(join(leases, "job-1"), JSON.stringify({ gb: 5, v: 1 }));

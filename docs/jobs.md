@@ -1,8 +1,10 @@
 # Heavy jobs: one queue for the whole machine
 
 `cc-smart-dev-kit job` makes heavy jobs wait for free memory instead of freezing the machine.
-The same queue runs on native Windows, where three things are different — the memory
-reading, a lease's start time and how a job's tree is ended: `windows-jobs.md`.
+Under load it also makes them give way on CPU and disk I/O: the desktop, the Claude sessions
+and the person's own work go first, and an idle machine still gives a job every core. The
+same queue runs on native Windows, where three things are different — the memory reading, a
+lease's start time and how a job's tree is ended: `windows-jobs.md`.
 
 A **heavy job** is a command that can use many gigabytes: a TypeScript type check, a
 type-aware lint, a test run, a production build, a container image build. When many
@@ -32,7 +34,7 @@ flowchart TD
     W -->|"no"| L["wait; say who holds the memory"]
     L --> W
     W -->|"yes"| P{"launch: auto, Linux:<br/>can systemd make a scope?"}
-    P -->|"yes"| S["scope in cc-smart-dev-kit-heavy.slice<br/>+ choom 900"]
+    P -->|"yes"| S["scope in cc-smart-dev-kit-heavy.slice<br/>+ choom 900<br/>+ a low CPU and I/O weight"]
     P -->|"no, choom here"| C["choom 900 only"]
     P -->|"no / macOS / Windows /<br/>launch: plain"| PL["plain run"]
     S --> E["exit code passes through"]
@@ -333,7 +335,7 @@ With `launch: auto` (the default), on Linux:
 
 | Mode | When | What |
 |---|---|---|
-| scope | a systemd user manager answers | `systemd-run --user --scope --slice=cc-smart-dev-kit-heavy.slice -p OOMPolicy=kill -- choom -n 900 -- <command>` |
+| scope | a systemd user manager answers | `systemd-run --user --scope --slice=cc-smart-dev-kit-heavy.slice -p OOMPolicy=kill -- choom -n 900 -- <command>`, the slice chain set to a low CPU and I/O weight |
 | choom | no user manager (cron, a container, CI), or no scope can be made | `choom -n 900 -- <command>` |
 | plain | no `choom`, macOS, Windows, `launch: plain`, or a 0 GB run | the command as it is |
 
@@ -348,6 +350,24 @@ With `launch: auto` (the default), on Linux:
   never take the memory kept for everything else, and past it the kernel kills inside the
   slice only. No swap for the slice: with swap, jobs over the ceiling would crawl through
   it instead of dying.
+- **The CPU and I/O weights.** At the same moment and in the same form, the slices get a low
+  `CPUWeight=` and `IOWeight=` (20 each by default, against systemd's own default of 100;
+  `jobs.json` can change each). A weight, never a quota: on an idle machine a job still gets
+  every core and the whole disk, and under load the desktop, the Claude sessions and the
+  person's own work go first. The weight goes on **every slice of the chain**, not only the
+  heavy one: a dash in a slice name nests, so `cc-smart-dev-kit-heavy.slice` sits inside
+  `cc-smart-dev-kit.slice`, which sits inside `cc-smart-dev.slice`, and so on up to
+  `cc.slice`. systemd shares CPU and I/O between slices that are siblings, so the heavy
+  slice alone would compete only with what sits beside it inside the kit's own slice; the
+  outermost slice is the one that competes with the desktop and the sessions.
+- **A controller first.** A weight needs its controller (the `cpu` and `io` controllers)
+  delegated to this machine's systemd user manager:
+  `/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/cgroup.controllers`.
+  systemd's `user@.service` delegates `pids memory cpu` by default, so `io` is usually not
+  there. A weight whose controller is missing is skipped — systemd would record the property
+  and write nothing to the cgroup, so the job would carry no priority — and `job status` says
+  which one, and what turns it on. The launch never fails for it. A choom or plain launch has
+  no slice at all, so it carries no weight, and `job status` says so.
 - **The kill mark.** `choom -n 900` raises the job's `oom_score_adj`: if memory runs out
   anywhere, a heavy job dies before the desktop, Claude and the dev servers. A heavy job
   is the one thing that can simply run again.
@@ -370,10 +390,10 @@ With `launch: auto` (the default), on Linux:
   named, and the memory is given back anyway.
 - A dash in a slice name means nesting: `cc-smart-dev-kit-heavy.slice` sits inside
   `cc-smart-dev-kit.slice`. `jobs.json` can name another slice.
-- **Windows:** no memory group, no kill mark and no "killed for memory" line, so a job runs
-  as a plain child with its lease; stopping it (Ctrl+C at `job run`, or `job run` ended)
-  ends its whole process tree with `taskkill /PID <pid> /T /F`, because Windows has no
-  signals and no graceful stop (`windows-jobs.md` § Running a job).
+- **Windows:** no memory group, no kill mark, no "killed for memory" line and no CPU or I/O
+  weight, so a job runs as a plain child with its lease; stopping it (Ctrl+C at `job run`,
+  or `job run` ended) ends its whole process tree with `taskkill /PID <pid> /T /F`, because
+  Windows has no signals and no graceful stop (`windows-jobs.md` § Running a job).
 
 ## The environment
 
@@ -394,13 +414,20 @@ Optional. Unknown fields are an error that names the file and the field.
 | `sharedDirs` | none | Shared folders (§ The shared view), used in path order. |
 | `launch` | `auto` | `auto` or `plain` (§ The launch). |
 | `slice` | `cc-smart-dev-kit-heavy.slice` | The systemd slice for `auto`. |
+| `cpuWeight` | 20 | The CPU weight of the heavy slices, 1 to 10000 (systemd's own default is 100). `0` or `"off"` leaves systemd's default. Machine-wide: the slices are the machine's, so a project's file cannot own it. |
+| `ioWeight` | 20 | The disk I/O weight of the heavy slices, 1 to 10000. `0` or `"off"` leaves systemd's default (100). Machine-wide, like `cpuWeight`. |
+
+The weights are machine-wide on purpose. The slices belong to the machine, not to a
+project: a project's `.claude/cc-smart-dev-kit.json` owns its kinds (`jobs.kinds`), and
+several projects' jobs run in the same slices, so one project must not decide how much CPU
+and disk I/O every other job gives way.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit job run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command…>` | Waits, runs, passes the job's stdio, exit code and signals through. `--kind`, `--exclusive`, or both. |
-| `cc-smart-dev-kit job status` | The memory, this machine's budget, who holds and who waits here and on each shared folder. Stale files it finds are removed. A store it cannot read is one line saying so. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
+| `cc-smart-dev-kit job status` | The memory, this machine's budget, the CPU and I/O weights of the heavy slices (or why one is not set), who holds and who waits here and on each shared folder. Stale files it finds are removed. A store it cannot read is one line saying so. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
 | `cc-smart-dev-kit job kinds` | Every kind: its sizes, where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
 
 ## The classifier
@@ -442,6 +469,16 @@ cases are in `src/jobs/classify.test.ts` and, through the hook, in
 
 ## Limits
 
+- **CPU and disk I/O are shared by weight, not capped.** Under load a heavy job gets about a
+  fifth of a default unit's share of each; alone it gets every core and the whole disk.
+  There is no quota, so one job can still use the whole machine when nothing else wants it.
+- **No I/O weight with systemd's default delegation.** `user@.service` delegates
+  `pids memory cpu`, so the `io` controller is usually not there. The I/O weight is then
+  skipped, `job status` says so, and an administrator turns it on by adding `io` to
+  `Delegate=` for `user@.service`. The CPU weight is normally in force.
+- **No weights without a scope.** macOS, Windows, a machine with no systemd user manager and
+  `launch: plain` have no slice, so a job carries no CPU or I/O weight there; `job status`
+  says so.
 - **A `job run` killed with SIGKILL** frees its lease at the next look, but its job keeps
   running, unaccounted. In its own process group, a kill of `job run`'s group does not
   reach it either. A scope's name shows it: `systemctl --user list-units
@@ -453,8 +490,8 @@ cases are in `src/jobs/classify.test.ts` and, through the hook, in
   it.
 - **Nesting is found on Linux only.** On macOS, a heavy job must not start another one
   through `job run`.
-- **macOS:** no live check, no memory group, no kill mark, no network file system check:
-  the queue only.
+- **macOS:** no live check, no memory group, no kill mark, no CPU or I/O weight, no network
+  file system check: the queue only.
 - **Windows:** no memory ceiling, no kill mark, no "killed for memory" line and no network
   file system check; `job run` watches the job's first process, so a worker left behind is
   not seen and the memory is given back while it runs; and a holder whose start time cannot
