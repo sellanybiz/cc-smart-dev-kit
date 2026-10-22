@@ -200,7 +200,8 @@ up).
 
 - `cc-smart-dev-kit gateway status`: router health (requests, fallbacks, resting targets, open
   breakers), each backend, the slots, whether Claude Code points at the gateway. Keys are
-  masked.
+  masked. Its last line is the verdict (`✓` all well, `✗` the config or the router, `!` a
+  backend, `·` not set up or not on), with the next step under it.
 - `cc-smart-dev-kit doctor`: the service, the router copy, the health page, each backend.
 - The log: `journalctl --user -u cc-smart-dev-kit-router -f`. One line per request; never a key.
   A target that answers 4xx / 5xx (Anthropic too) gets a `WARN` line with the start of
