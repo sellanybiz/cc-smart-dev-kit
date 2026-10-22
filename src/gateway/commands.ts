@@ -23,7 +23,7 @@ import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
 import { createOut, type Out } from "../cli/ui/out";
 import { INTERRUPTED_EXIT, type Prompts } from "../cli/ui/prompt";
-import { currentTerminal } from "../cli/ui/terminal";
+import { detectTerminal, type Terminal } from "../cli/ui/terminal";
 import { withLock } from "../setup/lock";
 import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
@@ -198,6 +198,11 @@ export interface GatewayContext {
   platform: NodeJS.Platform;
   /** Where a command's own lines go: `console.log` in use, a collector from the portal. */
   print: (line: string) => void;
+  /**
+   * The terminal those lines are drawn for (`currentTerminal`): set only when they go to this
+   * process's own stdout. Left out (the portal's collector, a test), they are plain text.
+   */
+  term?: Terminal;
   /** Where a refusal or a usage line goes: `console.error` in use. */
   error: (line: string) => void;
   /**
@@ -1526,11 +1531,12 @@ function formatUsd(usd: number): string {
 
 /**
  * The output module over the gateway's own print sink: the same words through `ctx.print` (the
- * portal hands its own), with colour and wrapping only when stdout is a terminal. A table is
+ * portal hands its own), with colour and wrapping only when `ctx.term` is a terminal. A table is
  * printed through `ctx.print` as it is: its columns must not wrap.
  */
 function gatewayOut(ctx: GatewayContext): Out {
-  return createOut(currentTerminal(process.env, ctx.platform), {
+  const plain = detectTerminal({ env: {}, isTTY: false, platform: ctx.platform });
+  return createOut(ctx.term ?? plain, {
     line: (text) => ctx.print(text),
     raw: () => undefined,
   });
