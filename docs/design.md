@@ -1413,8 +1413,8 @@ a loop is one launch to the record.
 
 The rules are in one table in `src/hooks/agent-guard.ts` (its header). The policy under them —
 which model a launch really runs on (`resolveLaunchModel`), the effort levels
-(`ALLOWED_EFFORTS`), the Fable reason words and the worker kinds (§ Lead and workers) — is one
-pure module, `src/models/launch-policy.ts`, which the guard imports and the worker launcher and
+(`ALLOWED_EFFORTS`), the Fable reason words and the crew kinds (§ Lead and the crew) — is one
+pure module, `src/models/launch-policy.ts`, which the guard imports and the crew launcher and
 the Bash judge share; the guard keeps the hook's own parts (reading a Workflow script, the agent
 types, the record, the messages). The one list a person
 may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
@@ -1614,7 +1614,7 @@ as Warp when `isWarpTerminal` says so, when `LC_TERMINAL=WarpTerminal` arrives (
 named terminal in `TERM_PROGRAM` (VS Code's `vscode`) says it is not Warp, while tmux's own
 `tmux` says nothing about the far end. One function maps the event (`warpEventOf`): finished
 → `stop`, failed → `stop_failure`, and every wait and question — a permission prompt, a
-worker's prompt, agent view's `agent_needs_input`, a question — → `permission_request`.
+crew session's prompt, agent view's `agent_needs_input`, a question — → `permission_request`.
 `agent_needs_input` is never sent: Warp showed only a tab badge for it and no popup, while
 `permission_request` showed the popup (proved live on Windows Warp, 2026-10-19);
 **the session's own device** — for an event whose answer Claude Code does
@@ -1746,7 +1746,7 @@ default:
 `cc-smart-dev-kit workflow show` (and the portal's settings page) can say *why* a value is what
 it is; both read a key's value through one map, `resolvedValueOf`, so a new setting is one
 entry there (the type checker refuses a key without one). A group (`alerts`,
-`fixesAfterReview`, `workers`) merges field by field like the rest. The one schema is reused by `src/project/config.ts` for the project's `workflow`
+`fixesAfterReview`, `crew`) merges field by field like the rest. The one schema is reused by `src/project/config.ts` for the project's `workflow`
 object, so a field can never mean two things in the two files. A broken personal file throws
 `WorkflowConfigError`, which names the file and the field: the person must hear it. A field
 with a wrong kind can never be written (`write.ts` validates the whole file before the
@@ -1793,8 +1793,8 @@ place (`auto-merge.ts`).
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source, and written by `workflow set`; the merge guard judges with them once its call site moves onto `readCover` (D17b). |
-| `workers.enabled`, `workers.max`, `workers.maxOpus`, `workers.memoryGb`, `workers.tag` | `worker lead` and `worker start` (`src/workers/`, § Lead and workers): the switch they refuse without, the two caps (D37) and the free memory a start is queued by, and the tag in the names. |
-| the other `workers.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later worker parts (the watch, the worker's own hooks) will read them. |
+| `crew.enabled`, `crew.max`, `crew.maxOpus`, `crew.memoryGb`, `crew.tag` | `crew lead` and `crew start` (`src/crew/`, § Lead and the crew): the switch they refuse without, the two caps (D37) and the free memory a start is queued by, and the tag in the names. |
+| the other `crew.*` | nothing yet: resolved, shown by `workflow show` with their source, and written by `workflow set`. The later crew session parts (the watch, the crew session's own hooks) will read them. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through
 with no question only when **all** of these hold: `autoMerge` is on (`autoMergeOff` is the first
@@ -2145,58 +2145,58 @@ filter that made each session's windows its own.
   profile, extension, token) are checked first, so a missing piece is one clear line instead of a
   30-second wait; what it opens and what stays behind is printed before it starts.
 
-## Lead and workers
+## Lead and the crew
 
 A person talks to one small **lead** session. It plans, and starts each phase of the plan as a
-**worker**: a background session (`claude --bg`) in its own worktree, on its own branch, that
+**crew session**: a background session (`claude --bg`) in its own worktree, on its own branch, that
 builds, tests, reviews and commits the phase and hands back a report. The lead never waits on a
-worker — the news arrives by itself — and merges the finished branches locally. Background
+crew session — the news arrives by itself — and merges the finished branches locally. Background
 sessions win over subagents alone (every hand-back lands in the lead's context, and a long phase
 rots it) and over agent teams (no worktree isolation, no resume).
 
 This section holds the contracts every part of it builds on — the switch, the kinds, the names
-and the store — and the commands that act on them so far: `worker lead` and the launcher,
-`worker start` (§ The lead and the launch, below), and the board and the end of a worker, `worker
+and the store — and the commands that act on them so far: `crew lead` and the launcher,
+`crew start` (§ The lead and the launch, below), and the board and the end of a crew session, `crew
 list`, `status`, `kinds`, `attach`, `stop`, `resume` and `rm` (§ The board and the end of a
-worker). The watch that brings the lead its news, the hand-back report command, and the worker
+crew session). The watch that brings the lead its news, the hand-back report command, and the crew session
 and lead hooks are later parts, and extend this section.
 
-**The instructions** say when a phase goes to a worker (`core.md` § Lead the work: a phase with
+**The instructions** say when a phase goes to a crew session (`core.md` § Lead the work: a phase with
 its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
 the procedures: `lead` (register, split, start, hear the news, route the questions, the merge
-gate, caps, hand-offs, restarts) and `worker` (build the phase end to end, the steps, the
+gate, caps, hand-offs, restarts) and `crew` (build the phase end to end, the steps, the
 report, the questions). Each points at the commands it uses and copies none of their tables:
-the kinds come from `worker kinds` (or `worker --help`), the caps from `workflow show`.
+the kinds come from `crew kinds` (or `crew --help`), the caps from `workflow show`.
 
-**The switch** (D34) is `workflow.workers.enabled`, off by default, in the person's
+**The switch** (D34) is `workflow.crew.enabled`, off by default, in the person's
 `workflow.json` (every project's default) and in a project's `.claude/cc-smart-dev-kit.json`,
 which wins field by field like every workflow setting (§ The workflow). Beside it in the same
-group sit the limits a lead keeps its workers to — how many run on the machine at once, and how
+group sit the limits a lead keeps its crew to — how many run on the machine at once, and how
 many of those on the opus tier (D37), the free memory a new one needs, when a quiet one is reported, when a long one hands off, when a
-blocked one is stopped (D35: a worker never outlives its work) — and the `tag` of their names.
+blocked one is stopped (D35: a crew session never outlives its work) — and the `tag` of their names.
 `workflow show` prints each with its source.
 
-**The kinds** (D46) say what a phase needs, and so the model and effort its worker runs on:
-`WORKER_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
+**The kinds** (D46) say what a phase needs, and so the model and effort its crew session runs on:
+`CREW_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
 guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`, `tests` — runs on
 `sonnet`, the worker slot: at `max` when an affordable gateway slot answers it, at `high` when
 Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
 Work that needs judgment — `architecture`, `ui` — runs on `opus` at `xhigh`, whatever answers the
-tier. `workerLaunch(kind, gateway, env)` makes that choice from the same reading of the gateway
-the guard makes, so a worker never starts on a model or an effort the guard would refuse a
+tier. `crewLaunch(kind, gateway, env)` makes that choice from the same reading of the gateway
+the guard makes, so a crew session never starts on a model or an effort the guard would refuse a
 subagent; a test runs every kind through the guard.
 
-**The names** (D26, `src/workers/names.ts`) show the role, because agent view has no parent link
+**The names** (D26, `src/crew/names.ts`) show the role, because agent view has no parent link
 and no grouping by lead — the name is how a person, and the portal, groups the sessions:
 
 | Session | Name |
 |---|---|
 | a lead | `LEAD <tag> <plan>` |
-| a worker | `W <tag> <phase> <slug>`, and ` 2`, ` 3` for a hand-off's next worker |
+| a crew session | `C <tag> <phase> <slug>`, and ` 2`, ` 3` for a hand-off's next crew session |
 
 - **Role and phase first**, so a list that cuts a name still shows them. A tag is at most
-  `MAX_TAG` (12) characters and a phase `MAX_PHASE` (8), so `W <tag> <phase>` always fits in the
+  `MAX_TAG` (12) characters and a phase `MAX_PHASE` (8), so `C <tag> <phase>` always fits in the
   first `NAME_VIEW` (24) characters (the width agent view really shows is not proved live yet),
   and the whole name fits in `MAX_SESSION_NAME` (60): the clean title every session's name goes
   through (`cleanSessionName`, which moved here from the session-name hook). What a long name
@@ -2205,38 +2205,38 @@ and no grouping by lead — the name is how a person, and the portal, groups the
   name, and it **never ends in `]`**: the message guard drops the ` [ref]` ListAgents prints after
   a name before it looks the name up (`withoutListRef`, one home), so a name of ours that ended in
   `]` would not match itself there. Every part goes through `namePart`: accents dropped, any other
-  character a `-`, no `--`, a letter or a digit at each end. A phase is the worker's identity, so
+  character a `-`, no `--`, a letter or a digit at each end. A phase is the crew session's identity, so
   one that is not already clean is refused rather than changed (`isPhase`).
 - **The tag** names the repository: the main checkout's folder name, made clean and short, or
-  `workflow.workers.tag` (`workerTag`). A folder name that leaves nothing (one of non-Latin
+  `workflow.crew.tag` (`crewTag`). A folder name that leaves nothing (one of non-Latin
   letters only) is refused with the line to set the tag.
-- `roleOf(name)` reads the shape only — `lead`, `worker`, or null for any other name, a ListAgents
+- `roleOf(name)` reads the shape only — `lead`, `crew`, or null for any other name, a ListAgents
   ` [ref]` read past. A person may name a session in that shape by hand, so **the store, never the
   name, is what anything that stops or removes a session goes by.**
 
-**The store** (`src/workers/store.ts`) is what the kit knows of each lead and worker, per
+**The store** (`src/crew/store.ts`) is what the kit knows of each lead and crew session, per
 repository, under the state folder:
 
 ```
-<stateDir>/workers/<repo key>/workers/<worker id>.json   one record per worker
-<stateDir>/workers/<repo key>/leads/<session id>.json    one record per lead
-<stateDir>/workers/<repo key>/reports/<worker id>.json   a worker's hand-back report
-<stateDir>/workers/<repo key>/files/<worker id>/         its brief.md and its settings.json
-<stateDir>/workers/<repo key>/events.jsonl               every change, one line each, append-only
-<stateDir>/workers/<repo key>/watch/<lead id>.json       where that lead's watch is in the log
-<stateDir>/workers/<repo key>/self/<worker id>.json      what that worker's own watch last said
-<stateDir>/workers/lock                                  the machine-wide lock of a start decision
+<stateDir>/crew/<repo key>/crew/<crew id>.json   one record per crew session
+<stateDir>/crew/<repo key>/leads/<session id>.json    one record per lead
+<stateDir>/crew/<repo key>/reports/<crew id>.json   a crew session's hand-back report
+<stateDir>/crew/<repo key>/files/<crew id>/         its brief.md and its settings.json
+<stateDir>/crew/<repo key>/events.jsonl               every change, one line each, append-only
+<stateDir>/crew/<repo key>/watch/<lead id>.json       where that lead's watch is in the log
+<stateDir>/crew/<repo key>/self/<crew id>.json      what that crew session's own watch last said
+<stateDir>/crew/lock                                  the machine-wide lock of a start decision
 ```
 
 - **The key is the review record's** (`repoKey`, a hash of the main checkout's folder), so every
   worktree of a repository shares one store, as it shares one review record. It is the kit's own
   state: folders 0700, files 0600, each record written whole through the kit's atomic write.
 - **Every write holds the store's own lock** (`withLock` on the repository's folder, 3 s at most),
-  not the state folder's shared one: two leads, or a lead and a worker reporting at once, both
+  not the state folder's shared one: two leads, or a lead and a crew reporting at once, both
   land. A state change and its `state` event are written under one hold, so the log never misses
-  a change; a new worker is one `created` event, a step, a report or a question one line each.
-  Every change of a worker record goes through one read-modify-write (`changeWorker`).
-- **A worker record** holds who it is (its id — a plain file name, known before any session
+  a change; a new crew session is one `created` event, a step, a report or a question one line each.
+  Every change of a crew record goes through one read-modify-write (`changeCrew`).
+- **A crew record** holds who it is (its id — a plain file name, known before any session
   exists: `<phase>-<slug>-<6 hex>`, so a second try of a phase never meets the first's record —,
   its name, its session's id and short id, its lead), what it does (the repository, the plan, the
   phase and slug, the kind, the model as named with the slot and the model that answer it
@@ -2244,23 +2244,23 @@ repository, under the state folder:
   from, the base and its commit once it starts, the phases it waits for, the files of its brief)
   and where it is: its state, its last line, its report, its pull request, its memory, its
   questions, what it waits for while `paused` (`waitingFor`: a gateway slot, or Claude's own
-  limit), when its session started (`startedAt`, optional: the worker's own time caps count
-  from it, not from when it was recorded), the worker it continues (`continues`, optional: the id
-  of the old worker, set by a hand-off and by nothing else), and when it was recorded and
+  limit), when its session started (`startedAt`, optional: the crew session's own time caps count
+  from it, not from when it was recorded), the crew session it continues (`continues`, optional: the id
+  of the old crew session, set by a hand-off and by nothing else), and when it was recorded and
   changed. The states are `queued`, `starting`,
   `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped`, `handoff`, `merged` and
-  `removed` (`WORKER_STATES`, each one's meaning in the file). **A lead record** holds its session
-  id, name, repository, plan, the tag its workers' names carry, and folder, and may hold
+  `removed` (`CREW_STATES`, each one's meaning in the file). **A lead record** holds its session
+  id, name, repository, plan, the tag its crew sessions' names carry, and folder, and may hold
   `pausedAgents`: the ids of its own subagents that stopped on an API error and wait to be woken.
   Both new fields are optional (`waitingFor` and `pausedAgents`), and a record an older kit wrote
   reads as it was.
-- **A worker's questions** (D36): a worker never asks the person. A question to its lead — the
+- **A crew session's questions** (D36): a crew session never asks the person. A question to its lead — the
   question, two or more options, the one it recommends (counted from 1), when it was asked — goes
-  at the end of its `questions` with a `question` event (`addWorkerQuestion`), and the worker goes
+  at the end of its `questions` with a `question` event (`addCrewQuestion`), and the crew session goes
   on with what the question does not block; the lead's answer is recorded once, with its time
-  (`answerWorkerQuestion`). A recommendation that is not one of the options, or an answer without
+  (`answerCrewQuestion`). A recommendation that is not one of the options, or an answer without
   its time, is refused.
-- **The hand-back report** is what a worker gives the lead when its phase ends: its status (`done`,
+- **The hand-back report** is what a crew session gives the lead when its phase ends: its status (`done`,
   `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
   diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
   the other checks, the one review (agent, model, effort, the commit it read, each finding and its
@@ -2279,289 +2279,289 @@ repository, under the state folder:
 
 ### The lead and the launch
 
-**`worker lead [--plan <slug>] [--tag <tag>]`** (`src/workers/lead.ts`) records the session
+**`crew lead [--plan <slug>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
 that runs it as a lead of this repository. **Which session** is found the way L1a.1 proved it:
 the nearest ancestor process with a Claude Code session record, `<config folder>/sessions/<pid>.json`
-(`callingSession`, `src/workers/session.ts`; parents from `/proc` on Linux, one process listing
+(`callingSession`, `src/crew/session.ts`; parents from `/proc` on Linux, one process listing
 elsewhere). Its name, `LEAD <tag> <plan>`, is written into the lead record as data: the
 session-name hook applies it later, and the command prints the `/rename` line meanwhile. The tag is
-`--tag`, else `workflow.workers.tag`, else the main checkout's folder name; the plan is `--plan`,
+`--tag`, else `workflow.crew.tag`, else the main checkout's folder name; the plan is `--plan`,
 else the plan this session already leads, else the branch.
 
-**`worker start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/workers/start.ts`)
+**`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
 **returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
 polls or retries. In order:
 
-1. **The refusals** (exit 1, a line and its `Fix:`), shared with `worker lead` (`caller.ts`): the
-   caller is a worker (`CC_SMART_DEV_KIT_WORKER` set); the folder is not in a git project, or its
-   kit config does not read; workers are off here (D34, resolved as `workflow show` resolves it);
+1. **The refusals** (exit 1, a line and its `Fix:`), shared with `crew lead` (`caller.ts`): the
+   caller is a crew session (`CC_SMART_DEV_KIT_CREW` set); the folder is not in a git project, or its
+   kit config does not read; crew sessions are off here (D34, resolved as `workflow show` resolves it);
    no Claude Code session runs the command; that session is in bypass mode — its command line
    (`--dangerously-skip-permissions`, `--permission-mode bypassPermissions`) where the machine
    shows it, else `permissions.defaultMode` in the checkout's `settings.local.json`, its
-   `settings.json`, then the person's (`bypass.ts`): a lead there would act on every worker's
-   message with no question. Then: no lead recorded for this session here (`worker lead` first);
+   `settings.json`, then the person's (`bypass.ts`): a lead there would act on every crew session's
+   message with no question. Then: no lead recorded for this session here (`crew lead` first);
    a brief that cannot be read, or is empty; no `claude` (PATH, then `~/.local/bin`); a base that
    is no commit. A wrong command line is exit 2: no phase, slug or kind, an unknown kind, an effort
-   a worker never runs at, a phase that waits for itself.
-2. **The model and effort**: the kind's (`workerLaunch`, D46). An override (`--model`, `--effort`;
+   a crew session never runs at, a phase that waits for itself.
+2. **The model and effort**: the kind's (`crewLaunch`, D46). An override (`--model`, `--effort`;
    a model alone runs at the kind's effort, or `max` when an affordable model answers it) is
    judged by the Agent guard's own `judgeLaunch`: one it refuses is refused with its words, and
    one it would **ask** the person about (`opus` at `max`, an unreadable name) is refused too,
-   because `worker start` never asks — the person starts such a session themselves. Fable is
-   refused: no worker carries the person's `Fable reason: build` line.
+   because `crew start` never asks — the person starts such a session themselves. Fable is
+   refused: no crew session carries the person's `Fable reason: build` line.
 3. **Start now, or queued** (`places.ts`), decided under one machine-wide lock
-   (`<stateDir>/workers/lock`) so two starts never both take the last place, and recorded
-   (`starting` or `queued`) under the same hold. First the name must be free: no worker of this
+   (`<stateDir>/crew/lock`) so two starts never both take the last place, and recorded
+   (`starting` or `queued`) under the same hold. First the name must be free: no crew session of this
    repository holds the branch (`holdsName`: every record but a `removed` one, and a `failed` one
-   that never got a session and left no worktree), and neither the branch nor the folder exists. Then, in order: **its phases** (`--waits-for`) — each phase's newest worker here must be
-   `merged` or `removed`; **a worker that finished its phase (`done`) is not enough**, because
+   that never got a session and left no worktree), and neither the branch nor the folder exists. Then, in order: **its phases** (`--waits-for`) — each phase's newest crew session here must be
+   `merged` or `removed`; **a crew session that finished its phase (`done`) is not enough**, because
    the lead has not merged it yet, and a dependent phase that branched before the merge would
    miss the work it waits for; **the two caps** (D37)
-   — the workers of every repository on this machine in `starting`, `working`, `blocked`,
-   `paused` or `quiet` stay below `workflow.workers.max` (6), and, for a new opus-tier worker, the
-   opus-tier ones among them stay below `workflow.workers.maxOpus` (2): the tier the model's name
+   — the crew of every repository on this machine in `starting`, `working`, `blocked`,
+   `paused` or `quiet` stay below `workflow.crew.max` (6), and, for a new opus-tier crew session, the
+   opus-tier ones among them stay below `workflow.crew.maxOpus` (2): the tier the model's name
    stands for, recorded at launch (`model.tier`), so the opus kinds (`architecture`, `ui`) and an
    override onto opus both count; the queued line names the cap that holds it; **the memory** — the memory free now less what heavy
    jobs reserved and have not used yet (the job queue's own reading) is at least
-   `workflow.workers.memoryGb` (no check where free memory cannot be read: macOS). The store alone
+   `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS). The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
-   finds a free place takes it, also while older workers wait: each lead's watch starts its own
-   queued ones. A queued worker has no worktree yet and its `base` is null: it is cut from its
+   finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own
+   queued ones. A queued crew session has no worktree yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
 4. **Its files** (`files/<id>/`): `brief.md` — the brief as given, then a fixed frame (`brief.ts`):
    who it is and for whom, its worktree and branch, the files it owns, the git rule (D24: commit on
    its branch, never push, never open a pull request, never merge), how it hands back
-   (`worker report --status done|failed`), and D36's rule: never ask the person or call
-   AskUserQuestion; a question goes to the lead with `worker report --question … --option …
-   --recommend <n>`, the worker goes on with what it does not block, and `--status blocked` only
-   when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_WORKER":"<id>"}}`.
-5. **The launch**, for a worker that starts: `git worktree add -b wk/<phase>-<slug>
-   .claude/worktrees/wk-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
-   a dependency install, is the worker's own first step), the `.worktreeinclude` files copied
+   (`crew report --status done|failed`), and D36's rule: never ask the person or call
+   AskUserQuestion; a question goes to the lead with `crew report --question … --option …
+   --recommend <n>`, the crew session goes on with what it does not block, and `--status blocked` only
+   when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":"<id>"}}`.
+5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
+   .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
+   a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
    (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
-   checkout `claude --bg -w wk-<phase>-<slug> --name "W <tag> <phase> <slug>" --model <m> --effort
+   checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <phase> <slug>" --model <m> --effort
    <e> --permission-mode auto --autocompact auto --settings <settings.json> "<first line>"`. The
-   first line names the worker, its lead and the brief's path; it holds no `"` or `%`, which a
+   first line names the crew session, its lead and the brief's path; it holds no `"` or `%`, which a
    `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: the kit knows no model's window
    (`gateway.json` holds none for a backend), so Claude Code's own stands. The settings are a
    **file** on every platform. On Windows a `claude.cmd` runs through `cmd /d /s /v:off /c` with
    one quoted line (`windowsRun`, the hooks' own quoting); a `claude.exe` runs as it is.
 6. **The one check**: the short id is read from `backgrounded · <id> · <name>` (`--session-id` is
    ignored with `--bg`), then `claude agents --json --all` is read once: the session's row must
-   name the worktree as its `cwd`. The worker is then `working`, with its session id. Otherwise it
+   name the worktree as its `cwd`. The crew session is then `working`, with its session id. Otherwise it
    is `failed`, with the reason: a session in another folder is stopped at once (`claude stop`:
-   the store records it, and a worker outside its worktree would edit another checkout); a row
+   the store records it, and a crew session outside its worktree would edit another checkout); a row
    that is missing, or a list that does not read, is failed with no retry. When nothing started —
    `claude` refused (`Workspace not trusted`: open the repo once with `claude` and accept the trust
    prompt), or `claude --bg` failed — the worktree and its branch are taken back (the branch only
    while it still points at its base), so a second try finds the name free. When a session may
    have started — no `backgrounded` line, or no answer in time — the worktree stays.
 
-### The board and the end of a worker
+### The board and the end of a crew session
 
-`worker list`, `status`, `kinds` and `attach` read; `stop`, `resume` and `rm` act (`board.ts`,
+`crew list`, `status`, `kinds` and `attach` read; `stop`, `resume` and `rm` act (`board.ts`,
 `end.ts`, `remove.ts`; their help is one table, `usage.ts`, which the help table's rows
-(`src/cli/help.ts`) and `worker --help` read too). All of them look a worker up **in this
+(`src/cli/help.ts`) and `crew --help` read too). All of them look a crew session up **in this
 repository's store only**, by its name (also the ` [ref]` form ListAgents prints), its id, its
-session's short id or its session id. A name that matches two workers is refused and both are
-named, so the store, never a guess, decides which session is meant (D35). A worker's own
-session (`CC_SMART_DEV_KIT_WORKER` set) never runs `stop`, `rm` or `resume`.
+session's short id or its session id. A name that matches two crew sessions is refused and both are
+named, so the store, never a guess, decides which session is meant (D35). A crew session's own
+session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
 
-- **`list`** shows the repository's workers (`--all`: every repository), newest first, one block
-  each. The state's age is the newest `state` or `created` event about the worker, not
+- **`list`** shows the repository's crew sessions (`--all`: every repository), newest first, one block
+  each. The state's age is the newest `state` or `created` event about the crew session, not
   `updatedAt`: the watch writes a line or a memory reading every few seconds, and that changes
-  the record without changing what the worker does. Its last step or line is its newest event
-  with a line, else `lastLine`. A queued worker says what holds it, recomputed from the store the
-  way `worker start` decides (`placeFor`: the phases it waits for, then the cap of all workers,
+  the record without changing what the crew session does. Its last step or line is its newest event
+  with a line, else `lastLine`. A queued crew session says what holds it, recomputed from the store the
+  way `crew start` decides (`placeFor`: the phases it waits for, then the cap of all crew sessions,
   the opus cap, the memory), or that a place is free and only its lead's watch is left to start
   it. `--json` prints the records as stored. A record that cannot be read is named on stderr and
   the rest still prints.
-- **`stop`** runs `claude stop <short id>`: the conversation stays on disk. A worker that was
+- **`stop`** runs `claude stop <short id>`: the conversation stays on disk. A crew session that was
   running becomes `stopped`; one that ended with an outcome (`done`, `failed`, `handoff`,
   `merged`) keeps it, because a phase that waits for it (`--waits-for`) reads `done` and
   `merged`, and stopping its process changes neither. A stop Claude Code refuses for a session
   that agent view does not list counts as stopped (the goal is met); one it refuses for a listed
   session is an error and changes nothing.
 - **`resume`** runs `claude respawn <short id>` for that one session — never `--all`, which
-  restarts every background session on the machine — and the worker is `working` again. It is
-  refused for a worker that is `removed` or `merged`, or has no session yet. It does not check
+  restarts every background session on the machine — and the crew session is `working` again. It is
+  refused for a crew session that is `removed` or `merged`, or has no session yet. It does not check
   the caps: the person or the lead asked for exactly this session.
-- **`rm`** ends a finished worker, and refuses at the first step that would lose something. A
-  worker commits on its branch and never pushes (D24), so **only the lead's branch decides**
-  whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `worker rm` and
-  the lead's watch share) asks it of the worker's branch against the commit checked out in the
-  lead's own folder (its lead record's `cwd`; the ref the worker was cut from when that folder is
+- **`rm`** ends a finished crew session, and refuses at the first step that would lose something. A
+  crew session commits on its branch and never pushes (D24), so **only the lead's branch decides**
+  whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `crew rm` and
+  the lead's watch share) asks it of the crew session's branch against the commit checked out in the
+  lead's own folder (its lead record's `cwd`; the ref the crew session was cut from when that folder is
   gone). The work is there when the branch is an ancestor (a merge commit, a fast-forward), or
   when merging it into that commit changes nothing (`git merge-tree --write-tree`, the replay
   `worktrees --clean` uses: it sees a squash merge). A conflict, an error or a git older than 2.38
-  is not certain, and the worker is kept. Then: uncommitted work in the worktree refuses it (before any
+  is not certain, and the crew session is kept. Then: uncommitted work in the worktree refuses it (before any
   side effect), and so does a lock a person took on it (`git worktree lock`; Claude Code's own
   lock — its reason starts `claude session` — is released); the session is stopped; the kit's
   own finished-worktree verdict (`src/worktrees/scan.ts`, the one `worktrees --clean` uses) judges
   the worktree **against the lead's branch rather than `origin/<base>`** (`ScanOptions.against`)
   and removes it, then its branch by the same rule (`deleteBranchOnRef`); and only then
   `claude rm <short id>`, which refuses a worktree that is still there (proved live, L1a.1). A
-  `claude rm` that fails leaves the worker `stopped` with a `step` event saying what is left, and
-  a second `worker rm` goes straight to it. Nothing is ever forced: `claude rm` has two force
+  `claude rm` that fails leaves the crew session `stopped` with a `step` event saying what is left, and
+  a second `crew rm` goes straight to it. Nothing is ever forced: `claude rm` has two force
   flags (`--discard-unpushed`, `--force-remove-worktree`), and neither is used.
-  A squash-merged worker branch is removed like any other; a squash that missed a later commit
-  of the worker is refused, with the count.
+  A squash-merged crew branch is removed like any other; a squash that missed a later commit
+  of the crew session is refused, with the count.
 
-### The worker's steps, its report, and the lead's watch
+### The crew session's steps, its report, and the lead's watch
 
-The lead never waits on a worker (D25). Everything a worker says arrives by itself: **the
-events log** for what the worker did, **the watch** for what the lead reads, and **the answer**
+The lead never waits on a crew session (D25). Everything a crew session says arrives by itself: **the
+events log** for what the crew session did, **the watch** for what the lead reads, and **the answer**
 for what the lead says back.
 
-**A step** — `cc-smart-dev-kit worker step <step> [--note <text>]` (`src/workers/step.ts`) — is
-one milestone of a worker's phase: a failing test, a passing one, the whole suite, the review
+**A step** — `cc-smart-dev-kit crew step <step> [--note <text>]` (`src/crew/step.ts`) — is
+one milestone of a crew session's phase: a failing test, a passing one, the whole suite, the review
 that starts and ends, the fixes, the commit, the pull request, the hand-off
-(`WORKER_STEPS`, one list). **Only a worker records steps**: the worker is the one
-`CC_SMART_DEV_KIT_WORKER` names (its Bash tool carries it, L1a.1), and a session that names none
-is refused. The command reads HEAD's sha itself, so the worker never has to name its own commit,
+(`CREW_STEPS`, one list). **Only a crew records steps**: the crew session is the one
+`CC_SMART_DEV_KIT_CREW` names (its Bash tool carries it, L1a.1), and a session that names none
+is refused. The command reads HEAD's sha itself, so the crew session never has to name its own commit,
 and appends **one** event (`type: "step"`, the step's name, the sha, the note, the time). A step
-the worker does not know is refused, with the list of the ones it does.
+the crew session does not know is refused, with the list of the ones it does.
 
-**The hand-back report** — `cc-smart-dev-kit worker report --status done|blocked|failed|handoff
-[--file <file|->]` (`src/workers/report.ts`) — is what the worker gives its lead. **The command
-fills the mechanical facts**, so the worker never looks them up: the branch and its head, the
+**The hand-back report** — `cc-smart-dev-kit crew report --status done|blocked|failed|handoff
+[--file <file|->]` (`src/crew/report.ts`) — is what the crew session gives its lead. **The command
+fills the mechanical facts**, so the crew session never looks them up: the branch and its head, the
 base it started from, the diff counted against that base (`git diff --numstat -z --no-renames`,
 `diff.ts`), the files it changed that its brief did not name (the brief's `--files` globs; a brief
 that names none names no boundary), the review the record holds for its branch, and its pull
 request. A diff git cannot give — the base is gone, the folder is no worktree — is a refusal,
-never "no file changed". The worker gives the rest, and the command checks it against the store's
+never "no file changed". The crew session gives the rest, and the command checks it against the store's
 report shape before it writes anything: the targeted tests and the whole suite, the other
 checks, the review's findings, the docs, what only the lead may do, and what is still open. The
 file holds that part as JSON, or as prose, which is kept as the report's `summary`; with no file
 the part is empty and the facts are still filled. A report that claims a review **the review
 record does not hold** is refused — so the lead's gate (D22) never has to doubt it. The report
-ends the worker's phase: its state becomes the status, and the report file, the record and the
+ends the crew session's phase: its state becomes the status, and the report file, the record and the
 `report` event are written under one hold. **Only a `blocked` report carries a question** — the
-one it waits on, or else the newest the worker asked that nobody answered; a `done` report with
-an old open question in it would tell the lead the worker is blocked.
+one it waits on, or else the newest the crew session asked that nobody answered; a `done` report with
+an old open question in it would tell the lead the crew session is blocked.
 
-**A question** — `worker report --question "<the question>" --option "<choice>" --option
+**A question** — `crew report --question "<the question>" --option "<choice>" --option
 "<choice>" [--recommend <n>]` — goes to the lead (D36). It is recorded at the end of the
-worker's `questions`, with a `question` event, and **the worker's state does not move**: it goes
-on with every part of the phase the question does not block. `--status blocked` says the worker
+crew session's `questions`, with a `question` event, and **the crew session's state does not move**: it goes
+on with every part of the phase the question does not block. `--status blocked` says the crew session
 has nothing left to do. A question needs two options at least, and a recommendation that is one
 of them; `--option` and `--recommend` without a `--question`, and a `--file` with one, are
 mistakes (exit 2).
 
-**The answer** — `cc-smart-dev-kit worker answer <worker> "<the answer>"` (`src/workers/answer.ts`)
+**The answer** — `cc-smart-dev-kit crew answer <crew session> "<the answer>"` (`src/crew/answer.ts`)
 — comes back from the lead (an answer that starts with `--` is given after a bare `--`). A
-**running** worker gets it as a message: the CLI cannot send one itself (Claude Code's
+**running** crew session gets it as a message: the CLI cannot send one itself (Claude Code's
 `SendMessage` is a tool only a session holds), so the command prints the one line the lead sends
 it with — `SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a
 quote or a line break in the answer is escaped and never changed — and records the answer, so the
-question is answered once. A **stopped** worker (D35: the watch stops a blocked worker that
-idles past `workflow.workers.idleStopMinutes`) is resumed with the answer as its next prompt:
+question is answered once. A **stopped** crew session (D35: the watch stops a blocked crew session that
+idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt:
 `claude --bg --resume <session id> "<text>"`, the form `claude --help` gives in 2.1.306 ("With
 --resume <session-id>, continues that session in the background under the same ID"), run in the
-worker's own worktree. **A worker the answer reaches or resumes is `working` again, in the same
+crew session's own worktree. **A crew session the answer reaches or resumes is `working` again, in the same
 hold that records the answer**: a record that kept saying `blocked` would let the watch stop a
-worker that is busy. A stopped worker that ended its phase (a `done`, `failed` or `handoff`
-report) is not resumed by an answer, and a worker the store does not know is never answered: the
-store, not the name, says what is a worker.
+crew session that is busy. A stopped crew session that ended its phase (a `done`, `failed` or `handoff`
+report) is not resumed by an answer, and a crew session the store does not know is never answered: the
+store, not the name, says what is a crew session.
 
-**The watch** — `cc-smart-dev-kit worker watch [--lead <session>] [--once] [--timeout
-<seconds>]` (`src/workers/watch.ts`) — is the lead's window. It prints **one line per change and
+**The watch** — `cc-smart-dev-kit crew watch [--lead <session>] [--once] [--timeout
+<seconds>]` (`src/crew/watch.ts`) — is the lead's window. It prints **one line per change and
 nothing else**, from two readers:
 
 - **the store's events log** (`events.jsonl`), read from the byte after the last whole line the
-  last pass read (the store's own reader, `readWorkerEvents`; a line a writer has not finished is
+  last pass read (the store's own reader, `readCrewEvents`; a line a writer has not finished is
   left for the next read). A step, a report, a question and a state change are each one line, and
   **a change of state is said from its event and from nowhere else**: the watch's own acts write
   events too, and the pass reads the log a second time at its end, so a change it makes is said
   once, in the same pass. A report's line names the review the record holds, the phases that wait
-  for this one and the report's file: `W kit B6b portal-live: done · review ✓ · unblocks B6c, B6d
+  for this one and the report's file: `C kit B6b portal-live: done · review ✓ · unblocks B6c, B6d
   · report <path>`; a `blocked` one says what it waits on, a `failed` one why. Where the watch
   goes on is **per lead** (`<store>/watch/<lead session id>.json`), so two leads watch their own
-  workers and neither loses the other's lines; the mark is written when the lead records itself
-  (`worker lead`), so the lines before it are history the lead already saw.
+  crew sessions and neither loses the other's lines; the mark is written when the lead records itself
+  (`crew lead`), so the lines before it are history the lead already saw.
 - **agent view** (`claude agents --json --all`), read on every pass. It raises three alerts, each
-  said once while it lasts and none of them an action: a worker that **needs the person** (a
+  said once while it lasts and none of them an action: a crew session that **needs the person** (a
   permission prompt or an input), one whose transcript has not moved for
-  `workflow.workers.quietMinutes` (**quiet**), and one whose turn **ended with no report**. It
-  also keeps the store true, because the caps count the workers that hold a place
+  `workflow.crew.quietMinutes` (**quiet**), and one whose turn **ended with no report**. It
+  also keeps the store true, because the caps count the crew that hold a place
   (`RUNNING_STATES`): a session that **failed** is recorded `failed`, and one the person
-  **stopped by hand** is recorded `stopped`; neither then holds a place and keeps a queued worker
-  waiting for ever. A permission wait does **not** make a worker `blocked`: the idle stop below
-  would kill a worker that only waits for the person to approve a call.
+  **stopped by hand** is recorded `stopped`; neither then holds a place and keeps a queued crew session
+  waiting for ever. A permission wait does **not** make a crew session `blocked`: the idle stop below
+  would kill a crew session that only waits for the person to approve a call.
 
-The watch **acts** as well, because a worker never outlives its work (D35), and only on workers
+The watch **acts** as well, because a crew session never outlives its work (D35), and only on crew sessions
 the store records — a session the kit does not know is the person's own:
 
-- it **starts the queued workers** of this lead when a place frees — through the launcher's own
-  path (`startQueued`, in `start.ts`: the same `launch` that `worker start` runs, never a second
-  launcher). A queued worker is cut from its `baseRef` when it starts, so a phase that waited for
+- it **starts the queued crew sessions** of this lead when a place frees — through the launcher's own
+  path (`startQueued`, in `start.ts`: the same `launch` that `crew start` runs, never a second
+  launcher). A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
   another starts from the merged result, and the folder `claude -w` opens is the record's own
   worktree, so a hand-off's numbered folder is the right one;
-- it **ends** a worker whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
+- it **ends** a crew session whose turn ended with a `done` or a `failed` report (`claude stop <id>`;
   the conversation stays; a session that crashed has nothing to stop), and a `blocked` one that
-  has idled past `workflow.workers.idleStopMinutes` (an answer brings it back). A stop that fails
+  has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A stop that fails
   is said once, not on every pass;
-- it **marks a worker `merged`** when the lead merged its branch, and the line says `worker rm`
+- it **marks a crew session `merged`** when the lead merged its branch, and the line says `crew rm`
   removes it. The branch must hold a commit of its own (its tip is not the base it was cut from —
-  a worker that failed before it committed is an ancestor of the lead's branch for that reason
+  a crew session that failed before it committed is an ancestor of the lead's branch for that reason
   alone), and its work must be on the commit **the lead's own folder** is on (the lead's record
-  holds it; the main checkout when that is gone): `workOnRef`, the answer `worker rm` gives too —
+  holds it; the main checkout when that is gone): `workOnRef`, the answer `crew rm` gives too —
   its tip is an ancestor, or merging it changes nothing, which is how a squash merge shows. When
   git cannot say, it is not marked. The merge is looked for on every
-  worker whose work is over (`done`, `failed`, `handoff`, `stopped`): a worker stopped after its
+  crew session whose work is over (`done`, `failed`, `handoff`, `stopped`): a crew session stopped after its
   turn ended is merged later, when the lead merges the branch.
 
 The watch's memory reading (`/proc/<pid>/status`'s `VmRSS` on Linux, nothing elsewhere) goes into
-the worker's record without moving its `updatedAt` (the idle stop counts from it), where `worker
-list` and the portal read it, and into the event the watch writes when it ends the worker.
+the crew session's record without moving its `updatedAt` (the idle stop counts from it), where `crew
+list` and the portal read it, and into the event the watch writes when it ends the crew session.
 
 `--once` ends on the next change: the fallback where monitors do not run (the lead runs it with
 `run_in_background: true`, re-armed per event, and the end of the run starts the lead's next
 turn); a pass with nothing to say waits for the next, so it never wakes the lead with no news.
 `--timeout <seconds>` bounds the wait.
 
-**The hand-off** — `worker start <phase> --continue <old worker>` — starts the next worker of a
-phase that ran out of room: the same phase and slug, cut from the **old worker's head** (not
-the lead's branch), with the old brief and what the old worker left behind as its brief — its
+**The hand-off** — `crew start <phase> --continue <old crew session>` — starts the next crew session of a
+phase that ran out of room: the same phase and slug, cut from the **old crew session's head** (not
+the lead's branch), with the old brief and what the old crew session left behind as its brief — its
 report: the branch and the counts, the docs, the files outside the brief, what only the lead may
-do, what is open, and its own words (`summary`) — and the next number in its name (`W <tag>
+do, what is open, and its own words (`summary`) — and the next number in its name (`C <tag>
 <phase> <slug> 2`, and ` 3` after that). Its branch and its worktree folder carry the same number
-as a suffix (`wk/<phase>-<slug>-2`), so the next worker never takes the branch or the folder of
+as a suffix (`crew/<phase>-<slug>-2`), so the next crew session never takes the branch or the folder of
 the one before it; its id keeps the one scheme (`<phase>-<slug>-<6 hex>`). It is a new launch, so
-it goes through the same launch policy a fresh start does (`chooseLaunch`): the old worker's model
-and effort are asked for again, and the Agent guard judges them now. **The old worker's session
-is stopped; its record stays `handoff`** — the store's word for "handed off to a next worker, and
-ended" — and so do its branch and its worktree, so the lead can read what it did and `worker rm`
-can clean it up. Only a worker that handed off can be continued, **once**: a second `--continue`
-of the same worker is refused while its next worker is not failed or removed, and a report that
-cannot be read is a refusal (a hand-off without it would lose what the next worker must know).
-**The chain is recorded, never worked out**: the next worker's record holds the old worker's id
+it goes through the same launch policy a fresh start does (`chooseLaunch`): the old crew session's model
+and effort are asked for again, and the Agent guard judges them now. **The old crew session's Claude session
+is stopped; its record stays `handoff`** — the store's word for "handed off to a next crew session, and
+ended" — and so do its branch and its worktree, so the lead can read what it did and `crew rm`
+can clean it up. Only a crew session that handed off can be continued, **once**: a second `--continue`
+of the same crew session is refused while its next crew session is not failed or removed, and a report that
+cannot be read is a refusal (a hand-off without it would lose what the next crew session must know).
+**The chain is recorded, never worked out**: the next crew session's record holds the old crew session's id
 (`continues`), because a number at the end of a branch or a slug proves nothing — a phase whose
 slug is `step-2` has a branch that ends in `-2` too.
 
-**The worker's own line** — `cc-smart-dev-kit worker self-watch [--once]`
-(`src/workers/self-watch.ts`) — runs in the worker's own monitor, and **keeps running**: it looks
-every minute and prints a line only when the worker should act, so a worker that is fine sees
-nothing. It reads the worker's own transcript tail: the last reply's `usage` (its input, its cache
+**The crew session's own line** — `cc-smart-dev-kit crew self-watch [--once]`
+(`src/crew/self-watch.ts`) — runs in the crew session's own monitor, and **keeps running**: it looks
+every minute and prints a line only when the crew session should act, so a crew session that is fine sees
+nothing. It reads the crew session's own transcript tail: the last reply's `usage` (its input, its cache
 written and its cache read) against the window of the model that wrote that reply
 (`transcript.ts`). **The kit knows no backend's window**: a Claude model — an id, or the family
-name a worker is launched with — has Claude Code's own 200 000 tokens, or 1 000 000 with the
-`[1m]` suffix (a family name that really has a larger window makes the worker hand off early,
+name a crew session is launched with — has Claude Code's own 200 000 tokens, or 1 000 000 with the
+`[1m]` suffix (a family name that really has a larger window makes the crew session hand off early,
 never late), and a model the kit does not know has no window and so no context line. At
-`workflow.workers.handoffPercent` (70 %) the worker is told to **hand off**: commit the work in
-progress and run `worker report --status handoff`. At `workflow.workers.softHours` (2) it gets a
-**note** (the phase is long); at `workflow.workers.maxHours` (4) it is told to hand off again —
+`workflow.crew.handoffPercent` (70 %) the crew session is told to **hand off**: commit the work in
+progress and run `crew report --status handoff`. At `workflow.crew.softHours` (2) it gets a
+**note** (the phase is long); at `workflow.crew.maxHours` (4) it is told to hand off again —
 the hours count from when its session **started** (`startedAt` in the record), not from when it
-was recorded, because a worker that waited in the queue has not run for the hours it waited. The
-same line is not said again before 15 minutes have passed, so a worker that ignored it sees it
-again and a worker that acted does not; the loop ends when the worker's phase is over. A monitor
+was recorded, because a crew session that waited in the queue has not run for the hours it waited. The
+same line is not said again before 15 minutes have passed, so a crew session that ignored it sees it
+again and a crew session that acted does not; the loop ends when the crew session's phase is over. A monitor
 is a process of the host, whose environment may not carry the settings' `env`, so this one command
-finds its worker by its worktree when `CC_SMART_DEV_KIT_WORKER` is not set; `--once` checks once
+finds its crew session by its worktree when `CC_SMART_DEV_KIT_CREW` is not set; `--once` checks once
 and exits (for a hook, and for a host where monitors do not run).
 
-**The monitors** (`plugin/monitors/monitors.json`) arm the two of them: `worker-events` on the
-lead's skill (`on-skill-invoke:cc-smart-dev-kit:lead`) runs the watch, and `worker-self` on the
-worker's (`on-skill-invoke:cc-smart-dev-kit:worker`) runs the self-watch. The file is an array of
+**The monitors** (`plugin/monitors/monitors.json`) arm the two of them: `crew-events` on the
+lead's skill (`on-skill-invoke:cc-smart-dev-kit:lead`) runs the watch, and `crew-self` on the
+crew session's (`on-skill-invoke:cc-smart-dev-kit:crew`) runs the self-watch. The file is an array of
 monitors with exactly the four fields Claude Code's loader reads (`name`, `command`,
 `description`, `when`); `when` for a plugin's own skill is the namespaced
 `on-skill-invoke:<plugin>:<skill>` (the loader compares it with the name the skill is invoked by,
@@ -2571,7 +2571,7 @@ watch says only what is news. **They are session-scoped**: the host arms them as
 of the session, and they end with it, so the long-lived-parts rule of `bundles-and-releases.md` (a
 part that outlives a session must run from a copy in `~/.local/share/`) does not apply to them.
 **They do not run where telemetry is off** (`DISABLE_TELEMETRY`, or
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), and there the lead uses `worker watch --once` in the
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), and there the lead uses `crew watch --once` in the
 background instead — the fallback the lead skill names. The watch knows which case it is in (the
 environment and the user's settings' `env`, `telemetry.ts`) and says so once, so the lead knows to
 re-arm it; the watch's own help names the fallback too. **`claude plugin validate` does not read

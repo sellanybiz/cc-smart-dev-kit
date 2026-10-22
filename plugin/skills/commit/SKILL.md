@@ -36,8 +36,8 @@ move on; with the whole plan done, ask once, listing every open pull request wit
 and the merge order.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
-- **Workers:** a worker session commits on its own branch and nothing more — its git rule is
-  `/cc-smart-dev-kit:worker` § 3. The lead handles git: it merges each worker's branch locally
+- **Crew sessions:** a crew session commits on its own branch and nothing more — its git rule is
+  `/cc-smart-dev-kit:crew` § 3. The lead handles git: it merges each crew session's branch locally
   (`/cc-smart-dev-kit:lead` § 6), and this skill covers its own commits, push and pull request.
 - **Push and open the pull request** when the change set is complete and the second opinion
   has read it, or it is a small fix that skips it. Not after each commit.

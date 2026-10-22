@@ -45,7 +45,7 @@ state, dated history or rollout status is not a rule. New rules, and where they 
 
 ## Saving to memory
 
-**Only the main session saves** — the one the person talks to. A subagent or a worker session
+**Only the main session saves** — the one the person talks to. A subagent or a crew session
 puts what is worth keeping in its report, and the session it reports to saves it.
 
 **Search before you save.** With claude-mem: `mem_search` first — the fact may be there

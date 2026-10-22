@@ -37,7 +37,7 @@ import {
   ccSmartDevKitConfigSchema,
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
-  WORKFLOW_WORKERS_SINCE,
+  WORKFLOW_CREW_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
 } from "./config";
@@ -183,7 +183,7 @@ export function raisedRequires(existing: unknown, floor: string, floorVersion: s
  * names, for `raisedRequires`.
  *
  * A file without `worktrees.prefix` needs the plugin that made that field optional
- * (0.5.2): every older plugin refuses the whole file. A file with `workflow.workers` or
+ * (0.5.2): every older plugin refuses the whole file. A file with `workflow.crew` or
  * `workflow.fixesAfterReview` needs the release that brought them: an older plugin reads
  * the file strictly, does not know that field, and refuses the file — so every guard in
  * that project fails closed until the plugin is updated.
@@ -193,8 +193,8 @@ export function requiresFloor(file: Record<string, unknown>): {
   version: string;
 } {
   const workflow = isObject(file.workflow) ? file.workflow : {};
-  if (Object.hasOwn(workflow, "workers") || Object.hasOwn(workflow, "fixesAfterReview")) {
-    return { floor: requiresFor(WORKFLOW_WORKERS_SINCE), version: WORKFLOW_WORKERS_SINCE };
+  if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
+    return { floor: requiresFor(WORKFLOW_CREW_SINCE), version: WORKFLOW_CREW_SINCE };
   }
   return {
     floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
@@ -360,7 +360,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (Object.keys(answers.workflow).length > 0) next.workflow = answers.workflow;
   else delete next.workflow;
   // The floor depends on the fields the file ends up with: a file that sets
-  // `workflow.workers` needs the plugin that brought it, or every older plugin refuses the
+  // `workflow.crew` needs the plugin that brought it, or every older plugin refuses the
   // whole file (it does not know the field) and every guard in that project fails closed.
   const floor = requiresFloor(next);
   next.requires = raisedRequires(before.requires, floor.floor, floor.version);

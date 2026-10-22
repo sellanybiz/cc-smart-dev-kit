@@ -106,7 +106,7 @@ export interface ScanOptions {
   base: string;
   /**
    * The ref the commits are judged against, and how a message calls it: the lead's branch, for
-   * a worker's worktree (D24: the lead merges locally, nothing is pushed). Without it the ref is
+   * a crew session's worktree (D24: the lead merges locally, nothing is pushed). Without it the ref is
    * `origin/<base>`, as `worktrees` judges.
    */
   against?: { label: string; ref: string };
@@ -318,7 +318,7 @@ export type WorkOnRef =
 /**
  * Is the work of the commit `head` on `ref`? The one answer for "is this branch merged": an
  * ancestor (a merge commit or a fast-forward), or a merge of it that changes nothing (a squash
- * merge, `replayOntoBase`). A worker's removal and the lead's watch both ask it, so they agree
+ * merge, `replayOntoBase`). A crew session's removal and the lead's watch both ask it, so they agree
  * with `worktrees --clean`. Only "ancestor" and "replay" are certain; keep what is at stake for
  * the rest.
  */

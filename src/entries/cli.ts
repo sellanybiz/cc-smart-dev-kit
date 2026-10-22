@@ -30,6 +30,8 @@ import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
+import { runCrew } from "../crew/command";
+import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { realProbe } from "../gateway/health";
@@ -61,8 +63,6 @@ import { instructionsFolder } from "../setup/instructions";
 import { LAUNCHER_NAME } from "../setup/launcher";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
-import { runWorker } from "../workers/command";
-import { realWorkerContext } from "../workers/context";
 import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
@@ -762,8 +762,8 @@ async function main(argv: string[]): Promise<number> {
         },
         rest,
       );
-    case "worker":
-      return await runWorker(rest, realWorkerContext(paths));
+    case "crew":
+      return await runCrew(rest, realCrewContext(paths));
     case "job":
       return runJobCommand(rest, {
         paths,

@@ -41,7 +41,7 @@ heading reads as "not considered".
    database, not only an empty one. Say "no-op in production" only when you checked.
 5. **How it was verified** — the real commands and their results. **Say what was not
    verified** — no browser check, no production data, no load test — and the second
-   opinion's result (or "small fix"). A branch that carries workers' phases lists each phase
+   opinion's result (or "small fix"). A branch that carries crew sessions' phases lists each phase
    with its review, then the integration review. "Verified" with nothing behind it is worse
    than an honest gap.
 6. **Still owed after the merge** — anything a person must do by hand, on a server, in a

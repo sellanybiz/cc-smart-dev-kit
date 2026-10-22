@@ -130,8 +130,8 @@ person asks, with the line `Fable reason: review - <why>`; `agent-guard` then as
   ship together get one read, not one each. A phase built on another open pull request is a
   new change set: its own branch, its own read. Fixes to code the agent already read are a
   re-push, not a new change set.
-- **Workers:** each worker's phase is its own change set, and the worker runs its one read
-  (`/cc-smart-dev-kit:worker` § 2). The lead's integration commits — conflict fixes, the shared
+- **Crew sessions:** each crew session's phase is its own change set, and the crew session runs its one read
+  (`/cc-smart-dev-kit:crew` § 2). The lead's integration commits — conflict fixes, the shared
   files, the glue between phases — are one more: one small integration review before the push,
   on that diff alone.
 - **The brief:** the diff (or how to get it: base and branch), what the change is meant to

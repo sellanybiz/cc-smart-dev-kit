@@ -78,7 +78,7 @@ describe("detachedArgv", () => {
   });
 
   test("windowsRun: the same quoting, with no start trampoline: cmd waits for the .cmd", () => {
-    const argv = ["C:\\Program Files\\nodejs\\claude.cmd", "--bg", "-w", "wk-K-x", "do it; now"];
+    const argv = ["C:\\Program Files\\nodejs\\claude.cmd", "--bg", "-w", "crew-K-x", "do it; now"];
     expect(windowsRun(argv)).toEqual({
       argv: [
         "cmd",
@@ -86,7 +86,7 @@ describe("detachedArgv", () => {
         "/s",
         "/v:off",
         "/c",
-        String.raw`""C:\Program Files\nodejs\claude.cmd" "--bg" "-w" "wk-K-x" "do it; now""`,
+        String.raw`""C:\Program Files\nodejs\claude.cmd" "--bg" "-w" "crew-K-x" "do it; now""`,
       ],
       ok: true,
     });

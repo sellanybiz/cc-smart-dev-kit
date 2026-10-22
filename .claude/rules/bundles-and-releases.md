@@ -21,7 +21,7 @@ Claude Code copies only `plugin/` into
   `monitors/monitors.json` (the plugin's monitors: commands Claude Code starts when a skill is
   used and ends with the session. They are session-scoped, so they run from the version folder
   and need no copy in `~/.local/share/`. `claude plugin validate` does not read the default-path
-  file, so `src/workers/monitors.test.ts` guards its shape), `instructions/`
+  file, so `src/crew/monitors.test.ts` guards its shape), `instructions/`
   (plain Markdown that `setup` copies), `skills/`, `agents/`, `output-styles/`, and
   `bunfig.toml` (**empty, and it stays empty**: every bun the plugin starts in a person's
   folder gets `--config=` pointing at it, so a project's own `bunfig.toml` — its `preload` —

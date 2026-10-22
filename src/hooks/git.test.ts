@@ -12,10 +12,10 @@ describe("parseWorktreeList", () => {
       "HEAD 1111111111111111111111111111111111111111",
       "branch refs/heads/main",
       "",
-      "worktree /work/app/.claude/worktrees/wk-B1-help",
+      "worktree /work/app/.claude/worktrees/crew-B1-help",
       "HEAD 2222222222222222222222222222222222222222",
-      "branch refs/heads/wk/B1-help",
-      "locked claude session wk-B1-help (pid 4242 start 99)",
+      "branch refs/heads/crew/B1-help",
+      "locked claude session crew-B1-help (pid 4242 start 99)",
       "",
       "worktree /work/usb",
       "HEAD 3333333333333333333333333333333333333333",
@@ -36,7 +36,7 @@ describe("parseWorktreeList", () => {
       prunable: false,
     });
     expect(claude?.locked).toBe(true);
-    expect(claude?.lockReason).toBe("claude session wk-B1-help (pid 4242 start 99)");
+    expect(claude?.lockReason).toBe("claude session crew-B1-help (pid 4242 start 99)");
     // A lock with no reason is a lock all the same, with nothing said.
     expect(bare?.locked).toBe(true);
     expect(bare?.lockReason).toBeUndefined();

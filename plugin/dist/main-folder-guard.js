@@ -6101,13 +6101,13 @@ function mergeKinds(projectKinds) {
   return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
 }
 
-// src/workers/names.ts
+// src/crew/names.ts
 var MAX_SESSION_NAME = 60;
 var MAX_TAG = 12;
 var MAX_PHASE = 8;
 var MAX_SLUG = 32;
 var LEAD_ROLE = "LEAD";
-var WORKER_ROLE = "W";
+var CREW_ROLE = "C";
 function cleanSessionName(raw) {
   const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
   const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
@@ -6134,7 +6134,7 @@ function withoutListRef(name) {
 }
 var PART = "[A-Za-z0-9._-]+";
 var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var WORKER_SHAPE = new RegExp(`^${WORKER_ROLE}( ${PART}){2,4}$`);
+var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}$`);
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
@@ -6151,14 +6151,14 @@ function numberSchema(rule) {
 }
 var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
-  "workers.idleStopMinutes": AT_LEAST_ONE,
-  "workers.max": AT_LEAST_ONE,
-  "workers.maxOpus": AT_LEAST_ONE,
-  "workers.memoryGb": ABOVE_ZERO,
-  "workers.quietMinutes": AT_LEAST_ONE,
-  "workers.handoffPercent": PERCENT,
-  "workers.softHours": ABOVE_ZERO,
-  "workers.maxHours": ABOVE_ZERO,
+  "crew.idleStopMinutes": AT_LEAST_ONE,
+  "crew.max": AT_LEAST_ONE,
+  "crew.maxOpus": AT_LEAST_ONE,
+  "crew.memoryGb": ABOVE_ZERO,
+  "crew.quietMinutes": AT_LEAST_ONE,
+  "crew.handoffPercent": PERCENT,
+  "crew.softHours": ABOVE_ZERO,
+  "crew.maxHours": ABOVE_ZERO,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -6187,16 +6187,16 @@ var workflowSchema = strictObject({
     sound: boolean2().optional(),
     usagePercent: numberField("alerts.usagePercent")
   }).optional(),
-  workers: strictObject({
+  crew: strictObject({
     enabled: boolean2().optional(),
-    idleStopMinutes: numberField("workers.idleStopMinutes"),
-    max: numberField("workers.max"),
-    maxOpus: numberField("workers.maxOpus"),
-    memoryGb: numberField("workers.memoryGb"),
-    quietMinutes: numberField("workers.quietMinutes"),
-    handoffPercent: numberField("workers.handoffPercent"),
-    softHours: numberField("workers.softHours"),
-    maxHours: numberField("workers.maxHours"),
+    idleStopMinutes: numberField("crew.idleStopMinutes"),
+    max: numberField("crew.max"),
+    maxOpus: numberField("crew.maxOpus"),
+    memoryGb: numberField("crew.memoryGb"),
+    quietMinutes: numberField("crew.quietMinutes"),
+    handoffPercent: numberField("crew.handoffPercent"),
+    softHours: numberField("crew.softHours"),
+    maxHours: numberField("crew.maxHours"),
     tag: tagSchema.optional()
   }).optional()
 });
@@ -6220,7 +6220,7 @@ var workflowDefaults = {
     sound: false,
     usagePercent: 85
   },
-  workers: {
+  crew: {
     enabled: false,
     idleStopMinutes: 10,
     max: 6,
@@ -6250,16 +6250,16 @@ var POLICY_KEYS = [
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
-  "workers.enabled",
-  "workers.idleStopMinutes",
-  "workers.max",
-  "workers.maxOpus",
-  "workers.memoryGb",
-  "workers.quietMinutes",
-  "workers.handoffPercent",
-  "workers.softHours",
-  "workers.maxHours",
-  "workers.tag"
+  "crew.enabled",
+  "crew.idleStopMinutes",
+  "crew.max",
+  "crew.maxOpus",
+  "crew.memoryGb",
+  "crew.quietMinutes",
+  "crew.handoffPercent",
+  "crew.softHours",
+  "crew.maxHours",
+  "crew.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -9963,7 +9963,7 @@ function effectiveLaunch(launch, env, sessionModel) {
     return { ...effort, model: workflowModel, modelFrom: "workflow" };
   return { ...effort, model: launch.model, modelFrom: "call" };
 }
-var WORKER_KINDS = {
+var CREW_KINDS = {
   build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
   docs: {
     about: "docs and their updates",
@@ -10005,7 +10005,7 @@ var WORKER_KINDS = {
   },
   ui: { about: "UI and UX judgment", affordableEffort: "xhigh", effort: "xhigh", model: "opus" }
 };
-var WORKER_KIND_NAMES = Object.keys(WORKER_KINDS);
+var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 
 // src/hooks/agent-guard-workflows.ts
 import { existsSync as existsSync8, readdirSync as readdirSync3, readFileSync as readFileSync10, statSync as statSync7 } from "fs";
@@ -11805,9 +11805,9 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
-  const workers = mergedGroup(personal.workers, project.workers);
-  if (workers !== undefined)
-    merged.workers = workers;
+  const crew = mergedGroup(personal.crew, project.crew);
+  if (crew !== undefined)
+    merged.crew = crew;
   return merged;
 }
 function sourceOf(personal, project, key) {
@@ -11872,7 +11872,7 @@ function resolveWorkflow(paths, projectConfig) {
     source: sourceOf(personal, project, key)
   });
   const fixes = merged.fixesAfterReview ?? {};
-  const workers = merged.workers ?? {};
+  const crew = merged.crew ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -11889,17 +11889,17 @@ function resolveWorkflow(paths, projectConfig) {
     },
     clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
     alerts: alertsFrom(personal, project),
-    workers: {
-      enabled: of("workers.enabled", workers.enabled ?? workflowDefaults.workers.enabled),
-      idleStopMinutes: of("workers.idleStopMinutes", workers.idleStopMinutes ?? workflowDefaults.workers.idleStopMinutes),
-      max: of("workers.max", workers.max ?? workflowDefaults.workers.max),
-      maxOpus: of("workers.maxOpus", workers.maxOpus ?? workflowDefaults.workers.maxOpus),
-      memoryGb: of("workers.memoryGb", workers.memoryGb ?? workflowDefaults.workers.memoryGb),
-      quietMinutes: of("workers.quietMinutes", workers.quietMinutes ?? workflowDefaults.workers.quietMinutes),
-      handoffPercent: of("workers.handoffPercent", workers.handoffPercent ?? workflowDefaults.workers.handoffPercent),
-      softHours: of("workers.softHours", workers.softHours ?? workflowDefaults.workers.softHours),
-      maxHours: of("workers.maxHours", workers.maxHours ?? workflowDefaults.workers.maxHours),
-      tag: of("workers.tag", workers.tag ?? workflowDefaults.workers.tag)
+    crew: {
+      enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      idleStopMinutes: of("crew.idleStopMinutes", crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes),
+      max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
+      maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
+      memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      quietMinutes: of("crew.quietMinutes", crew.quietMinutes ?? workflowDefaults.crew.quietMinutes),
+      handoffPercent: of("crew.handoffPercent", crew.handoffPercent ?? workflowDefaults.crew.handoffPercent),
+      softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
+      maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
+      tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag)
     },
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),

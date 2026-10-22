@@ -22,8 +22,8 @@ work), and which model and effort each agent gets too (§ Subagents).
 | A file's or a module's structure — its functions, exports, outline | yourself: claude-mem's `smart_outline` for one file, `smart_search` across the repo, `smart_unfold` for one symbol's body; when they are not there or do not answer, `Grep` and `Read` |
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
-| A whole phase of a plan, where the project has workers on | a worker session, not a subagent — `/cc-smart-dev-kit:lead` |
-| A phase of a plan with workers off, a piece of one; any job that both explores and edits | `general-purpose` |
+| A whole phase of a plan, where the project has crew sessions on | a crew session, not a subagent — `/cc-smart-dev-kit:lead` |
+| A phase of a plan with crew sessions off, a piece of one; any job that both explores and edits | `general-purpose` |
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
 | Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify` |
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
@@ -92,7 +92,7 @@ guard asks the person about every Fable launch.
 
 **A fresh attempt's brief** (`unsatisfied`) carries: the task; your answer, or the files you
 changed; what the person disliked, in their words; and what it returns — a design, a plan or a
-fix for you or a worker to build, never a build of its own.
+fix for you or a crew session to build, never a build of its own.
 
 ## While agents run
 

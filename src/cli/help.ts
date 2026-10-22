@@ -20,6 +20,8 @@
  * before any command runs, so help never runs a command and never needs a machine (`UX-2`).
  */
 import { COMMAND, VERSION } from "../build-info";
+import { CREW_USAGE } from "../crew/command";
+import { BOARD_COMMANDS } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
@@ -31,8 +33,6 @@ import {
   RETRY_WATCHDOG_FLAG,
 } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
-import { WORKER_USAGE } from "../workers/command";
-import { BOARD_COMMANDS } from "../workers/usage";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import { PROJECT_INIT_USAGE } from "./project-init";
@@ -282,7 +282,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "mcp", listed: "more", help: MCP_HELP },
   { name: "omniroute", listed: "more", help: OMNIROUTE_USAGE },
   { name: "job", listed: "more", help: JOB_USAGE },
-  { name: "worker", listed: "more", help: WORKER_USAGE },
+  { name: "crew", listed: "more", help: CREW_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },
   { name: "statusline", listed: "more", help: STATUSLINE_HELP },
   { name: "version", listed: "more", help: VERSION_HELP },
@@ -292,8 +292,8 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "gateway", help: GATEWAY_USAGE },
   { name: "project", help: PROJECT_INIT_USAGE },
   { name: "mcp status", help: MCP_HELP },
-  // The board and the end of a worker: a row each, from their own table (`workers/usage.ts`).
-  ...BOARD_COMMANDS.map((one) => ({ name: `worker ${one.name}`, help: one.help })),
+  // The board and the end of a crew session: a row each, from their own table (`crew/usage.ts`).
+  ...BOARD_COMMANDS.map((one) => ({ name: `crew ${one.name}`, help: one.help })),
   { name: "session-name", help: SESSION_NAME_HELP },
   { name: ALERT_WORKER_COMMAND, help: ALERT_WORKER_HELP },
   // `help` prints the top-level help, which is built from this table (see `helpTextFor`).

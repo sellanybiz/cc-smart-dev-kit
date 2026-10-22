@@ -49,7 +49,7 @@ export function defaultResolved(): ResolvedWorkflow {
       statusLine: at(false),
       updateHold: at(false),
     },
-    workers: {
+    crew: {
       enabled: at(false),
       handoffPercent: at(70),
       idleStopMinutes: at(10),

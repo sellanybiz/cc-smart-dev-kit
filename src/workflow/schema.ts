@@ -17,13 +17,13 @@
  * the schema does not accept one (`workflowSchema` has no `switches` field).
  *
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
- * without the person, every alert is on, and no worker session starts.
+ * without the person, every alert is on, and no crew session starts.
  *
- * **A group** (`alerts`, `workers`, `fixesAfterReview`) is merged field by field like the rest,
- * and its fields are named with a dot (`workers.enabled`).
+ * **A group** (`alerts`, `crew`, `fixesAfterReview`) is merged field by field like the rest,
+ * and its fields are named with a dot (`crew.enabled`).
  */
 import { z } from "zod";
-import { isNameTag, TAG_RULE } from "../workers/names";
+import { isNameTag, TAG_RULE } from "../crew/names";
 
 /** The four moments an alert is worth having. */
 export const ALERT_EVENTS = ["needs-you", "question", "finished", "failed"] as const;
@@ -56,14 +56,14 @@ function numberSchema(rule: NumberRule): z.ZodNumber {
 /** Every number setting, and what it takes. */
 const NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
-  "workers.idleStopMinutes": AT_LEAST_ONE,
-  "workers.max": AT_LEAST_ONE,
-  "workers.maxOpus": AT_LEAST_ONE,
-  "workers.memoryGb": ABOVE_ZERO,
-  "workers.quietMinutes": AT_LEAST_ONE,
-  "workers.handoffPercent": PERCENT,
-  "workers.softHours": ABOVE_ZERO,
-  "workers.maxHours": ABOVE_ZERO,
+  "crew.idleStopMinutes": AT_LEAST_ONE,
+  "crew.max": AT_LEAST_ONE,
+  "crew.maxOpus": AT_LEAST_ONE,
+  "crew.memoryGb": ABOVE_ZERO,
+  "crew.quietMinutes": AT_LEAST_ONE,
+  "crew.handoffPercent": PERCENT,
+  "crew.softHours": ABOVE_ZERO,
+  "crew.maxHours": ABOVE_ZERO,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
@@ -76,7 +76,7 @@ function numberField(key: NumberKey) {
   return numberSchema(NUMBER_RULES[key]).optional();
 }
 
-/** The schema for the workers' tag: already clean, as the names need it (`isNameTag`). */
+/** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
 const tagSchema = z.string().refine(isNameTag, TAG_RULE);
 
 export const workflowSchema = z.strictObject({
@@ -135,32 +135,32 @@ export const workflowSchema = z.strictObject({
     })
     .optional(),
   /**
-   * Lead and worker sessions (decisions D34, D35, D37): the switch, the limits a lead keeps its
-   * workers to, and the tag in their names. In the person's file it is every project's default;
-   * a project's file wins field by field. `worker lead` and `worker start` read `enabled`, `max`,
-   * `maxOpus`, `memoryGb` and `tag` (`src/workers/`); the rest is for the parts after them.
+   * Lead and crew sessions (decisions D34, D35, D37): the switch, the limits a lead keeps its
+   * crew sessions to, and the tag in their names. In the person's file it is every project's default;
+   * a project's file wins field by field. `crew lead` and `crew start` read `enabled`, `max`,
+   * `maxOpus`, `memoryGb` and `tag` (`src/crew/`); the rest is for the parts after them.
    */
-  workers: z
+  crew: z
     .strictObject({
-      /** Workers may start here: off, a lead uses subagents only. Default: false. */
+      /** Crew sessions may start here: off, a lead uses subagents only. Default: false. */
       enabled: z.boolean().optional(),
-      /** Minutes a blocked worker waits before its session is stopped; an answer brings it back. Default: 10. */
-      idleStopMinutes: numberField("workers.idleStopMinutes"),
-      /** At most this many workers run on this machine at once, across leads (D37). Default: 6. */
-      max: numberField("workers.max"),
+      /** Minutes a blocked crew session waits before its session is stopped; an answer brings it back. Default: 10. */
+      idleStopMinutes: numberField("crew.idleStopMinutes"),
+      /** At most this many crew sessions run on this machine at once, across leads (D37). Default: 6. */
+      max: numberField("crew.max"),
       /** At most this many of them on the opus tier, inside `max` (D37). Default: 2. */
-      maxOpus: numberField("workers.maxOpus"),
-      /** The free memory, in GB, a new worker needs; below it, the worker waits in the queue. Default: 2. */
-      memoryGb: numberField("workers.memoryGb"),
-      /** Minutes a working worker's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
-      quietMinutes: numberField("workers.quietMinutes"),
-      /** The share of its context, in percent, at which a worker hands off to a next one. Default: 70. */
-      handoffPercent: numberField("workers.handoffPercent"),
-      /** Hours after which the lead gets a note about a worker still running. Default: 2. */
-      softHours: numberField("workers.softHours"),
-      /** Hours after which a worker hands off. Default: 4. */
-      maxHours: numberField("workers.maxHours"),
-      /** The tag in every lead's and worker's name (D26). Default: the main checkout's folder name. */
+      maxOpus: numberField("crew.maxOpus"),
+      /** The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. Default: 2. */
+      memoryGb: numberField("crew.memoryGb"),
+      /** Minutes a working crew session's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
+      quietMinutes: numberField("crew.quietMinutes"),
+      /** The share of its context, in percent, at which a crew session hands off to a next one. Default: 70. */
+      handoffPercent: numberField("crew.handoffPercent"),
+      /** Hours after which the lead gets a note about a crew session still running. Default: 2. */
+      softHours: numberField("crew.softHours"),
+      /** Hours after which a crew session hands off. Default: 4. */
+      maxHours: numberField("crew.maxHours"),
+      /** The tag in every lead's and crew session's name (D26). Default: the main checkout's folder name. */
       tag: tagSchema.optional(),
     })
     .optional(),
@@ -191,8 +191,8 @@ export const workflowDefaults = {
     usagePercent: 85,
   },
   // Off by default (D34). The cap, the memory and the times are the plan's starting values,
-  // approved with it; the first long worker run (P14) tunes them.
-  workers: {
+  // approved with it; the first long crew session run (P14) tunes them.
+  crew: {
     enabled: false,
     idleStopMinutes: 10,
     max: 6,
@@ -202,13 +202,13 @@ export const workflowDefaults = {
     handoffPercent: 70,
     softHours: 2,
     maxHours: 4,
-    /** Null: the main checkout's folder name stands in (`workerTag` in `src/workers/names.ts`). */
+    /** Null: the main checkout's folder name stands in (`crewTag` in `src/crew/names.ts`). */
     tag: null,
   },
 } as const;
 
-/** What `workflow show` prints for `workers.tag` while nobody sets it. */
-export const WORKERS_TAG_UNSET = "the main checkout's folder name";
+/** What `workflow show` prints for `crew.tag` while nobody sets it. */
+export const CREW_TAG_UNSET = "the main checkout's folder name";
 
 /**
  * The switches, and where each one really lives: read and written through the setting that
@@ -234,16 +234,16 @@ export type WorkflowKey =
   | "alerts.events"
   | "alerts.sound"
   | "alerts.usagePercent"
-  | "workers.enabled"
-  | "workers.idleStopMinutes"
-  | "workers.max"
-  | "workers.maxOpus"
-  | "workers.memoryGb"
-  | "workers.quietMinutes"
-  | "workers.handoffPercent"
-  | "workers.softHours"
-  | "workers.maxHours"
-  | "workers.tag"
+  | "crew.enabled"
+  | "crew.idleStopMinutes"
+  | "crew.max"
+  | "crew.maxOpus"
+  | "crew.memoryGb"
+  | "crew.quietMinutes"
+  | "crew.handoffPercent"
+  | "crew.softHours"
+  | "crew.maxHours"
+  | "crew.tag"
   | `switches.${SwitchName}`;
 
 /** Every policy key, in the order `workflow show` and `--help` print them. */
@@ -263,16 +263,16 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
-  "workers.enabled",
-  "workers.idleStopMinutes",
-  "workers.max",
-  "workers.maxOpus",
-  "workers.memoryGb",
-  "workers.quietMinutes",
-  "workers.handoffPercent",
-  "workers.softHours",
-  "workers.maxHours",
-  "workers.tag",
+  "crew.enabled",
+  "crew.idleStopMinutes",
+  "crew.max",
+  "crew.maxOpus",
+  "crew.memoryGb",
+  "crew.quietMinutes",
+  "crew.handoffPercent",
+  "crew.softHours",
+  "crew.maxHours",
+  "crew.tag",
 ];
 
 /**
@@ -353,7 +353,7 @@ function isNumberKey(key: string): key is NumberKey {
   return Object.hasOwn(NUMBER_RULES, key);
 }
 
-/** What a number setting takes, in words: `workers.max is a whole number, 1 or more`. */
+/** What a number setting takes, in words: `crew.max is a whole number, 1 or more`. */
 function numberRuleText(key: NumberKey): string {
   const rule: NumberRule = NUMBER_RULES[key];
   if (rule.kind === "positive") return `${key} is a number above 0`;
@@ -386,7 +386,7 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
       : { ok: false, why: `${key} is one of ${words.join(", ")}` };
   }
   if (isNumberKey(key)) return parseNumber(key, value);
-  if (key === "workers.tag") {
+  if (key === "crew.tag") {
     return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
   }
   if (key === "reviewAgents") {
@@ -425,10 +425,10 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
 
 /**
  * A value as `workflow show` prints it: a list as words, a number, a boolean, a word — and an
- * unset `workers.tag` as what stands in for it.
+ * unset `crew.tag` as what stands in for it.
  */
 export function showValue(key: WorkflowKey, value: unknown): string {
-  if (key === "workers.tag" && value === null) return `(${WORKERS_TAG_UNSET})`;
+  if (key === "crew.tag" && value === null) return `(${CREW_TAG_UNSET})`;
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
 }

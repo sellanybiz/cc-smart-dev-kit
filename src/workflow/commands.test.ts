@@ -59,16 +59,16 @@ describe("workflow show", () => {
       "alerts.events = needs-you, question, finished, failed (default)",
       "alerts.sound = false (default)",
       "alerts.usagePercent = 85 (default)",
-      "workers.enabled = false (default)",
-      "workers.idleStopMinutes = 10 (default)",
-      "workers.max = 6 (default)",
-      "workers.maxOpus = 2 (default)",
-      "workers.memoryGb = 2 (default)",
-      "workers.quietMinutes = 20 (default)",
-      "workers.handoffPercent = 70 (default)",
-      "workers.softHours = 2 (default)",
-      "workers.maxHours = 4 (default)",
-      "workers.tag = (the main checkout's folder name) (default)",
+      "crew.enabled = false (default)",
+      "crew.idleStopMinutes = 10 (default)",
+      "crew.max = 6 (default)",
+      "crew.maxOpus = 2 (default)",
+      "crew.memoryGb = 2 (default)",
+      "crew.quietMinutes = 20 (default)",
+      "crew.handoffPercent = 70 (default)",
+      "crew.softHours = 2 (default)",
+      "crew.maxHours = 4 (default)",
+      "crew.tag = (the main checkout's folder name) (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
@@ -619,25 +619,23 @@ describe("the review gate (CM-1)", () => {
     expect(run.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: openPr = draft"]);
   });
 
-  test("D34: the workers' switch is not part of the gate: set in both files, shown with its source", async () => {
+  test("D34: the crew sessions' switch is not part of the gate: set in both files, shown with its source", async () => {
     const env = { ...hookEnv(), CLAUDECODE: "1" };
     const repo = makeRepo();
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
     const mine = context(repo, env);
-    expect(await runWorkflow(["set", "workers.max", "2"], mine.context)).toBe(0);
-    expect(mine.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: workers.max = 2"]);
+    expect(await runWorkflow(["set", "crew.max", "2"], mine.context)).toBe(0);
+    expect(mine.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: crew.max = 2"]);
     const theirs = context(repo, env);
-    expect(await runWorkflow(["set", "workers.enabled", "true", "--project"], theirs.context)).toBe(
-      0,
-    );
-    expect(theirs.lines).toEqual([`~ ${file}: workers.enabled = true`]);
-    expect(JSON.parse(readFileSync(file, "utf8")).workflow).toEqual({ workers: { enabled: true } });
+    expect(await runWorkflow(["set", "crew.enabled", "true", "--project"], theirs.context)).toBe(0);
+    expect(theirs.lines).toEqual([`~ ${file}: crew.enabled = true`]);
+    expect(JSON.parse(readFileSync(file, "utf8")).workflow).toEqual({ crew: { enabled: true } });
     const show = context(repo, env);
     await runWorkflow(["show"], show.context);
-    expect(show.lines).toContain("workers.enabled = true (project)");
-    expect(show.lines).toContain("workers.max = 2 (personal)");
+    expect(show.lines).toContain("crew.enabled = true (project)");
+    expect(show.lines).toContain("crew.max = 2 (personal)");
     // Not a gate key: no gate line names it.
-    expect(show.lines.filter((line) => line.startsWith("gate workers."))).toEqual([]);
+    expect(show.lines.filter((line) => line.startsWith("gate crew sessions."))).toEqual([]);
   });
 
   test("CM-1: show prints the gate as the merge guard reads it, from the committed file", async () => {

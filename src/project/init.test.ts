@@ -492,7 +492,7 @@ describe("requiresFloor", () => {
   test("a file with a field that came with 1.0.0: the release that brought it", () => {
     // An older plugin reads the file strictly, does not know the field, and refuses the
     // whole file — so every guard in that project fails closed until it is updated.
-    expect(requiresFloor({ workflow: { workers: { enabled: true } } })).toEqual({
+    expect(requiresFloor({ workflow: { crew: { enabled: true } } })).toEqual({
       floor: ">=1.0",
       version: "1.0.0",
     });
@@ -505,7 +505,7 @@ describe("requiresFloor", () => {
   test("the plan asks for what its own fields need", () => {
     const root = tempDir("project-init");
     const plan = planProjectInit(
-      input({ root, answers: { ...ANSWERS, workflow: { workers: { enabled: true } } } }),
+      input({ root, answers: { ...ANSWERS, workflow: { crew: { enabled: true } } } }),
     );
     expect(plan.text).toContain('"requires": ">=1.0"');
   });

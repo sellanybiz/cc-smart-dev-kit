@@ -6469,12 +6469,12 @@ var kindSpecSchema = strictObject({
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
 
-// src/workers/names.ts
+// src/crew/names.ts
 var MAX_TAG = 12;
 var MAX_PHASE = 8;
 var MAX_SLUG = 32;
 var LEAD_ROLE = "LEAD";
-var WORKER_ROLE = "W";
+var CREW_ROLE = "C";
 var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
 function namePart(raw, max) {
   const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
@@ -6491,7 +6491,7 @@ var SLUG_RULE = partRule(MAX_SLUG);
 var PHASE_RULE = partRule(MAX_PHASE);
 var PART = "[A-Za-z0-9._-]+";
 var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var WORKER_SHAPE = new RegExp(`^${WORKER_ROLE}( ${PART}){2,4}$`);
+var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}$`);
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
@@ -6508,14 +6508,14 @@ function numberSchema(rule) {
 }
 var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
-  "workers.idleStopMinutes": AT_LEAST_ONE,
-  "workers.max": AT_LEAST_ONE,
-  "workers.maxOpus": AT_LEAST_ONE,
-  "workers.memoryGb": ABOVE_ZERO,
-  "workers.quietMinutes": AT_LEAST_ONE,
-  "workers.handoffPercent": PERCENT,
-  "workers.softHours": ABOVE_ZERO,
-  "workers.maxHours": ABOVE_ZERO,
+  "crew.idleStopMinutes": AT_LEAST_ONE,
+  "crew.max": AT_LEAST_ONE,
+  "crew.maxOpus": AT_LEAST_ONE,
+  "crew.memoryGb": ABOVE_ZERO,
+  "crew.quietMinutes": AT_LEAST_ONE,
+  "crew.handoffPercent": PERCENT,
+  "crew.softHours": ABOVE_ZERO,
+  "crew.maxHours": ABOVE_ZERO,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -6544,16 +6544,16 @@ var workflowSchema = strictObject({
     sound: boolean2().optional(),
     usagePercent: numberField("alerts.usagePercent")
   }).optional(),
-  workers: strictObject({
+  crew: strictObject({
     enabled: boolean2().optional(),
-    idleStopMinutes: numberField("workers.idleStopMinutes"),
-    max: numberField("workers.max"),
-    maxOpus: numberField("workers.maxOpus"),
-    memoryGb: numberField("workers.memoryGb"),
-    quietMinutes: numberField("workers.quietMinutes"),
-    handoffPercent: numberField("workers.handoffPercent"),
-    softHours: numberField("workers.softHours"),
-    maxHours: numberField("workers.maxHours"),
+    idleStopMinutes: numberField("crew.idleStopMinutes"),
+    max: numberField("crew.max"),
+    maxOpus: numberField("crew.maxOpus"),
+    memoryGb: numberField("crew.memoryGb"),
+    quietMinutes: numberField("crew.quietMinutes"),
+    handoffPercent: numberField("crew.handoffPercent"),
+    softHours: numberField("crew.softHours"),
+    maxHours: numberField("crew.maxHours"),
     tag: tagSchema.optional()
   }).optional()
 });
@@ -6577,7 +6577,7 @@ var workflowDefaults = {
     sound: false,
     usagePercent: 85
   },
-  workers: {
+  crew: {
     enabled: false,
     idleStopMinutes: 10,
     max: 6,
@@ -6607,16 +6607,16 @@ var POLICY_KEYS = [
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
-  "workers.enabled",
-  "workers.idleStopMinutes",
-  "workers.max",
-  "workers.maxOpus",
-  "workers.memoryGb",
-  "workers.quietMinutes",
-  "workers.handoffPercent",
-  "workers.softHours",
-  "workers.maxHours",
-  "workers.tag"
+  "crew.enabled",
+  "crew.idleStopMinutes",
+  "crew.max",
+  "crew.maxOpus",
+  "crew.memoryGb",
+  "crew.quietMinutes",
+  "crew.handoffPercent",
+  "crew.softHours",
+  "crew.maxHours",
+  "crew.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -7058,9 +7058,9 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
-  const workers = mergedGroup(personal.workers, project.workers);
-  if (workers !== undefined)
-    merged.workers = workers;
+  const crew = mergedGroup(personal.crew, project.crew);
+  if (crew !== undefined)
+    merged.crew = crew;
   return merged;
 }
 function sourceOf(personal, project, key) {

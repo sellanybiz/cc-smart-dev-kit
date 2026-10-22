@@ -7,14 +7,14 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, VERSION } from "../build-info";
+import { CREW_USAGE } from "../crew/command";
+import { BOARD_COMMANDS } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
-import { WORKER_USAGE } from "../workers/command";
-import { BOARD_COMMANDS } from "../workers/usage";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import {
@@ -73,8 +73,8 @@ describe("the command table", () => {
     expect(helpTextFor(["update"])).toStartWith(UPDATE_USAGE);
   });
 
-  test("CM-12: `worker --help` lists every worker command with a short line, the board's own rows from their table", () => {
-    const usage = helpTextFor(["worker"]) ?? "";
+  test("CM-12: `crew --help` lists every crew session command with a short line, the board's own rows from their table", () => {
+    const usage = helpTextFor(["crew"]) ?? "";
     // The names of the plan's phases: the launcher, the watch and the reports, the board.
     for (const name of [
       "lead",
@@ -94,10 +94,10 @@ describe("the command table", () => {
     ]) {
       expect(usage).toMatch(new RegExp(`^  ${name}\\b`, "m"));
     }
-    // A row each for the board and the end of a worker, with its own help and nothing else.
+    // A row each for the board and the end of a crew session, with its own help and nothing else.
     for (const one of BOARD_COMMANDS) {
-      expect(helpTextFor(["worker", one.name])).toBe(one.help);
-      expect(one.help).toStartWith(`Usage: ${COMMAND} worker ${one.name}`);
+      expect(helpTextFor(["crew", one.name])).toBe(one.help);
+      expect(one.help).toStartWith(`Usage: ${COMMAND} crew ${one.name}`);
       expect(usage).toContain(one.summary);
     }
     expect(BOARD_COMMANDS.map((one) => one.name)).toEqual([
@@ -110,8 +110,8 @@ describe("the command table", () => {
       "kinds",
     ]);
     // The commands that are not in the table still print the whole usage.
-    expect(helpTextFor(["worker", "start"])).toBe(WORKER_USAGE);
-    expect(helpTextFor(["worker", "lead"])).toBe(WORKER_USAGE);
+    expect(helpTextFor(["crew", "start"])).toBe(CREW_USAGE);
+    expect(helpTextFor(["crew", "lead"])).toBe(CREW_USAGE);
   });
 
   test("CM-12: the hook help names the one hook left, from the constant that names it", () => {
@@ -149,7 +149,7 @@ describe("the top-level help", () => {
       `  ${COMMAND} doctor              the health check`,
       "",
       "More commands: workflow, update, restore, migrate, sessions, worktrees,",
-      "  usage, report, portal, mcp, omniroute, job, worker, hook, statusline,",
+      "  usage, report, portal, mcp, omniroute, job, crew, hook, statusline,",
       "  version",
       `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
     ].join("\n");

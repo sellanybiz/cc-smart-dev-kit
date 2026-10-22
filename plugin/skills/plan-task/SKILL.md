@@ -83,27 +83,27 @@ Then ask for approval with `AskUserQuestion` ("Start building this plan?"). Appr
 (`.claude/research/archive/` by default) and update the plan's link to it, then build. Changes wanted: revise, ask again. Never go from `In review` to code
 without an explicit yes.
 
-## 5. Phases and owners — you lead, subagents and workers build
+## 5. Phases and owners — you lead, subagents and crew sessions build
 
 Write the plan for a team. What stays with you is the core instructions' inline list (§ Lead
 the work).
 
-- **Each phase has one owner** — a worker session with its kind (where the project has workers
+- **Each phase has one owner** — a crew session with its kind (where the project has crew sessions
   on: `/cc-smart-dev-kit:lead`), a subagent with its type, model and effort, or you. The waves
-  table has a **Workers** column that names each phase's owner.
+  table has a **Crew sessions** column that names each phase's owner.
 - **A phase is about 30 to 90 minutes of work.** A bigger one splits before it starts.
 - **Each phase names its files.** Two phases that might change one file are split instead of
   run in turn: each takes its own part of it, or both run and you merge the small conflict.
 - **Each phase names what it waits for** — any contract it builds on (a type, an API shape, a
   shared constant) and any code it calls. Contracts go first, alone.
 - **The plan lists its phases in waves** — a wave is the group that starts together: wave 1
-  holds every phase that waits for nothing, and it starts at once, in one message (workers
-  through `cc-smart-dev-kit worker start`). On each hand-back, check the phases still waiting
+  holds every phase that waits for nothing, and it starts at once, in one message (crew
+  through `cc-smart-dev-kit crew start`). On each hand-back, check the phases still waiting
   and start, in that turn, what it unblocked. A phase never waits for a merge or a review it
   does not use.
 - **The last wave is a heavy cleanup**, run only once everything is verified live: the
   fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches,
-  worktrees and workers, docs that still name what was removed, and the plan's archive (§ 8).
+  worktrees and crew sessions, docs that still name what was removed, and the plan's archive (§ 8).
 - **Each phase has a done-check** — the targeted tests that prove it.
 - **Shared files stay with you, the integrator:** the plan file, the lockfile and new
   dependencies, the project's version number, shared index files (a docs index, a barrel, a
@@ -113,10 +113,10 @@ the work).
   rebuilding as you go. None of it holds a phase back: it is your work, done after.
 
 Brief each owner with its phase, its files, the patterns, its done-check and its limits
-(`/cc-smart-dev-kit:subagent-decision` § How to brief; a worker's brief: `/cc-smart-dev-kit:lead`
+(`/cc-smart-dev-kit:subagent-decision` § How to brief; a crew session's brief: `/cc-smart-dev-kit:lead`
 § 3). Check each subagent's hand-back yourself: read `git diff -- <its files>` in full, run its
 tests, confirm nothing changed outside its list. That read is your own review pass for those
-files. A worker's hand-back passes the lead skill's gate instead (§ 6 there). While other
+files. A crew session's hand-back passes the lead skill's gate instead (§ 6 there). While other
 owners still write, stage by path, never `git add -A`. You tick the plan, integrate, commit and
 own the result. Once a subagent's work is merged, remove its worktree and its branch in the same
 step (`git worktree remove`, `git branch -D`): Claude Code keeps a worktree that holds commits,

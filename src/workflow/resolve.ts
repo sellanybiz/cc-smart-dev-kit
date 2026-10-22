@@ -75,7 +75,7 @@ export interface ResolvedWorkflow {
     sound: ResolvedValue<boolean>;
     usagePercent: ResolvedValue<number>;
   };
-  workers: {
+  crew: {
     enabled: ResolvedValue<boolean>;
     idleStopMinutes: ResolvedValue<number>;
     max: ResolvedValue<number>;
@@ -132,7 +132,7 @@ function mergedGroup<T extends object>(personal: T | undefined, project: T | und
 
 /**
  * The project's workflow object and the person's, the project's over it, field by field — a
- * group's fields too (`alerts`, `fixesAfterReview`, `workers`).
+ * group's fields too (`alerts`, `fixesAfterReview`, `crew`).
  */
 export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow {
   const merged: Workflow = { ...personal, ...project };
@@ -140,8 +140,8 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
   if (alerts !== undefined) merged.alerts = alerts;
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined) merged.fixesAfterReview = fixes;
-  const workers = mergedGroup(personal.workers, project.workers);
-  if (workers !== undefined) merged.workers = workers;
+  const crew = mergedGroup(personal.crew, project.crew);
+  if (crew !== undefined) merged.crew = crew;
   return merged;
 }
 
@@ -295,16 +295,16 @@ const RESOLVED: {
   "alerts.events": (r) => r.alerts.events,
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
-  "workers.enabled": (r) => r.workers.enabled,
-  "workers.idleStopMinutes": (r) => r.workers.idleStopMinutes,
-  "workers.max": (r) => r.workers.max,
-  "workers.maxOpus": (r) => r.workers.maxOpus,
-  "workers.memoryGb": (r) => r.workers.memoryGb,
-  "workers.quietMinutes": (r) => r.workers.quietMinutes,
-  "workers.handoffPercent": (r) => r.workers.handoffPercent,
-  "workers.softHours": (r) => r.workers.softHours,
-  "workers.maxHours": (r) => r.workers.maxHours,
-  "workers.tag": (r) => r.workers.tag,
+  "crew.enabled": (r) => r.crew.enabled,
+  "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
+  "crew.max": (r) => r.crew.max,
+  "crew.maxOpus": (r) => r.crew.maxOpus,
+  "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.quietMinutes": (r) => r.crew.quietMinutes,
+  "crew.handoffPercent": (r) => r.crew.handoffPercent,
+  "crew.softHours": (r) => r.crew.softHours,
+  "crew.maxHours": (r) => r.crew.maxHours,
+  "crew.tag": (r) => r.crew.tag,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,
@@ -338,7 +338,7 @@ export function resolveWorkflow(
     source: sourceOf(personal, project, key),
   });
   const fixes = merged.fixesAfterReview ?? {};
-  const workers = merged.workers ?? {};
+  const crew = merged.crew ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -365,26 +365,26 @@ export function resolveWorkflow(
     ),
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
-    workers: {
-      enabled: of("workers.enabled", workers.enabled ?? workflowDefaults.workers.enabled),
+    crew: {
+      enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
       idleStopMinutes: of(
-        "workers.idleStopMinutes",
-        workers.idleStopMinutes ?? workflowDefaults.workers.idleStopMinutes,
+        "crew.idleStopMinutes",
+        crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes,
       ),
-      max: of("workers.max", workers.max ?? workflowDefaults.workers.max),
-      maxOpus: of("workers.maxOpus", workers.maxOpus ?? workflowDefaults.workers.maxOpus),
-      memoryGb: of("workers.memoryGb", workers.memoryGb ?? workflowDefaults.workers.memoryGb),
+      max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
+      maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
+      memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
       quietMinutes: of(
-        "workers.quietMinutes",
-        workers.quietMinutes ?? workflowDefaults.workers.quietMinutes,
+        "crew.quietMinutes",
+        crew.quietMinutes ?? workflowDefaults.crew.quietMinutes,
       ),
       handoffPercent: of(
-        "workers.handoffPercent",
-        workers.handoffPercent ?? workflowDefaults.workers.handoffPercent,
+        "crew.handoffPercent",
+        crew.handoffPercent ?? workflowDefaults.crew.handoffPercent,
       ),
-      softHours: of("workers.softHours", workers.softHours ?? workflowDefaults.workers.softHours),
-      maxHours: of("workers.maxHours", workers.maxHours ?? workflowDefaults.workers.maxHours),
-      tag: of("workers.tag", workers.tag ?? workflowDefaults.workers.tag),
+      softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
+      maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
+      tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
     },
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),

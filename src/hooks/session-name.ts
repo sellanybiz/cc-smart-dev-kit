@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { cleanSessionName } from "../workers/names";
+import { cleanSessionName } from "../crew/names";
 import { type HookResult, SILENT } from "./io";
 import type { Env, HookContext } from "./run";
 

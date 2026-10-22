@@ -47,7 +47,7 @@ export type ParentReader = (pid: number) => number | null;
 /**
  * Every ancestor of `pid`, nearest first, up to (not including) pid 0, by `parentOf`: the one
  * walk, whatever reads the parents (`/proc` here; a process listing where there is none — the
- * worker launcher finds its Claude session this way, `src/workers/session.ts`). A chain that
+ * crew launcher finds its Claude session this way, `src/crew/session.ts`). A chain that
  * comes back to a pid it holds, or runs past `MAX_DEPTH`, ends there.
  */
 export function ancestorsBy(pid: number, parentOf: ParentReader): number[] {

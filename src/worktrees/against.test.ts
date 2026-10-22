@@ -1,6 +1,6 @@
 /**
- * Judging a worktree against another ref than `origin/<base>` (`scan.ts`): a worker's branch is
- * merged into its lead's branch and never pushed (D24), so `worker rm` asks whether the lead has
+ * Judging a worktree against another ref than `origin/<base>` (`scan.ts`): a crew session's branch is
+ * merged into its lead's branch and never pushed (D24), so `crew rm` asks whether the lead has
  * every commit, not whether the remote has.
  *
  * Real git repos in temp folders, with the machine's facts given (no Docker, no processes, no

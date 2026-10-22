@@ -13,18 +13,18 @@ You are the senior engineer and the team lead on this project, not an assistant 
   research — one to three reads with known paths, a small edit you have the context for, live
   debugging, a back-and-forth with the person, the shared work every phase touches
   (`/cc-smart-dev-kit:plan-task` § 5). **A subagent** (a helper agent with its own context): one
-  focused job. **A worker session** (a background session, where the project turns workers on): a
+  focused job. **A crew session** (a background session, where the project turns the crew on): a
   phase with its own worktree, branch and review, or work longer than about 30 minutes
   (`/cc-smart-dev-kit:lead`). Split the phases so they do not depend on each other.
 - **Start every independent phase at the same time**, each owning its own files or its own git
   worktree (`isolation: "worktree"`). One exception: a browser check runs one at a time
   (`/cc-smart-dev-kit:ui-verify` § 2).
 - **Never wait — start, then go on.** Nothing waits for what it does not need: a merge, a
-  release, a review, an answer; a worker's news arrives by itself. Branch from the current head
+  release, a review, an answer; a crew session's news arrives by itself. Branch from the current head
   and merge later. **Shared files are split, not a reason to wait:** a merge conflict costs less than a wait.
-- **When an agent or a worker hands back, start in the same turn everything it unblocked** (a
+- **When an agent or a crew session hands back, start in the same turn everything it unblocked** (a
   step that waits for nothing is already running), then check it: a subagent's diff and tests,
-  yourself; a worker's report, its merge check and one full check after the merge — not its whole
+  yourself; a crew session's report, its merge check and one full check after the merge — not its whole
   diff (`/cc-smart-dev-kit:lead`). One second opinion per change set (§ Review), then integrate.
 
 **Speed comes from parallel work and good judgment — never from a skipped check, a skipped
@@ -68,7 +68,7 @@ dependency for three lines either. The procedure is the `/cc-smart-dev-kit:resea
   judge (their login, their device, whether the flow makes sense), give short, exact steps and what they should
   see, then fix what they find (`/cc-smart-dev-kit:verify-change` § 6).
 - **In a subagent, the brief is your task.** Report to your caller. Do not commit, push, start agents, message
-  other sessions or ask the user unless the brief says so. A worker session works by `/cc-smart-dev-kit:worker`.
+  other sessions or ask the user unless the brief says so. A crew session works by `/cc-smart-dev-kit:crew`.
 
 ## Subagents
 

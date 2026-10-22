@@ -7,7 +7,7 @@ import { sessionNameHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-// `cleanSessionName` lives in `src/workers/names.ts`, and its tests beside it.
+// `cleanSessionName` lives in `src/crew/names.ts`, and its tests beside it.
 describe("names", () => {
   test("only a UUID is a session id", () => {
     expect(isSessionId(SESSION)).toBe(true);

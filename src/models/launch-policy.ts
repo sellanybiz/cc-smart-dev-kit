@@ -1,11 +1,11 @@
 /**
  * The launch policy: which model and effort a launch really runs on (Claude Code's own overrides,
  * `effectiveLaunch`, then the model's resolution), the effort levels a subagent may run at, the
- * Fable reason words, and the model and effort each kind of worker phase runs on (D46).
+ * Fable reason words, and the model and effort each kind of crew phase runs on (D46).
  *
  * **One home, pure.** The Agent guard (`src/hooks/agent-guard.ts`) judges every Agent, Task and
- * Workflow launch by it; the worker launcher and the Bash judge read the same table, so a
- * worker never starts on a model or an effort the guard would refuse for a subagent. Nothing
+ * Workflow launch by it; the crew launcher and the Bash judge read the same table, so a
+ * crew session never starts on a model or an effort the guard would refuse for a subagent. Nothing
  * here reads a file or the machine: the caller hands in what it knows of the gateway
  * (`GatewayFacts`) and the environment. The hook's own parts — reading a Workflow script, the
  * agent types, the record, the messages — stay in the guard.
@@ -282,7 +282,7 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
  * follows it: a family name through `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`, then — a family name or a
  * Claude id — its family's slot while that slot has a chain; a slot key is its own slot. Null
  * when no slot answers: the gateway off, a family slot with no chain (Claude itself answers), a
- * `<backend>:<model>` named directly. What a worker's record names as its `slot`.
+ * `<backend>:<model>` named directly. What a crew session's record names as its `slot`.
  */
 export function answeringSlot(name: string, gateway: GatewayFacts, env: Env): null | string {
   if (!gateway.gatewayOn || gateway.config === null) return null;
@@ -429,29 +429,29 @@ export function effectiveLaunch(
   return { ...effort, model: launch.model, modelFrom: "call" };
 }
 
-/** The model a worker kind names, and the effort it runs at. */
-export interface WorkerKindPolicy {
-  /** What the kind is for, in a few words: what `worker kinds` prints beside it. */
+/** The model a crew kind names, and the effort it runs at. */
+export interface CrewKindPolicy {
+  /** What the kind is for, in a few words: what `crew kinds` prints beside it. */
   about: string;
   /** The effort when an affordable slot answers the family; the same as `effort` for a tier. */
   affordableEffort: Effort;
   /** The effort when Claude answers the family. */
   effort: Effort;
-  /** The family name the launcher passes as the worker's `--model`. */
+  /** The family name the launcher passes as the crew session's `--model`. */
   model: "opus" | "sonnet";
 }
 
 /**
- * The kinds of worker phase, and the model and effort each runs on (the owner's decision D46).
+ * The kinds of crew phase, and the model and effort each runs on (the owner's decision D46).
  * Routine work — building, docs, tests — goes to `sonnet`, the worker slot: at `max` when an
  * affordable slot answers it, at `high` when Claude Sonnet does. So does code that touches
  * security, money, permissions, a schema or deploy plumbing: it builds like any other code.
  * Only work that needs design judgment — architecture, UI — goes to `opus` at `xhigh`, whatever
  * answers the tier. A kind's name may also be the word of an `Opus reason: <word>` line in a
  * launch record: the guard takes any word there, so `security` still names an Opus review. A
- * person may override one worker's model (the launcher's own flag); the table is the default.
+ * person may override one crew session's model (the launcher's own flag); the table is the default.
  */
-export const WORKER_KINDS = {
+export const CREW_KINDS = {
   build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
   docs: {
     about: "docs and their updates",
@@ -492,35 +492,35 @@ export const WORKER_KINDS = {
     model: "opus",
   },
   ui: { about: "UI and UX judgment", affordableEffort: "xhigh", effort: "xhigh", model: "opus" },
-} as const satisfies Record<string, WorkerKindPolicy>;
+} as const satisfies Record<string, CrewKindPolicy>;
 
-/** One kind of worker phase. */
-export type WorkerKind = keyof typeof WORKER_KINDS;
+/** One kind of crew phase. */
+export type CrewKind = keyof typeof CREW_KINDS;
 
 /** Every kind, in the table's order: what a list or a help text shows. */
-export const WORKER_KIND_NAMES = Object.keys(WORKER_KINDS) as WorkerKind[];
+export const CREW_KIND_NAMES = Object.keys(CREW_KINDS) as CrewKind[];
 
-/** True when `value` names a worker kind, exactly. */
-export function isWorkerKind(value: string): value is WorkerKind {
-  return Object.hasOwn(WORKER_KINDS, value);
+/** True when `value` names a crew kind, exactly. */
+export function isCrewKind(value: string): value is CrewKind {
+  return Object.hasOwn(CREW_KINDS, value);
 }
 
-/** What one worker of a kind starts on: the name passed, its effort, and what answers it. */
-export interface WorkerLaunch {
+/** What one crew session of a kind starts on: the name passed, its effort, and what answers it. */
+export interface CrewLaunch {
   effort: Effort;
-  model: WorkerKindPolicy["model"];
+  model: CrewKindPolicy["model"];
   /** The model behind the name, resolved the way the guard resolves a launch's. */
   real: LaunchModel;
 }
 
 /**
- * The model and effort a worker of `kind` starts on, by the table and the gateway as the caller
+ * The model and effort a crew session of `kind` starts on, by the table and the gateway as the caller
  * reads it: the kind's affordable effort when an affordable model answers its family
  * (`isAffordable`), else its Claude effort. So a launch the table makes is one the Agent guard
  * allows.
  */
-export function workerLaunch(kind: WorkerKind, gateway: GatewayFacts, env: Env): WorkerLaunch {
-  const policy: WorkerKindPolicy = WORKER_KINDS[kind];
+export function crewLaunch(kind: CrewKind, gateway: GatewayFacts, env: Env): CrewLaunch {
+  const policy: CrewKindPolicy = CREW_KINDS[kind];
   const real = resolveLaunchModel(policy.model, gateway, env);
   return {
     effort: isAffordable(real) ? policy.affordableEffort : policy.effort,

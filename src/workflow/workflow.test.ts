@@ -65,9 +65,9 @@ describe("the workflow schema", () => {
     );
   });
 
-  test("D34: workflow.workers takes the switch, the limits and a tag, and nothing else", () => {
+  test("D34: workflow.crew takes the switch, the limits and a tag, and nothing else", () => {
     const every = {
-      workers: {
+      crew: {
         enabled: true,
         handoffPercent: 70,
         idleStopMinutes: 10,
@@ -81,8 +81,7 @@ describe("the workflow schema", () => {
       },
     };
     expect(workflowSchema.parse(every)).toEqual(every);
-    const refused = (workers: Record<string, unknown>) =>
-      workflowSchema.safeParse({ workers }).success;
+    const refused = (crew: Record<string, unknown>) => workflowSchema.safeParse({ crew }).success;
     expect(refused({ count: 3 })).toBe(false);
     expect(refused({ enabled: "yes" })).toBe(false);
     for (const [field, bad] of [
@@ -169,43 +168,43 @@ describe("one value, as a person types it", () => {
     });
   });
 
-  test("D34: the workers' numbers, each with its own range", () => {
-    expect(parseWorkflowValue("workers.enabled", "true")).toEqual({ ok: true, value: true });
-    expect(parseWorkflowValue("workers.max", "3")).toEqual({ ok: true, value: 3 });
-    expect(parseWorkflowValue("workers.max", "0")).toEqual({
+  test("D34: the crew sessions' numbers, each with its own range", () => {
+    expect(parseWorkflowValue("crew.enabled", "true")).toEqual({ ok: true, value: true });
+    expect(parseWorkflowValue("crew.max", "3")).toEqual({ ok: true, value: 3 });
+    expect(parseWorkflowValue("crew.max", "0")).toEqual({
       ok: false,
-      why: "workers.max is a whole number, 1 or more",
+      why: "crew.max is a whole number, 1 or more",
     });
-    expect(parseWorkflowValue("workers.idleStopMinutes", "2.5")).toEqual({
+    expect(parseWorkflowValue("crew.idleStopMinutes", "2.5")).toEqual({
       ok: false,
-      why: "workers.idleStopMinutes is a whole number, 1 or more",
+      why: "crew.idleStopMinutes is a whole number, 1 or more",
     });
-    expect(parseWorkflowValue("workers.maxOpus", "1")).toEqual({ ok: true, value: 1 });
-    expect(parseWorkflowValue("workers.maxOpus", "0")).toEqual({
+    expect(parseWorkflowValue("crew.maxOpus", "1")).toEqual({ ok: true, value: 1 });
+    expect(parseWorkflowValue("crew.maxOpus", "0")).toEqual({
       ok: false,
-      why: "workers.maxOpus is a whole number, 1 or more",
+      why: "crew.maxOpus is a whole number, 1 or more",
     });
-    expect(parseWorkflowValue("workers.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
-    expect(parseWorkflowValue("workers.handoffPercent", "101")).toEqual({
+    expect(parseWorkflowValue("crew.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
+    expect(parseWorkflowValue("crew.handoffPercent", "101")).toEqual({
       ok: false,
-      why: "workers.handoffPercent is a whole number 1-100",
+      why: "crew.handoffPercent is a whole number 1-100",
     });
-    expect(parseWorkflowValue("workers.softHours", "1.5")).toEqual({ ok: true, value: 1.5 });
-    expect(parseWorkflowValue("workers.memoryGb", "0")).toEqual({
+    expect(parseWorkflowValue("crew.softHours", "1.5")).toEqual({ ok: true, value: 1.5 });
+    expect(parseWorkflowValue("crew.memoryGb", "0")).toEqual({
       ok: false,
-      why: "workers.memoryGb is a number above 0",
+      why: "crew.memoryGb is a number above 0",
     });
-    expect(parseWorkflowValue("workers.maxHours", "four")).toEqual({
+    expect(parseWorkflowValue("crew.maxHours", "four")).toEqual({
       ok: false,
-      why: "workers.maxHours is a number above 0",
+      why: "crew.maxHours is a number above 0",
     });
   });
 
-  test("D26: the workers' tag is refused unless it is already clean", () => {
-    expect(parseWorkflowValue("workers.tag", "kit")).toEqual({ ok: true, value: "kit" });
-    expect(parseWorkflowValue("workers.tag", "My App")).toEqual({
+  test("D26: the crew sessions' tag is refused unless it is already clean", () => {
+    expect(parseWorkflowValue("crew.tag", "kit")).toEqual({ ok: true, value: "kit" });
+    expect(parseWorkflowValue("crew.tag", "My App")).toEqual({
       ok: false,
-      why: 'workers.tag is 1-12 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
+      why: 'crew.tag is 1-12 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
     });
   });
 
@@ -297,9 +296,9 @@ describe("resolveWorkflow: the order", () => {
     );
   });
 
-  test("D34, D35, D37: workers are off by default, with the lead's limits; D17's limits 200/10/20", () => {
+  test("D34, D35, D37: crew sessions are off by default, with the lead's limits; D17's limits 200/10/20", () => {
     const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
-    expect(resolved.workers).toEqual({
+    expect(resolved.crew).toEqual({
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
@@ -322,23 +321,23 @@ describe("resolveWorkflow: the order", () => {
     const env = hookEnv();
     writePersonal(env, {
       fixesAfterReview: { lines: 50 },
-      workers: { enabled: true, max: 2, tag: "mine" },
+      crew: { enabled: true, max: 2, tag: "mine" },
     });
     const config = ccSmartDevKitConfigSchema.parse({
-      workflow: { fixesAfterReview: { files: 0 }, workers: { max: 3 } },
+      workflow: { fixesAfterReview: { files: 0 }, crew: { max: 3 } },
     });
     const resolved = resolveWorkflow(pathsFor(env), config);
-    expect(resolved.workers.enabled).toEqual({ value: true, source: "personal" });
-    expect(resolved.workers.max).toEqual({ value: 3, source: "project" });
-    expect(resolved.workers.tag).toEqual({ value: "mine", source: "personal" });
-    expect(resolved.workers.quietMinutes).toEqual({ value: 20, source: "default" });
+    expect(resolved.crew.enabled).toEqual({ value: true, source: "personal" });
+    expect(resolved.crew.max).toEqual({ value: 3, source: "project" });
+    expect(resolved.crew.tag).toEqual({ value: "mine", source: "personal" });
+    expect(resolved.crew.quietMinutes).toEqual({ value: 20, source: "default" });
     expect(resolved.fixesAfterReview).toEqual({
       files: { value: 0, source: "project" },
       lines: { value: 50, source: "personal" },
       percent: { value: 20, source: "default" },
     });
-    const off = ccSmartDevKitConfigSchema.parse({ workflow: { workers: { enabled: false } } });
-    expect(resolveWorkflow(pathsFor(env), off).workers.enabled).toEqual({
+    const off = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { enabled: false } } });
+    expect(resolveWorkflow(pathsFor(env), off).crew.enabled).toEqual({
       value: false,
       source: "project",
     });

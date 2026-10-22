@@ -2,7 +2,7 @@
  * `.worktreeinclude`: the git-ignored files (a `.env.local`) a new worktree gets copied from the
  * checkout it is cut from, the way Claude Code does for the worktrees it makes itself
  * (code.claude.com/docs/en/worktrees; `docs/claude-code-contract.md`). One home for every
- * worktree the kit makes: the worker launcher's (`src/workers/start.ts`).
+ * worktree the kit makes: the crew launcher's (`src/crew/start.ts`).
  */
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
