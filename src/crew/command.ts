@@ -403,7 +403,7 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
         ctx.error(usageError(args.error, "lead tell"));
         return 2;
       }
-      return await guarded(sub, ctx, () => runLeadTell(args, ctx));
+      return await guarded("lead tell", ctx, () => runLeadTell(args, ctx));
     }
     const args = parseLeadArgs(rest);
     if ("error" in args) {

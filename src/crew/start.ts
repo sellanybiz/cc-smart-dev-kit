@@ -817,8 +817,8 @@ export function filesOverlap(
   const shared = [...new Set(other.flat())].filter((path) => mineFiles.has(path)).sort();
   if (shared.length > 0) return { files: shared, patterns: null };
   for (let a = 0; a < ours.length; a += 1) {
-    // A pattern that names a tracked file is judged by those files alone, so the prefix rule
-    // stands in only for a pattern that names nothing yet.
+    // Two patterns that both name tracked files are judged by those files alone; the prefix
+    // rule stands in the moment either names nothing yet.
     const named = (mine[a]?.length ?? 0) > 0;
     for (let b = 0; b < theirs.length; b += 1) {
       if (named && (other[b]?.length ?? 0) > 0) continue;
@@ -846,7 +846,7 @@ function clashLine(other: CrewRecord, shared: FileOverlap): string {
       : shared.files.length <= CLASH_FILES_SHOWN
         ? shared.files.join(", ")
         : `${shared.files.slice(0, CLASH_FILES_SHOWN).join(", ")} and ${shared.files.length - CLASH_FILES_SHOWN} more`;
-  return `clash: ${other.name} (${other.leadName}) may change the same files: ${what} — started anyway; two leads may mean to share a file`;
+  return `clash: ${other.name} (${other.leadName}) may change the same files: ${what} — not blocked; two leads may mean to share a file`;
 }
 
 /**

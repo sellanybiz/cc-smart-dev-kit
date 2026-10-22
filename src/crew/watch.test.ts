@@ -162,14 +162,14 @@ describe("crew watch", () => {
       eventLine(
         {
           ...base,
-          text: "clash: C a (LEAD b) may change src/a.ts — started anyway",
+          text: "clash: C a (LEAD b) may change src/a.ts — not blocked",
           type: "clash",
         },
         null,
         [],
         false,
       ),
-    ).toBe("clash: C a (LEAD b) may change src/a.ts — started anyway");
+    ).toBe("clash: C a (LEAD b) may change src/a.ts — not blocked");
     expect(
       eventLine({ ...base, text: "LEAD b merged #7 into main", type: "merge" }, null, [], false),
     ).toBe("LEAD b merged #7 into main");

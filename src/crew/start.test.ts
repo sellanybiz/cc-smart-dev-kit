@@ -1026,7 +1026,7 @@ function clashEvents(world: ReturnType<typeof crewWorld>) {
 
 /** The line the start of B6b prints after its own line when it clashes over `README.md`. */
 const CLASH_LINE =
-  "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: README.md — started anyway; two leads may mean to share a file";
+  "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: README.md — not blocked; two leads may mean to share a file";
 
 describe("D55: a file clash between two leads, warned at crew start", () => {
   test("shared files: one line naming the other lead, its crew session and the files", async () => {
@@ -1103,7 +1103,7 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
       0,
     );
     expect(world.out[1]).toBe(
-      "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: src/crew/new.ts and src/crew/** (no file matches them yet) — started anyway; two leads may mean to share a file",
+      "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: src/crew/new.ts and src/crew/** (no file matches them yet) — not blocked; two leads may mean to share a file",
     );
     // The rule on its own: the tracked files decide when they can, the fixed prefixes when
     // nothing exists yet, and different folders never clash.
