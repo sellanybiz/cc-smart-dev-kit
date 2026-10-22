@@ -6224,6 +6224,15 @@ var kindSpecSchema = strictObject({
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
 
+// src/setup/user-json.ts
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
 var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
@@ -6480,7 +6489,7 @@ function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
@@ -7231,17 +7240,6 @@ import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
 import { createHash } from "crypto";
 import { existsSync as existsSync5, readFileSync as readFileSync5 } from "fs";
 import { join as join7 } from "path";
-
-// src/setup/user-json.ts
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-
-// src/setup/managed-json.ts
 var OWNED_FILE = "owned.json";
 function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);

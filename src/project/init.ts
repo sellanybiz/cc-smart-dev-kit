@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
 import { detectIndent, isObject } from "../setup/managed-json";
+import { parseUserJson } from "../setup/user-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import { clashNote, workflowClashes } from "../workflow/clashes";
 import { type Workflow, workflowDefaults } from "../workflow/schema";
@@ -156,7 +157,9 @@ function parseObject(text: string | null, file: string): Record<string, unknown>
   if (text === null || text.trim() === "") return {};
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    // The one reader of a person-edited JSON file: an editor's byte order mark is skipped, so
+    // a project file saved that way is read here as every guard reads it (F5-2).
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);

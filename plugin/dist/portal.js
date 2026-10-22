@@ -18585,7 +18585,7 @@ function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
@@ -21220,8 +21220,12 @@ function inspect(command, cwd, reading, run, depth = 0) {
     const operands = withoutRedirections(args);
     if (program === "git")
       found.push(...gitQuestions(operands, folder, run));
-    if (invocation.computed && namesPush(words))
-      found.push(COMPUTED_PUSH_ASK);
+    if (invocation.computed && namesPush(words)) {
+      if (run.options.pushRules.crew)
+        run.refusals.add(CREW_PUSH_REFUSAL);
+      else
+        found.push(COMPUTED_PUSH_ASK);
+    }
     if (CHANGE_DIR.has(program))
       folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -22022,7 +22026,7 @@ function mergesPullRequest(command, dialect) {
   return pullRequestMerges(command, null, dialect).some((one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null));
 }
 var COMPUTED_MERGE = "This command runs a program it works out when it runs, and its words name a merge, so this guard cannot tell whether it merges a pull request. Write the command out in full if you meant it.";
-function computedMergeRisk(command, dialect) {
+function computedInvocationRisk(command, dialect, names) {
   return readingsOf(command, dialect).some((reading) => shellSteps(command, {
     blindWhenOpen: true,
     dialect: reading.dialect,
@@ -22030,11 +22034,23 @@ function computedMergeRisk(command, dialect) {
   }).some((step) => {
     const words = wordsOf(step.text, reading.dialect);
     const invocation = invocationOf(words);
-    return invocation?.computed === true && words.some((word) => /merge/i.test(word));
+    return invocation?.computed === true && names(words);
   }));
 }
+function computedMergeRisk(command, dialect) {
+  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /merge/i.test(word)));
+}
+function namesPullRequestChange(words) {
+  const lower = words.map((word) => word.toLowerCase());
+  if (lower.some((word) => /merge/i.test(word)))
+    return true;
+  return lower.includes("pr") && lower.some((word) => PR_OPENERS.has(word));
+}
+function computedPullRequestRisk(command, dialect) {
+  return computedInvocationRisk(command, dialect, namesPullRequestChange);
+}
 function requestsPullRequestChange(command, dialect) {
-  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms) || computedMergeRisk(command, dialect);
+  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms) || computedPullRequestRisk(command, dialect);
 }
 function exactMergeOf(command, dialect) {
   const readings = readingsOf(command, dialect);
@@ -28045,6 +28061,8 @@ function crewPrAnswer(input, env, cwd) {
   const dialect = dialectOfTool(input.tool_name);
   if (!requestsPullRequestChange(command, dialect))
     return SILENT;
+  if (computedPullRequestRisk(command, dialect))
+    return toolDecision("deny", CREW_PR_REFUSAL);
   if (pullRequestOpenings(command, null, dialect).length > 0) {
     return toolDecision("deny", CREW_PR_REFUSAL);
   }
@@ -29271,7 +29289,7 @@ function parseObject(text, file) {
     return {};
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
@@ -29641,9 +29659,18 @@ function setLeaf(data, path, value) {
   if (leaf !== undefined)
     node[leaf] = value;
 }
+function mergeWorkflow(base, overrides) {
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(overrides)) {
+    const before = merged[key];
+    merged[key] = isObject2(before) && isObject2(value) ? mergeWorkflow(before, value) : value;
+  }
+  return merged;
+}
 function defaultAnswers(existing, facts, flags) {
   const worktrees = existing !== null && isObject2(existing.worktrees) ? existing.worktrees : {};
   const jobs = existing !== null && isObject2(existing.jobs) ? existing.jobs : {};
+  const existingWorkflow = existing !== null && isObject2(existing.workflow) ? existing.workflow : {};
   const base = flags.base ?? (typeof worktrees.base === "string" ? worktrees.base : facts.defaultBranch);
   const bases = flags.bases ?? (isObject2(worktrees.bases) ? worktrees.bases : defaultBases(facts));
   const protectedBranches = flags.protectedBranches ?? (Array.isArray(existing?.protectedBranches) && existing.protectedBranches.every((name) => typeof name === "string") ? existing.protectedBranches : [...new Set([facts.defaultBranch, base, ...facts.protectedFromGithub])].filter((name) => name !== ""));
@@ -29656,7 +29683,7 @@ function defaultAnswers(existing, facts, flags) {
       sessionNames: flags.sessionNames ?? (typeof existing?.sessionNames === "boolean" ? existing.sessionNames : true),
       jobRoute: flags.jobRoute ?? (typeof jobs.route === "boolean" ? jobs.route : false)
     },
-    workflow: flags.workflow !== undefined ? workflowFromFlags(flags.workflow) : existing !== null && isObject2(existing.workflow) ? existing.workflow : {}
+    workflow: flags.workflow !== undefined ? mergeWorkflow(existingWorkflow, workflowFromFlags(flags.workflow)) : existingWorkflow
   };
 }
 function defaultBases(facts) {
@@ -29670,7 +29697,7 @@ function readExisting(file) {
   if (text === null)
     return null;
   try {
-    const parsed = JSON.parse(text);
+    const parsed = parseUserJson(text);
     return isObject2(parsed) ? parsed : null;
   } catch {
     return null;

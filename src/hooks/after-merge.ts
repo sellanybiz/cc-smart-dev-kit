@@ -1214,11 +1214,15 @@ export const COMPUTED_MERGE =
   "This command runs a program it works out when it runs, and its words name a merge, so this guard cannot tell whether it merges a pull request. Write the command out in full if you meant it.";
 
 /**
- * True when a command's program is computed (`$GH`, `$(which gh)`) and the words of that
- * command name a merge. The one reader of a merge command line answers it for the merge
- * guard, its fail-closed answers, and every other caller.
+ * True when a command's program is worked out when it runs (`$GH`, `$(which gh)`) and the
+ * words of that command, as the reader sees them, say `names`. One reader for every
+ * computed-program risk, so the merge check and the opening check can never disagree.
  */
-export function computedMergeRisk(command: string, dialect?: Dialect): boolean {
+function computedInvocationRisk(
+  command: string,
+  dialect: Dialect | undefined,
+  names: (words: readonly string[]) => boolean,
+): boolean {
   return readingsOf(command, dialect).some((reading) =>
     shellSteps(command, {
       blindWhenOpen: true,
@@ -1227,21 +1231,53 @@ export function computedMergeRisk(command: string, dialect?: Dialect): boolean {
     }).some((step) => {
       const words = wordsOf(step.text, reading.dialect);
       const invocation = invocationOf(words);
-      return invocation?.computed === true && words.some((word) => /merge/i.test(word));
+      return invocation?.computed === true && names(words);
     }),
   );
 }
 
 /**
+ * True when a command's program is computed (`$GH`, `$(which gh)`) and the words of that
+ * command name a merge. The one reader of a merge command line answers it for the merge
+ * guard, its fail-closed answers, and every other caller.
+ */
+export function computedMergeRisk(command: string, dialect?: Dialect): boolean {
+  return computedInvocationRisk(command, dialect, (words) =>
+    words.some((word) => /merge/i.test(word)),
+  );
+}
+
+/**
+ * Do these words name a pull request change: an opening (`pr create`, `pr new`, `pr ready`)
+ * or a merge? Read the way `couldBeMerge` reads a `gh pr` command, over a line whose program
+ * cannot be named.
+ */
+function namesPullRequestChange(words: readonly string[]): boolean {
+  const lower = words.map((word) => word.toLowerCase());
+  if (lower.some((word) => /merge/i.test(word))) return true;
+  return lower.includes("pr") && lower.some((word) => PR_OPENERS.has(word));
+}
+
+/**
+ * True when a command's program is computed (`$GH`, `$(which gh)`) and the words of that
+ * command name a pull request opening or merge. The program cannot be named, so a guard that
+ * must refuse both cannot tell the line's work apart: a crew session's crew part denies on it
+ * (D24, F5-1), the same way the merge guard asks about a computed merge.
+ */
+export function computedPullRequestRisk(command: string, dialect?: Dialect): boolean {
+  return computedInvocationRisk(command, dialect, namesPullRequestChange);
+}
+
+/**
  * Did this shell command ask GitHub to merge a pull request, or open or ready one? What the
  * merge guard watches (D16): one cheap read, so an ordinary Bash call finds nothing and pays
- * nothing. A computed program whose words name a merge counts: the guard asks rather than
- * stay silent.
+ * nothing. A computed program whose words name a merge, an opening or making one ready counts:
+ * the guard asks (or a crew session's crew part denies) rather than stay silent.
  */
 export function requestsPullRequestChange(command: string, dialect?: Dialect): boolean {
   return (
     pullRequestCalls(command, null, dialect).some((one) => !one.disarms) ||
-    computedMergeRisk(command, dialect)
+    computedPullRequestRisk(command, dialect)
   );
 }
 

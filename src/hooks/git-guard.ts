@@ -758,8 +758,14 @@ function inspect(
     const operands = withoutRedirections(args);
     if (program === "git") found.push(...gitQuestions(operands, folder, run));
     // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
-    // guard cannot name it, so a line whose words name a push asks, never stays silent.
-    if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
+    // guard cannot name it, so a line whose words name a push asks, never stays silent. A
+    // crew session never pushes (D24), so there the same words are the refusal itself (F5-1):
+    // the crew part and the guard's own run both read this one detector, so a spelling that
+    // gets past one gets past both.
+    if (invocation.computed && namesPush(words)) {
+      if (run.options.pushRules.crew) run.refusals.add(CREW_PUSH_REFUSAL);
+      else found.push(COMPUTED_PUSH_ASK);
+    }
     if (CHANGE_DIR.has(program)) folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {

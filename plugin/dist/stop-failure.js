@@ -6950,7 +6950,7 @@ function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);

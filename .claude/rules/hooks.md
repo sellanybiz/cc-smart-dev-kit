@@ -363,7 +363,9 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
 - **The reader steps over every wrapper it knows** (`isWrapper`: `env`, `sudo`, `timeout`,
   `setsid`, `flock`, `script -c`, `busybox`, …) and reads the command inside, and a program
   named at run time (`$GIT`, `$(which git)`) comes back `computed`. **A guard whose domain
-  words are in a computed command asks** rather than stay silent. A new wrapper or spelling
+  words are in a computed command asks** rather than stay silent; in a crew session, whose
+  words name a push or a pull request opening or merge, it denies instead (D24). A new
+  wrapper or spelling
   goes in this one reader, never in a guard.
 - **A new spelling that gets past a guard is fixed in the reader**, with a test named after
   the finding, never with a special case in one guard.

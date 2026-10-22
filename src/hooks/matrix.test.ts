@@ -840,11 +840,34 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     await expectRefused(crew, repo);
   });
 
+  test("a computed `$GH pr create` and `$GIT push` are denied too: no file, and whatever ownHooks says (F5-1)", async () => {
+    // The reader marks a program named at run time `computed`, so its words are all the guard
+    // has. A crew session never opens a pull request or pushes (D24): the crew part denies,
+    // and no file and no ownHooks list can soften it.
+    for (const config of [undefined, { ownHooks: ["git-guard", "merge-guard"] }]) {
+      const { crew, repo } = await world(config);
+      for (const command of [
+        "$GH pr create --fill",
+        "$(which gh) pr create --fill",
+        "$GH pr merge 7",
+      ]) {
+        denied(await runHook(mergeGuardHook, shell(repo, command), crew), CREW_PR_REFUSAL);
+      }
+      for (const command of ["$GIT push origin fix/x", "$(which git) push origin fix/x"]) {
+        denied(await runHook(gitGuardHook, shell(repo, command), crew), CREW_PUSH_REFUSAL);
+      }
+    }
+  });
+
   test("a plain session with no file keeps today's silence; a crew session's other git work is not judged", async () => {
     const { crew, env, repo } = await world(undefined);
     expect(await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), env)).toEqual({});
     expect(await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), env)).toEqual({});
     expect(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), env)).toEqual({});
+    // The computed forms are the crew part's business: a plain session with no file stays
+    // silent about them too (F5-1).
+    expect(await runHook(mergeGuardHook, shell(repo, "$GH pr create --fill"), env)).toEqual({});
+    expect(await runHook(gitGuardHook, shell(repo, "$GIT push origin fix/x"), env)).toEqual({});
     // A crew session's other git work is not refused either: this part judges a push only.
     expect(await runHook(gitGuardHook, shell(repo, "git status"), crew)).toEqual({});
   });

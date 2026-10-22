@@ -37,6 +37,7 @@ import {
   requiresFor,
 } from "../project/init";
 import { isObject } from "../setup/managed-json";
+import { parseUserJson } from "../setup/user-json";
 import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   isSwitchKey,
@@ -343,6 +344,25 @@ function setLeaf(data: Record<string, unknown>, path: string[], value: unknown):
 }
 
 /**
+ * `base` with every setting `overrides` gives changed and every other one kept: one
+ * `--workflow` word changes only its own field, so `crew.*`, `fixesAfterReview.*` and every
+ * other setting the file already holds survive a line that names one of them (F5-3). A group
+ * (`crew`, `alerts`, `fixesAfterReview`) merges field by field; an array or a leaf replaces
+ * the value before it.
+ */
+export function mergeWorkflow(base: Workflow, overrides: Workflow): Workflow {
+  const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(overrides as Record<string, unknown>)) {
+    const before = merged[key];
+    merged[key] =
+      isObject(before) && isObject(value)
+        ? mergeWorkflow(before as Workflow, value as Workflow)
+        : value;
+  }
+  return merged as Workflow;
+}
+
+/**
  * Every answer, without a person: the flags first, then what the project's file already
  * says, then what the repo says. This is what a `--yes` run writes, and the defaults the
  * questions offer. A retired engine field in an existing file is no answer: the plan takes it
@@ -355,6 +375,8 @@ export function defaultAnswers(
 ): ProjectInitAnswers {
   const worktrees = existing !== null && isObject(existing.worktrees) ? existing.worktrees : {};
   const jobs = existing !== null && isObject(existing.jobs) ? existing.jobs : {};
+  const existingWorkflow =
+    existing !== null && isObject(existing.workflow) ? (existing.workflow as Workflow) : {};
   const base =
     flags.base ?? (typeof worktrees.base === "string" ? worktrees.base : facts.defaultBranch);
   const bases =
@@ -381,12 +403,13 @@ export function defaultAnswers(
         (typeof existing?.sessionNames === "boolean" ? existing.sessionNames : true),
       jobRoute: flags.jobRoute ?? (typeof jobs.route === "boolean" ? jobs.route : false),
     },
+    // A `--workflow` word changes only the settings it names, in the file's own policy: the
+    // rest (`crew.*`, `fixesAfterReview.*`, …) stays (F5-3). With no word, the file's policy
+    // is the answer as it stands.
     workflow:
       flags.workflow !== undefined
-        ? workflowFromFlags(flags.workflow)
-        : existing !== null && isObject(existing.workflow)
-          ? (existing.workflow as Workflow)
-          : {},
+        ? mergeWorkflow(existingWorkflow, workflowFromFlags(flags.workflow))
+        : existingWorkflow,
   };
 }
 
@@ -529,7 +552,9 @@ export function readExisting(file: string): Record<string, unknown> | null {
   const text = readText(file);
   if (text === null) return null;
   try {
-    const parsed: unknown = JSON.parse(text);
+    // The one reader of a person-edited JSON file: a byte order mark an editor saved is
+    // skipped, so the file's own answers are read, not lost (F5-2).
+    const parsed: unknown = parseUserJson(text);
     return isObject(parsed) ? parsed : null;
   } catch {
     return null;
@@ -639,8 +664,10 @@ export function runProjectInit(
     context.print(`${write.created ? "+" : "~"} ${shown}`);
   }
   context.print("Commit both files with the project.");
+  // The plan's text is JSON this command wrote; the one user-JSON reader keeps the read
+  // here the same one every reader of the file uses.
   const requires =
-    (JSON.parse(plan.text) as { requires?: string }).requires ?? requiresFor(VERSION);
+    (parseUserJson(plan.text) as { requires?: string }).requires ?? requiresFor(VERSION);
   context.print(
     `The file asks for ${COMMAND} ${requires}: every teammate needs that plugin version or newer.`,
   );

@@ -2564,7 +2564,10 @@ too (`--no-guard-main-folder`, `--no-session-names`, `--no-job-route`), so a run
 terminal can answer either way. With no terminal it writes nothing unless
 `--yes` is given: it prints the plan and the line to run instead. `--dry-run` prints the plan
 and writes nothing at all. Run it again on a project that has a file: it shows the diff and
-asks, and `--yes` keeps every field the flags do not set. A `requires` the file already has
+asks, and `--yes` keeps every field the flags do not set. A `--workflow` word changes only
+the setting it names — `--workflow autoPush=true` keeps `crew.*`, `fixesAfterReview.*` and
+every other workflow field the file holds; a dotted key (`crew.enabled=false`) changes only
+its own field. A `requires` the file already has
 is never lowered (a project needing a newer plugin keeps its range); an older one is raised to
 the oldest plugin that reads the file — 0.5.2, the version that made `worktrees.prefix`
 optional, or 1.0 for a file that sets `workflow.crew` or `workflow.fixesAfterReview` —

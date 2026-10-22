@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { kindsSchema } from "../jobs/kinds";
+import { parseUserJson, readUserJson } from "../setup/user-json";
 import { workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
 
@@ -247,7 +248,9 @@ function checkRetiredFields(where: string, raw: unknown): void {
 export function readOwnHooks(file: string): string[] | null {
   if (!existsSync(file)) return null;
   try {
-    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+    // The one reader of a person-edited JSON file: an editor's byte order mark is skipped,
+    // so a file Claude Code reads without trouble is not refused here (F5-2).
+    const raw: unknown = readUserJson(file);
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
     const listed = (raw as { ownHooks?: unknown }).ownHooks;
     return Array.isArray(listed)
@@ -284,7 +287,10 @@ export function parseCcSmartDevKitConfig(
 ): CcSmartDevKitConfig {
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    // The one reader of a person-edited JSON file (F5-2): a leading byte order mark, which
+    // `JSON.parse` refuses, is skipped. The text may come from a file or from git
+    // (`readCommittedConfig`), and either may carry the mark.
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);

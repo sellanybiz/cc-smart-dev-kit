@@ -103,6 +103,7 @@ import { type GateRead, resolveGate } from "../workflow/resolve";
 import {
   COMPUTED_MERGE,
   computedMergeRisk,
+  computedPullRequestRisk,
   exactMergeOf,
   isMerge,
   type MergeCall,
@@ -137,12 +138,15 @@ export const CREW_PR_REFUSAL =
  * The guard's crew part (D24): a crew session opens no pull request, whatever `openPr` says.
  * The forms are the guard's own reader's (`pullRequestOpenings`, and the aliases
  * `pullRequestCallsWithAliases` expands), so an alias that expands to `gh pr create` is
- * denied here exactly as it is denied in `mergeGuard`. The frame runs this before `ownHooks`
- * and before the project's file, so a project with no `cc-smart-dev-kit.json`, or one whose
- * `ownHooks` names `merge-guard`, keeps the refusal.
+ * denied here exactly as it is denied in `mergeGuard`, and so is a program the line works out
+ * when it runs whose words name an opening or a merge (`computedPullRequestRisk`). The frame
+ * runs this before `ownHooks` and before the project's file, so a project with no
+ * `cc-smart-dev-kit.json`, or one whose `ownHooks` names `merge-guard`, keeps the refusal.
  *
- * A merge is none of this part's business: `mergeGuard` judges it (and a crew session is
- * never answered `allow` for one). Not a crew session, or a line with no opening: silence.
+ * A merge the reader can name is none of this part's business: `mergeGuard` judges it (and a
+ * crew session is never answered `allow` for one). Only a computed program's words, which
+ * cannot be told apart as an opening or a merge, are denied here. Not a crew session, or a
+ * line with nothing to judge: silence.
  */
 export function crewPrAnswer(input: HookInput, env: Env, cwd: string): HookResult {
   if (crewIdOf(env) === null) return SILENT;
@@ -152,6 +156,10 @@ export function crewPrAnswer(input: HookInput, env: Env, cwd: string): HookResul
   // nothing, and `gh alias list` is read only for a word that may be an alias.
   const dialect = dialectOfTool(input.tool_name);
   if (!requestsPullRequestChange(command, dialect)) return SILENT;
+  // A program the line works out when it runs (`$GH pr create`, `$(which gh) pr create`)
+  // cannot be named: its words name an opening or a merge, which a crew session never does
+  // (D24), so it is denied here rather than left to the guard's project part (F5-1).
+  if (computedPullRequestRisk(command, dialect)) return toolDecision("deny", CREW_PR_REFUSAL);
   if (pullRequestOpenings(command, null, dialect).length > 0) {
     return toolDecision("deny", CREW_PR_REFUSAL);
   }

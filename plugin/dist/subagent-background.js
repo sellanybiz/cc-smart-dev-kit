@@ -142,7 +142,7 @@ function maskedLine(text, known, max, options = {}) {
 }
 
 // src/project/config.ts
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync as readFileSync2 } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6209,6 +6209,19 @@ function mergeKinds(projectKinds) {
   return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
 }
 
+// src/setup/user-json.ts
+import { readFileSync } from "fs";
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync(file, "utf8"));
+}
+
 // src/crew/names.ts
 var MAX_SESSION_NAME = 60;
 var MAX_TAG = 12;
@@ -6496,7 +6509,7 @@ function readOwnHooks(file) {
   if (!existsSync(file))
     return null;
   try {
-    const raw = JSON.parse(readFileSync(file, "utf8"));
+    const raw = readUserJson(file);
     if (typeof raw !== "object" || raw === null || Array.isArray(raw))
       return [];
     const listed = raw.ownHooks;
@@ -6508,12 +6521,12 @@ function readOwnHooks(file) {
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync(file))
     return null;
-  return parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file, pluginVersion);
+  return parseCcSmartDevKitConfig(readFileSync2(file, "utf8"), file, pluginVersion);
 }
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
@@ -6688,7 +6701,7 @@ function readCommittedConfig(checkout, branch, options = {}) {
 }
 
 // src/hooks/ask-log.ts
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync5, statSync as statSync5 } from "fs";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync4, readFileSync as readFileSync6, statSync as statSync5 } from "fs";
 import { dirname as dirname2, join as join7 } from "path";
 
 // src/setup/write.ts
@@ -6700,7 +6713,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
-  readFileSync as readFileSync2,
+  readFileSync as readFileSync3,
   readlinkSync,
   realpathSync as realpathSync2,
   renameSync,
@@ -6769,7 +6782,7 @@ import {
   existsSync as existsSync4,
   mkdirSync as mkdirSync3,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync4,
+  readFileSync as readFileSync5,
   rmSync,
   statSync as statSync4,
   writeFileSync as writeFileSync2
@@ -6781,7 +6794,7 @@ import {
   closeSync as closeSync2,
   mkdirSync as mkdirSync2,
   openSync as openSync2,
-  readFileSync as readFileSync3,
+  readFileSync as readFileSync4,
   readlinkSync as readlinkSync2,
   statSync as statSync3,
   unlinkSync as unlinkSync2,
@@ -6798,7 +6811,7 @@ class LockBusyError extends Error {
 }
 function procStartTime(pid) {
   try {
-    const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
+    const stat = readFileSync4(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     const start = fields[22 - 3];
     return start && /^\d+$/.test(start) ? start : null;
@@ -6877,7 +6890,7 @@ function readHeld(file) {
   }
   let info;
   try {
-    info = parseLock(readFileSync3(file, "utf8"));
+    info = parseLock(readFileSync4(file, "utf8"));
   } catch (error) {
     const code = error.code;
     if (code === "ENOENT")
@@ -7031,7 +7044,7 @@ function cutBack(file) {
   }
   if (size <= LOG_MAX_BYTES)
     return;
-  const text = readFileSync5(file, "utf8");
+  const text = readFileSync6(file, "utf8");
   const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
   atomicWrite(file, keep.slice(keep.indexOf(`
 `) + 1), 384);
@@ -7235,7 +7248,7 @@ async function runHookEntry(spec) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync5, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync6 } from "fs";
+import { existsSync as existsSync5, readdirSync as readdirSync3, readFileSync as readFileSync7, statSync as statSync6 } from "fs";
 import { uptime } from "os";
 import { join as join8 } from "path";
 function parseSessionRecord(json) {
@@ -7275,7 +7288,7 @@ function liveSessions(claudeConfigDir) {
     try {
       if (statSync6(join8(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync6(join8(dir, file), "utf8");
+      text = readFileSync7(join8(dir, file), "utf8");
     } catch {
       continue;
     }
@@ -8476,7 +8489,7 @@ function programsIn(command, dialect) {
 
 // src/workflow/reviews.ts
 import { createHash } from "crypto";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync8 } from "fs";
 import { dirname as dirname4, join as join10 } from "path";
 var REVIEWS_KEPT = 50;
 var REVIEWS_LOCK_WAIT_MS = 3000;
@@ -8497,7 +8510,7 @@ function reviewStartsFile(stateDir, repo) {
 }
 function readObject(file) {
   try {
-    const parsed = JSON.parse(readFileSync7(file, "utf8"));
+    const parsed = JSON.parse(readFileSync8(file, "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
@@ -8714,7 +8727,7 @@ function pluginFolderBeside(importDir) {
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync8 } from "fs";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync9 } from "fs";
 import { dirname as dirname5, join as join12 } from "path";
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var TOLD_NAMES_MAX = 8;
@@ -8748,7 +8761,7 @@ function autoCleanFiles(stateDir, repo) {
 }
 function readJson(file, schema) {
   try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync8(file, "utf8")));
+    const parsed = schema.safeParse(JSON.parse(readFileSync9(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -9246,8 +9259,12 @@ function inspect(command, cwd, reading, run, depth = 0) {
     const operands = withoutRedirections(args);
     if (program === "git")
       found.push(...gitQuestions(operands, folder, run));
-    if (invocation.computed && namesPush(words))
-      found.push(COMPUTED_PUSH_ASK);
+    if (invocation.computed && namesPush(words)) {
+      if (run.options.pushRules.crew)
+        run.refusals.add(CREW_PUSH_REFUSAL);
+      else
+        found.push(COMPUTED_PUSH_ASK);
+    }
     if (CHANGE_DIR.has(program))
       folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -10048,7 +10065,7 @@ function mergesPullRequest(command, dialect) {
   return pullRequestMerges(command, null, dialect).some((one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null));
 }
 var COMPUTED_MERGE = "This command runs a program it works out when it runs, and its words name a merge, so this guard cannot tell whether it merges a pull request. Write the command out in full if you meant it.";
-function computedMergeRisk(command, dialect) {
+function computedInvocationRisk(command, dialect, names) {
   return readingsOf(command, dialect).some((reading) => shellSteps(command, {
     blindWhenOpen: true,
     dialect: reading.dialect,
@@ -10056,11 +10073,23 @@ function computedMergeRisk(command, dialect) {
   }).some((step) => {
     const words = wordsOf(step.text, reading.dialect);
     const invocation = invocationOf(words);
-    return invocation?.computed === true && words.some((word) => /merge/i.test(word));
+    return invocation?.computed === true && names(words);
   }));
 }
+function computedMergeRisk(command, dialect) {
+  return computedInvocationRisk(command, dialect, (words) => words.some((word) => /merge/i.test(word)));
+}
+function namesPullRequestChange(words) {
+  const lower = words.map((word) => word.toLowerCase());
+  if (lower.some((word) => /merge/i.test(word)))
+    return true;
+  return lower.includes("pr") && lower.some((word) => PR_OPENERS.has(word));
+}
+function computedPullRequestRisk(command, dialect) {
+  return computedInvocationRisk(command, dialect, namesPullRequestChange);
+}
 function requestsPullRequestChange(command, dialect) {
-  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms) || computedMergeRisk(command, dialect);
+  return pullRequestCalls(command, null, dialect).some((one) => !one.disarms) || computedPullRequestRisk(command, dialect);
 }
 function exactMergeOf(command, dialect) {
   const readings = readingsOf(command, dialect);
@@ -10263,7 +10292,7 @@ function afterMerge(context) {
 }
 
 // src/gateway/config.ts
-import { mkdirSync as mkdirSync8, readFileSync as readFileSync9, statSync as statSync7 } from "fs";
+import { mkdirSync as mkdirSync8, readFileSync as readFileSync10, statSync as statSync7 } from "fs";
 
 // src/gateway/history.ts
 var HISTORY_MAX_RETENTION_DAYS = 3650;
@@ -10494,7 +10523,7 @@ function loadConfigFile(path, platform = hostPlatform()) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync9(path, "utf8"));
+    raw = JSON.parse(readFileSync10(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -10506,7 +10535,7 @@ ${parsed.error}`);
 }
 
 // src/gateway/settings.ts
-import { existsSync as existsSync7, readFileSync as readFileSync10 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync11 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -10533,7 +10562,7 @@ function readSettings(path) {
     return {};
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync10(path, "utf8"));
+    parsed = JSON.parse(readFileSync11(path, "utf8"));
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -10764,17 +10793,17 @@ var CREW_KINDS = {
 var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 
 // src/hooks/agent-guard-workflows.ts
-import { existsSync as existsSync9, readdirSync as readdirSync4, readFileSync as readFileSync12, statSync as statSync8 } from "fs";
+import { existsSync as existsSync9, readdirSync as readdirSync4, readFileSync as readFileSync13, statSync as statSync8 } from "fs";
 import { dirname as dirname6, isAbsolute as isAbsolute2, join as join15, resolve as resolve5, sep as sep2 } from "path";
 
 // src/setup/installed-plugins.ts
-import { existsSync as existsSync8, readFileSync as readFileSync11 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync12 } from "fs";
 function pluginsRecord(installedPluginsFile) {
   if (!existsSync8(installedPluginsFile))
     return null;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync11(installedPluginsFile, "utf8"));
+    parsed = JSON.parse(readFileSync12(installedPluginsFile, "utf8"));
   } catch {
     return null;
   }
@@ -10990,7 +11019,7 @@ function scriptAtPath(path, cwd) {
     };
   }
   try {
-    return { file, script: normalized(readFileSync12(file, "utf8")) };
+    return { file, script: normalized(readFileSync13(file, "utf8")) };
   } catch {
     return { unreadable: `The workflow script \`${file}\` cannot be read.` };
   }
@@ -11011,7 +11040,7 @@ function claiming(files, name) {
       const stat = statSync8(file);
       if (!stat.isFile() || stat.size > WORKFLOW_SCRIPT_MAX_BYTES)
         continue;
-      const script = normalized(readFileSync12(file, "utf8"));
+      const script = normalized(readFileSync13(file, "utf8"));
       if (workflowMetaName(script) === name)
         found.push({ file, script });
     } catch {}
@@ -11066,7 +11095,7 @@ function pluginFolder(plugin, place) {
 function pluginWorkflowFiles(root) {
   let listed;
   try {
-    const manifest = JSON.parse(readFileSync12(join15(root, ".claude-plugin", "plugin.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync13(join15(root, ".claude-plugin", "plugin.json"), "utf8"));
     listed = manifest?.workflows ?? manifest?.experimental?.workflows;
   } catch {
     listed = undefined;
@@ -11115,7 +11144,7 @@ import {
   fstatSync,
   mkdirSync as mkdirSync9,
   openSync as openSync3,
-  readFileSync as readFileSync13,
+  readFileSync as readFileSync14,
   readSync
 } from "fs";
 import { dirname as dirname7, join as join16 } from "path";
@@ -12167,7 +12196,7 @@ import {
   existsSync as existsSync10,
   mkdirSync as mkdirSync10,
   readdirSync as readdirSync5,
-  readFileSync as readFileSync14,
+  readFileSync as readFileSync15,
   realpathSync as realpathSync4,
   renameSync as renameSync2,
   statfsSync,
@@ -12214,7 +12243,7 @@ var realSharedFolderFacts = {
   },
   mountinfo: () => {
     try {
-      return readFileSync14("/proc/self/mountinfo", "utf8");
+      return readFileSync15("/proc/self/mountinfo", "utf8");
     } catch {
       return null;
     }
@@ -12230,7 +12259,7 @@ import {
   mkdirSync as mkdirSync11,
   openSync as openSync5,
   readdirSync as readdirSync6,
-  readFileSync as readFileSync15,
+  readFileSync as readFileSync16,
   readSync as readSync3,
   statSync as statSync10
 } from "fs";
@@ -12447,7 +12476,7 @@ function checked(schema, value, file) {
 function readRecord(schema, file) {
   let raw;
   try {
-    raw = readFileSync15(file, "utf8");
+    raw = readFileSync16(file, "utf8");
   } catch (error) {
     if (notThere(error))
       return null;
@@ -12626,7 +12655,7 @@ function notesStateFile(stateDir, repo, leadSessionId) {
 var notesStateFields = object({ offset: count });
 function readNotesState(stateDir, repo, leadSessionId) {
   try {
-    const raw = readFileSync15(notesStateFile(stateDir, repo, leadSessionId), "utf8");
+    const raw = readFileSync16(notesStateFile(stateDir, repo, leadSessionId), "utf8");
     const parsed = notesStateFields.safeParse(JSON.parse(raw));
     if (parsed.success)
       return parsed.data;
@@ -12646,7 +12675,7 @@ var stopStateFields = object({
 });
 function readStopState(stateDir, repo, id) {
   try {
-    const raw = readFileSync15(stopStateFile(stateDir, repo, id), "utf8");
+    const raw = readFileSync16(stopStateFile(stateDir, repo, id), "utf8");
     const parsed = stopStateFields.safeParse(JSON.parse(raw));
     if (parsed.success)
       return parsed.data;
@@ -12669,7 +12698,7 @@ var RUNNING_STATES = [
 ];
 
 // src/crew/wait.ts
-import { readFileSync as readFileSync16 } from "fs";
+import { readFileSync as readFileSync17 } from "fs";
 
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
@@ -12809,7 +12838,7 @@ function pausesCrew(error) {
 }
 function readState(file) {
   try {
-    return parseLimitState(readFileSync16(file, "utf8")) ?? emptyLimitState();
+    return parseLimitState(readFileSync17(file, "utf8")) ?? emptyLimitState();
   } catch {
     return emptyLimitState();
   }
@@ -13020,7 +13049,7 @@ import { existsSync as existsSync13, mkdirSync as mkdirSync13, writeFileSync as 
 import { dirname as dirname9, join as join20 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync12, mkdirSync as mkdirSync12, readFileSync as readFileSync17, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync12, mkdirSync as mkdirSync12, readFileSync as readFileSync18, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
 import { join as join19 } from "path";
 function isSessionId(value) {
@@ -13031,7 +13060,7 @@ function namesDir(env) {
 }
 function readName(file) {
   try {
-    return existsSync12(file) ? cleanSessionName(readFileSync17(file, "utf8")) : null;
+    return existsSync12(file) ? cleanSessionName(readFileSync18(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -13464,12 +13493,12 @@ function classifyRoutableLine(bashCommand, kinds, source) {
 }
 
 // src/jobs/package-scripts.ts
-import { readFileSync as readFileSync18 } from "fs";
+import { readFileSync as readFileSync19 } from "fs";
 import { join as join22 } from "path";
 function packageScripts(folder) {
   let text;
   try {
-    text = readFileSync18(join22(folder, "package.json"), "utf8");
+    text = readFileSync19(join22(folder, "package.json"), "utf8");
   } catch {
     return null;
   }
@@ -13978,7 +14007,7 @@ function routeFacts(input, context) {
 }
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync19, readlinkSync as readlinkSync3 } from "fs";
+import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync20, readlinkSync as readlinkSync3 } from "fs";
 import { join as join23 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
@@ -14009,7 +14038,7 @@ function sameAsMain(worktree, mainCheckout, path) {
       if (a.isDirectory()) {
         return b.isDirectory() && readdirSync7(here).every((entry) => same(join23(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync19(here).equals(readFileSync19(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync20(here).equals(readFileSync20(there));
     } catch {
       return false;
     }
@@ -14031,13 +14060,13 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { readFileSync as readFileSync20, statSync as statSync11 } from "fs";
+import { readFileSync as readFileSync21, statSync as statSync11 } from "fs";
 import { basename as basename5, isAbsolute as isAbsolute5, join as join24, resolve as resolve6 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutes(worktree, now) {
   let admin;
   try {
-    admin = readFileSync20(join24(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync21(join24(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return 0;
   }
@@ -14386,7 +14415,7 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync14, readFileSync as readFileSync21 } from "fs";
+import { existsSync as existsSync14, readFileSync as readFileSync22 } from "fs";
 
 // src/setup/statusline.ts
 import { join as join26 } from "path";
@@ -14406,7 +14435,7 @@ function loadWorkflow(file) {
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync21(file, "utf8"));
+    raw = JSON.parse(readFileSync22(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -14457,7 +14486,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync21(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync22(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -15023,6 +15052,8 @@ function crewPrAnswer(input, env, cwd) {
   const dialect = dialectOfTool(input.tool_name);
   if (!requestsPullRequestChange(command, dialect))
     return SILENT;
+  if (computedPullRequestRisk(command, dialect))
+    return toolDecision("deny", CREW_PR_REFUSAL);
   if (pullRequestOpenings(command, null, dialect).length > 0) {
     return toolDecision("deny", CREW_PR_REFUSAL);
   }
@@ -15839,7 +15870,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync22 } from "fs";
+import { readFileSync as readFileSync23 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -15937,7 +15968,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync22(transcript, "utf8");
+    text = readFileSync23(transcript, "utf8");
   } catch {
     return SILENT;
   }

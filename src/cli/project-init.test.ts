@@ -285,7 +285,39 @@ describe("the defaults from the repo", () => {
       sessionNames: true,
       jobRoute: false,
     });
-    expect(withFlags.workflow).toEqual({ openPr: "ready" });
+    // A --workflow word changes only what it names: the file's own setting stays (F5-3).
+    expect(withFlags.workflow).toEqual({ autoCommit: true, openPr: "ready" });
+  });
+
+  test("--workflow merges into the file's policy: a key changes only its own field (F5-3)", () => {
+    const facts = { defaultBranch: "main", protectedFromGithub: [] };
+    const existing = {
+      worktrees: { base: "main" },
+      workflow: {
+        crew: { enabled: true, max: 4 },
+        fixesAfterReview: { lines: 120, percent: 30 },
+      },
+    };
+    // One flat key: the two groups the line does not name survive whole.
+    expect(
+      defaultAnswers(existing, facts, { dryRun: false, yes: true, workflow: ["autoPush=true"] })
+        .workflow,
+    ).toEqual({
+      crew: { enabled: true, max: 4 },
+      fixesAfterReview: { lines: 120, percent: 30 },
+      autoPush: true,
+    });
+    // One dotted key: only that field changes, its group's other fields stay.
+    expect(
+      defaultAnswers(existing, facts, {
+        dryRun: false,
+        yes: true,
+        workflow: ["crew.enabled=false"],
+      }).workflow,
+    ).toEqual({
+      crew: { enabled: false, max: 4 },
+      fixesAfterReview: { lines: 120, percent: 30 },
+    });
   });
 });
 
@@ -488,6 +520,66 @@ describe("the run", () => {
     expect(runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
     expect(run.lines).toContain("Dry run: nothing was written.");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("a project file saved with a byte order mark is read, not refused (F5-2)", () => {
+    const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(dirname(file), { recursive: true });
+    // Notepad and an older PowerShell save UTF-8 with the mark; JSON.parse refuses it, so
+    // every guard fails closed on the file. The command must read it the same way they do now.
+    writeFileSync(
+      file,
+      `\uFEFF${JSON.stringify(
+        { requires: ">=1.0", worktrees: { base: "dev" }, autoMode: ["one rule"] },
+        null,
+        2,
+      )}\n`,
+    );
+    const run = context(repo);
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(run.errors).toEqual([]);
+    // The file's own answers were read: its base stays (not the repo's default), and a field
+    // the flags do not set stays too.
+    const written = JSON.parse(readFileSync(file, "utf8")) as {
+      autoMode?: unknown;
+      worktrees: { base: string };
+    };
+    expect(written.worktrees.base).toBe("dev");
+    expect(written.autoMode).toEqual(["one rule"]);
+    expect(() => parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).not.toThrow();
+  });
+
+  test("--yes with --workflow keeps the file's other workflow settings (F5-3)", () => {
+    const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          requires: ">=1.0",
+          worktrees: { base: "main" },
+          workflow: { crew: { enabled: true }, fixesAfterReview: { lines: 120 } },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const run = context(repo);
+    expect(runProjectInit(["--yes", "--workflow", "autoPush=true"], run.context, runner({}))).toBe(
+      0,
+    );
+    const written = JSON.parse(readFileSync(file, "utf8")) as {
+      workflow: Record<string, unknown>;
+    };
+    expect(written.workflow).toEqual({
+      crew: { enabled: true },
+      fixesAfterReview: { lines: 120 },
+      autoPush: true,
+    });
+    // The merged file is one the plugin's own readers accept before it is written.
+    expect(() => parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).not.toThrow();
   });
 
   test("an existing file: --yes keeps every field the flags do not set", () => {
