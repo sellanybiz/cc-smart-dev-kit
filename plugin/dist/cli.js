@@ -9486,13 +9486,13 @@ function createPrompts(term, io) {
     }
   };
 }
-function terminalPrompts(term, stdin = process.stdin) {
+function terminalPrompts(term, stdin = process.stdin, write = (text) => {
+  process.stdout.write(text);
+}) {
   if (stdin.isTTY !== true)
     return null;
   return createPrompts(term, {
-    write: (text) => {
-      process.stdout.write(text);
-    },
+    write,
     readLine: (shown) => prompt(shown),
     ...canHideInput(stdin) ? { readSecret: () => readSecretLine(stdin) } : {}
   });
@@ -45254,7 +45254,7 @@ function gatewayContext(options) {
     bundle: options.bundle,
     runner: options.runner,
     readStdin: async () => cleanSecretLine(await Bun.stdin.text()),
-    ...terminalQuestions(terminal),
+    ...terminalQuestions(terminal, options.questionOutput),
     confirm: options.confirm,
     service: options.service,
     account: options.account,
@@ -45265,8 +45265,8 @@ function gatewayContext(options) {
     error: options.error ?? ((line) => console.error(line))
   };
 }
-function terminalQuestions(terminal) {
-  const prompts = terminalPrompts(currentTerminal(), terminal);
+function terminalQuestions(terminal, write) {
+  const prompts = terminalPrompts(currentTerminal(), terminal, write);
   if (prompts === null)
     return {};
   return prompts.secret === null ? { prompts } : { prompts, readSecret: prompts.secret };
