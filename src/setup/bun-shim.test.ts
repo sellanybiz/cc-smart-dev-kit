@@ -102,10 +102,10 @@ describe("the hooks' bun shim", () => {
     // A crew session has nobody to answer the guard's question, so the same answer is a
     // denial naming the fix and the step that puts the question to its lead (D36).
     const home = tempDir("shim");
-    const run = runShim(
-      { CC_SMART_DEV_KIT_CREW: "B2-api-aaaaaa", HOME: home, PATH: NO_BUN_PATH },
-      ["--missing=ask", "/x/dist/git-guard.js"],
-    );
+    const run = runShim({ CC_SMART_DEV_KIT_CREW: "B2-api-aaaaaa", HOME: home, PATH: NO_BUN_PATH }, [
+      "--missing=ask",
+      "/x/dist/git-guard.js",
+    ]);
     expect(run.exitCode).toBe(0);
     expect(run.stderr).toBe("");
     expect(JSON.parse(run.stdout)).toEqual({
@@ -113,7 +113,7 @@ describe("the hooks' bun shim", () => {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason:
-          "cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup. A crew session has nobody to answer, so the call is refused. Fix it, or report it to your lead with `cc-smart-dev-kit crew report --question \"<the question>\" --option \"<choice>\" --option \"<choice>\" --recommend <n>`.",
+          'cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup. A crew session has nobody to answer, so the call is refused. Fix it, or report it to your lead with `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`.',
       },
     });
   });
