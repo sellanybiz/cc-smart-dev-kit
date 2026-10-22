@@ -74,7 +74,8 @@ describe("crew through the CLI", () => {
       `started C my-app B1 help (${SHORT_ID}) · sonnet high · crew/B1-help @ ${head}\n`,
     );
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
-    expect(record?.state).toBe("working");
+    // `starting`: its own SessionStart hook says when it is in its worktree.
+    expect(record?.state).toBe("starting");
     expect(readFileSync(join(world.bin, "calls.log"), "utf8")).toContain(
       "--bg\n-w\ncrew-B1-help\n",
     );
