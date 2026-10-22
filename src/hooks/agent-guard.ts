@@ -1253,13 +1253,13 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
     const why = opusWhy(effort, firstWord(said));
     if (effort !== OPUS_ASK_EFFORT) return allow(real, why);
     if (nobodyWatches(env)) {
-      const why = `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer`;
+      const nobody = `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer`;
       return deny(
         real,
         inCrew(env)
-          ? [`${why}.`, CREW_QUESTION_STEP].join("\n")
+          ? [`${nobody}.`, CREW_QUESTION_STEP].join("\n")
           : [
-              `${why} (\`claude -p\`).`,
+              `${nobody} (\`claude -p\`).`,
               `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`,
             ].join("\n"),
       );
