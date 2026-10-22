@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
+import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import {
   clearWorktreeNote,
@@ -344,6 +344,52 @@ describe("the hook", () => {
     const again = await runHook(afterMergeHook, ran(worktree, "gh pr merge --squash"), env);
     expect(again.stdout).toContain("Clear the worktree now");
     expect(again.stdout).not.toContain("Tell the other sessions");
+  });
+
+  test("a merge into the base starts the background clean once: detached, with the repo and the session's folder (D48)", async () => {
+    const { repo, worktree } = project();
+    const env = fakeGh(merged);
+    const { start, started } = recordingStarter();
+    const input = ran(join(worktree, "src"), "gh pr merge --squash");
+
+    await runHook(afterMergeHook, input, env, start);
+
+    // Asked for once, as a "merge" run (it ignores the hourly limit), for the main checkout,
+    // naming the folder the merging session works in. The worktree is untouched: nothing ran.
+    expect(started).toHaveLength(1);
+    expect(started[0]?.argv.slice(-3)).toEqual([repo, "merge", join(worktree, "src")]);
+    expect(started[0]?.argv[0]).toBe(process.execPath);
+    expect(started[0]?.options.cwd).toBe(env.HOME);
+    expect(existsSync(worktree)).toBe(true);
+
+    // The same pull request again is announced no more, and starts no second clean.
+    await runHook(afterMergeHook, input, env, start);
+    expect(started).toHaveLength(1);
+  });
+
+  test("no clean starts for a pull request into another base, for a merge gh cannot vouch for, or with autoClean off", async () => {
+    const other = project();
+    const { start, started } = recordingStarter();
+    await runHook(
+      afterMergeHook,
+      ran(join(other.worktree, "src"), "gh pr merge"),
+      fakeGh({ ...merged, baseRefName: "release" }),
+      start,
+    );
+    await runHook(afterMergeHook, ran(other.worktree, "gh pr merge"), fakeGh(null), start);
+    expect(started).toHaveLength(0);
+
+    const off = project();
+    writeClaudeFile(off.repo, "cc-smart-dev-kit.json", {
+      worktrees: { base: "main", autoClean: false },
+    });
+    await runHook(
+      afterMergeHook,
+      ran(off.worktree, "gh pr merge"),
+      fakeGh({ ...merged, number: 8 }),
+      start,
+    );
+    expect(started).toHaveLength(0);
   });
 
   test("the hook's message carries the caution when the project names other bases", async () => {

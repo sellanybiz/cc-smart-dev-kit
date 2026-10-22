@@ -38,6 +38,7 @@ import {
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
   WORKFLOW_CREW_SINCE,
+  WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
 } from "./config";
@@ -184,17 +185,21 @@ export function raisedRequires(existing: unknown, floor: string, floorVersion: s
  *
  * A file without `worktrees.prefix` needs the plugin that made that field optional
  * (0.5.2): every older plugin refuses the whole file. A file with `workflow.crew` or
- * `workflow.fixesAfterReview` needs the release that brought them: an older plugin reads
- * the file strictly, does not know that field, and refuses the file — so every guard in
- * that project fails closed until the plugin is updated.
+ * `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the release that brought
+ * them: an older plugin reads the file strictly, does not know that field, and refuses the
+ * file — so every guard in that project fails closed until the plugin is updated.
  */
 export function requiresFloor(file: Record<string, unknown>): {
   floor: string;
   version: string;
 } {
   const workflow = isObject(file.workflow) ? file.workflow : {};
+  const worktrees = isObject(file.worktrees) ? file.worktrees : {};
   if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
     return { floor: requiresFor(WORKFLOW_CREW_SINCE), version: WORKFLOW_CREW_SINCE };
+  }
+  if (Object.hasOwn(worktrees, "autoClean")) {
+    return { floor: requiresFor(WORKTREE_AUTO_CLEAN_SINCE), version: WORKTREE_AUTO_CLEAN_SINCE };
   }
   return {
     floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,

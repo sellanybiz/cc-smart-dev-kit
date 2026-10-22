@@ -374,6 +374,14 @@ a command must never report success when it did not run.
   every call.
 - Anything a guard cannot work out (a session record it cannot read, a branch it cannot
   name) lets the call through.
+- **A hook may start a background program, and never run it.** D48: `after-merge` (a pull
+  request merged into the base) and `worktree-leftovers` (an attended session start, at most
+  once an hour per repo) make one call, `startAutoClean` (`src/worktrees/auto-start.ts`), which
+  starts `src/entries/worktrees-clean.ts` detached and returns. The hook waits for nothing,
+  judges nothing and removes nothing; the clean takes the machine-wide lock, and **its errors
+  go to its own log** (`<stateDir>/worktrees-auto-clean.log`), never to the hook's answer. A
+  hook test hands in a recorder (`recordingStarter`, `src/testing/hooks.ts`), so no process
+  runs there. `worktrees.autoClean: false` starts neither.
 
 ## Session start never changes anything that matters
 

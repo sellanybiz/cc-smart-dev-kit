@@ -62,6 +62,12 @@ export const RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"] as const;
 export const WORKFLOW_CREW_SINCE = "1.0.0";
 
 /**
+ * The release that brought `worktrees.autoClean` (D48). A project file that sets it needs that
+ * plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
+ */
+export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
+
+/**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */
@@ -84,6 +90,13 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
        * a worktree): there, every change goes in a worktree. Off when left out.
        */
       guardMainFolder: z.boolean().optional(),
+      /**
+       * Finished worktrees clean themselves (D48): after a merge into the base, and when a
+       * session starts, the plugin runs the same safe clean as `worktrees --clean` in the
+       * background (`src/worktrees/auto-clean.ts`). On when left out; `false` starts nothing.
+       * A minor change to the contract (1.0.0): a project that sets it raises `requires` to `>=1.0`.
+       */
+      autoClean: z.boolean().optional(),
       /**
        * A branch-name prefix (ending in "/") to the base that branch family's pull requests
        * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go

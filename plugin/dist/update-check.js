@@ -216,13 +216,13 @@ import { join as join10, relative, sep as sep2 } from "path";
 import { resolve } from "path";
 var IGNORE_CASE = process.platform === "win32";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
-  const form = (p) => {
-    const forward = resolve(p.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
-    return ignoreCase ? forward.toLowerCase() : forward;
-  };
-  const child = form(path);
-  const parent = form(folder);
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
   return child === parent || child.startsWith(`${parent}/`);
+}
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
 }
 function isStrictlyInside(path, folder, ignoreCase = IGNORE_CASE) {
   return isInside(path, folder, ignoreCase) && !isInside(folder, path, ignoreCase);
@@ -2248,6 +2248,11 @@ function capturingRunner(env, home) {
   };
 }
 
+// src/hooks/attended.ts
+function isAttended(env) {
+  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
+}
+
 // src/setup/auto-update.ts
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 var AUTO_UPDATE_VALUE = false;
@@ -2460,18 +2465,21 @@ function isHeld(files) {
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
-function appendLog(files, line, nowMs) {
-  ensureDir(join13(files.log, ".."));
+function appendLogLine(logFile, line, nowMs) {
+  ensureDir(join13(logFile, ".."));
   try {
-    if (statSync3(files.log).size > LOG_MAX_BYTES) {
-      const text = readFileSync15(files.log, "utf8");
+    if (statSync3(logFile).size > LOG_MAX_BYTES) {
+      const text = readFileSync15(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-      writeFileSync2(files.log, keep.slice(keep.indexOf(`
+      writeFileSync2(logFile, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
     }
   } catch {}
-  appendFileSync(files.log, `${isoSeconds(nowMs)} ${line}
+  appendFileSync(logFile, `${isoSeconds(nowMs)} ${line}
 `, { mode: 384 });
+}
+function appendLog(files, line, nowMs) {
+  appendLogLine(files.log, line, nowMs);
 }
 function wasReported(files, at) {
   try {
@@ -2541,9 +2549,6 @@ function messageOf(error) {
 }
 function optOutDetail(name) {
   return `${name} is set`;
-}
-function isAttended(env) {
-  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
 }
 function backgroundCommand(bunPath, entryPath, pluginDir) {
   return [bunPath, "--no-env-file", bunConfigArg(pluginDir), entryPath, "--background"];

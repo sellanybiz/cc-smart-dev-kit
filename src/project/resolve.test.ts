@@ -101,6 +101,7 @@ describe("resolveProject", () => {
         worktrees: {
           base: "dev",
           guardMainFolder: true,
+          autoClean: false,
           bases: { "hotfix/": "main", "release/": "main" },
         },
         protectedBranches: ["main", "release"],
@@ -116,6 +117,7 @@ describe("resolveProject", () => {
       worktrees: {
         base: "dev",
         guardMainFolder: true,
+        autoClean: false,
         bases: { "hotfix/": "main", "release/": "main" },
       },
       protectedBranches: ["main", "release"],
@@ -147,6 +149,7 @@ describe("resolveProject", () => {
     [{ ownHooks: ["worktree-create"] }, "ownHooks.0:"],
     [{ ownHooks: "git-guard" }, "ownHooks:"],
     [{ worktrees: { base: "dev", guardMainFolder: 1 } }, "worktrees.guardMainFolder:"],
+    [{ worktrees: { base: "dev", autoClean: "off" } }, "worktrees.autoClean:"],
     [
       { worktrees: { base: "dev", bases: { hotfix: "main" } } },
       'worktrees.bases: "hotfix" must end with "/"',

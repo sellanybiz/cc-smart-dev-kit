@@ -132,3 +132,16 @@ export function addContext(event: string, text: string): HookResult {
 export function systemMessage(text: string): HookResult {
   return { stdout: JSON.stringify({ systemMessage: text }) };
 }
+
+/**
+ * Both in one answer: a line for the person (`systemMessage`) and text for Claude's context
+ * (`addContext`). The two fields sit side by side in one JSON object.
+ */
+export function addContextAndMessage(event: string, text: string, message: string): HookResult {
+  return {
+    stdout: JSON.stringify({
+      systemMessage: message,
+      hookSpecificOutput: { hookEventName: event, additionalContext: text },
+    }),
+  };
+}

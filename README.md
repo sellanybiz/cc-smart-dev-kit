@@ -1722,9 +1722,9 @@ guard fails closed), and every other hook writes one line on stderr and the sess
 | `session-escape-guard` | before a Bash, PowerShell, Edit, Write or NotebookEdit call | **Machine-wide**, and `ownHooks` cannot switch it off. Stops a session from loosening its own limits. It **refuses** `cc-smart-dev-kit workflow review-done` (a review is recorded by the review-record hook when a review agent returns, never by the session) and any `cc-smart-dev-kit` command run with `CLAUDECODE` removed (`env -u CLAUDECODE …`, `CLAUDECODE= …`, `unset CLAUDECODE; …`, `env -i`, `sudo`): the commands that change your settings refuse to run inside Claude Code, and this keeps a session from dropping the marker. It **asks you** before a command that reaches the portal's port (20150) on this machine — the portal has no sign-in — and before an Edit or Write of a `.claude/cc-smart-dev-kit.json`, of `~/.config/cc-smart-dev-kit/` (your workflow and gateway settings), or of the kit's state folder (the review record) — a shell line that writes them asks the same way: `>`, `>>`, `tee`, `sed -i`, `cp`/`mv` onto the path, `dd of=`, and PowerShell's `Set-Content`, `Add-Content`, `Out-File`, `Copy-Item` and `Move-Item`. Reading one (`cat`, `grep`) asks nothing. It does not read a script file, a port held in a variable, a target it works out when it runs (unless the line also names one of those files), or a write by a program it does not know. |
 | `fable-session` | a session starts; a model switch; each answer ends | **Machine-wide**: when the session's own model is the `fable` tier — Claude Fable, or a model an override points that tier at — it shows *you* one line, once a session: the premium tier uses your plan's limits faster than Opus, so switch with `/model` if you did not mean to. Nothing goes to Claude, never an error and never a block. A session start judges only the `model` the start names; a switch judges `to_model` — the model the session moved TO — so the line appears AT the switch; a finished answer is judged by the model that answered it, which is the catch-all for a Claude Code that fires no `PostModelSwitch`, and can never fire for a model the session has already left (the old `UserPromptSubmit` read was one turn behind: it missed the switch to Fable and warned after the switch back). The line was seen live on a real session (2026-10-17); that `systemMessage` shows on `PostModelSwitch` and `Stop` is not proved yet (the contract's § Relied on, not proved yet). |
 | `job-route` | before a Bash command | With `"jobs": { "route": true }`: a heavy command (the project's own [kinds](docs/jobs.md#kinds)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A command already inside `cc-smart-dev-kit job run` is left as it is. |
-| `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. |
+| `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged, and, for a merge into `worktrees.base`, the message to send the other sessions of the repo, and it starts the background clean of finished worktrees (once per merge, `worktrees.autoClean`). Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one ([The hooks](#the-hooks) has the guard's row). A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. |
 | `review-record` | when a subagent starts, and when it finishes | When the agent is one `reviewAgents` lists (the plugin's reviewer by default): notes the commit the session's working folder is on at its start, and its branch, and records that start commit on that branch at its end: commits made while it read count as change after the review. It is the record the merge guard reads for a merge it would make with no person watching ([The review record](#the-workflow)). It writes nothing for an agent that stopped inside its own worktree. |
-| `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone. It removes nothing. |
+| `worktree-leftovers` | a session starts | With `worktrees`: names the worktrees that are finished (every commit on `origin/<base>`, nothing uncommitted, no running session, idle for an hour) or whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`, `worktrees.autoClean`). It removes nothing itself. |
 | `session-name` | a session starts; each prompt | With `sessionNames`: asks the session to name itself after its task, then sets that name at the next prompt. |
 
 **A project that still has its own copy of a hook says so**: `ownHooks` in its
@@ -2260,6 +2260,21 @@ main checkout only (a session working in a worktree leaves it first) and one at 
 second run says so and does nothing. A worktree whose folder is gone is named, and
 `git worktree prune` forgets it.
 
+**The finished ones also clean themselves** (`worktrees.autoClean`, on unless a project turns
+it off). After a pull request merges into the base, and when a session starts, the plugin
+runs that same clean by itself: the same verdict, in a detached process, so nothing waits for
+it and no program is ever forced. A session start starts it at most once an hour per repo,
+and never in `claude -p`, where nobody would read the line. The next session you start in that
+repo says once what it removed — `cc-smart-dev-kit removed 2 finished worktrees: app-wt-a,
+app-wt-b (work on main)` — and the note below still names the ones it did not remove, with the
+reason. Everything it removed, kept and every error goes to `cc-smart-dev-kit`'s own state
+folder (`worktrees-auto-clean/`, one file per repo, and `worktrees-auto-clean.log`, kept
+small). Off:
+
+```json
+{ "worktrees": { "base": "main", "autoClean": false } }
+```
+
 **A worktree that holds a git submodule** cannot be moved or removed by git at all
 (`git worktree move` and `git worktree remove` both refuse one), so it is kept with that
 reason, never with "try again". Commit and push its work, delete the folder by hand, and run
@@ -2283,7 +2298,8 @@ checks a worktree under `.claude/worktrees/` itself; for one outside it, the not
 `git status --porcelain` and `git log @{u}..` first, and only then to pass `discard_changes
 true`. When `ExitWorktree` cannot, it says `cc-smart-dev-kit worktrees --remove <path>`, which
 removes the folder and the branch only when the worktree is finished. The SessionStart note, when finished worktrees are left behind, points at
-`cc-smart-dev-kit worktrees --clean`.
+`cc-smart-dev-kit worktrees --clean` — and the background clean above has usually taken them
+already.
 
 ## `project init`
 
@@ -2529,6 +2545,7 @@ every question it holds.
   "worktrees": {
     "base": "main",
     "guardMainFolder": true,
+    "autoClean": true,
     "bases": { "hotfix/": "main", "release/": "main" }
   },
   "protectedBranches": ["main"],
@@ -2549,6 +2566,7 @@ every question it holds.
 | `worktrees.prefix` | **Retired in 1.0.0, and refused**: the folder-name prefix the plugin's worktree engine gave a worktree beside the repo. A file that still sets it does not load; `cc-smart-dev-kit project init` removes it (§ Worktrees). |
 | `worktrees.setup` | **Retired in 1.0.0, and refused**: a command the engine ran inside a new worktree. A project runs its own install itself; `cc-smart-dev-kit project init` removes the field. |
 | `worktrees.guardMainFolder` | `true`: refuse edits in the main checkout itself. Off when left out. |
+| `worktrees.autoClean` | `false`: the finished worktrees do not clean themselves. On when left out: after a merge into the base, and at an attended session start (at most once an hour), the plugin runs the same safe clean as `cc-smart-dev-kit worktrees --clean` in the background (§ Worktrees). A field of 1.0.0: a project that sets it needs `"requires": ">=1.0"`. |
 | `worktrees.bases` | A branch-name prefix (ending in `/`) to the base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch's requests go into `base`. Auto-merge and the after-merge note read it; to start a task from another base, switch the main checkout to it first with `baseRef: "head"`, or `git worktree add` it as Claude Code's docs say. |
 | `worktrees.engine` | **Retired in 1.0.0, and refused**: it said who made the project's worktrees. Every project uses Claude Code's own; `cc-smart-dev-kit project init` removes the field. |
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
@@ -2567,6 +2585,8 @@ plugin says so and asks you to run `claude plugin update cc-smart-dev-kit@cc-sma
 uses a field raises its `requires` to the release that brought the field: a file written
 without `worktrees.prefix` asks for at least `>=0.5.2`, the version that made it optional, so
 a teammate on an older plugin is told to update instead of failing the file's parse.
+`worktrees.autoClean` came with 1.0.0 (an optional field: a minor change), so a project that
+sets it asks for `>=1.0`.
 `worktrees.prefix`, `worktrees.setup` and `worktrees.engine` retired with the plugin's
 worktree engine in 1.0.0: a file that still sets one does not load, and the error names each
 field and the fix, `cc-smart-dev-kit project init`.

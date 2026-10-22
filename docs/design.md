@@ -1268,6 +1268,43 @@ and its hook lines in both project settings files. `doctor` fails (`✗`) on eit
 line names a retired field, and one line per settings file names a leftover hook line, both
 with `cc-smart-dev-kit project init` as the fix.
 
+### Finished worktrees clean themselves (D48)
+
+Worktrees pile up: one project had 73. Claude Code removes a subagent's worktree by itself
+only when it holds no change at all, and `cc-smart-dev-kit worktrees --clean` removes only
+what it can prove finished — but only when someone runs it. Since 1.0.0 that safe clean also
+runs by itself (owner's decision D48, 2026-10-22).
+
+- **One home for the clean.** `cleanFinished` (`src/worktrees/clean.ts`) removes what the scan
+  judged finished, with its branch, forgets a worktree whose folder is gone, and reports what
+  it removed and kept. `worktrees --clean` and the background clean both call it, so the two
+  cannot judge differently. Nothing forces: the verdict (`verdict.ts`), the replay of a branch
+  onto the base (`workOnRef`), and the fresh verdict `removeWorktree` takes right before it
+  moves a folder decide, so a session, a program, a Docker container, uncommitted changes, a
+  local file, a commit not on the base or a replay that cannot answer all keep the worktree.
+- **The background clean** (`src/worktrees/auto-clean.ts`, run by the bundle
+  `src/entries/worktrees-clean.ts`) takes the machine-wide lock (`LOCK_PORTS.worktreesClean`)
+  and does nothing when it is busy, re-reads `worktrees.autoClean`, fetches `origin/<base>`,
+  scans, cleans, and records the result for the hooks in the state folder
+  (`src/worktrees/auto-state.ts`: one `worktrees-auto-clean/<key>.json` per repo, one
+  `<key>.told.json` for what a session start already showed, and one line per run in
+  `worktrees-auto-clean.log`, kept small by the update log's rule). Its own errors are that
+  log line too: the process never throws at a person.
+- **When it runs.** `after-merge` starts it once per pull request merged into the base, and
+  `worktree-leftovers` at an attended session start — at most once an hour per repo (decided
+  in the hook for speed, and again under the lock, so sessions that start together clean
+  once), never in `claude -p`. Both make ONE call (`startAutoClean`, `src/worktrees/auto-start.ts`):
+  it starts the bundle detached (`startDetached`, as the self-update starts its check) with the
+  main checkout, the trigger and the session's own folder, so the worktree that session works
+  in stays even when Claude Code has not written its record yet. A hook never waits for it.
+- **What the person is told.** The next attended session start of that repo shows one
+  `systemMessage`, once: `cc-smart-dev-kit removed 2 finished worktrees: app-wt-a, app-wt-b
+  (work on main)`, then marks it told (`markTold`, keyed on the removal's number, so a clean
+  that finished in between is not marked). The leftovers note still names the worktrees the clean
+  did not remove, with the reason — including the reason the last clean itself gave.
+- **The off switch** is `worktrees.autoClean` (1.0.0, optional, on when left out): `false`
+  starts neither, and the background clean says so in its log.
+
 ### The worktree engine (retired in 1.0.0)
 
 The engine retired in 1.0.0 (D20; owner, 2026-10-21) and its code is gone: the fields it
@@ -1295,9 +1332,9 @@ that, so the plugin ships no worktree hook at all.
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port and before an edit of the kit's own settings. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
-| `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. A form that names no pull request gets no note. |
+| `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send the other sessions when it went into `worktrees.base`, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
-| `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone. Removes nothing. |
+| `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the four machine-wide

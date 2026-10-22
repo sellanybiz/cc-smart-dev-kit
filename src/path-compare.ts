@@ -21,15 +21,22 @@ export const IGNORE_CASE = process.platform === "win32";
  * `app/../app-wt-x` is not "inside app". `\` and `/` are the same separator.
  */
 export function isInside(path: string, folder: string, ignoreCase = IGNORE_CASE): boolean {
-  const form = (p: string) => {
-    // `\` becomes `/` before the resolve too, so a Windows path's `..` is resolved on any host
-    // (a test of a Windows path runs on Linux as well).
-    const forward = resolve(p.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
-    return ignoreCase ? forward.toLowerCase() : forward;
-  };
-  const child = form(path);
-  const parent = form(folder);
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
   return child === parent || child.startsWith(`${parent}/`);
+}
+
+/**
+ * The one form of a path every test here compares: `.` and `..` resolved, `/` for every
+ * separator, no trailing `/`, and lower case where folders compare without it. Two paths
+ * `samePath` calls one place have the same form, so it also serves as a key for a file per
+ * place (the background clean's record of a repo, `src/worktrees/auto-state.ts`).
+ */
+export function pathForm(path: string, ignoreCase = IGNORE_CASE): string {
+  // `\` becomes `/` before the resolve too, so a Windows path's `..` is resolved on any host
+  // (a test of a Windows path runs on Linux as well).
+  const forward = resolve(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
 }
 
 /** Are `a` and `b` the same place (as `isInside` reads them)? */

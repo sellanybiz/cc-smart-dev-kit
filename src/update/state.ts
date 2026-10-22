@@ -214,19 +214,27 @@ export function isoSeconds(ms: number): string {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 
-/** Appends one line to the update log; cuts it back to its newer half when it grew too big. */
-export function appendLog(files: UpdateFiles, line: string, nowMs: number): void {
-  ensureDir(join(files.log, ".."));
+/**
+ * Appends one timestamped line to a log file in the state folder; cuts the file back to its
+ * newer half when it grew past `LOG_MAX_BYTES`. The one size rule of the plain-text logs.
+ */
+export function appendLogLine(logFile: string, line: string, nowMs: number): void {
+  ensureDir(join(logFile, ".."));
   try {
-    if (statSync(files.log).size > LOG_MAX_BYTES) {
-      const text = readFileSync(files.log, "utf8");
+    if (statSync(logFile).size > LOG_MAX_BYTES) {
+      const text = readFileSync(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-      writeFileSync(files.log, keep.slice(keep.indexOf("\n") + 1), { mode: 0o600 });
+      writeFileSync(logFile, keep.slice(keep.indexOf("\n") + 1), { mode: 0o600 });
     }
   } catch {
     // No log yet.
   }
-  appendFileSync(files.log, `${isoSeconds(nowMs)} ${line}\n`, { mode: 0o600 });
+  appendFileSync(logFile, `${isoSeconds(nowMs)} ${line}\n`, { mode: 0o600 });
+}
+
+/** Appends one line to the update log (`appendLogLine`). */
+export function appendLog(files: UpdateFiles, line: string, nowMs: number): void {
+  appendLogLine(files.log, line, nowMs);
 }
 
 /** True when the failure keyed `at` (its time, or its streak's `since`) was already told. */

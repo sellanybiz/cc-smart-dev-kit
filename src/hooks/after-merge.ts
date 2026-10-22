@@ -46,6 +46,7 @@ import {
   withoutRedirections,
   wordsOf,
 } from "../shell/command";
+import { startAutoClean } from "../worktrees/auto-start";
 import { innermostWorktree, listWorktrees, runGit } from "./git";
 import { gitCalls } from "./git-guard";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
@@ -1220,5 +1221,8 @@ export function afterMerge(context: HookContext): HookResult {
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, "");
   }
+  // A merge into the base (announced once per pull request): finished worktrees clean
+  // themselves, in a detached process (D48, `src/worktrees/auto-start.ts`).
+  if (outcome.announce !== null) startAutoClean(context, repo, "merge");
   return notes.length === 0 ? SILENT : addContext(event, notes.join("\n\n"));
 }

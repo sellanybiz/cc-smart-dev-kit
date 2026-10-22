@@ -5,8 +5,9 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { DetachedOptions } from "../hooks/detached";
 import type { HookResult } from "../hooks/io";
-import { type HookSpec, handleHook } from "../hooks/run";
+import { type DetachedStarter, type HookSpec, handleHook } from "../hooks/run";
 import { subprocessGuard } from "./port-guard";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
@@ -94,9 +95,17 @@ export function runHook(
   spec: HookSpec,
   input: Record<string, unknown>,
   env: Record<string, string>,
+  start: DetachedStarter = noBackground,
 ): Promise<HookResult> {
-  return handleHook(spec, JSON.stringify(input), env);
+  return handleHook(spec, JSON.stringify(input), env, Date.now(), start);
 }
+
+/**
+ * The starter a hook test gets unless it hands in its own recorder: it starts nothing. A hook
+ * that starts a background program (the worktree clean, `src/worktrees/auto-start.ts`) must
+ * never launch a real process from a test that is about something else.
+ */
+const noBackground: DetachedStarter = () => undefined;
 
 const ENTRIES = join(import.meta.dir, "..", "entries");
 
@@ -134,4 +143,25 @@ export function writeSessionRecord(
     join(dir, `${pid}.json`),
     JSON.stringify({ pid, sessionId: record.sessionId, cwd: record.cwd, name: record.name }),
   );
+}
+
+/** One background program a hook asked to start. */
+export interface StartedProgram {
+  argv: string[];
+  options: DetachedOptions;
+  platform: NodeJS.Platform;
+}
+
+/**
+ * A starter that records what a hook asked to start and starts nothing: the test asserts the
+ * spawn was asked for, and that nothing ran in the hook's own process.
+ */
+export function recordingStarter(): { start: DetachedStarter; started: StartedProgram[] } {
+  const started: StartedProgram[] = [];
+  return {
+    started,
+    start: (platform, argv, options) => {
+      started.push({ argv, options, platform });
+    },
+  };
 }

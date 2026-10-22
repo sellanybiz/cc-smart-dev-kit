@@ -502,6 +502,13 @@ describe("requiresFloor", () => {
     });
   });
 
+  test("`worktrees.autoClean` came with 1.0.0 too (D48): a file that sets it needs >=1.0", () => {
+    expect(requiresFloor({ worktrees: { base: "main", autoClean: false } })).toEqual({
+      floor: ">=1.0",
+      version: "1.0.0",
+    });
+  });
+
   test("the plan asks for what its own fields need", () => {
     const root = tempDir("project-init");
     const plan = planProjectInit(

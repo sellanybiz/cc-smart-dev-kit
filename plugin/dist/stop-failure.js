@@ -6856,6 +6856,7 @@ var ccSmartDevKitConfigSchema = strictObject({
   worktrees: strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
+    autoClean: boolean2().optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;

@@ -42,6 +42,7 @@ import {
   type Project,
 } from "../project/resolve";
 import { ASK_REASON_MAX, appendAsk, askLogFile } from "./ask-log";
+import type { startDetached } from "./detached";
 import {
   askReason,
   type HookInput,
@@ -56,6 +57,9 @@ export type Env = Record<string, string | undefined>;
 /** The environment variable naming the file each hook run is logged to. */
 export const HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
 
+/** Starts a program that outlives the hook (`startDetached` in `./detached`). */
+export type DetachedStarter = typeof startDetached;
+
 export interface HookContext {
   input: HookInput;
   event: string;
@@ -64,6 +68,11 @@ export interface HookContext {
   project: Project;
   env: Env;
   paths: CliPaths;
+  /**
+   * How a hook starts a background program. Left out, it is `startDetached`; a test hands in
+   * a recorder, so no program runs in the test (`src/worktrees/auto-start.ts`).
+   */
+  start?: DetachedStarter;
 }
 
 /**
@@ -75,6 +84,8 @@ export interface HookContext {
 export interface HookEnvContext {
   env: Env;
   paths: CliPaths;
+  /** The starter a test hands in (`HookContext.start`). */
+  start?: DetachedStarter;
 }
 
 export interface HookSpec {
@@ -238,7 +249,15 @@ async function answer(
       }
       throw error;
     }
-    return await spec.run({ input, event, cwd, project, env, paths: context.paths });
+    return await spec.run({
+      input,
+      event,
+      cwd,
+      project,
+      env,
+      paths: context.paths,
+      ...(context.start !== undefined && { start: context.start }),
+    });
   } catch (error) {
     return crashResult(spec, errorMessage(error), input, event, context);
   }
@@ -246,15 +265,21 @@ async function answer(
 
 /**
  * Runs one hook on its input text: the answer of the frame's steps, then the record of an ask.
- * Never throws. `nowMs` is the time a recorded ask carries.
+ * Never throws. `nowMs` is the time a recorded ask carries; `start` is the starter a test
+ * hands in for a hook that starts a background program.
  */
 export async function handleHook(
   spec: HookSpec,
   text: string,
   env: Env,
   nowMs: number = Date.now(),
+  start?: DetachedStarter,
 ): Promise<HookResult> {
-  const context: HookEnvContext = { env, paths: cliPaths(env) };
+  const context: HookEnvContext = {
+    env,
+    paths: cliPaths(env),
+    ...(start !== undefined && { start }),
+  };
   const input = parseHookInput(text);
   return recordAsk(spec, input, await answer(spec, input, context), context, nowMs);
 }

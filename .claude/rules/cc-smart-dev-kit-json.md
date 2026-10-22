@@ -37,6 +37,7 @@ a clear error that says what is wrong.
 | `worktrees.prefix` | **retired in 1.0.0, refused** | The folder-name prefix the plugin's worktree engine gave a worktree beside the repo. Not in the schema; `RETIRED_WORKTREE_FIELDS` refuses it by name, with the fix (`project init` removes it). |
 | `worktrees.setup` | **retired in 1.0.0, refused** | A command the engine ran inside a new worktree. Refused the same way. |
 | `worktrees.guardMainFolder` | boolean | Refuse edits in the main checkout itself (the main-folder guard). Off when left out. |
+| `worktrees.autoClean` | boolean | On when left out: finished worktrees clean themselves after a merge into the base, and at an attended session start (at most once an hour per repo, never in `claude -p`), through the same safe clean as `worktrees --clean` (`src/worktrees/auto-clean.ts`, D48). `false` starts nothing. Came with 1.0.0. |
 | `worktrees.bases` | object: a branch-name prefix (ending in `/`) to a base branch | The base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`), over `worktrees.base`; the longest prefix that matches wins. Auto-merge and the after-merge note read it (`src/workflow/auto-merge.ts`, `src/hooks/after-merge.ts`). |
 | `worktrees.engine` | **retired in 1.0.0, refused** | Who made this project's worktrees. Refused the same way. |
 | `workflow` | object (`src/workflow/schema.ts`) | What cc-smart-dev-kit may do by itself here (commit, push, open a pull request, merge), over the person's own `~/.config/cc-smart-dev-kit/workflow.json`. Each field is optional, and the project's value wins field by field (`src/workflow/resolve.ts`). |
@@ -54,9 +55,9 @@ The schema is `ccSmartDevKitConfigSchema` in `src/project/config.ts` (zod). The 
 example; keep it in step.
 
 `worktrees.bases` and `workflow` came with 0.4.0 (and `worktrees.engine`, since retired): a
-project that uses one raises `requires` to `>=0.4`. `workflow.crew` and
-`workflow.fixesAfterReview` come with 1.0.0 (optional fields: a minor change to the
-contract); a project that uses one raises `requires` to `>=1.0`. `worktrees.guardMainFolder`, `protectedBranches`,
+project that uses one raises `requires` to `>=0.4`. `workflow.crew`,
+`workflow.fixesAfterReview` and `worktrees.autoClean` come with 1.0.0 (optional fields: a
+minor change to the contract); a project that uses one raises `requires` to `>=1.0`. `worktrees.guardMainFolder`, `protectedBranches`,
 `sessionNames` and `ownHooks` came with the hooks: a project that uses one raises its
 `requires` to the release that ships them. `worktrees.prefix` became optional in 0.5.2 with
 the engine's deprecation: a file written without it raises `requires` to `>=0.5.2` (one

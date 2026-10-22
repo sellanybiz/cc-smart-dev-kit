@@ -19,6 +19,7 @@
 
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
+import { isAttended } from "../hooks/attended";
 import { detachedArgv } from "../hooks/detached";
 import {
   AUTO_UPDATE_KEY,
@@ -76,17 +77,6 @@ function messageOf(error: unknown): string {
 /** The detail of a check skipped because Claude Code's switch for updates is set. */
 export function optOutDetail(name: string): string {
   return `${name} is set`;
-}
-
-/**
- * True when a person sees this session's messages. Claude Code sets
- * `CLAUDE_CODE_SESSION_ATTENDED=0` for its hooks in `claude -p` (and `1` in an interactive
- * session; seen on 2.1.300). The hook's input does not say which (the same fields in
- * both). Without the variable (another Claude Code version), the session counts as
- * attended, as before.
- */
-export function isAttended(env: Env): boolean {
-  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
 }
 
 /**
