@@ -54,6 +54,9 @@ export const CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"] as const;
 /** The words Claude Code writes before a blocked stop's reason in the transcript. */
 const STOP_FEEDBACK = "Stop hook feedback:";
 
+/** The stable words of this hook's own reminder: the command that follows may be long. */
+const REMINDER_MARK = "has not run the project's fast check since";
+
 /** The reminder; the command is the project's own, as its file writes it. */
 export function verifyGateReason(check: string): string {
   return `This session changed files and has not run the project's fast check since: run \`${check}\`, then stop.`;
@@ -164,7 +167,7 @@ export function ranCheck(command: string, check: string, dialect?: Dialect): boo
 }
 
 /** True when this line carries the Stop feedback of this hook's own reminder. */
-function isOwnReminder(line: Record<string, unknown>, check: string): boolean {
+function isOwnReminder(line: Record<string, unknown>): boolean {
   const content = objectOf(line.message)?.content;
   const texts =
     typeof content === "string"
@@ -172,8 +175,7 @@ function isOwnReminder(line: Record<string, unknown>, check: string): boolean {
       : blocksOf(line)
           .map((block) => (typeof block.text === "string" ? block.text : ""))
           .filter((text) => text !== "");
-  const reason = verifyGateReason(check);
-  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(reason));
+  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(REMINDER_MARK));
 }
 
 /** Where the last change, the last run of the check and the last reminder are: -1 when absent. */
@@ -200,7 +202,7 @@ export function seenIn(lines: readonly string[], check: string): SeenIn {
     const record = objectOf(entry);
     // A sidechain line is a subagent's own conversation: not this session's change.
     if (record === null || record.isSidechain === true) continue;
-    if (isOwnReminder(record, check)) seen.lastReminder = index;
+    if (isOwnReminder(record)) seen.lastReminder = index;
     for (const block of toolUses(record)) {
       const name = stringField(block.name);
       if (name !== null && (CHANGE_TOOLS as readonly string[]).includes(name)) {
