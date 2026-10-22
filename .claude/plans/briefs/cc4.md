@@ -10,7 +10,8 @@ Open only the functions you need, by line range. Don't read whole folders. Start
 - On this machine a crew session on `claude-opus-5-5` reached 185 869 tokens with no compaction: more than a 200k window allows.
 - A crew session starts at about 62–69k tokens. With a 200k gauge at 70% it handed off after its research alone.
 - The gauge: `src/crew/self-watch.ts:125` takes `contextWindowOf(usage?.model ?? record.model.resolved)`; the usage is the last reply's from the transcript (`contextUseOf`).
-- The worker slot here answers from a backend (`omniroute:…`). The gateway's model list knows each backend model's context window (`cc-smart-dev-kit gateway models` shows it; find its home in `src/gateway/`, read only).
+- The worker slot here answers from a backend (`omniroute:ollama-cloud/deepseek-v4.1-flash`). OmniRoute reports each model's `context_length`, and the gateway reads it (`src/gateway/backends.ts:43`); `cc-smart-dev-kit gateway models` shows that model at 1 000 000 tokens.
+- Measured: the transcripts of the two worker-slot crew sessions record `message.model` as the bare backend name, `deepseek-v4.1-flash` (no backend prefix). So today `contextWindowOf` returns null for them, and they get no context line at all. The gauge must map that bare name back to the slot's target (the slot chain in the gateway config) and take the target's window from the backend's list, read once and kept, never one network call per poll. A name it cannot map stays unknown.
 
 ## Build
 1. **Find where Claude Code itself says a session's window**, and prove it on the tested version (`.claude-code-version`). Candidates: the status line input's `context_window` (code.claude.com/docs/en/statusline), anything in the transcript, the SessionStart input. Prove what a `--bg` session gives. If a proof needs an interactive terminal, write the exact `!` command for the owner in your report (`needsLead`) and build the rest. Add the proved row to `docs/claude-code-contract.md`.
