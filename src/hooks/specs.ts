@@ -51,7 +51,13 @@ import { programsOf } from "../shell/command";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
-import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
+import {
+  AGENT_TOOLS,
+  agentGuard,
+  crewAgentAnswer,
+  guardFacts,
+  WORKFLOW_TOOLS,
+} from "./agent-guard";
 import { recordAgentUsage } from "./agent-usage";
 import { CREW_ASK_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
@@ -440,6 +446,12 @@ export const agentGuardHook: HookSpec = {
     agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) =>
     agentGuard(input, context.env, context.paths, cwdOf(input)),
+  // A crew session is a background session nobody watches: the guard judges it as unattended,
+  // so every launch it would ask the person about is refused with the step that reaches the
+  // lead — whatever `ownHooks` says and before the file (`crewAgentAnswer` judges, records
+  // nothing).
+  crewLimits: (input, _checkout, { env, paths }) =>
+    crewAgentAnswer(input, env, paths, cwdOf(input)),
   // A crash must not let a launch through unchecked: the guard asks about the launch it was
   // asked to judge. On PostToolUse (the record) it says nothing: the launch already ran.
   onCrash: guardCrash("the model this launch runs on", (input) =>
