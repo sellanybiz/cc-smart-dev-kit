@@ -1634,14 +1634,14 @@ that, so the plugin ships no worktree hook at all.
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's `crew start` is denied; a polling loop over `crew list|status` or `claude agents --json` (a repeating `while`/`until`/`do` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read; a `for`/`foreach` over a fixed list is no poll) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). § The Bash judge and the job route. |
-| `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send the other sessions when it went into `worktrees.base` (it says what to do after the merge: never commit unfinished work for it, run the project's install if a lock file changed, run the tests it touched), and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). A form that names no pull request gets no note. |
+| `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send **the other leads of the repo and the person's own sessions — never a crew session** when it went into `worktrees.base`, one `merge` event per other lead so its watch says the line, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). The message says what to do after the merge: never commit unfinished work for it, run the project's install if a lock file changed, run the tests it touched. A form that names no pull request gets no note (§ The crew talks). |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds at most one short line about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
 | `crew-role` | SessionStart (startup, resume, compact), PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; **its own `cwd` checked against the record's worktree** — inside it a `starting` record is written `working`, outside it an open record is written `failed` with where it started, and its card says to stop (the lead's watch ends the session) — each write reads the state again under the store's lock (`updateCrewIfState`); the two tools that ask the person **denied** with the `crew report --question …` step (D36); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
-| `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
+| `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions — a note another lead told it, a file clash, a merge into the base — since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the eight machine-wide
 ones: `agent-guard` (§ The Agent guard), `job-route` (§ The Bash judge and the job route),
@@ -2970,6 +2970,14 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    queued ones, oldest first, so no lead starves another. A queued crew session has no worktree
    yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
+   **A file clash is said, and never blocks** (D55): once the record exists, the phase's `--files`
+   are compared with those of every running or queued crew session of **another lead** in this
+   repository (`fileClashSessions`). The tracked files (`git ls-files`) decide, and for a pattern
+   that names no tracked file yet, two fixed prefixes that hold each other count as shared — a
+   guess the person can ignore. Each clash is one line after the `started`/`queued` line, naming
+   the other lead, its crew session and the files they share, and one `clash` event on that crew
+   session, so the other lead's watch says the same line. Two leads may mean to share a file, so
+   nothing is refused, delayed or queued.
 4. **Its files** (`files/<id>/`): `brief.md` — the brief as given, then a fixed frame (`brief.ts`):
    who it is and for whom, its worktree and branch, the files it owns, the git rule (D24: commit on
    its branch, never push, never open a pull request, never merge), how it hands back
@@ -3321,6 +3329,32 @@ tell, as it decides everything else about a crew session.
   the tool, so the crew session sends it.
 - **Never status.** "How it goes" and "done" are the lead's, through `crew report`: the crew
   skill says so, and the guard below refuses the alternative.
+
+**`crew lead tell <lead…> --kind contract|question "<text>"`** (`src/crew/lead-tell.ts`, D55) is
+the same talk between **leads**. Several plans often run in one repository at once, each led by
+its own session; a note one lead's plan changes that another's work may use crosses in the same
+two kinds, tagged with the sender's lead name (`[LEAD <tag> <plan>] CONTRACT: …`, the same
+`tell-format.ts`), and a crew session never sees it. Each `<lead>` must be **a lead the store
+records for this repository** (`listLeads`) — its name, its session id or the first 8 characters
+of it; a name this repository does not know (another repository's lead included), the sender
+itself, and a session that never ran `crew lead` are each refused with one line, and **nothing is
+recorded or printed: all or none**. A crew session never runs it at all: `readCaller` refuses it,
+because a crew session talks to its own lead. The command records **one `lead-tell` event per
+receiver**, with that lead's session id in `lead` — so its watch prints one line and its
+`lead-notes` hook covers a missed one — and then prints one `SendMessage` line per receiver. The
+event's text is the note's first line without the tag: the watch line already names the sender.
+
+**A merge into the base reaches the other leads** (D55, `after-merge.ts`). The note after a pull
+request merged into `worktrees.base` names **the other leads of the repo and the person's own
+sessions, never a crew session**: a crew session follows its own lead's branch, cut from that
+lead's work, and merging the base into it would be wrong. Each other lead also gets one `merge`
+event, so its watch says the line (who merged, what number and title, and to merge
+`origin/<base>` at its next stop) without waiting for the message the merging session sends. The
+lead that merged is never told to message itself.
+
+**A file clash reaches the other lead** (D55, `src/crew/start.ts`): a new phase's `--files`
+compared with a running or queued crew session of another lead — see § The lead and the launch,
+step 3 — prints one line at the start and records one `clash` event, which that lead's watch says.
 
 **The message guard** (`src/hooks/message-guard.ts`, PreToolUse on `SendMessage`) is the
 enforcement. Its other-repo rule is unchanged and runs first (§ The hooks): a message to a session

@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { readCrewEvents, writeLead } from "../crew/store";
 import { OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { readCrewEvents, writeLead } from "../crew/store";
 import {
   clearWorktreeNote,
   exactMergeOf,
@@ -714,18 +714,18 @@ describe("the hook", () => {
     await recordLead(env, repo, "LEAD my-app master-plan", "master-plan", MERGING_SESSION);
     await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
     await noteAfterMerge(join(worktree, "src"), env);
-    expect(readCrewEvents(paths.stateDir, repo).events.filter((one) => one.type === "merge")).toEqual(
-      [
-        expect.objectContaining({
-          crew: MERGING_SESSION,
-          lead: OTHER_SESSION,
-          name: "LEAD my-app master-plan",
-          state: "working",
-          text: "LEAD my-app master-plan merged #7 (Fix 'login') into main — at your next stop, merge origin/main into your branch",
-          type: "merge",
-        }),
-      ],
-    );
+    expect(
+      readCrewEvents(paths.stateDir, repo).events.filter((one) => one.type === "merge"),
+    ).toEqual([
+      expect.objectContaining({
+        crew: MERGING_SESSION,
+        lead: OTHER_SESSION,
+        name: "LEAD my-app master-plan",
+        state: "working",
+        text: "LEAD my-app master-plan merged #7 (Fix 'login') into main — at your next stop, merge origin/main into your branch",
+        type: "merge",
+      }),
+    ]);
   });
 
   test("D55: a merge by a session that is no lead reaches every lead, named as a session", async () => {
@@ -735,14 +735,14 @@ describe("the hook", () => {
     await recordLead(env, repo, "LEAD my-app docs-plan", "docs-plan", OTHER_SESSION);
     const note = await noteAfterMerge(join(worktree, "src"), env);
     expect(note).toContain("The other leads here: LEAD my-app docs-plan.");
-    expect(readCrewEvents(paths.stateDir, repo).events.filter((one) => one.type === "merge")).toEqual(
-      [
-        expect.objectContaining({
-          crew: MERGING_SESSION,
-          lead: OTHER_SESSION,
-          text: "a session merged #7 (Fix 'login') into main — at your next stop, merge origin/main into your branch",
-        }),
-      ],
-    );
+    expect(
+      readCrewEvents(paths.stateDir, repo).events.filter((one) => one.type === "merge"),
+    ).toEqual([
+      expect.objectContaining({
+        crew: MERGING_SESSION,
+        lead: OTHER_SESSION,
+        text: "a session merged #7 (Fix 'login') into main — at your next stop, merge origin/main into your branch",
+      }),
+    ]);
   });
 });

@@ -180,4 +180,3 @@ The first line carries the tag and the point, because it is the line the receive
 The note is recorded for each receiving lead, so that lead's watch shows it as one line, and
 the command prints one SendMessage line per lead, to send as it is: only a session sends a
 message.`;
-

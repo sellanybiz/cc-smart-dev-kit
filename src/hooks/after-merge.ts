@@ -38,7 +38,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { appendCrewEvent, type LeadRecord, listLeads, readLead } from "../crew/store";
+import { appendCrewEvent, type LeadRecord, listLeads } from "../crew/store";
 import {
   CHANGE_DIR,
   type Dialect,

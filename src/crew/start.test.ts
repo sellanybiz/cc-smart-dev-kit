@@ -1118,9 +1118,9 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
     expect(filesOverlap(["src/crew/*.ts"], ["src/other/new.ts"], [])).toBeNull();
     // The tracked file `src/crew/start.ts` matches the glob, so the glob matched a file: the
     // prefix rule still finds the file that does not exist yet under it.
-    expect(filesOverlap(["src/crew/*.ts"], ["src/crew/deep/new.ts"], ["src/crew/start.ts"])).toEqual(
-      { files: [], patterns: ["src/crew/*.ts", "src/crew/deep/new.ts"] },
-    );
+    expect(
+      filesOverlap(["src/crew/*.ts"], ["src/crew/deep/new.ts"], ["src/crew/start.ts"]),
+    ).toEqual({ files: [], patterns: ["src/crew/*.ts", "src/crew/deep/new.ts"] });
     // Two globs that both match real files are decided by the files they match.
     expect(
       filesOverlap(["src/crew/*.ts"], ["src/crew/**"], ["src/crew/start.ts", "src/crew/diff.ts"]),

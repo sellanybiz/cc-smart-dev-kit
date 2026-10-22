@@ -84,9 +84,9 @@ import {
   OPUS_TIER,
   onOpusTier,
   placeFor,
+  RUNNING_STATES,
   runningCrew,
   runningForLead,
-  RUNNING_STATES,
   unmetWaits,
   withPlacesLock,
 } from "./places";

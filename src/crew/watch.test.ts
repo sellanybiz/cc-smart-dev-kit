@@ -160,19 +160,18 @@ describe("crew watch", () => {
     // A clash and a merge carry their whole line, written where it happened.
     expect(
       eventLine(
-        { ...base, text: "clash: C a (LEAD b) may change src/a.ts — started anyway", type: "clash" },
+        {
+          ...base,
+          text: "clash: C a (LEAD b) may change src/a.ts — started anyway",
+          type: "clash",
+        },
         null,
         [],
         false,
       ),
     ).toBe("clash: C a (LEAD b) may change src/a.ts — started anyway");
     expect(
-      eventLine(
-        { ...base, text: "LEAD b merged #7 into main", type: "merge" },
-        null,
-        [],
-        false,
-      ),
+      eventLine({ ...base, text: "LEAD b merged #7 into main", type: "merge" }, null, [], false),
     ).toBe("LEAD b merged #7 into main");
   });
 

@@ -175,10 +175,7 @@ describe("crew lead tell", () => {
 
   test("telling yourself is refused", async () => {
     const world = await twoLeadWorld();
-    const code = await runCrew(
-      ["lead", "tell", SELF_NAME, "--kind", "contract", "x"],
-      world.ctx(),
-    );
+    const code = await runCrew(["lead", "tell", SELF_NAME, "--kind", "contract", "x"], world.ctx());
     expect(code).toBe(1);
     expect(world.err).toEqual(["crew lead tell: you cannot tell yourself"]);
     expect(notes(world)).toEqual([]);
@@ -216,10 +213,7 @@ describe("crew lead tell", () => {
       { name: PEER_NAME, sessionId: OTHER_SESSION },
       { name: PEER_NAME, sessionId: "e22fbc7d-9999-aaaa-bbbb-cccccccccccc" },
     ]);
-    const code = await runCrew(
-      ["lead", "tell", PEER_NAME, "--kind", "contract", "x"],
-      world.ctx(),
-    );
+    const code = await runCrew(["lead", "tell", PEER_NAME, "--kind", "contract", "x"], world.ctx());
     expect(code).toBe(1);
     expect(world.err).toEqual([
       'crew lead tell: "LEAD my-app other-plan" is two leads',
@@ -277,9 +271,9 @@ describe("crew lead tell", () => {
     );
     // The sender itself is the only lead: there is no other to name.
     expect(listLeads(world.paths.stateDir, world.repo).records).toHaveLength(1);
-    expect(
-      await runCrew(["lead", "tell", PEER_NAME, "--kind", "contract", "x"], world.ctx()),
-    ).toBe(1);
+    expect(await runCrew(["lead", "tell", PEER_NAME, "--kind", "contract", "x"], world.ctx())).toBe(
+      1,
+    );
     expect(world.err).toEqual([
       `crew lead tell: no lead of this repository is "${PEER_NAME}"`,
       `Fix: cc-smart-dev-kit crew lead records this session as a lead; the leads here are ${SELF_NAME}`,

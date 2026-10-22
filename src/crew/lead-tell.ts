@@ -26,15 +26,9 @@ import { sendMessageLine } from "./answer";
 import { readCaller, reasonOf, requireSession } from "./caller";
 import type { CrewContext } from "./context";
 import { withoutListRef } from "./names";
-import {
-  appendCrewEvent,
-  type LeadRecord,
-  listLeads,
-  type Listed,
-  readLead,
-} from "./store";
-import { firstLineOf, leadTellMessage } from "./tell-format";
+import { appendCrewEvent, type LeadRecord, type Listed, listLeads, readLead } from "./store";
 import type { TellArgs } from "./tell";
+import { firstLineOf, leadTellMessage } from "./tell-format";
 
 /** A lead `ref` names; or the refusal that names every candidate. */
 function findLead(
@@ -44,13 +38,12 @@ function findLead(
   const plain = withoutListRef(ref);
   const matches = records
     .filter(
-      (one) =>
-        one.name === plain ||
-        one.sessionId === plain ||
-        one.sessionId.slice(0, 8) === plain,
+      (one) => one.name === plain || one.sessionId === plain || one.sessionId.slice(0, 8) === plain,
     )
     // Oldest first, so the candidates read as a history.
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId));
+    .sort(
+      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId),
+    );
   const [only] = matches;
   if (only !== undefined && matches.length === 1) return { record: only };
   if (only === undefined) {
