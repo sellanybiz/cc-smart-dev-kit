@@ -630,7 +630,11 @@ the portal's own folder is in it. `/api/projects/<id>` adds the project-init car
 root and the open pull requests (`gh pr list`) and crew branches (`listCrew`), each judged by
 `checkPullRequest` / `checkBranch` — the merge guard's own code — under **one deadline per
 page** (`PROJECT_BRANCHES_DEADLINE_MS`; past it a verdict is `late`, never a guess) and kept
-for `PROJECT_BRANCHES_CACHE_MS`. Every git and `gh` child on these paths is awaited
+for `PROJECT_BRANCHES_CACHE_MS` (a read the deadline cut short is not kept). The verdicts run
+`PROJECT_VERDICTS_AT_ONCE` at a time and share one default-branch read; crew rows are only the
+states whose branch still waits for a merge (`CREW_BRANCH_STATES`). The list itself is kept for
+`PROJECTS_LIST_CACHE_MS`, shared by looks at once, dropped by an add or a write, and its scan
+runs at most `PROJECT_GIT_AT_ONCE` git children together. Every git and `gh` child on these paths is awaited
 (`Bun.spawn`): merge-check takes an injectable async `GhRunner` (default `spawnGh`), and the
 merge guard and `workflow merge-check` await it with their time budget unchanged, so a verdict
 never freezes the pages or the live stream. `project.preview` and `project.write` take an

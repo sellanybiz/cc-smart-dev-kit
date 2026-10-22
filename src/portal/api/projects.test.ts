@@ -33,7 +33,10 @@ import type { PageDataDeps } from "../page-data";
 import {
   addProjectRoot,
   forgetProjectBranches,
+  forgetProjectsList,
   NO_SESSION_RECORDS,
+  PROJECT_GIT_AT_ONCE,
+  PROJECT_VERDICTS_AT_ONCE,
   type ProjectsWorld,
   projectBranches,
   projectsList,
@@ -51,11 +54,24 @@ function expectedId(root: string): string {
   return createHash("sha256").update(root).digest("hex").slice(0, 12);
 }
 
-/** A PATH with the real git, and (when asked) a gh that only has to exist. */
-function binPath(withGh: boolean): string {
+/**
+ * A PATH with the real git, and (when asked) a gh that only has to exist. `gitLog`: a git that
+ * writes its arguments to that file before running the real one, so a test counts the scans.
+ * `gitHold`: a file the git waits for first, so a test sees how many children start at once.
+ */
+function binPath(withGh: boolean, gitLog?: string, gitHold?: string): string {
   const bin = join(tempDir("projects-bin"), "bin");
   mkdirSync(bin);
-  symlinkSync(Bun.which("git") ?? "/usr/bin/git", join(bin, "git"));
+  const gitPath = Bun.which("git") ?? "/usr/bin/git";
+  if (gitLog === undefined && gitHold === undefined) {
+    symlinkSync(gitPath, join(bin, "git"));
+  } else {
+    const script = join(bin, "git");
+    const log = gitLog === undefined ? "" : `printf '%s\\n' "$*" >> "${gitLog}"\n`;
+    const hold = gitHold === undefined ? "" : `while [ ! -f "${gitHold}" ]; do sleep 0.05; done\n`;
+    writeFileSync(script, `#!/bin/sh\n${log}${hold}exec "${gitPath}" "$@"\n`);
+    chmodSync(script, 0o755);
+  }
   if (withGh) {
     writeFileSync(join(bin, "gh"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(bin, "gh"), 0o755);
@@ -63,13 +79,26 @@ function binPath(withGh: boolean): string {
   return bin;
 }
 
+/** Every git call the logged PATH saw, oldest first (none before the first call). */
+function gitCalls(log: string): string[] {
+  if (!existsSync(log)) return [];
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line !== "");
+}
+
 /** The environment the portal reads: a temp HOME, and only the programs a test allows. */
-function worldEnv(home: string, withGh: boolean): Record<string, string> {
+function worldEnv(
+  home: string,
+  withGh: boolean,
+  gitLog?: string,
+  gitHold?: string,
+): Record<string, string> {
   return {
     ...cleanGitEnv(),
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     HOME: home,
-    PATH: binPath(withGh),
+    PATH: binPath(withGh, gitLog, gitHold),
   };
 }
 
@@ -123,11 +152,17 @@ interface TestWorld {
 
 /** Everything one test reads: a temp HOME and portal folder, and the portal's own context. */
 function testWorld(
-  options: { clock?: () => number; gh?: boolean; withGh?: GhRunner } = {},
+  options: {
+    clock?: () => number;
+    gh?: boolean;
+    gitHold?: string;
+    gitLog?: string;
+    withGh?: GhRunner;
+  } = {},
 ): TestWorld {
   const home = tempDir("projects-home");
   const cwd = tempDir("projects-cwd");
-  const env = worldEnv(home, options.gh === true);
+  const env = worldEnv(home, options.gh === true, options.gitLog, options.gitHold);
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const now = options.clock ?? (() => Date.now());
   const ctx = portalContext(paths, env, now);
@@ -171,6 +206,56 @@ function committedRepo(name: string, config: unknown = {}): string {
   const repo = makeRepo(name);
   commitConfig(repo, config, ["main"]);
   return repo;
+}
+
+/** A repo whose committed policy lets its plain integration base merge by itself. */
+function mergeableRepo(name: string): string {
+  const repo = makeRepo(name);
+  commitConfig(
+    repo,
+    {
+      workflow: { autoMerge: true, reviewBeforePush: false },
+      worktrees: { base: "integration" },
+    },
+    ["main", "integration"],
+  );
+  return repo;
+}
+
+/**
+ * A gh runner for `numbers` open pull requests into `integration`, each one green and allowed
+ * to merge; `onCall` sees every call (to count them, or to slow them down).
+ */
+function mergeableRunner(numbers: number[], onCall?: (args: string[]) => Promise<void>): GhRunner {
+  return async (args) => {
+    if (onCall !== undefined) await onCall(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify(
+        numbers.map((number) => ({
+          baseRefName: "integration",
+          headRefName: `feat/${number}`,
+          isDraft: false,
+          number,
+          title: `Add ${number}`,
+        })),
+      );
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({
+        baseRefName: "integration",
+        headRefName: `feat/${args[2]}`,
+        headRefOid: "c".repeat(40),
+        number: Number(args[2]),
+      });
+    }
+    if (args[0] === "repo" && args[1] === "view") {
+      return JSON.stringify({ defaultBranchRef: { name: "main" } });
+    }
+    if (args[0] === "pr" && args[1] === "checks") {
+      return JSON.stringify([{ bucket: "pass", name: "ci" }]);
+    }
+    return null;
+  };
 }
 
 /** The form's own answers: everything the Project card sends, and nothing else. */
@@ -223,8 +308,9 @@ async function projectOf(world: ProjectsWorld, root: string): Promise<ProjectSum
 }
 
 beforeEach(() => {
-  // The kept branch answers are the server's memory: a test starts from none.
+  // The kept branch answers and the kept list are the server's memory: a test starts from none.
   forgetProjectBranches();
+  forgetProjectsList();
 });
 
 describe("the projects list (B8)", () => {
@@ -288,6 +374,36 @@ describe("the projects list (B8)", () => {
     expect(fromWorktree.projects.find((one) => one.root === alpha)?.current).toBe(true);
   });
 
+  test("the scan runs at most PROJECT_GIT_AT_ONCE git children at once", async () => {
+    const release = join(tempDir("projects-release"), "release");
+    const log = join(tempDir("projects-git-log"), "git.log");
+    const w = testWorld({ clock: () => T0, gitHold: release, gitLog: log });
+    const repos = Array.from({ length: PROJECT_GIT_AT_ONCE + 4 }, (_, index) =>
+      makeRepo(`repo-${index}`),
+    );
+    for (const [index, repo] of repos.entries()) {
+      sessionRecord(w.paths.projectsDir, repo, `s-${index}`, T0);
+    }
+
+    // Every git call waits for the release file: until it is written, exactly the cap may
+    // start, and not one more.
+    const scanning = projectsList(w.projects);
+    try {
+      const until = Date.now() + 10_000;
+      while (gitCalls(log).length < PROJECT_GIT_AT_ONCE && Date.now() < until) {
+        await Bun.sleep(10);
+      }
+      expect(gitCalls(log)).toHaveLength(PROJECT_GIT_AT_ONCE);
+      await Bun.sleep(100);
+      expect(gitCalls(log)).toHaveLength(PROJECT_GIT_AT_ONCE);
+    } finally {
+      // Written even when an assertion fails, so no git child of this test stays blocked.
+      writeFileSync(release, "");
+    }
+    const list = await scanning;
+    expect(list.projects.map((one) => one.root).sort()).toEqual([...repos].sort());
+  });
+
   test("no session records: the note says why, and the added folders are rows even so", async () => {
     const w = testWorld();
     const alpha = committedRepo("alpha");
@@ -316,6 +432,121 @@ describe("the projects list (B8)", () => {
         worktrees: 0,
       },
     ]);
+  });
+});
+
+describe("the projects list is kept briefly (B8)", () => {
+  test("two reads within ten seconds are one scan, two at once share it, and past it reads scan again", async () => {
+    let clock = T0;
+    const log = join(tempDir("projects-git-log"), "git.log");
+    const w = testWorld({ clock: () => clock, gitLog: log });
+    const repo = committedRepo("alpha");
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+
+    const first = await projectsList(w.projects);
+    const scanned = gitCalls(log).length;
+    expect(scanned).toBeGreaterThan(0);
+
+    // Inside the ten seconds: the kept answer, and no git child at all.
+    clock += 9_000;
+    expect(await projectsList(w.projects)).toEqual(first);
+    expect(gitCalls(log)).toHaveLength(scanned);
+
+    // Two looks at once past the keep share the one scan their first look starts.
+    clock += 50_000;
+    const [one, two] = await Promise.all([projectsList(w.projects), projectsList(w.projects)]);
+    expect(two).toEqual(one);
+    expect(gitCalls(log)).toHaveLength(2 * scanned);
+
+    // Past the keep, the next look is a fresh scan.
+    clock += 11_000;
+    await projectsList(w.projects);
+    expect(gitCalls(log)).toHaveLength(3 * scanned);
+  });
+
+  test("a project added on the page shows at once, not ten seconds later", async () => {
+    const w = testWorld({ clock: () => T0 });
+    expect(await projectsList(w.projects)).toEqual({ note: NO_SESSION_RECORDS, projects: [] });
+
+    const repo = committedRepo("alpha");
+    const added = await runAction("project.add", { folder: repo }, w.action);
+    expect(added.ok).toBe(true);
+
+    expect((await projectsList(w.projects)).projects.map((one) => one.root)).toEqual([repo]);
+  });
+
+  test("a project file written on the page drops the kept list, so the next look scans again", async () => {
+    const log = join(tempDir("projects-git-log"), "git.log");
+    const w = testWorld({ clock: () => T0, gitLog: log });
+    const repo = makeRepo("alpha");
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+    const id = (await projectOf(w.projects, repo)).id;
+    const scanned = gitCalls(log).length;
+
+    // The preview finds the project in the kept list: its own checkout is read, but the list is
+    // not scanned again (a scan always lists the project's worktrees).
+    const preview = await runAction(
+      "project.preview",
+      { answers: formAnswers(), project: id },
+      w.action,
+    );
+    expect(preview.ok).toBe(true);
+    const afterPreview = gitCalls(log).length;
+    expect(
+      gitCalls(log)
+        .slice(scanned)
+        .some((call) => call.startsWith("worktree list")),
+    ).toBe(false);
+    const write = await runAction(
+      "project.write",
+      { answers: formAnswers(), confirm: true, previewHash: preview.filesHash, project: id },
+      w.action,
+    );
+    expect(write.ok).toBe(true);
+
+    // The write dropped the kept list: the page's next look scans the list again, at once.
+    await projectOf(w.projects, repo);
+    expect(
+      gitCalls(log)
+        .slice(afterPreview)
+        .some((call) => call.startsWith("worktree list")),
+    ).toBe(true);
+  });
+});
+
+describe("the projects list folds one repository (B8)", () => {
+  test("a folder reached through a symlink is the same repository: one row", async () => {
+    const w = testWorld({ clock: () => T0 });
+    const repo = committedRepo("alpha");
+    const link = join(tempDir("projects-link"), "alpha-link");
+    symlinkSync(repo, link);
+    sessionRecord(w.paths.projectsDir, repo, "s-real", T0);
+    sessionRecord(w.paths.projectsDir, link, "s-link", T0 + HOUR);
+
+    const list = await projectsList(w.projects);
+    expect(list.projects).toHaveLength(1);
+    // The row is the main checkout's real path, and its newest use is the symlink's session's.
+    expect(list.projects[0]).toMatchObject({
+      id: expectedId(repo),
+      lastUsed: new Date(T0 + HOUR).toISOString(),
+      root: repo,
+    });
+  });
+
+  test("a committed project file changed on disk is uncommitted", async () => {
+    let clock = T0;
+    const w = testWorld({ clock: () => clock });
+    const repo = committedRepo("alpha");
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+    expect((await projectOf(w.projects, repo)).uncommitted).toBe(false);
+
+    writeFileSync(
+      join(repo, ".claude", "cc-smart-dev-kit.json"),
+      '{"workflow":{"autoMerge":true}}\n',
+    );
+    // Past the list's own keep, so the page reads the working copy again.
+    clock += 11_000;
+    expect((await projectOf(w.projects, repo)).uncommitted).toBe(true);
   });
 });
 
@@ -492,6 +723,109 @@ describe("/api/projects/<id> (B8)", () => {
     expect(two).toEqual(one);
   });
 
+  test("three open pull requests ask gh repo view once for the page", async () => {
+    const w = testWorld({ clock: () => T0, gh: true });
+    const repo = mergeableRepo("alpha");
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+    const asked: string[][] = [];
+    const run = mergeableRunner([7, 8, 9], async (args) => {
+      asked.push(args);
+    });
+    const world = { ...w.projects, gh: run };
+    const answer = await projectBranches(world, await projectOf(world, repo));
+    expect(answer.note).toBe(null);
+    // Every row is there, in gh's own order, each with its own verdict.
+    expect(answer.branches.map((one) => [one.number, one.verdict.kind])).toEqual([
+      [7, "allowed"],
+      [8, "allowed"],
+      [9, "allowed"],
+    ]);
+    // One default branch for the page, and one view per pull request.
+    expect(asked.filter((one) => one[0] === "repo" && one[1] === "view")).toHaveLength(1);
+    expect(asked.filter((one) => one[0] === "pr" && one[1] === "view")).toHaveLength(3);
+  });
+
+  test("the pull request verdicts run together, at most PROJECT_VERDICTS_AT_ONCE at a time", async () => {
+    const w = testWorld({ clock: () => T0, gh: true });
+    const repo = mergeableRepo("alpha");
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+    let inFlight = 0;
+    let mostAtOnce = 0;
+    const run = mergeableRunner([1, 2, 3, 4, 5, 6], async () => {
+      inFlight += 1;
+      mostAtOnce = Math.max(mostAtOnce, inFlight);
+      await Bun.sleep(10);
+      inFlight -= 1;
+    });
+    const world = { ...w.projects, gh: run };
+    const answer = await projectBranches(world, await projectOf(world, repo));
+    expect(answer.branches).toHaveLength(6);
+    expect(answer.branches.every((one) => one.verdict.kind === "allowed")).toBe(true);
+    // More than one at a time (they overlap), and never more than the cap.
+    expect(mostAtOnce).toBeGreaterThan(1);
+    expect(mostAtOnce).toBe(PROJECT_VERDICTS_AT_ONCE);
+  });
+
+  test("a pull request the deadline cut short is late, not unread", async () => {
+    let clock = T0;
+    const w = testWorld({ clock: () => clock, gh: true });
+    const repo = committedRepo("alpha");
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+    const run: GhRunner = async (args) => {
+      if (args[0] === "pr" && args[1] === "list") {
+        return JSON.stringify([
+          {
+            baseRefName: "main",
+            headRefName: "feat/x",
+            isDraft: true,
+            number: 7,
+            title: "Add x",
+          },
+        ]);
+      }
+      if (args[0] === "repo" && args[1] === "view") {
+        return JSON.stringify({ defaultBranchRef: { name: "main" } });
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        // The view itself eats the page's whole deadline and answers nothing.
+        clock += 9_000;
+        return null;
+      }
+      return null;
+    };
+    const world = { ...w.projects, gh: run };
+    const answer = await projectBranches(world, await projectOf(world, repo));
+    expect(answer.branches[0]?.verdict).toEqual({
+      kind: "late",
+      number: null,
+      what: "the pull request this command names",
+    });
+    expect(answer.note).toContain("the time to read every verdict ran out");
+  });
+
+  test("crew rows are only the branches that still wait for a merge", async () => {
+    const w = testWorld({ clock: () => T0 });
+    const repo = committedRepo("alpha");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const base = crewFixture(repo, head);
+    const records = [
+      { branch: "crew/A-merged", id: "crew-A", state: "merged" },
+      { branch: "crew/B-handoff", id: "crew-B", state: "handoff" },
+      { branch: "crew/C-queued", id: "crew-C", state: "queued" },
+      { branch: "crew/D-working", id: "crew-D", state: "working" },
+      { branch: "crew/E-stopped", id: "crew-E", state: "stopped" },
+    ] as const;
+    for (const { branch, id, state } of records) {
+      await createCrew(w.paths.stateDir, { ...base, branch, id, name: id, state }, T0);
+    }
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+
+    const answer = await projectBranches(w.projects, await projectOf(w.projects, repo));
+    // A merged branch, a handed-off one and one with no branch yet are not rows; a running one
+    // and a stopped one still wait for the lead's merge, so they are.
+    expect(answer.branches.map((one) => one.branch)).toEqual(["crew/D-working", "crew/E-stopped"]);
+  });
+
   test("the branches are kept for 60 s, and read again after it", async () => {
     let clock = T0;
     const w = testWorld({ clock: () => clock, gh: true });
@@ -572,6 +906,32 @@ describe("the project actions (B8)", () => {
     expect(w.workflow.calls.applyProjectInit[0]?.plan.file).toBe(
       join(beta, ".claude", "cc-smart-dev-kit.json"),
     );
+  });
+
+  test("a project field that is not a string is refused, and nothing is read or written", async () => {
+    const w = testWorld();
+    for (const value of [7, null, { id: "no-such-id" }]) {
+      for (const name of ["project.preview", "project.write"] as const) {
+        const answer = await runAction(
+          name,
+          { answers: formAnswers(), confirm: true, project: value },
+          w.action,
+        );
+        expect(answer.ok).toBe(false);
+        expect(answer.lines).toEqual([
+          "The project must be named by its id, as a string; nothing was read or written.",
+        ]);
+      }
+    }
+    expect(w.workflow.calls.planProjectInit).toEqual([]);
+    expect(w.workflow.calls.applyProjectInit).toEqual([]);
+  });
+
+  test("no project field still means the folder the portal runs in", async () => {
+    const w = testWorld();
+    const answer = await runAction("project.preview", { answers: formAnswers() }, w.action);
+    expect(answer.ok).toBe(false);
+    expect(answer.lines).toEqual(["this folder is not inside a git project"]);
   });
 
   test("project.add refuses what is not a folder in git, and adds a worktree's main checkout", async () => {

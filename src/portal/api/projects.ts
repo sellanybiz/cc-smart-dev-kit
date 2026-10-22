@@ -9,13 +9,15 @@
  * page (`portalProjectsFile`) are rows too, whether or not a session ever worked there.
  *
  * **Nothing here blocks the server.** Every git and `gh` child is awaited (`Bun.spawn`:
- * `locateCheckoutAsync`, `runGitAsync`, the merge check's own runner), and the git calls run
- * in parallel across projects: a page, another action and the live stream stay live while
- * they run (`.claude/rules/portal.md`). One deadline covers the whole branch answer
- * (`PROJECT_BRANCHES_DEADLINE_MS`): past it a verdict is `late` ("not read yet"), never a
- * guess. The answers are kept for `PROJECT_BRANCHES_CACHE_MS` in the server's own memory,
- * because reading a verdict asks GitHub and measures git; the clock is the portal's own
- * (`PortalContext.now`), so a test moves time instead of waiting.
+ * `locateCheckoutAsync`, `runGitAsync`, the merge check's own runner), and both run a few at
+ * a time: a page, another action and the live stream stay live while they run
+ * (`.claude/rules/portal.md`). The list's projects are read `PROJECT_GIT_AT_ONCE` at a time,
+ * and a page's pull request verdicts `PROJECT_VERDICTS_AT_ONCE` at a time. One deadline covers
+ * the whole branch answer (`PROJECT_BRANCHES_DEADLINE_MS`): past it a verdict is `late` ("not
+ * read yet"), never a guess. The branch answers are kept for `PROJECT_BRANCHES_CACHE_MS` and
+ * the list for `PROJECTS_LIST_CACHE_MS` in the server's own memory, because reading them asks
+ * GitHub and measures git; the clock is the portal's own (`PortalContext.now`), so a test
+ * moves time instead of waiting.
  *
  * **A project is named by its id, never by a path.** The id is a short hash of the main
  * checkout's root (`projectId`): the page and the `project.*` actions send it, and the server
@@ -42,6 +44,7 @@ import {
   type MergeVerdict as CheckVerdict,
   checkBranch,
   checkPullRequest,
+  defaultBranchOf,
   GH_TIMEOUT_MS,
   type GhRunner,
   ghMissing,
@@ -67,6 +70,44 @@ export const PROJECT_BRANCHES_CACHE_MS = 60_000;
 
 /** One deadline for a whole page's branches: past it a verdict is `late`, never a guess. */
 export const PROJECT_BRANCHES_DEADLINE_MS = 8_000;
+
+/** How long the list itself is kept: the page, a project's page and an action share one scan. */
+export const PROJECTS_LIST_CACHE_MS = 10_000;
+
+/** How many pull request verdicts one page reads at once: enough to overlap, never a flood of gh. */
+export const PROJECT_VERDICTS_AT_ONCE = 4;
+
+/**
+ * How many of the list's projects have their git reads run at once. Each project runs up to
+ * two git children (its worktree list, and the status of its two files), so a home with many
+ * projects never starts a hundred git processes together.
+ */
+export const PROJECT_GIT_AT_ONCE = 8;
+
+/**
+ * Runs `read` over `items`, at most `atOnce` at a time, and answers in the items' own order:
+ * a slow read never holds up the others, and the cap keeps the children from flooding.
+ */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  atOnce: number,
+  read: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const answers = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next;
+      if (index >= items.length) return;
+      next += 1;
+      const item = items[index];
+      if (item === undefined) continue;
+      answers[index] = await read(item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(atOnce, items.length) }, () => worker()));
+  return answers;
+}
 
 /** What the list and one page are read from: the portal's own paths, folder, clock and gh. */
 export interface ProjectsWorld {
@@ -137,7 +178,7 @@ export async function addProjectRoot(
   paths: CliPaths,
   root: string,
 ): Promise<{ added: boolean; roots: string[] }> {
-  return await withLock(
+  const result = await withLock(
     paths.stateDir,
     () => {
       const roots = readAddedProjects(paths);
@@ -148,6 +189,9 @@ export async function addProjectRoot(
     },
     { waitMs: 10_000 },
   );
+  // A new root is a new row: the page's next look must not be the list kept before it.
+  if (result.added) forgetProjectsList();
+  return result;
 }
 
 /** One project the list found: its main checkout, where it came from, and when it was used. */
@@ -168,31 +212,28 @@ async function foundProjects(
 ): Promise<{ found: FoundProject[]; records: number }> {
   const worked = sessionWorkFolderTimes(world.paths.projectsDir);
   const byRoot = new Map<string, FoundProject>();
-  // One checkout read per folder, all at once: the git children never run one after another.
-  await Promise.all(
-    worked.map(async ({ folder, lastWrite }) => {
-      const checkout = await checkoutOfAsync(folder, world.env);
-      if (checkout === null) return;
-      const known = byRoot.get(checkout.main);
-      byRoot.set(checkout.main, {
-        lastWrite: Math.max(known?.lastWrite ?? 0, lastWrite),
-        root: checkout.main,
-        source: "sessions",
-      });
-    }),
-  );
+  // A few folders at a time: one checkout read each, never one after another, and never all
+  // of them at once on a machine with many projects (`PROJECT_GIT_AT_ONCE`).
+  await mapLimit(worked, PROJECT_GIT_AT_ONCE, async ({ folder, lastWrite }) => {
+    const checkout = await checkoutOfAsync(folder, world.env);
+    if (checkout === null) return;
+    const known = byRoot.get(checkout.main);
+    byRoot.set(checkout.main, {
+      lastWrite: Math.max(known?.lastWrite ?? 0, lastWrite),
+      root: checkout.main,
+      source: "sessions",
+    });
+  });
   const added = readAddedProjects(world.paths);
-  await Promise.all(
-    added.map(async (folder) => {
-      const checkout = await checkoutOfAsync(folder, world.env);
-      if (checkout === null) return;
-      const known = byRoot.get(checkout.main);
-      // A folder that is also a session's stays one row; the session records are the first
-      // source, so they name it, and its newest use is theirs.
-      if (known !== undefined) return;
-      byRoot.set(checkout.main, { lastWrite: 0, root: checkout.main, source: "added" });
-    }),
-  );
+  await mapLimit(added, PROJECT_GIT_AT_ONCE, async (folder) => {
+    const checkout = await checkoutOfAsync(folder, world.env);
+    if (checkout === null) return;
+    const known = byRoot.get(checkout.main);
+    // A folder that is also a session's stays one row; the session records are the first
+    // source, so they name it, and its newest use is theirs.
+    if (known !== undefined) return;
+    byRoot.set(checkout.main, { lastWrite: 0, root: checkout.main, source: "added" });
+  });
   return { found: [...byRoot.values()], records: worked.length };
 }
 
@@ -262,12 +303,84 @@ export interface ProjectList {
 export const NO_SESSION_RECORDS =
   "Claude Code has saved no session records on this machine yet, so this list holds only the folders you added.";
 
-/** Every project the person works in, newest use first, and why the list may be short. */
+/** One kept list, and when it was read. */
+interface KeptList {
+  at: number;
+  list: ProjectList;
+}
+
+/** The server's own memory of the list (`PROJECTS_LIST_CACHE_MS`), by what it answers for. */
+const keptLists = new Map<string, KeptList>();
+
+/** The scans still running, by the same key: a second look at once waits for the same one. */
+const readingLists = new Map<string, Promise<KeptList>>();
+
+/**
+ * Changes when the kept list is dropped. A scan that started before the drop keeps nothing
+ * when it ends: a `project.add` or a `project.write` is never undone by a read already running.
+ */
+let listGeneration = 0;
+
+/**
+ * What one kept list answers for: the folder it calls `current`, the paths it reads, and the
+ * PATH its git children run with. Two worlds that differ in any of them get two lists.
+ */
+function projectsListKey(world: ProjectsWorld): string {
+  return [
+    world.cwd,
+    world.paths.stateDir,
+    world.paths.projectsDir,
+    world.paths.portalProjectsFile,
+    world.env.PATH ?? "",
+  ].join("\u0000");
+}
+
+/** Forgets the kept list: a project added, a project file written, or a test that moves the clock. */
+export function forgetProjectsList(): void {
+  listGeneration += 1;
+  keptLists.clear();
+  readingLists.clear();
+}
+
+/**
+ * Every project the person works in, newest use first, and why the list may be short. Kept for
+ * `PROJECTS_LIST_CACHE_MS`: the list page, a project's page and the `project.*` actions share
+ * one scan, and two looks at once share the scan already running.
+ */
 export async function projectsList(world: ProjectsWorld): Promise<ProjectList> {
+  const key = projectsListKey(world);
+  const at = world.now();
+  const kept = keptLists.get(key);
+  if (kept !== undefined && at - kept.at < PROJECTS_LIST_CACHE_MS) return kept.list;
+  let reading = readingLists.get(key);
+  if (reading === undefined) {
+    const generation = listGeneration;
+    const scan = scanProjects(world).then((list) => {
+      const answer = { at, list };
+      if (generation === listGeneration) keptLists.set(key, answer);
+      return answer;
+    });
+    reading = scan;
+    readingLists.set(key, scan);
+    // The caller gets a failed scan; this chain only clears the entry (and only its own).
+    scan
+      .finally(() => {
+        if (readingLists.get(key) === scan) readingLists.delete(key);
+      })
+      .catch(() => undefined);
+  }
+  return (await reading).list;
+}
+
+/** One scan of every repository: the answer `projectsList` keeps. */
+async function scanProjects(world: ProjectsWorld): Promise<ProjectList> {
   const { found, records } = await foundProjects(world);
   const here = await checkoutOfAsync(world.cwd, world.env);
   const currentRoot = here?.main ?? null;
-  const projects = await Promise.all(found.map((one) => summaryOf(one, world, currentRoot)));
+  // A few projects at a time (`PROJECT_GIT_AT_ONCE`): each reads its worktrees and its files.
+  const projects = await mapLimit(found, PROJECT_GIT_AT_ONCE, (one) =>
+    summaryOf(one, world, currentRoot),
+  );
   projects.sort(
     (a, b) =>
       (b.lastUsed ?? "").localeCompare(a.lastUsed ?? "") ||
@@ -380,6 +493,29 @@ function unreadVerdict(number: null | number, what: string): CheckVerdict {
   return { kind: "unread", number, what };
 }
 
+/**
+ * The crew states whose branch is on disk and still waits for a merge: the only crew rows the
+ * project page lists. Every other state is out:
+ *
+ * - `queued` and `starting` — no branch yet: a queued crew session's worktree is made when a
+ *   place frees up, and a starting one's `git worktree add` has not returned;
+ * - `handoff` — it handed its phase to the next crew session, and that one's branch is the row;
+ * - `merged` — its branch is already in the base, so there is nothing left to merge;
+ * - `removed` — its session, worktree and branch are gone.
+ *
+ * The rest — `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped` — all have
+ * a branch on disk that the lead has not merged yet.
+ */
+const CREW_BRANCH_STATES: ReadonlySet<string> = new Set([
+  "working",
+  "blocked",
+  "paused",
+  "quiet",
+  "done",
+  "failed",
+  "stopped",
+]);
+
 /** Reads one project's branches: gh's open pull requests, the crew's, and their verdicts. */
 async function readBranches(
   world: ProjectsWorld,
@@ -449,26 +585,52 @@ async function readBranches(
     };
   }
 
-  const branches: ProjectBranch[] = [];
-  for (const pullRequest of pullRequests) {
-    const verdict =
-      mergeWorld === null
-        ? unreadVerdict(pullRequest.number, "this project's folder is not in a git checkout")
-        : await checkPullRequest(mergeWorld, { ref: String(pullRequest.number), repo: null });
-    branches.push({
-      base: pullRequest.base,
-      branch: pullRequest.head,
-      draft: pullRequest.draft,
-      kind: "pr",
-      number: pullRequest.number,
-      title: pullRequest.title,
-      verdict: mergeVerdictOf(verdict),
-    });
+  // One default branch for the whole page. It is asked here, before the verdicts run together:
+  // `checkPullRequest` reads this map, and concurrent misses would each ask gh once. The key is
+  // `checkPullRequest`'s own: the empty string is this folder's repository, as `repo: null` asks.
+  const defaultBranches = new Map<string, string | null>();
+  if (mergeWorld !== null && pullRequests.length > 0) {
+    const left = timeFor(GH_TIMEOUT_MS);
+    if (left > 0) {
+      defaultBranches.set("", await defaultBranchOf(project.root, world.env, null, left, gh));
+    }
   }
 
-  // The crew sessions' branches that no open pull request already covers. A removed crew
-  // session's branch went with its worktree, so it is not listed. A store that cannot be read
-  // is one note: the pull requests still show, and the page says why the crew's are missing.
+  // The pull requests' verdicts run a few at a time (`PROJECT_VERDICTS_AT_ONCE`), all under the
+  // page's one deadline, and keep gh's own order.
+  const branches = await mapLimit(
+    pullRequests,
+    PROJECT_VERDICTS_AT_ONCE,
+    async (pullRequest): Promise<ProjectBranch> => {
+      const verdict =
+        mergeWorld === null
+          ? unreadVerdict(pullRequest.number, "this project's folder is not in a git checkout")
+          : await checkPullRequest(
+              mergeWorld,
+              { ref: String(pullRequest.number), repo: null },
+              defaultBranches,
+            );
+      // A verdict gh never answered because the page's clock ran out is "not read yet", never
+      // "gh could not read it": the deadline is the page's own.
+      const cut =
+        verdict.kind === "unread" && timeFor(GH_TIMEOUT_MS) <= 0
+          ? { kind: "late" as const, number: verdict.number, what: verdict.what }
+          : verdict;
+      return {
+        base: pullRequest.base,
+        branch: pullRequest.head,
+        draft: pullRequest.draft,
+        kind: "pr",
+        number: pullRequest.number,
+        title: pullRequest.title,
+        verdict: mergeVerdictOf(cut),
+      };
+    },
+  );
+
+  // The crew sessions' branches that no open pull request already covers, and only the ones
+  // that still wait for a merge (`CREW_BRANCH_STATES`). A store that cannot be read is one
+  // note: the pull requests still show, and the page says why the crew's are missing.
   const openNumbers = new Set(pullRequests.map((one) => one.number));
   const openHeads = new Set(pullRequests.map((one) => one.head));
   let crewRecords: CrewRecord[] = [];
@@ -478,7 +640,7 @@ async function readBranches(
     notes.push("the crew sessions' branches could not be read");
   }
   for (const record of crewRecords) {
-    if (record.state === "removed") continue;
+    if (!CREW_BRANCH_STATES.has(record.state)) continue;
     if (record.branch === "" || openHeads.has(record.branch)) continue;
     if (record.pr !== null && openNumbers.has(record.pr)) continue;
     const base = record.base?.ref ?? record.baseRef;

@@ -67,7 +67,12 @@ import {
   updateFiles,
 } from "../update/state";
 import { runWorktrees } from "../worktrees/command";
-import { addProjectRoot, type ProjectsWorld, projectRootById } from "./api/projects";
+import {
+  addProjectRoot,
+  forgetProjectsList,
+  type ProjectsWorld,
+  projectRootById,
+} from "./api/projects";
 import type { LivePublish } from "./api/types";
 import type { PortalContext } from "./context";
 import {
@@ -925,7 +930,15 @@ async function projectTarget(
   action: ActionContext,
   body: Record<string, unknown>,
 ): Promise<{ cwd: string } | { why: string }> {
-  const id = typeof body.project === "string" ? body.project.trim() : "";
+  const named = body.project;
+  // A `project` that is there but is not a string is a request this action cannot read: it
+  // names no project, and it must never fall back to the portal's own folder by accident.
+  if (named !== undefined && typeof named !== "string") {
+    return {
+      why: "The project must be named by its id, as a string; nothing was read or written.",
+    };
+  }
+  const id = named === undefined ? "" : named.trim();
   if (id === "") return { cwd: action.cwd };
   const root = await projectRootById(projectsWorld(action), id);
   return root === null
@@ -1050,6 +1063,9 @@ async function projectWrite(
     if (writes.length === 0) {
       return { lines: ["Nothing to change: both files already say this."], ok: true };
     }
+    // A row of the list holds the project's two files: the page's next look must read them
+    // again, not the list kept before this write.
+    forgetProjectsList();
     return {
       lines: [
         ...writes.map((write) => `${write.created ? "+" : "~"} ${write.file}`),
