@@ -139,6 +139,7 @@ function MergeVerdict({ check }: { check: MergeCheck }) {
             <dt className="text-muted-foreground">Changed since</dt>
             <dd className="tabular-nums">
               {count(delta.lines)} lines in {count(delta.files)} files
+              {delta.binary > 0 && `, ${count(delta.binary)} of them binary`}
             </dd>
           </>
         )}
@@ -152,11 +153,32 @@ function MergeVerdict({ check }: { check: MergeCheck }) {
           </>
         )}
       </dl>
-      {delta !== null && allowance !== null && (
-        <div className="flex flex-col gap-3 rounded-lg border p-3">
-          <DeltaMeter label="Lines since the review" used={delta.lines} allowed={allowance.lines} />
-          <DeltaMeter label="Files since the review" used={delta.files} allowed={allowance.files} />
-        </div>
+      {delta !== null && delta.binary > 0 ? (
+        // The gate never covers a binary change: meters drawn from the lines would say the
+        // opposite of the verdict, so none is drawn.
+        <p className="rounded-lg border border-bad/30 p-3 text-pretty">
+          <StatusMark tone="bad">
+            {count(delta.binary)} binary file{delta.binary === 1 ? "" : "s"} changed since the
+            review. A binary change has no lines to count, so no fix limit covers it: only a new
+            review does.
+          </StatusMark>
+        </p>
+      ) : (
+        delta !== null &&
+        allowance !== null && (
+          <div className="flex flex-col gap-3 rounded-lg border p-3">
+            <DeltaMeter
+              label="Lines since the review"
+              used={delta.lines}
+              allowed={allowance.lines}
+            />
+            <DeltaMeter
+              label="Files since the review"
+              used={delta.files}
+              allowed={allowance.files}
+            />
+          </div>
+        )
       )}
     </div>
   );

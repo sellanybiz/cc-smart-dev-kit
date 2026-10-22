@@ -601,8 +601,8 @@ export type NeedsItem =
       asker: string;
       session: string;
       project: string;
-      /** The command that opens the waiting session in a terminal: `claude attach <id>`. */
-      attach: string;
+      /** `claude attach <id>`, for a crew session the server names; null for any other session. */
+      attach: null | string;
       /** The tool the prompt is about, and its one line. */
       tool: string;
       detail: string;
@@ -642,6 +642,8 @@ export type HandBackReport = CrewReport;
 export interface ChangeCount {
   lines: number;
   files: number;
+  /** Binary files in it: never counted in lines, and never covered by a review. */
+  binary: number;
 }
 
 /**
@@ -739,7 +741,7 @@ export interface WorktreeRow {
   project: string;
   path: string;
   branch: null | string;
-  /** Null until the server sends how long it was idle. */
+  /** Null when how long it was idle is not known. */
   idleMinutes: null | number;
   verdict:
     | { finished: true; note: null | string }

@@ -254,10 +254,10 @@ describe("the adapters", () => {
       mergeCheck: {
         detail: {
           allowance: { files: 5, lines: 61 },
-          delta: { files: 2, lines: 74 },
+          delta: { binary: 0, files: 2, lines: 74 },
           limits: { files: 5, lines: 50, percent: 10 },
           review: "4f2a9c1",
-          reviewed: { files: 9, lines: 612 },
+          reviewed: { binary: 1, files: 9, lines: 612 },
         },
         kind: "refused",
         number: 7,
@@ -281,13 +281,13 @@ describe("the adapters", () => {
     expect(data.mergeCheck).toEqual({
       allowance: { files: 5, lines: 61 },
       allowed: false,
-      delta: { files: 2, lines: 74 },
+      delta: { binary: 0, files: 2, lines: 74 },
       kind: "refused",
       limits: { files: 5, lines: 50, percent: 10 },
       pr: 7,
       reason: "the change after the review is over the limit",
       review: "4f2a9c1",
-      reviewed: { files: 9, lines: 612 },
+      reviewed: { binary: 1, files: 9, lines: 612 },
     });
     expect(data.reviews).toEqual([
       { at: "2026-10-22T10:05:00.000Z", by: ["reviewer"], sha: "4f2a9c1" },
@@ -363,6 +363,8 @@ describe("the adapters", () => {
         {
           asker: "git-guard",
           at: Date.parse("2026-10-22T10:04:00.000Z"),
+          attach: "claude attach abc123",
+          crew: { id: "crew-1", name: "C my-app B6c slots", shortId: "abc123" },
           kind: null,
           project: "my-app",
           session: "abc123-full-session-id",
@@ -371,6 +373,8 @@ describe("the adapters", () => {
         {
           asker: "claude",
           at: Date.parse("2026-10-22T10:02:00.000Z"),
+          attach: null,
+          crew: null,
           kind: "a file write",
           project: "my-app",
           session: "s9",
@@ -381,7 +385,7 @@ describe("the adapters", () => {
     };
     const data = needsOf(answer, "1.1.0");
     expect(data.items.map((item) => item.id)).toEqual([
-      "question-crew-1",
+      "question-crew-1-2026-10-22T10:05:00.000Z",
       "permission-abc123-full-session-id-1792663440000",
       "breaker-cc-smart-dev-kit-fable",
       "permission-s9-1792663320000",
@@ -402,10 +406,11 @@ describe("the adapters", () => {
       ["", "something else", null, "2026-10-22T08:00:00.000Z"],
     ]);
     const waits = data.items.flatMap((item) => (item.kind === "permission" ? [item] : []));
-    // A crew session's wait is attached by its short id; another session by its own id.
+    // The server names the crew session and its attach command; a session it does not name has
+    // no command (a session in its own terminal cannot be attached), never one made up here.
     expect(waits.map((item) => [item.crew?.id ?? null, item.attach])).toEqual([
       ["crew-1", "claude attach abc123"],
-      [null, "claude attach s9"],
+      [null, null],
     ]);
   });
 

@@ -14,7 +14,6 @@ import type {
   CrewDetail,
   CrewEvent,
   CrewRecord,
-  CrewRef,
   CrewState,
   FlowReport,
   GuardAsksPage,
@@ -412,11 +411,6 @@ export function crewOf(answer: CrewAnswer): CrewDetail {
   };
 }
 
-/** The command that opens a waiting session in a terminal (`claude attach <id>`). */
-function attachCommand(id: string): string {
-  return `claude attach ${id}`;
-}
-
 /** The command that lets Claude answer a slot again while its targets rest. */
 function claudeSlotCommand(slot: string): string {
   return `${KIT_NAME} gateway slot ${slotName(slot)} claude`;
@@ -425,10 +419,8 @@ function claudeSlotCommand(slot: string): string {
 /** "Needs you": everything the server lists, newest first. `installed` is the running version. */
 export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
   const items: NeedsItem[] = [];
-  const crews: CrewRef[] = [];
   for (const need of answer.crew) {
     const crew = { id: need.crew.id, name: need.crew.name, shortId: need.crew.shortId };
-    crews.push(crew);
     items.push({
       ask: {
         answer: null,
@@ -439,19 +431,17 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
         recommended: need.recommended,
       },
       crew,
-      id: `question-${need.crew.id}`,
+      // The question itself, not only its crew session: a later question is a new item.
+      id: `question-${need.crew.id}-${need.askedAt}`,
       kind: "question",
       since: need.askedAt,
     });
   }
   for (const wait of answer.permissions) {
-    // A crew session the answer names is known by its short id, the start of its session id.
-    const crew =
-      crews.find((one) => one.shortId !== null && wait.session.startsWith(one.shortId)) ?? null;
     items.push({
       asker: wait.asker,
-      attach: attachCommand(crew?.shortId ?? wait.session),
-      crew,
+      attach: wait.attach,
+      crew: wait.crew,
       detail: wait.kind ?? `asked by ${wait.asker}`,
       id: `permission-${wait.session}-${String(wait.at)}`,
       kind: "permission",

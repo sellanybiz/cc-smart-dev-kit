@@ -74,12 +74,16 @@ const WORKTREE_COLUMNS = column.columns([
   }),
 ]);
 
-/** Auto-clean's last run: when, against which base, and each worktree it removed with why. */
+/**
+ * Auto-clean: when it last ran and against which base, and apart from that, the worktrees it
+ * removed that no session start has reported yet. That list gathers across runs and carries no
+ * time of its own, so it is never shown as what the last run removed.
+ */
 function AutoClean({ run }: { run: WorktreesData["autoClean"] }) {
   return (
     <section aria-labelledby="auto-clean-title" className="flex flex-col gap-2 text-sm">
       <h3 id="auto-clean-title" className="font-medium">
-        Removed by auto-clean
+        Auto-clean
       </h3>
       {run === null ? (
         <p className="text-muted-foreground">
@@ -89,10 +93,15 @@ function AutoClean({ run }: { run: WorktreesData["autoClean"] }) {
       ) : (
         <>
           <p className="text-muted-foreground">
-            Last run {ago(run.lastRunAt)}, against{" "}
-            <span className="font-mono text-xs">{run.base}</span>
-            {run.removed.length === 0 ? ": nothing was finished, so nothing went." : "."}
+            Last run{" "}
+            <time dateTime={run.lastRunAt} title={run.lastRunAt}>
+              {ago(run.lastRunAt)}
+            </time>{" "}
+            against <span className="font-mono text-xs">{run.base}</span>.
           </p>
+          {run.removed.length > 0 && (
+            <h4 className="mt-1 text-muted-foreground">Removed, not reported yet:</h4>
+          )}
           {run.removed.length > 0 && (
             <ul className="flex flex-col gap-1.5">
               {run.removed.map((entry) => (

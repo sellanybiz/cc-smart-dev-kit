@@ -176,10 +176,12 @@ function Body({ item, onSettled }: { item: NeedsItem; onSettled: OnSettled }): {
         what: (
           <>
             It waits on a <span className="font-medium">{item.tool}</span> prompt ({item.detail}).
-            Answer it in the session's own terminal:
+            {item.attach === null
+              ? " Answer it in the terminal it runs in."
+              : " Open it in a terminal to answer it:"}
           </>
         ),
-        action: <CommandLine command={item.attach} label="Copy" />,
+        action: item.attach === null ? null : <CommandLine command={item.attach} label="Copy" />,
       };
     }
     case "update":

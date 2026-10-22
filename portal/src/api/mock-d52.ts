@@ -84,7 +84,8 @@ export function needsData(
         asker: "claude",
         session: "5c0e7d21-90ab-4cde-8f12-3456789abcde",
         project: "docs-site",
-        attach: "claude attach 5c0e7d21-90ab-4cde-8f12-3456789abcde",
+        // One of the person's own sessions: it runs in a terminal, so there is nothing to attach.
+        attach: null,
         tool: "Write",
         detail: "a write outside the project",
       },
@@ -276,8 +277,8 @@ export function crewDetail(
       reason:
         "The change after the review is 74 lines in 2 files: more than the limit of 50 lines or 10 % of the reviewed change (612 lines). Review it again.",
       review: "4f2a9c1",
-      delta: { lines: 74, files: 2 },
-      reviewed: { lines: 612, files: 9 },
+      delta: { lines: 74, files: 2, binary: 0 },
+      reviewed: { lines: 612, files: 9, binary: 1 },
       limits: { lines: 50, files: 5, percent: 10 },
       allowance: { lines: 61, files: 5 },
     },
