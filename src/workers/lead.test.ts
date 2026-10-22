@@ -157,8 +157,6 @@ describe("the usage", () => {
   test("no command: exit 2", async () => {
     const world = workerWorld();
     expect(await runWorker([], world.ctx())).toBe(2);
-    expect(world.err).toEqual([
-      "Say which worker command: lead or start\nSee: cc-smart-dev-kit worker --help",
-    ]);
+    expect(world.err).toEqual(["Say which worker command\nSee: cc-smart-dev-kit worker --help"]);
   });
 });

@@ -7,6 +7,7 @@
 import { randomBytes } from "node:crypto";
 import type { CliPaths } from "../cli/paths";
 import { realMemoryFacts } from "../jobs/memory";
+import type { ScanOptions } from "../worktrees/scan";
 import { type RunProgram, realRunProgram } from "./claude";
 import { freeForWorkersGb } from "./places";
 import { type ProcessFacts, realProcessFacts } from "./session";
@@ -32,6 +33,11 @@ export interface WorkerContext {
   runProgram: RunProgram;
   /** The full path of a command on PATH (`env.PATH`), or null. */
   which: (command: string) => null | string;
+  /**
+   * The machine's facts `worker rm` judges a worktree by: the running sessions, the programs and
+   * the Docker containers. A test gives them; left out, they are read from the machine.
+   */
+  scanFacts?: ScanOptions["facts"];
   print: (line: string) => void;
   error: (line: string) => void;
 }

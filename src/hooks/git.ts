@@ -87,6 +87,8 @@ export interface ListedWorktree {
   /** Without `refs/heads/`; null on a detached commit. */
   branch: string | null;
   locked: boolean;
+  /** Why it is locked, when the lock says (`git worktree lock --reason`); absent for a bare lock. */
+  lockReason?: string;
   /** git found its folder gone. */
   prunable: boolean;
 }
@@ -100,11 +102,13 @@ export function parseWorktreeList(porcelain: string): ListedWorktree[] {
     const flag = (key: string) => lines.some((line) => line === key || line.startsWith(`${key} `));
     const path = value("worktree");
     if (path === undefined) continue;
+    const lockReason = value("locked")?.trim();
     worktrees.push({
       path,
       head: value("HEAD") ?? "",
       branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
       locked: flag("locked"),
+      ...(lockReason === undefined || lockReason === "" ? {} : { lockReason }),
       prunable: flag("prunable"),
     });
   }
