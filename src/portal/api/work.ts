@@ -38,7 +38,13 @@ import { askLogFile } from "../../hooks/ask-log";
 import { idleMinutes } from "../../hooks/worktree-leftovers";
 import { locateCheckout } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
-import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, openWaits, readFlow } from "../../sessions/flow";
+import {
+  FLOW_DAYS_KEPT,
+  OPEN_WAIT_MAX_AGE_MS,
+  type OpenWait,
+  openWaits,
+  readFlow,
+} from "../../sessions/flow";
 import {
   type MergeVerdict as CheckVerdict,
   checkBranch,
@@ -349,48 +355,72 @@ function mergeCheckOf(
   }
 }
 
+/** The command that opens a crew session's terminal again, as `crew end` prints it; null with no short id. */
+function attachCommand(record: CrewRecord): null | string {
+  return record.shortId === null ? null : `claude attach ${record.shortId}`;
+}
+
+/**
+ * One permission prompt as "Needs you" sends it, matched to the crew session that runs in that
+ * session (its `sessionId`, the full id Claude Code writes). Only a crew session gets the
+ * command that opens its terminal: `claude attach` opens a background session, and another
+ * session's is opened by its own terminal, not by this page. A wait whose session no record
+ * names is the person's own session: no crew, no command.
+ */
+export function permissionWaitOf(wait: OpenWait, records: readonly CrewRecord[]): PermissionWait {
+  const record = records.find((one) => one.sessionId === wait.session);
+  return {
+    asker: wait.asker,
+    attach: record === undefined ? null : attachCommand(record),
+    at: wait.at,
+    crew:
+      record === undefined ? null : { id: record.id, name: record.name, shortId: record.shortId },
+    kind: wait.kind,
+    project: wait.project,
+    session: wait.session,
+    tool: wait.tool,
+  };
+}
+
 /** `/api/needs`: everything that waits on the person (D52). */
 export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
   const paths = deps.action.portal.paths;
   const now = deps.action.portal.now();
   const found = repoOf(deps);
-  const crew: CrewNeed[] = [];
+  // Every crew session of this repository, read once: the questions, and the session of each
+  // permission prompt, are matched against the same records.
+  let records: CrewRecord[] = [];
   if ("repo" in found) {
     try {
-      for (const record of listCrew(paths.stateDir, found.repo).records) {
-        const index = openQuestionIndex(record);
-        const question = index === null ? undefined : record.questions[index];
-        if (question === undefined) continue;
-        crew.push({
-          askedAt: question.askedAt,
-          crew: {
-            id: record.id,
-            name: record.name,
-            shortId: record.shortId,
-            state: record.state,
-          },
-          options: question.options,
-          question: question.question,
-          recommended: question.recommended,
-        });
-      }
+      records = listCrew(paths.stateDir, found.repo).records;
     } catch {
       // A store that cannot be read is doctor's to report; the rest of "Needs you" still shows.
     }
+  }
+  const crew: CrewNeed[] = [];
+  for (const record of records) {
+    const index = openQuestionIndex(record);
+    const question = index === null ? undefined : record.questions[index];
+    if (question === undefined) continue;
+    crew.push({
+      askedAt: question.askedAt,
+      crew: {
+        id: record.id,
+        name: record.name,
+        shortId: record.shortId,
+        state: record.state,
+      },
+      options: question.options,
+      question: question.question,
+      recommended: question.recommended,
+    });
   }
   const permissions: PermissionWait[] = openWaits(paths, {
     nowMs: now,
     project: null,
     session: null,
     sinceMs: now - OPEN_WAIT_MAX_AGE_MS,
-  }).map((wait) => ({
-    asker: wait.asker,
-    at: wait.at,
-    kind: wait.kind,
-    project: wait.project,
-    session: wait.session,
-    tool: wait.tool,
-  }));
+  }).map((wait) => permissionWaitOf(wait, records));
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {

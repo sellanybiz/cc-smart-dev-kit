@@ -368,8 +368,15 @@ export interface GuardAsksAnswer {
 /** Why the person is needed, from the flow report: a permission prompt or a question. */
 export interface PermissionWait {
   asker: string;
+  /**
+   * The full command that opens the waiting session again (`claude attach <id>`), the way
+   * `crew end` prints it; null when the session is not a crew session.
+   */
+  attach: null | string;
   /** Milliseconds since the epoch. */
   at: number;
+  /** The crew session that waits, when the session is one; null for any other session. */
+  crew: null | { id: string; name: string; shortId: null | string };
   kind: null | string;
   project: string;
   session: string;

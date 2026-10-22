@@ -108,10 +108,10 @@ describe("checkBranch's review detail", () => {
     expect(checkBranch(worldOf(repo, env), { base: "main", branch: "feat" })).toEqual({
       detail: {
         allowance: { files: 10, lines: 200 },
-        delta: { files: 1, lines: 5 },
+        delta: { binary: 0, files: 1, lines: 5 },
         limits: LIMITS,
         review: reviewed,
-        reviewed: { files: 2, lines: 100 },
+        reviewed: { binary: 0, files: 2, lines: 100 },
       },
       kind: "allowed",
       reason: `the review of ${reviewed.slice(0, 7)} covers ${head.slice(0, 7)}, with the fixes after it within the limits`,
@@ -139,10 +139,10 @@ describe("checkBranch's review detail", () => {
     expect(verdict).toMatchObject({
       detail: {
         allowance: { files: 10, lines: 200 },
-        delta: { files: 3, lines: 600 },
+        delta: { binary: 0, files: 3, lines: 600 },
         limits: LIMITS,
         review: reviewed,
-        reviewed: { files: 2, lines: 100 },
+        reviewed: { binary: 0, files: 2, lines: 100 },
       },
       kind: "refused",
       number: null,

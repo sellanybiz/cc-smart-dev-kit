@@ -129,13 +129,13 @@ export interface MergeDetail {
   /** What the review still covers: the limit or the percent of the reviewed change, whichever is larger. */
   allowance: null | { files: number; lines: number };
   /** The change after the review; null when it is the reviewed commit itself, or none was measured. */
-  delta: null | { files: number; lines: number };
+  delta: null | { binary: number; files: number; lines: number };
   /** The gate's limits (`workflow.fixesAfterReview`); null when no gate was read. */
   limits: null | { files: number; lines: number; percent: number };
   /** The reviewed commit the verdict is about; null when no review candidate exists. */
   review: null | string;
   /** The reviewed change's own size; null unless both it and the change after it were measured. */
-  reviewed: null | { files: number; lines: number };
+  reviewed: null | { binary: number; files: number; lines: number };
 }
 
 /** What one merge check decided. */
@@ -241,13 +241,15 @@ function reviewRefusal(cover: Cover | null): string | null {
   return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
 }
 
-/** One change as a page reads it: its lines and files (a generated file is listed, not counted). */
-function counted(change: ChangeCount): { files: number; lines: number } {
-  return { files: change.files, lines: change.lines };
+/** One change as a page reads it: its lines and files, and how many binary files it holds. */
+function counted(change: ChangeCount): { binary: number; files: number; lines: number } {
+  return { binary: change.binary.length, files: change.files, lines: change.lines };
 }
 
 /** One of the cover's changes as a page reads it, or null when it was not measured. */
-function countsOf(change: ChangeCount | null | undefined): null | { files: number; lines: number } {
+function countsOf(
+  change: ChangeCount | null | undefined,
+): null | { binary: number; files: number; lines: number } {
   return change === null || change === undefined ? null : counted(change);
 }
 

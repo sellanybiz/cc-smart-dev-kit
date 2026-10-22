@@ -537,10 +537,10 @@ export type MergeVerdict =
 /** `src/workflow/merge-check.ts` › `MergeDetail`: the review gate's own numbers behind a verdict. */
 export interface MergeDetail {
   allowance: null | { files: number; lines: number };
-  delta: null | { files: number; lines: number };
+  delta: null | { binary: number; files: number; lines: number };
   limits: null | { files: number; lines: number; percent: number };
   review: null | string;
-  reviewed: null | { files: number; lines: number };
+  reviewed: null | { binary: number; files: number; lines: number };
 }
 
 /** `src/crew/diff.ts` › `DiffFile`: one file of the diff; a binary file has null counts. */
@@ -600,7 +600,9 @@ export interface GuardAsksAnswer {
 
 export interface PermissionWait {
   asker: string;
+  attach: null | string;
   at: number;
+  crew: null | { id: string; name: string; shortId: null | string };
   kind: null | string;
   project: string;
   session: string;
