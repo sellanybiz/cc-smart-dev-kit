@@ -6241,6 +6241,7 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "verify-gate",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
@@ -6265,6 +6266,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     }).optional()
   }).optional(),
   protectedBranches: array(string2().min(1)).min(1).optional(),
+  checks: strictObject({ fast: string2().trim().min(1) }).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),

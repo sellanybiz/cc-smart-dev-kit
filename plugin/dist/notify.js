@@ -1,6 +1,6 @@
 // @bun
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync8 } from "fs";
+import { existsSync as existsSync9 } from "fs";
 import { join as join11 } from "path";
 
 // src/cli/paths.ts
@@ -177,9 +177,12 @@ var FIND_INSTALL_JS = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);"
 ].join("");
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 // src/hooks/notify.ts
-import { readFileSync as readFileSync8, rmSync, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync8, rmSync, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir } from "os";
 import { basename as basename2, join as join9 } from "path";
 
@@ -6416,6 +6419,7 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "verify-gate",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
@@ -6440,6 +6444,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     }).optional()
   }).optional(),
   protectedBranches: array(string2().min(1)).min(1).optional(),
+  checks: strictObject({ fast: string2().trim().min(1) }).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
@@ -6899,6 +6904,9 @@ function startDetached(platform, argv, options) {
 
 // src/hooks/io.ts
 var SILENT = {};
+function stringField(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
 
 // src/hooks/notify-types.ts
 var PLUGIN_NOTIFY_TYPES = [
@@ -7429,13 +7437,13 @@ var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function tailLines(transcriptPath) {
+function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
   let text;
   try {
     const fd = openSync2(transcriptPath, "r");
     try {
       const size = fstatSync(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
       readSync(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
@@ -7780,6 +7788,1159 @@ var spawnRunner = ({ argv, timeoutMs }) => {
 };
 var ACTION_WAIT_MS = 30 * 60000;
 
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+// src/worktrees/machine-facts.ts
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+
+// src/crew/session.ts
+var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
+function crewIdOf(env) {
+  const id = env[CREW_ENV]?.trim() ?? "";
+  return id === "" ? null : id;
+}
+
+// src/shell/command.ts
+function dialectOfTool(tool) {
+  if (tool === "Bash")
+    return "bash";
+  if (tool === "PowerShell")
+    return "powershell";
+  return;
+}
+var MAX_NESTING = 3;
+var ESCAPE = { bash: "\\", powershell: "`" };
+var SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
+var DOUBLE = { bash: '"', powershell: '"\u201C\u201D\u201E' };
+var oneOf = (chars, char) => char !== "" && chars.includes(char);
+var CONTINUATION = {
+  bash: /\\[ \t]*\r?\n/y,
+  powershell: /`[ \t]*\r?\n/y
+};
+var SEPARATORS = new Set([`
+`, "\r", "&", "(", ")", ";", "|"]);
+var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
+var MAX_INNER = 8;
+var isBlank = (char) => char === " " || char === "\t";
+function lex(text, options) {
+  const { blind, dialect, join } = options;
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
+  const segments = [];
+  const piped = [];
+  const owed = [];
+  let open = false;
+  let unparsable = false;
+  let at = 0;
+  let afterPipe = false;
+  let matching = null;
+  let semicolons = null;
+  const push = (piece, from) => {
+    segments.push(piece);
+    piped.push(from);
+  };
+  function addInner(inner, body) {
+    const depth = (options.depth ?? 0) + 1;
+    if (depth > MAX_INNER) {
+      open = true;
+      return;
+    }
+    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth });
+    if (read.open)
+      open = true;
+    if (read.unparsable)
+      unparsable = true;
+    for (let i = 0;i < read.segments.length; i++) {
+      push(read.segments[i] ?? "", read.piped[i] ?? null);
+    }
+  }
+  function skipBodies() {
+    for (const { quoted, script, stripTabs, word } of owed.splice(0)) {
+      let line = at;
+      let closedAt = -1;
+      let bodyEnd = text.length;
+      while (line < text.length) {
+        const end = text.indexOf(`
+`, line);
+        const stop = end === -1 ? text.length : end;
+        const content = text.slice(line, stop).replace(/\r$/, "");
+        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
+          closedAt = Math.min(stop + 1, text.length);
+          bodyEnd = line;
+          break;
+        }
+        line = stop + 1;
+      }
+      if (closedAt === -1 && blind)
+        continue;
+      if (script)
+        addInner(text.slice(at, bodyEnd), false);
+      else if (!quoted)
+        addInner(text.slice(at, bodyEnd), true);
+      if (closedAt === -1) {
+        open = true;
+        at = text.length;
+      } else {
+        at = closedAt;
+      }
+    }
+  }
+  function arithmeticEnd(from) {
+    if (text.charAt(from + 1) !== "(")
+      return -1;
+    if (matching === null || semicolons === null) {
+      matching = new Int32Array(text.length).fill(-1);
+      semicolons = new Int32Array(text.length + 1);
+      const stack = [];
+      for (let i = 0;i < text.length; i++) {
+        const char = text.charAt(i);
+        semicolons[i + 1] = (semicolons[i] ?? 0) + (char === ";" ? 1 : 0);
+        if (char === "(")
+          stack.push(i);
+        else if (char === ")") {
+          const opened = stack.pop();
+          if (opened !== undefined)
+            matching[opened] = i;
+        }
+      }
+    }
+    const close = matching[from] ?? -1;
+    if (close === -1)
+      return -1;
+    const closes = text.charAt(close - 1) === ")" && close - 1 > from + 1;
+    const plain = (semicolons[close] ?? 0) === (semicolons[from] ?? 0);
+    return closes && plain ? close + 1 : -1;
+  }
+  function readArithmetic(end) {
+    addInner(text.slice(at + 3, end - 2), true);
+    const piece = text.slice(at, end);
+    at = end;
+    return piece;
+  }
+  function readSingle(ansi) {
+    let end = at + 1;
+    while (end < text.length) {
+      const char = text.charAt(end);
+      if (ansi && char === "\\") {
+        end += 2;
+        continue;
+      }
+      if (oneOf(single, char)) {
+        if (!bash && oneOf(single, text.charAt(end + 1))) {
+          end += 2;
+          continue;
+        }
+        break;
+      }
+      end++;
+    }
+    if (end >= text.length)
+      open = true;
+    const piece = text.slice(at, end + 1);
+    at = Math.min(end + 1, text.length);
+    return piece;
+  }
+  function readBacktick() {
+    let end = at + 1;
+    while (end < text.length && text.charAt(end) !== "`") {
+      end += text.charAt(end) === "\\" ? 2 : 1;
+    }
+    if (end >= text.length) {
+      open = true;
+      const piece = text.slice(at);
+      at = text.length;
+      return piece;
+    }
+    addInner(text.slice(at + 1, end).replace(/\\([`\\$])/g, "$1"), false);
+    const piece = text.slice(at, end + 1);
+    at = end + 1;
+    return piece;
+  }
+  function readDouble(closes) {
+    const mark = segments.length;
+    let raw = "";
+    if (closes) {
+      raw = text.charAt(at);
+      at++;
+    }
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (closes && oneOf(double, char)) {
+        if (!bash && oneOf(double, next)) {
+          raw += char + next;
+          at += 2;
+          continue;
+        }
+        at++;
+        return raw + char;
+      }
+      if (char === escaper && next !== "") {
+        raw += char + next;
+        at += 2;
+      } else if (char === "$" && next === "(") {
+        const end = bash ? arithmeticEnd(at + 1) : -1;
+        if (end === -1) {
+          at += 2;
+          raw += `$(${read(true).raw}`;
+        } else {
+          raw += readArithmetic(end);
+        }
+      } else if (bash && char === "`") {
+        raw += readBacktick();
+      } else {
+        raw += char;
+        at++;
+      }
+    }
+    if (!closes)
+      return raw;
+    open = true;
+    segments.length = mark;
+    piped.length = mark;
+    return raw;
+  }
+  function hereDocOpener() {
+    let pos = at + 2;
+    const stripTabs = text.charAt(pos) === "-";
+    if (stripTabs)
+      pos++;
+    while (isBlank(text.charAt(pos)))
+      pos++;
+    let word = "";
+    let quoted = false;
+    while (pos < text.length) {
+      const char = text.charAt(pos);
+      if (/\s/.test(char) || "<>;&|()".includes(char))
+        break;
+      if (char === "'" || char === '"') {
+        const close = text.indexOf(char, pos + 1);
+        if (close === -1)
+          return null;
+        word += text.slice(pos + 1, close);
+        quoted = true;
+        pos = close + 1;
+      } else if (char === "\\") {
+        word += text.charAt(pos + 1);
+        quoted = true;
+        pos += 2;
+      } else {
+        word += char;
+        pos++;
+      }
+    }
+    return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
+  }
+  function isGroupBrace(char, wordStart) {
+    if (char !== "{" && char !== "}")
+      return false;
+    if (!bash)
+      return true;
+    const after = text.charAt(at + 1);
+    return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
+  }
+  function read(nested, substitutions = 0) {
+    let raw = "";
+    let current = "";
+    let depth = 0;
+    let wordStart = true;
+    let afterClose = false;
+    let stdinShell = null;
+    const take = (piece, blank = false) => {
+      current += piece;
+      raw += piece;
+      wordStart = blank;
+      afterClose = false;
+    };
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (join && char === escaper) {
+        const continuation = CONTINUATION[dialect];
+        continuation.lastIndex = at;
+        if (continuation.test(text)) {
+          take(" ", true);
+          at = continuation.lastIndex;
+          continue;
+        }
+      }
+      if (!blind) {
+        if (char === escaper && next !== "" && next !== `
+` && next !== "\r") {
+          take(char + next);
+          at += 2;
+          continue;
+        }
+        if (oneOf(single, char)) {
+          take(readSingle(false));
+          continue;
+        }
+        if (oneOf(double, char)) {
+          take(readDouble(true));
+          continue;
+        }
+        if (bash && char === "$" && next === "'") {
+          at++;
+          take(`$${readSingle(true)}`);
+          continue;
+        }
+        if (bash && char === "`") {
+          take(readBacktick());
+          continue;
+        }
+        const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
+        if (arithmetic !== -1) {
+          take(readArithmetic(arithmetic));
+          continue;
+        }
+        if (char === "$" && next === "(" && substitutions < MAX_INNER) {
+          at += 2;
+          const substitution = read(true, substitutions + 1);
+          if (!substitution.closed)
+            open = true;
+          take(`$(${substitution.raw}`);
+          continue;
+        }
+        if (char === "#" && wordStart && !afterClose) {
+          const end = text.indexOf(`
+`, at);
+          at = end === -1 ? text.length : end;
+          continue;
+        }
+        if (!bash && char === "<" && next !== "#")
+          unparsable = true;
+        if (!bash && char === "<" && next === "#" && wordStart) {
+          const end = text.indexOf("#>", at + 2);
+          if (end === -1)
+            open = true;
+          at = end === -1 ? text.length : end + 2;
+          take(" ", true);
+          continue;
+        }
+        if (!bash && wordStart && text.startsWith("--%", at) && /^\s?$/.test(text.charAt(at + 3))) {
+          let end = at;
+          while (end < text.length && text.charAt(end) !== `
+` && text.charAt(end) !== "|")
+            end++;
+          take(text.slice(at, end));
+          at = end;
+          continue;
+        }
+      }
+      if (bash && char === "<" && next === "<") {
+        if (text.charAt(at + 2) === "<") {
+          take("<<<");
+          at += 3;
+          continue;
+        }
+        const opener = hereDocOpener();
+        if (opener === null) {
+          take("<<");
+          at += 2;
+          continue;
+        }
+        stdinShell ??= readsStdinShell(current);
+        owed.push({ ...opener, script: stdinShell });
+        take(text.slice(at, opener.end));
+        at = opener.end;
+        continue;
+      }
+      if (!bash && char === "@" && (next === '"' || next === "'")) {
+        HERE_STRING.lastIndex = at;
+        const quoted = HERE_STRING.exec(text);
+        if (quoted !== null) {
+          if (next === '"' || blind)
+            addInner(quoted[2] ?? "", true);
+          take(`${next}${next}`);
+          at = HERE_STRING.lastIndex;
+          continue;
+        }
+      }
+      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
+        take(char);
+        at++;
+        continue;
+      }
+      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
+        push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+        afterPipe = char === "|";
+        if (nested && char === ")" && depth === 0) {
+          at++;
+          return { closed: true, raw: `${raw})` };
+        }
+        if (nested && char === "(")
+          depth++;
+        if (nested && char === ")")
+          depth--;
+        current = "";
+        stdinShell = null;
+        raw += char;
+        at++;
+        wordStart = true;
+        afterClose = char === ")";
+        if (char === `
+`)
+          skipBodies();
+        continue;
+      }
+      take(char, isBlank(char));
+      at++;
+    }
+    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+    return { closed: false, raw };
+  }
+  if (options.body === true)
+    readDouble(false);
+  else
+    read(false);
+  return { open, piped, segments, unparsable };
+}
+function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
+  const read = lex(command, { blind: false, dialect, join: joinLines });
+  if (read.unparsable)
+    return [];
+  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
+  return chosen.segments.map((text, index) => ({ text, pipedFrom: chosen.piped[index] ?? null }));
+}
+var ANSI_ESCAPES = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1B",
+  E: "\x1B",
+  f: "\f",
+  n: `
+`,
+  r: "\r",
+  t: "\t",
+  v: "\v"
+};
+function ansiText(body) {
+  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs, (_, code) => {
+    const kind = code.charAt(0);
+    if (kind === "x" || kind === "u" || kind === "U") {
+      return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
+    }
+    if (/[0-7]/.test(kind))
+      return String.fromCharCode(Number.parseInt(code, 8) & 255);
+    if (kind === "c")
+      return String.fromCharCode(code.charCodeAt(1) & 31);
+    return ANSI_ESCAPES[code] ?? code;
+  });
+}
+var POWERSHELL_ESCAPES = {
+  "0": "\x00",
+  a: "\x07",
+  b: "\b",
+  e: "\x1B",
+  f: "\f",
+  n: `
+`,
+  r: "\r",
+  t: "\t",
+  v: "\v"
+};
+function wordsOf(segment, dialect = "bash") {
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
+  const words = [];
+  let word = "";
+  let inWord = false;
+  let quoted = false;
+  const end = () => {
+    if (inWord)
+      words.push(word);
+    word = "";
+    inWord = false;
+    quoted = false;
+  };
+  const add = (piece) => {
+    word += piece;
+    inWord = true;
+  };
+  let i = 0;
+  while (i < segment.length) {
+    const char = segment.charAt(i);
+    const next = segment.charAt(i + 1);
+    if (/\s/.test(char)) {
+      end();
+      i++;
+    } else if (char === escaper && next === `
+`) {
+      i += 2;
+    } else if (char === escaper) {
+      quoted = true;
+      add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
+      i += 2;
+    } else if (char === "<" || char === ">") {
+      if (quoted || !/^\d+$/.test(word))
+        end();
+      while (oneOf("<>", segment.charAt(i)))
+        add(segment.charAt(i++));
+      if (oneOf("&|", segment.charAt(i)))
+        add(segment.charAt(i++));
+    } else if (bash && char === "$" && next === "'") {
+      let close = i + 2;
+      while (close < segment.length && segment.charAt(close) !== "'") {
+        close += segment.charAt(close) === "\\" ? 2 : 1;
+      }
+      add(ansiText(segment.slice(i + 2, Math.min(close, segment.length))));
+      quoted = true;
+      i = close + 1;
+    } else if (bash && char === "$" && next === '"') {
+      i++;
+    } else if (oneOf(single, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        if (oneOf(single, inside)) {
+          if (bash || !oneOf(single, segment.charAt(i + 1)))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        add(inside);
+        i++;
+      }
+      i++;
+    } else if (oneOf(double, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        const after = segment.charAt(i + 1);
+        if (oneOf(double, inside)) {
+          if (bash || !oneOf(double, after))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        if (inside === escaper && after !== "") {
+          if (!bash)
+            add(POWERSHELL_ESCAPES[after] ?? after);
+          else if ('$`"\\'.includes(after))
+            add(after);
+          else if (after !== `
+`)
+            add(inside + after);
+          i += 2;
+          continue;
+        }
+        add(inside);
+        i++;
+      }
+      i++;
+    } else {
+      add(char);
+      i++;
+    }
+  }
+  end();
+  return words;
+}
+var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
+var ASSIGNMENT = /^[A-Za-z_]\w*=/;
+var CHANGE_DIR = new Set([
+  "cd",
+  "chdir",
+  "popd",
+  "pushd",
+  "set-location",
+  "sl"
+]);
+var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
+var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
+var CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
+var WRAPPERS = {
+  builtin: { long: [], short: "" },
+  busybox: { long: [], short: "" },
+  chrt: {
+    long: [
+      "--sched-runtime",
+      "--sched-period",
+      "--sched-deadline",
+      "--sched-priority",
+      "--reset-on-fork"
+    ],
+    short: "PT",
+    skip: (word) => /^-?\d+$/.test(word)
+  },
+  command: { inert: ["-v", "-V"], long: [], short: "" },
+  doas: { long: [], short: "uC" },
+  env: {
+    long: ["--unset", "--chdir", "--split-string"],
+    short: "uCS",
+    split: { long: "--split-string", short: "S" }
+  },
+  exec: { long: [], short: "a" },
+  flock: {
+    long: ["--timeout", "--conflict-exit-code", "--command"],
+    short: "wEc",
+    skip: () => true,
+    runs: { long: "--command", short: "c" }
+  },
+  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
+  nice: { long: ["--adjustment"], short: "n" },
+  nohup: { long: [], short: "" },
+  nsenter: {
+    long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
+    short: "tSG"
+  },
+  script: {
+    long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
+    short: "cEOI",
+    skip: () => true,
+    runs: { long: "--command", short: "c" }
+  },
+  setsid: { long: [], short: "" },
+  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
+  sudo: {
+    long: [
+      "--user",
+      "--group",
+      "--host",
+      "--prompt",
+      "--close-from",
+      "--chdir",
+      "--chroot",
+      "--command-timeout",
+      "--other-user"
+    ],
+    short: "ughpCDRTU"
+  },
+  taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
+  time: { long: [], short: "" },
+  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+  unbuffer: { long: [], short: "" },
+  xargs: {
+    long: [
+      "--arg-file",
+      "--delimiter",
+      "--eof",
+      "--max-args",
+      "--max-chars",
+      "--max-lines",
+      "--max-procs",
+      "--replace",
+      "--process-slot-var"
+    ],
+    short: "adEILnPs"
+  }
+};
+var SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
+var CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
+var PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
+function packageCommand(program, args) {
+  let rest;
+  if (PACKAGE_RUNNERS.has(program))
+    rest = args;
+  else if (program === "pnpm" && args[0] === "dlx")
+    rest = args.slice(1);
+  else
+    return null;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      const pkg = rest[index + 1];
+      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg) ? { args: rest.slice(index + 2), program: "claude" } : null;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (name === "-p" || name === "--package") {
+      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
+      const pkg = inline ?? rest[index + 1];
+      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg))
+        return null;
+      const after = rest.slice(index + (inline === undefined ? 2 : 1));
+      const command = after[0] === "claude" ? after.slice(1) : after;
+      return { args: [...command], program: "claude" };
+    }
+    if (word.startsWith("-")) {
+      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
+      continue;
+    }
+    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
+  }
+  return null;
+}
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+}
+function shortFlags(arg, valued) {
+  let flags = "";
+  for (let i = 1;i < arg.length; i++) {
+    const letter = arg.charAt(i);
+    flags += letter;
+    if (valued.includes(letter))
+      return { flags, wantsNext: i === arg.length - 1 };
+  }
+  return { flags, wantsNext: false };
+}
+function isShort(arg) {
+  return /^-[^-]/.test(arg);
+}
+function afterWrapper(words, from, spec) {
+  let index = from;
+  let skipped = false;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (word === "--")
+      return { index: index + 1 };
+    if (!isShort(word) && !word.startsWith("--")) {
+      if (!skipped && spec.skip?.(word) === true) {
+        skipped = true;
+        index++;
+        continue;
+      }
+      break;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
+      return;
+    if (word.startsWith("--")) {
+      const valued = spec.long.includes(name) && !word.includes("=");
+      if (spec.split !== undefined && name === spec.split.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        const to = index + (valued ? 2 : 1);
+        return { index, split: { from: index, to, value, keep: null } };
+      }
+      if (spec.runs !== undefined && name === spec.runs.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
+      }
+      index += valued ? 2 : 1;
+      continue;
+    }
+    const { flags, wantsNext } = shortFlags(word, spec.short);
+    if (spec.split !== undefined && flags.endsWith(spec.split.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      const before = flags.slice(0, -1);
+      const to = index + (wantsNext ? 2 : 1);
+      return {
+        index,
+        split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
+      };
+    }
+    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
+    }
+    index += wantsNext ? 2 : 1;
+  }
+  return { index };
+}
+function invocationOf(words) {
+  let list = [...words];
+  let splits = 0;
+  let index = 0;
+  while (index < list.length) {
+    const word = list[index] ?? "";
+    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
+      index++;
+      continue;
+    }
+    const redirection = REDIRECTION.exec(word);
+    if (redirection !== null) {
+      index += (redirection[2] ?? "") === "" ? 2 : 1;
+      continue;
+    }
+    const spec = WRAPPERS[programName(word)];
+    if (spec === undefined)
+      break;
+    const after = afterWrapper(list, index + 1, spec);
+    if (after === undefined)
+      return;
+    if (after.split !== undefined && splits < MAX_NESTING) {
+      const { from, keep, to, value } = after.split;
+      const kept = keep === null ? [] : [keep];
+      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
+      splits++;
+      continue;
+    }
+    if (after.runs !== undefined && splits < MAX_NESTING) {
+      const { from, to, value } = after.runs;
+      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
+      index = from;
+      splits++;
+      continue;
+    }
+    index = after.split === undefined ? after.index : after.split.to;
+  }
+  const first = list[index];
+  if (first === undefined)
+    return;
+  const program = programName(first);
+  const ran = packageCommand(program, list.slice(index + 1));
+  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
+  const command = started ?? ran;
+  return {
+    args: command?.args ?? list.slice(index + 1),
+    computed: isComputedWord(first),
+    prefix: [...list.slice(0, index), ...started?.prefix ?? []],
+    program: command?.program ?? program
+  };
+}
+function isComputedWord(word) {
+  if (!word.startsWith("$") && !word.startsWith("`"))
+    return false;
+  return /[$`(){}[\]\s]/.test(programName(word));
+}
+var START_PROCESS_PARAMETERS = new Map([
+  ["argumentlist", true],
+  ["credential", true],
+  ["erroraction", true],
+  ["errorvariable", true],
+  ["filepath", true],
+  ["informationaction", true],
+  ["informationvariable", true],
+  ["loaduserprofile", false],
+  ["nonewwindow", false],
+  ["outbuffer", true],
+  ["outvariable", true],
+  ["passthru", false],
+  ["pipelinevariable", true],
+  ["redirectstandarderror", true],
+  ["redirectstandardinput", true],
+  ["redirectstandardoutput", true],
+  ["usenewenvironment", false],
+  ["verb", true],
+  ["wait", false],
+  ["warningaction", true],
+  ["warningvariable", true],
+  ["windowstyle", true],
+  ["workingdirectory", true]
+]);
+function startProcessParameter(word) {
+  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
+  const given = match?.[1]?.toLowerCase() ?? "";
+  if (given === "")
+    return null;
+  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
+  const [name] = names;
+  if (names.length !== 1 || name === undefined)
+    return null;
+  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
+}
+function startProcess(args) {
+  let file = null;
+  let list = null;
+  let fresh = null;
+  const positional = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(index + 1));
+      break;
+    }
+    const parameter = startProcessParameter(arg);
+    if (parameter === null) {
+      if (!arg.startsWith("-"))
+        positional.push(arg);
+      continue;
+    }
+    const { name, takesValue } = parameter;
+    let value = parameter.value;
+    if (takesValue && value === undefined) {
+      value = args[index + 1];
+      index++;
+    }
+    if (name === "filepath" && value !== undefined)
+      file = value;
+    else if (name === "argumentlist" && value !== undefined) {
+      list = value.split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
+    } else if (name === "usenewenvironment")
+      fresh = arg;
+  }
+  file ??= positional[0] ?? null;
+  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  if (file === null)
+    return null;
+  return {
+    args: list,
+    prefix: fresh === null ? [] : [START_PROCESS, fresh],
+    program: programName(file)
+  };
+}
+var START_PROCESS = "start-process";
+var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
+function shellTakesStdin(args) {
+  let stdin = false;
+  let scriptFile = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      if ((redirection[1] ?? "").startsWith("<<"))
+        stdin = true;
+      continue;
+    }
+    if (arg === "-") {
+      stdin = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (isShort(arg) || arg.startsWith("+")) {
+      const letters = arg.replace(/^[-+]+/, "");
+      if (letters.includes("c"))
+        return false;
+      if (letters.includes("s"))
+        stdin = true;
+      if (letters === "o")
+        index++;
+      continue;
+    }
+    scriptFile = true;
+  }
+  return stdin || !scriptFile;
+}
+function shellCommandString(args) {
+  let commandMode = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--")
+      return commandMode ? args[index + 1] : undefined;
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (/^[-+][A-Za-z]+$/.test(arg)) {
+      const letters = arg.slice(1);
+      if (arg.startsWith("-") && letters.includes("c"))
+        commandMode = true;
+      if (/[oO]$/.test(letters))
+        index++;
+      continue;
+    }
+    return commandMode ? arg : undefined;
+  }
+  return;
+}
+function readsStdinShell(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
+}
+function writtenText(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  if (invocation === undefined || invocation.args.length === 0)
+    return null;
+  const text = invocation.args.join(" ");
+  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
+}
+function nestedCommand(program, args, pipedFrom = null) {
+  if (SHELLS.has(program)) {
+    const script = shellCommandString(args);
+    if (script !== undefined)
+      return script;
+    if (!shellTakesStdin(args))
+      return;
+    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
+    if (here !== -1) {
+      const word = args[here] ?? "";
+      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
+    }
+    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
+  }
+  if (program === COMMAND && args[0] === "job" && args[1] === "run") {
+    const dashes = args.indexOf("--");
+    return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
+  }
+  if (program === "cmd") {
+    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "powershell" || program === "pwsh") {
+    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
+    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+  }
+  if (program === "eval" || program === "iex" || program === "invoke-expression") {
+    return args.join(" ");
+  }
+  return;
+}
+function nestedDialect(program) {
+  return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
+}
+
+// src/hooks/verify-gate.ts
+var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
+var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
+var STOP_FEEDBACK = "Stop hook feedback:";
+var REMINDER_MARK = "has not run the project's fast check since";
+function objectOf(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function blocksOf(line) {
+  const content = objectOf(line.message)?.content;
+  if (!Array.isArray(content))
+    return [];
+  return content.filter((block) => objectOf(block) !== null && block !== null);
+}
+function toolUses(line) {
+  return blocksOf(line).filter((block) => block.type === "tool_use");
+}
+function resultText(content) {
+  if (typeof content === "string")
+    return content;
+  if (!Array.isArray(content))
+    return "";
+  return content.map((block) => {
+    const text = objectOf(block)?.text;
+    return typeof text === "string" ? text : "";
+  }).join(`
+`);
+}
+var REFUSED = /(doesn't want to proceed|tool use was rejected|has been denied)/i;
+function failedCalls(lines) {
+  const failed = new Set;
+  for (const line of lines) {
+    if (!line.includes('"tool_result"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = objectOf(entry);
+    if (record === null)
+      continue;
+    for (const block of blocksOf(record)) {
+      if (block.type !== "tool_result")
+        continue;
+      const id = stringField(block.tool_use_id);
+      if (id === null)
+        continue;
+      const text = resultText(block.content);
+      if (block.is_error === true || REFUSED.test(text))
+        failed.add(id);
+    }
+  }
+  return failed;
+}
+function runWords(line, dialect, depth = 0) {
+  if (depth > MAX_NESTING)
+    return [];
+  const words = [];
+  for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
+    const command = wordsOf(step.text, dialect);
+    words.push(...command);
+    const invocation = invocationOf(command);
+    if (invocation === undefined)
+      continue;
+    const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+    if (inner !== undefined) {
+      words.push(...runWords(inner, nestedDialect(invocation.program), depth + 1));
+    }
+  }
+  return words;
+}
+function contains(run, wanted) {
+  for (let at = 0;at + wanted.length <= run.length; at += 1) {
+    if (wanted.every((word, index) => run[at + index] === word))
+      return true;
+  }
+  return false;
+}
+function ranCheck(command, check, dialect) {
+  const dialects = dialect === undefined ? ["bash", "powershell"] : [dialect];
+  return dialects.some((one) => {
+    const wanted = runWords(check, one);
+    return wanted.length > 0 && contains(runWords(command, one), wanted);
+  });
+}
+function isOwnReminder(line) {
+  const content = objectOf(line.message)?.content;
+  const texts = typeof content === "string" ? [content] : blocksOf(line).map((block) => typeof block.text === "string" ? block.text : "").filter((text) => text !== "");
+  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(REMINDER_MARK));
+}
+function seenIn(lines, check) {
+  const seen = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };
+  const failed = failedCalls(lines);
+  for (let index = 0;index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes('"tool_use"') && !line.includes(STOP_FEEDBACK))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = objectOf(entry);
+    if (record === null || record.isSidechain === true)
+      continue;
+    if (isOwnReminder(record))
+      seen.lastReminder = index;
+    for (const block of toolUses(record)) {
+      const name = stringField(block.name);
+      if (name !== null && CHANGE_TOOLS.includes(name)) {
+        if (!failed.has(stringField(block.id) ?? ""))
+          seen.lastEdit = index;
+        continue;
+      }
+      const dialect = dialectOfTool(name);
+      if (dialect === undefined)
+        continue;
+      const command = stringField(objectOf(block.input)?.command);
+      if (command !== null && ranCheck(command, check, dialect))
+        seen.lastCheck = index;
+    }
+  }
+  return seen;
+}
+function verifyGateWouldBlock(input, config, env) {
+  if (config === null)
+    return false;
+  if (input.stop_hook_active === true)
+    return false;
+  if (crewIdOf(env) !== null)
+    return false;
+  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
+    return false;
+  const check = config.checks?.fast;
+  if (check === undefined)
+    return false;
+  const transcript = stringField(input.transcript_path);
+  if (transcript === null)
+    return false;
+  const lines = tailLines(transcript, VERIFY_GATE_TAIL_BYTES);
+  if (lines === null)
+    return false;
+  const seen = seenIn(lines, check);
+  return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
+}
+function verifyGateWouldBlockAt(input, env) {
+  const cwd = stringField(input.cwd);
+  if (cwd === null)
+    return false;
+  try {
+    const checkout = locateCheckout(cwd, { env });
+    return checkout !== null && verifyGateWouldBlock(input, loadProjectConfig(checkout).config, env);
+  } catch {
+    return false;
+  }
+}
+
 // src/hooks/notify.ts
 var ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var AGENT_FINISHED_BODY = "A background session finished.";
@@ -7834,6 +8995,12 @@ function markedWaiting(file, nowMs) {
   }
 }
 function markWaiting(file) {
+  try {
+    writeFileSync3(file, `${Date.now()}
+`);
+  } catch {}
+}
+function markFinished(file) {
   try {
     writeFileSync3(file, `${Date.now()}
 `);
@@ -7969,8 +9136,11 @@ function alertFor(input, event, ctx) {
     case "Stop": {
       forget(ctx.mark);
       forget(ctx.failed);
-      if (input.stop_hook_active === true)
+      if (ctx.stopWouldBlock)
         return null;
+      if (input.stop_hook_active === true && existsSync8(ctx.finished))
+        return null;
+      markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
         return null;
       const answer = ctx.transcript === null ? null : waitThenLastAnswer(ctx.transcript);
@@ -8142,8 +9312,10 @@ function notifyHook(input, event, deps) {
   const dir = runtimeDir(deps.env);
   const mark = join9(dir, `cc-smart-dev-kit-notify-asked-${session}`);
   const failed = join9(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join9(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
+    forget(finished);
     return SILENT;
   }
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
@@ -8156,12 +9328,15 @@ function notifyHook(input, event, deps) {
     platform: deps.platform,
     which: deps.which
   }) : false;
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) : false;
   const alert = alertFor(input, event, {
     failed,
+    finished,
     label,
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
+    stopWouldBlock,
     transcript
   });
   if (alert === null)
@@ -8308,7 +9483,7 @@ async function runNotifyEntry() {
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync8(launcher) ? launcher : null,
+      launcher: existsSync9(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,

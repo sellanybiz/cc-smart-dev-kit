@@ -6440,6 +6440,7 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "verify-gate",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
@@ -6464,6 +6465,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     }).optional()
   }).optional(),
   protectedBranches: array(string2().min(1)).min(1).optional(),
+  checks: strictObject({ fast: string2().trim().min(1) }).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
@@ -11343,13 +11345,13 @@ var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function tailLines2(transcriptPath) {
+function tailLines2(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
   let text;
   try {
     const fd = openSync4(transcriptPath, "r");
     try {
       const size = fstatSync2(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
       readSync2(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
@@ -16533,6 +16535,166 @@ function subagentBackground(context) {
   return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
 }
 
+// src/hooks/verify-gate.ts
+var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
+var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
+var STOP_FEEDBACK = "Stop hook feedback:";
+var REMINDER_MARK = "has not run the project's fast check since";
+function verifyGateReason(check) {
+  return `This session changed files and has not run the project's fast check since: run \`${check}\`, then stop.`;
+}
+function objectOf(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function blocksOf(line) {
+  const content = objectOf(line.message)?.content;
+  if (!Array.isArray(content))
+    return [];
+  return content.filter((block) => objectOf(block) !== null && block !== null);
+}
+function toolUses(line) {
+  return blocksOf(line).filter((block) => block.type === "tool_use");
+}
+function resultText2(content) {
+  if (typeof content === "string")
+    return content;
+  if (!Array.isArray(content))
+    return "";
+  return content.map((block) => {
+    const text = objectOf(block)?.text;
+    return typeof text === "string" ? text : "";
+  }).join(`
+`);
+}
+var REFUSED = /(doesn't want to proceed|tool use was rejected|has been denied)/i;
+function failedCalls(lines) {
+  const failed = new Set;
+  for (const line of lines) {
+    if (!line.includes('"tool_result"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = objectOf(entry);
+    if (record === null)
+      continue;
+    for (const block of blocksOf(record)) {
+      if (block.type !== "tool_result")
+        continue;
+      const id = stringField(block.tool_use_id);
+      if (id === null)
+        continue;
+      const text = resultText2(block.content);
+      if (block.is_error === true || REFUSED.test(text))
+        failed.add(id);
+    }
+  }
+  return failed;
+}
+function runWords(line, dialect, depth = 0) {
+  if (depth > MAX_NESTING)
+    return [];
+  const words = [];
+  for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
+    const command = wordsOf(step.text, dialect);
+    words.push(...command);
+    const invocation = invocationOf(command);
+    if (invocation === undefined)
+      continue;
+    const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+    if (inner !== undefined) {
+      words.push(...runWords(inner, nestedDialect(invocation.program), depth + 1));
+    }
+  }
+  return words;
+}
+function contains(run, wanted) {
+  for (let at = 0;at + wanted.length <= run.length; at += 1) {
+    if (wanted.every((word, index) => run[at + index] === word))
+      return true;
+  }
+  return false;
+}
+function ranCheck(command, check, dialect) {
+  const dialects = dialect === undefined ? ["bash", "powershell"] : [dialect];
+  return dialects.some((one) => {
+    const wanted = runWords(check, one);
+    return wanted.length > 0 && contains(runWords(command, one), wanted);
+  });
+}
+function isOwnReminder(line) {
+  const content = objectOf(line.message)?.content;
+  const texts = typeof content === "string" ? [content] : blocksOf(line).map((block) => typeof block.text === "string" ? block.text : "").filter((text) => text !== "");
+  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(REMINDER_MARK));
+}
+function seenIn(lines, check) {
+  const seen = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };
+  const failed = failedCalls(lines);
+  for (let index = 0;index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes('"tool_use"') && !line.includes(STOP_FEEDBACK))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = objectOf(entry);
+    if (record === null || record.isSidechain === true)
+      continue;
+    if (isOwnReminder(record))
+      seen.lastReminder = index;
+    for (const block of toolUses(record)) {
+      const name = stringField(block.name);
+      if (name !== null && CHANGE_TOOLS.includes(name)) {
+        if (!failed.has(stringField(block.id) ?? ""))
+          seen.lastEdit = index;
+        continue;
+      }
+      const dialect = dialectOfTool(name);
+      if (dialect === undefined)
+        continue;
+      const command = stringField(objectOf(block.input)?.command);
+      if (command !== null && ranCheck(command, check, dialect))
+        seen.lastCheck = index;
+    }
+  }
+  return seen;
+}
+function verifyGateWouldBlock(input, config, env) {
+  if (config === null)
+    return false;
+  if (input.stop_hook_active === true)
+    return false;
+  if (crewIdOf(env) !== null)
+    return false;
+  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
+    return false;
+  const check = config.checks?.fast;
+  if (check === undefined)
+    return false;
+  const transcript = stringField(input.transcript_path);
+  if (transcript === null)
+    return false;
+  const lines = tailLines2(transcript, VERIFY_GATE_TAIL_BYTES);
+  if (lines === null)
+    return false;
+  const seen = seenIn(lines, check);
+  return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
+}
+function verifyGate(context) {
+  if (context.event !== "Stop")
+    return SILENT;
+  if (!verifyGateWouldBlock(context.input, context.project.config, context.env))
+    return SILENT;
+  const check = context.project.config?.checks?.fast ?? "";
+  return { stdout: JSON.stringify({ decision: "block", reason: verifyGateReason(check) }) };
+}
+
 // src/hooks/specs.ts
 function cannotCheck(what, message) {
   return `cc-smart-dev-kit cannot check ${what}: ${message}`;
@@ -16661,6 +16823,12 @@ var subagentBackgroundHook = {
   }),
   run: subagentBackground
 };
+var verifyGateHook = {
+  name: "verify-gate",
+  events: ["Stop"],
+  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit verify-gate: ${message}` }),
+  run: verifyGate
+};
 var agentUsageHook = {
   name: "agent-usage",
   events: ["SubagentStop"],
@@ -16755,6 +16923,7 @@ var HOOKS = [
   afterMergeHook,
   reviewRecordHook,
   subagentBackgroundHook,
+  verifyGateHook,
   agentUsageHook,
   worktreeLeftoversHook,
   sessionNameHook,

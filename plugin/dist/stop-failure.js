@@ -6877,6 +6877,7 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "verify-gate",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
@@ -6901,6 +6902,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     }).optional()
   }).optional(),
   protectedBranches: array(string2().min(1)).min(1).optional(),
+  checks: strictObject({ fast: string2().trim().min(1) }).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
@@ -7312,13 +7314,13 @@ var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function tailLines(transcriptPath) {
+function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
   let text;
   try {
     const fd = openSync2(transcriptPath, "r");
     try {
       const size = fstatSync(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
       readSync(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");

@@ -1,6 +1,6 @@
 // @bun
 // src/entries/cli.ts
-import { existsSync as existsSync71, statSync as statSync28 } from "fs";
+import { existsSync as existsSync72, statSync as statSync28 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join81, resolve as resolve14 } from "path";
 
@@ -21123,6 +21123,7 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "verify-gate",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
@@ -21136,6 +21137,7 @@ var WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var WORKFLOW_CREW_SINCE = "1.0.0";
 var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
+var CHECKS_SINCE = "1.1.0";
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -21151,6 +21153,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     }).optional()
   }).optional(),
   protectedBranches: array(string2().min(1)).min(1).optional(),
+  checks: strictObject({ fast: string2().trim().min(1) }).optional(),
   sessionNames: boolean2().optional(),
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
@@ -25730,13 +25733,13 @@ var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function tailLines2(transcriptPath) {
+function tailLines2(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
   let text;
   try {
     const fd = openSync5(transcriptPath, "r");
     try {
       const size = fstatSync2(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
       readSync2(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
@@ -34356,6 +34359,177 @@ function subagentBackground(context) {
   return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
 }
 
+// src/hooks/verify-gate.ts
+var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
+var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
+var STOP_FEEDBACK = "Stop hook feedback:";
+var REMINDER_MARK = "has not run the project's fast check since";
+function verifyGateReason(check) {
+  return `This session changed files and has not run the project's fast check since: run \`${check}\`, then stop.`;
+}
+function objectOf(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function blocksOf(line) {
+  const content = objectOf(line.message)?.content;
+  if (!Array.isArray(content))
+    return [];
+  return content.filter((block) => objectOf(block) !== null && block !== null);
+}
+function toolUses(line) {
+  return blocksOf(line).filter((block) => block.type === "tool_use");
+}
+function resultText2(content) {
+  if (typeof content === "string")
+    return content;
+  if (!Array.isArray(content))
+    return "";
+  return content.map((block) => {
+    const text = objectOf(block)?.text;
+    return typeof text === "string" ? text : "";
+  }).join(`
+`);
+}
+var REFUSED = /(doesn't want to proceed|tool use was rejected|has been denied)/i;
+function failedCalls(lines) {
+  const failed = new Set;
+  for (const line of lines) {
+    if (!line.includes('"tool_result"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = objectOf(entry);
+    if (record === null)
+      continue;
+    for (const block of blocksOf(record)) {
+      if (block.type !== "tool_result")
+        continue;
+      const id = stringField(block.tool_use_id);
+      if (id === null)
+        continue;
+      const text = resultText2(block.content);
+      if (block.is_error === true || REFUSED.test(text))
+        failed.add(id);
+    }
+  }
+  return failed;
+}
+function runWords(line, dialect, depth = 0) {
+  if (depth > MAX_NESTING)
+    return [];
+  const words = [];
+  for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
+    const command = wordsOf(step.text, dialect);
+    words.push(...command);
+    const invocation = invocationOf(command);
+    if (invocation === undefined)
+      continue;
+    const inner = nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+    if (inner !== undefined) {
+      words.push(...runWords(inner, nestedDialect(invocation.program), depth + 1));
+    }
+  }
+  return words;
+}
+function contains(run, wanted) {
+  for (let at = 0;at + wanted.length <= run.length; at += 1) {
+    if (wanted.every((word, index) => run[at + index] === word))
+      return true;
+  }
+  return false;
+}
+function ranCheck(command, check, dialect) {
+  const dialects = dialect === undefined ? ["bash", "powershell"] : [dialect];
+  return dialects.some((one) => {
+    const wanted = runWords(check, one);
+    return wanted.length > 0 && contains(runWords(command, one), wanted);
+  });
+}
+function isOwnReminder(line) {
+  const content = objectOf(line.message)?.content;
+  const texts = typeof content === "string" ? [content] : blocksOf(line).map((block) => typeof block.text === "string" ? block.text : "").filter((text) => text !== "");
+  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(REMINDER_MARK));
+}
+function seenIn(lines, check) {
+  const seen = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };
+  const failed = failedCalls(lines);
+  for (let index = 0;index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes('"tool_use"') && !line.includes(STOP_FEEDBACK))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = objectOf(entry);
+    if (record === null || record.isSidechain === true)
+      continue;
+    if (isOwnReminder(record))
+      seen.lastReminder = index;
+    for (const block of toolUses(record)) {
+      const name = stringField(block.name);
+      if (name !== null && CHANGE_TOOLS.includes(name)) {
+        if (!failed.has(stringField(block.id) ?? ""))
+          seen.lastEdit = index;
+        continue;
+      }
+      const dialect = dialectOfTool(name);
+      if (dialect === undefined)
+        continue;
+      const command = stringField(objectOf(block.input)?.command);
+      if (command !== null && ranCheck(command, check, dialect))
+        seen.lastCheck = index;
+    }
+  }
+  return seen;
+}
+function verifyGateWouldBlock(input, config, env) {
+  if (config === null)
+    return false;
+  if (input.stop_hook_active === true)
+    return false;
+  if (crewIdOf(env) !== null)
+    return false;
+  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
+    return false;
+  const check = config.checks?.fast;
+  if (check === undefined)
+    return false;
+  const transcript = stringField(input.transcript_path);
+  if (transcript === null)
+    return false;
+  const lines = tailLines2(transcript, VERIFY_GATE_TAIL_BYTES);
+  if (lines === null)
+    return false;
+  const seen = seenIn(lines, check);
+  return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
+}
+function verifyGateWouldBlockAt(input, env) {
+  const cwd = stringField(input.cwd);
+  if (cwd === null)
+    return false;
+  try {
+    const checkout = locateCheckout(cwd, { env });
+    return checkout !== null && verifyGateWouldBlock(input, loadProjectConfig(checkout).config, env);
+  } catch {
+    return false;
+  }
+}
+function verifyGate(context) {
+  if (context.event !== "Stop")
+    return SILENT;
+  if (!verifyGateWouldBlock(context.input, context.project.config, context.env))
+    return SILENT;
+  const check = context.project.config?.checks?.fast ?? "";
+  return { stdout: JSON.stringify({ decision: "block", reason: verifyGateReason(check) }) };
+}
+
 // src/hooks/specs.ts
 function cannotCheck(what, message) {
   return `cc-smart-dev-kit cannot check ${what}: ${message}`;
@@ -34484,6 +34658,12 @@ var subagentBackgroundHook = {
   }),
   run: subagentBackground
 };
+var verifyGateHook = {
+  name: "verify-gate",
+  events: ["Stop"],
+  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit verify-gate: ${message}` }),
+  run: verifyGate
+};
 var agentUsageHook = {
   name: "agent-usage",
   events: ["SubagentStop"],
@@ -34578,6 +34758,7 @@ var HOOKS = [
   afterMergeHook,
   reviewRecordHook,
   subagentBackgroundHook,
+  verifyGateHook,
   agentUsageHook,
   worktreeLeftoversHook,
   sessionNameHook,
@@ -34656,6 +34837,7 @@ var FILE_ORDER = [
   "requires",
   "worktrees",
   "protectedBranches",
+  "checks",
   "sessionNames",
   "instructions",
   "autoMode",
@@ -34706,6 +34888,9 @@ function raisedRequires(existing, floor, floorVersion) {
   return floor;
 }
 function requiresFloor(file) {
+  if (Object.hasOwn(file, "checks")) {
+    return { floor: requiresFor(CHECKS_SINCE), version: CHECKS_SINCE };
+  }
   const workflow = isObject(file.workflow) ? file.workflow : {};
   const worktrees = isObject(file.worktrees) ? file.worktrees : {};
   if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
@@ -34847,6 +35032,12 @@ function planProjectInit(input) {
     next.protectedBranches = answers.protectedBranches;
   else
     delete next.protectedBranches;
+  if (answers.checks !== undefined) {
+    if (answers.checks === null)
+      delete next.checks;
+    else
+      next.checks = { fast: answers.checks.fast };
+  }
   if (answers.guards.sessionNames)
     next.sessionNames = true;
   else
@@ -35013,10 +35204,37 @@ function protectedFromGithub(runner, root) {
 `).map((line) => line.trim().replace(/^refs\/heads\//, "")).filter((name) => name !== "" && !name.includes("*")))
   ];
 }
+var FAST_CHECK_SCRIPTS = ["typecheck", "lint", "check", "test"];
+function runnerOf2(root) {
+  if (existsSync54(join64(root, "bun.lock")) || existsSync54(join64(root, "bun.lockb")))
+    return "bun run";
+  if (existsSync54(join64(root, "pnpm-lock.yaml")))
+    return "pnpm run";
+  if (existsSync54(join64(root, "yarn.lock")))
+    return "yarn run";
+  return "npm run";
+}
+function defaultFastCheck(root) {
+  const file = join64(root, "package.json");
+  if (!existsSync54(file))
+    return null;
+  let scripts;
+  try {
+    const parsed = parseUserJson(readFileSync63(file, "utf8"));
+    scripts = isObject(parsed) ? parsed.scripts : undefined;
+  } catch {
+    return null;
+  }
+  if (!isObject(scripts))
+    return null;
+  const name = FAST_CHECK_SCRIPTS.find((script) => typeof scripts[script] === "string");
+  return name === undefined ? null : `${runnerOf2(root)} ${name}`;
+}
 function detectFacts(runner, root) {
   return {
     defaultBranch: defaultBranchOf2(runner, root),
-    protectedFromGithub: protectedFromGithub(runner, root)
+    protectedFromGithub: protectedFromGithub(runner, root),
+    fastCheck: defaultFastCheck(root)
   };
 }
 function parseFlags(argv) {
@@ -35063,6 +35281,13 @@ function parseFlags(argv) {
         case "--protected":
           flags.protectedBranches = value(arg, argv[index + 1]).split(",").filter((word) => word !== "");
           index += 1;
+          break;
+        case "--check":
+          flags.check = words(arg, argv[index + 1]);
+          index += 1;
+          break;
+        case "--no-check":
+          flags.check = "";
           break;
         case "--guard-main-folder":
         case "--no-guard-main-folder":
@@ -35142,10 +35367,12 @@ function defaultAnswers(existing, facts, flags) {
   const base = flags.base ?? (typeof worktrees.base === "string" ? worktrees.base : facts.defaultBranch);
   const bases = flags.bases ?? (isObject(worktrees.bases) ? worktrees.bases : defaultBases(facts));
   const protectedBranches = flags.protectedBranches ?? (Array.isArray(existing?.protectedBranches) && existing.protectedBranches.every((name) => typeof name === "string") ? existing.protectedBranches : [...new Set([facts.defaultBranch, base, ...facts.protectedFromGithub])].filter((name) => name !== ""));
+  const existingChecks = existing !== null && isObject(existing.checks) && typeof existing.checks.fast === "string" ? { fast: existing.checks.fast } : null;
   return {
     base,
     bases,
     protectedBranches,
+    checks: flags.check !== undefined ? checkAnswer(listAnswer(flags.check)) : existingChecks ?? (facts.fastCheck === null ? null : { fast: facts.fastCheck }),
     guards: {
       guardMainFolder: flags.guardMainFolder ?? (typeof worktrees.guardMainFolder === "boolean" ? worktrees.guardMainFolder : true),
       sessionNames: flags.sessionNames ?? (typeof existing?.sessionNames === "boolean" ? existing.sessionNames : true),
@@ -35168,6 +35395,10 @@ var NONE2 = "none";
 function listAnswer(text) {
   return text.trim().toLowerCase() === NONE2 ? "" : text;
 }
+function checkAnswer(text) {
+  const command = text.trim();
+  return command === "" ? null : { fast: command };
+}
 function refusal2(check) {
   try {
     check();
@@ -35183,6 +35414,7 @@ var QUESTIONS = [
     "protectedBranches",
     `Protected branches: the git guard asks before a push to these, comma separated ("${NONE2}" for none)`
   ],
+  ["checks", `The fast check a session runs before it stops: one command ("${NONE2}" for none)`],
   [
     "workflow",
     `Workflow policy: what happens by itself after a step, as ${POLICY_EXAMPLE} ("${NONE2}" for none)`
@@ -35211,6 +35443,7 @@ function askedAnswers(prompts, answers) {
   const protectedText = listAnswer(prompts.ask(numbered("protectedBranches"), {
     default: answers.protectedBranches.join(", ")
   }));
+  const checksText = listAnswer(prompts.ask(numbered("checks"), { default: answers.checks?.fast ?? NONE2 }));
   const workflowText = listAnswer(prompts.ask(numbered("workflow"), {
     default: shownWorkflow(answers.workflow),
     check: (answer) => refusal2(() => workflowFromFlags(listOf(listAnswer(answer))))
@@ -35224,6 +35457,7 @@ function askedAnswers(prompts, answers) {
     base: base === "" ? answers.base : base,
     bases: parseBases(basesText),
     protectedBranches: listOf(protectedText),
+    checks: checkAnswer(checksText),
     guards,
     workflow: workflowFromFlags(listOf(workflowText))
   };
@@ -35314,6 +35548,10 @@ the project.
   --bases <p=b,p=b>      bases for other branch prefixes (default: hotfix/, release/)
   --protected <a,b>      the branches the git guard asks about (default: the default
                          branch, the base, and GitHub's protected branches)
+  --check <command>      the fast check a session runs before it stops (default: a script in
+                         package.json \u2014 typecheck, lint, check or test \u2014 with its package
+                         manager; "none" for no check)
+  --no-check             no fast check
   --[no-]guard-main-folder
                          refuse edits in the main checkout itself (or not)
   --[no-]session-names   each session names itself after its task (or not)
@@ -35534,6 +35772,9 @@ function onEvent(event, subjects) {
   const named = subjects.filter((subject) => subject !== null);
   return named.length > 0 ? `${event} (${named.join(", ")})` : event;
 }
+var OPT_IN_HOOKS = {
+  "verify-gate": (config) => config.checks !== undefined
+};
 function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   let pluginHooks;
   try {
@@ -35584,6 +35825,9 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
       continue;
     }
     if (MACHINE_WIDE_HOOKS.includes(hook.name))
+      continue;
+    const optIn = OPT_IN_HOOKS[hook.name];
+    if (optIn !== undefined && !optIn(config))
       continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
@@ -44969,7 +45213,7 @@ function terminalQuestions(terminal) {
 }
 
 // src/hooks/notify.ts
-import { readFileSync as readFileSync74, rmSync as rmSync18, statSync as statSync26, writeFileSync as writeFileSync14 } from "fs";
+import { existsSync as existsSync69, readFileSync as readFileSync74, rmSync as rmSync18, statSync as statSync26, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir9 } from "os";
 import { basename as basename14, join as join78 } from "path";
 
@@ -45050,6 +45294,12 @@ function markedWaiting(file, nowMs) {
   }
 }
 function markWaiting(file) {
+  try {
+    writeFileSync14(file, `${Date.now()}
+`);
+  } catch {}
+}
+function markFinished(file) {
   try {
     writeFileSync14(file, `${Date.now()}
 `);
@@ -45185,8 +45435,11 @@ function alertFor(input, event, ctx) {
     case "Stop": {
       forget(ctx.mark);
       forget(ctx.failed);
-      if (input.stop_hook_active === true)
+      if (ctx.stopWouldBlock)
         return null;
+      if (input.stop_hook_active === true && existsSync69(ctx.finished))
+        return null;
+      markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
         return null;
       const answer = ctx.transcript === null ? null : waitThenLastAnswer(ctx.transcript);
@@ -45358,8 +45611,10 @@ function notifyHook(input, event, deps) {
   const dir = runtimeDir(deps.env);
   const mark = join78(dir, `cc-smart-dev-kit-notify-asked-${session}`);
   const failed = join78(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join78(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
+    forget(finished);
     return SILENT;
   }
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
@@ -45372,12 +45627,15 @@ function notifyHook(input, event, deps) {
     platform: deps.platform,
     which: deps.which
   }) : false;
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) : false;
   const alert = alertFor(input, event, {
     failed,
+    finished,
     label,
     limitAlertIsStopFailures,
     mark,
     nowMs: deps.nowMs,
+    stopWouldBlock,
     transcript
   });
   if (alert === null)
@@ -45437,7 +45695,7 @@ function withProblem(result, problem) {
 }
 
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync69 } from "fs";
+import { existsSync as existsSync70 } from "fs";
 import { join as join80 } from "path";
 
 // src/hooks/terminal.ts
@@ -45528,7 +45786,7 @@ async function runNotifyEntry() {
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync69(launcher) ? launcher : null,
+      launcher: existsSync70(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,
@@ -45551,14 +45809,14 @@ async function runNotifyEntry() {
 }
 
 // src/machine/machine.ts
-import { existsSync as existsSync70, readFileSync as readFileSync75 } from "fs";
+import { existsSync as existsSync71, readFileSync as readFileSync75 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
-    exists: (path) => existsSync70(path),
+    exists: (path) => existsSync71(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync70("/etc/os-release") ? readFileSync75("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync71("/etc/os-release") ? readFileSync75("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -45858,7 +46116,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
 // src/entries/cli.ts
 function distBundle(name) {
   const beside = join81(import.meta.dir, name);
-  return existsSync71(beside) ? beside : join81(import.meta.dir, "..", "..", "plugin", "dist", name);
+  return existsSync72(beside) ? beside : join81(import.meta.dir, "..", "..", "plugin", "dist", name);
 }
 function routerBundle() {
   return distBundle("router.js");
@@ -46007,7 +46265,7 @@ async function main(argv) {
         console.error(usageError2("--warp and --remove-warp do opposite things: give one", "setup"));
         return 2;
       }
-      if (!existsSync71(project) || !statSync28(project).isDirectory()) {
+      if (!existsSync72(project) || !statSync28(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;
