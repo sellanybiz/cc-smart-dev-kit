@@ -7,7 +7,9 @@ import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
  * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may
- * list. A test keeps it the same as `HOOKS` in `src/hooks/specs.ts`.
+ * list. A test keeps it the same as `HOOKS` in `src/hooks/specs.ts`, except the hooks marked
+ * `alwaysOn` (today `session-escape-guard`): a project cannot switch those off, so `ownHooks`
+ * does not accept their names.
  */
 export const PLUGIN_HOOK_NAMES = [
   "git-guard",

@@ -38,6 +38,7 @@ import {
   mergeGuardHook,
   messageGuardHook,
   reviewRecordHook,
+  sessionEscapeGuardHook,
   sessionNameHook,
   worktreeLeftoversHook,
 } from "./specs";
@@ -63,6 +64,8 @@ interface Case {
    * does not depend on the project's file, so the shared rows below say so.
    */
   machineWide?: boolean;
+  /** A hook `ownHooks` cannot switch off (`HookSpec.alwaysOn`): listing it silences nothing. */
+  alwaysOn?: boolean;
 }
 
 function project(config: unknown) {
@@ -160,6 +163,28 @@ const CASES: Case[] = [
       env: hookEnv(),
     }),
     failsClosed: denyLine,
+  },
+  {
+    spec: sessionEscapeGuardHook,
+    own: { event: "PreToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
+    machineWide: true,
+    alwaysOn: true,
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: project(config),
+        tool_name: "Bash",
+        tool_input: { command: "env -u CLAUDECODE cc-smart-dev-kit workflow set autoMerge true" },
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: (result) => {
+      expect(result.exitCode ?? 0).toBe(0);
+      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+      expect(output.permissionDecision).toBe("deny");
+      expect(output.permissionDecisionReason).toContain("with CLAUDECODE removed");
+    },
   },
   {
     spec: fableSessionHook,
@@ -337,9 +362,14 @@ test("the table covers every hook", () => {
   expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
 });
 
-test("ownHooks accepts exactly the plugin's hooks", () => {
+test("ownHooks accepts exactly the plugin's hooks that a project can switch off", () => {
   const listed: string[] = [...PLUGIN_HOOK_NAMES];
-  expect(listed.sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
+  const switchable = HOOKS.filter((spec) => spec.alwaysOn !== true).map((spec) => spec.name);
+  expect(listed.sort()).toEqual(switchable.sort());
+  // An `alwaysOn` hook is wired and in the table, and its name is refused by the strict parse.
+  expect(HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name)).toEqual([
+    "session-escape-guard",
+  ]);
 });
 
 /** The full config, with `ownHooks` listing this hook. */
@@ -371,7 +401,10 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
 
   test("listed in ownHooks: a plugin hook stays silent (the project's copy answers)", async () => {
     const { input, env } = c.setup(listing(c));
-    expect(await runHook(c.spec, input, env)).toEqual({});
+    const result = await runHook(c.spec, input, env);
+    // An `alwaysOn` hook is the one no project can switch off: it answers all the same.
+    if (c.alwaysOn === true) expect(speaks(result)).toBe(true);
+    else expect(result).toEqual({});
   });
 
   test("a retired name in ownHooks (serena-root): the file still reads, and this hook still speaks", async () => {
@@ -403,7 +436,9 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
   test("requires not met, and listed in ownHooks: the hook stays silent (the project's copy runs)", async () => {
     const { input, env } = c.setup(listing(c, { requires: ">=99", fieldFromTheFuture: true }));
     wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
-    expect(await runHook(c.spec, input, env)).toEqual({});
+    const result = await runHook(c.spec, input, env);
+    if (c.alwaysOn === true) expect(speaks(result)).toBe(true);
+    else expect(result).toEqual({});
   });
 
   test("requires not met, another hook for the same event, not listed: fails closed all the same", async () => {

@@ -1190,7 +1190,10 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    project, prints one `·` line per listed hook, and warns (`!`) when a listed hook has no
    project hook left to answer, or when a project hook runs next to a plugin hook the list
    does not name. A hook the project wires itself skips this step: that wiring is its
-   opt-in.
+   opt-in. **One hook skips the step itself:** `session-escape-guard` is `alwaysOn`
+   (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for it and `ownHooks` does not
+   accept its name — the project's file is one of the things it guards (§ The session-escape
+   guard).
 3. **Read `cc-smart-dev-kit.json`.** When it is broken or needs a newer plugin, the hook
    **fails closed**, each in the way that suits its event: a guard asks the person (it cannot
    know whether the project turned it on), an informational hook says one line. "Closed"
@@ -1207,11 +1210,11 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
 
 Each hook's answer when it fails (the same table is in `.claude/rules/hooks.md` § Fail safe):
 
-| Failure | A guard (git, merge, main-folder, message, job-route, agent) | Any other plugin hook | `hook notify` |
+| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape) | Any other plugin hook | `hook notify` |
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | **ask** | one line of context or stderr | not read |
+| `cc-smart-dev-kit.json` broken or too new | **ask** (`agent-guard` and `session-escape-guard` judge the call anyway) | one line of context or stderr | not read |
 | No bun, or one too old | the shim's `--missing=ask`: **ask** | `--missing=quiet`: stderr, exit 0 | the launcher's line, exit 1 (Claude Code goes on) |
 | The bundle file is gone | the shim **asks** | bun's error, exit 1 | not applicable |
 | Cannot start, times out, fails (exit code other than 0 and 2) | `"onFailure": "block"`: the call is **blocked** | Claude Code goes on | Claude Code goes on |
@@ -1287,6 +1290,7 @@ that, so the plugin ships no worktree hook at all.
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
 | `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
+| `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port and before an edit of the kit's own settings. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `job-route` | PreToolUse (Bash) | `jobs.route` | A heavy command is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301). § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, and the message to send the other sessions when it went into `worktrees.base`. A form that names no pull request gets no note. |
@@ -1294,10 +1298,11 @@ that, so the plugin ships no worktree hook at all.
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone. Removes nothing. |
 | `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
 
-Without `cc-smart-dev-kit.json` every one of them is silent — except the three machine-wide
-ones: `agent-guard` (§ The Agent guard), `fable-session` (§ The Fable-session note) and
+Without `cc-smart-dev-kit.json` every one of them is silent — except the four machine-wide
+ones: `agent-guard` (§ The Agent guard), `session-escape-guard` (§ The session-escape guard),
+`fable-session` (§ The Fable-session note) and
 `playwright-output`, which reads no project file at all — so a project that never opted in
-sees only Claude Code's own worktrees. The machine-wide `notify` hook needs no project file
+sees only Claude Code's own worktrees and the limits a session may not get around. The machine-wide `notify` hook needs no project file
 and acts without one; the
 `workflow.alerts` settings are the one thing it reads from a project that has them (§ The
 notifier).
@@ -1488,6 +1493,68 @@ The Fable rules are the owner's of 2026-10-16, and each is the person's call:
   of the read-only words). A fork of a session whose own model is the `fable` tier is judged the
   same way, so such a session can fork with `Fable reason: build - …` and is not refused
   outright.
+
+### The session-escape guard
+
+`session-escape-guard` (PreToolUse on `Bash`, `PowerShell`, `Edit`, `Write` and `NotebookEdit`)
+stops a session from loosening the limits the person set for it. `src/hooks/session-escape-guard.ts`
+is the whole of it. It is **machine-wide** like `agent-guard` (it runs with or without
+`.claude/cc-smart-dev-kit.json`, in a folder outside git, and when the file is broken or too new)
+and **`alwaysOn`**: `ownHooks` cannot silence it and does not accept its name, because the
+project's file is one of the things it guards — a session could otherwise list the guard there
+first. It is wired `--missing=ask` with `"onFailure": "block"`, and a crash of its own asks about
+the calls in its domain (§ One frame for every hook).
+
+| The call | The answer | Why |
+|---|---|---|
+| A line that runs `cc-smart-dev-kit workflow review-done` | **deny** | A review is recorded by the review-record hook when a review agent returns. A session never records its own. |
+| A line that runs a kit command (the launcher, or `bun …/dist/cli.js` / `portal.js`) with `CLAUDECODE` removed | **deny** | The kit's commands that change this machine's settings (the workflow gate, the portal, updates) refuse to run while Claude Code's `CLAUDECODE` is set — a courtesy a command can drop. This is the lock. |
+| A line that reaches the portal's port (20150) on this machine | **ask** | The portal has no sign-in of its own (D9): its pages change the gateway, the judge, updates and the review gate. |
+| An Edit, Write or NotebookEdit of a `.claude/cc-smart-dev-kit.json`, the kit's settings folder (`workflow.json`, `gateway.json`) or its state folder (the review record, the ask log) | **ask** | They hold the limits the guards enforce: the project's gate and `ownHooks`, the person's own policy, the record of what was reviewed. |
+
+**How `CLAUDECODE` counts as removed.** The shell reader (`src/shell/command.ts`) gives each
+command of the line, its wrappers, and the lines it runs (`bash -c`, `eval`, a here-string,
+`cc-smart-dev-kit job run --`, `ssh host '…'`). On one command: `CLAUDECODE=…` before it, `env -u
+CLAUDECODE`, `env --unset`, `env -i` (and `env -`), `sudo`/`doas`/`su`/`runuser`/`ssh`/`systemd-run`
+(a fresh environment). For the commands after it in the same line: `unset CLAUDECODE`, `export
+CLAUDECODE=…`, `export -n`, `declare +x`, a step that is only `CLAUDECODE=`, and in PowerShell any
+write to `$env:CLAUDECODE` (`Remove-Item Env:CLAUDECODE`, `SetEnvironmentVariable`; the whole
+line counts, because PowerShell's lexer cuts at braces). A kit command is also found as an
+argument of a runner (`find -exec`, `watch`, `parallel`), except after programs that only read
+their arguments (`ls`, `grep`, `git`, `echo`…), so `env -u CLAUDECODE claude -p` and `env -u
+CLAUDECODE bun test` — the usual way to start a nested session — are not touched. Claude Code's
+Bash tool keeps no `export` or `unset` from one call to the next (seen live 2026-10-22: an
+`unset CLAUDECODE` in one call, `CLAUDECODE=1` again in the next), so a line is the unit.
+
+**How an edit is matched.** The path the call names is taken as written and as a real path (an
+Edit follows a link, so `notes.txt` linking to `workflow.json` changes `workflow.json`);
+either one that is a `.claude/cc-smart-dev-kit.json` (any folder: the main checkout, a worktree
+inside `.claude/worktrees/`, a folder outside git), or inside the settings or state folder
+(`cliPaths()`, so `CLAUDE_CONFIG_DIR` moves the state folder with it), asks. Names compare
+without case.
+
+**How a shell write is matched.** A Bash or PowerShell line that writes those same files asks,
+with the Edit's reason: a redirect (`>`, `>>`, `>|`, `&>`; `2>&1` and `>&2` name no file; the
+reader's `redirectionTargets` gives the targets), `tee` (and `Tee-Object`), `sed -i` / `perl -i`,
+`cp` / `mv` / `install` / `ln` (`-t` and `--target-directory` included) and PowerShell's
+`Copy-Item` / `Move-Item` (`-Destination`, or the last word), `dd of=`, `Set-Content`,
+`Add-Content`, `Out-File` (`sc`, `ac`, `si`, `ni`, … — PowerShell takes any prefix of a
+parameter name). Every target goes through the same `kitFileKind` as an Edit, as written (the
+`~`, a relative path against the input's `cwd` and against each `cd` / `Set-Location` /
+`Push-Location` the line ran before it) and as a real path. A target the line works out when it
+runs (`> $FILE`, `$(mktemp)`, a glob) cannot be resolved: it asks only when the line also names
+a protected file or folder by text (`cc-smart-dev-kit.json`, `.config/cc-smart-dev-kit`, the
+state folder), and passes otherwise. `cat`, `grep`, `sed` without `-i`, `cp` *from* the file and
+a message that names it all pass.
+
+**What it does not read.** The limit is the one the review gate has: it stops mistakes and the
+easy shortcut, not a same-user process set on getting past it. A script file's content (`env -u
+CLAUDECODE sh run.sh`), a program or port named at run time (`curl localhost:$PORT`), a portal
+started with another `--port`, a hostname that resolves to this machine, and a file written by a
+program the guard does not know (`python -c "open(…,'w')"`, `rsync`, `truncate`) are not read.
+The portal check reads the text of the whole command, so a script in a here-doc that connects
+counts — and so does a commit message that only mentions the address: one extra question, not a
+miss.
 
 ### The Fable-session note
 

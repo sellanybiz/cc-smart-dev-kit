@@ -13,6 +13,7 @@ import {
   nestedDialect,
   programsOf,
   readingsOf,
+  redirectionTargets,
   shellSegments,
   shellSteps,
   withoutRedirections,
@@ -308,6 +309,36 @@ describe("wordsOf", () => {
       "push",
       "origin",
     ]);
+  });
+});
+
+describe("redirectionTargets — the files a command's words write", () => {
+  test("every writing operator, attached or apart, before or after the program", () => {
+    expect(
+      redirectionTargets(["echo", "x", ">a", ">>", "b", ">|c", "&>d", "&>>e", "2>f", "<>g"]),
+    ).toEqual(["a", "b", "c", "d", "e", "f", "g"]);
+    expect(redirectionTargets([">log", "echo"])).toEqual(["log"]);
+    expect(redirectionTargets(wordsOf("echo x>log 2> err"))).toEqual(["log", "err"]);
+  });
+
+  test("a read, a here-doc, a here-string and a descriptor write no file", () => {
+    expect(redirectionTargets(["cat", "<in", "<", "in2", "<<EOF", "<<<", "text"])).toEqual([]);
+    expect(redirectionTargets(["cmd", "2>&1", ">&2", ">&-", "1>&2"])).toEqual([]);
+    // `>&file` sends both streams to a file.
+    expect(redirectionTargets(["cmd", ">&log"])).toEqual(["log"]);
+  });
+
+  test("a quoted or escaped `>` is a character, not a redirection", () => {
+    expect(redirectionTargets(wordsOf('echo "a>b" x\\>y'))).toEqual([]);
+  });
+});
+
+describe("bash's `>|` is a redirect, not a pipe", () => {
+  test("the file after it is its target, not a command; a real pipe still splits", () => {
+    expect(shellSegments("echo x >| out.txt")).toEqual(["echo x >| out.txt"]);
+    expect(shellSegments("echo x > a | tee b")).toEqual(["echo x > a ", " tee b"]);
+    expect(shellSegments("echo x \\>| tee b")).toEqual(["echo x \\>", " tee b"]);
+    expect(shellSegments('echo ">" | tee b')).toEqual(['echo ">" ', " tee b"]);
   });
 });
 

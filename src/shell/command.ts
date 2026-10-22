@@ -515,6 +515,13 @@ function lex(text: string, options: LexOptions): Lexed {
           continue;
         }
       }
+      // `>|` is bash's clobbering redirect (`echo x >| file`), not a pipe: its `|` is part of the
+      // operator, and the file after it is the redirection's target, not a command.
+      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
+        take(char);
+        at++;
+        continue;
+      }
       // Read blind, a bash backtick ends a command: what it holds may run.
       if (
         SEPARATORS.has(char) ||
@@ -953,6 +960,34 @@ export function withoutRedirections(args: readonly string[]): string[] {
     else if ((redirection[2] ?? "") === "") index++; // its target is the next word
   }
   return kept;
+}
+
+/** The redirection operators that open their target for writing (`<>` reads and writes). */
+const WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
+
+/**
+ * The files a command's words redirect output into (`>log`, `2>>log`, `>| log`, `&>log`,
+ * `> log`, `<>log`): the targets of `withoutRedirections`' dropped words that write. A
+ * redirection to a file descriptor (`2>&1`, `>&2`, `>&-`) names no file. The words may hold
+ * the redirection before the program (`>log cmd`), so pass every word of the step.
+ */
+export function redirectionTargets(words: readonly string[]): string[] {
+  const targets: string[] = [];
+  for (let index = 0; index < words.length; index++) {
+    const redirection = REDIRECTION.exec(words[index] ?? "");
+    if (redirection === null) continue;
+    let target = redirection[2] ?? "";
+    if (target === "") target = words[++index] ?? ""; // the target is the next word
+    const operator = redirection[1] ?? "";
+    if (operator === ">&") continue;
+    if (operator === "&>" && target.startsWith(">")) target = target.slice(1); // `&>>log`
+    if (operator === ">" && target.startsWith("&")) {
+      // `>&2` and `>&-` name a descriptor; `>&log` sends both streams to the file.
+      target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
+    }
+    if (WRITING_REDIRECTIONS.has(operator) && target !== "") targets.push(target);
+  }
+  return targets;
 }
 
 /**

@@ -6,11 +6,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { DEFAULT_PORTAL_PORT } from "../ports";
 import { readChanged } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import {
   claudeCodeRefusal,
-  DEFAULT_PORTAL_PORT,
   mayAutoOpen,
   openYourselfLine,
   PORTAL_USAGE,

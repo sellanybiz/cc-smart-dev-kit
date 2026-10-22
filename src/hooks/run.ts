@@ -4,7 +4,8 @@
  * 1. Read the input. Not a JSON object, a wrong event, or a `cwd` that is not a folder in
  *    git: nothing to do.
  * 2. **The project's own copy**: when the project's cc-smart-dev-kit.json lists the hook in
- *    `ownHooks`, exit 0 and print nothing, so the project's copy runs alone. Only that field
+ *    `ownHooks`, exit 0 and print nothing, so the project's copy runs alone (a hook with
+ *    `alwaysOn` skips this step: the project cannot switch it off). Only that field
  *    is read here (`ownHooksOf`), so it works even when the rest of the file is broken or
  *    needs a newer plugin. Nothing else silences a plugin hook: a project hook on the same
  *    event does not (it may be a logger, and a guard must not go quiet for it).
@@ -125,6 +126,13 @@ export interface HookSpec {
     context: HookEnvContext,
   ) => HookResult;
   run: (context: HookContext) => HookResult | Promise<HookResult>;
+  /**
+   * True when the project cannot switch the hook off: the frame skips the `ownHooks` step, and
+   * `ownHooks` does not accept the name (`PLUGIN_HOOK_NAMES`). For a guard that guards the
+   * project's own file — a session could otherwise list the guard there first
+   * (`session-escape-guard`).
+   */
+  alwaysOn?: boolean;
   /** The exit code when the hook itself fails. Default 0. */
   crashExitCode?: number;
 }
@@ -219,7 +227,7 @@ async function answer(
     }
     if (checkout === null) return outside(input, event, `${cwd} is not in a git checkout`, context);
 
-    if (ownHooksOf(checkout).includes(spec.name)) return SILENT;
+    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
     let project: Project;
     try {

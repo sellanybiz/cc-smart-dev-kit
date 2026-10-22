@@ -12,6 +12,7 @@
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges a pull request (`merge-guard.ts`) |
+ * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
  * | job-route | PreToolUse (Bash) | asking about a heavy command, classified with the default kinds |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
@@ -57,6 +58,7 @@ import { mergeGuard } from "./merge-guard";
 import { messageGuard } from "./message-guard";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
+import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
 import { worktreeLeftovers } from "./worktree-leftovers";
 
@@ -293,6 +295,31 @@ export const agentGuardHook: HookSpec = {
 };
 
 /**
+ * The session-escape guard: PreToolUse on the shell tools and the three edit tools. It denies
+ * the ways a session gets around the limits the person set for it (`workflow review-done`; a
+ * kit command run with CLAUDECODE removed) and asks before a command that reaches the portal
+ * or an edit of the kit's own settings (§ `session-escape-guard.ts`).
+ *
+ * **Machine-wide**, like `agent-guard`: its answer never depends on the project's file, so a
+ * broken or too new file, and a folder outside git, are judged the same way. And **`alwaysOn`**:
+ * `ownHooks` cannot switch it off (it does not even accept the name), because the project's
+ * file is one of the things this guard guards. A crash asks about the calls in its domain.
+ */
+export const sessionEscapeGuardHook: HookSpec = {
+  name: "session-escape-guard",
+  events: ["PreToolUse"],
+  alwaysOn: true,
+  onConfigProblem: (_message, input, _event, _checkout, context) =>
+    sessionEscapeGuard(input, context.paths),
+  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths),
+  onCrash: guardCrash(
+    "whether this call goes around the limits set for the session",
+    inEscapeDomain,
+  ),
+  run: ({ input, paths }) => sessionEscapeGuard(input, paths),
+};
+
+/**
  * The Fable-session note: SessionStart, PostModelSwitch and Stop. **Machine-wide** like
  * `agent-guard`: it runs with or without cc-smart-dev-kit.json, and its answer never depends on
  * the project's file — it is about the model this session runs on (§ `fable-session.ts`). Its
@@ -358,6 +385,7 @@ export const HOOKS: readonly HookSpec[] = [
   mainFolderGuardHook,
   messageGuardHook,
   agentGuardHook,
+  sessionEscapeGuardHook,
   fableSessionHook,
   jobRouteHook,
   afterMergeHook,
@@ -400,8 +428,9 @@ export const USER_HOOKS: readonly string[] = [
 /**
  * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles
  * (no project file is needed for them to act) and the plugin hooks whose answer does not
- * depend on the project's file either — `agent-guard` (the model a launch runs on) and
- * `fable-session` (the model this session runs on). `doctor`'s project checks never warn about
+ * depend on the project's file either — `agent-guard` (the model a launch runs on),
+ * `fable-session` (the model this session runs on) and `session-escape-guard` (whether a call
+ * goes around the limits set for the session). `doctor`'s project checks never warn about
  * a project hook that runs beside one of these: it is the person's own business, not a second
  * copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
  */
@@ -409,4 +438,5 @@ export const MACHINE_WIDE_HOOKS: readonly string[] = [
   ...USER_HOOKS,
   "agent-guard",
   "fable-session",
+  "session-escape-guard",
 ];

@@ -12,6 +12,7 @@ paths:
   - "src/entries/notify.ts"
   - "src/entries/playwright-output.ts"
   - "src/entries/review-record.ts"
+  - "src/entries/session-escape-guard.ts"
   - "src/entries/session-name.ts"
   - "src/entries/stop-failure.ts"
   - "src/entries/update-check.ts"
@@ -214,6 +215,12 @@ spec's `onConfigProblem` and `outsideGit` judge on. It is still in `PLUGIN_HOOK_
 a project that runs its own Agent guard silences it through `ownHooks`, which is read on its
 own, before the file.
 
+`session-escape-guard` is machine-wide in the same way, and **`alwaysOn`** (`HookSpec.alwaysOn`):
+the frame skips its `ownHooks` step and `PLUGIN_HOOK_NAMES` leaves its name out, because the
+project's file is one of the things it guards (a session could list the guard there first). A
+guard that guards the project's own settings is `alwaysOn`; any other machine-wide guard may be
+silenced by a project that runs its own copy. `matrix.test.ts` checks both halves.
+
 ```json
 { "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": { "command": "…" } } }
 ```
@@ -332,11 +339,11 @@ A bug in an informational hook must never stop a user's work. A bug in a **guard
 let a call through. Each hook's answer to its own failure, in one table (the same in
 `docs/design.md` § One frame for every hook):
 
-| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard` | Any other plugin hook | `cc-smart-dev-kit hook notify` |
+| Failure | A guard: `git-guard`, `merge-guard`, `main-folder-guard`, `message-guard`, `job-route`, `agent-guard`, `session-escape-guard` | Any other plugin hook | `cc-smart-dev-kit hook notify` |
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call in the guard's domain (a call outside it: silent; on PostToolUse: silent, one stderr line) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard` judges the call anyway) | one line of context, or on stderr | not read |
+| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard` and `session-escape-guard` judge the call anyway) | one line of context, or on stderr | not read |
 | No bun, or one older than `MIN_BUN` | the shim's `--missing=ask`: **ask** | the shim's `--missing=quiet`: one stderr line, exit 0 | the launcher's line on stderr, exit 1 (Claude Code reads exit 1 as a failure that goes on) |
 | The bundle file is gone (an update removed the version folder) | the shim **asks** | bun's own error, exit 1 | not applicable: the launcher runs the installed version |
 | The hook cannot start, times out, or fails (an exit code other than 0 and 2) | `"onFailure": "block"` in `hooks.json`: Claude Code **blocks** the call | Claude Code goes on | Claude Code goes on |

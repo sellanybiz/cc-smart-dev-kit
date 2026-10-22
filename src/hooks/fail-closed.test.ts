@@ -25,6 +25,7 @@ import {
   mainFolderGuardHook,
   mergeGuardHook,
   messageGuardHook,
+  sessionEscapeGuardHook,
   sessionNameHook,
 } from "./specs";
 
@@ -62,6 +63,14 @@ const GUARD_CASES: { spec: HookSpec; what: string; input: Record<string, unknown
     spec: agentGuardHook,
     what: "the model this launch runs on",
     input: { tool_name: "Agent", tool_input: { effort: "low", model: "opus", prompt: "do it" } },
+  },
+  {
+    spec: sessionEscapeGuardHook,
+    what: "whether this call goes around the limits set for the session",
+    input: {
+      tool_name: "Bash",
+      tool_input: { command: "env -u CLAUDECODE cc-smart-dev-kit workflow review-done" },
+    },
   },
 ];
 

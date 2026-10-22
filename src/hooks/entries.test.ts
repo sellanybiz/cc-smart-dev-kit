@@ -20,6 +20,7 @@ import { tempDir } from "../testing/temp";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { GH_TIMEOUT_MS } from "./merge-guard";
 import { HOOK_LOG_ENV } from "./run";
+import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
 import { GUARD_BUNDLES, HOOKS, USER_HOOKS } from "./specs";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -225,6 +226,20 @@ esac
     expect(matcher).toBe("Edit|Write|NotebookEdit");
   });
 
+  test("the session-escape-guard matcher is exactly the tools it judges: the shell tools and the edit tools", () => {
+    const matcher = wired.find(
+      ({ handler }) => bundleOf(handler) === "session-escape-guard",
+    )?.matcher;
+    expect(matcher).toBe([...ESCAPE_SHELL_TOOLS, ...ESCAPE_EDIT_TOOLS].join("|"));
+    // It is the guard that no project can switch off, so it is also on every PreToolUse once.
+    expect(
+      wired.filter(
+        ({ event, handler }) =>
+          event === "PreToolUse" && bundleOf(handler) === "session-escape-guard",
+      ),
+    ).toHaveLength(1);
+  });
+
   test("the timeouts: short for a guard", () => {
     const timeout = (bundle: string) =>
       wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout;
@@ -232,6 +247,7 @@ esac
     expect(timeout("main-folder-guard")).toBe(10);
     expect(timeout("message-guard")).toBe(10);
     expect(timeout("agent-guard")).toBe(10);
+    expect(timeout("session-escape-guard")).toBe(10);
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {
@@ -289,6 +305,7 @@ describe("the entries, run as Claude Code runs them", () => {
     "main-folder-guard": "whether this edit belongs in a worktree",
     "merge-guard": "whether this merge may happen by itself",
     "message-guard": "whether this message stays in this repo",
+    "session-escape-guard": "whether this call goes around the limits set for the session",
   };
 
   test("the list of guards above is the list of guards", () => {

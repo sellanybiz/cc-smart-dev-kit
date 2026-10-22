@@ -11354,6 +11354,9 @@ function mcpChecks(paths, deps, env, cwd = process.cwd()) {
   return checks;
 }
 
+// src/ports.ts
+var DEFAULT_PORTAL_PORT = 20150;
+
 // src/setup/bun-config.ts
 import { basename as basename3, join as join12 } from "path";
 var BUN_CONFIG_NAME = "bunfig.toml";
@@ -11362,7 +11365,6 @@ function pluginFolderBeside(importDir) {
 }
 
 // src/portal/command.ts
-var DEFAULT_PORTAL_PORT = 20150;
 var PORTAL_USAGE = `Usage: ${COMMAND} portal [--port <port>] [--no-open]
 
 Starts the local portal: a page on this machine to see and change the gateway's settings,
@@ -12019,7 +12021,7 @@ function legacyBrowserInfo(paths, deps) {
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync43, readFileSync as readFileSync46 } from "fs";
-import { dirname as dirname16, join as join42 } from "path";
+import { dirname as dirname17, join as join42 } from "path";
 
 // src/gateway/doctor.ts
 import { existsSync as existsSync18, readFileSync as readFileSync22 } from "fs";
@@ -17632,6 +17634,11 @@ function lex(text, options) {
           continue;
         }
       }
+      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
+        take(char);
+        at++;
+        continue;
+      }
       if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
         push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
         afterPipe = char === "|";
@@ -17964,6 +17971,29 @@ function withoutRedirections(args) {
       index++;
   }
   return kept;
+}
+var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
+function redirectionTargets(words) {
+  const targets = [];
+  for (let index = 0;index < words.length; index++) {
+    const redirection = REDIRECTION.exec(words[index] ?? "");
+    if (redirection === null)
+      continue;
+    let target = redirection[2] ?? "";
+    if (target === "")
+      target = words[++index] ?? "";
+    const operator = redirection[1] ?? "";
+    if (operator === ">&")
+      continue;
+    if (operator === "&>" && target.startsWith(">"))
+      target = target.slice(1);
+    if (operator === ">" && target.startsWith("&")) {
+      target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
+    }
+    if (WRITING_REDIRECTIONS.has(operator) && target !== "")
+      targets.push(target);
+  }
+  return targets;
 }
 function shellTakesStdin(args) {
   let stdin = false;
@@ -22260,9 +22290,417 @@ async function reviewRecord(context) {
   return SILENT;
 }
 
+// src/hooks/session-escape-guard.ts
+import { dirname as dirname16, isAbsolute as isAbsolute4, relative as relative3, resolve as resolve9 } from "path";
+var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
+var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
+var CLAUDECODE = "CLAUDECODE";
+var PROJECT_FILE = `${COMMAND}.json`;
+var PROJECT_FOLDER = ".claude";
+var OVERWRITTEN = "is overwritten (`CLAUDECODE=\u2026`)";
+var UNSET = "is unset";
+var CLEARED = "is gone: the whole environment is cleared (`env -i`)";
+var RESET = "is gone: the program starts the command with a fresh environment";
+var RESETTERS = new Set([
+  "doas",
+  "runuser",
+  "ssh",
+  "su",
+  "sudo",
+  "systemd-run"
+]);
+var INERT = new Set([
+  "[",
+  "[[",
+  "awk",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "diff",
+  "echo",
+  "egrep",
+  "fgrep",
+  "file",
+  "git",
+  "grep",
+  "head",
+  "less",
+  "ln",
+  "ls",
+  "man",
+  "mkdir",
+  "more",
+  "mv",
+  "printf",
+  "readlink",
+  "realpath",
+  "rg",
+  "rm",
+  "sed",
+  "stat",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "type",
+  "wc",
+  "which"
+]);
+var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+function isKitWord(word) {
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+var ASSIGNS_CLAUDECODE = new RegExp(`^${CLAUDECODE}=`, "i");
+var ENV_VALUED_LONG = ["--chdir", "--split-string"];
+function prefixDrop(prefix, program) {
+  if (program === "-" && programName(prefix.at(-1) ?? "") === "env")
+    return CLEARED;
+  if (prefix.some((word) => ASSIGNS_CLAUDECODE.test(word)))
+    return OVERWRITTEN;
+  if (prefix.some((word) => RESETTERS.has(programName(word))))
+    return RESET;
+  for (let at = 0;at < prefix.length; at++) {
+    if (programName(prefix[at] ?? "") !== "env")
+      continue;
+    for (let index = at + 1;index < prefix.length; index++) {
+      const word = prefix[index] ?? "";
+      if (word === "--")
+        break;
+      if (word === "-")
+        return CLEARED;
+      if (word.startsWith("--")) {
+        const [name = "", inline] = word.split("=", 2);
+        if (name === "--ignore-environment")
+          return CLEARED;
+        if (name === "--unset") {
+          if ((inline ?? prefix[++index]) === CLAUDECODE)
+            return UNSET;
+        } else if (ENV_VALUED_LONG.includes(name) && inline === undefined)
+          index++;
+        continue;
+      }
+      if (!isShort(word)) {
+        if (/^\w+=/.test(word))
+          continue;
+        break;
+      }
+      const { flags, wantsNext } = shortFlags(word, "uCS");
+      if (flags.includes("i"))
+        return CLEARED;
+      if (flags.endsWith("u")) {
+        const name = wantsNext ? prefix[++index] : word.slice(flags.length + 1);
+        if (name === CLAUDECODE)
+          return UNSET;
+      } else if (wantsNext)
+        index++;
+    }
+  }
+  return null;
+}
+var POWERSHELL_DROPS = [
+  new RegExp(String.raw`\$\{?env:${CLAUDECODE}\}?\s*=(?!=)`, "i"),
+  new RegExp(String.raw`\b(?:clear-item|cli|new-item|ni|remove-item|ri|rm|del|erase|set-item|si)\b[^\n;|]*\benv:\\?${CLAUDECODE}\b`, "i"),
+  new RegExp(String.raw`\bSetEnvironmentVariable\s*\(\s*['"]${CLAUDECODE}['"]`, "i")
+];
+function powershellDrop(line) {
+  return POWERSHELL_DROPS.some((pattern) => pattern.test(line)) ? OVERWRITTEN : null;
+}
+function persistentDrop(words, program, args) {
+  if (program === undefined) {
+    return words.some((word) => ASSIGNS_CLAUDECODE.test(word)) ? OVERWRITTEN : null;
+  }
+  const names = args.filter((arg) => !arg.startsWith("-") || ASSIGNS_CLAUDECODE.test(arg));
+  if (program === "unset")
+    return names.includes(CLAUDECODE) ? UNSET : null;
+  if (["declare", "export", "local", "readonly", "set", "typeset"].includes(program)) {
+    if (args.some((arg) => ASSIGNS_CLAUDECODE.test(arg)))
+      return OVERWRITTEN;
+    const stopsExporting = args.includes("-n") || args.includes("+x");
+    return stopsExporting && names.includes(CLAUDECODE) ? UNSET : null;
+  }
+  return null;
+}
+var REVIEW_DONE_DENIAL = `\`${COMMAND} workflow review-done\` records a review by hand, for the person in their own terminal. A session never records its own review: the review-record hook records it when a review agent (the \`reviewAgents\` setting) returns. Run the review agent on the change instead; if it did and nothing was recorded, tell the person.`;
+function droppedDenial(why) {
+  return `This runs a ${COMMAND} command with CLAUDECODE removed: it ${why}. Claude Code sets CLAUDECODE for the commands it runs, and the commands that change this machine's settings (the workflow gate, the portal, updates) refuse to run while it is set, because they are for the person in their own terminal. Dropping it to get past that is not allowed. If the person wants the command run, they run it themselves.`;
+}
+function judgeKitCommand(kitArgs, dropped, found) {
+  const operands = withoutRedirections(kitArgs);
+  if (operands[0] === "workflow" && operands[1] === "review-done") {
+    found.denials.add(REVIEW_DONE_DENIAL);
+  }
+  if (dropped !== null)
+    found.denials.add(droppedDenial(dropped));
+}
+var WRITES_ITS_FILES = new Set([
+  "ac",
+  "add-content",
+  "out-file",
+  "sc",
+  "set-content",
+  "tee",
+  "tee-object"
+]);
+var COPIES = new Set([
+  "copy",
+  "copy-item",
+  "cp",
+  "cpi",
+  "install",
+  "ln",
+  "mi",
+  "move",
+  "move-item",
+  "mv"
+]);
+var MOVES = new Set(["mi", "move", "move-item", "mv"]);
+var CHANGES_FOLDER = new Set([
+  "cd",
+  "chdir",
+  "popd",
+  "push-location",
+  "pushd",
+  "set-location",
+  "sl"
+]);
+function isString(value) {
+  return typeof value === "string";
+}
+var COMPUTED_PATH = /[$`*?[\]]|%\w+%/;
+function parameterValues(args, names) {
+  const values = [];
+  for (let index = 0;index < args.length; index++) {
+    const parameter = /^-([a-z]+)(?::(.*))?$/i.exec(args[index] ?? "");
+    const given = parameter?.[1]?.toLowerCase() ?? "";
+    if (given.length < 2 || !names.some((name) => name.startsWith(given)))
+      continue;
+    const value = parameter?.[2] ?? args[++index];
+    if (value !== undefined)
+      values.push(value);
+  }
+  return values;
+}
+function targetDirectories(args) {
+  const found = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-t" || arg === "--target-directory")
+      found.push(args[++index] ?? "");
+    else if (arg.startsWith("--target-directory="))
+      found.push(arg.slice(19));
+    else if (/^-t./.test(arg) && !arg.startsWith("--"))
+      found.push(arg.slice(2));
+  }
+  return found.filter((one) => one !== "");
+}
+function writtenPaths(words, invocation) {
+  const written = redirectionTargets(words);
+  if (invocation === undefined)
+    return written;
+  const { program } = invocation;
+  const args = withoutRedirections(invocation.args);
+  const operands = args.filter((arg) => !arg.startsWith("-"));
+  if (WRITES_ITS_FILES.has(program))
+    written.push(...operands);
+  else if (program === "dd")
+    written.push(...args.filter((arg) => arg.startsWith("of=")).map((arg) => arg.slice(3)));
+  else if (program === "sed" || program === "perl") {
+    if (args.some((arg) => arg.startsWith("--in-place") || /^-[a-z]*i/.test(arg))) {
+      written.push(...operands);
+    }
+  } else if (COPIES.has(program)) {
+    const given = [...parameterValues(args, ["destination"]), ...targetDirectories(args)];
+    written.push(...given.length > 0 ? given : operands.slice(-1));
+    if (MOVES.has(program))
+      written.push(...operands);
+  }
+  return written;
+}
+function movedTo2(invocation, folder, ctx) {
+  const to = withoutRedirections(invocation.args).find((arg) => !arg.startsWith("-"));
+  if (to === undefined)
+    return invocation.program === "cd" ? ctx.paths.home : folder;
+  const path = expanded(to, ctx.paths.home);
+  if (COMPUTED_PATH.test(path) || path === "-")
+    return null;
+  return isAbsolute4(path) ? resolve9(path) : folder === null ? null : resolve9(folder, path);
+}
+function protectedNeedles(paths) {
+  const settings = dirname16(paths.workflowConfigFile);
+  const needles = [PROJECT_FILE, settings, paths.stateDir];
+  for (const folder of [settings, paths.stateDir]) {
+    const underHome = relative3(paths.home, folder);
+    if (!underHome.startsWith("..") && !isAbsolute4(underHome))
+      needles.push(underHome);
+  }
+  return needles.map((needle) => needle.replace(/\\/g, "/").toLowerCase());
+}
+function namesProtected(text, paths) {
+  const lower = text.replace(/\\/g, "/").toLowerCase();
+  return protectedNeedles(paths).some((needle) => lower.includes(needle));
+}
+var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
+function settingsQuestion(what, file, action) {
+  return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
+}
+function judgeWrites(raw, folder, ctx, found) {
+  const { cwd, paths } = ctx;
+  let computed = null;
+  for (const target of raw) {
+    const path = expanded(target, paths.home);
+    if (COMPUTED_PATH.test(path)) {
+      computed ??= target;
+      continue;
+    }
+    if (!isAbsolute4(path) && folder === null)
+      computed ??= target;
+    const bases = isAbsolute4(path) ? [""] : [...new Set([folder, cwd, "/"].filter(isString))];
+    const files = bases.flatMap((base) => {
+      const written = resolve9(base, path);
+      return [written, realPath(written)];
+    });
+    for (const file of new Set(files)) {
+      const what = kitFileKind(file, paths);
+      if (what !== null) {
+        found.asks.add(settingsQuestion(what, file, "This command writes into"));
+        break;
+      }
+    }
+  }
+  if (computed !== null && namesProtected(ctx.text, paths)) {
+    found.asks.add(`This command writes to a path it works out when it runs (${computed}), and it names the kit's own settings. ${SETTINGS_TAIL}`);
+  }
+}
+function readLine(line, reading, start, folder, depth, found, ctx) {
+  const { dialect, joinLines } = reading;
+  let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
+  let where = folder;
+  for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
+    const words = wordsOf(step.text, dialect);
+    const invocation = invocationOf(words);
+    const writes = writtenPaths(words, invocation);
+    if (writes.length > 0)
+      judgeWrites(writes, where, ctx, found);
+    if (invocation !== undefined && CHANGES_FOLDER.has(invocation.program)) {
+      where = invocation.program === "popd" ? null : movedTo2(invocation, where, ctx);
+    }
+    const later = persistentDrop(words, invocation?.program, invocation === undefined ? [] : withoutRedirections(invocation.args));
+    if (invocation !== undefined) {
+      const { args, prefix, program } = invocation;
+      const operands = withoutRedirections(args);
+      const resets = RESETTERS.has(program) ? RESET : null;
+      const here = dropped ?? prefixDrop(prefix, program) ?? resets;
+      const kit = kitArguments(program, operands);
+      if (kit !== null)
+        judgeKitCommand(kit, here, found);
+      if (depth < MAX_NESTING) {
+        const nested = nestedCommand(program, args, step.pipedFrom);
+        if (nested !== undefined) {
+          for (const inner of readingsOf(nested, nestedDialect(program))) {
+            const after = readLine(nested, inner, here, where, depth + 1, found, ctx);
+            if (program === "eval")
+              dropped = after ?? dropped;
+          }
+        }
+        if (resets !== null) {
+          for (const operand of operands.filter((one) => /\s/.test(one))) {
+            for (const inner of readingsOf(operand, "bash")) {
+              readLine(operand, inner, here, where, depth + 1, found, ctx);
+            }
+          }
+        }
+      }
+    }
+    dropped = later ?? dropped;
+  }
+  return dropped;
+}
+var LOOPBACK = String.raw`(?:[\w-]+\.)?localhost|127(?:\.\d{1,3}){0,3}|0\.0\.0\.0|0x7f[\da-f.x]*|2130706433|\[?::1?\]?|\[?::ffff:[\d.]+\]?`;
+var PORTAL_ADDRESS = new RegExp(String.raw`(?<![\w.:-])(?:${LOOPBACK})[\s:/,'")\]]{1,8}${DEFAULT_PORTAL_PORT}(?!\d)`, "i");
+var PORTAL_QUESTION = `This command reaches the portal's port (${DEFAULT_PORTAL_PORT}) on this machine. The portal has no sign-in of its own: its pages change the gateway, the safety judge, updates and the workflow settings, the review gate included. It is for you, in your own browser. Allow this only if you asked for it.`;
+function commandOf(input) {
+  return stringField(toolInput(input).command) ?? "";
+}
+function judgeShell(input, paths) {
+  const command = commandOf(input);
+  if (command === "")
+    return SILENT;
+  const found = { denials: new Set, asks: new Set };
+  const ctx = { paths, cwd: stringField(input.cwd), text: command };
+  for (const reading of readingsOf(command, dialectOfTool(input.tool_name))) {
+    readLine(command, reading, null, ctx.cwd, 0, found, ctx);
+  }
+  if (found.denials.size > 0)
+    return toolDecision("deny", [...found.denials].join(`
+`));
+  if (PORTAL_ADDRESS.test(command))
+    found.asks.add(PORTAL_QUESTION);
+  return found.asks.size > 0 ? toolDecision("ask", [...found.asks].join(`
+`)) : SILENT;
+}
+var PROJECT_FILE_WHAT = `the project's ${COMMAND} settings (the workflow gate, which hooks run)`;
+var SETTINGS_WHAT = "the kit's own settings folder (the person's workflow and gateway settings)";
+var STATE_WHAT = "the kit's own state folder (the review record, the ask log)";
+function expanded(path, home) {
+  return /^~(?=$|[\\/])/.test(path) ? `${home}${path.slice(1)}` : path;
+}
+function kitFileKind(path, paths) {
+  const parts = path.split(/[\\/]/);
+  const name = parts.at(-1) ?? "";
+  if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
+    return PROJECT_FILE_WHAT;
+  }
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname16);
+  if (settingsFolders.some((folder) => isInside(path, folder, true)))
+    return SETTINGS_WHAT;
+  return isInside(path, paths.stateDir, true) ? STATE_WHAT : null;
+}
+function editedPaths(input, cwd, home) {
+  const fields = toolInput(input);
+  const given = stringField(fields.file_path) ?? stringField(fields.notebook_path);
+  if (given === null)
+    return [];
+  const path = expanded(given, home);
+  const written = isAbsolute4(path) ? resolve9(path) : resolve9(cwd ?? "/", path);
+  return [...new Set([written, realPath(written)])];
+}
+function judgeEdit(input, paths) {
+  for (const file of editedPaths(input, stringField(input.cwd), paths.home)) {
+    const what = kitFileKind(file, paths);
+    if (what !== null) {
+      return toolDecision("ask", settingsQuestion(what, file, "This edit changes"));
+    }
+  }
+  return SILENT;
+}
+function sessionEscapeGuard(input, paths) {
+  const tool = stringField(input.tool_name) ?? "";
+  if (ESCAPE_SHELL_TOOLS.includes(tool))
+    return judgeShell(input, paths);
+  if (ESCAPE_EDIT_TOOLS.includes(tool))
+    return judgeEdit(input, paths);
+  return SILENT;
+}
+var DOMAIN_TEXT = new RegExp(`${COMMAND}|${CLAUDECODE}|${DEFAULT_PORTAL_PORT}|(?:dist|entries)[\\\\/](?:cli|portal)\\.`, "i");
+function inEscapeDomain(input) {
+  const tool = stringField(input.tool_name) ?? "";
+  if (ESCAPE_EDIT_TOOLS.includes(tool))
+    return true;
+  return ESCAPE_SHELL_TOOLS.includes(tool) && DOMAIN_TEXT.test(commandOf(input));
+}
+
 // src/hooks/worktree-leftovers.ts
 import { readFileSync as readFileSync43, statSync as statSync12 } from "fs";
-import { basename as basename6, isAbsolute as isAbsolute4, join as join39, resolve as resolve9 } from "path";
+import { basename as basename6, isAbsolute as isAbsolute5, join as join39, resolve as resolve10 } from "path";
 
 // src/hooks/local-files.ts
 import { lstatSync as lstatSync3, readdirSync as readdirSync14, readFileSync as readFileSync42, readlinkSync as readlinkSync4 } from "fs";
@@ -22326,8 +22764,8 @@ function idleMinutes(worktree, now) {
   } catch {
     return 0;
   }
-  if (!isAbsolute4(admin))
-    admin = resolve9(worktree, admin);
+  if (!isAbsolute5(admin))
+    admin = resolve10(worktree, admin);
   let last = 0;
   for (const file of ["index", "HEAD", join39("logs", "HEAD")]) {
     try {
@@ -22425,7 +22863,7 @@ function judgesCall(inDomain, input) {
 function toolOf2(input) {
   return input === null ? "" : stringField(input.tool_name) ?? "";
 }
-function commandOf(input) {
+function commandOf2(input) {
   return input === null ? "" : stringField(toolInput(input).command) ?? "";
 }
 var gitGuardHook = {
@@ -22436,7 +22874,7 @@ var gitGuardHook = {
     return command !== null && runsGit(command) ? toolDecision("ask", cannotCheck("this git command", message)) : SILENT;
   },
   onCrash: guardCrash("this git command", (input) => {
-    const command = commandOf(input);
+    const command = commandOf2(input);
     return command !== "" && runsGit(command);
   }),
   logFacts: (input) => {
@@ -22471,7 +22909,7 @@ var mergeGuardHook = {
     return command === null ? {} : { programs: programsOf(command) };
   },
   onCrash: guardCrash("whether this merge may happen by itself", (input) => {
-    const command = commandOf(input);
+    const command = commandOf2(input);
     return command !== "" && requestsMerge(command);
   }),
   run: mergeGuard
@@ -22533,6 +22971,15 @@ var agentGuardHook = {
   logFacts: guardFacts,
   run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd)
 };
+var sessionEscapeGuardHook = {
+  name: "session-escape-guard",
+  events: ["PreToolUse"],
+  alwaysOn: true,
+  onConfigProblem: (_message, input, _event, _checkout, context) => sessionEscapeGuard(input, context.paths),
+  outsideGit: (input, _event, _why, context) => sessionEscapeGuard(input, context.paths),
+  onCrash: guardCrash("whether this call goes around the limits set for the session", inEscapeDomain),
+  run: ({ input, paths }) => sessionEscapeGuard(input, paths)
+};
 var fableSessionHook = {
   name: "fable-session",
   events: ["SessionStart", "PostModelSwitch", "Stop"],
@@ -22548,7 +22995,7 @@ var jobRouteHook = {
     return command === null || classifyHeavyCommand(command, mergeKinds(undefined)) === null ? SILENT : toolDecision("ask", cannotCheck("whether this project routes heavy commands through its job queue", message));
   },
   logFacts: routeFacts,
-  onCrash: guardCrash("whether this project routes heavy commands through its job queue", (input) => classifyHeavyCommand(commandOf(input), mergeKinds(undefined)) !== null),
+  onCrash: guardCrash("whether this project routes heavy commands through its job queue", (input) => classifyHeavyCommand(commandOf2(input), mergeKinds(undefined)) !== null),
   run: jobRoute
 };
 function cwdOf(input) {
@@ -22560,6 +23007,7 @@ var HOOKS = [
   mainFolderGuardHook,
   messageGuardHook,
   agentGuardHook,
+  sessionEscapeGuardHook,
   fableSessionHook,
   jobRouteHook,
   afterMergeHook,
@@ -22578,7 +23026,8 @@ var USER_HOOKS = [
 var MACHINE_WIDE_HOOKS = [
   ...USER_HOOKS,
   "agent-guard",
-  "fable-session"
+  "fable-session",
+  "session-escape-guard"
 ];
 
 // src/workflow/review-cover.ts
@@ -23745,7 +24194,7 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname16(dir)) {
+  for (let dir = cwd;; dir = dirname17(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join42(dir, name);
       if (from === join42(paths.claudeConfigDir, "CLAUDE.md") || !existsSync43(from))
@@ -23761,7 +24210,7 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname16(dir) === dir)
+    if (dirname17(dir) === dir)
       break;
   }
   if (imports.length === 0)
@@ -24224,7 +24673,7 @@ function readProcStat(pid) {
 
 // src/jobs/config.ts
 import { existsSync as existsSync44, readFileSync as readFileSync48 } from "fs";
-import { isAbsolute as isAbsolute5, join as join43 } from "path";
+import { isAbsolute as isAbsolute6, join as join43 } from "path";
 function jobsPaths(home) {
   return {
     configFile: join43(home, ".config", "cc-smart-dev-kit", "jobs.json"),
@@ -24233,7 +24682,7 @@ function jobsPaths(home) {
 }
 var DEFAULT_RESERVE_GB = 22;
 var DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
-var absolutePath = string2().min(1).refine((path) => isAbsolute5(path), "must be an absolute path");
+var absolutePath = string2().min(1).refine((path) => isAbsolute6(path), "must be an absolute path");
 var jobsMachineConfigSchema = strictObject({
   stateDir: absolutePath.optional(),
   budgetGb: number2().int().min(1).optional(),
@@ -25848,7 +26297,7 @@ import { join as join45 } from "path";
 
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync17 } from "fs";
-import { dirname as dirname17 } from "path";
+import { dirname as dirname18 } from "path";
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -25924,7 +26373,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync17(dirname17(file), { mode: 448, recursive: true });
+  mkdirSync17(dirname18(file), { mode: 448, recursive: true });
   atomicWrite(file, `${JSON.stringify(data, null, indent)}
 `, 384);
   return shownWrite(shown, wanted, value, text === null);
