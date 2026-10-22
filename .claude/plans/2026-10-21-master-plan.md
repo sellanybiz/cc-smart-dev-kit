@@ -444,3 +444,4 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 ### Decided overnight (for the owner's review)
 
 _None yet._
+- 2026-10-23: **The browser fails after a machine restart (owner: a bug, seen after the last restart too).** A subagent's Playwright call failed with "extension did not connect within 30s" while no Chrome ran, and `browser check` did not finish in 60 s. **BR1** (running): the root cause with proof, a fix so the first browser call after a restart works or fails at once with one plain step, and a `browser check` that never hangs. Brief `briefs/br1.md`.
