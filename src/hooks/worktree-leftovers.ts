@@ -60,16 +60,18 @@ export const IDLE_MINUTES = 60;
 
 /**
  * Minutes since git last wrote to the worktree's own files (its index, HEAD and HEAD log in
- * `.git/worktrees/<name>/`). Unknown counts as just now, which keeps the worktree.
+ * `.git/worktrees/<name>/`), or **null when they cannot be read** — a folder that is gone, or
+ * one that is not a worktree any more. One reader for both callers: `idleMinutes` counts
+ * unknown as just now (`0`), which keeps the worktree, and the worktrees page says null.
  */
-export function idleMinutes(worktree: string, now: number): number {
+export function idleMinutesOrNull(worktree: string, now: number): null | number {
   let admin: string;
   try {
     admin = readFileSync(join(worktree, ".git"), "utf8")
       .trim()
       .replace(/^gitdir:\s*/, "");
   } catch {
-    return 0;
+    return null;
   }
   if (!isAbsolute(admin)) admin = resolve(worktree, admin);
   let last = 0;
@@ -80,7 +82,16 @@ export function idleMinutes(worktree: string, now: number): number {
       // Not every worktree has every file.
     }
   }
-  return last === 0 ? 0 : (now - last) / 60_000;
+  return last === 0 ? null : (now - last) / 60_000;
+}
+
+/**
+ * Minutes since git last wrote to the worktree's own files; unknown counts as just now, which
+ * keeps the worktree. The note's own rule: it removes nothing, so "not known" must not read as
+ * "idle for hours".
+ */
+export function idleMinutes(worktree: string, now: number): number {
+  return idleMinutesOrNull(worktree, now) ?? 0;
 }
 
 export type Verdict = "finished" | "gone" | "kept";

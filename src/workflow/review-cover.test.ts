@@ -10,6 +10,7 @@ import { type Checkout, locateCheckout } from "../project/resolve";
 import { makeClone } from "../testing/hooks";
 import { cleanGitEnv, git, withGitVersion } from "../testing/temp";
 import {
+  allowanceOf,
   type ChangeCount,
   type Cover,
   type CoverTarget,
@@ -163,7 +164,9 @@ describe("D17: fixes after a review", () => {
       commit(w.repo, { "src/c.txt": numbered(250, "c") }, "fix");
       expect(cover(w, [record(R)])).toEqual({
         covered: false,
+        delta: count(250, 1),
         review: R,
+        reviewed: REVIEWED,
         why: `250 lines in 1 file changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
       });
     },
@@ -180,7 +183,9 @@ describe("D17: fixes after a review", () => {
       commit(w.repo, files, "fix");
       expect(cover(w, [record(R)])).toEqual({
         covered: false,
+        delta: count(11, 11),
         review: R,
+        reviewed: REVIEWED,
         why: `11 lines in 11 files changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
       });
     },
@@ -208,7 +213,9 @@ describe("D17: fixes after a review", () => {
       });
       expect(cover(w, [record(R)], {}, { lines: 10, files: 1, percent: 0 })).toEqual({
         covered: false,
+        delta: count(40, 2),
         review: R,
+        reviewed: count(100, 4),
         why: `40 lines in 2 files changed after the review of ${short(R)}, over the limit of 10 lines and 1 file (fixesAfterReview: 10 lines, 1 file, or 0% of the reviewed 100 lines in 4 files)`,
       });
     },
@@ -352,7 +359,9 @@ describe("D17: which reviews are candidates", () => {
       git(w.repo, "revert", "--no-edit", R);
       expect(cover(w, [record(R)])).toEqual({
         covered: false,
+        delta: count(250, 1),
         review: R,
+        reviewed: count(250, 1),
         why: `250 lines in 1 file changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 250 lines in 1 file)`,
       });
     },
@@ -488,7 +497,9 @@ describe("D17: what is listed, not counted, and what is never covered", () => {
       });
       expect(cover(w, [record(R)])).toEqual({
         covered: false,
+        delta: count(501, 2),
         review: R,
+        reviewed: REVIEWED,
         why: `501 lines in 2 files changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
       });
     },
@@ -503,7 +514,9 @@ describe("D17: what is listed, not counted, and what is never covered", () => {
       commit(w.repo, { "logo.bin": new Uint8Array([0, 1, 2, 0, 255, 0]) });
       expect(cover(w, [record(R)])).toEqual({
         covered: false,
+        delta: { binary: ["logo.bin"], files: 1, generated: [], lines: 0 },
         review: R,
+        reviewed: REVIEWED,
         why: `logo.bin is a binary file changed after the review of ${short(R)}: its change cannot be counted`,
       });
     },
@@ -629,6 +642,21 @@ describe("D17: the pure parts", () => {
     expect(
       coverRefusal(count(0, 0), REVIEWED, { lines: 0, files: 0, percent: 0 }, "c".repeat(40)),
     ).toBe("fixesAfterReview is 0/0/0, so only the reviewed commit ccccccc itself counts");
+  });
+
+  test("D17: allowanceOf: the limit, or the percent of the reviewed change, whichever is larger", () => {
+    // 20% of 100 lines and 2 files is 20 and 0: the limits (200 and 10) are larger.
+    expect(allowanceOf(REVIEWED, LIMITS)).toEqual({ files: 10, lines: 200 });
+    // 50% of 100 lines and 4 files is 50 and 2: the percent is larger.
+    expect(allowanceOf(count(100, 4), { files: 1, lines: 10, percent: 50 })).toEqual({
+      files: 2,
+      lines: 50,
+    });
+    // 20% of 3 lines and 3 files is 0 and 0, counted down: the limits stay.
+    expect(allowanceOf(count(3, 3), { files: 1, lines: 1, percent: 20 })).toEqual({
+      files: 1,
+      lines: 1,
+    });
   });
 
   test("D17: parseNumstat reads a change, a rename and a binary file", () => {

@@ -1,11 +1,13 @@
 "use client";
 
 import { ArrowLeftIcon, GitBranchIcon } from "lucide-react";
+import { useMemo } from "react";
 import { useResource } from "@/api/hooks";
 import { CREW_REFRESH } from "@/api/refresh";
-import type { CrewDetail, CrewEvent, MergeCheck } from "@/api/types";
+import type { CrewDetail, CrewEvent, DiffFile, MergeCheck } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
 import { CrewActions } from "@/components/crew-actions";
+import { columnsFor, PortalTable } from "@/components/data-table";
 import { Markdown } from "@/components/markdown";
 import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
@@ -22,6 +24,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ago, clockTime, count, megabytes, slotName } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 const RUNNING = ["starting", "working", "blocked", "paused", "quiet"];
 
@@ -64,64 +67,232 @@ function Timeline({ events }: { events: CrewEvent[] }) {
   );
 }
 
-function MergeVerdict({ check }: { check: MergeCheck }) {
-  const percent =
-    check.delta !== null && check.reviewed !== null && check.reviewed.lines > 0
-      ? Math.round((check.delta.lines / check.reviewed.lines) * 100)
-      : null;
+const VERDICT: Record<MergeCheck["kind"], { tone: Tone; pill: string; words: string }> = {
+  allowed: { tone: "ok", pill: "allowed", words: "The merge guard lets it merge by itself" },
+  refused: { tone: "warn", pill: "asks", words: "The merge guard asks you first" },
+  unread: { tone: "bad", pill: "not read", words: "The merge guard could not judge it" },
+  late: { tone: "info", pill: "merged", words: "It merged before the guard judged it" },
+};
+
+/** One count since the review against what the review still covers: the words and a meter. */
+function DeltaMeter({ label, used, allowed }: { label: string; used: number; allowed: number }) {
+  const over = used > allowed;
+  // The meter's scale: the allowance, or the count when it is over (so the bar shows how far).
+  const scale = Math.max(1, used, allowed);
   return (
-    <div className="flex flex-col gap-3 text-sm">
-      <StatusMark tone={check.allowed ? "ok" : "warn"}>
-        <span className="font-medium">
-          {check.allowed ? "The merge guard allows it" : "The merge guard asks first"}
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="text-muted-foreground">{label}</span>
+        <span className={cn("tabular-nums", over && "font-medium text-bad")}>
+          {count(used)} of {count(allowed)} {over ? "(over)" : ""}
         </span>
-      </StatusMark>
-      {check.reason !== null && <p className="text-pretty">{check.reason}</p>}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
+      </div>
+      <svg className="h-1.5 w-full rounded-full" aria-hidden="true" preserveAspectRatio="none">
+        <rect width="100%" height="100%" className="fill-muted" />
+        <rect
+          width={`${(Math.min(used, allowed) / scale) * 100}%`}
+          height="100%"
+          className={over ? "fill-warn" : "fill-ok"}
+        />
+        {over && (
+          <rect
+            x={`${(allowed / scale) * 100}%`}
+            width={`${((used - allowed) / scale) * 100}%`}
+            height="100%"
+            className="fill-bad"
+          />
+        )}
+      </svg>
+    </div>
+  );
+}
+
+function MergeVerdict({ check }: { check: MergeCheck }) {
+  const verdict = VERDICT[check.kind];
+  const { allowance, delta, reviewed, limits } = check;
+  return (
+    <div className="flex flex-col gap-4 text-sm">
+      <div className="flex flex-col gap-1.5">
+        <StatusMark tone={verdict.tone}>
+          <span className="font-medium">
+            {verdict.words}
+            {check.pr !== null && ` (pull request #${check.pr})`}
+          </span>
+        </StatusMark>
+        {check.reason !== null && (
+          <p className="pl-[1.125rem] text-pretty text-muted-foreground">{check.reason}</p>
+        )}
+      </div>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5">
         <dt className="text-muted-foreground">Reviewed commit</dt>
-        <dd className="font-mono text-xs">{check.review ?? "none"}</dd>
-        {check.reviewed !== null && (
+        <dd className="font-mono text-xs">{check.review ?? "no review recorded"}</dd>
+        {reviewed !== null && (
           <>
-            <dt className="text-muted-foreground">Reviewed change</dt>
+            <dt className="text-muted-foreground">The review covered</dt>
             <dd className="tabular-nums">
-              {count(check.reviewed.lines)} lines in {count(check.reviewed.files)} files
+              {count(reviewed.lines)} lines in {count(reviewed.files)} files
             </dd>
           </>
         )}
-        {check.delta !== null && (
+        {delta !== null && (
           <>
-            <dt className="text-muted-foreground">Since the review</dt>
+            <dt className="text-muted-foreground">Changed since</dt>
             <dd className="tabular-nums">
-              {count(check.delta.lines)} lines in {count(check.delta.files)} files
-              {percent !== null && ` (${percent} %)`}
+              {count(delta.lines)} lines in {count(delta.files)} files
+              {delta.binary > 0 && `, ${count(delta.binary)} of them binary`}
             </dd>
           </>
         )}
-        {check.limits !== null && (
+        {limits !== null && (
           <>
-            <dt className="text-muted-foreground">Limit</dt>
-            <dd className="tabular-nums">
-              {check.limits.lines} lines, {check.limits.files} files or {check.limits.percent} %
+            <dt className="text-muted-foreground">Fixes allowed</dt>
+            <dd className="text-pretty tabular-nums">
+              {count(limits.lines)} lines and {count(limits.files)} files, or {limits.percent} % of
+              the reviewed change, whichever is more
             </dd>
           </>
         )}
       </dl>
+      {delta !== null && delta.binary > 0 ? (
+        // The gate never covers a binary change: meters drawn from the lines would say the
+        // opposite of the verdict, so none is drawn.
+        <p className="rounded-lg border border-bad/30 p-3 text-pretty">
+          <StatusMark tone="bad">
+            {count(delta.binary)} binary file{delta.binary === 1 ? "" : "s"} changed since the
+            review. A binary change has no lines to count, so no fix limit covers it: only a new
+            review does.
+          </StatusMark>
+        </p>
+      ) : (
+        delta !== null &&
+        allowance !== null && (
+          <div className="flex flex-col gap-3 rounded-lg border p-3">
+            <DeltaMeter
+              label="Lines since the review"
+              used={delta.lines}
+              allowed={allowance.lines}
+            />
+            <DeltaMeter
+              label="Files since the review"
+              used={delta.files}
+              allowed={allowance.files}
+            />
+          </div>
+        )
+      )}
     </div>
   );
+}
+
+const diffColumn = columnsFor<DiffFile>();
+
+/** The diff's columns; `widest` scales every file's bar to the same width. */
+function diffColumns(widest: number) {
+  return diffColumn.columns([
+    diffColumn.accessor("path", {
+      header: "File",
+      cell: ({ row }) => (
+        <span className="block max-w-[28rem] truncate font-mono text-xs" title={row.original.path}>
+          {row.original.path}
+        </span>
+      ),
+      enableHiding: false,
+    }),
+    diffColumn.accessor((file) => file.added ?? -1, {
+      id: "added",
+      header: "Added",
+      cell: ({ row }) =>
+        row.original.added === null ? (
+          <span className="text-muted-foreground">binary</span>
+        ) : (
+          <span className="text-ok tabular-nums">+{count(row.original.added)}</span>
+        ),
+    }),
+    diffColumn.accessor((file) => file.removed ?? -1, {
+      id: "removed",
+      header: "Removed",
+      cell: ({ row }) =>
+        row.original.removed === null ? (
+          <span className="text-muted-foreground">binary</span>
+        ) : (
+          <span className="text-bad tabular-nums">−{count(row.original.removed)}</span>
+        ),
+    }),
+    diffColumn.display({
+      id: "share",
+      header: () => <span className="sr-only">Share of the change</span>,
+      cell: ({ row }) => {
+        const added = row.original.added ?? 0;
+        const removed = row.original.removed ?? 0;
+        return (
+          <svg className="h-2 w-24" aria-hidden="true" preserveAspectRatio="none">
+            <rect width={`${(added / widest) * 100}%`} height="100%" className="fill-ok" />
+            <rect
+              x={`${(added / widest) * 100}%`}
+              width={`${(removed / widest) * 100}%`}
+              height="100%"
+              className="fill-bad"
+            />
+          </svg>
+        );
+      },
+    }),
+  ]);
+}
+
+/** The reviews recorded for the branch, newest first, each at its commit. */
+function Reviews({ reviews, head }: { reviews: CrewDetail["reviews"]; head: null | string }) {
+  if (reviews.length === 0) {
+    return (
+      <EmptyState title="No review recorded">
+        One review per change set, before its first push.
+      </EmptyState>
+    );
+  }
+  return (
+    <ol className="flex flex-col divide-y text-sm">
+      {[...reviews].reverse().map((review) => (
+        <li key={`${review.sha}-${review.at}`} className="flex flex-col gap-0.5 py-2.5">
+          <span className="flex flex-wrap items-baseline gap-2">
+            <code className="font-mono text-xs">{review.sha.slice(0, 7)}</code>
+            {head !== null && review.sha.startsWith(head) && (
+              <TonePill tone="ok">its reported head</TonePill>
+            )}
+            <time dateTime={review.at} className="text-xs text-muted-foreground">
+              {ago(review.at)}
+            </time>
+          </span>
+          <span className="text-muted-foreground">
+            By {review.by.length === 0 ? "an unnamed reviewer" : review.by.join(", ")}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** Its memory over time: the line, the peak and how many readings it is drawn from. */
+function memoryWords(memory: CrewDetail["memory"]): string {
+  if (memory.length === 0) return "Not measured yet";
+  const peak = Math.max(...memory.map((point) => point.mb));
+  const first = memory[0]?.at ?? 0;
+  return `Peak ${megabytes(peak)}, ${memory.length} reading${memory.length === 1 ? "" : "s"} since ${clockTime(first)}`;
 }
 
 function CrewPage({ data }: { data: CrewDetail }) {
   const { record, report } = data;
   const running = RUNNING.includes(record.state);
   const merged = record.state === "merged";
-  // The server sends the diff in totals (`diffTotals`); the per-file list, when there is one.
-  const added = data.diffTotals?.insertions ?? data.diff.reduce((sum, file) => sum + file.added, 0);
+  // The server sends the diff in totals (`diffTotals`) and per file; a binary file has no counts.
+  const added =
+    data.diffTotals?.insertions ?? data.diff.reduce((sum, file) => sum + (file.added ?? 0), 0);
   const removed =
-    data.diffTotals?.deletions ?? data.diff.reduce((sum, file) => sum + file.removed, 0);
+    data.diffTotals?.deletions ?? data.diff.reduce((sum, file) => sum + (file.removed ?? 0), 0);
   const files = data.diffTotals?.files ?? data.diff.length;
   const diffError = data.diffTotals?.error ?? null;
   const base = record.baseRef === "" ? "its base" : record.baseRef;
-  const widest = Math.max(1, ...data.diff.map((file) => file.added + file.removed));
+  const widest = Math.max(1, ...data.diff.map((file) => (file.added ?? 0) + (file.removed ?? 0)));
+  const columns = useMemo(() => diffColumns(widest), [widest]);
   return (
     <>
       <PagePad className="flex flex-wrap items-start justify-between gap-3">
@@ -181,7 +352,11 @@ function CrewPage({ data }: { data: CrewDetail }) {
         />
         <StatCard
           label="Review"
-          value={report?.review == null ? "None yet" : `${report.review.findings.length} findings`}
+          value={
+            report?.review == null
+              ? "None yet"
+              : `${report.review.findings.length} finding${report.review.findings.length === 1 ? "" : "s"}`
+          }
           badge={
             report?.review == null ? (
               <TonePill tone="info">waits</TonePill>
@@ -197,7 +372,7 @@ function CrewPage({ data }: { data: CrewDetail }) {
           detail={
             report?.review == null
               ? "Before its first push"
-              : `At effort ${report.review.effort}, commit ${report.review.sha}`
+              : `At effort ${report.review.effort}, commit ${report.review.sha.slice(0, 7)}`
           }
         />
         <StatCard
@@ -206,12 +381,12 @@ function CrewPage({ data }: { data: CrewDetail }) {
           headline={
             <Sparkline
               values={data.memory.map((point) => point.mb)}
-              label="Memory over its last readings"
-              width={140}
+              label={`Memory over time: ${memoryWords(data.memory)}`}
+              width={160}
               height={24}
             />
           }
-          detail={record.startedAt == null ? "Not started" : `Started ${ago(record.startedAt)}`}
+          detail={memoryWords(data.memory)}
         />
       </SectionCards>
       <PagePad className="grid gap-4 md:gap-6 @4xl/main:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
@@ -233,7 +408,7 @@ function CrewPage({ data }: { data: CrewDetail }) {
             <Timeline events={data.events} />
           </CardContent>
         </Card>
-        <Card>
+        <Card className="@4xl/main:col-span-2">
           <CardHeader>
             <CardTitle>Diff against {base}</CardTitle>
             <CardDescription>
@@ -243,35 +418,13 @@ function CrewPage({ data }: { data: CrewDetail }) {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <ul className="flex flex-col gap-2 text-sm">
-              {data.diff.map((file) => (
-                <li
-                  key={file.path}
-                  className="grid grid-cols-[minmax(0,1fr)_auto_5rem] items-center gap-3"
-                >
-                  <span className="truncate font-mono text-xs" title={file.path}>
-                    {file.path}
-                  </span>
-                  <span className="text-xs tabular-nums">
-                    <span className="text-ok">+{file.added}</span>{" "}
-                    <span className="text-bad">−{file.removed}</span>
-                  </span>
-                  <svg className="h-2 w-full" aria-hidden="true" preserveAspectRatio="none">
-                    <rect
-                      width={`${(file.added / widest) * 100}%`}
-                      height="100%"
-                      className="fill-ok"
-                    />
-                    <rect
-                      x={`${(file.added / widest) * 100}%`}
-                      width={`${(file.removed / widest) * 100}%`}
-                      height="100%"
-                      className="fill-bad"
-                    />
-                  </svg>
-                </li>
-              ))}
-            </ul>
+            <PortalTable
+              rows={data.diff}
+              columns={columns}
+              rowKey={(file) => file.path}
+              label={`Files changed against ${base}`}
+              empty={diffError !== null ? "The diff could not be read." : "No file changed yet."}
+            />
           </CardContent>
         </Card>
         <Card>
@@ -282,8 +435,8 @@ function CrewPage({ data }: { data: CrewDetail }) {
             </CardDescription>
             {data.mergeCheck !== null && (
               <CardAction>
-                <TonePill tone={data.mergeCheck.allowed ? "ok" : "warn"}>
-                  {data.mergeCheck.allowed ? "allowed" : "asks"}
+                <TonePill tone={VERDICT[data.mergeCheck.kind].tone}>
+                  {VERDICT[data.mergeCheck.kind].pill}
                 </TonePill>
               </CardAction>
             )}
@@ -296,6 +449,22 @@ function CrewPage({ data }: { data: CrewDetail }) {
             ) : (
               <MergeVerdict check={data.mergeCheck} />
             )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Reviews</CardTitle>
+            <CardDescription>
+              The second opinions recorded for its branch, newest first.
+            </CardDescription>
+            <CardAction>
+              <TonePill tone={data.reviews.length > 0 ? "ok" : "info"}>
+                {data.reviews.length}
+              </TonePill>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            <Reviews reviews={data.reviews} head={report?.branch.sha ?? null} />
           </CardContent>
         </Card>
         <Card className="@4xl/main:col-span-2">

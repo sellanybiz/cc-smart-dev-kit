@@ -805,8 +805,16 @@ held major version). `history` and `requests` read the router's request log thro
 reader (`src/gateway/history-read.ts`, H1): `historySeries` answers one series per `by` key,
 every bucket of the range as zeros where nothing happened, and `recentRequests` pages the
 newest rows by id, both with the `slot`, `target`, `model`, `session` and `status=error`
-filters; a machine with no database yet answers empty with a note, never an error. Nothing
-carries a key or a prompt.
+filters; a machine with no database yet answers empty with a note, never an error.
+
+The guard log is paged on the server: `guard-asks` takes a `range`, a `cursor` and a `limit`,
+and answers one page newest first, the range's chart of asks per hook, and the guards and
+sessions it holds for the filter menus. The facts a page explains itself with are on the same
+answers: a crew page's changed files each with their own line counts and the crew session's
+memory over time, the merge verdict's review, its limits and what the review still covers,
+every open breaker with the router's live count of what waits, each doctor failure with its
+fix and section, and each worktree's idle minutes and the removals auto-clean has not reported
+yet. Nothing carries a key or a prompt.
 
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its

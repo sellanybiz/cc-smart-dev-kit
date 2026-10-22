@@ -104,6 +104,13 @@ export type Cover =
       review: string | null;
       /** The reason, as words a person reads: the counts and the limit, or what to fetch. */
       why: string;
+      /**
+       * The change after the review that is over the limit, and the reviewed change it is
+       * judged against. Present only when the reason is that measurement; absent when nothing
+       * was measured (no candidate, limits of 0/0/0, git that cannot measure).
+       */
+      delta?: ChangeCount;
+      reviewed?: ChangeCount;
     };
 
 /** The first seven characters of a commit: how a person reads it. */
@@ -122,11 +129,26 @@ function exactOnly(limits: FixLimits): boolean {
 }
 
 /**
+ * What a review still covers: for the lines and for the files, the larger of `limits` and
+ * `percent`% of the reviewed change, counted down (`Math.floor`). One home for the rule:
+ * `coverRefusal` judges a change against it, and a page draws its meters from it.
+ */
+export function allowanceOf(
+  reviewed: ChangeCount,
+  limits: FixLimits,
+): { files: number; lines: number } {
+  return {
+    files: Math.max(limits.files, Math.floor((reviewed.files * limits.percent) / 100)),
+    lines: Math.max(limits.lines, Math.floor((reviewed.lines * limits.percent) / 100)),
+  };
+}
+
+/**
  * Why the change `delta`, made after the review of `review` whose own change was `reviewed`,
- * is not covered by `limits`; null when it is. Covered when the delta's lines are at most
- * `lines` or `percent`% of the reviewed lines, whichever is more, AND its files at most
- * `files` or `percent`% of the reviewed files, whichever is more. A binary file in the delta is
- * never covered; limits of 0/0/0 cover nothing but the reviewed commit itself.
+ * is not covered by `limits`; null when it is. Covered when the delta stays within what the
+ * review covers (`allowanceOf`: the limit, or `percent`% of the reviewed change, whichever is
+ * more, for lines and for files each). A binary file in the delta is never covered; limits of
+ * 0/0/0 cover nothing but the reviewed commit itself.
  */
 export function coverRefusal(
   delta: ChangeCount,
@@ -143,12 +165,11 @@ export function coverRefusal(
     const others = more.length === 0 ? "" : ` (and ${counted(more.length, "other")})`;
     return `${binary}${others} is a binary file changed after the review of ${of}: its change cannot be counted`;
   }
-  const maxLines = Math.max(limits.lines, Math.floor((reviewed.lines * limits.percent) / 100));
-  const maxFiles = Math.max(limits.files, Math.floor((reviewed.files * limits.percent) / 100));
-  if (delta.lines <= maxLines && delta.files <= maxFiles) return null;
+  const allowance = allowanceOf(reviewed, limits);
+  if (delta.lines <= allowance.lines && delta.files <= allowance.files) return null;
   return (
     `${counted(delta.lines, "line")} in ${counted(delta.files, "file")} changed after the review of ${of}, ` +
-    `over the limit of ${counted(maxLines, "line")} and ${counted(maxFiles, "file")} ` +
+    `over the limit of ${counted(allowance.lines, "line")} and ${counted(allowance.files, "file")} ` +
     `(fixesAfterReview: ${counted(limits.lines, "line")}, ${counted(limits.files, "file")}, ` +
     `or ${limits.percent}% of the reviewed ${counted(reviewed.lines, "line")} in ${counted(reviewed.files, "file")})`
   );
@@ -446,7 +467,13 @@ function measure(
   }
   const smallest = measured[0];
   if (smallest !== undefined && smallest.refusal !== null) {
-    return { covered: false, review: smallest.review, why: smallest.refusal };
+    return {
+      covered: false,
+      review: smallest.review,
+      why: smallest.refusal,
+      delta: smallest.delta,
+      reviewed: smallest.reviewed,
+    };
   }
   const [first] = unread;
   if (first !== undefined) throw first;

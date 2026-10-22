@@ -160,7 +160,10 @@ export function ActionButton({
   disabled = false,
   onDone,
   icon,
+  className,
 }: {
+  /** Extra classes for the button itself (a long answer wraps instead of overflowing). */
+  className?: string;
   disabled?: boolean;
   action: ActionName;
   body: Record<string, unknown>;
@@ -175,10 +178,11 @@ export function ActionButton({
   const sending = state.phase === "sending";
   const start = () => (confirm === undefined ? run(body) : setAsking(true));
   return (
-    <div className="flex flex-col items-start gap-1.5">
+    <div className="flex min-w-0 flex-col items-start gap-1.5">
       <Button
         size="sm"
         variant={variant}
+        className={className}
         disabled={disabled || sending}
         aria-busy={sending}
         onClick={start}

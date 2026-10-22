@@ -533,16 +533,39 @@ export interface CrewReview {
 }
 
 export type MergeVerdict =
-  | { kind: "allowed"; reason: string }
-  | { kind: "refused"; number: null | number; reason: string }
+  | { detail: MergeDetail | null; kind: "allowed"; reason: string }
+  | { detail: MergeDetail | null; kind: "refused"; number: null | number; reason: string }
   | { kind: "silent" }
   | { kind: "unread"; number: null | number; what: string }
   | { kind: "late"; number: null | number; what: string };
+
+/** `src/workflow/merge-check.ts` › `MergeDetail`: the review gate's own numbers behind a verdict. */
+export interface MergeDetail {
+  allowance: null | { files: number; lines: number };
+  delta: null | { binary: number; files: number; lines: number };
+  limits: null | { files: number; lines: number; percent: number };
+  review: null | string;
+  reviewed: null | { binary: number; files: number; lines: number };
+}
+
+/** `src/crew/diff.ts` › `DiffFile`: one file of the diff; a binary file has null counts. */
+export interface DiffFile {
+  added: null | number;
+  deleted: null | number;
+  path: string;
+}
+
+/** `src/portal/api/types.ts` › `CrewMemoryPoint`: one memory reading of a crew session. */
+export interface CrewMemoryPoint {
+  at: string;
+  mb: number;
+}
 
 export interface CrewAnswer {
   brief: null | string;
   crew: CrewSummary;
   diff: {
+    byFile: DiffFile[];
     deletions: number;
     error: null | string;
     files: number;
@@ -550,6 +573,7 @@ export interface CrewAnswer {
     outsideBrief: string[];
   };
   events: CrewStepItem[];
+  memory: CrewMemoryPoint[];
   mergeCheck: MergeVerdict;
   report: CrewReport | null;
   reviews: CrewReview[];
@@ -568,14 +592,22 @@ export type GuardAsk = GuardAskItem;
 
 export interface GuardAsksAnswer {
   asks: GuardAskItem[];
+  bucketMs: number;
+  buckets: { at: number; byHook: Record<string, number> }[];
   byHook: Record<string, number>;
+  guards: string[];
   kept: number;
+  next: null | string;
+  range: string;
+  sessions: string[];
   skipped: number;
 }
 
 export interface PermissionWait {
   asker: string;
+  attach: null | string;
   at: number;
+  crew: null | { id: string; name: string; shortId: null | string };
   kind: null | string;
   project: string;
   session: string;
@@ -592,17 +624,20 @@ export interface CrewNeed {
 
 export interface BreakerNeed {
   held: number;
+  heldNow: null | number;
   since: string;
   slot: string;
   targets: { status: null | number; target: string; until: string }[];
 }
 
 export interface DoctorFailure {
+  fix: null | string;
+  section: null | string;
   text: string;
 }
 
 export interface NeedsAnswer {
-  breaker: null | BreakerNeed;
+  breakers: BreakerNeed[];
   crew: CrewNeed[];
   doctor: { at: null | number; failures: DoctorFailure[] };
   permissions: PermissionWait[];
@@ -613,11 +648,19 @@ export interface WorktreeItem {
   branch: null | string;
   kind: "finished" | "gone" | "kept" | "main";
   head: string;
+  idleMinutes: null | number;
   path: string;
   why: null | string;
 }
 
+export interface WorktreeAutoClean {
+  base: string;
+  lastRunAt: string;
+  removed: { branch: null | string; name: string; path: string; why: string }[];
+}
+
 export interface WorktreesAnswer {
+  autoClean: null | WorktreeAutoClean;
   base: string;
   from: "config" | "default" | "origin";
   note: null | string;

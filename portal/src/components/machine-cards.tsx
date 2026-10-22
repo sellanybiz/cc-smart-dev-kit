@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
+import type { ActionResult } from "@/api/client";
 import { useResource } from "@/api/hooks";
 import { UPDATE_REFRESH, WORKTREES_REFRESH } from "@/api/refresh";
-import type { WorktreeRow } from "@/api/types";
-import { ActionButton } from "@/components/action-button";
+import type { WorktreeRow, WorktreesData } from "@/api/types";
+import { ActionButton, ActionResultLine } from "@/components/action-button";
 import { columnsFor, PortalTable } from "@/components/data-table";
 import { HeldMajorActions } from "@/components/held-major";
 import { EmptyState } from "@/components/states";
@@ -20,6 +22,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ago, duration } from "@/lib/format";
 
 const column = columnsFor<WorktreeRow>();
+
+/** How long a worktree has been idle, to the minute: the verdict counts in minutes, not seconds. */
+function idleWords(minutes: null | number): string {
+  if (minutes === null) return "not known";
+  if (minutes < 1) return "under 1 min";
+  return duration(Math.round(minutes) * 60_000);
+}
 
 const WORKTREE_COLUMNS = column.columns([
   column.accessor("path", {
@@ -38,9 +47,7 @@ const WORKTREE_COLUMNS = column.columns([
   column.accessor("idleMinutes", {
     header: "Idle",
     cell: ({ row }) => (
-      <span className="tabular-nums whitespace-nowrap">
-        {row.original.idleMinutes === null ? "—" : duration(row.original.idleMinutes * 60_000)}
-      </span>
+      <span className="tabular-nums whitespace-nowrap">{idleWords(row.original.idleMinutes)}</span>
     ),
   }),
   column.display({
@@ -67,6 +74,55 @@ const WORKTREE_COLUMNS = column.columns([
   }),
 ]);
 
+/**
+ * Auto-clean: when it last ran and against which base, and apart from that, the worktrees it
+ * removed that no session start has reported yet. That list gathers across runs and carries no
+ * time of its own, so it is never shown as what the last run removed.
+ */
+function AutoClean({ run }: { run: WorktreesData["autoClean"] }) {
+  return (
+    <section aria-labelledby="auto-clean-title" className="flex flex-col gap-2 text-sm">
+      <h3 id="auto-clean-title" className="font-medium">
+        Auto-clean
+      </h3>
+      {run === null ? (
+        <p className="text-muted-foreground">
+          Auto-clean has not run in this project yet. It runs after a merge into the base, and at a
+          session start at most once an hour.
+        </p>
+      ) : (
+        <>
+          <p className="text-muted-foreground">
+            Last run{" "}
+            <time dateTime={run.lastRunAt} title={run.lastRunAt}>
+              {ago(run.lastRunAt)}
+            </time>{" "}
+            against <span className="font-mono text-xs">{run.base}</span>.
+          </p>
+          {run.removed.length > 0 && (
+            <h4 className="mt-1 text-muted-foreground">Removed, not reported yet:</h4>
+          )}
+          {run.removed.length > 0 && (
+            <ul className="flex flex-col gap-1.5">
+              {run.removed.map((entry) => (
+                <li key={entry.path}>
+                  <StatusMark tone="ok">
+                    <span className="font-medium">{entry.name}</span>{" "}
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {entry.branch ?? "no branch"}
+                    </span>
+                    <span className="text-muted-foreground">: {entry.why}</span>
+                  </StatusMark>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 /** Every worktree with its verdict, what auto-clean removed, and "Clean finished now". */
 export function WorktreesCard() {
   const worktrees = useResource((client) => client.worktrees(), "", WORKTREES_REFRESH);
@@ -77,28 +133,32 @@ export function WorktreesCard() {
       <CardHeader>
         <CardTitle>Worktrees</CardTitle>
         <CardDescription>
-          Every worktree of every project. A finished one is cleared by itself after its merge; a
-          kept one says why.
+          Every worktree of this project, how long it has been idle, and its verdict. A finished one
+          is cleared by itself after its merge; a kept one says why.
         </CardDescription>
-        <CardAction>
-          {finished > 0 && (
-            <ActionButton
-              action="worktrees.clean"
-              body={{ confirm: true }}
-              variant="outline"
-              confirm={{
-                title: `Remove ${finished} finished worktree${finished === 1 ? "" : "s"}?`,
-                body: "Each one goes with its branch. A worktree that is not finished is kept, with its reason.",
-                yes: "Remove them",
-                tone: "destructive",
-              }}
-            >
-              Clean finished now ({finished})
-            </ActionButton>
-          )}
-        </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
+        {/* Always there (above the list, so a phone keeps the description wide), and its result
+            stays in place after the list reads again with nothing finished. */}
+        <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
+          <ActionButton
+            action="worktrees.clean"
+            body={{ confirm: true }}
+            variant="outline"
+            disabled={finished === 0}
+            confirm={{
+              title: `Remove ${finished} finished worktree${finished === 1 ? "" : "s"}?`,
+              body: "Each one goes with its branch. A worktree that is not finished is kept, with its reason.",
+              yes: "Remove them",
+              tone: "destructive",
+            }}
+          >
+            Clean finished now{finished > 0 && ` (${finished})`}
+          </ActionButton>
+          {data !== null && finished === 0 && (
+            <p className="py-1.5 text-sm text-muted-foreground">Nothing is finished yet.</p>
+          )}
+        </div>
         {worktrees.status === "loading" ? (
           <Skeleton className="h-48 w-full" />
         ) : worktrees.status === "error" ? (
@@ -112,24 +172,7 @@ export function WorktreesCard() {
               label="Worktrees and their verdicts"
               empty="No worktree besides each project's main checkout."
             />
-            <section className="flex flex-col gap-2 text-sm">
-              <h3 className="font-medium">Cleared by auto-clean</h3>
-              {worktrees.data.cleaned.length === 0 ? (
-                <p className="text-muted-foreground">Nothing yet.</p>
-              ) : (
-                <ul className="flex flex-col gap-1.5">
-                  {worktrees.data.cleaned.map((entry) => (
-                    <li key={entry.path}>
-                      <StatusMark tone="ok">
-                        {entry.path.split("/").at(-1)}{" "}
-                        <span className="text-muted-foreground">in {entry.project}</span>,{" "}
-                        {ago(entry.at)}
-                      </StatusMark>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
+            <AutoClean run={worktrees.data.autoClean} />
           </>
         )}
       </CardContent>
@@ -140,6 +183,7 @@ export function WorktreesCard() {
 /** The installed version, the newest, a held major with its why and What's new, and Install. */
 export function UpdatesCard() {
   const update = useResource((client) => client.update(), "", UPDATE_REFRESH);
+  const [install, setInstall] = useState<ActionResult | null>(null);
   if (update.status !== "ready") {
     return (
       <Card>
@@ -192,17 +236,25 @@ export function UpdatesCard() {
             </>
           )}
         </dl>
-        {data.held === null ? (
-          !behind && <EmptyState title="Nothing to install">You run the newest version.</EmptyState>
-        ) : (
+        {data.held !== null ? (
           <div className="flex flex-col gap-3 rounded-lg border p-4">
             <p>
               <span className="font-medium">{data.held.version} is a major version.</span> Found{" "}
               {ago(data.held.at)}
               {data.held.from !== null && `, while you ran ${data.held.from}`}.
             </p>
-            <HeldMajorActions held={data.held} />
+            <HeldMajorActions held={data.held} onDone={setInstall} />
           </div>
+        ) : install !== null ? (
+          // The held version is gone after its install: its result stays in place.
+          <ActionResultLine state={{ phase: "done", result: install }} />
+        ) : behind ? (
+          <p className="text-muted-foreground">
+            {data.newest} is a minor version: it installs by itself at the next check
+            {data.hold ? ", once you lift your hold" : ""}.
+          </p>
+        ) : (
+          <EmptyState title="Nothing to install">You run the newest version.</EmptyState>
         )}
       </CardContent>
     </Card>

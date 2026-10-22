@@ -9,13 +9,27 @@
  * Each security rule is one test, and each was watched failing with its rule broken.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
-import { addCrewQuestion, createCrew, type NewCrew, readCrew } from "../crew/store";
+import {
+  addCrewQuestion,
+  appendCrewEvent,
+  createCrew,
+  type NewCrew,
+  readCrew,
+} from "../crew/store";
 import { upgradeConfig } from "../gateway/commands";
 import { loadConfigFile, saveConfig } from "../gateway/config";
 import { createHistoryWriter, type HistoryRow } from "../gateway/history";
@@ -27,6 +41,7 @@ import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
+import { autoCleanFiles } from "../worktrees/auto-state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
@@ -158,6 +173,16 @@ async function open(options: {
    * json` answers, OLDEST FIRST as the real one prints them. One minute apart, from 09:00 UTC.
    */
   journal?: { level: "ERROR" | "INFO" | "WARN"; text: string }[];
+  /** The open breakers the router's health page reports: where `heldNow` comes from. */
+  routerBreakers?: Record<
+    string,
+    {
+      held: number;
+      heldNow: number;
+      since: number;
+      targets: { status: null | number; target: string; until: number }[];
+    }
+  >;
   /** The workflow module behind the adapter; a fake by default, never a real file or repo. */
   workflow?: WorkflowAdapter;
   withConfig?: boolean;
@@ -268,6 +293,7 @@ async function open(options: {
         options.onProbe?.();
         if (String(url).includes("/__cc-smart-dev-kit/health")) {
           return Response.json({
+            ...(options.routerBreakers === undefined ? {} : { breakers: options.routerBreakers }),
             fallbacks: 0,
             ok: true,
             port: 20_199,
@@ -3874,6 +3900,158 @@ describe("the JSON API", () => {
     }
   });
 
+  test("a crew page: every changed file, and its memory series from the log and the record", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    // A fixed clock, so the record's own memory reading has an exact time.
+    const now = Date.UTC(2026, 9, 23, 12, 0, 0);
+    const world = await open({
+      backendPort: backend.port,
+      env: { PATH: process.env.PATH ?? "" },
+      now: () => now,
+      projectFiles: {},
+    });
+    try {
+      // The project's policy on main, committed and known as origin/main: the merge check's
+      // gate. reviewBeforePush off, so no review is required and the detail is its limits.
+      writeFileSync(
+        join(world.cwd, ".claude", "cc-smart-dev-kit.json"),
+        `${JSON.stringify(
+          {
+            requires: ">=0.1",
+            workflow: { reviewBeforePush: false },
+            worktrees: { base: "main" },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      git(world.cwd, "add", "-A");
+      git(world.cwd, "commit", "-q", "-m", "base");
+      const base = git(world.cwd, "rev-parse", "HEAD").trim();
+      git(world.cwd, "update-ref", "refs/remotes/origin/main", base);
+      // The crew session's own branch: one text and one binary file changed against the base.
+      git(world.cwd, "checkout", "-q", "-b", "crew/K-contracts");
+      writeFileSync(join(world.cwd, "a.txt"), "one\ntwo\n");
+      writeFileSync(join(world.cwd, "b.bin"), Buffer.from([0, 1, 2]));
+      git(world.cwd, "add", "-A");
+      git(world.cwd, "commit", "-q", "-m", "change");
+
+      const crew = {
+        ...crewFixture(world.cwd),
+        base: { ref: "main", sha: base },
+        memoryMb: 512,
+        state: "working",
+        worktree: world.cwd,
+      };
+      await createCrew(world.paths.stateDir, crew, now - 300_000);
+      const step = (memoryMb: number) => ({
+        crew: crew.id,
+        lead: crew.leadSessionId,
+        memoryMb,
+        name: crew.name,
+        state: "working",
+        text: "a step",
+        type: "step",
+      });
+      await appendCrewEvent(world.paths.stateDir, world.cwd, step(128), now - 120_000);
+      await appendCrewEvent(world.paths.stateDir, world.cwd, step(256), now - 60_000);
+
+      const body = JSON.parse((await world.call(`/api/crew/${crew.id}`)).body) as {
+        diff: {
+          byFile: { added: null | number; deleted: null | number; path: string }[];
+          deletions: number;
+          error: null | string;
+          files: number;
+          insertions: number;
+        };
+        memory: { at: string; mb: number }[];
+        mergeCheck: {
+          detail: null | {
+            allowance: null | { files: number; lines: number };
+            delta: null | { files: number; lines: number };
+            limits: null | { files: number; lines: number; percent: number };
+            review: null | string;
+            reviewed: null | { files: number; lines: number };
+          };
+          kind: string;
+          reason: string;
+        };
+      };
+      expect(body.diff.error).toBe(null);
+      expect(body.diff.byFile).toEqual([
+        { added: 2, deleted: 0, path: "a.txt" },
+        { added: null, deleted: null, path: "b.bin" },
+      ]);
+      expect(body.diff.files).toBe(2);
+      expect(body.diff.insertions).toBe(2);
+      expect(body.diff.deletions).toBe(0);
+      // Oldest first: the two readings the log kept, then the record's now.
+      expect(body.memory).toEqual([
+        { at: new Date(now - 120_000).toISOString(), mb: 128 },
+        { at: new Date(now - 60_000).toISOString(), mb: 256 },
+        { at: new Date(now).toISOString(), mb: 512 },
+      ]);
+      // The merge check's own numbers reach the page: no review is required here, and the
+      // gate's limits are still what it judged by.
+      expect(body.mergeCheck).toEqual({
+        detail: {
+          allowance: null,
+          delta: null,
+          limits: { files: 10, lines: 200, percent: 20 },
+          review: null,
+          reviewed: null,
+        },
+        kind: "allowed",
+        reason: "reviewBeforePush is off, so no review is required for crew/K-contracts",
+      });
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a crew page of an ended session: its memory series is the log's readings only", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const now = Date.UTC(2026, 9, 23, 12, 0, 0);
+    const world = await open({
+      backendPort: backend.port,
+      now: () => now,
+      projectFiles: {},
+    });
+    try {
+      // Its session ended: the record's last memory reading is not a reading at this time.
+      const crew = {
+        ...crewFixture(world.cwd),
+        branch: "crew/K-done",
+        id: "crew-K-done",
+        memoryMb: 999,
+        state: "done",
+      };
+      await createCrew(world.paths.stateDir, crew, now - 300_000);
+      await appendCrewEvent(
+        world.paths.stateDir,
+        world.cwd,
+        {
+          crew: crew.id,
+          lead: crew.leadSessionId,
+          memoryMb: 64,
+          name: crew.name,
+          state: "working",
+          text: "a step",
+          type: "step",
+        },
+        now - 120_000,
+      );
+      const body = JSON.parse((await world.call(`/api/crew/${crew.id}`)).body) as {
+        memory: { at: string; mb: number }[];
+      };
+      expect(body.memory).toEqual([{ at: new Date(now - 120_000).toISOString(), mb: 64 }]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
   test("needs: a crew question, doctor's failures, an open breaker and a held major", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({
@@ -3929,17 +4107,29 @@ describe("the JSON API", () => {
         version: "2.0.0",
       });
       const body = JSON.parse((await world.call("/api/needs")).body) as {
-        breaker: { held: number; slot: string } | null;
+        breakers: { held: number; heldNow: null | number; slot: string }[];
         crew: { question: string }[];
-        doctor: { failures: unknown[] };
+        doctor: { failures: { fix: null | string; section: null | string; text: string }[] };
         permissions: unknown[];
         update: { notes: string[]; version: string } | null;
       };
       expect(body.crew[0]?.question).toBe("Merge it?");
-      expect(body.breaker?.slot).toBe("cc-smart-dev-kit-worker");
-      expect(body.breaker?.held).toBe(3);
+      expect(body.breakers).toHaveLength(1);
+      expect(body.breakers[0]?.slot).toBe("cc-smart-dev-kit-worker");
+      expect(body.breakers[0]?.held).toBe(3);
+      // The health page this test's machine answers lists no breakers: the router answered,
+      // so nothing waits there right now, and the count is 0 rather than an unknown.
+      expect(body.breakers[0]?.heldNow).toBe(0);
       expect(body.update).toMatchObject({ notes: ["it refuses old fields"], version: "2.0.0" });
-      expect(Array.isArray(body.doctor.failures)).toBe(true);
+      expect(body.doctor.failures.length).toBeGreaterThan(0);
+      // A failure keeps doctor's own words, the line that fixes it, and its report group.
+      for (const failure of body.doctor.failures) {
+        expect(Object.keys(failure).sort()).toEqual(["fix", "section", "text"]);
+        expect(typeof failure.text).toBe("string");
+        expect(failure.text).not.toBe("");
+        expect(typeof failure.fix).toBe("string");
+        expect(failure.section === null || typeof failure.section === "string").toBe(true);
+      }
       expect(Array.isArray(body.permissions)).toBe(true);
     } finally {
       world.portal.stop();
@@ -3947,44 +4137,199 @@ describe("the JSON API", () => {
     }
   });
 
-  test("the guard log: masked, filtered and with its totals", async () => {
+  test("needs: every open breaker, and the router's own count of what waits right now", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port });
+    const now = Date.now();
+    const world = await open({
+      backendPort: backend.port,
+      routerBreakers: {
+        "cc-smart-dev-kit-scout": {
+          held: 4,
+          heldNow: 2,
+          since: now - 120_000,
+          targets: [{ status: 429, target: "omniroute:glm-5.3-flash", until: now + 30_000 }],
+        },
+        "cc-smart-dev-kit-worker": {
+          held: 9,
+          heldNow: 0,
+          since: now - 60_000,
+          targets: [{ status: 503, target: "omniroute:deepseek-v4.1-flash", until: now + 10_000 }],
+        },
+      },
+    });
     try {
-      mkdirSync(world.paths.stateDir, { recursive: true });
-      const ask = (hook: string, reason: string, at: number) =>
-        JSON.stringify({ at, hook, reason, session: "s1", tool: "Bash" });
+      mkdirSync(dirname(world.paths.gatewayStateFile), { recursive: true });
       writeFileSync(
-        askLogFile(world.paths.stateDir),
-        `${[ask("git-guard", "push to main", 1), ask("merge-guard", "merge without review token=omni_PLANTED_SECRET_a1b2", 2), ask("git-guard", "force push", 3)].join("\n")}\n`,
+        world.paths.gatewayStateFile,
+        JSON.stringify({
+          breakers: {
+            "cc-smart-dev-kit-worker": {
+              held: 9,
+              lastAt: now,
+              since: now - 60_000,
+              targets: [
+                { status: 503, target: "omniroute:deepseek-v4.1-flash", until: now + 10_000 },
+              ],
+            },
+            "cc-smart-dev-kit-scout": {
+              held: 4,
+              lastAt: now,
+              since: now - 120_000,
+              targets: [{ status: 429, target: "omniroute:glm-5.3-flash", until: now + 30_000 }],
+            },
+          },
+          fallbacks: {},
+          limits: {},
+          version: 1,
+        }),
       );
-      const all = JSON.parse((await world.call("/api/guard-asks")).body) as {
-        asks: { hook: string; reason: string }[];
-        byHook: Record<string, number>;
-        kept: number;
+      const body = JSON.parse((await world.call("/api/needs")).body) as {
+        breakers: {
+          held: number;
+          heldNow: null | number;
+          since: string;
+          slot: string;
+          targets: { status: null | number; target: string; until: string }[];
+        }[];
       };
-      expect(all.byHook).toEqual({ "git-guard": 2, "merge-guard": 1 });
-      // Newest first, and the key a reason quoted is masked before a page sees it (its last
-      // four characters stay, as `maskedLine` masks: enough to tell keys apart, never a key).
-      expect(all.asks.map((one) => one.reason)).toEqual([
-        "force push",
-        "merge without review token=****a1b2",
-        "push to main",
+      expect(body.breakers).toEqual([
+        {
+          held: 4,
+          heldNow: 2,
+          since: new Date(now - 120_000).toISOString(),
+          slot: "cc-smart-dev-kit-scout",
+          targets: [
+            {
+              status: 429,
+              target: "omniroute:glm-5.3-flash",
+              until: new Date(now + 30_000).toISOString(),
+            },
+          ],
+        },
+        {
+          held: 9,
+          heldNow: 0,
+          since: new Date(now - 60_000).toISOString(),
+          slot: "cc-smart-dev-kit-worker",
+          targets: [
+            {
+              status: 503,
+              target: "omniroute:deepseek-v4.1-flash",
+              until: new Date(now + 10_000).toISOString(),
+            },
+          ],
+        },
       ]);
-      expect(JSON.stringify(all)).not.toContain(KEY);
-      expect(all.kept).toBe(3);
-      const filtered = JSON.parse(
-        (await world.call("/api/guard-asks?hook=git-guard&limit=1")).body,
-      ) as { asks: { reason: string }[]; kept: number };
-      expect(filtered.asks.map((one) => one.reason)).toEqual(["force push"]);
-      expect(filtered.kept).toBe(1);
     } finally {
       world.portal.stop();
       backend.stop();
     }
   });
 
-  test("worktrees: every worktree's verdict against the base", async () => {
+  test("the guard log: masked, filtered, and paged by the server with the range's buckets", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    // A fixed clock: the range and each bucket of the chart are the test's own numbers.
+    const now = Date.UTC(2026, 9, 23, 12, 0, 0);
+    const world = await open({ backendPort: backend.port, now: () => now });
+    try {
+      mkdirSync(world.paths.stateDir, { recursive: true });
+      const minutesAgo = (minutes: number) => now - minutes * 60_000;
+      const ask = (hook: string, reason: string, at: number, session = "s1") =>
+        JSON.stringify({ at, hook, reason, session, tool: "Bash" });
+      writeFileSync(
+        askLogFile(world.paths.stateDir),
+        `${[
+          ask("git-guard", "push to main", minutesAgo(5)),
+          ask("merge-guard", "merge without review token=omni_PLANTED_SECRET_a1b2", minutesAgo(5)),
+          ask("git-guard", "force push", minutesAgo(3), "s2"),
+          // A time that is not a whole millisecond: it cannot name a page cursor, so it is skipped.
+          ask("git-guard", "a half time", 1.5),
+          // Two days back: outside the default range (24 hours), so not a row, a guard or a bucket.
+          ask("git-guard", "an old ask", now - 2 * 86_400_000),
+        ].join("\n")}\n`,
+      );
+      const all = JSON.parse((await world.call("/api/guard-asks")).body) as {
+        asks: { at: number; hook: string; reason: string; session: string }[];
+        bucketMs: number;
+        buckets: { at: number; byHook: Record<string, number> }[];
+        byHook: Record<string, number>;
+        guards: string[];
+        kept: number;
+        next: null | string;
+        range: string;
+        sessions: string[];
+        skipped: number;
+      };
+      // `byHook` stays the whole log's; the range decides the rows, the guards and the chart.
+      expect(all.byHook).toEqual({ "git-guard": 3, "merge-guard": 1 });
+      expect(all.range).toBe("1d");
+      expect(all.kept).toBe(3);
+      // The row whose `at` is not a whole millisecond cannot name a cursor: it is skipped.
+      expect(all.skipped).toBe(1);
+      expect(all.guards).toEqual(["git-guard", "merge-guard"]);
+      expect(all.sessions).toEqual(["s1", "s2"]);
+      // Newest first, and the key a reason quoted is masked before a page sees it (its last
+      // four characters stay, as `maskedLine` masks: enough to tell keys apart, never a key).
+      expect(all.asks.map((one) => one.reason)).toEqual([
+        "force push",
+        "push to main",
+        "merge without review token=****a1b2",
+      ]);
+      expect(JSON.stringify(all)).not.toContain(KEY);
+      expect(all.next).toBe(null);
+      // One point per bucket of the window (a 15-minute step over 24 hours), empty ones as {}.
+      expect(all.bucketMs).toBe(15 * 60_000);
+      expect(all.buckets).toHaveLength(97);
+      expect(all.buckets[0]?.at).toBe(now - 86_400_000);
+      expect(all.buckets.at(-1)?.at).toBe(now);
+      expect(all.buckets.find((bucket) => bucket.at === now - 15 * 60_000)?.byHook).toEqual({
+        "git-guard": 2,
+        "merge-guard": 1,
+      });
+      expect(all.buckets.find((bucket) => bucket.at === now)?.byHook).toEqual({});
+
+      // A smaller page answers the cursor of the next (older) one; two rows share a time, so
+      // the cursor counts how many of them this page already gave.
+      const first = JSON.parse((await world.call("/api/guard-asks?range=1d&limit=2")).body) as {
+        asks: { reason: string }[];
+        next: null | string;
+      };
+      expect(first.asks.map((one) => one.reason)).toEqual(["force push", "push to main"]);
+      expect(first.next).toBe(`${minutesAgo(5)}.1`);
+      const second = JSON.parse(
+        (await world.call(`/api/guard-asks?range=1d&limit=2&cursor=${first.next}`)).body,
+      ) as { asks: { reason: string }[]; next: null | string };
+      expect(second.asks.map((one) => one.reason)).toEqual(["merge without review token=****a1b2"]);
+      expect(second.next).toBe(null);
+
+      // The filters keep `guards` and `sessions` as the range's own values, for the selects.
+      const filtered = JSON.parse(
+        (await world.call("/api/guard-asks?range=1d&hook=git-guard&limit=1&q=force")).body,
+      ) as {
+        asks: { reason: string }[];
+        buckets: { byHook: Record<string, number> }[];
+        guards: string[];
+        kept: number;
+        sessions: string[];
+      };
+      expect(filtered.asks.map((one) => one.reason)).toEqual(["force push"]);
+      expect(filtered.kept).toBe(1);
+      expect(filtered.guards).toEqual(["git-guard", "merge-guard"]);
+      expect(filtered.sessions).toEqual(["s1", "s2"]);
+      expect(
+        filtered.buckets.reduce((sum, bucket) => sum + Object.values(bucket.byHook).length, 0),
+      ).toBe(1);
+
+      // A range this version does not know, and a cursor that is not `<at>.<n>`, are refusals.
+      expect((await world.call("/api/guard-asks?range=24h")).status).toBe(400);
+      expect((await world.call("/api/guard-asks?cursor=yesterday")).status).toBe(400);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("worktrees: every worktree's verdict, its idle minutes, and the last auto-clean", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({
       backendPort: backend.port,
@@ -3996,16 +4341,104 @@ describe("the JSON API", () => {
       writeFileSync(join(world.cwd, "README.md"), "readme\n");
       git(world.cwd, "add", "README.md");
       git(world.cwd, "commit", "-q", "-m", "init");
+      // A linked worktree of this test's repo: git just wrote to it, so it is minutes old.
+      const linked = join(tempDir("worktree"), "one");
+      git(world.cwd, "worktree", "add", "-q", "-b", "feat", linked);
+      // And one whose folder was deleted: git still lists it, and its idle time is unknown.
+      const gone = join(tempDir("worktree"), "gone");
+      git(world.cwd, "worktree", "add", "-q", "-b", "old", gone);
+      rmSync(gone, { recursive: true, force: true });
+      // And one whose git folder cannot be read: nothing says when git last wrote to it.
+      const broken = join(tempDir("worktree"), "broken");
+      git(world.cwd, "worktree", "add", "-q", "-b", "drift", broken);
+      writeFileSync(join(broken, ".git"), "gitdir: /nonexistent/cc-smart-dev-kit-worktree\n");
+      // Auto-clean's record, as the background clean writes it.
+      const files = autoCleanFiles(world.paths.stateDir, world.cwd);
+      mkdirSync(dirname(files.result), { recursive: true });
+      const ranAt = Date.UTC(2026, 9, 23, 10, 0, 0);
+      writeFileSync(
+        files.result,
+        `${JSON.stringify({
+          base: "main",
+          kept: [],
+          lastRunAt: ranAt,
+          removed: [
+            {
+              branch: "crew/old",
+              name: "crew-old",
+              path: "/home/user/my-app/.claude/worktrees/crew-old",
+              why: "every commit is on origin/main",
+            },
+          ],
+          repo: world.cwd,
+          seq: 1,
+        })}\n`,
+      );
       const body = JSON.parse((await world.call("/api/worktrees")).body) as {
+        autoClean: null | {
+          base: string;
+          lastRunAt: string;
+          removed: { branch: null | string; name: string; path: string; why: string }[];
+        };
         base: string;
         note: null | string;
-        worktrees: { kind: string; path: string }[];
+        worktrees: { idleMinutes: null | number; kind: string; path: string }[];
       };
       expect(body.base).toBe("main");
       // The temp repo has no origin: the answer says it judged against the local base.
       expect(body.note).toContain("judges against the local main");
+      const main = body.worktrees.find((one) => one.kind === "main");
+      expect(main?.path).toBe(world.cwd);
+      // The main checkout is never one to clear, so it has no idle time.
+      expect(main?.idleMinutes).toBe(null);
+      const one = body.worktrees.find((one) => one.path === linked);
+      expect(one).toBeDefined();
+      expect(typeof one?.idleMinutes).toBe("number");
+      expect(one?.idleMinutes ?? 60).toBeLessThan(60);
+      // A worktree whose folder is gone has no git files to read: its idle time is unknown.
+      const missing = body.worktrees.find((one) => one.path === gone);
+      expect(missing?.kind).toBe("gone");
+      expect(missing?.idleMinutes).toBe(null);
+      // So does one whose `.git` cannot be read: never a made-up 0.
+      const unread = body.worktrees.find((one) => one.path === broken);
+      expect(unread).toBeDefined();
+      expect(unread?.idleMinutes).toBe(null);
+      expect(body.autoClean).toEqual({
+        base: "main",
+        lastRunAt: new Date(ranAt).toISOString(),
+        removed: [
+          {
+            branch: "crew/old",
+            name: "crew-old",
+            path: "/home/user/my-app/.claude/worktrees/crew-old",
+            why: "every commit is on origin/main",
+          },
+        ],
+      });
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("worktrees: no auto-clean has run yet, so the answer says so", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      env: { PATH: process.env.PATH ?? "" },
+      projectFiles: {},
+    });
+    try {
+      writeFileSync(join(world.cwd, "README.md"), "readme\n");
+      git(world.cwd, "add", "README.md");
+      git(world.cwd, "commit", "-q", "-m", "init");
+      const body = JSON.parse((await world.call("/api/worktrees")).body) as {
+        autoClean: unknown;
+        worktrees: { idleMinutes: null | number; kind: string }[];
+      };
+      expect(body.autoClean).toBe(null);
       expect(body.worktrees[0]?.kind).toBe("main");
-      expect(body.worktrees[0]?.path).toBe(world.cwd);
+      expect(body.worktrees[0]?.idleMinutes).toBe(null);
     } finally {
       world.portal.stop();
       backend.stop();

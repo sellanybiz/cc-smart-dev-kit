@@ -69,6 +69,19 @@ function cursorOf(value: null | string): "bad" | null | number {
 }
 
 /**
+ * `/api/guard-asks`' cursor: `<at>.<n>`, the time of the last row a page gave and how many of
+ * that time it already gave; null for the newest page.
+ */
+function guardCursorOf(value: null | string): "bad" | null | { at: number; n: number } {
+  if (value === null) return null;
+  const found = /^(\d+)\.(\d+)$/.exec(value);
+  if (found?.[1] === undefined || found[2] === undefined) return "bad";
+  const at = Number(found[1]);
+  const n = Number(found[2]);
+  return Number.isSafeInteger(at) && Number.isSafeInteger(n) ? { at, n } : "bad";
+}
+
+/**
  * The answer for one GET under `/api/`, or null when no read route lives there (the server
  * then answers the path as it always did: an action is a POST).
  */
@@ -178,12 +191,23 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
       }
     }
     case "/api/guard-asks": {
-      const limit = limitOf(query.get("limit"), GUARD_ASKS_DEFAULT);
+      const range = rangeOf(query.get("range"));
+      const cursor = guardCursorOf(query.get("cursor"));
+      if (range === null || cursor === "bad") {
+        return {
+          body: {
+            error: `guard-asks takes range=${Object.keys(HISTORY_RANGES).join("|")}, cursor=<at>.<n>, limit, hook, session, tool and q`,
+          },
+          status: 400,
+        };
+      }
       return ok(
         guardAsksAnswer(deps, {
+          cursor,
           hook: wordOf(query.get("hook")),
-          limit,
+          limit: limitOf(query.get("limit"), GUARD_ASKS_DEFAULT),
           q: wordOf(query.get("q")),
+          range,
           session: wordOf(query.get("session")),
           tool: wordOf(query.get("tool")),
         }),

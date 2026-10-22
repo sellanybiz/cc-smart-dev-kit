@@ -32,7 +32,13 @@ import type { Env } from "../hooks/run";
 import type { Checkout } from "../project/resolve";
 import { autoMergeRefusal } from "./auto-merge";
 import { type GateRead, type ResolvedWorkflow, resolveGate } from "./resolve";
-import { type Cover, type FixLimits, readCover } from "./review-cover";
+import {
+  allowanceOf,
+  type ChangeCount,
+  type Cover,
+  type FixLimits,
+  readCover,
+} from "./review-cover";
 import { COMMIT_SHA, reviewsFile, trustedReviews } from "./reviews";
 
 /** How long one `gh` call may take: a read-only network call, and a guard has 30 s. */
@@ -111,9 +117,32 @@ export function parseRequiredChecks(json: string): RequiredCheck[] | null {
  */
 export const PASSING_BUCKETS: ReadonlySet<string> = new Set(["pass", "skipping"]);
 
+/**
+ * The review gate's own numbers behind a verdict (D17, D22), for the portal's crew page:
+ * which review covers the head, the change made after it and the change it reviewed, and the
+ * gate's `fixesAfterReview` limits those are judged against. A generated file is listed, not
+ * counted, and a binary file changed after the review is never covered (`review-cover.ts`).
+ * `limits` is null only in a caller that has no gate to read; the check fills it whenever it
+ * read the gate, whether or not a review is required.
+ */
+export interface MergeDetail {
+  /** What the review still covers: the limit or the percent of the reviewed change, whichever is larger. */
+  allowance: null | { files: number; lines: number };
+  /** The change after the review; null when it is the reviewed commit itself, or none was measured. */
+  delta: null | { binary: number; files: number; lines: number };
+  /** The gate's limits (`workflow.fixesAfterReview`); null when no gate was read. */
+  limits: null | { files: number; lines: number; percent: number };
+  /** The reviewed commit the verdict is about; null when no review candidate exists. */
+  review: null | string;
+  /** The reviewed change's own size; null unless both it and the change after it were measured. */
+  reviewed: null | { binary: number; files: number; lines: number };
+}
+
 /** What one merge check decided. */
 export type MergeVerdict =
   | {
+      /** The review gate's numbers: null when the check refused before it read the gate. */
+      detail: MergeDetail | null;
       kind: "allowed";
       /** The short sentence both the guard's `allow` and the command print. */
       reason: string;
@@ -123,7 +152,7 @@ export type MergeVerdict =
    * so this check says nothing. Only the hook uses this; the command prints it as no verdict.
    */
   | { kind: "silent" }
-  | { kind: "refused"; number: number | null; reason: string }
+  | { detail: MergeDetail | null; kind: "refused"; number: number | null; reason: string }
   | { kind: "unread"; number: number | null; what: string }
   | { kind: "late"; number: number | null; what: string };
 
@@ -210,6 +239,36 @@ function reviewRefusal(cover: Cover | null): string | null {
   if (cover === null || cover.covered) return null;
   if (cover.review !== null) return cover.why;
   return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
+}
+
+/** One change as a page reads it: its lines and files, and how many binary files it holds. */
+function counted(change: ChangeCount): { binary: number; files: number; lines: number } {
+  return { binary: change.binary.length, files: change.files, lines: change.lines };
+}
+
+/** One of the cover's changes as a page reads it, or null when it was not measured. */
+function countsOf(
+  change: ChangeCount | null | undefined,
+): null | { binary: number; files: number; lines: number } {
+  return change === null || change === undefined ? null : counted(change);
+}
+
+/**
+ * The review gate's numbers behind a verdict: the review the cover is about, the change after
+ * it and the change it reviewed, what that review still covers (`allowanceOf`), and the limits
+ * they were judged against. A review of the head itself has no delta, no reviewed change and no
+ * allowance; a cover that refuses carries the measurement its reason is about, when one was
+ * made. `limits` is always the gate's own: the verdict says what it judged by.
+ */
+function detailOf(cover: Cover | null, limits: FixLimits): MergeDetail {
+  const reviewed = cover?.reviewed;
+  return {
+    allowance: reviewed === null || reviewed === undefined ? null : allowanceOf(reviewed, limits),
+    delta: countsOf(cover?.delta),
+    limits: { files: limits.files, lines: limits.lines, percent: limits.percent },
+    review: cover?.review ?? null,
+    reviewed: countsOf(reviewed),
+  };
 }
 
 /** The first seven characters of a commit: how a person reads it. */
@@ -438,13 +497,18 @@ export function checkPullRequest(
   try {
     read = gateFor(world, view.base);
   } catch (error) {
-    return { kind: "refused", number: view.number, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: view.number, reason: policyUnread(view.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: view.number,
+      reason: policyUnread(view.base, read.why),
+    };
   }
   const { resolved, config: committed } = read.gate;
   // The project runs its own merge guard, as its committed policy says: that one answers.
@@ -480,7 +544,9 @@ export function checkPullRequest(
   }
   // The review is measured only when everything else passed: a red check never pays for git.
   const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
-  if (before !== null) return { kind: "refused", number: view.number, reason: before };
+  if (before !== null) {
+    return { detail: null, kind: "refused", number: view.number, reason: before };
+  }
   const review = reviewGateOf(world.paths, world.checkout, resolved);
   const cover = coverOf(world, review, {
     head: view.headOid,
@@ -488,8 +554,16 @@ export function checkPullRequest(
     base: view.base,
   });
   const refused = reviewRefusal(cover);
-  if (refused !== null) return { kind: "refused", number: view.number, reason: refused };
+  if (refused !== null) {
+    return {
+      detail: detailOf(cover, review.limits),
+      kind: "refused",
+      number: view.number,
+      reason: refused,
+    };
+  }
   return {
+    detail: detailOf(cover, review.limits),
     kind: "allowed",
     reason: pullRequestAllowed(cover?.covered === true ? cover : null),
   };
@@ -520,6 +594,7 @@ export function checkBranch(
   const head = commitOf(world, target.branch) ?? commitOf(world, `origin/${target.branch}`);
   if (head === null) {
     return {
+      detail: null,
       kind: "refused",
       number: null,
       reason: `branch ${target.branch} is not in this checkout`,
@@ -529,19 +604,26 @@ export function checkBranch(
   try {
     read = gateFor(world, target.base);
   } catch (error) {
-    return { kind: "refused", number: null, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: null, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: null, what: `the policy committed on ${target.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: null, reason: policyUnread(target.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: null,
+      reason: policyUnread(target.base, read.why),
+    };
   }
   const review = reviewGateOf(world.paths, world.checkout, read.gate.resolved);
   const cover = coverOf(world, review, { head, branch: target.branch, base: target.base });
+  const detail = detailOf(cover, review.limits);
   const refused = reviewRefusal(cover);
-  if (refused !== null) return { kind: "refused", number: null, reason: refused };
+  if (refused !== null) return { detail, kind: "refused", number: null, reason: refused };
   return {
+    detail,
     kind: "allowed",
     reason: branchAllowed(target.branch, head, cover?.covered === true ? cover : null),
   };

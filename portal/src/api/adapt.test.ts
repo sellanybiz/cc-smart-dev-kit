@@ -7,12 +7,15 @@ import {
   crewOf,
   guardAsksOf,
   healthOf,
+  mergeCheckOf,
   NotSetUpError,
   needsOf,
   overviewOf,
   projectsOf,
   workOf,
+  worktreesOf,
 } from "./adapt";
+import { GUARD_PAGE_SIZE, guardQuery } from "./client";
 import { CSRF_HEADER, getJson, PortalRequestError, postAction } from "./http";
 import type {
   CrewAnswer,
@@ -22,7 +25,16 @@ import type {
   OverviewAnswer,
   RouterFacts,
   WorkAnswer,
+  WorktreesAnswer,
 } from "./wire";
+
+const WORKTREES_EMPTY: WorktreesAnswer = {
+  autoClean: null,
+  base: "main",
+  from: "default",
+  note: null,
+  worktrees: [],
+};
 
 const ROUTER: RouterFacts = {
   breakers: {},
@@ -202,7 +214,7 @@ describe("the adapters", () => {
     ]);
   });
 
-  test("a crew page: the verdict in words, the diff in totals, the open question", () => {
+  test("a crew page: the verdict in full, the diff per file, memory, reviews, the question", () => {
     const answer: CrewAnswer = {
       brief: null,
       crew: {
@@ -214,7 +226,17 @@ describe("the adapters", () => {
           recommended: 1,
         },
       },
-      diff: { deletions: 3, error: null, files: 2, insertions: 40, outsideBrief: [] },
+      diff: {
+        byFile: [
+          { added: 30, deleted: 3, path: "src/a.ts" },
+          { added: null, deleted: null, path: "assets/logo.png" },
+        ],
+        deletions: 3,
+        error: null,
+        files: 2,
+        insertions: 40,
+        outsideBrief: [],
+      },
       events: [
         {
           at: "2026-10-22T10:01:00.000Z",
@@ -225,33 +247,102 @@ describe("the adapters", () => {
           type: "step",
         },
       ],
-      mergeCheck: { kind: "refused", number: 7, reason: "no review recorded" },
+      memory: [
+        { at: "2026-10-22T10:01:00.000Z", mb: 300 },
+        { at: "2026-10-22T10:06:00.000Z", mb: 512 },
+      ],
+      mergeCheck: {
+        detail: {
+          allowance: { files: 5, lines: 61 },
+          delta: { binary: 0, files: 2, lines: 74 },
+          limits: { files: 5, lines: 50, percent: 10 },
+          review: "4f2a9c1",
+          reviewed: { binary: 1, files: 9, lines: 612 },
+        },
+        kind: "refused",
+        number: 7,
+        reason: "the change after the review is over the limit",
+      },
       report: null,
-      reviews: [],
+      reviews: [{ at: "2026-10-22T10:05:00.000Z", by: ["reviewer"], sha: "4f2a9c1" }],
     };
     const data = crewOf(answer);
     expect(data.brief).toBe("");
     expect(data.diffTotals).toEqual({ deletions: 3, error: null, files: 2, insertions: 40 });
+    // A binary file has no line counts: unknown, never 0.
+    expect(data.diff).toEqual([
+      { added: 30, path: "src/a.ts", removed: 3 },
+      { added: null, path: "assets/logo.png", removed: null },
+    ]);
+    expect(data.memory).toEqual([
+      { at: Date.parse("2026-10-22T10:01:00.000Z"), mb: 300 },
+      { at: Date.parse("2026-10-22T10:06:00.000Z"), mb: 512 },
+    ]);
     expect(data.mergeCheck).toEqual({
+      allowance: { files: 5, lines: 61 },
       allowed: false,
-      delta: null,
-      limits: null,
-      reason: "no review recorded",
-      review: null,
-      reviewed: null,
+      delta: { binary: 0, files: 2, lines: 74 },
+      kind: "refused",
+      limits: { files: 5, lines: 50, percent: 10 },
+      pr: 7,
+      reason: "the change after the review is over the limit",
+      review: "4f2a9c1",
+      reviewed: { binary: 1, files: 9, lines: 612 },
     });
+    expect(data.reviews).toEqual([
+      { at: "2026-10-22T10:05:00.000Z", by: ["reviewer"], sha: "4f2a9c1" },
+    ]);
     expect(data.questions.map((one) => one.question)).toEqual(["Ship?"]);
     expect(crewOf({ ...answer, mergeCheck: { kind: "silent" } }).mergeCheck).toBe(null);
   });
 
-  test("Needs you: a question, a session's prompt, a held update, a breaker, newest first", () => {
-    const answer: NeedsAnswer = {
-      breaker: {
-        held: 4,
-        since: "2026-10-22T10:03:00.000Z",
-        slot: "cc-smart-dev-kit-fable",
-        targets: [{ status: 429, target: "omniroute:kimi-k3", until: "2026-10-22T10:10:00.000Z" }],
+  test("the merge verdict: allowed with no detail, and one the guard could not read", () => {
+    expect(mergeCheckOf({ detail: null, kind: "allowed", reason: "reviewed at the head" })).toEqual(
+      {
+        allowance: null,
+        allowed: true,
+        delta: null,
+        kind: "allowed",
+        limits: null,
+        pr: null,
+        reason: "reviewed at the head",
+        review: null,
+        reviewed: null,
       },
+    );
+    expect(mergeCheckOf({ kind: "unread", number: 3, what: "gh is not signed in" })).toEqual({
+      allowance: null,
+      allowed: false,
+      delta: null,
+      kind: "unread",
+      limits: null,
+      pr: 3,
+      reason: "gh is not signed in",
+      review: null,
+      reviewed: null,
+    });
+  });
+
+  test("Needs you: every open breaker, doctor's fix, the attach command, newest first", () => {
+    const answer: NeedsAnswer = {
+      breakers: [
+        {
+          held: 4,
+          heldNow: 2,
+          since: "2026-10-22T10:03:00.000Z",
+          slot: "cc-smart-dev-kit-fable",
+          targets: [
+            { status: 429, target: "omniroute:kimi-k3", until: "2026-10-22T10:10:00.000Z" },
+          ],
+        },
+        {
+          held: 1,
+          heldNow: null,
+          since: "2026-10-22T09:00:00.000Z",
+          slot: "cc-smart-dev-kit-worker",
+          targets: [],
+        },
+      ],
       crew: [
         {
           askedAt: "2026-10-22T10:05:00.000Z",
@@ -261,73 +352,184 @@ describe("the adapters", () => {
           recommended: 2,
         },
       ],
-      doctor: { at: null, failures: [] },
+      doctor: {
+        at: Date.parse("2026-10-22T08:00:00.000Z"),
+        failures: [
+          { fix: "cc-smart-dev-kit setup", section: "mcp", text: "a server is missing" },
+          { fix: null, section: null, text: "something else" },
+        ],
+      },
       permissions: [
         {
           asker: "git-guard",
           at: Date.parse("2026-10-22T10:04:00.000Z"),
+          attach: "claude attach abc123",
+          crew: { id: "crew-1", name: "C my-app B6c slots", shortId: "abc123" },
           kind: null,
           project: "my-app",
-          session: "s1",
+          session: "abc123-full-session-id",
           tool: "Bash",
+        },
+        {
+          asker: "claude",
+          at: Date.parse("2026-10-22T10:02:00.000Z"),
+          attach: null,
+          crew: null,
+          kind: "a file write",
+          project: "my-app",
+          session: "s9",
+          tool: "Write",
         },
       ],
       update: { at: "2026-10-22T10:01:00.000Z", from: "1.0.0", notes: [], version: "2.0.0" },
     };
     const data = needsOf(answer, "1.1.0");
-    expect(data.items.map((item) => item.kind)).toEqual([
-      "question",
-      "permission",
-      "breaker",
-      "update",
+    expect(data.items.map((item) => item.id)).toEqual([
+      "question-crew-1-2026-10-22T10:05:00.000Z",
+      "permission-abc123-full-session-id-1792663440000",
+      "breaker-cc-smart-dev-kit-fable",
+      "permission-s9-1792663320000",
+      "update-2.0.0",
+      "breaker-cc-smart-dev-kit-worker",
+      "doctor-0",
+      "doctor-1",
     ]);
-    const breaker = data.items.find((item) => item.kind === "breaker");
-    // How many wait right now is not in the answer: unknown, never 0.
-    expect(breaker?.kind === "breaker" ? breaker.breaker.heldNow : "missing").toBe(null);
-    const permission = data.items.find((item) => item.kind === "permission");
-    expect(permission?.kind === "permission" ? permission.crew : "missing").toBe(null);
+    const breakers = data.items.flatMap((item) => (item.kind === "breaker" ? [item] : []));
+    // How many wait right now is the router's; when it does not say, unknown, never 0.
+    expect(breakers.map((item) => [item.breaker.heldNow, item.command])).toEqual([
+      [2, "cc-smart-dev-kit gateway slot fable claude"],
+      [null, "cc-smart-dev-kit gateway slot worker claude"],
+    ]);
+    const doctor = data.items.flatMap((item) => (item.kind === "doctor" ? [item] : []));
+    expect(doctor.map((item) => [item.section, item.text, item.fix, item.since])).toEqual([
+      ["mcp", "a server is missing", "cc-smart-dev-kit setup", "2026-10-22T08:00:00.000Z"],
+      ["", "something else", null, "2026-10-22T08:00:00.000Z"],
+    ]);
+    const waits = data.items.flatMap((item) => (item.kind === "permission" ? [item] : []));
+    // The server names the crew session and its attach command; a session it does not name has
+    // no command (a session in its own terminal cannot be attached), never one made up here.
+    expect(waits.map((item) => [item.crew?.id ?? null, item.attach])).toEqual([
+      ["crew-1", "claude attach abc123"],
+      [null, null],
+    ]);
   });
 
-  test("the guard log: the range kept here, one series per guard, newest first", () => {
-    const now = Date.UTC(2026, 9, 22, 12, 0, 0);
-    const page = guardAsksOf(
+  test("the guard log: the server's page as it is, and its buckets as one series per guard", () => {
+    const page = guardAsksOf({
+      asks: [
+        { at: 3_000, hook: "git-guard", reason: "a push", session: "s1", tool: "Bash" },
+        { at: 2_000, hook: "merge-guard", reason: "old", session: "s2", tool: "Bash" },
+      ],
+      bucketMs: 1_000,
+      buckets: [
+        { at: 3_000, byHook: { "git-guard": 1 } },
+        { at: 1_000, byHook: { "git-guard": 4, "merge-guard": 2 } },
+        { at: 2_000, byHook: { "merge-guard": 1 } },
+      ],
+      byHook: { "git-guard": 5, "merge-guard": 3 },
+      guards: ["git-guard", "merge-guard"],
+      kept: 8,
+      next: "2000.1",
+      range: "1h",
+      sessions: ["s1", "s2"],
+      skipped: 0,
+    });
+    // Nothing is filtered, sorted or cut here: the server did that.
+    expect(page.rows.map((row) => row.at)).toEqual([3_000, 2_000]);
+    expect(page.next).toBe("2000.1");
+    expect(page.kept).toBe(8);
+    expect(page.guards).toEqual(["git-guard", "merge-guard"]);
+    expect(page.sessions).toEqual(["s1", "s2"]);
+    expect(page.buckets).toEqual({
+      bucketMs: 1_000,
+      series: [
+        {
+          key: "git-guard",
+          points: [
+            { count: 4, t: 1_000 },
+            { count: 0, t: 2_000 },
+            { count: 1, t: 3_000 },
+          ],
+        },
+        {
+          key: "merge-guard",
+          points: [
+            { count: 2, t: 1_000 },
+            { count: 1, t: 2_000 },
+            { count: 0, t: 3_000 },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("the guard log's request: the range, the cursor, the page size and the filters", () => {
+    expect(guardQuery({ cursor: null, range: "7d" }).toString()).toBe(
+      `limit=${GUARD_PAGE_SIZE}&range=7d`,
+    );
+    expect(
+      guardQuery({
+        cursor: "1792663440000.2",
+        guard: "git-guard",
+        range: "1h",
+        session: "s1",
+      }).toString(),
+    ).toBe(`limit=${GUARD_PAGE_SIZE}&range=1h&cursor=1792663440000.2&hook=git-guard&session=s1`);
+  });
+
+  test("worktrees: idle time and auto-clean's last run, the main checkout left out", () => {
+    const data = worktreesOf(
       {
-        asks: [
+        autoClean: {
+          base: "main",
+          lastRunAt: "2026-10-22T09:00:00.000Z",
+          removed: [
+            {
+              branch: "crew/a",
+              name: "a",
+              path: "/home/user/my-app/.claude/worktrees/a",
+              why: "its pull request is merged",
+            },
+          ],
+        },
+        base: "main",
+        from: "config",
+        note: null,
+        worktrees: [
           {
-            at: now - 10 * 60_000,
-            hook: "git-guard",
-            reason: "a push",
-            session: "s1",
-            tool: "Bash",
+            branch: "main",
+            head: "a1",
+            idleMinutes: null,
+            kind: "main",
+            path: "/home/user/my-app",
+            why: null,
           },
           {
-            at: now - 5 * 60_000,
-            hook: "git-guard",
-            reason: "a push",
-            session: "s1",
-            tool: "Bash",
+            branch: "crew/b",
+            head: "b1",
+            idleMinutes: 42,
+            kind: "kept",
+            path: "/home/user/my-app/.claude/worktrees/b",
+            why: "uncommitted changes",
           },
           {
-            at: now - 2 * 86_400_000,
-            hook: "merge-guard",
-            reason: "old",
-            session: "s2",
-            tool: "Bash",
+            branch: "crew/c",
+            head: "c1",
+            idleMinutes: 300,
+            kind: "finished",
+            path: "/home/user/my-app/.claude/worktrees/c",
+            why: "merged into main",
           },
         ],
-        byHook: { "git-guard": 2, "merge-guard": 1 },
-        kept: 3,
-        skipped: 0,
       },
-      { cursor: null, range: "1h" },
-      now,
+      "my-app",
     );
-    expect(page.rows.map((row) => row.at)).toEqual([now - 5 * 60_000, now - 10 * 60_000]);
-    expect(page.guards).toEqual(["git-guard", "merge-guard"]);
-    expect(page.sessions).toEqual(["s1"]);
-    expect(page.buckets.series.map((one) => [one.key, one.points.length])).toEqual([
-      ["git-guard", 2],
+    expect(data.rows.map((row) => [row.branch, row.idleMinutes, row.verdict])).toEqual([
+      ["crew/b", 42, { finished: false, held: false, why: "uncommitted changes" }],
+      ["crew/c", 300, { finished: true, note: "merged into main" }],
     ]);
+    expect(data.autoClean?.removed.map((one) => one.name)).toEqual(["a"]);
+    expect(worktreesOf({ ...WORKTREES_EMPTY, autoClean: null }, "my-app").autoClean).toBe(null);
   });
 
   test("projects: unknown counts stay unknown", () => {

@@ -9,9 +9,11 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { groupTitle } from "../../cli/check";
 import { openQuestionIndex } from "../../crew/answer";
 import { findCrew, stateSince } from "../../crew/board";
 import { diffAgainstBase, outsideBrief } from "../../crew/diff";
+import { RUNNING_STATES } from "../../crew/places";
 import {
   type CrewEvent,
   type CrewRecord,
@@ -23,6 +25,9 @@ import {
 } from "../../crew/store";
 import { historyDbExists } from "../../gateway/history";
 import {
+  bucketStart,
+  HISTORY_BUCKET_MS,
+  HISTORY_RANGE_MS,
   type HistoryFilters,
   historySeries,
   type RecentRequestRow,
@@ -33,25 +38,34 @@ import { oneLine } from "../../gateway/plain-text";
 import { askLogFile } from "../../hooks/ask-log";
 import { locateCheckout } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
-import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, openWaits, readFlow } from "../../sessions/flow";
+import {
+  FLOW_DAYS_KEPT,
+  OPEN_WAIT_MAX_AGE_MS,
+  type OpenWait,
+  openWaits,
+  readFlow,
+} from "../../sessions/flow";
 import {
   type MergeVerdict as CheckVerdict,
   checkBranch,
   type MergeWorld,
 } from "../../workflow/merge-check";
 import { readReviews, reviewsFile } from "../../workflow/reviews";
+import { autoCleanFiles, readRepoRecord } from "../../worktrees/auto-state";
 import { baseBranch } from "../../worktrees/command";
 import { scanWorktrees } from "../../worktrees/scan";
-import { shownDetail } from "../facts";
+import { routerFacts, shownDetail } from "../facts";
 import { type PageDataDeps, updateFacts } from "../page-data";
 import {
   type BreakerNeed,
   type CrewAnswer,
+  type CrewMemoryPoint,
   type CrewNeed,
   type CrewReport,
   type CrewReview,
   type CrewStepItem,
   type CrewSummary,
+  type DoctorFailure,
   type FlowAnswer,
   type GuardAskItem,
   type GuardAsksAnswer,
@@ -75,8 +89,8 @@ export const CREW_PAGE_EVENTS = 200;
 /** How far back the Work view looks for the other Claude Code sessions: two days, as `sessions`. */
 export const WORK_SESSIONS_MS = 2 * 86_400_000;
 
-/** How many asks the guard log answers unless the query says otherwise. */
-export const GUARD_ASKS_DEFAULT = 200;
+/** How many asks one page of the guard log answers unless the query says otherwise. */
+export const GUARD_ASKS_DEFAULT = 50;
 
 /** This project's main checkout, or why there is none. */
 function repoOf(deps: PageDataDeps): { repo: string } | { note: string } {
@@ -180,9 +194,14 @@ export function workAnswer(deps: PageDataDeps): WorkAnswer {
 function mergeVerdictOf(verdict: CheckVerdict): CrewAnswer["mergeCheck"] {
   switch (verdict.kind) {
     case "allowed":
-      return { kind: "allowed", reason: verdict.reason };
+      return { detail: verdict.detail, kind: "allowed", reason: verdict.reason };
     case "refused":
-      return { kind: "refused", number: verdict.number, reason: verdict.reason };
+      return {
+        detail: verdict.detail,
+        kind: "refused",
+        number: verdict.number,
+        reason: verdict.reason,
+      };
     case "silent":
       return { kind: "silent" };
     case "unread":
@@ -228,6 +247,7 @@ export function crewAnswerFor(deps: PageDataDeps, ref: string): CrewAnswer | { e
     // No brief (a queued crew session, or one whose files were removed): the page says so.
   }
   let diff: CrewAnswer["diff"] = {
+    byFile: [],
     deletions: 0,
     error: null,
     files: 0,
@@ -240,6 +260,7 @@ export function crewAnswerFor(deps: PageDataDeps, ref: string): CrewAnswer | { e
     try {
       const facts = diffAgainstBase(record.worktree, record.base.sha, deps.action.portal.env);
       diff = {
+        byFile: facts.byFile,
         deletions: facts.deletions,
         error: null,
         files: facts.files,
@@ -263,10 +284,34 @@ export function crewAnswerFor(deps: PageDataDeps, ref: string): CrewAnswer | { e
     crew: crewSummary(record, allEvents),
     diff,
     events,
+    memory: memoryOf(record, allEvents, deps.action.portal.now()),
     mergeCheck,
     report: reportOf(record.reportPath),
     reviews,
   };
+}
+
+/**
+ * A crew session's memory over time, oldest first: each reading its own log kept (the watch
+ * writes one when a session ends), then — only while its session still runs — the record's
+ * memory as it is now, at this answer's time. An ended session's last reading is history, not
+ * a reading now, so its series is the log's own.
+ */
+function memoryOf(
+  record: CrewRecord,
+  events: readonly CrewEvent[],
+  nowMs: number,
+): CrewMemoryPoint[] {
+  const kept: CrewMemoryPoint[] = events.flatMap((event) => {
+    if (event.crew !== record.id || typeof event.memoryMb !== "number") return [];
+    return [{ at: event.at, mb: event.memoryMb }];
+  });
+  kept.sort((a, b) => a.at.localeCompare(b.at));
+  const running = (RUNNING_STATES as readonly string[]).includes(record.state);
+  if (running && record.memoryMb !== null) {
+    kept.push({ at: new Date(nowMs).toISOString(), mb: record.memoryMb });
+  }
+  return kept;
 }
 
 /** The report file, read through the store's own schema; null when there is none. */
@@ -313,78 +358,121 @@ function mergeCheckOf(
   }
 }
 
+/** The command that opens a crew session's terminal again, as `crew end` prints it; null with no short id. */
+function attachCommand(record: CrewRecord): null | string {
+  return record.shortId === null ? null : `claude attach ${record.shortId}`;
+}
+
+/**
+ * One permission prompt as "Needs you" sends it, matched to the crew session that runs in that
+ * session (its `sessionId`, the full id Claude Code writes). Only a crew session gets the
+ * command that opens its terminal: `claude attach` opens a background session, and another
+ * session's is opened by its own terminal, not by this page. A wait whose session no record
+ * names is the person's own session: no crew, no command.
+ */
+export function permissionWaitOf(wait: OpenWait, records: readonly CrewRecord[]): PermissionWait {
+  const record = records.find((one) => one.sessionId === wait.session);
+  return {
+    asker: wait.asker,
+    attach: record === undefined ? null : attachCommand(record),
+    at: wait.at,
+    crew:
+      record === undefined ? null : { id: record.id, name: record.name, shortId: record.shortId },
+    kind: wait.kind,
+    project: wait.project,
+    session: wait.session,
+    tool: wait.tool,
+  };
+}
+
 /** `/api/needs`: everything that waits on the person (D52). */
 export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
   const paths = deps.action.portal.paths;
   const now = deps.action.portal.now();
   const found = repoOf(deps);
-  const crew: CrewNeed[] = [];
+  // Every crew session of this repository, read once: the questions, and the session of each
+  // permission prompt, are matched against the same records.
+  let records: CrewRecord[] = [];
   if ("repo" in found) {
     try {
-      for (const record of listCrew(paths.stateDir, found.repo).records) {
-        const index = openQuestionIndex(record);
-        const question = index === null ? undefined : record.questions[index];
-        if (question === undefined) continue;
-        crew.push({
-          askedAt: question.askedAt,
-          crew: {
-            id: record.id,
-            name: record.name,
-            shortId: record.shortId,
-            state: record.state,
-          },
-          options: question.options,
-          question: question.question,
-          recommended: question.recommended,
-        });
-      }
+      records = listCrew(paths.stateDir, found.repo).records;
     } catch {
       // A store that cannot be read is doctor's to report; the rest of "Needs you" still shows.
     }
+  }
+  const crew: CrewNeed[] = [];
+  for (const record of records) {
+    const index = openQuestionIndex(record);
+    const question = index === null ? undefined : record.questions[index];
+    if (question === undefined) continue;
+    crew.push({
+      askedAt: question.askedAt,
+      crew: {
+        id: record.id,
+        name: record.name,
+        shortId: record.shortId,
+        state: record.state,
+      },
+      options: question.options,
+      question: question.question,
+      recommended: question.recommended,
+    });
   }
   const permissions: PermissionWait[] = openWaits(paths, {
     nowMs: now,
     project: null,
     session: null,
     sinceMs: now - OPEN_WAIT_MAX_AGE_MS,
-  }).map((wait) => ({
-    asker: wait.asker,
-    at: wait.at,
-    kind: wait.kind,
-    project: wait.project,
-    session: wait.session,
-    tool: wait.tool,
-  }));
+  }).map((wait) => permissionWaitOf(wait, records));
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {
-    breaker: breakerOf(deps, now),
+    breakers: await breakersOf(deps, now),
     crew,
     doctor: {
       at: doctor?.at ?? null,
-      failures: (doctor?.checks ?? [])
-        .filter((check) => !check.ok)
-        .map((check) => ({ text: check.text })),
+      failures: (doctor?.checks ?? []).flatMap((check): DoctorFailure[] =>
+        check.ok
+          ? []
+          : [
+              {
+                fix: check.fix,
+                section: check.group === undefined ? null : groupTitle(check.group),
+                text: check.text,
+              },
+            ],
+      ),
     },
     permissions,
     update,
   };
 }
 
-/** The first open breaker, as "Needs you" shows one; null when every slot answers. */
-function breakerOf(deps: PageDataDeps, now: number): BreakerNeed | null {
+/**
+ * Every breaker open now, from the state file the router writes, with the router's own live
+ * count of the requests it holds right now. A router that does not answer (or no gateway config
+ * names one) leaves `heldNow` null: the answer never guesses a number.
+ */
+async function breakersOf(deps: PageDataDeps, now: number): Promise<BreakerNeed[]> {
   let text: string;
   try {
     text = readFileSync(deps.action.portal.paths.gatewayStateFile, "utf8");
   } catch {
-    return null;
+    return [];
   }
   const state = parseLimitState(text);
-  if (state === null) return null;
-  const [slot, record] = currentBreakers(state, now)[0] ?? [];
-  if (slot === undefined || record === undefined) return null;
-  return {
+  if (state === null) return [];
+  const open = currentBreakers(state, now);
+  // Nothing open: the router is not asked at all, so a healthy machine pays no probe.
+  if (open.length === 0) return [];
+  const router =
+    "config" in deps.found ? await routerFacts(deps.action.portal, deps.found.config.port) : null;
+  const live = router?.up === true ? router.breakers : null;
+  return open.map(([slot, record]) => ({
     held: record.held,
+    // The router answered: a slot it does not list holds nothing right now. Only a router
+    // that did not answer leaves the count unknown.
+    heldNow: live === null ? null : (live[slot]?.heldNow ?? 0),
     since: new Date(record.since).toISOString(),
     slot,
     targets: record.targets.map((target) => ({
@@ -392,25 +480,69 @@ function breakerOf(deps: PageDataDeps, now: number): BreakerNeed | null {
       target: target.target,
       until: new Date(target.until).toISOString(),
     })),
-  };
+  }));
 }
 
-/** The filters `/api/guard-asks` takes. */
+/** The filters and the page `/api/guard-asks` takes. */
 export interface GuardAskQuery {
+  /** The page to read: after the first `n` rows of `<at>`, among rows at or before it. */
+  cursor: null | { at: number; n: number };
   hook: null | string;
   limit: number;
   q: null | string;
+  range: HistoryRange;
   session: null | string;
   tool: null | string;
 }
 
-/** `/api/guard-asks`: the guard log, filtered, with the totals its chart draws. */
+/** One hook's asks in one bucket, for the chart. */
+function guardBuckets(
+  rows: readonly GuardAskItem[],
+  from: number,
+  to: number,
+  bucketMs: number,
+): GuardAsksAnswer["buckets"] {
+  const counts = new Map<number, Record<string, number>>();
+  for (const row of rows) {
+    const at = bucketStart(row.at, bucketMs);
+    const bucket = counts.get(at) ?? {};
+    bucket[row.hook] = (bucket[row.hook] ?? 0) + 1;
+    counts.set(at, bucket);
+  }
+  // Every bucket of the window, an empty one as `{}`: a chart needs no filling in.
+  const buckets: GuardAsksAnswer["buckets"] = [];
+  const last = bucketStart(to, bucketMs);
+  for (let at = bucketStart(from, bucketMs); at <= last; at += bucketMs) {
+    buckets.push({ at, byHook: counts.get(at) ?? {} });
+  }
+  return buckets;
+}
+
+/**
+ * `/api/guard-asks?range=…&cursor=…&limit=…`: the guard log over the range, filtered, newest
+ * first, one page at a time. The chart, the guards and the sessions cover the whole range; the
+ * page is the server's own cut of it, and `next` is the cursor of the older one.
+ */
 export function guardAsksAnswer(deps: PageDataDeps, query: GuardAskQuery): GuardAsksAnswer {
+  const now = deps.action.portal.now();
+  const from = now - HISTORY_RANGE_MS[query.range];
+  const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text: string;
   try {
     text = readFileSync(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
-    return { asks: [], byHook: {}, kept: 0, skipped: 0 };
+    return {
+      asks: [],
+      bucketMs,
+      buckets: guardBuckets([], from, now, bucketMs),
+      byHook: {},
+      guards: [],
+      kept: 0,
+      next: null,
+      range: query.range,
+      sessions: [],
+      skipped: 0,
+    };
   }
   const asks: GuardAskItem[] = [];
   const byHook: Record<string, number> = {};
@@ -431,7 +563,9 @@ export function guardAsksAnswer(deps: PageDataDeps, query: GuardAskQuery): Guard
     const value = parsed as Record<string, unknown>;
     const hook = typeof value.hook === "string" ? value.hook : null;
     const at = typeof value.at === "number" ? value.at : null;
-    if (hook === null || at === null) {
+    // A time that is not a whole millisecond cannot name a page cursor (`<at>.<n>`): skipped,
+    // like a line with no hook or no time.
+    if (hook === null || at === null || !Number.isSafeInteger(at)) {
       skipped += 1;
       continue;
     }
@@ -446,26 +580,75 @@ export function guardAsksAnswer(deps: PageDataDeps, query: GuardAskQuery): Guard
       tool: oneLine(typeof value.tool === "string" ? value.tool : "", 64),
     });
   }
-  const kept = asks
-    .filter(
-      (ask) =>
-        (query.hook === null || ask.hook === query.hook) &&
-        (query.session === null || ask.session === query.session) &&
-        (query.tool === null || ask.tool === query.tool) &&
-        (query.q === null || ask.reason.toLowerCase().includes(query.q.toLowerCase())),
-    )
-    .sort((a, b) => b.at - a.at)
-    .slice(0, query.limit);
-  return { asks: kept, byHook, kept: kept.length, skipped };
+  // The range's rows: the guards and sessions a filter offers come from these, not the filter.
+  const inRange = asks.filter((ask) => ask.at >= from && ask.at <= now);
+  const guards = [...new Set(inRange.map((ask) => ask.hook))].sort();
+  const sessions = [
+    ...new Set(inRange.flatMap((ask) => (ask.session === "" ? [] : [ask.session]))),
+  ].sort();
+  const keptRows = inRange.filter(
+    (ask) =>
+      (query.hook === null || ask.hook === query.hook) &&
+      (query.session === null || ask.session === query.session) &&
+      (query.tool === null || ask.tool === query.tool) &&
+      (query.q === null || ask.reason.toLowerCase().includes(query.q.toLowerCase())),
+  );
+  const sorted = [...keptRows].sort((a, b) => b.at - a.at);
+  // The page: a cursor names a time and how many rows of it were already given, so two asks
+  // that share a millisecond are never skipped and never said twice.
+  let start = 0;
+  const cursor = query.cursor;
+  if (cursor !== null) {
+    const found = sorted.findIndex((ask) => ask.at <= cursor.at);
+    start = found === -1 ? sorted.length : found;
+    let given = 0;
+    while (given < cursor.n && sorted[start]?.at === cursor.at) {
+      start += 1;
+      given += 1;
+    }
+  }
+  const page = sorted.slice(start, start + query.limit);
+  const last = page[page.length - 1];
+  let next: null | string = null;
+  if (last !== undefined && start + query.limit < sorted.length) {
+    // Rows of the last row's own time this answer (and the pages before it) already gave.
+    const before = cursor !== null && cursor.at === last.at ? cursor.n : 0;
+    const here = page.filter((ask) => ask.at === last.at).length;
+    next = `${last.at}.${before + here}`;
+  }
+  return {
+    asks: page,
+    bucketMs,
+    buckets: guardBuckets(keptRows, from, now, bucketMs),
+    byHook,
+    guards,
+    kept: keptRows.length,
+    next,
+    range: query.range,
+    sessions,
+    skipped,
+  };
+}
+
+/** What the last background clean of `repo` did, or null when it never ran. */
+function autoCleanOf(deps: PageDataDeps, repo: string): WorktreesAnswer["autoClean"] {
+  const record = readRepoRecord(autoCleanFiles(deps.action.portal.paths.stateDir, repo));
+  if (record === null) return null;
+  return {
+    base: record.base,
+    lastRunAt: new Date(record.lastRunAt).toISOString(),
+    removed: record.removed,
+  };
 }
 
 /** `/api/worktrees`: every worktree's verdict, against the project's base. */
 export function worktreesAnswer(deps: PageDataDeps): WorktreesAnswer {
   const found = repoOf(deps);
   if ("note" in found) {
-    return { base: "", from: "default", note: found.note, worktrees: [] };
+    return { autoClean: null, base: "", from: "default", note: found.note, worktrees: [] };
   }
   const { repo } = found;
+  const now = deps.action.portal.now();
   try {
     const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
     const chosen = baseBranch(checkout, deps.action.portal.env, repo);
@@ -473,7 +656,7 @@ export function worktreesAnswer(deps: PageDataDeps): WorktreesAnswer {
       base: chosen.base,
       claudeConfigDir: deps.action.portal.paths.claudeConfigDir,
       env: deps.action.portal.env,
-      now: deps.action.portal.now(),
+      now,
     };
     let note: null | string = null;
     let scanned: ReturnType<typeof scanWorktrees>;
@@ -484,7 +667,7 @@ export function worktreesAnswer(deps: PageDataDeps): WorktreesAnswer {
       // base branch: the same comparison, said plainly.
       const why = error instanceof Error ? error.message : String(error);
       if (!why.includes("is not known here")) {
-        return { base: "", from: "default", note: why, worktrees: [] };
+        return { autoClean: null, base: "", from: "default", note: why, worktrees: [] };
       }
       scanned = scanWorktrees(repo, {
         ...judged,
@@ -494,19 +677,49 @@ export function worktreesAnswer(deps: PageDataDeps): WorktreesAnswer {
     }
     const worktrees: WorktreeItem[] = scanned.map((worktree) => {
       const { branch, head, path } = worktree.listed;
+      // The main checkout is never one to clear, and a folder that is gone has no git files
+      // to read: neither has an idle time.
       if (worktree.state === "main") {
-        return { branch, head, kind: "main", path, why: null };
+        return { branch, head, idleMinutes: null, kind: "main", path, why: null };
       }
       if (worktree.state === "gone") {
-        return { branch, head, kind: "gone", path, why: "its folder no longer exists" };
+        return {
+          branch,
+          head,
+          idleMinutes: null,
+          kind: "gone",
+          path,
+          why: "its folder no longer exists",
+        };
       }
       return worktree.state.finished
-        ? { branch, head, kind: "finished", path, why: null }
-        : { branch, head, kind: "kept", path, why: worktree.state.why };
+        ? {
+            branch,
+            head,
+            idleMinutes: worktree.idleMinutes,
+            kind: "finished",
+            path,
+            why: null,
+          }
+        : {
+            branch,
+            head,
+            idleMinutes: worktree.idleMinutes,
+            kind: "kept",
+            path,
+            why: worktree.state.why,
+          };
     });
-    return { base: chosen.base, from: chosen.from, note, worktrees };
+    return {
+      autoClean: autoCleanOf(deps, repo),
+      base: chosen.base,
+      from: chosen.from,
+      note,
+      worktrees,
+    };
   } catch (error) {
     return {
+      autoClean: null,
       base: "",
       from: "default",
       note: error instanceof Error ? error.message : String(error),

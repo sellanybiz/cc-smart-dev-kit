@@ -16,6 +16,7 @@
  */
 
 import type { Check as DoctorCheck } from "../../cli/doctor";
+import type { DiffFile } from "../../crew/diff";
 import type { CrewEvent } from "../../crew/store";
 import {
   HISTORY_RANGE_MS,
@@ -31,6 +32,7 @@ import type { GuardAsk } from "../../hooks/ask-log";
 import type { JobsAnswer, JobWeightState, JobWeightsState } from "../../jobs/status";
 import type { FlowReport } from "../../sessions/flow";
 import type { LastCheck } from "../../update/state";
+import type { MergeDetail } from "../../workflow/merge-check";
 import type { ActionName, ActionResult } from "../actions";
 import type {
   BackendRow,
@@ -56,6 +58,7 @@ export type {
   BackendRow,
   BreakerRecord,
   CrewEvent,
+  DiffFile,
   DoctorCheck,
   FallbackRecord,
   FallbackRow,
@@ -69,6 +72,7 @@ export type {
   LimitRecord,
   LimitRow,
   LogLine,
+  MergeDetail,
   ModelRow,
   OpenBreaker,
   PortalFacts,
@@ -288,11 +292,19 @@ export interface CrewReview {
 
 /** The merge check's verdict, in the command's own kinds (`workflow merge-check`). */
 export type MergeVerdict =
-  | { kind: "allowed"; reason: string }
-  | { kind: "refused"; number: null | number; reason: string }
+  | { detail: MergeDetail | null; kind: "allowed"; reason: string }
+  | { detail: MergeDetail | null; kind: "refused"; number: null | number; reason: string }
   | { kind: "silent" }
   | { kind: "unread"; number: null | number; what: string }
   | { kind: "late"; number: null | number; what: string };
+
+/** One memory reading of a crew session's own log (`src/crew/store.ts` › `CrewEvent.memoryMb`). */
+export interface CrewMemoryPoint {
+  /** When it was read (ISO 8601). */
+  at: string;
+  /** The memory its session's process held, in MB. */
+  mb: number;
+}
 
 /** `GET /api/crew/<id>`: one crew session's page (D52). */
 export interface CrewAnswer {
@@ -301,6 +313,8 @@ export interface CrewAnswer {
   crew: CrewSummary;
   /** Its branch against its base; `error` says why git could not give it. */
   diff: {
+    /** Every changed file, from git's own numstat; a binary file has null counts. */
+    byFile: DiffFile[];
     deletions: number;
     error: null | string;
     files: number;
@@ -309,6 +323,8 @@ export interface CrewAnswer {
   };
   /** Its log's newest events last; at most `CREW_PAGE_EVENTS`. */
   events: CrewStepItem[];
+  /** Its memory over time, oldest first: each reading its log kept, then the record's now. */
+  memory: CrewMemoryPoint[];
   mergeCheck: MergeVerdict;
   report: CrewReport | null;
   /** Every review recorded on its branch, newest first. */
@@ -326,21 +342,41 @@ export interface GuardAskItem {
   tool: string;
 }
 
-/** `GET /api/guard-asks`: the guard log, filtered, with its totals for the chart. */
+/** `GET /api/guard-asks`: the guard log, paged, filtered, with its totals for the chart. */
 export interface GuardAsksAnswer {
+  /** The page, newest first. */
   asks: GuardAskItem[];
-  /** The hooks that asked, with how many times, across the whole kept log. */
+  /** The chart's step for the range, from the history's own buckets. */
+  bucketMs: number;
+  /** Asks per hook per bucket, over the whole filtered range (not just the page). */
+  buckets: { at: number; byHook: Record<string, number> }[];
+  /** The hooks that asked, with how many times, across the whole log. */
   byHook: Record<string, number>;
-  /** How many asks the filter kept, and how many lines the file held that could not be read. */
+  /** Every hook the range holds, for the filter's select. */
+  guards: string[];
+  /** How many asks the filter kept across the range, and how many lines of the file could not be read. */
   kept: number;
+  /** The cursor of the next (older) page; null on the last page. */
+  next: null | string;
+  /** The range this answer covers, as it was asked for. */
+  range: string;
+  /** Every session the range holds, for the filter's select. */
+  sessions: string[];
   skipped: number;
 }
 
 /** Why the person is needed, from the flow report: a permission prompt or a question. */
 export interface PermissionWait {
   asker: string;
+  /**
+   * The full command that opens the waiting session again (`claude attach <id>`), the way
+   * `crew end` prints it; null when the session is not a crew session.
+   */
+  attach: null | string;
   /** Milliseconds since the epoch. */
   at: number;
+  /** The crew session that waits, when the session is one; null for any other session. */
+  crew: null | { id: string; name: string; shortId: null | string };
   kind: null | string;
   project: string;
   session: string;
@@ -358,20 +394,28 @@ export interface CrewNeed {
 
 /** An open breaker: a slot whose every target is limited or down. */
 export interface BreakerNeed {
+  /** Requests the breaker held since it opened. */
   held: number;
+  /** Requests it holds right now, from the router's live answer; null when the router does not say. */
+  heldNow: null | number;
   since: string;
   slot: string;
   targets: { status: null | number; target: string; until: string }[];
 }
 
-/** A doctor failure with the line that fixes it (doctor's own words). */
+/** A doctor failure, with the line that fixes it and the report group it belongs to (doctor's own words). */
 export interface DoctorFailure {
+  /** The command that fixes it, or the one step a person takes; null when the check names none. */
+  fix: null | string;
+  /** The report group's title (`CHECK_GROUPS`), or null when the check names none. */
+  section: null | string;
   text: string;
 }
 
 /** `GET /api/needs`: everything that waits on the person (D52). */
 export interface NeedsAnswer {
-  breaker: null | BreakerNeed;
+  /** Every breaker open now, by slot. */
+  breakers: BreakerNeed[];
   crew: CrewNeed[];
   doctor: { at: null | number; failures: DoctorFailure[] };
   permissions: PermissionWait[];
@@ -386,13 +430,31 @@ export interface WorktreeItem {
   kind: "finished" | "gone" | "kept" | "main";
   /** The commit it is on. */
   head: string;
+  /** Minutes since git last wrote to it; null for the main checkout and a folder that is gone. */
+  idleMinutes: null | number;
   path: string;
   /** Why it is kept; null when it is finished or the main checkout. */
   why: null | string;
 }
 
+/**
+ * The background clean's record of a repository (`src/worktrees/auto-state.ts`): when it last
+ * ran, and the removals no session start has reported to the person yet (the record keeps them
+ * until then, so they are not necessarily from that last run).
+ */
+export interface WorktreeAutoClean {
+  /** The base those removals were judged against. */
+  base: string;
+  /** When auto-clean last ran (ISO 8601), whatever that run did. */
+  lastRunAt: string;
+  /** The latest removals auto-clean has not reported yet, and why each counted as finished. */
+  removed: { branch: null | string; name: string; path: string; why: string }[];
+}
+
 /** `GET /api/worktrees`: every worktree's verdict against `base`, with no fetch (origin as it is). */
 export interface WorktreesAnswer {
+  /** The last background clean of this repository; null when it never ran. */
+  autoClean: null | WorktreeAutoClean;
   base: string;
   /** Where the base came from: the project's file, the remote's default, or the fallback. */
   from: "config" | "default" | "origin";

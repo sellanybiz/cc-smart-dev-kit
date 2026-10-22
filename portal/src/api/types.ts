@@ -11,6 +11,7 @@
 import type {
   BackendRow,
   CrewReport,
+  CrewReview,
   HistoryAnswer,
   HistoryRequest,
   ModelRow,
@@ -600,6 +601,8 @@ export type NeedsItem =
       asker: string;
       session: string;
       project: string;
+      /** `claude attach <id>`, for a crew session the server names; null for any other session. */
+      attach: null | string;
       /** The tool the prompt is about, and its one line. */
       tool: string;
       detail: string;
@@ -635,35 +638,47 @@ export interface NeedsData {
 /** The hand-back report, as the server sends it (`src/crew/store.ts` › `HandBackReport`). */
 export type HandBackReport = CrewReport;
 
-/** `src/workflow/review-cover.ts` › `ChangeCount`. */
+/** Lines and files: a change, as `src/workflow/review-cover.ts` › `Cover` counts it. */
 export interface ChangeCount {
   lines: number;
   files: number;
-  generated: string[];
-  binary: string[];
+  /** Binary files in it: never counted in lines, and never covered by a review. */
+  binary: number;
 }
 
 /**
- * The merge guard's verdict on the branch (D17b, `workflow merge-check`): allowed, or the
- * reason it asks, with the counts against the limit (`FixLimits`, `review-cover.ts`).
+ * The merge guard's verdict on the branch (D17b, `workflow merge-check`): allowed, refused with
+ * its reason, or not known (`unread`: the guard could not read it; `late`: the pull request
+ * merged before it was judged), with the counts against the limit (`FixLimits`).
  */
 export interface MergeCheck {
+  kind: "allowed" | "refused" | "unread" | "late";
   allowed: boolean;
+  /** The pull request the verdict is about; null when it does not name one. */
+  pr: null | number;
   /** In words, the counts and the limit; null when it is allowed with nothing to say. */
   reason: null | string;
+  /** The commit the last review covered; null when no review is recorded. */
   review: null | string;
+  /** The change since that review. */
   delta: null | ChangeCount;
+  /** The change that review covered. */
   reviewed: null | ChangeCount;
   /** Null when the verdict does not say. */
   limits: null | { lines: number; files: number; percent: number };
+  /** What may still change after the review and stay covered (the gate's own count); null when it does not say. */
+  allowance: null | { lines: number; files: number };
 }
 
-/** One file of the diff against the base. */
+/** One file of the diff against the base; `added` and `removed` are null for a binary file. */
 export interface DiffFile {
   path: string;
-  added: number;
-  removed: number;
+  added: null | number;
+  removed: null | number;
 }
+
+/** One review recorded for the branch (`src/workflow/reviews.ts`): when, by whom, at which commit. */
+export type CrewReviewRecord = CrewReview;
 
 export interface CrewDetail {
   record: CrewRecord;
@@ -678,7 +693,10 @@ export interface CrewDetail {
   /** The branch against its base, in totals; `error` says why git could not give them. */
   diffTotals: null | { deletions: number; error: null | string; files: number; insertions: number };
   mergeCheck: null | MergeCheck;
+  /** Its memory over time, oldest first; empty when nothing was measured. */
   memory: { at: number; mb: number }[];
+  /** The reviews recorded for its branch, oldest first. */
+  reviews: CrewReviewRecord[];
 }
 
 // ── Guard log (D52; planned: `GET /api/guard-asks?…`) ─────────────────────────────────
@@ -696,13 +714,20 @@ export interface GuardQuery {
   range: HistoryRange;
   guard?: string;
   session?: string;
+  /** The server's cursor of the page to read; null for the newest page. */
   cursor: null | string;
 }
 
-/** One page of the guard log, newest first, and the asks per guard over the range. */
+/**
+ * One page of the guard log, newest first, cut by the server, and the asks per guard over the
+ * whole range (not the page).
+ */
 export interface GuardAsksPage {
   rows: GuardAsk[];
+  /** The cursor of the next (older) page; null on the last one. */
   next: null | string;
+  /** Asks the filters kept across the whole range. */
+  kept: number;
   /** Every guard and every session the range holds, for the filters. */
   guards: string[];
   sessions: string[];
@@ -716,17 +741,25 @@ export interface WorktreeRow {
   project: string;
   path: string;
   branch: null | string;
-  /** Null until the server sends how long it was idle. */
+  /** Null when how long it was idle is not known. */
   idleMinutes: null | number;
   verdict:
     | { finished: true; note: null | string }
     | { finished: false; held: boolean; why: string };
 }
 
+/** One worktree auto-clean removed, and why it counted as finished. */
+export interface CleanedWorktree {
+  branch: null | string;
+  name: string;
+  path: string;
+  why: string;
+}
+
 export interface WorktreesData {
   rows: WorktreeRow[];
-  /** What auto-clean removed, newest first. */
-  cleaned: { project: string; path: string; branch: null | string; at: string }[];
+  /** Auto-clean's last run in this project: when, against which base, and what it removed. */
+  autoClean: null | { lastRunAt: string; base: string; removed: CleanedWorktree[] };
 }
 
 /** `src/update/state.ts` › `LastCheck`. */

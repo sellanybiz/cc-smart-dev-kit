@@ -154,17 +154,19 @@ function NeedsPanel() {
       </h2>
       {needs.status === "loading" ? (
         <p className="text-sm text-muted-foreground">Looking…</p>
-      ) : items.length === 0 ? (
-        <p className="py-6 text-sm text-muted-foreground">
-          <span className="text-ok" aria-hidden="true">
-            ✓{" "}
-          </span>
-          Nothing needs you.
-        </p>
       ) : (
+        // Always the list, with its own empty state: what it settled stays in place.
         <NeedsList
           compact
           items={[...items].sort((a, b) => Date.parse(b.since) - Date.parse(a.since)).slice(0, 3)}
+          empty={
+            <p className="py-6 text-sm text-muted-foreground">
+              <span className="text-ok" aria-hidden="true">
+                ✓{" "}
+              </span>
+              Nothing needs you.
+            </p>
+          }
         />
       )}
       <AppLink
