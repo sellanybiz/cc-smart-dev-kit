@@ -640,13 +640,17 @@ describe("the adapters", () => {
   });
 
   test("a merge verdict, in the page's words: each kind has its tone and its reason", () => {
-    expect(branchVerdictOf({ detail: null, kind: "allowed", reason: "reviewed at abc123" })).toEqual({
+    expect(
+      branchVerdictOf({ detail: null, kind: "allowed", reason: "reviewed at abc123" }),
+    ).toEqual({
       kind: "allowed",
       label: "allowed",
       reason: "reviewed at abc123",
       tone: "ok",
     });
-    expect(branchVerdictOf({ detail: null, kind: "refused", number: 4, reason: "no review recorded" })).toEqual({
+    expect(
+      branchVerdictOf({ detail: null, kind: "refused", number: 4, reason: "no review recorded" }),
+    ).toEqual({
       kind: "refused",
       label: "refused",
       reason: "no review recorded",
