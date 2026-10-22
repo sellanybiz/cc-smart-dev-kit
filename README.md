@@ -1648,6 +1648,15 @@ pages the newest rows first; both take `slot`, `target`, `model`, `session` and
 request yet. `GET /api/history/keys?range=…` lists the slots, targets, models and sessions the
 range holds, for the filter menus.
 
+**The guard log pages on the server too.** `GET /api/guard-asks?range=…&cursor=…&limit=…`
+answers one page of the guards' questions, newest first, with a cursor for the page after it,
+the asks per guard for the range's chart, and the guards and sessions the range holds, for the
+filter menus. The other answers carry what a page needs to explain itself: a crew session's
+changed files each with its own line counts, its memory over time, and why its merge is allowed
+or refused (the review, the change after it, and what that review still covers); every open
+breaker with how many requests wait right now; each failing `doctor` check with its fix and its
+section; and each worktree's idle minutes and what the last automatic clean removed.
+
 ## Instructions, skills and agents
 
 The plugin gives Claude general working instructions, skills and agents, written for any

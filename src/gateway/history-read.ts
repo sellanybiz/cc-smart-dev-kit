@@ -51,6 +51,9 @@ const BUCKET_MS: Readonly<Record<HistoryRange, number>> = {
   "90d": 24 * 60 * 60 * 1000,
 };
 
+/** The same map for a reader that charts another log over one of these ranges (one home). */
+export const HISTORY_BUCKET_MS: Readonly<Record<HistoryRange, number>> = BUCKET_MS;
+
 /** What `historySeries` groups by. */
 export const HISTORY_BY = ["target", "slot", "model", "session"] as const;
 export type HistoryBy = (typeof HISTORY_BY)[number];
@@ -234,7 +237,7 @@ export function percentiles(values: readonly number[]): { p50: number; p95: numb
 }
 
 /** The bucket a time falls in, for `bucketMs`. */
-function bucketStart(at: number, bucketMs: number): number {
+export function bucketStart(at: number, bucketMs: number): number {
   return Math.floor(at / bucketMs) * bucketMs;
 }
 

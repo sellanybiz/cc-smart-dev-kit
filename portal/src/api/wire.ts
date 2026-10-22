@@ -536,6 +536,7 @@ export type MergeVerdict =
 
 /** `src/workflow/merge-check.ts` › `MergeDetail`: the review gate's own numbers behind a verdict. */
 export interface MergeDetail {
+  allowance: null | { files: number; lines: number };
   delta: null | { files: number; lines: number };
   limits: null | { files: number; lines: number; percent: number };
   review: null | string;
