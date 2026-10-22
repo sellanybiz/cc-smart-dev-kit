@@ -1,6 +1,7 @@
 "use client";
 
 import { useResource } from "@/api/hooks";
+import { NEEDS_REFRESH } from "@/api/refresh";
 import { NAV_GROUPS, navItemFor } from "@/components/nav-items";
 import { AppLink, useAppPath } from "@/components/router";
 import {
@@ -16,7 +17,7 @@ import {
 /** The sidebar's pages, in their groups; the page you are on is marked for a screen reader too. */
 export function NavMain() {
   const current = navItemFor(useAppPath());
-  const needs = useResource((client) => client.needs());
+  const needs = useResource((client) => client.needs(), "", NEEDS_REFRESH);
   const needsCount = needs.status === "ready" ? needs.data.items.length : 0;
   return (
     <>

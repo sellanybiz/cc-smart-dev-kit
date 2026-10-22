@@ -30,6 +30,7 @@ import { VERSION } from "../build-info";
 import { listModels } from "../gateway/backends";
 import { judgeDefaultWords } from "../gateway/commands";
 import {
+  breakerOn,
   DEFAULT_PORT,
   fallbackOn,
   type GatewayConfig,
@@ -37,6 +38,8 @@ import {
   keptChain,
   loadConfigFile,
   messageOf,
+  type SlotMode,
+  slotMode,
 } from "../gateway/config";
 import { routerHealth } from "../gateway/health";
 import {
@@ -151,14 +154,56 @@ export async function shellFacts(
 
 // ── The router's health page ────────────────────────────────────────────────────
 
+/**
+ * One routed request, as the router's health answer lists it (`recent`): metadata only, never
+ * a prompt, an answer or a header. The live stream's `recent` event carries the same shape.
+ */
+export interface RecentEntry {
+  /** When it came in: milliseconds since the epoch. */
+  at: number;
+  /** How long until its answer started: milliseconds. */
+  ms: number;
+  /** A next target of the slot answered, or tried to: the first one did not. */
+  nextTarget: boolean;
+  /** The slot that answered it; null for a request no slot took. */
+  slot: null | string;
+  status: number;
+  /** Who answered, as the router's log names it. */
+  target: string;
+}
+
+/** One target of a slot whose breaker is open: its last status, and when its rest ends. */
+export interface OpenBreakerTarget {
+  status: null | number;
+  target: string;
+  /** Milliseconds since the epoch. */
+  until: number;
+}
+
+/** A slot whose breaker is open now (the router's `breakers`): every target limited or down. */
+export interface OpenBreaker {
+  /** Requests held since it opened. */
+  held: number;
+  /** Requests held right now. */
+  heldNow: number;
+  /** Milliseconds since the epoch. */
+  since: number;
+  targets: OpenBreakerTarget[];
+}
+
 /** The router's own answer, as the pages read it. */
 export interface RouterFacts {
-  /** Seconds it has been up. */
+  /** The slots whose breaker is open now, by slot key; empty while the router is down. */
+  breakers: Record<string, OpenBreaker>;
+  /** Target → seconds it still rests. */
   cooling: [string, number][];
   fallbacks: number;
   port: number;
+  /** The last routed requests, oldest first (at most the router's `RECENT_MAX`). */
+  recent: RecentEntry[];
   requests: number;
   up: boolean;
+  /** Seconds it has been up. */
   uptimeSec: number;
   /** Why it is down, when it is. */
   why: null | string;
@@ -175,13 +220,55 @@ function entriesOf(value: unknown): [string, number][] {
     .sort(([a], [b]) => (a < b ? -1 : 1));
 }
 
+/** One `recent` entry of the router's answer, or null when it is not one this version reads. */
+export function recentEntryOf(value: unknown): null | RecentEntry {
+  if (!isJsonObject(value)) return null;
+  const { at, ms, nextTarget, slot, status, target } = value;
+  if (typeof at !== "number" || typeof ms !== "number" || typeof status !== "number") return null;
+  if (typeof target !== "string" || (slot !== null && typeof slot !== "string")) return null;
+  return { at, ms, nextTarget: nextTarget === true, slot, status, target };
+}
+
+/** The router's open breakers, defensively read: a malformed entry is left out. */
+function breakersOf(value: unknown): Record<string, OpenBreaker> {
+  if (!isJsonObject(value)) return {};
+  const out: Record<string, OpenBreaker> = {};
+  for (const [slot, raw] of Object.entries(value)) {
+    if (!isJsonObject(raw)) continue;
+    const { held, heldNow, since, targets } = raw;
+    if (typeof held !== "number" || typeof heldNow !== "number" || typeof since !== "number") {
+      continue;
+    }
+    out[slot] = {
+      held,
+      heldNow,
+      since,
+      targets: (Array.isArray(targets) ? targets : []).flatMap((one): OpenBreakerTarget[] => {
+        if (!isJsonObject(one) || typeof one.target !== "string" || typeof one.until !== "number") {
+          return [];
+        }
+        return [
+          {
+            status: typeof one.status === "number" ? one.status : null,
+            target: one.target,
+            until: one.until,
+          },
+        ];
+      }),
+    };
+  }
+  return out;
+}
+
 export async function routerFacts(ctx: PortalContext, port: number): Promise<RouterFacts> {
   const health = await routerHealth(port, ctx.probe.fetch);
   if ("error" in health) {
     return {
+      breakers: {},
       cooling: [],
       fallbacks: 0,
       port,
+      recent: [],
       requests: 0,
       up: false,
       uptimeSec: 0,
@@ -191,9 +278,14 @@ export async function routerFacts(ctx: PortalContext, port: number): Promise<Rou
   const body = isJsonObject(health.body) ? health.body : {};
   const number = (key: string): number => (typeof body[key] === "number" ? body[key] : 0);
   return {
+    breakers: breakersOf(body.breakers),
     cooling: entriesOf(body.cooling),
     fallbacks: number("fallbacks"),
     port: typeof body.port === "number" ? body.port : port,
+    recent: (Array.isArray(body.recent) ? body.recent : []).flatMap((entry) => {
+      const read = recentEntryOf(entry);
+      return read === null ? [] : [read];
+    }),
     requests: number("requests"),
     up: true,
     uptimeSec: number("uptimeSec"),
@@ -313,15 +405,41 @@ export interface SlotTarget {
 }
 
 export interface SlotRow {
+  /** Its breaker switch (`breakerOn`): always false for the judge, which never holds. */
+  breaker: boolean;
   /** Its fallback switch (`fallbackOn`): may the next target answer? */
   fallback: boolean;
   /** The words the page shows instead of the slot key's prefix. */
   info: string;
+  /** The chain saved while the slot answers as Claude (`kept`); null when there is none. */
+  kept: null | { fallback: boolean; targets: SlotTarget[] };
   key: string;
+  /** What the slot is for, `off` while it answers as Claude (the server-rendered pages' word). */
   kind: string;
+  /** `custom`: its chain answers; `claude`: Claude answers, any chain stays saved (`slotMode`). */
+  mode: SlotMode;
   name: string;
   note: string;
+  /** What the slot is for, whatever its mode: `affordable`, `model`, `judge`, `other`. */
+  role: string;
+  /**
+   * The chain as this page read it (`slotStamp`): a save sends it back, and the server refuses
+   * a save made over a chain that changed since (another tab, the command line).
+   */
+  stamp: string;
+  /** The chain in use; empty while the slot answers as Claude. */
   targets: SlotTarget[];
+}
+
+/**
+ * The slot's chain as one short value: the chain in use and the one saved, nothing else. Two
+ * reads that give the same stamp saw the same chain, so a save made from an older page is
+ * refused before it overwrites a newer chain.
+ */
+export function slotStamp(config: Pick<GatewayConfig, "kept" | "slots">, key: string): string {
+  const inUse = Object.hasOwn(config.slots, key) ? (config.slots[key] ?? null) : null;
+  const saved = keptChain(config, key)?.targets ?? null;
+  return createHash("sha256").update(JSON.stringify({ inUse, saved })).digest("hex").slice(0, 16);
 }
 
 /** The words each slot kind gets, the same ones the Slots page shows. */
@@ -373,23 +491,37 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
     const targets = config.slots[key];
     const on = targets !== undefined;
+    const targetRow = (target: string): SlotTarget => {
+      const parsed = parseTarget(target);
+      const known = "target" in parsed ? parsed.target : null;
+      return {
+        from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
+        restingFor: resting.get(target) ?? null,
+        target,
+        tested: key === JUDGE_SLOT && judgeTargetTested(config, target),
+      };
+    };
+    const kept = keptChain(config, key);
     rows.push({
+      breaker: breakerOn(config, key),
       fallback: fallbackOn(config, key),
       info: meta.info,
+      kept:
+        kept === null
+          ? null
+          : {
+              // The switch saved with the chain, else the slot's own default.
+              fallback: kept.fallback ?? fallbackOn({}, key),
+              targets: kept.targets.map(targetRow),
+            },
       key,
       kind: on ? meta.kind : "off",
+      mode: slotMode(config, key),
       name,
       note: slotNote(config, key),
-      targets: (targets ?? []).map((target) => {
-        const parsed = parseTarget(target);
-        const known = "target" in parsed ? parsed.target : null;
-        return {
-          from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
-          restingFor: resting.get(target) ?? null,
-          target,
-          tested: key === JUDGE_SLOT && judgeTargetTested(config, target),
-        };
-      }),
+      role: meta.kind,
+      stamp: slotStamp(config, key),
+      targets: (targets ?? []).map(targetRow),
     });
   }
   return rows;

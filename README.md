@@ -1513,14 +1513,24 @@ question, an update check or a change in the heavy-job queue as it lands. Severa
 more than eight open tabs are refused with a short line instead of holding the server open. The
 pages fetch their facts from read-only `/api/…` answers (the portal's own interface, not a
 public API), and an action that runs a command no longer freezes anything: installing an update
-shows each step while it runs, and the pages and the stream stay live.
+shows each step while it runs, and the pages and the stream stay live. When the connection
+drops, the header says "Reconnecting…" and the page keeps what it last knew; it catches up by
+itself when the portal answers again.
+
+**Every change is made in place.** A button that restarts or rewrites something asks first, in
+the page, naming the exact change (Stop a crew session, save a chain, switch a slot, write a
+project's own setting); then it shows "Working…" and the command's newest line, and its result
+beside the button — `✓` with what changed, or `✗ Not done:` with the command's own words,
+**Details** and **Try again**. The page is never reloaded to show it, so an edit elsewhere on the
+page is never lost. A page drawn from mock data (`?mock=` in its address, for a look at its other
+states) says "Mock data" in its header and sends nothing.
 
 Six screens, each following the design the owner approved (2026-10-16):
 
 | Screen | What it shows |
 |---|---|
 | **Overview** | The plan limits the router saw and the slots answering from a fallback; every slot's chain; the three switches (the gateway, your own judge, the opus and fable slots); the latest warnings. |
-| **Slots** | A chain per slot, built from the backends' live model lists, and a Fallback switch per slot — rows after the first read "kept, not used" while it is off. **Test each target** — one tiny chat to each affordable model, and the force-push test for a judge — then **Save**, after a confirmation that every running Claude session uses it from its next request. Save is held off for the **judge** slot until every backend target has blocked the force-push test; the command line's own rule, said in the judge note. |
+| **Slots** | One card per slot. **Who answers**: Claude or Custom, both named (`gateway slot <slot> claude\|custom`); Custom stays unavailable, with its reason, until a chain is saved (the judge: until every backend target passed the force-push test). **The chain**: the one in use, or the one saved while Claude answers ("Saved, not in use"); drag a target or use its arrows, add one from the backends' live model list, or type one, which the server checks with the command line's own rule before it joins (`✗ "omnirout:glm-5.3": backend "omnirout" is not in the config`). Edits stay a draft until **Save**, which asks first and runs `gateway slot <slot> <targets>` (in Claude mode it says that saving puts the chain in use). A save over a chain that changed since the page read it (another tab, the command line) is refused, and the card offers **Load it** or **Keep mine**. **Test each target** marks each one (one tiny chat to an affordable model, the force-push test for a judge). **Fallback** and **Breaker** save at once, after a confirmation (`gateway fallback`, `gateway breaker`; the judge has no breaker). Each target shows its last day from the request history. |
 | **Health** | The router's counters, each backend and whether it answers, the targets resting, and its journal. Looks again every five seconds (Pause stops that, and a hidden tab is not reloaded at all). |
 | **Machine** | Updates (installed, newest, last check, on hold, check now, install), the heavy-job queue, the companion plugins, the OmniRoute card, the **Browser card** (the browser's own `doctor` lines, the five steps as one numbered list — each step's sentence, then the address or command it needs in a box of its own with a Copy button — a button that runs `browser setup`, which opens the extension's page in your `claude-code` profile and names that profile in Chrome's own settings file while Chrome is closed, and a masked field that saves the token: the stored value is never on the page), `doctor` (run again, without the browser's lines, which are on that card), the project's auto-mode rules, the **Project card** (below), and the **Warp card**, which shows the install and remove commands to copy. |
 | **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here, with a link to the Project card. |
@@ -1614,7 +1624,8 @@ counts and an estimated cost). `GET /api/history?range=1h|4h|1d|7d|14d|30d|90d&b
 answers one series per key, every bucket of the window included, and `GET /api/requests`
 pages the newest rows first; both take `slot`, `target`, `model`, `session` and
 `status=error`, and both answer empty — not an error — on a machine that has logged no
-request yet.
+request yet. `GET /api/history/keys?range=…` lists the slots, targets, models and sessions the
+range holds, for the filter menus.
 
 ## Instructions, skills and agents
 

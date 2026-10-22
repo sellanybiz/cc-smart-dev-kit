@@ -1,11 +1,13 @@
 "use client";
 
-import { GitBranchIcon, SquareIcon, UsersIcon } from "lucide-react";
+import { GitBranchIcon, UsersIcon } from "lucide-react";
 import { useState } from "react";
+import { crewStateOf } from "@/api/adapt";
 import { useResource } from "@/api/hooks";
+import { CREW_REFRESH } from "@/api/refresh";
 import type { CrewEvent, CrewRecord, CrewState, OtherSession, WorkData } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
-import { LaterAction } from "@/components/later-action";
+import { CrewActions } from "@/components/crew-actions";
 import { AppLink } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { Sparkline } from "@/components/sparkline";
@@ -25,7 +27,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ago, clockTime, megabytes, slotName, until } from "@/lib/format";
 
 /** The states a crew session is running in: the Overview's count uses the same list. */
-const RUNNING: readonly CrewState[] = ["starting", "working", "blocked", "paused", "quiet"];
+const RUNNING: readonly string[] = ["starting", "working", "blocked", "paused", "quiet"];
+
+/** A state's tone; a word a newer kit wrote is shown as itself, in the quiet tone. */
+function stateTone(state: string): Tone {
+  const known = crewStateOf(state);
+  return known === null ? "info" : STATE_TONE[known];
+}
 
 const STATE_TONE: Record<CrewState, Tone> = {
   queued: "info",
@@ -122,7 +130,7 @@ function CrewRow({
       </TableCell>
       <TableCell className="w-44 align-top whitespace-normal">
         <div className="flex flex-col items-start gap-1">
-          <TonePill tone={STATE_TONE[record.state]}>{record.state}</TonePill>
+          <TonePill tone={stateTone(record.state)}>{record.state}</TonePill>
           {waiting !== null && (
             <span className="text-xs text-pretty text-muted-foreground">{waiting}</span>
           )}
@@ -172,14 +180,7 @@ function CrewRow({
           {record.shortId !== null && (
             <CopyButton text={`claude attach ${record.shortId}`} label="Attach" />
           )}
-          {RUNNING.includes(record.state) && (
-            <LaterAction
-              icon={<SquareIcon data-icon="inline-start" aria-hidden="true" />}
-              label={`Stop ${record.name}`}
-            >
-              Stop
-            </LaterAction>
-          )}
+          <CrewActions crew={record} />
         </div>
       </TableCell>
     </TableRow>
@@ -258,6 +259,7 @@ const SESSION_TONE: Record<OtherSession["state"], Tone> = {
   working: "ok",
   waiting: "warn",
   idle: "info",
+  open: "info",
 };
 
 function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: number }) {
@@ -397,7 +399,7 @@ function WorkPage({ data }: { data: WorkData }) {
 
 /** Work (D27): each lead with its crew sessions nested, and the person's other sessions. */
 export function WorkView() {
-  const work = useResource((client) => client.work());
+  const work = useResource((client) => client.work(), "", CREW_REFRESH);
   return (
     <ResourceView resource={work} label="the work">
       {(data) => <WorkPage data={data} />}

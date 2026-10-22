@@ -7,7 +7,7 @@
  * (`src/portal/actions.ts`).
  */
 
-import { RECENT_PAGE_DEFAULT } from "../../gateway/history-read";
+import { historyKeys, RECENT_PAGE_DEFAULT } from "../../gateway/history-read";
 import type { PageDataDeps } from "../page-data";
 import {
   healthAnswer,
@@ -99,6 +99,27 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
       return ok(updateAnswer(deps));
     case "/api/jobs":
       return ok(await jobsAnswerFor(deps));
+    case "/api/facts":
+      return ok(await deps.facts());
+    case "/api/history/keys": {
+      const range = rangeOf(query.get("range"));
+      if (range === null) {
+        return {
+          body: { error: `range must be one of ${Object.keys(HISTORY_RANGES).join(", ")}` },
+          status: 400,
+        };
+      }
+      try {
+        return ok(
+          historyKeys(deps.action.portal.paths.historyDbFile, {
+            now: deps.action.portal.now(),
+            range,
+          }),
+        );
+      } catch {
+        return { body: { error: "the request history could not be read" }, status: 500 };
+      }
+    }
     case "/api/flow": {
       const range = rangeOf(query.get("range"));
       if (range === null) {

@@ -42,9 +42,11 @@ import type {
 
 /** The router with no config to name: nothing is probed, and no port is invented. */
 const NO_ROUTER: RouterFacts = {
+  breakers: {},
   cooling: [],
   fallbacks: 0,
   port: 0,
+  recent: [],
   requests: 0,
   up: false,
   uptimeSec: 0,
@@ -125,6 +127,7 @@ export async function slotsAnswer(deps: PageDataDeps): Promise<SlotsAnswer> {
     return {
       ...notSetUp(deps),
       backendNotes: [],
+      breakers: {},
       chains: {},
       fallback: {},
       models: [],

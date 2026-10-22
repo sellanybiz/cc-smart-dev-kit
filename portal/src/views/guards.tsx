@@ -3,7 +3,8 @@
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { type Resource, useResource } from "@/api/hooks";
-import type { GuardAsk, GuardAsksPage, History, HistoryRange } from "@/api/types";
+import { GUARDS_REFRESH } from "@/api/refresh";
+import type { ChartHistory, GuardAsk, GuardAsksPage, HistoryRange } from "@/api/types";
 import { columnsFor, PortalTable } from "@/components/data-table";
 import { RangeSwitch } from "@/components/filter-bar";
 import { HistoryChart } from "@/components/history-chart";
@@ -59,7 +60,7 @@ const COLUMNS = column.columns([
 ]);
 
 /** The guard log's asks per guard, in the history's shape, so the history chart draws them. */
-function asHistory(page: GuardAsksPage, range: HistoryRange): History {
+function asHistory(page: GuardAsksPage, range: HistoryRange): ChartHistory {
   return {
     range,
     bucketMs: page.buckets.bucketMs,
@@ -142,6 +143,7 @@ export function GuardsView() {
         ...(session === null ? {} : { session }),
       }),
     `${key}|${cursor ?? ""}`,
+    GUARDS_REFRESH,
   );
   const set = (name: string, value: null | string) => {
     const next = new URLSearchParams(query);
@@ -152,7 +154,7 @@ export function GuardsView() {
   const ready = page.status === "ready" ? page.data : null;
   const history = useMemo(() => (ready === null ? null : asHistory(ready, range)), [ready, range]);
   // The chart reads the same answer as the table, in the history's shape.
-  let chartResource: Resource<History> = { status: "loading" };
+  let chartResource: Resource<ChartHistory> = { status: "loading" };
   if (history !== null) chartResource = { status: "ready", data: history };
   else if (page.status === "error") {
     chartResource = { status: "error", message: page.message, gateway: false };

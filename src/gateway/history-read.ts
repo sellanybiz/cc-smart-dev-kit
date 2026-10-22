@@ -135,6 +135,47 @@ export const RECENT_PAGE_MAX = 200;
 /** The default page size. */
 export const RECENT_PAGE_DEFAULT = 50;
 
+/** The values each filter can take in a range: what the portal's filter menus offer. */
+export interface HistoryKeys {
+  models: string[];
+  sessions: string[];
+  slots: string[];
+  targets: string[];
+}
+
+/**
+ * The slots, targets, models and sessions the range holds, each sorted. A row with no slot or
+ * no session gives no key here: a filter is an exact match on its column, and a missing value
+ * is not one a person can pick.
+ */
+export function historyKeys(
+  file: string,
+  options: { now?: number; range: HistoryRange },
+): HistoryKeys {
+  const db = openReadonly(file);
+  if (db === null) return { models: [], sessions: [], slots: [], targets: [] };
+  try {
+    const from = (options.now ?? Date.now()) - RANGE_MS[options.range];
+    // The column name is one of four fixed words, never a caller's text.
+    const values = (column: "model" | "session" | "slot" | "target"): string[] =>
+      (
+        db
+          .query(
+            `SELECT DISTINCT ${column} AS value FROM requests WHERE at >= ? AND ${column} IS NOT NULL ORDER BY ${column}`,
+          )
+          .all(from) as { value: string }[]
+      ).map((row) => row.value);
+    return {
+      models: values("model"),
+      sessions: values("session"),
+      slots: values("slot"),
+      targets: values("target"),
+    };
+  } finally {
+    db.close();
+  }
+}
+
 /** The grouping expression, from the column a row holds; never from a caller's text. */
 function groupExpression(by: HistoryBy): string {
   switch (by) {

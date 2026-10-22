@@ -691,9 +691,10 @@ function notSlotName(slotArg: string): string {
 /**
  * Why a chain cannot be used, or null when it can: each target parses, its backend exists,
  * and its model is in that backend's list. `claude-…` targets are taken as they are:
- * Anthropic's list is not reachable without the person's login.
+ * Anthropic's list is not reachable without the person's login. The portal's `slot.check`
+ * asks it too, so a target typed on the Slots page is judged exactly as `gateway slot` would.
  */
-function chainProblem(
+export function chainProblem(
   config: GatewayConfig,
   targets: readonly string[],
   modelsByBackend: Readonly<Record<string, null | string[]>>,

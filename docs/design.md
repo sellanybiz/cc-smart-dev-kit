@@ -800,6 +800,52 @@ owner's yes to D49's one loosening, for the exact values the export writes. `scr
 server-rendered page, and with no export folder at all the server-rendered pages answer as
 before: the switch-over costs nothing.
 
+### The page side: the client, the stream, the actions (B6c)
+
+**One client, chosen in one place** (`portal/src/api/client.ts` › `portalClient()`): the live
+client on a page the kit's server serves, the mock client with `?mock=<state>` in the address
+or under `next dev` (and then the header says "Mock data"). The live client fetches
+`GET /api/…` on the same origin and nothing else; each answer goes through `adapt.ts`, the one
+translation into the shape its page draws. A fact the server does not send yet is `null` there
+and the page says it does not know (the Machine page's Claude Code and Bun versions, the
+router's socket unit, a project's last use): never a value made up to fill a field.
+
+**The API types have one mirror** (`portal/src/api/wire.ts`): every type
+`src/portal/api/types.ts` exports, by the same name, written out because the server's file
+imports Bun, zod and the gateway, which the app cannot bundle. `src/portal/api/wire-mirror.ts`
+checks each pair with the type checker (assignable both ways, the same fields; one way only for
+the Project card's opaque `workflow`), and `wire-mirror.test.ts` fails when a server export is
+not checked, when the type checker refuses the mirror, or when the app's list of actions is not
+`ACTION_NAMES` (`src/portal/actions.ts`). So a changed shape on either side fails `bun test`,
+not a page. Generating one from the other was the other choice; it was not taken because the
+server's types are built from zod schemas and modules the app has no access to.
+
+**One stream for every tab** (`portal/src/api/stream.ts`): the tab that holds the Web Lock
+`ccsdk-portal-events` opens the one `EventSource('/events')` and passes each event to the
+others over a `BroadcastChannel`; the next tab takes over when it closes. `EventSource`
+resumes by `Last-Event-ID` by itself; a stream that ended for good (an error status) is opened
+again after 2 s, doubling to 30 s, and since a new stream has nothing to resume from, the page
+is told to `reset`. The header shows "Reconnecting…" while there is no stream. After `closing`
+the page reloads once the new portal says `hello` — the one reload, because the new version's
+files are new.
+
+**A page reads again when its events say so** (`useResource(read, key, refreshOn)`, the rules in
+`portal/src/api/refresh.ts`): in the background, gathering a burst for 300 ms, and keeping what
+it shows until the new answer is there. The Overview and Health ask every backend for its model
+list, so they read again on `state`, not on each routed request; the Overview adds each
+`recent` event to its count instead. `reset` makes every resource read again.
+
+**An action runs in place** (`components/action-button.tsx`, `useAction`): `POST
+/api/<action>` with the page's CSRF value; while it runs, its newest `action` line from the
+stream; then its result beside the control (`✓`, or `✗ Not done:` with the command's own
+words, Details and Try again). A change that restarts or rewrites something asks first in a
+native `<dialog>` (`confirm-dialog.tsx`: `showModal()` writes no style, unlike a Radix dialog
+under the strict policy), with the safe answer focused. No page is ever reloaded to show a
+result (PX-4). A draft (a chain being edited, a setting being changed) holds only while the
+server still holds the value it was made from: the Slots card then says "This chain changed
+elsewhere" with Load it / Keep mine, and `slot.save` carries the chain's `stamp`
+(`slotStamp`, `src/portal/facts.ts`) so the server refuses a save over a newer chain.
+
 **An action never blocks the server.** Every command an action starts with a child is spawned
 asynchronously (`Bun.spawn`, with its timeout), not with `Bun.spawnSync`: `claude plugin …` can
 take up to 300 s, and the synchronous version froze every page, every action and the stream for

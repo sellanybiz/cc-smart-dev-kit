@@ -3,6 +3,7 @@
 import { ServerIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useResource } from "@/api/hooks";
+import { HEALTH_REFRESH, HISTORY_REFRESH } from "@/api/refresh";
 import type { BackendRow, HealthData, LogLine } from "@/api/types";
 import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
@@ -90,6 +91,7 @@ function HealthPage({ data }: { data: HealthData }) {
   const byTarget = useResource(
     (client) => client.history({ ...state.filter, range: state.range, by: "target" }),
     `${state.key}|target`,
+    HISTORY_REFRESH,
   );
   const words = rangeOf(state.range).words;
   return (
@@ -106,17 +108,19 @@ function HealthPage({ data }: { data: HealthData }) {
           }
           detail={`On 127.0.0.1:${router.port}`}
         />
-        <StatCard
-          label="Socket"
-          value={socket.listening ? "Listening" : "Closed"}
-          badge={
-            <TonePill tone={socket.listening ? "ok" : "warn"}>
-              {socket.listening ? "ready" : "closed"}
-            </TonePill>
-          }
-          headline="It starts the router on the first request"
-          detail={socket.unit ?? "No socket unit on this machine"}
-        />
+        {socket !== null && (
+          <StatCard
+            label="Socket"
+            value={socket.listening ? "Listening" : "Closed"}
+            badge={
+              <TonePill tone={socket.listening ? "ok" : "warn"}>
+                {socket.listening ? "ready" : "closed"}
+              </TonePill>
+            }
+            headline="It starts the router on the first request"
+            detail={socket.unit ?? "No socket unit on this machine"}
+          />
+        )}
         <StatCard
           label="Backends answering"
           value={`${answering} of ${data.backends.length}`}
@@ -281,7 +285,7 @@ function HealthPage({ data }: { data: HealthData }) {
 
 /** Health: the router, its socket, the backends, the WARN and ERROR lines, the activity feed. */
 export function HealthView() {
-  const health = useResource((client) => client.health());
+  const health = useResource((client) => client.health(), "", HEALTH_REFRESH);
   return (
     <ResourceView resource={health} label="the health page">
       {(data) => <HealthPage data={data} />}

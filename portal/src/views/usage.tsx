@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { type Resource, useResource } from "@/api/hooks";
+import { HISTORY_REFRESH } from "@/api/refresh";
 import type { History, HistoryBy, HistoryKeys } from "@/api/types";
 import { BarList } from "@/components/bar-list";
 import { columnsFor, PortalTable } from "@/components/data-table";
@@ -75,6 +76,7 @@ function useBreakdown(
   return useResource(
     (client) => client.history({ ...state.filter, range: state.range, by }),
     `${state.key}|${by}`,
+    HISTORY_REFRESH,
   );
 }
 

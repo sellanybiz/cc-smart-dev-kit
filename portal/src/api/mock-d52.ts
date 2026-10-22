@@ -69,6 +69,9 @@ export function needsData(
         id: "p-a1f04c2e",
         since: iso(now - 4 * MINUTE),
         crew: { id: "a1f04c2e", name: "C my-app B6b live-stream", shortId: "a1f04c2e" },
+        asker: "git-guard",
+        session: "a1f04c2e-session",
+        project: "my-app",
         tool: "Bash",
         detail: "git push origin crew/b6b-live-stream: the git guard asks before a push",
       },
@@ -219,6 +222,7 @@ export function crewDetail(
           open: ["The idle clock test is still to write"],
           question: null,
         },
+    diffTotals: { deletions: 38, error: null, files: 6, insertions: 412 },
     diff: [
       { path: "src/portal/live/hub.ts", added: 214, removed: 0 },
       { path: "src/portal/live/hub.test.ts", added: 188, removed: 0 },

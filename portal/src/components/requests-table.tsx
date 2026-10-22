@@ -3,6 +3,7 @@
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useState } from "react";
 import { useResource } from "@/api/hooks";
+import { HISTORY_REFRESH } from "@/api/refresh";
 import type { RequestRow } from "@/api/types";
 import { columnsFor, PortalTable } from "@/components/data-table";
 import type { HistoryState } from "@/components/history-state";
@@ -66,7 +67,7 @@ const COLUMNS = column.columns([
         >
           {row.original.status}
         </TonePill>
-        {row.original.next && (
+        {row.original.nextTarget !== null && (
           <Badge variant="outline" className="text-muted-foreground">
             next target
           </Badge>
@@ -74,24 +75,23 @@ const COLUMNS = column.columns([
       </span>
     ),
   }),
-  column.accessor("ms", {
+  column.accessor("latencyMs", {
     header: "Took",
     cell: ({ row }) => (
-      <span className="block text-right tabular-nums">{duration(row.original.ms)}</span>
+      <span className="block text-right tabular-nums">{duration(row.original.latencyMs)}</span>
     ),
   }),
   column.display({
     id: "tokens",
     header: "Tokens",
     cell: ({ row }) => {
-      const r = row.original;
+      const t = row.original.tokens;
       return (
         <span
           className="block text-right tabular-nums"
-          title={`${r.inputTokens} in, ${r.cacheReadTokens} from the cache, ${r.cacheWriteTokens} into it, ${r.outputTokens} out`}
+          title={`${t.input} in, ${t.cacheRead} from the cache, ${t.cacheWrite} into it, ${t.output} out`}
         >
-          {compact(r.inputTokens + r.cacheReadTokens + r.cacheWriteTokens)} /{" "}
-          {compact(r.outputTokens)}
+          {compact(t.input + t.cacheRead + t.cacheWrite)} / {compact(t.output)}
         </span>
       );
     },
@@ -99,7 +99,9 @@ const COLUMNS = column.columns([
   column.accessor("costUsd", {
     header: "Est. USD",
     cell: ({ row }) => (
-      <span className="block text-right tabular-nums">{usd(row.original.costUsd)}</span>
+      <span className="block text-right tabular-nums">
+        {row.original.costUsd === null ? "—" : usd(row.original.costUsd)}
+      </span>
     ),
   }),
 ]);
@@ -121,6 +123,8 @@ export function RequestsTable({ state }: { state: HistoryState }) {
   const page = useResource(
     (client) => client.requests({ ...state.filter, range: state.range, cursor }),
     `${state.key}|${cursor ?? ""}`,
+    // Only the first page grows with a new request: an older page stays as it was read.
+    cursor === null ? HISTORY_REFRESH : undefined,
   );
   if (page.status === "loading") {
     return (
@@ -143,13 +147,14 @@ export function RequestsTable({ state }: { state: HistoryState }) {
   const pageNumber = cursors.length;
   return (
     <PortalTable
-      rows={page.data.rows}
+      rows={page.data.requests}
       columns={COLUMNS}
-      rowKey={(row) => row.id}
+      // A row has no id of its own: its time, target, status and time taken tell it apart.
+      rowKey={(row) => `${row.at}|${row.target}|${row.status}|${row.latencyMs}`}
       label="Routed requests"
       empty={`No request in ${rangeOf(state.range).words} matches.`}
       pager={
-        page.data.rows.length > 0 && (
+        page.data.requests.length > 0 && (
           <div className="flex items-center justify-end gap-4 px-2">
             <p className="text-sm text-muted-foreground" aria-live="polite">
               Page {pageNumber}, newest first
@@ -168,10 +173,10 @@ export function RequestsTable({ state }: { state: HistoryState }) {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  const next = page.data.next;
+                  const next = page.data.cursor;
                   if (next !== null) setCursors((list) => [...list, next]);
                 }}
-                disabled={page.data.next === null}
+                disabled={page.data.cursor === null}
               >
                 Older
                 <ChevronRightIcon data-icon="inline-end" aria-hidden="true" />

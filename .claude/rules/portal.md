@@ -116,9 +116,14 @@ in this turn.
   that needs the config says "not set up" in a short line: never an invented port or value.
   Overview, Slots and Health need it, so they show the not-set-up page, which points at
   Machine. A new page follows that: work without the config, or say what it needs.
-- **A browser cannot be asked a terminal question.** The page asks first (`data-confirm`) and
-  the action passes `--yes`. A new action that restarts or rewrites something gets its own
-  confirmation, in the design's words.
+- **A browser cannot be asked a terminal question.** The page asks first (the Next.js pages:
+  `ConfirmDialog`, a native `<dialog>`; the server-rendered ones: `data-confirm`) and the action
+  passes `--yes`. A new action that restarts or rewrites something gets its own confirmation,
+  in the design's words, and shows its result in place: never a page reload (PX-4).
+- **The page's API types have one mirror.** `portal/src/api/wire.ts` copies every type
+  `src/portal/api/types.ts` exports, and every action in `ACTION_NAMES`;
+  `src/portal/api/wire-mirror.test.ts` fails on a drift. A new answer, field or action changes
+  both files in the same commit.
 - **Never run what needs `sudo`**: show the exact command to copy. Writing the auto-mode trust
   rules needs an explicit confirmation on the page, and is written only as shown: the card is
   `setup`'s own `+` / `-` dry run, its button carries that change's hash (`autoModeChange`), and

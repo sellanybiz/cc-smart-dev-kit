@@ -28,9 +28,11 @@ import type { CliPaths } from "../../cli/paths";
 import { listAllCrew, readCrewEvents } from "../../crew/store";
 import { type HealthFetch, routerHealth } from "../../gateway/health";
 import { parseLimitState } from "../../gateway/limit-state";
-import { askLogFile } from "../../hooks/ask-log";
-import { jobsFingerprint } from "../../jobs/status";
+import { askLogFile, type GuardAsk } from "../../hooks/ask-log";
+import { type JobsAnswer, jobsFingerprint } from "../../jobs/status";
 import { readLastCheck, updateFiles } from "../../update/state";
+import type { ApiError, LivePublish } from "../api/types";
+import { recentEntryOf } from "../facts";
 
 /** How often the poller reads, by default: fast enough for a feed, cheap enough for a laptop. */
 export const LIVE_POLL_MS = 2_000;
@@ -45,12 +47,12 @@ export interface LiveSourcesDeps {
   fetch: HealthFetch;
   now: () => number;
   paths: CliPaths;
-  /** Where the events go (the hub's `publish`). */
-  publish: (event: string, data: unknown) => void;
+  /** Where the events go (the hub's `publish`), each with its own data (`LiveEvents`). */
+  publish: LivePublish;
   /** The router's port now, or null when no config names one. Read fresh every poll. */
   routerPort: () => null | number;
   /** The heavy-job queue's answer (`/api/jobs`'s shape), built only when its files changed. */
-  jobs: () => Promise<unknown>;
+  jobs: () => Promise<ApiError | JobsAnswer>;
   pollMs?: number | undefined;
 }
 
@@ -76,6 +78,20 @@ function recentOf(body: unknown): Record<string, unknown>[] {
           typeof entry === "object" && entry !== null && !Array.isArray(entry),
       )
     : [];
+}
+
+/** One line of the ask log, or null when it is not one this version reads (never sent then). */
+function guardAskOf(value: unknown): GuardAsk | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const { at, hook, reason, session, tool } = value as Record<string, unknown>;
+  if (typeof at !== "number" || typeof hook !== "string" || typeof reason !== "string") return null;
+  return {
+    at,
+    hook,
+    reason,
+    session: typeof session === "string" ? session : "",
+    tool: typeof tool === "string" ? tool : "",
+  };
 }
 
 /**
@@ -120,7 +136,10 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
     const last = recent[recent.length - 1];
     const at = last === undefined ? -1 : fingerprints.lastIndexOf(last);
     const fresh = at >= 0 ? entries.slice(at + 1) : entries.slice(-Math.min(entries.length, 50));
-    for (const entry of fresh) deps.publish("recent", entry);
+    for (const entry of fresh) {
+      const read = recentEntryOf(entry);
+      if (read !== null) deps.publish("recent", read);
+    }
     recent = fingerprints;
   }
 
@@ -179,10 +198,8 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
     for (const line of fresh.split("\n")) {
       if (line.trim() === "") continue;
       try {
-        const parsed: unknown = JSON.parse(line);
-        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-          deps.publish("guard-ask", parsed);
-        }
+        const ask = guardAskOf(JSON.parse(line));
+        if (ask !== null) deps.publish("guard-ask", ask);
       } catch {
         // A line the log cannot use is counted by the report, not sent to a page.
       }

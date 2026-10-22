@@ -3,6 +3,8 @@
 import { LockIcon } from "lucide-react";
 import { useId, useState } from "react";
 import type { SettingsRow, WorkflowSource } from "@/api/types";
+import { ActionResultLine, useAction } from "@/components/action-button";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -29,17 +31,51 @@ function stringList(value: unknown): string[] {
     : [];
 }
 
-/** One setting's control, drawn from its kind; a change stays in the page (a draft). */
-function Control({ row, labelId }: { row: SettingsRow; labelId: string }) {
-  const [value, setValue] = useState<unknown>(row.value);
-  const disabled = row.readOnly;
+/** A value changed on the page, and the server's value it was changed from. */
+type Draft = null | { base: unknown; value: unknown };
+
+/** Two values the same, for a list too (`alerts.events`). */
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * One setting's control, drawn from its kind. A change is saved at once through
+ * `workflow.set`, the command line's own writer: a setting of the person's own straight away,
+ * one the project owns after the page asks (it rewrites the project's committed file). A number
+ * is saved when the field is left or Enter is pressed, not on every key.
+ */
+function Control({
+  row,
+  labelId,
+  onSave,
+  busy,
+  draft,
+  setDraft,
+}: {
+  row: SettingsRow;
+  labelId: string;
+  onSave: (value: unknown) => void;
+  busy: boolean;
+  draft: Draft;
+  setDraft: (draft: Draft) => void;
+}) {
+  // A draft holds only while the server still holds the value it was made from: a new answer
+  // (this save, another tab, the command line) shows what the server holds.
+  const value = draft !== null && sameValue(draft.base, row.value) ? draft.value : row.value;
+  const setValue = (next: unknown) => setDraft({ base: row.value, value: next });
+  const disabled = row.readOnly || busy;
+  const change = (next: unknown) => {
+    setValue(next);
+    if (!sameValue(next, row.value)) onSave(next);
+  };
   switch (row.kind) {
     case "boolean":
       return (
         <Switch
           aria-labelledby={labelId}
           checked={value === true}
-          onCheckedChange={setValue}
+          onCheckedChange={change}
           disabled={disabled}
         />
       );
@@ -52,7 +88,7 @@ function Control({ row, labelId }: { row: SettingsRow; labelId: string }) {
           aria-labelledby={labelId}
           value={typeof value === "string" ? value : ""}
           onValueChange={(next) => {
-            if (next !== "") setValue(next);
+            if (next !== "") change(next);
           }}
           disabled={disabled}
         >
@@ -79,7 +115,7 @@ function Control({ row, labelId }: { row: SettingsRow; labelId: string }) {
                   id={id}
                   checked={chosen.includes(choice.value)}
                   onCheckedChange={(on) =>
-                    setValue(
+                    change(
                       on === true
                         ? [...chosen, choice.value]
                         : chosen.filter((v) => v !== choice.value),
@@ -96,7 +132,12 @@ function Control({ row, labelId }: { row: SettingsRow; labelId: string }) {
         </fieldset>
       );
     }
-    case "number":
+    case "number": {
+      const commit = () => {
+        if (typeof value === "number" && Number.isFinite(value) && !sameValue(value, row.value)) {
+          onSave(value);
+        }
+      };
       return (
         <span className="flex items-center gap-2">
           <Input
@@ -107,11 +148,16 @@ function Control({ row, labelId }: { row: SettingsRow; labelId: string }) {
             className="h-8 w-20 text-right tabular-nums"
             value={typeof value === "number" ? value : ""}
             onChange={(event) => setValue(Number(event.target.value))}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") commit();
+            }}
             disabled={disabled}
           />
           <span className="text-sm text-muted-foreground">%</span>
         </span>
       );
+    }
     default:
       return null;
   }
@@ -119,6 +165,17 @@ function Control({ row, labelId }: { row: SettingsRow; labelId: string }) {
 
 function Row({ row }: { row: SettingsRow }) {
   const labelId = useId();
+  const [draft, setDraft] = useState<Draft>(null);
+  // A change that did not happen (a refusal) puts back what the server holds.
+  const { run, state, clear } = useAction("workflow.set", (result) => {
+    if (!result.ok) setDraft(null);
+  });
+  // A project-owned setting rewrites the project's committed file: the page asks first.
+  const [asking, setAsking] = useState<null | { value: unknown }>(null);
+  const save = (value: unknown) => {
+    if (row.where === "project") setAsking({ value });
+    else run({ key: row.key, value });
+  };
   return (
     <li className="grid gap-x-6 gap-y-2 border-b py-4 last:border-b-0 @3xl/main:grid-cols-[minmax(0,1fr)_auto]">
       <div className="flex flex-col gap-1">
@@ -137,10 +194,36 @@ function Row({ row }: { row: SettingsRow }) {
             Read-only here: {row.why}.
           </p>
         )}
+        <ActionResultLine state={state} />
       </div>
       <div className="flex items-start @3xl/main:justify-end">
-        <Control row={row} labelId={labelId} />
+        <Control
+          row={row}
+          labelId={labelId}
+          onSave={save}
+          busy={state.phase === "sending"}
+          draft={draft}
+          setDraft={setDraft}
+        />
       </div>
+      <ConfirmDialog
+        open={asking !== null}
+        title={`Change ${row.label} for this project?`}
+        yes="Write it"
+        onCancel={() => {
+          setAsking(null);
+          setDraft(null);
+          clear();
+        }}
+        onYes={() => {
+          const value = asking?.value;
+          setAsking(null);
+          run({ confirm: true, key: row.key, value });
+        }}
+      >
+        It is the project's own setting: it is written into its .claude/cc-smart-dev-kit.json, for
+        everyone who works in it. The review gate reads it once that file is committed and pushed.
+      </ConfirmDialog>
     </li>
   );
 }

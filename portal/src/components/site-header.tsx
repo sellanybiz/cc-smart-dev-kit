@@ -1,9 +1,11 @@
 "use client";
 
 import { LoaderCircleIcon } from "lucide-react";
+import { portalClient } from "@/api/client";
 import { useConnection, useResource } from "@/api/hooks";
 import { navItemFor } from "@/components/nav-items";
 import { useAppPath } from "@/components/router";
+import { useMounted } from "@/components/status";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
@@ -63,6 +65,8 @@ function RouterPill() {
 /** dashboard-01's site header: the sidebar's switch, the page's title, the live state. */
 export function SiteHeader() {
   const item = navItemFor(useAppPath());
+  // The client is made in the browser only: the exported HTML is built without one.
+  const mounted = useMounted();
   return (
     <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">
       <div className="flex w-full min-w-0 items-center gap-1 px-4 lg:gap-2 lg:px-6">
@@ -75,6 +79,11 @@ export function SiteHeader() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
+          {mounted && portalClient().kind === "mock" && (
+            <span className="inline-flex h-7 items-center rounded-full border border-warn/40 bg-warn/10 px-2.5 text-xs font-medium text-warn">
+              Mock data
+            </span>
+          )}
           <RouterPill />
           <ConnectionPill />
         </div>

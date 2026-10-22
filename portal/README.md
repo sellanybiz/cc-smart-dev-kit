@@ -23,9 +23,21 @@ fixes the build id (`generateBuildId`), so a second build is byte for byte the s
 - `src/views/` holds every page as a plain React component; it imports no router. Links and
   the address go through `src/components/router.tsx`, which `src/pages/_app.tsx` fills.
 - `src/pages/` is the routing shell: one line per page that mounts its view.
-- `src/api/` is the one data client. `types.ts` mirrors the kit's own types and names the
-  file each one comes from; a type marked "planned" names the phase that builds it. Until the
-  server serves JSON, `mock.ts` (and `mock-history.ts`, `mock-d52.ts`) answer in those shapes.
+- `src/api/` is the one data client (`client.ts`; which one answers is chosen in
+  `portalClient()`):
+  - `wire.ts` is the server's API, type for type (one mirror of the kit's
+    `src/portal/api/types.ts`; the kit's `src/portal/api/wire-mirror.test.ts` fails when the two
+    drift). Change both in the same commit.
+  - `adapt.ts` turns each answer into the shape its page draws (`types.ts`); a fact the server
+    does not send yet is `null`, and the page says it does not know.
+  - `http.ts` is the GET and the action's POST (with the page's CSRF value); `stream.ts` is the
+    one `EventSource('/events')` every tab shares; `hooks.ts` reads a resource and reads it
+    again on its live events (`refresh.ts` names which).
+  - `mock.ts` (and `mock-history.ts`, `mock-d52.ts`) answer in the pages' shapes for `?mock=`
+    and `next dev`.
+- An action runs through `components/action-button.tsx` (`useAction`, `ActionResultLine`) and
+  asks first through `components/confirm-dialog.tsx`, a native `<dialog>`: its result shows in
+  place, never by reloading the page.
 - `src/components/ui/` is shadcn's code, kept close to upstream; the rest of
   `src/components/` is the portal's own.
 
@@ -45,5 +57,7 @@ The page runs under `script-src 'self'` and `style-src 'self'`. So:
 
 ## Mock states
 
-Add `?mock=` to any address to see a page's other states: `loading`, `error`, `empty`,
-`no-gateway`, `reconnecting`. Filters live in the address too (`?range=7d&slot=…`).
+`bun run dev` draws every page from mock data (there is no server behind it). On the real
+portal, add `?mock=` to any address to see a page's other states: `normal`, `loading`, `error`,
+`empty`, `no-gateway`, `reconnecting`; the header then says "Mock data", and an action sends
+nothing. Filters live in the address too (`?range=7d&slot=…`).

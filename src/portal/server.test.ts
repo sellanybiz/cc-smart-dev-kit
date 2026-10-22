@@ -27,7 +27,7 @@ import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
-import { type DoctorSource, portalOmnirouteContext } from "./actions";
+import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
@@ -1142,6 +1142,155 @@ describe("every answer", () => {
 // ── The actions ─────────────────────────────────────────────────────────────────
 
 describe("the actions", () => {
+  test('every action a page may send is one the server runs: none answers "is not an action"', async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const csrf = await world.csrfOf();
+      // An empty body: each action refuses its own missing inputs in words, and runs nothing
+      // that changes the machine. `doctor.run` is the server's own, and runs a real pass.
+      for (const name of ACTION_NAMES) {
+        if (name === "doctor.run" || name === "router.restart" || name.startsWith("omniroute.")) {
+          continue;
+        }
+        if (name === "update.check" || name === "update.install" || name === "browser.setup") {
+          continue;
+        }
+        if (name === "switch" || name === "worktrees.clean" || name === "automode.apply") {
+          continue;
+        }
+        const answer = JSON.parse((await world.post(name, {}, csrf)).body) as { lines: string[] };
+        expect(answer.lines.join(" ")).not.toContain("is not an action");
+      }
+      // And a name that is not on the list is refused in those words.
+      const unknown = JSON.parse((await world.post("slot.nope", {}, csrf)).body) as {
+        lines: string[];
+      };
+      expect(unknown.lines).toEqual(['"slot.nope" is not an action.']);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a save over a chain that changed since the page read it is refused, and writes nothing", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const csrf = await world.csrfOf();
+      const read = JSON.parse((await world.call("/api/slots")).body) as {
+        slots: { mode: string; name: string; stamp: string; targets: { target: string }[] }[];
+      };
+      const worker = read.slots.find((one) => one.name === "worker");
+      expect(worker?.mode).toBe("custom");
+      const stamp = worker?.stamp ?? "";
+      expect(stamp).toMatch(/^[0-9a-f]{16}$/);
+      // Another tab saves first: the stamp the first page holds is now old.
+      const other = await world.post(
+        "slot.save",
+        { slot: "worker", stamp, targets: ["omniroute:deepseek-v4.1-flash"] },
+        csrf,
+      );
+      expect(JSON.parse(other.body).ok).toBe(true);
+      const stale = await world.post(
+        "slot.save",
+        { slot: "worker", stamp, targets: ["omniroute:glm-5.3-flash"] },
+        csrf,
+      );
+      expect(stale.status).toBe(400);
+      expect(JSON.parse(stale.body).lines[0]).toBe(
+        "This slot's chain changed since the page read it (another tab, or the command line), so nothing was saved.",
+      );
+      expect(
+        loadConfigFile(world.paths.gatewayConfigFile).slots["cc-smart-dev-kit-worker"],
+      ).toEqual(["omniroute:deepseek-v4.1-flash"]);
+      // A stamp that is not a string is no chain's stamp either.
+      const odd = await world.post(
+        "slot.save",
+        { slot: "worker", stamp: 7, targets: ["omniroute:glm-5.3-flash"] },
+        csrf,
+      );
+      expect(odd.status).toBe(400);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the Slots answer says each slot's mode, its saved chain, and its breaker switch", async () => {
+    const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const csrf = await world.csrfOf();
+      await world.post("slot.mode", { mode: "claude", slot: "worker" }, csrf);
+      const off = await world.post("slot.breaker", { on: false, slot: "scout" }, csrf);
+      expect(JSON.parse(off.body).ok).toBe(true);
+      const slots = JSON.parse((await world.call("/api/slots")).body) as {
+        slots: {
+          breaker: boolean;
+          kept: null | { fallback: boolean; targets: { target: string }[] };
+          mode: string;
+          name: string;
+          role: string;
+          targets: unknown[];
+        }[];
+      };
+      const byName = Object.fromEntries(slots.slots.map((one) => [one.name, one]));
+      expect(byName.worker?.mode).toBe("claude");
+      expect(byName.worker?.role).toBe("affordable");
+      expect(byName.worker?.targets).toEqual([]);
+      expect(byName.worker?.kept?.targets.map((one) => one.target)).toEqual([
+        "omniroute:deepseek-v4.1-flash",
+        "claude-sonnet-5-5",
+      ]);
+      expect(byName.scout?.breaker).toBe(false);
+      expect(byName.judge?.breaker).toBe(false);
+      expect(loadConfigFile(world.paths.gatewayConfigFile).breaker).toEqual({
+        "cc-smart-dev-kit-scout": false,
+      });
+      // The judge has no breaker switch: the command line's own refusal, in its words.
+      const judge = await world.post("slot.breaker", { on: true, slot: "judge" }, csrf);
+      expect(JSON.parse(judge.body).ok).toBe(false);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("a typed target is checked as `gateway slot` checks it, before it joins a draft", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const csrf = await world.csrfOf();
+      const check = async (target: string) =>
+        JSON.parse((await world.post("slot.check", { target }, csrf)).body) as {
+          lines: string[];
+          ok: boolean;
+        };
+      expect(await check("omniroute:glm-5.3-flash")).toEqual({
+        lines: ["omniroute:glm-5.3-flash: its backend lists it."],
+        ok: true,
+      });
+      expect(await check("claude-opus-5-5")).toEqual({
+        lines: ["claude-opus-5-5: on your own Claude login."],
+        ok: true,
+      });
+      expect(await check("omnirout:glm-5.3")).toEqual({
+        lines: [
+          '"omnirout:glm-5.3": backend "omnirout" is not in the config. The config names: omniroute.',
+        ],
+        ok: false,
+      });
+      const missing = await check("omniroute:no-such-model");
+      expect(missing.ok).toBe(false);
+      expect(missing.lines[0]).toContain('"omniroute" has no model "no-such-model"');
+      expect((await check("")).ok).toBe(false);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
   test("the hold switch really holds and resumes, and the page shows the CLI's own lines", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
@@ -3882,6 +4031,81 @@ describe("the JSON API", () => {
       expect((await world.call("/api/flow?range=nope")).status).toBe(400);
     } finally {
       world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("/api/history/keys: the values each filter can take in the range, from H1's database", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      // A machine that never logged a request has no value to offer.
+      expect(JSON.parse((await world.call("/api/history/keys")).body)).toEqual({
+        models: [],
+        sessions: [],
+        slots: [],
+        targets: [],
+      });
+      const now = Date.now();
+      const writer = createHistoryWriter({
+        file: world.paths.historyDbFile,
+        flushAfterMs: 0,
+        log: () => undefined,
+        retentionDays: () => 90,
+      });
+      const row = (overrides: Partial<HistoryRow>): HistoryRow => ({
+        at: now - 60_000,
+        breaker: null,
+        cost: null,
+        model: "claude-sonnet-5-5",
+        ms: 100,
+        nextTarget: null,
+        session: "session-a",
+        slot: "cc-smart-dev-kit-worker",
+        status: 200,
+        target: "omniroute:glm-5.3-flash",
+        tokens: null,
+        ...overrides,
+      });
+      writer.record(row({}));
+      writer.record(
+        row({ session: null, slot: "cc-smart-dev-kit-scout", target: "claude-haiku-5-5" }),
+      );
+      // Older than the range asked: not one of its values.
+      writer.record(row({ at: now - 3 * 86_400_000, model: "claude-opus-5-5" }));
+      writer.close();
+      expect(JSON.parse((await world.call("/api/history/keys?range=1d")).body)).toEqual({
+        models: ["claude-sonnet-5-5"],
+        sessions: ["session-a"],
+        slots: ["cc-smart-dev-kit-scout", "cc-smart-dev-kit-worker"],
+        targets: ["claude-haiku-5-5", "omniroute:glm-5.3-flash"],
+      });
+      expect((await world.call("/api/history/keys?range=2d")).status).toBe(400);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("/api/facts is the frame's facts: the version, the portal's own port, the router", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      expect(JSON.parse((await world.call("/api/facts")).body)).toEqual({
+        platform: "linux",
+        portalPort: world.portal.port,
+        router: { port: 20_199, up: true },
+        version: VERSION,
+      });
+    } finally {
+      world.portal.stop();
+    }
+    const bare = await open({ backendPort: backend.port, withConfig: false });
+    try {
+      // No config names a router: none is claimed, and no port is invented.
+      expect(JSON.parse((await bare.call("/api/facts")).body).router).toBe(null);
+    } finally {
+      bare.portal.stop();
       backend.stop();
     }
   });

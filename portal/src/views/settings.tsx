@@ -2,6 +2,7 @@
 
 import { FolderGit2Icon, InfoIcon } from "lucide-react";
 import { useResource } from "@/api/hooks";
+import { SETTINGS_REFRESH } from "@/api/refresh";
 import type { ProjectListRow } from "@/api/types";
 import { columnsFor, PortalTable } from "@/components/data-table";
 import { AppLink, useAppQuery, useSetAppQuery } from "@/components/router";
@@ -43,18 +44,18 @@ const PROJECT_COLUMNS = column.columns([
   }),
   column.accessor("lastUsed", {
     header: "Last used",
-    cell: ({ row }) => ago(row.original.lastUsed),
+    cell: ({ row }) => (row.original.lastUsed === null ? "—" : ago(row.original.lastUsed)),
   }),
   column.accessor("worktrees", {
     header: "Worktrees",
     cell: ({ row }) => (
-      <span className="block text-right tabular-nums">{row.original.worktrees}</span>
+      <span className="block text-right tabular-nums">{row.original.worktrees ?? "—"}</span>
     ),
   }),
 ]);
 
 function ThisMachine() {
-  const settings = useResource((client) => client.settings());
+  const settings = useResource((client) => client.settings(), "", SETTINGS_REFRESH);
   if (settings.status === "loading") return <LoadingState label="the settings" />;
   if (settings.status === "error")
     return <ErrorState message={settings.message} onRetry={settings.reload} />;

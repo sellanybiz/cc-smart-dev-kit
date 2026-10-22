@@ -1,7 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useResource } from "@/api/hooks";
+import { recentOf } from "@/api/adapt";
+import { useLiveEvent, useResource } from "@/api/hooks";
+import { HISTORY_REFRESH, NEEDS_REFRESH, OVERVIEW_REFRESH } from "@/api/refresh";
 import type { FallbackRow, LimitRow, OverviewData, RecentRequest } from "@/api/types";
 import { BySwitch } from "@/components/by-switch";
 import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
@@ -59,6 +61,7 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
   const history = useResource(
     (client) => client.history({ ...state.filter, range: state.range, by: state.by }),
     `${state.key}|${state.by}`,
+    HISTORY_REFRESH,
   );
   const words = rangeOf(state.range).words;
   const totals = useMemo(() => {
@@ -138,7 +141,7 @@ function JobsTile({ jobs }: { jobs: OverviewData["jobs"] }) {
 }
 
 function NeedsPanel() {
-  const needs = useResource((client) => client.needs());
+  const needs = useResource((client) => client.needs(), "", NEEDS_REFRESH);
   const items = needs.status === "ready" ? needs.data.items : [];
   return (
     <section
@@ -174,9 +177,30 @@ function NeedsPanel() {
   );
 }
 
+/** How many routed requests the page keeps from the stream: the router's own list's length. */
+const RECENT_KEPT = 200;
+
+/**
+ * The answer with the requests the stream sent since: each `recent` event is one more request
+ * in the router's list, so the page counts it without asking the server again.
+ */
+export function withRecent(data: OverviewData, live: readonly RecentRequest[]): OverviewData {
+  const last = data.health.recent.at(-1)?.at ?? 0;
+  const fresh = live.filter((request) => request.at > last);
+  if (fresh.length === 0) return data;
+  return {
+    ...data,
+    health: {
+      ...data.health,
+      recent: [...data.health.recent, ...fresh].slice(-RECENT_KEPT),
+      requests: data.health.requests + fresh.length,
+    },
+  };
+}
+
 function OverviewPage({ data }: { data: OverviewData }) {
-  // The page's clock, fixed when the data came: every card counts from it.
-  const [now] = useState(() => Date.now());
+  // The page's clock, read when it draws: a new request draws it again.
+  const now = Date.now();
   const state = useHistoryState("target");
   const { health } = data;
   const rpm = perMinute(health.recent, now);
@@ -323,10 +347,16 @@ function OverviewPage({ data }: { data: OverviewData }) {
 
 /** Overview: the traffic now, what answers it, and what needs you. */
 export function OverviewView() {
-  const overview = useResource((client) => client.overview());
+  const overview = useResource((client) => client.overview(), "", OVERVIEW_REFRESH);
+  const [live, setLive] = useState<RecentRequest[]>([]);
+  useLiveEvent((message) => {
+    if (message.name === "recent") {
+      setLive((list) => [...list, recentOf(message.data)].slice(-RECENT_KEPT));
+    }
+  });
   return (
     <ResourceView resource={overview} label="the overview">
-      {(data) => <OverviewPage data={data} />}
+      {(data) => <OverviewPage data={withRecent(data, live)} />}
     </ResourceView>
   );
 }

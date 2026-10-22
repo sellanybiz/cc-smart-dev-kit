@@ -1,6 +1,7 @@
 "use client";
 
 import { useResource } from "@/api/hooks";
+import { MACHINE_REFRESH } from "@/api/refresh";
 import type { DoctorLine, MachineData, McpServerStatus } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
 import { HeavyJobsCard } from "@/components/heavy-jobs";
@@ -48,7 +49,7 @@ function MachinePage({ data }: { data: MachineData }) {
   const failing = data.doctor.filter((line) => line.mark === "fail").length;
   const warning = data.doctor.filter((line) => line.mark === "warn").length;
   const claude = data.claudeCode;
-  const newer = claude.version !== null && claude.version !== claude.tested;
+  const newer = claude !== null && claude.version !== null && claude.version !== claude.tested;
   const { omniroute, browser } = data;
   return (
     <>
@@ -59,29 +60,33 @@ function MachinePage({ data }: { data: MachineData }) {
           headline="Installed and enabled"
           detail={`The portal listens on 127.0.0.1:${data.facts.portalPort}`}
         />
-        <StatCard
-          label="Claude Code"
-          value={claude.version ?? "not found"}
-          badge={
-            newer ? (
-              <TonePill tone="info">newer than tested</TonePill>
-            ) : (
-              <TonePill tone="ok">tested</TonePill>
-            )
-          }
-          headline={`The kit was last proved on ${claude.tested}`}
-          detail={
-            newer
-              ? "A newer version usually works; the kit says when it does not"
-              : "The version the kit was proved on"
-          }
-        />
-        <StatCard
-          label="Bun"
-          value={data.bun}
-          headline="Runs the kit's hooks and commands"
-          detail="Found on this machine"
-        />
+        {claude !== null && (
+          <StatCard
+            label="Claude Code"
+            value={claude.version ?? "not found"}
+            badge={
+              newer ? (
+                <TonePill tone="info">newer than tested</TonePill>
+              ) : (
+                <TonePill tone="ok">tested</TonePill>
+              )
+            }
+            headline={`The kit was last proved on ${claude.tested}`}
+            detail={
+              newer
+                ? "A newer version usually works; the kit says when it does not"
+                : "The version the kit was proved on"
+            }
+          />
+        )}
+        {data.bun !== null && (
+          <StatCard
+            label="Bun"
+            value={data.bun}
+            headline="Runs the kit's hooks and commands"
+            detail="Found on this machine"
+          />
+        )}
         <StatCard
           label="Doctor"
           value={
@@ -153,8 +158,14 @@ function MachinePage({ data }: { data: MachineData }) {
             <CardDescription>The servers setup registers for every project.</CardDescription>
           </CardHeader>
           <CardContent>
+            {data.mcp === null && (
+              <p className="text-sm text-muted-foreground">
+                The portal does not list them yet:{" "}
+                <code className="font-mono">{KIT_NAME} mcp status</code> does.
+              </p>
+            )}
             <ul className="flex flex-col gap-3 text-sm">
-              {data.mcp.map((server) => (
+              {(data.mcp ?? []).map((server) => (
                 <li key={server.name} className="flex items-center justify-between gap-2">
                   <span className="font-mono text-xs">{server.name}</span>
                   <TonePill tone={MCP_WORDS[server.state].tone}>
@@ -163,7 +174,7 @@ function MachinePage({ data }: { data: MachineData }) {
                 </li>
               ))}
             </ul>
-            {data.mcp.some((server) => server.state === "missing") && (
+            {(data.mcp ?? []).some((server) => server.state === "missing") && (
               <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 Setup registers a missing one:
                 <CopyButton text={`${KIT_NAME} setup`} label="Copy the command" />
@@ -281,7 +292,7 @@ function order(mark: DoctorLine["mark"]): number {
 
 /** Machine: versions, Claude Code, the companions, the MCP servers, the browser, OmniRoute. */
 export function MachineView() {
-  const machine = useResource((client) => client.machine());
+  const machine = useResource((client) => client.machine(), "", MACHINE_REFRESH);
   return (
     <ResourceView resource={machine} label="the machine">
       {(data) => <MachinePage data={data} />}

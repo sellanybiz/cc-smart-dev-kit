@@ -660,59 +660,72 @@ export function mockData(empty: boolean): MockData {
     restingFor,
     tested: false,
   });
+  const info: Record<string, string> = {
+    scout:
+      "Haiku's work: file search, greps, reading, summaries and background calls. With no chain, Haiku answers itself.",
+    worker:
+      "Sonnet's work: building, doc updates, tests and mechanical runs. With no chain, Sonnet answers itself.",
+    opus: "Every Opus request: the main session on Opus and every opus agent. With no chain, Opus answers itself.",
+    fable:
+      "Every Fable request: the main session on Fable and every fable agent. With no chain, Fable answers itself.",
+    judge:
+      "Auto mode's safety checks. With no chain, Claude judges them. With one, its first target judges every check in Claude's place, and only a target that passed the force-push test is used. A weak judge can let a risky command through, and it reads the conversation.",
+  };
+  const role: Record<string, string> = {
+    scout: "affordable",
+    worker: "affordable",
+    opus: "model",
+    fable: "model",
+    judge: "judge",
+  };
+  // Saved while Claude answers: the fable chain, and a judge chain not tested yet.
+  const kept: Record<string, string[]> = {
+    [key("fable")]: ["claude-fable-5", "omniroute:kimi-k3"],
+    [key("judge")]: ["omniroute:glm-5.3"],
+  };
+  const rows = SLOT_KEYS.map((slot) => {
+    const chain = empty ? [] : (CHAINS[key(slot)] ?? []);
+    const saved = empty ? undefined : kept[key(slot)];
+    return {
+      breaker: slot !== "judge",
+      fallback: slot !== "fable" && slot !== "opus",
+      info: info[slot] ?? "",
+      kept:
+        saved === undefined
+          ? null
+          : { fallback: slot !== "fable", targets: saved.map((target) => slotTarget(target)) },
+      key: key(slot),
+      kind: chain.length === 0 ? "off" : (role[slot] ?? "model"),
+      mode: chain.length === 0 ? ("claude" as const) : ("custom" as const),
+      name: slot,
+      note: chain.length === 0 ? "Claude: no chain in use" : "fallback on",
+      role: role[slot] ?? "model",
+      stamp: `mock-${slot}`,
+      targets: chain.map((target) =>
+        slotTarget(target, cooling[target as keyof typeof cooling] ?? null),
+      ),
+    };
+  });
   const slots: SlotsData = {
-    rows: SLOT_KEYS.map((slot) => {
-      const chain = CHAINS[key(slot)] ?? [];
-      const info: Record<string, string> = {
-        scout:
-          "Haiku's work: file search, greps, reading, summaries and background calls. With no chain, Haiku answers itself.",
-        worker:
-          "Sonnet's work: building, doc updates, tests and mechanical runs. With no chain, Sonnet answers itself.",
-        opus: "Every Opus request: the main session on Opus and every opus agent. With no chain, Opus answers itself.",
-        fable:
-          "Every Fable request: the main session on Fable and every fable agent. With no chain, Fable answers itself.",
-        judge:
-          "Auto mode's safety checks. With no chain, Claude judges them. With one, its first target judges every check in Claude's place, and only a target that passed the force-push test is used. A weak judge can let a risky command through, and it reads the conversation.",
-      };
-      const kind: Record<string, string> = {
-        scout: "affordable",
-        worker: "affordable",
-        opus: "model",
-        fable: "model",
-        judge: "judge",
-      };
-      return {
-        key: key(slot),
-        name: slot,
-        kind: kind[slot] ?? "model",
-        info: info[slot] ?? "",
-        note: chain.length === 0 ? "No chain: Claude answers." : "",
-        fallback: slot !== "fable",
-        targets: chain.map((target) =>
-          slotTarget(target, cooling[target as keyof typeof cooling] ?? null),
-        ),
-      };
-    }),
-    breaker: {
-      [key("scout")]: true,
-      [key("worker")]: true,
-      [key("opus")]: true,
-      [key("fable")]: true,
-      [key("judge")]: false,
-    },
+    backendNotes: [],
     breakers,
+    chains: Object.fromEntries(rows.map((row) => [row.name, row.targets.map((t) => t.target)])),
+    configured: true,
+    error: null,
+    fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
     models: [
-      { backend: "omniroute", id: "glm-5.3", context: "200K", plan: false },
-      { backend: "omniroute", id: "glm-5.3-flash", context: "128K", plan: false },
-      { backend: "omniroute", id: "deepseek-v4.1", context: "128K", plan: false },
-      { backend: "omniroute", id: "deepseek-v4.1-flash", context: "128K", plan: false },
-      { backend: "omniroute", id: "minimax-m3", context: "1000K", plan: false },
-      { backend: "omniroute", id: "kimi-k3", context: "256K", plan: false },
-      { backend: "Claude login", id: "claude-haiku-5-5", context: "—", plan: true },
-      { backend: "Claude login", id: "claude-sonnet-5-5", context: "—", plan: true },
-      { backend: "Claude login", id: "claude-opus-5-5", context: "—", plan: true },
-      { backend: "Claude login", id: "claude-fable-5", context: "—", plan: true },
+      { backend: "omniroute", id: "omniroute:glm-5.3", context: "200K", plan: false },
+      { backend: "omniroute", id: "omniroute:glm-5.3-flash", context: "128K", plan: false },
+      { backend: "omniroute", id: "omniroute:deepseek-v4.1", context: "128K", plan: false },
+      { backend: "omniroute", id: "omniroute:deepseek-v4.1-flash", context: "128K", plan: false },
+      { backend: "omniroute", id: "omniroute:minimax-m3", context: "1000K", plan: false },
+      { backend: "omniroute", id: "omniroute:kimi-k3", context: "256K", plan: false },
+      { backend: "Claude login", id: "claude-haiku-5-5", context: "the plan's", plan: true },
+      { backend: "Claude login", id: "claude-sonnet-5-5", context: "the plan's", plan: true },
+      { backend: "Claude login", id: "claude-opus-5-5", context: "the plan's", plan: true },
+      { backend: "Claude login", id: "claude-fable-5", context: "the plan's", plan: true },
     ],
+    slots: rows,
     switches: {
       gateway: true,
       models: true,
@@ -721,6 +734,7 @@ export function mockData(empty: boolean): MockData {
       settingsBaseUrl: "http://127.0.0.1:20100",
       warnings: [],
     },
+    tested: {},
   };
 
   const projects: ProjectListRow[] = empty
@@ -839,7 +853,16 @@ export function mockData(empty: boolean): MockData {
     slots,
     health: {
       router: {
+        breakers,
         cooling: Object.entries(cooling),
+        recent: recent.map((entry) => ({
+          at: entry.at,
+          ms: entry.ms,
+          nextTarget: entry.next,
+          slot: entry.slot,
+          status: entry.status,
+          target: entry.target,
+        })),
         fallbacks: health.fallbacks,
         port: 20100,
         requests: health.requests,

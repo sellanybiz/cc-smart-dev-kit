@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../../cli/paths";
 import { appendCrewEvent, createCrew, crewStoreDir, type NewCrew } from "../../crew/store";
 import { askLogFile } from "../../hooks/ask-log";
+import type { JobsAnswer } from "../../jobs/status";
 import { tempDir } from "../../testing/temp";
 import { updateFiles, writeLastCheck } from "../../update/state";
 import { createLiveSources } from "./sources";
@@ -59,7 +60,7 @@ function world(options: { recent?: () => unknown[]; routerUp?: boolean } = {}) {
   const home = tempDir("live");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const published: Published[] = [];
-  let jobs: unknown = { budgetGb: 8, freeGb: 8, keptGb: 22, memoryGb: 32, stores: [] };
+  let jobs: JobsAnswer = { budgetGb: 8, freeGb: 8, keptGb: 22, memoryGb: 32, stores: [] };
   const sources = createLiveSources({
     cwd: home,
     fetch: async () =>
@@ -82,7 +83,7 @@ function world(options: { recent?: () => unknown[]; routerUp?: boolean } = {}) {
     home,
     paths,
     published,
-    setJobs: (next: unknown) => {
+    setJobs: (next: JobsAnswer) => {
       jobs = next;
     },
     sources,

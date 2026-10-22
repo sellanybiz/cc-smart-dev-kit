@@ -1,6 +1,7 @@
 "use client";
 
 import { useResource } from "@/api/hooks";
+import { UPDATE_REFRESH, WORKTREES_REFRESH } from "@/api/refresh";
 import type { WorktreeRow } from "@/api/types";
 import { ActionButton } from "@/components/action-button";
 import { columnsFor, PortalTable } from "@/components/data-table";
@@ -38,7 +39,7 @@ const WORKTREE_COLUMNS = column.columns([
     header: "Idle",
     cell: ({ row }) => (
       <span className="tabular-nums whitespace-nowrap">
-        {duration(row.original.idleMinutes * 60_000)}
+        {row.original.idleMinutes === null ? "—" : duration(row.original.idleMinutes * 60_000)}
       </span>
     ),
   }),
@@ -68,7 +69,7 @@ const WORKTREE_COLUMNS = column.columns([
 
 /** Every worktree with its verdict, what auto-clean removed, and "Clean finished now". */
 export function WorktreesCard() {
-  const worktrees = useResource((client) => client.worktrees());
+  const worktrees = useResource((client) => client.worktrees(), "", WORKTREES_REFRESH);
   const data = worktrees.status === "ready" ? worktrees.data : null;
   const finished = data?.rows.filter((row) => row.verdict.finished).length ?? 0;
   return (
@@ -83,11 +84,13 @@ export function WorktreesCard() {
           {finished > 0 && (
             <ActionButton
               action="worktrees.clean"
-              body={{}}
+              body={{ confirm: true }}
               variant="outline"
               confirm={{
-                question: `Remove ${finished} finished worktree${finished === 1 ? "" : "s"} and their branch folders?`,
+                title: `Remove ${finished} finished worktree${finished === 1 ? "" : "s"}?`,
+                body: "Each one goes with its branch. A worktree that is not finished is kept, with its reason.",
                 yes: "Remove them",
+                tone: "destructive",
               }}
             >
               Clean finished now ({finished})
@@ -136,7 +139,7 @@ export function WorktreesCard() {
 
 /** The installed version, the newest, a held major with its why and What's new, and Install. */
 export function UpdatesCard() {
-  const update = useResource((client) => client.update());
+  const update = useResource((client) => client.update(), "", UPDATE_REFRESH);
   if (update.status !== "ready") {
     return (
       <Card>

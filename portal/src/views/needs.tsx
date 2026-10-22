@@ -2,6 +2,7 @@
 
 import { CircleCheckIcon } from "lucide-react";
 import { useResource } from "@/api/hooks";
+import { NEEDS_REFRESH } from "@/api/refresh";
 import type { NeedsData } from "@/api/types";
 import { NeedsList } from "@/components/needs-list";
 import { SectionCards, StatCard } from "@/components/section-cards";
@@ -80,7 +81,7 @@ function NeedsPage({ data }: { data: NeedsData }) {
 
 /** Needs you (D52): every question, prompt, failing check, open breaker and held update. */
 export function NeedsView() {
-  const needs = useResource((client) => client.needs());
+  const needs = useResource((client) => client.needs(), "", NEEDS_REFRESH);
   return (
     <ResourceView resource={needs} label="what needs you">
       {(data) => <NeedsPage data={data} />}

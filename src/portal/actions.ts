@@ -36,7 +36,7 @@ import { runCrewResume, runCrewStop } from "../crew/end";
 import { runCrewRm } from "../crew/remove";
 import { realProcessFacts } from "../crew/session";
 import { listModels, probeModel } from "../gateway/backends";
-import { type GatewayContext, runGateway } from "../gateway/commands";
+import { chainProblem, type GatewayContext, runGateway } from "../gateway/commands";
 import {
   type GatewayConfig,
   keptChain,
@@ -64,6 +64,7 @@ import {
   updateFiles,
 } from "../update/state";
 import { runWorktrees } from "../worktrees/command";
+import type { LivePublish } from "./api/types";
 import type { PortalContext } from "./context";
 import {
   type ProjectDefaultsReader,
@@ -72,6 +73,7 @@ import {
   readProject,
   settingsLineNote,
   shownDetail,
+  slotStamp,
 } from "./facts";
 import { parseSettingValue, settingSpec } from "./settings";
 import type { ProjectInitAnswers, ProjectInitPlan, WorkflowAdapter } from "./workflow-adapter";
@@ -135,7 +137,7 @@ export interface ActionContext {
    * result go out to every open page while it runs (B6b). Absent in a test that only calls
    * the actions.
    */
-  publish?: (event: string, data: unknown) => void;
+  publish?: LivePublish;
   /**
    * The project's own defaults, remembered for this run: reading them runs git and, when `gh`
    * is there, GitHub itself, so one file's answers are computed once (`server.ts`).
@@ -345,9 +347,27 @@ async function setSlotFallback(
   return gateway(action, ["fallback", slot, body.on ? "on" : "off"]);
 }
 
+/** Sets a slot's breaker switch through `gateway breaker`: the judge has none (it never holds). */
+async function setSlotBreaker(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || typeof body.on !== "boolean") {
+    return { lines: ["Pick a slot, and say on or off."], ok: false };
+  }
+  return gateway(action, ["breaker", slot, body.on ? "on" : "off"]);
+}
+
 /**
- * Saves a chain through `gateway slot`. The config is the one home of every chain: in use in
- * `slots`, saved in `kept` while the slot answers as Claude. The portal keeps none of its own.
+ * Saves a chain through `gateway slot`, which also puts it in use. The config is the one home
+ * of every chain: in use in `slots`, saved in `kept` while the slot answers as Claude. The
+ * portal keeps none of its own.
+ *
+ * `stamp` is the chain as the page read it (`slotStamp`): a page open since before another
+ * tab or the command line changed this slot's chain would otherwise overwrite that change
+ * unseen, so such a save is refused and the page offers the newer chain. Any value that is
+ * not this chain's stamp (a number, a stale string) is refused the same way.
  */
 async function saveSlot(
   action: ActionContext,
@@ -359,7 +379,63 @@ async function saveSlot(
     : [];
   if (slot === "" || targets.length === 0)
     return { lines: ["Pick a slot and give it a target."], ok: false };
+  // The stamp guards a page against its own old copy, not a caller against the portal (D9 has
+  // no sign-in): the server-rendered page sends none, and is checked by `gateway slot` alone.
+  if (body.stamp !== undefined && slotStamp(gatewayConfig(action), slot) !== body.stamp) {
+    return {
+      lines: [
+        "This slot's chain changed since the page read it (another tab, or the command line), so nothing was saved.",
+        "Load the newer chain, then make the change again.",
+      ],
+      ok: false,
+    };
+  }
   return gateway(action, ["slot", slot, targets.join(",")]);
+}
+
+/**
+ * Checks one typed target the way `gateway slot` would (`chainProblem`: it parses, its backend
+ * is in the config, and that backend lists the model), before the page adds it to a draft. A
+ * `claude-…` id is taken as it is, as the command line takes it.
+ */
+async function checkTarget(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "")
+    return { lines: ["Type a target: claude-<id> or <backend>:<model>."], ok: false };
+  const config = gatewayConfig(action);
+  const parsed = parseTarget(text);
+  const models: Record<string, null | string[]> = {};
+  if ("target" in parsed && parsed.target.kind !== "anthropic") {
+    const backend = config.backends[parsed.target.backend];
+    if (backend !== undefined) {
+      const listed = await listModels(backend.baseUrl, backend.apiKey, 8_000);
+      models[parsed.target.backend] =
+        "error" in listed || listed.status !== 200 ? null : listed.models.map((model) => model.id);
+    }
+  }
+  const problem = chainProblem(config, [text], models);
+  if (problem !== null) {
+    const names = Object.keys(config.backends);
+    const known =
+      "target" in parsed &&
+      parsed.target.kind !== "anthropic" &&
+      !Object.hasOwn(config.backends, parsed.target.backend)
+        ? `. The config names: ${names.length === 0 ? "no backend" : names.join(", ")}.`
+        : "";
+    // A backend's model list never holds its key, but the line is masked all the same.
+    return { lines: [`${shownDetail(problem, [])}${known}`], ok: false };
+  }
+  return {
+    lines: [
+      "target" in parsed && parsed.target.kind === "anthropic"
+        ? `${text}: on your own Claude login.`
+        : `${text}: its backend lists it.`,
+    ],
+    ok: true,
+  };
 }
 
 /**
@@ -1108,6 +1184,43 @@ async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
 }
 
 // ── The door ────────────────────────────────────────────────────────────────────
+
+/**
+ * Every action a page may POST to `/api/<name>`: the cases of `runAction`, and `doctor.run`,
+ * which the server runs itself (it keeps the pass). The portal's client sends only these
+ * (`portal/src/api/wire.ts` mirrors the list, and a test runs each one).
+ */
+export const ACTION_NAMES = [
+  "automode.apply",
+  "browser.setup",
+  "browser.token",
+  "companion.enable",
+  "crew.answer",
+  "crew.resume",
+  "crew.rm",
+  "crew.stop",
+  "doctor.run",
+  "omniroute.rollback",
+  "omniroute.update",
+  "project.preview",
+  "project.write",
+  "router.restart",
+  "slot.breaker",
+  "slot.check",
+  "slot.fallback",
+  "slot.mode",
+  "slot.save",
+  "slot.test",
+  "switch",
+  "update.check",
+  "update.install",
+  "workflow.set",
+  "worktrees.clean",
+] as const;
+
+/** One action's name. */
+export type ActionName = (typeof ACTION_NAMES)[number];
+
 /**
  * Runs one action. `body` is the page's JSON, already parsed; nothing here trusts it — every
  * value is checked, and a value a command would refuse is refused here too.
@@ -1123,10 +1236,14 @@ export async function runAction(
   switch (name) {
     case "slot.test":
       return testTargets(action, body);
+    case "slot.check":
+      return checkTarget(action, body);
     case "slot.save":
       return saveSlot(action, body);
     case "slot.fallback":
       return setSlotFallback(action, body);
+    case "slot.breaker":
+      return setSlotBreaker(action, body);
     case "slot.mode":
       return setSlotMode(action, body);
     case "switch": {

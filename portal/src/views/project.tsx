@@ -2,6 +2,7 @@
 
 import { ArrowLeftIcon, GitBranchIcon, TriangleAlertIcon } from "lucide-react";
 import { useResource } from "@/api/hooks";
+import { SETTINGS_REFRESH } from "@/api/refresh";
 import type { ProjectData } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
 import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
@@ -50,13 +51,13 @@ function ProjectPage({ data }: { data: ProjectData }) {
         />
         <StatCard
           label="Worktrees"
-          value={project.worktrees}
+          value={project.worktrees ?? "—"}
           headline="Checkouts beside the main one"
           detail="A finished one clears itself after its merge"
         />
         <StatCard
           label="Last used"
-          value={ago(project.lastUsed)}
+          value={project.lastUsed === null ? "—" : ago(project.lastUsed)}
           headline="Its newest Claude session"
           detail="From the session records on this machine"
         />
@@ -157,6 +158,7 @@ export function ProjectView() {
         ? Promise.reject(new Error("No project is named in the address: open one from Settings."))
         : client.project(id),
     `${ready}|${id ?? ""}`,
+    SETTINGS_REFRESH,
   );
   if (!ready) return <LoadingState label="the project" />;
   return (

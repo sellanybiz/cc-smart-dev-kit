@@ -1,10 +1,11 @@
 "use client";
 
-import { ArrowLeftIcon, GitBranchIcon, PlayIcon, SquareIcon, Trash2Icon } from "lucide-react";
+import { ArrowLeftIcon, GitBranchIcon } from "lucide-react";
 import { useResource } from "@/api/hooks";
+import { CREW_REFRESH } from "@/api/refresh";
 import type { CrewDetail, CrewEvent, MergeCheck } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
-import { LaterAction } from "@/components/later-action";
+import { CrewActions } from "@/components/crew-actions";
 import { Markdown } from "@/components/markdown";
 import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
@@ -24,7 +25,7 @@ import { ago, clockTime, count, megabytes, slotName } from "@/lib/format";
 
 const RUNNING = ["starting", "working", "blocked", "paused", "quiet"];
 
-const EVENT_TONE: Record<CrewEvent["type"], Tone> = {
+const EVENT_TONE: Record<string, Tone> = {
   created: "info",
   state: "info",
   step: "ok",
@@ -45,7 +46,7 @@ function Timeline({ events }: { events: CrewEvent[] }) {
             aria-hidden="true"
           />
           <div className="flex flex-wrap items-baseline gap-2 text-sm">
-            <StatusMark tone={EVENT_TONE[event.type]}>
+            <StatusMark tone={EVENT_TONE[event.type] ?? "info"}>
               <span className="font-medium">{event.text ?? event.type}</span>
             </StatusMark>
             <time dateTime={event.at} className="text-xs text-muted-foreground">
@@ -96,10 +97,14 @@ function MergeVerdict({ check }: { check: MergeCheck }) {
             </dd>
           </>
         )}
-        <dt className="text-muted-foreground">Limit</dt>
-        <dd className="tabular-nums">
-          {check.limits.lines} lines, {check.limits.files} files or {check.limits.percent} %
-        </dd>
+        {check.limits !== null && (
+          <>
+            <dt className="text-muted-foreground">Limit</dt>
+            <dd className="tabular-nums">
+              {check.limits.lines} lines, {check.limits.files} files or {check.limits.percent} %
+            </dd>
+          </>
+        )}
       </dl>
     </div>
   );
@@ -109,8 +114,13 @@ function CrewPage({ data }: { data: CrewDetail }) {
   const { record, report } = data;
   const running = RUNNING.includes(record.state);
   const merged = record.state === "merged";
-  const added = data.diff.reduce((sum, file) => sum + file.added, 0);
-  const removed = data.diff.reduce((sum, file) => sum + file.removed, 0);
+  // The server sends the diff in totals (`diffTotals`); the per-file list, when there is one.
+  const added = data.diffTotals?.insertions ?? data.diff.reduce((sum, file) => sum + file.added, 0);
+  const removed =
+    data.diffTotals?.deletions ?? data.diff.reduce((sum, file) => sum + file.removed, 0);
+  const files = data.diffTotals?.files ?? data.diff.length;
+  const diffError = data.diffTotals?.error ?? null;
+  const base = record.baseRef === "" ? "its base" : record.baseRef;
   const widest = Math.max(1, ...data.diff.map((file) => file.added + file.removed));
   return (
     <>
@@ -122,8 +132,14 @@ function CrewPage({ data }: { data: CrewDetail }) {
           </h2>
           <span className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
             <GitBranchIcon className="size-3.5" aria-hidden="true" />
-            <span className="font-mono text-xs">{record.branch}</span> from{" "}
-            <span className="font-mono text-xs">{record.baseRef}</span>, led by {data.lead.name}
+            <span className="font-mono text-xs">{record.branch}</span>
+            {record.baseRef !== "" && (
+              <>
+                {" "}
+                from <span className="font-mono text-xs">{record.baseRef}</span>
+              </>
+            )}
+            , led by {data.lead.name}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -136,31 +152,7 @@ function CrewPage({ data }: { data: CrewDetail }) {
           {record.shortId !== null && (
             <CopyButton text={`claude attach ${record.shortId}`} label="Copy attach" />
           )}
-          {running ? (
-            <LaterAction
-              icon={<SquareIcon data-icon="inline-start" aria-hidden="true" />}
-              label={`Stop ${record.name}`}
-            >
-              Stop
-            </LaterAction>
-          ) : (
-            !merged && (
-              <LaterAction
-                icon={<PlayIcon data-icon="inline-start" aria-hidden="true" />}
-                label={`Resume ${record.name}`}
-              >
-                Resume
-              </LaterAction>
-            )
-          )}
-          {merged && (
-            <LaterAction
-              icon={<Trash2Icon data-icon="inline-start" aria-hidden="true" />}
-              label={`Remove ${record.name}`}
-            >
-              Remove after merge
-            </LaterAction>
-          )}
+          <CrewActions crew={record} />
         </div>
       </PagePad>
       <SectionCards columns={4}>
@@ -178,7 +170,9 @@ function CrewPage({ data }: { data: CrewDetail }) {
               <span className="text-bad">−{count(removed)}</span>
             </span>
           }
-          headline={`${data.diff.length} files against ${record.baseRef}`}
+          headline={
+            diffError !== null ? "The diff could not be read" : `${files} files against ${base}`
+          }
           detail={
             report !== null && report.outsideBrief.length > 0
               ? `${report.outsideBrief.length} outside its brief`
@@ -241,9 +235,11 @@ function CrewPage({ data }: { data: CrewDetail }) {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Diff against {record.baseRef}</CardTitle>
+            <CardTitle>Diff against {base}</CardTitle>
             <CardDescription>
-              {count(added)} lines added and {count(removed)} removed, in {data.diff.length} files.
+              {diffError !== null
+                ? `It could not be read: ${diffError}.`
+                : `${count(added)} lines added and ${count(removed)} removed, in ${files} files.`}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -403,6 +399,7 @@ export function CrewView() {
         ? Promise.reject(new Error("No crew session is named in the address: open one from Work."))
         : client.crew(id),
     `${ready}|${id ?? ""}`,
+    CREW_REFRESH,
   );
   if (!ready) return <LoadingState label="the crew session" />;
   return (

@@ -31,6 +31,7 @@ import type {
   LogLine,
   ModelRow,
   OmnirouteRow,
+  OpenBreaker,
   ProjectCardData,
   RouterFacts,
   SettingsData,
@@ -244,6 +245,8 @@ ${switches}
 export interface SlotsData {
   /** Why a backend's models are not listed, per backend. */
   backendNotes: string[];
+  /** The slots whose breaker is open now, by slot key (the router's own answer). */
+  breakers: Record<string, OpenBreaker>;
   chains: Record<string, string[]>;
   /** Each slot's fallback switch, by short name (`scout`): it decides the chain's labels. */
   fallback: Record<string, boolean>;

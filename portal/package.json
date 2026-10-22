@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build --webpack && bun scripts/csp-hashes.ts out",
     "typecheck": "tsc --noEmit",
-    "test": "bun test scripts"
+    "test": "bun test scripts src"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

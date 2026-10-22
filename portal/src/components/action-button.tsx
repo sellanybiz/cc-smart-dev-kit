@@ -1,20 +1,155 @@
 "use client";
 
 import { LoaderCircleIcon } from "lucide-react";
-import { type ReactNode, useState } from "react";
-import { type PortalAction, portalClient } from "@/api/client";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ActionName, type ActionResult, portalClient } from "@/api/client";
+import { useLiveEvent } from "@/api/hooks";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
-type State =
+/** How long a success stays in place before the button is plain again. */
+export const DONE_SHOWN_MS = 6_000;
+
+/** One action's life on the page: idle, asked, running (with its last line), and its result. */
+export type ActionState =
   | { phase: "idle" }
-  | { phase: "asking" }
-  | { phase: "sending" }
-  | { phase: "done"; ok: boolean; message: string };
+  | { phase: "sending"; line: null | string }
+  | { phase: "done"; result: ActionResult };
+
+/** What a result says, as the page shows it: the first line, and the rest behind "Details". */
+export function resultWords(result: ActionResult): { first: string; rest: string[] } {
+  const [first, ...rest] = result.lines;
+  return {
+    first: first ?? (result.ok ? "Done." : "It did not work, and said nothing."),
+    rest,
+  };
+}
 
 /**
- * A button that runs one of the portal's actions (a POST with the page's CSRF value). With
- * `confirm`, it first asks in the page, in words that name the change: a browser cannot be
- * asked a terminal question, and a dialog would lock the page's scroll with a runtime style.
+ * Runs one action of the portal and follows it: while it runs, its newest line from the live
+ * stream; when it ends, its result in place (no page reload). A failure keeps its words until
+ * the person tries again; a success clears itself after `DONE_SHOWN_MS`.
+ */
+export function useAction(action: ActionName, onDone?: (result: ActionResult) => void) {
+  const [state, setState] = useState<ActionState>({ phase: "idle" });
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+  useLiveEvent((message) => {
+    if (message.name !== "action" || message.data.action !== action) return;
+    const data = message.data;
+    if ("line" in data) {
+      setState((before) =>
+        before.phase === "sending" ? { line: data.line, phase: "sending" } : before,
+      );
+    }
+  });
+  useEffect(() => {
+    if (state.phase !== "done" || !state.result.ok) return;
+    const timer = window.setTimeout(() => setState({ phase: "idle" }), DONE_SHOWN_MS);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  const run = useCallback(
+    (body: Record<string, unknown>) => {
+      setState({ line: null, phase: "sending" });
+      portalClient()
+        .act(action, body)
+        .then(
+          (result) => {
+            setState({ phase: "done", result });
+            doneRef.current?.(result);
+          },
+          (error: unknown) =>
+            setState({
+              phase: "done",
+              result: {
+                lines: [error instanceof Error ? error.message : String(error)],
+                ok: false,
+              },
+            }),
+        );
+    },
+    [action],
+  );
+  const clear = useCallback(() => setState({ phase: "idle" }), []);
+  return { clear, run, state };
+}
+
+/** The result line under a control: ✓ or ✗, the first line, and the rest on demand. */
+export function ActionResultLine({
+  state,
+  onRetry,
+  className,
+}: {
+  state: ActionState;
+  onRetry?: () => void;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  if (state.phase === "idle") return null;
+  if (state.phase === "sending") {
+    return (
+      <p role="status" className={cn("text-sm text-muted-foreground", className)}>
+        {state.line ?? "Working…"}
+      </p>
+    );
+  }
+  const { first, rest } = resultWords(state.result);
+  const ok = state.result.ok;
+  return (
+    <div role="status" className={cn("flex flex-col gap-1 text-sm", className)}>
+      <p className={cn("text-pretty", ok ? "text-ok" : "text-bad")}>
+        <span aria-hidden="true">{ok ? "✓ " : "✗ "}</span>
+        {ok ? "" : "Not done: "}
+        {first}
+      </p>
+      {(rest.length > 0 || (!ok && onRetry !== undefined)) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {rest.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2"
+              aria-expanded={open}
+              aria-controls={detailsId}
+              onClick={() => setOpen(!open)}
+            >
+              {open ? "Hide details" : "Details"}
+            </Button>
+          )}
+          {!ok && onRetry !== undefined && (
+            <Button variant="outline" size="sm" className="h-7" onClick={onRetry}>
+              Try again
+            </Button>
+          )}
+        </div>
+      )}
+      {rest.length > 0 && (
+        // The command's own lines, in its order (a line may repeat): one block, as it printed.
+        <pre
+          id={detailsId}
+          hidden={!open}
+          className="font-mono text-xs whitespace-pre-wrap text-muted-foreground"
+        >
+          {rest.join("\n")}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** A question the page asks before the action runs: what changes, and the verb that says yes. */
+export interface Confirm {
+  title: string;
+  body?: ReactNode;
+  yes: string;
+  tone?: "default" | "destructive";
+}
+
+/**
+ * A button that runs one of the portal's actions. With `confirm`, it first asks in the page,
+ * in words that name the change. Its progress and its result show beside it.
  */
 export function ActionButton({
   action,
@@ -23,69 +158,58 @@ export function ActionButton({
   confirm,
   variant = "default",
   disabled = false,
+  onDone,
+  icon,
 }: {
   disabled?: boolean;
-  action: PortalAction;
+  action: ActionName;
   body: Record<string, unknown>;
   children: ReactNode;
-  /** The question, and the verb on the button that says yes. */
-  confirm?: { question: string; yes: string };
-  variant?: "default" | "outline";
+  confirm?: Confirm;
+  variant?: "default" | "destructive" | "outline";
+  onDone?: (result: ActionResult) => void;
+  icon?: ReactNode;
 }) {
-  const [state, setState] = useState<State>({ phase: "idle" });
-  const send = () => {
-    setState({ phase: "sending" });
-    portalClient()
-      .act(action, body)
-      .then(
-        (answer) => setState({ phase: "done", ok: answer.ok, message: answer.message }),
-        (error: unknown) =>
-          setState({
-            phase: "done",
-            ok: false,
-            message: error instanceof Error ? error.message : String(error),
-          }),
-      );
-  };
-  if (state.phase === "asking" && confirm !== undefined) {
-    return (
-      <fieldset className="m-0 flex flex-wrap items-center gap-2 border-0 p-0">
-        <legend className="sr-only">{confirm.question}</legend>
-        <span className="text-sm" aria-hidden="true">
-          {confirm.question}
-        </span>
-        <Button size="sm" onClick={send}>
-          {confirm.yes}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => setState({ phase: "idle" })}>
-          Cancel
-        </Button>
-      </fieldset>
-    );
-  }
-  if (state.phase === "done") {
-    return (
-      <p role="status" className={state.ok ? "text-sm text-ok" : "text-sm text-bad"}>
-        <span aria-hidden="true">{state.ok ? "✓ " : "✗ "}</span>
-        {state.message}
-      </p>
-    );
-  }
+  const { run, state } = useAction(action, onDone);
+  const [asking, setAsking] = useState(false);
+  const sending = state.phase === "sending";
+  const start = () => (confirm === undefined ? run(body) : setAsking(true));
   return (
-    <Button
-      size="sm"
-      variant={variant}
-      disabled={disabled || state.phase === "sending"}
-      onClick={() => (confirm === undefined ? send() : setState({ phase: "asking" }))}
-    >
-      {state.phase === "sending" && (
-        <LoaderCircleIcon
-          data-icon="inline-start"
-          className="animate-spin motion-reduce:animate-none"
-          aria-hidden="true"
-        />
+    <div className="flex flex-col items-start gap-1.5">
+      <Button
+        size="sm"
+        variant={variant}
+        disabled={disabled || sending}
+        aria-busy={sending}
+        onClick={start}
+      >
+        {sending ? (
+          <LoaderCircleIcon
+            data-icon="inline-start"
+            className="animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        ) : (
+          icon
+        )}
+        {children}
+      </Button>
+      <ActionResultLine state={state} onRetry={start} />
+      {confirm !== undefined && (
+        <ConfirmDialog
+          open={asking}
+          title={confirm.title}
+          yes={confirm.yes}
+          tone={confirm.tone}
+          onCancel={() => setAsking(false)}
+          onYes={() => {
+            setAsking(false);
+            run(body);
+          }}
+        >
+          {confirm.body}
+        </ConfirmDialog>
       )}
-      {children}
-    </Button>
+    </div>
   );
 }

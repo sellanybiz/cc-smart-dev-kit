@@ -13586,6 +13586,23 @@ var NO_SLOT_KEY = "(no slot)";
 var NO_SESSION_KEY = "(no session)";
 var RECENT_PAGE_MAX = 200;
 var RECENT_PAGE_DEFAULT = 50;
+function historyKeys(file, options) {
+  const db = openReadonly(file);
+  if (db === null)
+    return { models: [], sessions: [], slots: [], targets: [] };
+  try {
+    const from = (options.now ?? Date.now()) - RANGE_MS[options.range];
+    const values = (column) => db.query(`SELECT DISTINCT ${column} AS value FROM requests WHERE at >= ? AND ${column} IS NOT NULL ORDER BY ${column}`).all(from).map((row) => row.value);
+    return {
+      models: values("model"),
+      sessions: values("session"),
+      slots: values("slot"),
+      targets: values("target")
+    };
+  } finally {
+    db.close();
+  }
+}
 function groupExpression(by) {
   switch (by) {
     case "slot":
@@ -32895,13 +32912,56 @@ function entriesOf2(value) {
     return [];
   return Object.entries(value).filter((entry) => typeof entry[1] === "number").sort(([a], [b]) => a < b ? -1 : 1);
 }
+function recentEntryOf(value) {
+  if (!isJsonObject14(value))
+    return null;
+  const { at, ms, nextTarget, slot, status, target } = value;
+  if (typeof at !== "number" || typeof ms !== "number" || typeof status !== "number")
+    return null;
+  if (typeof target !== "string" || slot !== null && typeof slot !== "string")
+    return null;
+  return { at, ms, nextTarget: nextTarget === true, slot, status, target };
+}
+function breakersOf(value) {
+  if (!isJsonObject14(value))
+    return {};
+  const out = {};
+  for (const [slot, raw] of Object.entries(value)) {
+    if (!isJsonObject14(raw))
+      continue;
+    const { held, heldNow, since, targets } = raw;
+    if (typeof held !== "number" || typeof heldNow !== "number" || typeof since !== "number") {
+      continue;
+    }
+    out[slot] = {
+      held,
+      heldNow,
+      since,
+      targets: (Array.isArray(targets) ? targets : []).flatMap((one) => {
+        if (!isJsonObject14(one) || typeof one.target !== "string" || typeof one.until !== "number") {
+          return [];
+        }
+        return [
+          {
+            status: typeof one.status === "number" ? one.status : null,
+            target: one.target,
+            until: one.until
+          }
+        ];
+      })
+    };
+  }
+  return out;
+}
 async function routerFacts(ctx, port) {
   const health = await routerHealth(port, ctx.probe.fetch);
   if ("error" in health) {
     return {
+      breakers: {},
       cooling: [],
       fallbacks: 0,
       port,
+      recent: [],
       requests: 0,
       up: false,
       uptimeSec: 0,
@@ -32911,9 +32971,14 @@ async function routerFacts(ctx, port) {
   const body = isJsonObject14(health.body) ? health.body : {};
   const number = (key) => typeof body[key] === "number" ? body[key] : 0;
   return {
+    breakers: breakersOf(body.breakers),
     cooling: entriesOf2(body.cooling),
     fallbacks: number("fallbacks"),
     port: typeof body.port === "number" ? body.port : port,
+    recent: (Array.isArray(body.recent) ? body.recent : []).flatMap((entry) => {
+      const read = recentEntryOf(entry);
+      return read === null ? [] : [read];
+    }),
     requests: number("requests"),
     up: true,
     uptimeSec: number("uptimeSec"),
@@ -32992,6 +33057,11 @@ function routerLog(ctx, count) {
 `).map((line) => parseJournalLine(line, nowMs)).filter((line) => line !== null);
   return { lines, note: null };
 }
+function slotStamp(config, key) {
+  const inUse = Object.hasOwn(config.slots, key) ? config.slots[key] ?? null : null;
+  const saved = keptChain(config, key)?.targets ?? null;
+  return createHash8("sha256").update(JSON.stringify({ inUse, saved })).digest("hex").slice(0, 16);
+}
 var SLOT_META = {
   fable: {
     info: "Every Fable request: the main session on Fable and every fable agent. With no chain, Fable answers itself.",
@@ -33030,23 +33100,33 @@ function slotRows(config, router) {
     const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
     const targets = config.slots[key];
     const on = targets !== undefined;
+    const targetRow = (target) => {
+      const parsed = parseTarget(target);
+      const known = "target" in parsed ? parsed.target : null;
+      return {
+        from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
+        restingFor: resting.get(target) ?? null,
+        target,
+        tested: key === JUDGE_SLOT && judgeTargetTested(config, target)
+      };
+    };
+    const kept = keptChain(config, key);
     rows.push({
+      breaker: breakerOn(config, key),
       fallback: fallbackOn(config, key),
       info: meta.info,
+      kept: kept === null ? null : {
+        fallback: kept.fallback ?? fallbackOn({}, key),
+        targets: kept.targets.map(targetRow)
+      },
       key,
       kind: on ? meta.kind : "off",
+      mode: slotMode(config, key),
       name,
       note: slotNote(config, key),
-      targets: (targets ?? []).map((target) => {
-        const parsed = parseTarget(target);
-        const known = "target" in parsed ? parsed.target : null;
-        return {
-          from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
-          restingFor: resting.get(target) ?? null,
-          target,
-          tested: key === JUDGE_SLOT && judgeTargetTested(config, target)
-        };
-      })
+      role: meta.kind,
+      stamp: slotStamp(config, key),
+      targets: (targets ?? []).map(targetRow)
     });
   }
   return rows;
@@ -33552,12 +33632,55 @@ async function setSlotFallback(action, body) {
   }
   return gateway(action, ["fallback", slot, body.on ? "on" : "off"]);
 }
+async function setSlotBreaker(action, body) {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || typeof body.on !== "boolean") {
+    return { lines: ["Pick a slot, and say on or off."], ok: false };
+  }
+  return gateway(action, ["breaker", slot, body.on ? "on" : "off"]);
+}
 async function saveSlot(action, body) {
   const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
   const targets = Array.isArray(body.targets) ? body.targets.filter((entry) => typeof entry === "string") : [];
   if (slot === "" || targets.length === 0)
     return { lines: ["Pick a slot and give it a target."], ok: false };
+  if (body.stamp !== undefined && slotStamp(gatewayConfig(action), slot) !== body.stamp) {
+    return {
+      lines: [
+        "This slot's chain changed since the page read it (another tab, or the command line), so nothing was saved.",
+        "Load the newer chain, then make the change again."
+      ],
+      ok: false
+    };
+  }
   return gateway(action, ["slot", slot, targets.join(",")]);
+}
+async function checkTarget(action, body) {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "")
+    return { lines: ["Type a target: claude-<id> or <backend>:<model>."], ok: false };
+  const config = gatewayConfig(action);
+  const parsed = parseTarget(text);
+  const models = {};
+  if ("target" in parsed && parsed.target.kind !== "anthropic") {
+    const backend = config.backends[parsed.target.backend];
+    if (backend !== undefined) {
+      const listed = await listModels(backend.baseUrl, backend.apiKey, 8000);
+      models[parsed.target.backend] = "error" in listed || listed.status !== 200 ? null : listed.models.map((model) => model.id);
+    }
+  }
+  const problem = chainProblem(config, [text], models);
+  if (problem !== null) {
+    const names = Object.keys(config.backends);
+    const known = "target" in parsed && parsed.target.kind !== "anthropic" && !Object.hasOwn(config.backends, parsed.target.backend) ? `. The config names: ${names.length === 0 ? "no backend" : names.join(", ")}.` : "";
+    return { lines: [`${shownDetail(problem, [])}${known}`], ok: false };
+  }
+  return {
+    lines: [
+      "target" in parsed && parsed.target.kind === "anthropic" ? `${text}: on your own Claude login.` : `${text}: its backend lists it.`
+    ],
+    ok: true
+  };
 }
 async function setSlotMode(action, body) {
   const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
@@ -34041,10 +34164,14 @@ async function runAction(name, body, action) {
   switch (name) {
     case "slot.test":
       return testTargets(action, body);
+    case "slot.check":
+      return checkTarget(action, body);
     case "slot.save":
       return saveSlot(action, body);
     case "slot.fallback":
       return setSlotFallback(action, body);
+    case "slot.breaker":
+      return setSlotBreaker(action, body);
     case "slot.mode":
       return setSlotMode(action, body);
     case "switch": {
@@ -34289,6 +34416,7 @@ async function slotsData(deps, config) {
     }
   }
   return {
+    breakers: router.breakers,
     backendNotes: backends.filter((backend) => backend.state !== "answers").map((backend) => `${backend.name} could not be listed (${backend.why}). Its models are missing from the table; ${backend.url} is what the config names.`),
     chains: Object.fromEntries(rows.map((row) => [row.name, row.targets.map((t) => t.target)])),
     fallback: Object.fromEntries(rows.map((row) => [row.name, row.fallback])),
@@ -34315,9 +34443,11 @@ function settingsPageData(deps) {
 
 // src/portal/api/data.ts
 var NO_ROUTER = {
+  breakers: {},
   cooling: [],
   fallbacks: 0,
   port: 0,
+  recent: [],
   requests: 0,
   up: false,
   uptimeSec: 0,
@@ -34378,6 +34508,7 @@ async function slotsAnswer(deps) {
     return {
       ...notSetUp(deps),
       backendNotes: [],
+      breakers: {},
       chains: {},
       fallback: {},
       models: [],
@@ -36031,6 +36162,25 @@ async function answerApi(deps, url) {
       return ok(updateAnswer(deps));
     case "/api/jobs":
       return ok(await jobsAnswerFor(deps));
+    case "/api/facts":
+      return ok(await deps.facts());
+    case "/api/history/keys": {
+      const range = rangeOf(query.get("range"));
+      if (range === null) {
+        return {
+          body: { error: `range must be one of ${Object.keys(HISTORY_RANGE_MS).join(", ")}` },
+          status: 400
+        };
+      }
+      try {
+        return ok(historyKeys(deps.action.portal.paths.historyDbFile, {
+          now: deps.action.portal.now(),
+          range
+        }));
+      } catch {
+        return { body: { error: "the request history could not be read" }, status: 500 };
+      }
+    }
     case "/api/flow": {
       const range = rangeOf(query.get("range"));
       if (range === null) {
@@ -37444,6 +37594,20 @@ function recentOf(body) {
   const recent = body.recent;
   return Array.isArray(recent) ? recent.filter((entry) => typeof entry === "object" && entry !== null && !Array.isArray(entry)) : [];
 }
+function guardAskOf(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
+  const { at, hook, reason, session, tool } = value;
+  if (typeof at !== "number" || typeof hook !== "string" || typeof reason !== "string")
+    return null;
+  return {
+    at,
+    hook,
+    reason,
+    session: typeof session === "string" ? session : "",
+    tool: typeof tool === "string" ? tool : ""
+  };
+}
 function createLiveSources(deps) {
   let timer = null;
   let running = false;
@@ -37479,8 +37643,11 @@ function createLiveSources(deps) {
     const last = recent[recent.length - 1];
     const at = last === undefined ? -1 : fingerprints.lastIndexOf(last);
     const fresh = at >= 0 ? entries.slice(at + 1) : entries.slice(-Math.min(entries.length, 50));
-    for (const entry of fresh)
-      deps.publish("recent", entry);
+    for (const entry of fresh) {
+      const read = recentEntryOf(entry);
+      if (read !== null)
+        deps.publish("recent", read);
+    }
     recent = fingerprints;
   }
   function pollState() {
@@ -37536,10 +37703,9 @@ function createLiveSources(deps) {
       if (line.trim() === "")
         continue;
       try {
-        const parsed = JSON.parse(line);
-        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-          deps.publish("guard-ask", parsed);
-        }
+        const ask = guardAskOf(JSON.parse(line));
+        if (ask !== null)
+          deps.publish("guard-ask", ask);
       } catch {}
     }
   }
@@ -38694,6 +38860,7 @@ async function startPortal(ctx, options) {
         await doctorOnce();
         return state.doctor;
       },
+      facts: () => shellFacts(ctx, port, found),
       found,
       projectDefaults,
       workflow

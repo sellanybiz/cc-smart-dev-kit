@@ -1,56 +1,86 @@
 /**
  * The portal's JSON API: every read-only answer a page fetches, and the shapes they carry.
  *
- * These are the names the portal UI is built against (`portal/src/api/types.ts` mirrors this
- * file): `GET /api/overview`, `/api/slots`, `/api/health`, `/api/machine`, `/api/settings`,
- * `/api/projects`, `/api/work`, `/api/crew/<id>`, `/api/flow`, `/api/needs`,
- * `/api/guard-asks`, `/api/worktrees`, `/api/update`, `/api/jobs`, `/api/history` and
- * `/api/requests`. Every one is a GET through the door and changes nothing; the pages that
- * act use `POST /api/<action>` (see `src/portal/actions.ts`).
+ * These are the names the portal UI is built against: `portal/src/api/wire.ts` mirrors every
+ * type this file exports, by the same name, and `wire-mirror.test.ts` fails when the two
+ * drift. The routes: `GET /api/facts`, `/api/overview`, `/api/slots`, `/api/health`,
+ * `/api/machine`, `/api/settings`, `/api/projects`, `/api/work`, `/api/crew/<id>`,
+ * `/api/flow`, `/api/needs`, `/api/guard-asks`, `/api/worktrees`, `/api/update`, `/api/jobs`,
+ * `/api/history`, `/api/history/keys` and `/api/requests`; the live stream `GET /events`
+ * (`LiveEvents`). Every one is a GET through the door and changes nothing; the pages that act
+ * use `POST /api/<action>` (`ActionName`, `src/portal/actions.ts`).
  *
  * Answers hold what the server-rendered pages hold — the same fact readers, the same words —
  * and never a key, an address with a credential, a prompt or an answer
  * (`.claude/rules/portal.md` § A key never reaches a page).
  */
 
+import type { Check as DoctorCheck } from "../../cli/doctor";
+import type { CrewEvent } from "../../crew/store";
 import {
   HISTORY_RANGE_MS,
   type HistoryBy,
   type HistoryFilters,
+  type HistoryKeys,
   type HistoryPoint,
   type HistoryRange,
   type HistorySeries,
 } from "../../gateway/history-read";
+import type { BreakerRecord, FallbackRecord, LimitRecord } from "../../gateway/limit-state";
+import type { GuardAsk } from "../../hooks/ask-log";
 import type { JobsAnswer } from "../../jobs/status";
 import type { FlowReport } from "../../sessions/flow";
+import type { LastCheck } from "../../update/state";
+import type { ActionName, ActionResult } from "../actions";
 import type {
   BackendRow,
   FallbackRow,
   LimitRow,
   LogLine,
   ModelRow,
+  OpenBreaker,
+  PortalFacts,
   ProjectCardData,
+  RecentEntry,
   RouterFacts,
   SettingsData,
   SlotRow,
+  SlotTarget,
   SwitchFacts,
 } from "../facts";
 import type { HealthData, MachineData, OverviewData, SlotsData } from "../views";
 
 export type {
+  ActionName,
+  ActionResult,
   BackendRow,
+  BreakerRecord,
+  CrewEvent,
+  DoctorCheck,
+  FallbackRecord,
   FallbackRow,
   FlowReport,
+  GuardAsk,
+  HistoryKeys,
   JobsAnswer,
+  LastCheck,
+  LimitRecord,
   LimitRow,
   LogLine,
   ModelRow,
+  OpenBreaker,
+  PortalFacts,
   ProjectCardData,
+  RecentEntry,
   RouterFacts,
   SettingsData,
   SlotRow,
+  SlotTarget,
   SwitchFacts,
 };
+
+/** `GET /api/facts`: the frame's facts — the version, this portal's port, the router. */
+export type FactsAnswer = PortalFacts;
 
 /** A page whose screen needs the gateway, on a machine that has none. */
 export interface NotSetUp {
@@ -421,6 +451,9 @@ export interface RequestsAnswer {
   requests: HistoryRequest[];
 }
 
+/** `GET /api/history/keys?range=…`: the values each filter can take in that range. */
+export type HistoryKeysAnswer = HistoryKeys;
+
 /** `GET /api/flow?range=…`: the flow report for the window (one reader: `src/sessions/flow.ts`). */
 export interface FlowAnswer {
   from: number;
@@ -434,3 +467,45 @@ export interface FlowAnswer {
 export interface ApiError {
   error: string;
 }
+
+/** `gateway-state.json` as the live stream's `state` event sends it (`limit-state.ts`). */
+export interface LiveState {
+  breakers: Record<string, BreakerRecord>;
+  fallbacks: Record<string, FallbackRecord>;
+  limits: Record<string, LimitRecord>;
+  /** Claude model id → the last time the router saw Claude Code send it (milliseconds). */
+  seenClaude: Record<string, number>;
+}
+
+/**
+ * The `action` event: a line an action printed while it runs (`line`), or its result, the same
+ * value its POST answers with. `action` names which one, so a page shows only its own.
+ */
+export type ActionEvent = { action: string; line: string } | ({ action: string } & ActionResult);
+
+/**
+ * Every event `GET /events` sends, and its `data`. A page fetches its facts from `/api/…` and
+ * fetches again when an event says they changed; `reset` (a new run of the portal, or a gap
+ * older than the replay buffer) means every page fetches again, and `closing` that this
+ * portal is going away for a new version.
+ */
+export interface LiveEvents {
+  action: ActionEvent;
+  closing: { at: number };
+  crew: CrewEvent;
+  doctor: null | { at: number; checks: DoctorCheck[] };
+  "guard-ask": GuardAsk;
+  hello: { at: number; boot: string };
+  jobs: ApiError | JobsAnswer;
+  ping: { at: number };
+  recent: RecentEntry;
+  reset: { boot: string };
+  state: LiveState;
+  update: { last: LastCheck | null };
+}
+
+/** An event's name. */
+export type LiveEventName = keyof LiveEvents;
+
+/** What publishes to the stream: an event's name and exactly its data. */
+export type LivePublish = <K extends LiveEventName>(event: K, data: LiveEvents[K]) => void;

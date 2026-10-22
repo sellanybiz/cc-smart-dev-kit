@@ -30,7 +30,7 @@
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { type Check, checkLine } from "../cli/doctor";
-import { jobsAnswer, readJobs } from "../jobs/status";
+import { type JobsAnswer, jobsAnswer, readJobs } from "../jobs/status";
 import {
   type ActionContext,
   type ActionResult,
@@ -42,6 +42,7 @@ import {
   updateState,
 } from "./actions";
 import { answerApi } from "./api/routes";
+import type { ApiError } from "./api/types";
 import { PORTAL_CSS, PORTAL_ICON, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { configExists, projectFileTexts, readConfig, shellFacts } from "./facts";
@@ -271,6 +272,7 @@ export async function startPortal(
         await doctorOnce();
         return state.doctor;
       },
+      facts: () => shellFacts(ctx, port, found),
       found,
       projectDefaults,
       workflow,
@@ -278,7 +280,7 @@ export async function startPortal(
   }
 
   /** The queue's answer, for the `jobs` event: the same reader `/api/jobs` uses. */
-  async function liveJobs(): Promise<unknown> {
+  async function liveJobs(): Promise<ApiError | JobsAnswer> {
     try {
       return jobsAnswer(await readJobs(jobContext(actionContext())));
     } catch (error) {

@@ -13,7 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import type { Resource } from "@/api/hooks";
-import type { History, HistoryPoint, HistoryRange } from "@/api/types";
+import type { ChartHistory, HistoryPoint, HistoryRange } from "@/api/types";
 import { useMounted } from "@/components/status";
 import {
   Card,
@@ -63,7 +63,7 @@ export function seriesLabel(key: string, by: SeriesBy, names?: Map<string, strin
   return key;
 }
 
-function rowsOf(history: History, colours: Map<string, SeriesColour>, metric: Metric): Row[] {
+function rowsOf(history: ChartHistory, colours: Map<string, SeriesColour>, metric: Metric): Row[] {
   const rows = new Map<number, Row>();
   for (const series of history.series) {
     const colour = colours.get(series.key) ?? "other";
@@ -110,7 +110,7 @@ export function HistoryChart({
   bars?: boolean;
   title: string;
   description: ReactNode;
-  history: Resource<History>;
+  history: Resource<ChartHistory>;
   by: SeriesBy;
   metric: Metric;
   action?: ReactNode;

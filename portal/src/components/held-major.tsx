@@ -30,9 +30,10 @@ export function HeldMajorActions({ held }: { held: HeldMajor }) {
         </Button>
         <ActionButton
           action="update.install"
-          body={{ version: held.version }}
+          body={{}}
           confirm={{
-            question: `Install ${held.version}? Running sessions keep their version until they start again.`,
+            title: `Install ${held.version}?`,
+            body: "It is a major version: read What's new first. Running sessions keep their version until they start again.",
             yes: `Install ${held.version}`,
           }}
         >

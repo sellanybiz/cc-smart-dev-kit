@@ -24,6 +24,7 @@ import {
   limitFacts,
   type ModelRow,
   omnirouteRow,
+  type PortalFacts,
   projectCardData,
   routerFacts,
   routerLog,
@@ -44,6 +45,8 @@ export interface PageDataDeps {
   found: ConfigRead;
   /** The last doctor pass, running one when there is none (the server's memory). */
   doctor: () => Promise<{ at: number; checks: Check[] } | null>;
+  /** The frame's facts for this request (`shellFacts`, with the port the server bound). */
+  facts: () => Promise<PortalFacts>;
   /** The project's remembered defaults (`server.ts`). */
   projectDefaults: ProjectDefaultsReader;
   workflow: WorkflowAdapter;
@@ -184,6 +187,7 @@ export async function slotsData(deps: PageDataDeps, config: GatewayConfig): Prom
     }
   }
   return {
+    breakers: router.breakers,
     backendNotes: backends
       .filter((backend) => backend.state !== "answers")
       .map(

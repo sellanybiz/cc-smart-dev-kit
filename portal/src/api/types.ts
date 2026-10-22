@@ -1,11 +1,30 @@
 /**
- * The shapes the portal's pages read. Each one mirrors a type the kit already has, and names
- * the file it comes from: when that file changes, this one changes with it. A shape marked
- * "planned" is not in the kit yet; the phase that builds it is named, and the page draws it
- * from mock data until then.
+ * The shapes the portal's pages draw. The server's own answers are in `wire.ts` (one mirror of
+ * the kit's API types, checked by the kit's tests); `adapt.ts` turns each answer into these,
+ * in one place. A shape here that is the server's own is an alias of it; one the server does
+ * not send in full yet names the fields it lacks, which are `null` (the page says it does not
+ * know) until a later phase sends them. The mock client (`mock.ts`) answers in these shapes.
  *
  * Times are milliseconds since the epoch unless the source keeps ISO text (the crew store).
  */
+
+import type {
+  BackendRow,
+  CrewReport,
+  HistoryAnswer,
+  HistoryRequest,
+  ModelRow,
+  OpenBreaker,
+  RequestsAnswer,
+  RouterFacts,
+  SlotRow,
+  SlotsAnswer,
+  SlotTarget,
+  SwitchFacts,
+  HistoryPoint as WireHistoryPoint,
+} from "./wire";
+
+export type { BackendRow, ModelRow, OpenBreaker, RouterFacts, SlotRow, SlotTarget, SwitchFacts };
 
 // ── The shell ──────────────────────────────────────────────────────────────────────────
 
@@ -23,38 +42,7 @@ export type Connection = "live" | "reconnecting";
 
 // ── The router ─────────────────────────────────────────────────────────────────────────
 
-/** `src/portal/facts.ts` › `RouterFacts`. */
-export interface RouterFacts {
-  /** Target → seconds it still rests. */
-  cooling: [string, number][];
-  fallbacks: number;
-  port: number;
-  requests: number;
-  up: boolean;
-  uptimeSec: number;
-  why: null | string;
-}
-
-/** `src/gateway/limit-state.ts` › `BreakerTarget`: one target of a slot whose breaker is open. */
-export interface BreakerTarget {
-  status: null | number;
-  target: string;
-  /** When its rest ends. */
-  until: number;
-}
-
-/** `src/gateway/router.ts` › `breakersNow()`: a slot whose breaker is open now. */
-export interface OpenBreaker {
-  held: number;
-  heldNow: number;
-  since: number;
-  targets: BreakerTarget[];
-}
-
-/**
- * One routed request (planned: B0/B6b add `recent` to the health answer). Metadata only:
- * never a prompt, an answer or a header.
- */
+/** One routed request, as the activity feed draws it (the router's `recent`). Metadata only. */
 export interface RecentRequest {
   at: number;
   /** The slot's short name, or null for a request no slot took (an explicit target). */
@@ -67,7 +55,7 @@ export interface RecentRequest {
   next: boolean;
 }
 
-/** `src/gateway/router.ts` › the `HEALTH_PATH` answer, with B6b's planned `recent`. */
+/** The router's health, as the route board reads it (`adapt.ts` › `overviewOf`). */
 export interface RouterHealth {
   breakers: Record<string, OpenBreaker>;
   /** Target → seconds it still rests. */
@@ -103,76 +91,28 @@ export interface HistoryFilter {
   errorsOnly?: boolean;
 }
 
-/** One bucket of one series: the request log's fields, summed or measured over the bucket. */
-export interface HistoryPoint {
-  /** The bucket's start. */
-  t: number;
-  requests: number;
-  errors: number;
-  /** The median and the 95th percentile of the time a request took. */
-  p50Ms: number;
-  p95Ms: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  /** Estimated from list prices: never a bill. */
-  costUsd: number;
-}
+/** One bucket of one series: H1's own shape (`src/gateway/history-read.ts`). */
+export type HistoryPoint = WireHistoryPoint;
 
-/**
- * The router's request history (planned: phase H1, owner decisions D51 and after). The router
- * writes every request's metadata to Bun's built-in SQLite, and the server's history module
- * serves it as `GET /api/history?range=…&by=…` with the filters of `HistoryFilter`.
- */
-export interface History {
-  range: HistoryRange;
-  bucketMs: number;
-  series: {
-    /** A target as the config spells it, a slot's key, a model id or a session id. */
-    key: string;
-    points: HistoryPoint[];
-  }[];
-}
+/** `GET /api/history?range=…&by=…`: the server's answer, as it is. */
+export type History = HistoryAnswer;
 
-/** The values a filter can take, from the same store (planned: H1, `GET /api/history/keys`). */
+/** What a history chart draws: the range, its buckets and the series (the guard log has these too). */
+export type ChartHistory = Pick<History, "bucketMs" | "range" | "series">;
+
+/** The values a filter can take (`GET /api/history/keys`); a session's name and project are not sent yet. */
 export interface HistoryKeys {
   slots: string[];
   targets: string[];
   models: string[];
-  sessions: { id: string; name: null | string; project: string }[];
+  sessions: { id: string; name: null | string; project: null | string }[];
 }
 
-/** One routed request, as the request log keeps it: metadata only, never a prompt or an answer. */
-export interface RequestRow {
-  id: string;
-  at: number;
-  /** The Claude session it came from; null when the router could not tell. */
-  session: null | string;
-  /** The model that answered. */
-  model: string;
-  /** The slot's key, or null for a request no slot took. */
-  slot: null | string;
-  /** The target that answered, as the config spells it. */
-  target: string;
-  status: number;
-  ms: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  /** Estimated from list prices. */
-  costUsd: number;
-  /** True when a target before it failed or rested, so the next one answered. */
-  next: boolean;
-}
+/** One routed request, as the request log keeps it: the server's row, metadata only. */
+export type RequestRow = HistoryRequest;
 
-/** One page of `GET /api/requests?…&cursor=` (planned: H1): newest first. */
-export interface RequestPage {
-  rows: RequestRow[];
-  /** The cursor of the next (older) page; null on the last one. */
-  next: null | string;
-}
+/** One page of `GET /api/requests?…&cursor=`: the server's answer, newest first. */
+export type RequestPage = RequestsAnswer;
 
 export interface RequestQuery extends HistoryFilter {
   range: HistoryRange;
@@ -208,64 +148,8 @@ export interface FallbackRow {
 
 // ── Slots ──────────────────────────────────────────────────────────────────────────────
 
-/** `src/portal/facts.ts` › `SlotTarget`. */
-export interface SlotTarget {
-  target: string;
-  from: string;
-  restingFor: null | number;
-  tested: boolean;
-}
-
-/** `src/portal/facts.ts` › `SlotRow`. */
-export interface SlotRow {
-  fallback: boolean;
-  info: string;
-  key: string;
-  kind: string;
-  name: string;
-  note: string;
-  targets: SlotTarget[];
-}
-
-/** `src/portal/facts.ts` › `ModelRow`. */
-export interface ModelRow {
-  backend: string;
-  context: string;
-  id: string;
-  plan: boolean;
-}
-
-/** `src/portal/facts.ts` › `BackendRow`. */
-export interface BackendRow {
-  ms: null | number;
-  models: ModelRow[];
-  name: string;
-  state: "answers" | "failed" | "unlisted";
-  url: string;
-  why: null | string;
-}
-
-/** `src/portal/facts.ts` › `SwitchFacts`. */
-export interface SwitchFacts {
-  models: boolean;
-  gateway: boolean;
-  judge: boolean;
-  judgeUntested: boolean;
-  settingsBaseUrl: null | string;
-  warnings: string[];
-}
-
-/**
- * The Slots page: the rows, each slot's breaker switch (`gateway.json` › `breaker`, read
- * through `breakerOn` in `src/gateway/config.ts`), the live model list and the switches.
- */
-export interface SlotsData {
-  breaker: Record<string, boolean>;
-  breakers: Record<string, OpenBreaker>;
-  models: ModelRow[];
-  rows: SlotRow[];
-  switches: SwitchFacts;
-}
+/** The Slots page draws the server's own answer (`GET /api/slots`). */
+export type SlotsData = SlotsAnswer;
 
 // ── Usage ──────────────────────────────────────────────────────────────────────────────
 
@@ -342,7 +226,8 @@ export interface CrewRecord {
   baseRef: string;
   waitsFor: string[];
   files: string[];
-  state: CrewState;
+  /** A `CrewState`, or a word a newer kit wrote (shown as itself). */
+  state: string;
   lastLine: null | string;
   pr: null | number;
   memoryMb: null | number;
@@ -368,11 +253,11 @@ export interface LeadRecord {
 /** `src/crew/store.ts` › `CrewEvent` (the fields a page reads). */
 export interface CrewEvent {
   at: string;
-  type: "created" | "state" | "step" | "report" | "question" | "tell";
+  type: string;
   crew: string;
   name: string;
   lead: null | string;
-  state: CrewState;
+  state: string;
   text: null | string;
   note?: null | string;
 }
@@ -386,8 +271,10 @@ export interface OtherSession {
   name: null | string;
   project: string;
   branch: null | string;
-  model: string;
-  state: "working" | "waiting" | "idle";
+  /** Null when its record does not say. */
+  model: null | string;
+  /** `open`: Claude Code has not written its end marker (it runs, or it stopped hard). */
+  state: "working" | "waiting" | "idle" | "open";
   /** ISO 8601: when it last wrote. */
   lastAt: string;
 }
@@ -455,6 +342,8 @@ export interface FlowReport {
   };
   open: OpenWait[];
   missing: string[];
+  /** Why the report covers less than the range asked (it keeps 8 days); null when it covers it. */
+  note?: null | string;
   /**
    * The window over time (planned: from the report's hourly cache buckets, `src/sessions/flow.ts`
    * › `FLOW_DAYS_KEPT`): launches and the time blocked on prompts per bucket.
@@ -474,7 +363,8 @@ export interface SocketFacts {
 
 export interface HealthData {
   router: RouterFacts;
-  socket: SocketFacts;
+  /** Null until the server sends the socket unit's facts. */
+  socket: null | SocketFacts;
   backends: BackendRow[];
   breakers: Record<string, OpenBreaker>;
   /** The journal's own order, oldest first (`routerLog`); the page shows it newest first. */
@@ -557,11 +447,14 @@ export interface DoctorLine {
 
 export interface MachineData {
   facts: PortalFacts;
-  /** Claude Code's version, and the one the kit was last proved on (`.claude-code-version`). */
-  claudeCode: { version: null | string; tested: string };
-  bun: string;
+  /**
+   * Claude Code's version, and the one the kit was last proved on (`.claude-code-version`).
+   * Null until the server sends it, as are `bun` and `mcp`.
+   */
+  claudeCode: null | { version: null | string; tested: string };
+  bun: null | string;
   companions: CompanionRow[];
-  mcp: McpServerStatus[];
+  mcp: null | McpServerStatus[];
   browser: BrowserCardData;
   omniroute: OmnirouteRow;
   warp: WarpRow;
@@ -610,9 +503,9 @@ export interface ProjectListRow {
   path: string;
   /** `.claude/cc-smart-dev-kit.json` is there. */
   setUp: boolean;
-  /** ISO 8601: the newest session in it. */
-  lastUsed: string;
-  worktrees: number;
+  /** ISO 8601: the newest session in it; null until B8 lists every repository. */
+  lastUsed: null | string;
+  worktrees: null | number;
 }
 
 /** `src/project/init.ts` › `ProjectInitAnswers` (the form's fields). */
@@ -628,8 +521,8 @@ export interface ProjectData {
   project: ProjectListRow;
   settings: SettingsData;
   answers: ProjectInitAnswers | null;
-  /** True while the main checkout's file differs from `origin/<base>`. */
-  uncommitted: boolean;
+  /** True while the main checkout's file differs from `origin/<base>`; null when not known. */
+  uncommitted: null | boolean;
 }
 
 // ── The heavy-job queue (planned: `GET /api/jobs` and the `jobs` event) ───────────────
@@ -641,7 +534,8 @@ export interface JobEntry {
   command: string;
   folder: string;
   user: string;
-  since: number;
+  /** Null for a record the queue could not read. */
+  since: null | number;
   pid: number;
 }
 
@@ -658,7 +552,8 @@ export interface JobStore {
 /** `GET /api/jobs`, and the `jobs` event's data: the same shape. */
 export interface JobsData {
   memoryGb: number;
-  freeGb: number;
+  /** Null where the machine does not say (macOS). */
+  freeGb: null | number;
   budgetGb: number;
   keptGb: number;
   stores: JobStore[];
@@ -699,7 +594,12 @@ export type NeedsItem =
       kind: "permission";
       id: string;
       since: string;
-      crew: CrewRef;
+      /** The crew session it is, or null for one of the person's own sessions. */
+      crew: null | CrewRef;
+      /** Who asked (a guard, or Claude Code), the session, and the project it is in. */
+      asker: string;
+      session: string;
+      project: string;
       /** The tool the prompt is about, and its one line. */
       tool: string;
       detail: string;
@@ -720,7 +620,8 @@ export type NeedsItem =
       since: string;
       /** The slot's key. */
       slot: string;
-      breaker: OpenBreaker;
+      /** `heldNow` is null when the answer does not say how many wait right now. */
+      breaker: Omit<OpenBreaker, "heldNow"> & { heldNow: null | number };
       /** The command that gives the slot another target. */
       command: string;
     };
@@ -731,33 +632,8 @@ export interface NeedsData {
 
 // ── A crew session's page (D52; planned: `GET /api/crew/<id>`) ────────────────────────
 
-/** `src/crew/store.ts` › `HandBackReport` (the fields the page draws). */
-export interface HandBackReport {
-  status: "done" | "blocked" | "failed" | "handoff";
-  phase: string;
-  branch: { name: string; sha: string };
-  base: { ref: string; sha: string };
-  pr: null | number;
-  changed: { files: number; insertions: number; deletions: number };
-  outsideBrief: string[];
-  tests: {
-    targeted: { command: string; passed: number; failed: number; ok: boolean }[];
-    full: null | { command: string; passed: number; failed: number; ok: boolean };
-  };
-  checks: { name: string; ok: boolean; note: null | string }[];
-  review: null | {
-    agent: string;
-    model: string;
-    effort: string;
-    sha: string;
-    findings: { finding: string; fix: string }[];
-  };
-  docs: string[];
-  needsLead: string[];
-  open: string[];
-  question: null | string;
-  summary?: null | string;
-}
+/** The hand-back report, as the server sends it (`src/crew/store.ts` › `HandBackReport`). */
+export type HandBackReport = CrewReport;
 
 /** `src/workflow/review-cover.ts` › `ChangeCount`. */
 export interface ChangeCount {
@@ -778,7 +654,8 @@ export interface MergeCheck {
   review: null | string;
   delta: null | ChangeCount;
   reviewed: null | ChangeCount;
-  limits: { lines: number; files: number; percent: number };
+  /** Null when the verdict does not say. */
+  limits: null | { lines: number; files: number; percent: number };
 }
 
 /** One file of the diff against the base. */
@@ -798,6 +675,8 @@ export interface CrewDetail {
   questions: CrewQuestion[];
   report: null | HandBackReport;
   diff: DiffFile[];
+  /** The branch against its base, in totals; `error` says why git could not give them. */
+  diffTotals: null | { deletions: number; error: null | string; files: number; insertions: number };
   mergeCheck: null | MergeCheck;
   memory: { at: number; mb: number }[];
 }
@@ -837,7 +716,8 @@ export interface WorktreeRow {
   project: string;
   path: string;
   branch: null | string;
-  idleMinutes: number;
+  /** Null until the server sends how long it was idle. */
+  idleMinutes: null | number;
   verdict:
     | { finished: true; note: null | string }
     | { finished: false; held: boolean; why: string };

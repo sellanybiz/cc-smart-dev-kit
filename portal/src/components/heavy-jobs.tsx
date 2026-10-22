@@ -103,8 +103,11 @@ function JobRows({
           </TableCell>
           <TableCell className="whitespace-normal">{job.user}</TableCell>
           <TableCell className="whitespace-nowrap tabular-nums">
-            {waiting ? "waits " : "for "}
-            {duration(Math.max(0, Math.round((now - job.since) / 1000) * 1000))}
+            {job.since === null
+              ? "—"
+              : `${waiting ? "waits " : "for "}${duration(
+                  Math.max(0, Math.round((now - job.since) / 1000) * 1000),
+                )}`}
           </TableCell>
         </TableRow>
       ))}

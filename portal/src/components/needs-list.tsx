@@ -50,7 +50,7 @@ function QuestionActions({ item }: { item: Extract<NeedsItem, { kind: "question"
             <li key={option} className="flex flex-wrap items-center gap-2">
               <ActionButton
                 action="crew.answer"
-                body={{ name: item.crew.name, text: option }}
+                body={{ answer: option, crew: item.crew.id }}
                 variant={recommended ? "default" : "outline"}
               >
                 {option}
@@ -77,7 +77,7 @@ function QuestionActions({ item }: { item: Extract<NeedsItem, { kind: "question"
         />
         <ActionButton
           action="crew.answer"
-          body={{ name: item.crew.name, text: text.trim() }}
+          body={{ answer: text.trim(), crew: item.crew.id }}
           variant="outline"
           disabled={text.trim() === ""}
         >
@@ -100,23 +100,27 @@ function Body({ item }: { item: NeedsItem }): {
         what: item.ask.question,
         action: <QuestionActions item={item} />,
       };
-    case "permission":
+    case "permission": {
+      const crew = item.crew;
       return {
-        who: <CrewLink id={item.crew.id} name={item.crew.name} />,
+        who:
+          crew === null ? (
+            <span className="font-medium">{item.project === "" ? "A session" : item.project}</span>
+          ) : (
+            <CrewLink id={crew.id} name={crew.name} />
+          ),
         what: (
           <>
-            It waits on a <span className="font-medium">{item.tool}</span> prompt: {item.detail}.
-            Open it in a terminal to answer.
+            It waits on a <span className="font-medium">{item.tool}</span> prompt ({item.detail}).
+            Answer it in the session's own terminal.
           </>
         ),
         action:
-          item.crew.shortId === null ? null : (
-            <CopyButton
-              text={`claude attach ${item.crew.shortId}`}
-              label="Copy the attach command"
-            />
+          crew === null || crew.shortId === null ? null : (
+            <CopyButton text={`claude attach ${crew.shortId}`} label="Copy the attach command" />
           ),
       };
+    }
     case "update":
       return {
         who: <span className="font-medium">cc-smart-dev-kit {item.held.version}</span>,
@@ -139,7 +143,11 @@ function Body({ item }: { item: NeedsItem }): {
     case "breaker":
       return {
         who: <span className="font-medium">The {slotName(item.slot)} slot</span>,
-        what: `Every target is limited or down: ${item.breaker.heldNow} request${item.breaker.heldNow === 1 ? "" : "s"} wait${item.breaker.heldNow === 1 ? "s" : ""}, ${item.breaker.held} held so far. Give it another target, or let Claude answer it:`,
+        what: `Every target is limited or down: ${
+          item.breaker.heldNow === null
+            ? ""
+            : `${item.breaker.heldNow} request${item.breaker.heldNow === 1 ? "" : "s"} wait${item.breaker.heldNow === 1 ? "s" : ""}, `
+        }${item.breaker.held} held so far. Give it another target, or let Claude answer it:`,
         action: (
           <span className="flex flex-wrap items-center gap-2">
             <code className="font-mono text-xs">{item.command}</code>

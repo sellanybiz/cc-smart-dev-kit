@@ -218,7 +218,12 @@ export function historyFor(now: number, query: HistoryQuery, empty: boolean): Hi
     }
   }
   return {
+    available: true,
+    by: query.by,
+    from: now - rangeOf(query.range).spanMs,
+    note: null,
     range: query.range,
+    to: now,
     bucketMs,
     series: [...byKey.entries()].map(([key, points]) => ({
       key,
@@ -231,7 +236,7 @@ const PAGE = 12;
 
 /** The request log, newest first, one page at a time: the cursor is the next row's index. */
 export function requestsFor(now: number, query: RequestQuery, empty: boolean): RequestPage {
-  if (empty) return { rows: [], next: null };
+  if (empty) return { available: true, cursor: null, note: null, requests: [] };
   const { spanMs } = rangeOf(query.range);
   const start = query.cursor === null ? 0 : Number(query.cursor);
   const random = seeded(42);
@@ -259,31 +264,40 @@ export function requestsFor(now: number, query: RequestQuery, empty: boolean): R
     const outputTokens = failed ? 0 : Math.round(output * (0.5 + size));
     const cacheWriteTokens = failed ? 0 : Math.round(input * 0.05);
     rows.push({
-      id: `r${Math.round(at)}`,
       at,
       session: unit.session.id,
       model: modelOf(unit.traffic.target),
       slot: slotKey(unit.traffic.slot),
       target: unit.traffic.target,
       status: failed ? (unit.traffic.target.startsWith("omniroute:") ? 502 : 529) : 200,
-      ms: Math.round(ms[0] + (ms[1] - ms[0]) * timing),
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
+      latencyMs: Math.round(ms[0] + (ms[1] - ms[0]) * timing),
+      tokens: {
+        cacheRead: cacheReadTokens,
+        cacheWrite: cacheWriteTokens,
+        input: inputTokens,
+        output: outputTokens,
+      },
       costUsd: cost(
         unit.traffic,
         inputTokens + cacheWriteTokens * 1.25,
         outputTokens,
         cacheReadTokens,
       ),
-      next:
+      held: false,
+      nextTarget:
         unit.traffic.target === "omniroute:glm-5.3" ||
-        unit.traffic.target === "omniroute:minimax-m3",
+        unit.traffic.target === "omniroute:minimax-m3"
+          ? "omniroute:deepseek-v4.1-flash"
+          : null,
     });
   }
   const more = rows.length > PAGE;
-  return { rows: rows.slice(0, PAGE), next: more ? String(start + PAGE) : null };
+  return {
+    available: true,
+    cursor: more ? String(start + PAGE) : null,
+    note: null,
+    requests: rows.slice(0, PAGE),
+  };
 }
 
 export function historyKeys(empty: boolean): HistoryKeys {

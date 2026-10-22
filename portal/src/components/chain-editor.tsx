@@ -20,10 +20,12 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { ArrowDownIcon, ArrowUpIcon, GripVerticalIcon, PlusIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
+import { portalClient } from "@/api/client";
 import type { ModelRow } from "@/api/types";
 import { Sparkline } from "@/components/sparkline";
 import { useMounted } from "@/components/status";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   NativeSelect,
   NativeSelectOptGroup,
@@ -37,6 +39,13 @@ export interface ChainItem {
   restingFor: null | number;
 }
 
+/** A mark beside one target: its last test, in the test's own words. */
+export interface TargetMark {
+  tone: "bad" | "ok" | "warn";
+  words: string;
+  detail?: string;
+}
+
 /** A target's last day, from the request history: its success rate and its latency. */
 export interface TargetStats {
   requests: number;
@@ -46,9 +55,9 @@ export interface TargetStats {
   line: number[];
 }
 
-/** A model row as a target, the way `gateway.json` spells it. */
+/** A model row as a target: the server spells its id the way `gateway.json` does. */
 export function targetOf(model: ModelRow): string {
-  return model.plan ? model.id : `${model.backend}:${model.id}`;
+  return model.id;
 }
 
 function ItemBody({
@@ -60,6 +69,7 @@ function ItemBody({
   onRemove,
   handle,
   stats,
+  mark,
 }: {
   item: ChainItem;
   index: number;
@@ -69,6 +79,7 @@ function ItemBody({
   onRemove: (index: number) => void;
   handle: React.ReactNode;
   stats: TargetStats | undefined;
+  mark: TargetMark | undefined;
 }) {
   const model = targetModel(item.target);
   return (
@@ -106,6 +117,20 @@ function ItemBody({
       {item.restingFor !== null && (
         <span className="text-xs text-warn">
           <span aria-hidden="true">! </span>rests {seconds(item.restingFor)}
+        </span>
+      )}
+      {mark !== undefined && (
+        <span
+          className={cn(
+            "max-w-48 truncate text-xs",
+            mark.tone === "ok" ? "text-ok" : mark.tone === "bad" ? "text-bad" : "text-warn",
+          )}
+          title={mark.detail}
+        >
+          <span aria-hidden="true">
+            {mark.tone === "ok" ? "✓ " : mark.tone === "bad" ? "✗ " : "! "}
+          </span>
+          {mark.words}
         </span>
       )}
       <span className="flex items-center">
@@ -183,7 +208,9 @@ function SortableItem(props: Omit<React.ComponentProps<typeof ItemBody>, "handle
 
 /**
  * A slot's chain: its targets in order, the first that is not resting answers. Drag a row, or
- * use its arrows; add a target from the live model list. The chain is a draft in the page.
+ * use its arrows; add a target from the live model list, or type one, which the server checks
+ * with the command line's own rule before it joins. The chain is a draft in the page: nothing
+ * is added for the person, and nothing is saved until they save it.
  */
 export function ChainEditor({
   items,
@@ -191,21 +218,63 @@ export function ChainEditor({
   onChange,
   label,
   stats,
+  live = true,
+  marks = new Map(),
+  empty = "No chain: Claude answers this slot on your own login.",
+  disabled = false,
 }: {
   items: ChainItem[];
   models: ModelRow[];
   onChange: (items: ChainItem[]) => void;
   label: string;
   stats: Map<string, TargetStats>;
+  /** False for a chain saved while Claude answers: none of its targets answers now. */
+  live?: boolean;
+  marks?: Map<string, TargetMark>;
+  empty?: string;
+  disabled?: boolean;
 }) {
   const mounted = useMounted();
   const selectId = useId();
+  const typedId = useId();
+  const typedErrorId = useId();
   const [adding, setAdding] = useState("");
+  const [typed, setTyped] = useState("");
+  const [typedState, setTypedState] = useState<
+    { phase: "idle" } | { phase: "checking" } | { phase: "refused"; words: string }
+  >({ phase: "idle" });
+  const addTyped = () => {
+    const target = typed.trim();
+    if (target === "") return;
+    if (items.some((item) => item.target === target)) {
+      setTypedState({ phase: "refused", words: `${target} is in the chain already.` });
+      return;
+    }
+    setTypedState({ phase: "checking" });
+    portalClient()
+      .act("slot.check", { target })
+      .then(
+        (result) => {
+          if (result.ok) {
+            onChange([...items, { target, restingFor: null }]);
+            setTyped("");
+            setTypedState({ phase: "idle" });
+          } else {
+            setTypedState({ phase: "refused", words: result.lines.join(" ") });
+          }
+        },
+        (error: unknown) =>
+          setTypedState({
+            phase: "refused",
+            words: error instanceof Error ? error.message : String(error),
+          }),
+      );
+  };
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const answering = items.findIndex((item) => item.restingFor === null);
+  const answering = live ? items.findIndex((item) => item.restingFor === null) : -1;
   const move = (from: number, to: number) => onChange(arrayMove(items, from, to));
   const remove = (index: number) => onChange(items.filter((_, i) => i !== index));
   const onDragEnd = (event: DragEndEvent) => {
@@ -227,13 +296,14 @@ export function ChainEditor({
     onMove: move,
     onRemove: remove,
     stats: stats.get(item.target),
+    mark: marks.get(item.target),
   });
 
   return (
     <div className="flex flex-col gap-3">
       {items.length === 0 ? (
         <p className="rounded-md border border-dashed px-3 py-3 text-sm text-muted-foreground">
-          No chain: Claude answers this slot on your own login.
+          {empty}
         </p>
       ) : mounted ? (
         <DndContext
@@ -285,6 +355,7 @@ export function ChainEditor({
           value={adding}
           onChange={(event) => setAdding(event.target.value)}
           className="min-w-56"
+          disabled={disabled}
         >
           <NativeSelectOption value="">Choose a model…</NativeSelectOption>
           {backends.map((backend) => (
@@ -293,7 +364,7 @@ export function ChainEditor({
                 .filter((model) => model.backend === backend)
                 .map((model) => (
                   <NativeSelectOption key={targetOf(model)} value={targetOf(model)}>
-                    {model.id}
+                    {targetModel(model.id)}
                     {model.context === "—" ? "" : ` (${model.context})`}
                   </NativeSelectOption>
                 ))}
@@ -303,7 +374,7 @@ export function ChainEditor({
         <Button
           variant="outline"
           size="sm"
-          disabled={adding === ""}
+          disabled={disabled || adding === ""}
           onClick={() => {
             onChange([...items, { target: adding, restingFor: null }]);
             setAdding("");
@@ -313,6 +384,48 @@ export function ChainEditor({
           Add to the end
         </Button>
       </div>
+      <form
+        className="flex flex-col gap-1.5"
+        onSubmit={(event) => {
+          event.preventDefault();
+          addTyped();
+        }}
+      >
+        <label htmlFor={typedId} className="text-xs text-muted-foreground">
+          Or type a target (<span className="font-mono">claude-…</span> or{" "}
+          <span className="font-mono">backend:model</span>)
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            id={typedId}
+            value={typed}
+            onChange={(event) => {
+              setTyped(event.target.value);
+              if (typedState.phase === "refused") setTypedState({ phase: "idle" });
+            }}
+            aria-invalid={typedState.phase === "refused" || undefined}
+            aria-describedby={typedState.phase === "refused" ? typedErrorId : undefined}
+            className="h-8 max-w-72 font-mono text-xs"
+            spellCheck={false}
+            autoComplete="off"
+            disabled={disabled}
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            size="sm"
+            disabled={disabled || typed.trim() === "" || typedState.phase === "checking"}
+          >
+            {typedState.phase === "checking" ? "Checking…" : "Check and add"}
+          </Button>
+        </div>
+        {typedState.phase === "refused" && (
+          <p id={typedErrorId} role="alert" className="text-xs text-pretty text-bad">
+            <span aria-hidden="true">✗ </span>
+            {typedState.words}
+          </p>
+        )}
+      </form>
     </div>
   );
 }

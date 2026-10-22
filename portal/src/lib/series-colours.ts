@@ -5,7 +5,7 @@
  * the order of their requests; once the four are taken, a key is "Other".
  */
 
-import type { History, HistoryBy } from "@/api/types";
+import type { ChartHistory, HistoryBy } from "@/api/types";
 
 export const COLOURED = ["s1", "s2", "s3", "s4"] as const;
 export type SeriesColour = (typeof COLOURED)[number] | "other";
@@ -36,7 +36,7 @@ const memory: Record<SeriesBy, Map<string, SeriesColour>> = {
 };
 
 /** The colour of every key in `history`, giving new keys theirs. */
-export function coloursFor(history: History, by: SeriesBy): Map<string, SeriesColour> {
+export function coloursFor(history: ChartHistory, by: SeriesBy): Map<string, SeriesColour> {
   const known = memory[by];
   const totals = history.series
     .map((series) => ({
