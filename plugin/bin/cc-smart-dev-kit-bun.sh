@@ -39,6 +39,11 @@
 #                    folder some time after an update, and a bun that is told to run a file
 #                    that is gone only prints its own error and exits 1, which Claude Code
 #                    reads as a failure that lets the call through.
+#                    In a crew session (`CC_SMART_DEV_KIT_CREW` set) the same answer is a
+#                    **deny**: nobody is at the machine to answer, and the crew session reads
+#                    the fix and the step that puts the question to its lead (`crew report
+#                    --question`). `crewIdOf` (src/crew/session.ts) trims the value; a set,
+#                    non-empty one counts here, and shell built-ins are all it takes.
 #   --missing=quiet  one line on stderr, exit 0.
 #   --missing=fail   one line on stderr, exit 1: for a command that must not report success
 #                    when it did not run (`plugin/bin/cc-smart-dev-kit`, the CLI).
@@ -54,6 +59,17 @@ case $1 in
     shift
     ;;
 esac
+
+# The PreToolUse answer for a guard that cannot run: an ask, or — in a crew session — a deny
+# naming the fix and the crew step. "$1" is the reason, in the words a person reads.
+guard_answer() {
+  if [ -n "${CC_SMART_DEV_KIT_CREW:-}" ]; then
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s A crew session has nobody to answer, so the call is refused. Fix it, or report it to your lead with `cc-smart-dev-kit crew report --question \\"<the question>\\" --option \\"<choice>\\" --option \\"<choice>\\" --recommend <n>`."}}\n' "$1"
+  else
+    printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"$1\"}}"
+  fi
+  exit 0
+}
 
 # What the line on stderr calls the program that did not run, and how it ends: a hook is
 # quiet (exit 0), a command fails (exit 1).
@@ -117,8 +133,7 @@ if [ -z "$bun" ]; then
 fi
 if [ -z "$bun" ]; then
   if [ "$mode" = "--missing=ask" ]; then
-    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup."}}'
-    exit 0
+    guard_answer "cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup."
   fi
   echo "cc-smart-dev-kit: bun not found (not in ~/.local/bin/cc-smart-dev-kit, \$BUN_INSTALL/bin, ~/.bun/bin or PATH), so the $what did not run. Install bun, then run: cc-smart-dev-kit setup" >&2
   exit $code
@@ -163,8 +178,7 @@ if [ "$bun" != "$baked" ] || [ "$bun" -nt "$launcher" ]; then
     detail="needs Bun >= $min_bun"
     [ -n "$version" ] && detail="needs Bun >= $min_bun; this is $version"
     if [ "$mode" = "--missing=ask" ]; then
-      printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"cc-smart-dev-kit cannot run its guard: this Bun is older than the plugin needs ($detail). Run: bun upgrade\"}}"
-      exit 0
+      guard_answer "cc-smart-dev-kit cannot run its guard: this Bun is older than the plugin needs ($detail). Run: bun upgrade"
     fi
     echo "cc-smart-dev-kit: this Bun is older than the plugin needs ($detail), so the $what did not run. Run: bun upgrade" >&2
     exit $code
@@ -178,8 +192,7 @@ fi
 # through (`onFailure: "block"` in hooks.json is the second belt, for a shim that is gone
 # too). Only a guard checks: any other hook goes on to bun as it always did.
 if [ "$mode" = "--missing=ask" ] && [ ! -f "$1" ]; then
-  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"cc-smart-dev-kit cannot run its guard: its own program file is missing (an update may have removed this plugin version). Restart Claude Code, then run: cc-smart-dev-kit setup"}}'
-  exit 0
+  guard_answer "cc-smart-dev-kit cannot run its guard: its own program file is missing (an update may have removed this plugin version). Restart Claude Code, then run: cc-smart-dev-kit setup"
 fi
 
 if [ -n "$shim_dir" ]; then
