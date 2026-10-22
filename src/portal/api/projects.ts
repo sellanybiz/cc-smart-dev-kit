@@ -328,9 +328,13 @@ interface KeptBranches {
 /** The server's own memory of the branch answers, by project id (`PROJECT_BRANCHES_CACHE_MS`). */
 const keptBranches = new Map<string, KeptBranches>();
 
+/** The reads still running, by project id: a second look at once waits for the same one. */
+const readingBranches = new Map<string, Promise<KeptBranches>>();
+
 /** Forgets every kept branch answer: a test that moves the clock or changes gh's answers. */
 export function forgetProjectBranches(): void {
   keptBranches.clear();
+  readingBranches.clear();
 }
 
 /**
@@ -351,9 +355,24 @@ export async function projectBranches(
       note: kept.note,
     };
   }
-  const read = await readBranches(world, project, at);
-  keptBranches.set(project.id, { at, branches: read.branches, note: read.note });
-  return { branches: read.branches, checkedAt: new Date(at).toISOString(), note: read.note };
+  let reading = readingBranches.get(project.id);
+  if (reading === undefined) {
+    reading = readBranches(world, project, at).then((read) => {
+      const answer = { at, branches: read.branches, note: read.note };
+      // A read the deadline cut short holds "not read yet": keeping it a minute would hide
+      // the real answer, so only a read that finished in time is kept.
+      if (world.now() < at + PROJECT_BRANCHES_DEADLINE_MS) {
+        keptBranches.set(project.id, answer);
+      }
+      return answer;
+    });
+    readingBranches.set(project.id, reading);
+    // The caller below gets a failed read; this chain only clears the entry, so its own copy
+    // of the failure is not a second, unhandled one.
+    reading.finally(() => readingBranches.delete(project.id)).catch(() => undefined);
+  }
+  const read = await reading;
+  return { branches: read.branches, checkedAt: new Date(read.at).toISOString(), note: read.note };
 }
 
 /** The answer for the branches that could not be read: a verdict is never a guess. */

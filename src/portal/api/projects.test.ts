@@ -438,10 +438,12 @@ describe("/api/projects/<id> (B8)", () => {
     const w = testWorld({ clock: () => clock, gh: true });
     const repo = committedRepo("alpha");
     sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+    let lists = 0;
     const run: GhRunner = async (args) => {
       // The answer eats the whole page's deadline before it arrives.
       clock += 9_000;
       if (args[0] === "pr" && args[1] === "list") {
+        lists += 1;
         return JSON.stringify([
           {
             baseRefName: "main",
@@ -462,6 +464,32 @@ describe("/api/projects/<id> (B8)", () => {
       what: "the pull request this command names",
     });
     expect(answer.note).toBe("the time to read every verdict ran out, so some are not read yet");
+    // A late answer is not kept: the next look reads again at once, not a minute later.
+    clock += 1_000;
+    await projectBranches(world, await projectOf(world, repo));
+    expect(lists).toBe(2);
+  });
+
+  test("two looks at once share one read", async () => {
+    const w = testWorld({ clock: () => T0, gh: true });
+    const repo = committedRepo("alpha");
+    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+    let lists = 0;
+    const run: GhRunner = async (args) => {
+      if (args[0] === "pr" && args[1] === "list") {
+        lists += 1;
+        return "[]";
+      }
+      return null;
+    };
+    const world = { ...w.projects, gh: run };
+    const project = await projectOf(world, repo);
+    const [one, two] = await Promise.all([
+      projectBranches(world, project),
+      projectBranches(world, project),
+    ]);
+    expect(lists).toBe(1);
+    expect(two).toEqual(one);
   });
 
   test("the branches are kept for 60 s, and read again after it", async () => {
