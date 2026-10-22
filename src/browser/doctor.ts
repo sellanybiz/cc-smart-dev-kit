@@ -24,6 +24,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
+import type { Check } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
 import type { Runner } from "../gateway/service";
 import type { Machine } from "../machine/machine";
@@ -44,16 +45,8 @@ import {
 import { legacyBrowserFacts, type ProcessReader } from "./legacy";
 import { readBrowserToken, type TokenDeps, tokenProtection } from "./token";
 
-export interface BrowserCheck {
-  ok: boolean;
-  /** Information only: printed with `·`, never a failure. */
-  info?: boolean;
-  /** A warning: printed with `!`, never a failure. */
-  warn?: boolean;
-  /** Which part these belong to: the portal draws the browser's own card from these. */
-  section?: "browser";
-  text: string;
-}
+/** One browser line of doctor's report: a check like any other (`check.ts`). */
+export type BrowserCheck = Check;
 
 /** What these checks ask of the machine. `platform` and `home` are required; the rest default. */
 export interface BrowserDoctorDeps extends ChromeDeps, TokenDeps {
@@ -73,9 +66,9 @@ const SETUP_COMMAND = `${COMMAND} browser setup`;
 /** The command that asks for the token. */
 const TOKEN_COMMAND = `${COMMAND} browser token`;
 
-/** One browser line: `section: "browser"` is what the portal draws the Browser card from. */
-function line(check: Omit<BrowserCheck, "section">): BrowserCheck {
-  return { ...check, section: "browser" };
+/** One browser line: `group: "browser"` is what the portal draws the Browser card from. */
+function line(check: Check): BrowserCheck {
+  return { ...check, group: "browser" };
 }
 
 /**
@@ -111,7 +104,7 @@ export function realBrowserDoctorDeps(
 }
 
 /**
- * The browser's lines. `section: "browser"` marks them so the portal can draw exactly these on
+ * The browser's lines. `group: "browser"` marks them so the portal can draw exactly these on
  * the Browser card, and leave them out of the Doctor card's list — one home for each line.
  *
  * The prerequisites first, then what version 0.3.0 left (`legacyChecks`). The leftovers are
@@ -129,10 +122,8 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
     return [
       line({
         ok: false,
-        text:
-          `Google Chrome is not installed where cc-smart-dev-kit looks ` +
-          `(${chromeCandidates(deps.platform, deps.home).join(", ")}). Install Google Chrome, ` +
-          `then run: ${SETUP_COMMAND}`,
+        text: `Google Chrome is not installed where ${COMMAND} looks (${chromeCandidates(deps.platform, deps.home).join(", ")})`,
+        fix: `install Google Chrome, then run: ${SETUP_COMMAND}`,
       }),
     ];
   }
@@ -153,7 +144,8 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
     checks.push(
       line({
         ok: false,
-        text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is not in ${userDataDir}: run: ${SETUP_COMMAND}`,
+        text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is not in ${userDataDir}`,
+        fix: SETUP_COMMAND,
       }),
     );
     return checks;
@@ -176,9 +168,8 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
         })
       : line({
           ok: false,
-          text:
-            `the Playwright extension is not installed in the "${CLAUDE_CODE_PROFILE}" profile: ` +
-            `run: ${SETUP_COMMAND}, then click "Add to Chrome" on ${PLAYWRIGHT_EXTENSION_URL}`,
+          text: `the Playwright extension is not installed in the "${CLAUDE_CODE_PROFILE}" profile`,
+          fix: `${SETUP_COMMAND}, then click "Add to Chrome" on ${PLAYWRIGHT_EXTENSION_URL}`,
         }),
   );
 
@@ -197,8 +188,8 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
           text:
             `${String(others.length)} other extension${others.length === 1 ? "" : "s"} in the ` +
             `"${CLAUDE_CODE_PROFILE}" profile (${others.map((one) => `${one.name} [${one.id}]`).join(", ")}): ` +
-            `one that injects into pages breaks a browser session (microsoft/playwright#43230, ` +
-            `open). Remove it from that profile: chrome://extensions`,
+            `one that injects into pages breaks a browser session (microsoft/playwright#43230, open)`,
+          fix: "remove it from that profile: chrome://extensions",
         }),
   );
 
@@ -210,10 +201,8 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
         : fileUrls === false
           ? line({
               ok: false,
-              text:
-                `the "${CLAUDE_CODE_PROFILE}" profile does not let the extension open file:// ` +
-                `pages: open ${PLAYWRIGHT_EXTENSION_SETTINGS_URL} in that profile and switch on ` +
-                `"Allow access to file URLs"`,
+              text: `the "${CLAUDE_CODE_PROFILE}" profile does not let the extension open file:// pages`,
+              fix: `open ${PLAYWRIGHT_EXTENSION_SETTINGS_URL} in that profile and switch on "Allow access to file URLs"`,
             })
           : line({
               info: true,
@@ -235,9 +224,8 @@ function prerequisiteChecks(paths: CliPaths, deps: BrowserDoctorDeps): BrowserCh
         })
       : line({
           ok: false,
-          text:
-            `the browser token is not set, so the browser cannot connect (${token.reason}): ` +
-            `run: ${SETUP_COMMAND}, then ${TOKEN_COMMAND}`,
+          text: `the browser token is not set, so the browser cannot connect (${token.reason})`,
+          fix: `${SETUP_COMMAND}, then ${TOKEN_COMMAND}`,
         }),
   );
   // The `playwright` server's own registration and start are `mcpChecks`' lines (`mcp/doctor.ts`):

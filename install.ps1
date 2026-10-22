@@ -46,7 +46,8 @@
 #      installs the instructions and the launcher), then the old plugin, asked about;
 #   7. the three things only the person has: the browser's token, the gateway's key, the
 #      Tavily key -- each asked on the console, each skippable, never echoed, never printed;
-#   8. `doctor`, then what is left, then the two closing lines.
+#   8. `doctor --json`, then what is left (each failure with its fix), then the two closing
+#      lines.
 #
 # EXIT CODES: 0 done (every step this script ran succeeded, and doctor is all [ok]); 3
 # installed, with items left (doctor shows [x], or something was skipped -- the list at the
@@ -1010,32 +1011,47 @@ if ($DryRun) {
   exit 0
 }
 
+# The report as JSON (DoctorReport, src/cli/doctor.ts), read for its failures: a person reads
+# the step line and the list below, and `doctor` itself shows every check. Never its text for a
+# person: that has groups, folds and wraps, and its marks change with the console. STDOUT only:
+# a stderr line must not reach ConvertFrom-Json.
 if (Test-Path $Launcher) {
-  $doctorOut = Get-CommandText { & $Launcher doctor }
+  $doctorJson = Get-CommandStdout { & $Launcher doctor --json }
 } else {
-  $doctorOut = Get-CommandText { Invoke-CliQuiet @("doctor") }
+  $doctorJson = Get-CommandStdout { Invoke-CliQuiet @("doctor", "--json") }
 }
 $doctorCode = $LASTEXITCODE
-Write-Output $doctorOut.TrimEnd()
+$doctorLeft = [System.Collections.Generic.List[object]]::new()
+try {
+  foreach ($group in @((ConvertFrom-Json -InputObject $doctorJson).groups)) {
+    foreach ($check in @($group.checks | Where-Object { $_.status -eq "fail" })) { $doctorLeft.Add($check) }
+  }
+} catch {
+  # Not JSON (doctor failed before its report): the line below says so.
+  $doctorLeft.Clear()
+}
+if ($doctorCode -ne 0 -and $doctorLeft.Count -eq 0) {
+  $doctorLeft.Add([pscustomobject]@{ text = "doctor did not finish its report"; fix = "run ``$(Get-PluginCommand @("doctor"))`` to see why" })
+}
 if ($doctorCode -eq 0) {
   Write-Step "8/8 doctor: every check passed"
 } else {
-  [Console]::Error.WriteLine("[x] 8/8 doctor found what is left (its [x] lines are in the list below)")
+  [Console]::Error.WriteLine("[x] 8/8 doctor found what is left (the list below; ``$(Get-PluginCommand @("doctor"))`` shows every check)")
 }
 
 Write-Output ""
 Write-Output "Restart every Claude Code session: they load the plugin when they start."
 Write-Output "``cc-smart-dev-kit portal`` opens the portal in your own terminal (it prints a link with a one-time token)."
 
-# What is left: the items this run skipped, then doctor's own [x] lines (each names what to
-# run where the plugin has a hint for it).
-$crossMark = [string][char]0x2717
-$doctorLeft = @($doctorOut -split "`r?`n" | Where-Object { $_.StartsWith($crossMark) })
+# What is left: the items this run skipped, then each of doctor's failures with its fix.
 if ($Left.Count -gt 0 -or $doctorLeft.Count -gt 0) {
   Write-Output ""
   Write-Output "What is left:"
   foreach ($line in $Left) { Write-Output "  - $line" }
-  foreach ($line in $doctorLeft) { Write-Output "  $($line.TrimEnd())" }
+  foreach ($check in $doctorLeft) {
+    Write-Output "  [x] $($check.text)"
+    if ($check.fix) { Write-Output "    Fix: $($check.fix)" }
+  }
 }
 
 if ($doctorCode -ne 0) { exit 3 }

@@ -436,7 +436,8 @@ describe("doctor's Warp line", () => {
     const pluginOnly = world({ plugins: ["warp@claude-code-warp"] });
     expect(warpCheck(pluginOnly.machine, pluginOnly.paths)).toEqual({
       ok: false,
-      text: "the Warp Claude plugin warp@claude-code-warp is installed, but the Warp app is not. Run: cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp)",
+      text: "the Warp Claude plugin warp@claude-code-warp is installed, but the Warp app is not",
+      fix: "cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp to install the app)",
     });
   });
 });

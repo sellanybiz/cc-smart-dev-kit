@@ -13,6 +13,10 @@ import {
   checkPortal,
   checkUserNotifyHook,
   claudeMemChecks,
+  countChecks,
+  doctorReport,
+  doctorVerdict,
+  groupSummary,
 } from "./doctor";
 import { type CliPaths, cliPaths } from "./paths";
 
@@ -32,7 +36,7 @@ function line(hooks: unknown): string {
 describe("doctor: agent view's notification hook", () => {
   test("missing: ✗, and the command to run", () => {
     expect(line(undefined)).toBe(
-      `✗ agent view's notification hook is missing from ${SETTINGS}, so agent view's alerts never arrive. Run: cc-smart-dev-kit setup`,
+      `✗ agent view's notification hook is missing from ${SETTINGS}, so agent view's alerts never arrive Fix: cc-smart-dev-kit setup`,
     );
   });
 
@@ -40,7 +44,7 @@ describe("doctor: agent view's notification hook", () => {
     expect(
       line({ Notification: [{ matcher: "agent_needs_input|agent_completed", hooks: [] }] }),
     ).toBe(
-      `✗ agent view's notification hook in ${SETTINGS} does not run ${COMMAND}, so agent view's alerts never reach the notifier. Run: cc-smart-dev-kit setup`,
+      `✗ agent view's notification hook in ${SETTINGS} does not run ${COMMAND}, so agent view's alerts never reach the notifier Fix: cc-smart-dev-kit setup`,
     );
   });
 
@@ -100,7 +104,7 @@ describe("doctor: the portal (D10)", () => {
 
   test("another program holds the port: ✗, because the portal cannot start there", () => {
     expect(checkLine(checkPortal({ kind: "other" }))).toBe(
-      "✗ Another program holds 127.0.0.1:20150, so the portal cannot start. Stop that program, then run: cc-smart-dev-kit portal",
+      "✗ another program holds 127.0.0.1:20150, so the portal cannot start Fix: stop that program, then run: cc-smart-dev-kit portal",
     );
   });
 });
@@ -165,7 +169,7 @@ describe("doctor: claude-mem's start blocks (D23)", () => {
 
   test("D23: claude-mem's defaults: ✗ with setup as the command to run", () => {
     expect(lines(world(SEEDED).paths)).toEqual([
-      `✗ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). Together they overflow Claude Code's start context in about one start in six. Run: cc-smart-dev-kit setup`,
+      `✗ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). Together they overflow Claude Code's start context in about one start in six Fix: cc-smart-dev-kit setup`,
     ]);
   });
 
@@ -211,7 +215,7 @@ describe("doctor: claude-mem's start blocks (D23)", () => {
     applyClaudeMem(w.paths, planned.plan, false);
     expect(lines(w.paths)).toEqual([
       `✓ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)`,
-      `✗ Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is not set in ${SETTINGS}, so a session has no to-do list while claude-mem's work state is off. Run: cc-smart-dev-kit setup`,
+      `✗ Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is not set in ${SETTINGS}, so a session has no to-do list while claude-mem's work state is off Fix: cc-smart-dev-kit setup`,
     ]);
   });
 
@@ -272,14 +276,15 @@ describe("doctor's line for this plugin", () => {
     expect(check.ok).toBe(false);
     expect(check.info).toBeUndefined();
     expect(check.text).toBe(
-      `${PLUGIN_ID} 0.5.0 is installed, but the user settings turn it off: none of its hooks, skills or commands run. Run: claude plugin enable ${PLUGIN_ID}`,
+      `${PLUGIN_ID} 0.5.0 is installed, but the user settings turn it off: none of its hooks, skills or commands run`,
     );
+    expect(check.fix).toBe(`claude plugin enable ${PLUGIN_ID}`);
   });
 
   test("CM-4: a settings file with no entry for it is the same failure", () => {
     const check = checkPlugin(world(undefined));
     expect(check.ok).toBe(false);
-    expect(check.text).toContain(`claude plugin enable ${PLUGIN_ID}`);
+    expect(check.fix).toBe(`claude plugin enable ${PLUGIN_ID}`);
   });
 
   test("green when the settings turn it on", () => {
@@ -295,8 +300,76 @@ describe("doctor's line for this plugin", () => {
     const paths = cliPaths({ HOME: tempDir("doctor-home") });
     const check = checkPlugin(paths);
     expect(check.ok).toBe(false);
-    expect(check.text).toBe(
-      `the ${PLUGIN_ID} plugin is not installed. Run: claude plugin install ${PLUGIN_ID}`,
+    expect(check.text).toBe(`the ${PLUGIN_ID} plugin is not installed`);
+    expect(check.fix).toBe(`claude plugin install ${PLUGIN_ID}`);
+  });
+});
+
+describe("the report's words: a group's line, the verdict, the JSON", () => {
+  const passed = { ok: true, text: "passed" } as const;
+  const note = { info: true, ok: true, text: "a note" } as const;
+  const warning = { ok: true, text: "a warning", warn: true } as const;
+  const failed = { fix: "run this", ok: false, text: "failed" } as const;
+
+  test("a group says what it holds in words, the worst first", () => {
+    expect(groupSummary(countChecks([passed, passed, note]))).toBe("2 passed, 1 note");
+    expect(groupSummary(countChecks([failed, warning, warning, passed]))).toBe(
+      "1 to fix, 2 warnings, 1 passed",
     );
+    expect(groupSummary(countChecks([note, note]))).toBe("2 notes");
+  });
+
+  test("the verdict: a failure names the count and the next step; a warning says nothing is broken", () => {
+    expect(doctorVerdict(countChecks([passed, passed, note]))).toEqual({
+      mark: "ok",
+      text: "Everything works: 2 checks passed.",
+    });
+    expect(doctorVerdict(countChecks([passed, warning]))).toEqual({
+      mark: "warn",
+      text: "Nothing to fix: 1 passed, and 1 warning to read above.",
+    });
+    expect(doctorVerdict(countChecks([failed, failed, passed, warning]))).toEqual({
+      mark: "fail",
+      text: "2 to fix, 1 passed, 1 warning. Run each Fix: line above, then: cc-smart-dev-kit doctor",
+    });
+  });
+
+  test("a failure's line carries its fix; a pass has none", () => {
+    expect(checkLine(failed)).toBe("✗ failed Fix: run this");
+    expect(checkLine(note)).toBe("· a note");
+  });
+
+  test("the JSON: an empty group is left out, a group's status is its worst line", () => {
+    const report = doctorReport([
+      { checks: [passed, note], group: "plugin" },
+      { checks: [], group: "mcp" },
+      { checks: [note, warning, failed], group: "gateway" },
+    ]);
+    expect(report).toMatchObject({
+      counts: { fail: 1, info: 2, ok: 1, warn: 1 },
+      format: 1,
+      ok: false,
+    });
+    expect(report.groups).toEqual([
+      {
+        checks: [
+          { status: "ok", text: "passed" },
+          { status: "info", text: "a note" },
+        ],
+        id: "plugin",
+        status: "ok",
+        title: "The plugin",
+      },
+      {
+        checks: [
+          { status: "info", text: "a note" },
+          { status: "warn", text: "a warning" },
+          { fix: "run this", status: "fail", text: "failed" },
+        ],
+        id: "gateway",
+        status: "fail",
+        title: "Gateway",
+      },
+    ]);
   });
 });

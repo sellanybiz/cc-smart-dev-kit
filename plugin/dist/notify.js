@@ -6598,133 +6598,378 @@ function loadProjectConfig(checkout, pluginVersion) {
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
-
-// src/setup/managed-json.ts
-import { createHash } from "crypto";
 import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
-import { join as join6 } from "path";
 
-// src/setup/user-json.ts
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/update/state.ts
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+
+// src/zod-issues.ts
+function describeIssues(issues) {
+  return issues.map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+    return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
+  }).join("; ");
 }
 
-// src/setup/managed-json.ts
-var OWNED_FILE = "owned.json";
-function isObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+// src/workflow/resolve.ts
+class WorkflowConfigError extends Error {
+  name = "WorkflowConfigError";
 }
-function samePath(a, b) {
-  return a.length === b.length && a.every((segment, index) => segment === b[index]);
+function personalWorkflowFile(paths) {
+  return paths.workflowConfigFile;
 }
-function detectIndent(text) {
-  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
-}
-function readJsonObject(file) {
-  if (!existsSync4(file))
-    return { data: {}, indent: "  ", text: null };
-  const text = readFileSync3(file, "utf8");
-  if (text.trim() === "")
-    return { data: {}, indent: "  ", text };
-  let parsed;
-  try {
-    parsed = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
-  }
-  if (!isObject2(parsed))
-    throw new Error(`${file} must hold a JSON object.`);
-  return { data: parsed, indent: detectIndent(text), text };
-}
-function toRecord(entry, file) {
-  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
-    return { path: [...entry] };
-  }
-  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
-    const record = { path: [...entry.path] };
-    if (Object.hasOwn(entry, "value"))
-      record.value = entry.value;
-    if (typeof entry.sha256 === "string")
-      record.sha256 = entry.sha256;
-    return record;
-  }
-  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
-}
-function readOwned(stateDir) {
-  const file = join6(stateDir, OWNED_FILE);
+function loadWorkflow(file) {
   if (!existsSync4(file))
     return {};
-  const parsed = JSON.parse(readFileSync3(file, "utf8"));
-  if (!isObject2(parsed))
-    throw new Error(`Invalid ${file}: expected an object`);
-  const owned = {};
-  for (const [target, entries] of Object.entries(parsed)) {
-    if (!Array.isArray(entries))
-      throw new Error(`Invalid ${file}: expected a list per file`);
-    owned[target] = entries.map((entry) => toRecord(entry, file));
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync3(file, "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
-  return owned;
-}
-function ownedRecords(stateDir, file) {
-  return readOwned(stateDir)[file] ?? [];
-}
-function hashOf(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-function ownership(records, path, current, unchosen) {
-  const record = records.find((entry) => samePath(entry.path, path));
-  if (record === undefined)
-    return "none";
-  if (!current.found)
-    return "changed";
-  if (record.sha256 !== undefined) {
-    if (hashOf(current.value) === record.sha256)
-      return "ours";
-  } else if (!Object.hasOwn(record, "value")) {
-    return "ours";
-  } else if (Bun.deepEquals(current.value, record.value, true)) {
-    return "ours";
+  const parsed = workflowSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
-  return unchosen?.(path, current.value) ? "ours" : "changed";
+  return parsed.data;
 }
-function getKey(data, path) {
-  let node = data;
-  for (const segment of path) {
-    if (!isObject2(node) || !Object.hasOwn(node, segment))
-      return { found: false, value: undefined };
-    node = node[segment];
+function mergedGroup(personal, project) {
+  if (personal === undefined)
+    return project;
+  if (project === undefined)
+    return personal;
+  return { ...personal, ...project };
+}
+function mergeWorkflows(personal, project) {
+  const merged = { ...personal, ...project };
+  const alerts = mergedGroup(personal.alerts, project.alerts);
+  if (alerts !== undefined)
+    merged.alerts = alerts;
+  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
+  if (fixes !== undefined)
+    merged.fixesAfterReview = fixes;
+  const crew = mergedGroup(personal.crew, project.crew);
+  if (crew !== undefined)
+    merged.crew = crew;
+  return merged;
+}
+function sourceOf(personal, project, key) {
+  if (workflowValue(project, key) !== undefined)
+    return "project";
+  return workflowValue(personal, key) !== undefined ? "personal" : "default";
+}
+function alertsFrom(personal, project) {
+  const merged = mergeWorkflows(personal, project);
+  const alerts = merged.alerts ?? {};
+  const of = (key, value) => ({
+    value,
+    source: sourceOf(personal, project, key)
+  });
+  return {
+    events: of("alerts.events", alerts.events ?? workflowDefaults.alerts.events),
+    sound: of("alerts.sound", alerts.sound ?? workflowDefaults.alerts.sound),
+    usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
+  };
+}
+function resolveAlerts(paths, projectConfig) {
+  const personal = loadWorkflow(personalWorkflowFile(paths));
+  return alertsFrom(personal, projectConfig?.workflow ?? {});
+}
+
+// src/workflow/alerts.ts
+function fallbackLine(problems) {
+  return `cc-smart-dev-kit: the alerts use the settings that can be read (${problems.join("; ")})`;
+}
+function alertsAt(paths, cwd, env) {
+  const problems = [];
+  let project = null;
+  if (cwd !== null) {
+    try {
+      const checkout = locateCheckout(cwd, { env });
+      if (checkout !== null)
+        project = loadProjectConfig(checkout).config;
+    } catch (error) {
+      if (error instanceof CcSmartDevKitConfigError)
+        problems.push(error.message);
+    }
   }
-  return { found: true, value: node };
+  try {
+    const alerts = resolveAlerts(paths, project);
+    return { alerts, problem: problems.length === 0 ? null : fallbackLine(problems) };
+  } catch (error) {
+    problems.push(error instanceof Error ? error.message : String(error));
+    return {
+      alerts: alertsFrom({}, project?.workflow ?? {}),
+      problem: fallbackLine(problems)
+    };
+  }
 }
 
-// src/browser/chrome.ts
-var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
-var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
-var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
+// src/hooks/alert-sound.ts
+import { join as join6 } from "path";
+var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
+var MACOS_SOUNDS = {
+  "dialog-warning": "Basso",
+  "service-login": "Glass",
+  "service-logout": "Pop"
+};
+function soundArgv(moment, platform, which) {
+  if (platform === "linux") {
+    const paplay = which("paplay");
+    if (paplay !== null)
+      return [paplay, join6(SOUND_DIR, `${moment}.oga`)];
+    const canberra = which("canberra-gtk-play");
+    return canberra === null ? null : [canberra, "-i", moment];
+  }
+  if (platform === "darwin") {
+    const afplay = which("afplay");
+    return afplay === null ? null : [afplay, join6("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
+  }
+  return null;
+}
 
-// src/browser/legacy.ts
-var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+// src/hooks/background-session.ts
+function inBackgroundSession(env) {
+  return (env.CLAUDE_JOB_DIR ?? "") !== "";
+}
 
-// src/browser/token.ts
-var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
-var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
+// src/hooks/desktop-alert.ts
+var TOOL_TIMEOUT_MS = 5000;
+function hasDesktop(platform, env) {
+  if (platform !== "linux")
+    return true;
+  return (env.DISPLAY ?? "") !== "" || (env.WAYLAND_DISPLAY ?? "") !== "";
+}
+function desktopTools(which) {
+  return {
+    gdbus: which("gdbus"),
+    notifySend: which("notify-send"),
+    xdotool: which("xdotool"),
+    xfconfQuery: which("xfconf-query")
+  };
+}
+function notifySendCapabilities(help) {
+  return {
+    actions: help.includes("--action"),
+    expire: help.includes("--expire-time"),
+    wait: help.includes("--wait")
+  };
+}
+function canWaitForClick(tools, capture) {
+  if (tools.gdbus !== null)
+    return true;
+  if (tools.notifySend === null)
+    return false;
+  const help = capture({ argv: [tools.notifySend, "--help"], timeoutMs: TOOL_TIMEOUT_MS });
+  const capabilities = notifySendCapabilities(help.stdout);
+  return capabilities.actions && capabilities.wait;
+}
+function dndOn(tools, capture) {
+  if (tools.xfconfQuery === null)
+    return false;
+  const run = capture({
+    argv: [tools.xfconfQuery, "-c", "xfce4-notifyd", "-p", "/do-not-disturb"],
+    timeoutMs: TOOL_TIMEOUT_MS
+  });
+  return run.exitCode === 0 && run.stdout.trim() === "true";
+}
+var NOTIFY_ALERT_KIND = "notify";
+function notifyWorkerAlert(alert, target) {
+  return {
+    body: alert.body,
+    critical: alert.critical,
+    kind: NOTIFY_ALERT_KIND,
+    session: target.session,
+    title: alert.title,
+    window: {
+      folder: target.folder,
+      name: target.name,
+      program: target.program,
+      windowId: target.windowId
+    }
+  };
+}
 
-// src/browser/setup.ts
-var WINDOWS_KEY = `HKCU\\Software\\Google\\Chrome\\Extensions\\${PLAYWRIGHT_EXTENSION_ID}`;
+// src/hooks/detached.ts
+import { spawn } from "child_process";
+var CMD = "cmd";
+var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
+function unableInCmd(argument) {
+  if (argument.includes('"'))
+    return 'a " would end the quoted argument';
+  if (argument.includes("%"))
+    return "a % is read as a variable name, inside double quotes too";
+  if (/[\r\n]/.test(argument))
+    return "a line break ends the command line";
+  if (argument.includes("\x00"))
+    return "a NUL ends the command line";
+  return null;
+}
+function cmdArgument(argument) {
+  const reason = unableInCmd(argument);
+  if (reason !== null)
+    return { ok: false, reason };
+  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
+  const kept = argument.slice(0, argument.length - trailing.length);
+  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
+}
+function windowsStart(argv) {
+  return cmdLine('start "" /b ', argv);
+}
+function cmdLine(head, argv) {
+  if (argv[0] === undefined) {
+    return { argument: "", ok: false, reason: "there is no program to start" };
+  }
+  const quoted = [];
+  for (const argument of argv) {
+    const one = cmdArgument(argument);
+    if (!one.ok)
+      return { argument, ok: false, reason: one.reason };
+    quoted.push(one.text);
+  }
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
+}
+function forMessage(argument) {
+  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
+}
+function startDetached(platform, argv, options) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const where = {
+    ...options.cwd !== undefined && { cwd: options.cwd },
+    ...options.env !== undefined && { env: options.env }
+  };
+  try {
+    if (platform === "win32") {
+      const start = windowsStart(argv);
+      if (!start.ok) {
+        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
+        return;
+      }
+      const result = Bun.spawnSync(start.argv, {
+        ...where,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true,
+        windowsVerbatimArguments: true
+      });
+      const exitCode = result.exitCode ?? 1;
+      if (exitCode !== 0)
+        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
+      return;
+    }
+    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
+    child.on("error", (error) => options.onError(error.message));
+    child.unref();
+  } catch (error) {
+    options.onError(error instanceof Error ? error.message : String(error));
+  }
+}
 
-// src/gateway/config.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, statSync as statSync3 } from "fs";
+// src/hooks/io.ts
+var SILENT = {};
 
-// src/gateway/history.ts
-var HISTORY_MAX_RETENTION_DAYS = 3650;
-var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
-var HISTORY_RETRY_MS = 60 * 1000;
+// src/hooks/notify-types.ts
+var PLUGIN_NOTIFY_TYPES = [
+  "permission_prompt",
+  "elicitation_dialog",
+  "elicitation_url_dialog",
+  "worker_permission_prompt"
+];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
+var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
+var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
+var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+
+// src/hooks/stop-failure.ts
+import { existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync2 } from "fs";
+import { join as join8 } from "path";
+
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
+  version: literal(1)
+});
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
 
 // src/gateway/targets.ts
 var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
@@ -6797,6 +7042,17 @@ function familySlotFor(model) {
 }
 var FALLBACK_OFF_BY_DEFAULT = [...Object.keys(MODEL_SLOTS)];
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+// src/gateway/breaker.ts
+var BREAKER_REMINDER_MS = 10 * 60000;
+
+// src/gateway/config.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, statSync as statSync3 } from "fs";
+
+// src/gateway/history.ts
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
 
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;
@@ -6968,7 +7224,112 @@ ${parsed.error}`);
 }
 
 // src/gateway/settings.ts
+import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
+
+// src/setup/managed-json.ts
+import { createHash } from "crypto";
 import { existsSync as existsSync5, readFileSync as readFileSync5 } from "fs";
+import { join as join7 } from "path";
+
+// src/setup/user-json.ts
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+
+// src/setup/managed-json.ts
+var OWNED_FILE = "owned.json";
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function samePath(a, b) {
+  return a.length === b.length && a.every((segment, index) => segment === b[index]);
+}
+function detectIndent(text) {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
+function readJsonObject(file) {
+  if (!existsSync5(file))
+    return { data: {}, indent: "  ", text: null };
+  const text = readFileSync5(file, "utf8");
+  if (text.trim() === "")
+    return { data: {}, indent: "  ", text };
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
+  }
+  if (!isObject2(parsed))
+    throw new Error(`${file} must hold a JSON object.`);
+  return { data: parsed, indent: detectIndent(text), text };
+}
+function toRecord(entry, file) {
+  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
+    return { path: [...entry] };
+  }
+  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
+    const record = { path: [...entry.path] };
+    if (Object.hasOwn(entry, "value"))
+      record.value = entry.value;
+    if (typeof entry.sha256 === "string")
+      record.sha256 = entry.sha256;
+    return record;
+  }
+  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
+}
+function readOwned(stateDir) {
+  const file = join7(stateDir, OWNED_FILE);
+  if (!existsSync5(file))
+    return {};
+  const parsed = JSON.parse(readFileSync5(file, "utf8"));
+  if (!isObject2(parsed))
+    throw new Error(`Invalid ${file}: expected an object`);
+  const owned = {};
+  for (const [target, entries] of Object.entries(parsed)) {
+    if (!Array.isArray(entries))
+      throw new Error(`Invalid ${file}: expected a list per file`);
+    owned[target] = entries.map((entry) => toRecord(entry, file));
+  }
+  return owned;
+}
+function ownedRecords(stateDir, file) {
+  return readOwned(stateDir)[file] ?? [];
+}
+function hashOf(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function ownership(records, path, current, unchosen) {
+  const record = records.find((entry) => samePath(entry.path, path));
+  if (record === undefined)
+    return "none";
+  if (!current.found)
+    return "changed";
+  if (record.sha256 !== undefined) {
+    if (hashOf(current.value) === record.sha256)
+      return "ours";
+  } else if (!Object.hasOwn(record, "value")) {
+    return "ours";
+  } else if (Bun.deepEquals(current.value, record.value, true)) {
+    return "ours";
+  }
+  return unchosen?.(path, current.value) ? "ours" : "changed";
+}
+function getKey(data, path) {
+  let node = data;
+  for (const segment of path) {
+    if (!isObject2(node) || !Object.hasOwn(node, segment))
+      return { found: false, value: undefined };
+    node = node[segment];
+  }
+  return { found: true, value: node };
+}
+
+// src/gateway/settings.ts
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
@@ -6991,11 +7352,11 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync5(path))
+  if (!existsSync6(path))
     return {};
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync5(path, "utf8"));
+    parsed = JSON.parse(readFileSync6(path, "utf8"));
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -7026,53 +7387,6 @@ function settingsReport(settingsPath) {
   return { baseUrl, loginOverrides, subagentOverrides };
 }
 
-// src/machine/claude-mem.ts
-var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
-var PROVIDER = "CLAUDE_MEM_PROVIDER";
-var START_BLOCK_KEYS = [
-  "CLAUDE_MEM_WORK_STATE_ENABLED",
-  "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED"
-];
-var WORK_STATE_KEY = START_BLOCK_KEYS[0];
-var UNCHOSEN = {
-  [PROVIDER]: ["", "claude"],
-  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
-  [API_KEY]: [""],
-  [START_BLOCK_KEYS[0]]: ["", "true"],
-  [START_BLOCK_KEYS[1]]: ["", "true"]
-};
-
-// src/machine/warp.ts
-var WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
-var YUM_REPO_TEXT = `[warpdotdev]
-name=warpdotdev
-baseurl=https://releases.warp.dev/linux/rpm/stable
-enabled=1
-gpgcheck=1
-gpgkey=${WARP_KEY_URL}
-`;
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-
-// src/setup/managed-hook.ts
-var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
-
-// src/setup/launcher-cmd.ts
-var FIND_INSTALL_JS2 = [
-  "const f=process.argv[process.argv.length-1];",
-  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
-  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
-  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
 // src/setup/retry-watchdog.ts
 var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
 var RETRY_WATCHDOG_VALUE = "1";
@@ -7097,395 +7411,6 @@ function retryWatchdogState(paths) {
     return "ours";
   return turnsOn(current.value) ? "yours" : "disabled";
 }
-
-// src/hooks/notify-types.ts
-var PLUGIN_NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "worker_permission_prompt"
-];
-var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
-var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
-var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
-var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
-
-// src/setup/user-notify-hook.ts
-var USER_NOTIFY_HOOK_NAME = "notify";
-var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
-
-// src/hooks/settings-hooks.ts
-var RETIRED_ENGINE_HOOKS = [
-  "worktree-create",
-  "worktree-remove",
-  "subagent-stop"
-];
-var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
-
-// src/workflow/reviews.ts
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-
-// src/sessions/command.ts
-var TAIL_BYTES = 512 * 1024;
-
-// src/update/state.ts
-var CHECK_INTERVAL_MS = 60 * 60 * 1000;
-var LOG_MAX_BYTES = 256 * 1024;
-var UNREACHABLE_FAILS_AFTER_HOURS = 24;
-var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
-
-// src/zod-issues.ts
-function describeIssues(issues) {
-  return issues.map((issue) => {
-    const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-    return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
-  }).join("; ");
-}
-
-// src/workflow/resolve.ts
-class WorkflowConfigError extends Error {
-  name = "WorkflowConfigError";
-}
-function personalWorkflowFile(paths) {
-  return paths.workflowConfigFile;
-}
-function loadWorkflow(file) {
-  if (!existsSync6(file))
-    return {};
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync6(file, "utf8"));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
-  }
-  const parsed = workflowSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
-  }
-  return parsed.data;
-}
-function mergedGroup(personal, project) {
-  if (personal === undefined)
-    return project;
-  if (project === undefined)
-    return personal;
-  return { ...personal, ...project };
-}
-function mergeWorkflows(personal, project) {
-  const merged = { ...personal, ...project };
-  const alerts = mergedGroup(personal.alerts, project.alerts);
-  if (alerts !== undefined)
-    merged.alerts = alerts;
-  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
-  if (fixes !== undefined)
-    merged.fixesAfterReview = fixes;
-  const crew = mergedGroup(personal.crew, project.crew);
-  if (crew !== undefined)
-    merged.crew = crew;
-  return merged;
-}
-function sourceOf(personal, project, key) {
-  if (workflowValue(project, key) !== undefined)
-    return "project";
-  return workflowValue(personal, key) !== undefined ? "personal" : "default";
-}
-function alertsFrom(personal, project) {
-  const merged = mergeWorkflows(personal, project);
-  const alerts = merged.alerts ?? {};
-  const of = (key, value) => ({
-    value,
-    source: sourceOf(personal, project, key)
-  });
-  return {
-    events: of("alerts.events", alerts.events ?? workflowDefaults.alerts.events),
-    sound: of("alerts.sound", alerts.sound ?? workflowDefaults.alerts.sound),
-    usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
-  };
-}
-function resolveAlerts(paths, projectConfig) {
-  const personal = loadWorkflow(personalWorkflowFile(paths));
-  return alertsFrom(personal, projectConfig?.workflow ?? {});
-}
-
-// src/workflow/alerts.ts
-function fallbackLine(problems) {
-  return `cc-smart-dev-kit: the alerts use the settings that can be read (${problems.join("; ")})`;
-}
-function alertsAt(paths, cwd, env) {
-  const problems = [];
-  let project = null;
-  if (cwd !== null) {
-    try {
-      const checkout = locateCheckout(cwd, { env });
-      if (checkout !== null)
-        project = loadProjectConfig(checkout).config;
-    } catch (error) {
-      if (error instanceof CcSmartDevKitConfigError)
-        problems.push(error.message);
-    }
-  }
-  try {
-    const alerts = resolveAlerts(paths, project);
-    return { alerts, problem: problems.length === 0 ? null : fallbackLine(problems) };
-  } catch (error) {
-    problems.push(error instanceof Error ? error.message : String(error));
-    return {
-      alerts: alertsFrom({}, project?.workflow ?? {}),
-      problem: fallbackLine(problems)
-    };
-  }
-}
-
-// src/hooks/alert-sound.ts
-import { join as join7 } from "path";
-var SOUND_DIR = "/usr/share/sounds/freedesktop/stereo";
-var MACOS_SOUNDS = {
-  "dialog-warning": "Basso",
-  "service-login": "Glass",
-  "service-logout": "Pop"
-};
-function soundArgv(moment, platform, which) {
-  if (platform === "linux") {
-    const paplay = which("paplay");
-    if (paplay !== null)
-      return [paplay, join7(SOUND_DIR, `${moment}.oga`)];
-    const canberra = which("canberra-gtk-play");
-    return canberra === null ? null : [canberra, "-i", moment];
-  }
-  if (platform === "darwin") {
-    const afplay = which("afplay");
-    return afplay === null ? null : [afplay, join7("/System/Library/Sounds", `${MACOS_SOUNDS[moment]}.aiff`)];
-  }
-  return null;
-}
-
-// src/hooks/background-session.ts
-function inBackgroundSession(env) {
-  return (env.CLAUDE_JOB_DIR ?? "") !== "";
-}
-
-// src/hooks/desktop-alert.ts
-var TOOL_TIMEOUT_MS = 5000;
-function hasDesktop(platform, env) {
-  if (platform !== "linux")
-    return true;
-  return (env.DISPLAY ?? "") !== "" || (env.WAYLAND_DISPLAY ?? "") !== "";
-}
-function desktopTools(which) {
-  return {
-    gdbus: which("gdbus"),
-    notifySend: which("notify-send"),
-    xdotool: which("xdotool"),
-    xfconfQuery: which("xfconf-query")
-  };
-}
-function notifySendCapabilities(help) {
-  return {
-    actions: help.includes("--action"),
-    expire: help.includes("--expire-time"),
-    wait: help.includes("--wait")
-  };
-}
-function canWaitForClick(tools, capture) {
-  if (tools.gdbus !== null)
-    return true;
-  if (tools.notifySend === null)
-    return false;
-  const help = capture({ argv: [tools.notifySend, "--help"], timeoutMs: TOOL_TIMEOUT_MS });
-  const capabilities = notifySendCapabilities(help.stdout);
-  return capabilities.actions && capabilities.wait;
-}
-function dndOn(tools, capture) {
-  if (tools.xfconfQuery === null)
-    return false;
-  const run = capture({
-    argv: [tools.xfconfQuery, "-c", "xfce4-notifyd", "-p", "/do-not-disturb"],
-    timeoutMs: TOOL_TIMEOUT_MS
-  });
-  return run.exitCode === 0 && run.stdout.trim() === "true";
-}
-var NOTIFY_ALERT_KIND = "notify";
-function notifyWorkerAlert(alert, target) {
-  return {
-    body: alert.body,
-    critical: alert.critical,
-    kind: NOTIFY_ALERT_KIND,
-    session: target.session,
-    title: alert.title,
-    window: {
-      folder: target.folder,
-      name: target.name,
-      program: target.program,
-      windowId: target.windowId
-    }
-  };
-}
-
-// src/hooks/detached.ts
-import { spawn } from "child_process";
-var CMD = "cmd";
-var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
-function unableInCmd(argument) {
-  if (argument.includes('"'))
-    return 'a " would end the quoted argument';
-  if (argument.includes("%"))
-    return "a % is read as a variable name, inside double quotes too";
-  if (/[\r\n]/.test(argument))
-    return "a line break ends the command line";
-  if (argument.includes("\x00"))
-    return "a NUL ends the command line";
-  return null;
-}
-function cmdArgument(argument) {
-  const reason = unableInCmd(argument);
-  if (reason !== null)
-    return { ok: false, reason };
-  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
-  const kept = argument.slice(0, argument.length - trailing.length);
-  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
-}
-function windowsStart(argv) {
-  return cmdLine('start "" /b ', argv);
-}
-function cmdLine(head, argv) {
-  if (argv[0] === undefined) {
-    return { argument: "", ok: false, reason: "there is no program to start" };
-  }
-  const quoted = [];
-  for (const argument of argv) {
-    const one = cmdArgument(argument);
-    if (!one.ok)
-      return { argument, ok: false, reason: one.reason };
-    quoted.push(one.text);
-  }
-  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
-}
-function forMessage(argument) {
-  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
-}
-function startDetached(platform, argv, options) {
-  const [file, ...args] = argv;
-  if (file === undefined)
-    return;
-  const where = {
-    ...options.cwd !== undefined && { cwd: options.cwd },
-    ...options.env !== undefined && { env: options.env }
-  };
-  try {
-    if (platform === "win32") {
-      const start = windowsStart(argv);
-      if (!start.ok) {
-        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
-        return;
-      }
-      const result = Bun.spawnSync(start.argv, {
-        ...where,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-        windowsHide: true,
-        windowsVerbatimArguments: true
-      });
-      const exitCode = result.exitCode ?? 1;
-      if (exitCode !== 0)
-        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
-      return;
-    }
-    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
-    child.on("error", (error) => options.onError(error.message));
-    child.unref();
-  } catch (error) {
-    options.onError(error instanceof Error ? error.message : String(error));
-  }
-}
-
-// src/hooks/io.ts
-var SILENT = {};
-
-// src/hooks/stop-failure.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync2 } from "fs";
-import { join as join8 } from "path";
-
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var breakerTargetSchema = object({
-  status: int().nullable(),
-  target: string2(),
-  until: number2()
-});
-var breakerSchema = object({
-  held: int().min(0),
-  lastAt: number2(),
-  since: number2(),
-  targets: array(breakerTargetSchema)
-});
-var stateSchema = object({
-  breakers: record(string2(), breakerSchema).optional(),
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  seenClaude: record(string2(), number2()).optional(),
-  version: literal(1)
-});
-function parseLimitState(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const parsed = stateSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
-function formatClock(epochSec, nowMs, timeZone) {
-  const at = new Date(epochSec * 1000);
-  const day = (date) => new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone,
-    year: "numeric"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    timeZone
-  }).format(at);
-  if (day(at) === day(new Date(nowMs)))
-    return time;
-  const date = new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    timeZone
-  }).format(at);
-  return `${date} ${time}`;
-}
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
-}
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-function currentBreakers(state, nowMs) {
-  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-
-// src/gateway/breaker.ts
-var BREAKER_REMINDER_MS = 10 * 60000;
 
 // src/hooks/transcript.ts
 import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
@@ -7975,7 +7900,7 @@ function farEndIsWarp(env, config) {
     return client.toLowerCase() === WARP_TERMINAL_NAME;
   return config.sshWarp;
 }
-function sessionLabel2(transcript, cwd) {
+function sessionLabel(transcript, cwd) {
   if (transcript !== null) {
     const named = lastCustomTitle(transcript);
     const clean = named === null ? null : cleanSessionName(named);
@@ -8212,7 +8137,7 @@ function notifyHook(input, event, deps) {
   }
   const transcript = typeof input.transcript_path === "string" ? input.transcript_path : null;
   const cwd = typeof input.cwd === "string" ? input.cwd : null;
-  const label = sessionLabel2(transcript, cwd);
+  const label = sessionLabel(transcript, cwd);
   const limitAlertIsStopFailures = event === "StopFailure" && input.error === "rate_limit" ? stopFailureWillAlert(input, {
     env: deps.env,
     nowMs: deps.nowMs,

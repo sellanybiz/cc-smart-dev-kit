@@ -17,6 +17,7 @@
  *     `·` line for one of the person's own under that name.
  */
 import { COMMAND } from "../build-info";
+import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import { readMcpRecords } from "./records";
 import { overridingServer, readUserServers, sameConfig } from "./register";
@@ -25,14 +26,8 @@ import { SERVER_NAMES } from "./servers";
 import { describeServerConfig } from "./status";
 import { readTavilyKey } from "./tavily";
 
-export interface McpCheck {
-  ok: boolean;
-  /** Information only: printed with `·`, never a failure. */
-  info?: boolean;
-  /** A warning: printed with `!`, never a failure. */
-  warn?: boolean;
-  text: string;
-}
+/** One MCP line of doctor's report: a check like any other (`check.ts`). */
+export type McpCheck = Check;
 
 /**
  * How long `claude mcp get` may take: it starts the server, and a first download can take a
@@ -105,14 +100,16 @@ export function mcpChecks(
     if (servers === null) {
       checks.push({
         ok: false,
-        text: `cannot read ${paths.userConfigFile} to check the MCP servers. Run: ${COMMAND} setup`,
+        text: `cannot read ${paths.userConfigFile} to check the MCP servers`,
+        fix: `${COMMAND} setup`,
       });
       break;
     }
     if (!(name in servers)) {
       checks.push({
         ok: false,
-        text: `the "${name}" MCP server is not registered for your user. Run: ${COMMAND} setup`,
+        text: `the "${name}" MCP server is not registered for your user`,
+        fix: `${COMMAND} setup`,
       });
       continue;
     }
@@ -127,9 +124,8 @@ export function mcpChecks(
       checks.push({
         ok: true,
         warn: true,
-        text:
-          `the "${name}" MCP server is registered by something else (${describeServerConfig(servers[name])}), ` +
-          `not by cc-smart-dev-kit. To let setup manage it: claude mcp remove ${name} --scope user, then ${COMMAND} setup`,
+        text: `the "${name}" MCP server is registered by something else (${describeServerConfig(servers[name])}), not by ${COMMAND}`,
+        fix: `to let setup manage it: claude mcp remove ${name} --scope user, then ${COMMAND} setup`,
       });
       continue;
     }
@@ -144,8 +140,8 @@ export function mcpChecks(
         warn: true,
         text:
           `the "${name}" MCP server has a copy that wins over yours (${describeServerConfig(overriding.config)} in ${tildify(overriding.file, paths.home)}): ` +
-          `a project's .mcp.json, or the local scope, takes precedence over the user-scope server, so cc-smart-dev-kit's is not the one starting. ` +
-          `Remove it from that file (or merge the base branch when it came from one), then run: ${COMMAND} doctor`,
+          `a project's .mcp.json, or the local scope, takes precedence over the user-scope server, so ${COMMAND}'s is not the one starting`,
+        fix: `remove it from that file (or merge the base branch when it came from one), then run: ${COMMAND} doctor`,
       });
       continue;
     }
@@ -153,6 +149,7 @@ export function mcpChecks(
       checks.push({
         ok: false,
         text: `the claude command is not on PATH, so the "${name}" MCP server could not be started to check it`,
+        fix: "install Claude Code, or put its `claude` command on PATH",
       });
       continue;
     }
@@ -165,23 +162,29 @@ export function mcpChecks(
     if (status === "" || status === "unknown") {
       checks.push({
         ok: false,
-        text: `\`claude mcp get ${name}\` gave no state. Run it to see why`,
+        text: `\`claude mcp get ${name}\` gave no state`,
+        fix: `run \`claude mcp get ${name}\` to see why`,
       });
       continue;
     }
     if (!scope.startsWith("User config")) {
       checks.push({
         ok: false,
-        text:
-          `another copy of "${name}" wins over yours: ${scope}. ` +
-          `A project .mcp.json: merge the base branch, or remove the file; a copy of your own: claude mcp remove ${name} --scope local`,
+        text: `another copy of "${name}" wins over yours: ${scope}`,
+        fix: `a project .mcp.json: merge the base branch, or remove the file; a copy of your own: claude mcp remove ${name} --scope local`,
       });
       continue;
     }
-    checks.push({
-      ok: status.includes("Connected"),
-      text: `MCP server "${name}": ${status}`,
-    });
+    const line = `MCP server "${name}": ${status}`;
+    checks.push(
+      status.includes("Connected")
+        ? { ok: true, text: line }
+        : {
+            ok: false,
+            text: line,
+            fix: `run \`claude mcp get ${name}\` to see why it does not connect`,
+          },
+    );
   }
   // Tavily is the one server that needs a key. No key: skipped, not a failure — and the
   // line names the key file, without ever reading the key itself.

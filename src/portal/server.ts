@@ -29,7 +29,7 @@
 
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
-import type { Check } from "../cli/doctor";
+import { type Check, checkLine } from "../cli/doctor";
 import { jobsAnswer, readJobs } from "../jobs/status";
 import {
   type ActionContext,
@@ -430,10 +430,7 @@ export async function startPortal(
           });
           const checks = state.doctor?.checks ?? [];
           hub.publish("doctor", state.doctor);
-          return json(
-            { lines: checks.map((check) => `${check.ok ? "✓" : "✗"} ${check.text}`), ok: true },
-            200,
-          );
+          return json({ lines: checks.map(checkLine), ok: true }, 200);
         }
         const result: ActionResult = await runAction(
           name,

@@ -192,7 +192,11 @@ describe("doctor --live", () => {
       run: () => ({ exitCode: 127, output: "claude: not found" }),
     });
     expect(lines).toEqual([
-      { ok: false, text: "live: `claude --version` gave no version: is Claude Code installed?" },
+      {
+        ok: false,
+        text: "live: `claude --version` gave no version",
+        fix: "install Claude Code, or put its `claude` command on PATH",
+      },
     ]);
   });
 

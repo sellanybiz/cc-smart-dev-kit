@@ -42,7 +42,8 @@
 #      installs the instructions and the launcher), then the old plugin, asked about;
 #   7. the three things only the person has: the browser's token, the gateway's key, the
 #      Tavily key — each asked on the terminal, each skippable, never echoed, never printed;
-#   8. `doctor`, then what is left, then the two closing lines.
+#   8. `doctor --json`, then what is left (each failure with its fix), then the two closing
+#      lines.
 #
 # EXIT CODES: 0 done (every step this script ran succeeded, and doctor is all ✓); 3
 # installed, with items left (doctor shows ✗, or something was skipped — the list at the end
@@ -370,6 +371,17 @@ foreign_mcp_servers() {
 try{for(const s of (JSON.parse(t).servers||[])) if(s.state==="foreign") console.log(s.name+"\t"+(s.runsWhat||""))}catch{}'       2>/dev/null || true
 }
 
+# doctor's failures, one per line as `<what is wrong><TAB><its fix>`, read from `doctor --json`
+# (the plugin's own report: src/cli/doctor.ts, `DoctorReport`). Never its text for a person:
+# that has groups, folds and wraps, and its marks change with the terminal. Nothing when the
+# JSON cannot be read.
+doctor_failures() { # <doctor --json output>
+  [ -n "$BUN" ] || return 0
+  printf '%s' "$1" |
+    "$BUN" -e 'let t="";for await(const c of Bun.stdin.stream()) t+=new TextDecoder().decode(c);
+try{for(const g of (JSON.parse(t).groups||[])) for(const c of (g.checks||[])) if(c.status==="fail") console.log(c.text+"\t"+(c.fix||""))}catch{}' 2>/dev/null || true
+}
+
 # One pass over those servers: show what runs instead, and ask. A name is asked about ONCE per
 # run (`mcp_asked`), so the second pass — after the Tavily key, whose arrival can change what
 # the plugin registers — brings up only what is new. A yes removes the server and runs `setup`
@@ -412,7 +424,7 @@ main() {
   local cli_have gateway_check_out gateway_check_code gateway_saved gateway_tries gateway_code
   local mcp_asked=""
   local BROWSER_TOKEN GATEWAY_KEY TAVILY_KEY
-  local doctor_out doctor_code doctor_left line
+  local doctor_json doctor_code doctor_left line fix
 
   for arg in "$@"; do
     case "$arg" in
@@ -967,32 +979,41 @@ main() {
     exit 0
   fi
 
+  # The report as JSON, read for its failures: a person reads the step line and the list below,
+  # and `doctor` itself shows every check.
   if [ -x "$LAUNCHER" ]; then
-    doctor_out="$("$LAUNCHER" doctor 2>&1 </dev/null)"
+    doctor_json="$("$LAUNCHER" doctor --json </dev/null)"
   else
-    doctor_out="$(run_cli doctor 2>&1 </dev/null)"
+    doctor_json="$(run_cli doctor --json </dev/null)"
   fi
   doctor_code=$?
-  printf '%s\n' "$doctor_out"
+  doctor_left="$(doctor_failures "$doctor_json")"
   if [ "$doctor_code" -eq 0 ]; then
     step "8/8 doctor: every check passed"
   else
-    printf '✗ 8/8 doctor found what is left (its ✗ lines are in the list below)\n' >&2
+    printf '✗ 8/8 doctor found what is left (the list below; `%s` shows every check)\n' "$(plugin_command doctor)" >&2
   fi
 
   printf '\n'
   printf 'Restart every Claude Code session: they load the plugin when they start.\n'
   printf '`cc-smart-dev-kit portal` opens the portal in your own terminal (it prints a link with a one-time token).\n'
 
-  # What is left: the items this run skipped, then doctor's own ✗ lines (each names what to
-  # run where the plugin has a hint for it).
-  doctor_left="$(printf '%s\n' "$doctor_out" | grep '^✗ ' 2>/dev/null || true)"
+  # A doctor that failed without a report it could read: say so, so the list is never empty.
+  if [ "$doctor_code" -ne 0 ] && [ -z "$doctor_left" ]; then
+    doctor_left="doctor did not finish its report$(printf '\t')run \`$(plugin_command doctor)\` to see why"
+  fi
+
+  # What is left: the items this run skipped, then each of doctor's failures with its fix.
   if [ "${#LEFT[@]}" -gt 0 ] || [ -n "$doctor_left" ]; then
     printf '\nWhat is left:\n'
     for line in ${LEFT[@]+"${LEFT[@]}"}; do printf '  - %s\n' "$line"; done
-    printf '%s\n' "$doctor_left" | while IFS= read -r line; do
-      [ -n "$line" ] && printf '  %s\n' "$line"
-    done
+    while IFS="$(printf '\t')" read -r line fix; do
+      [ -n "$line" ] || continue
+      printf '  ✗ %s\n' "$line"
+      [ -n "$fix" ] && printf '    Fix: %s\n' "$fix"
+    done <<EOF
+$doctor_left
+EOF
   fi
 
   if [ "$doctor_code" -ne 0 ]; then

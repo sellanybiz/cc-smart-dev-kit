@@ -332,7 +332,7 @@ try {
   if (-not (Test-Called $world "cli.js setup")) {
     Stop-Smoke "a fresh machine: setup was not run through the plugin's own bundle"
   }
-  if ($calls -notcontains "launcher doctor") { Stop-Smoke "a fresh machine: doctor did not run through the launcher" }
+  if ($calls -notcontains "launcher doctor --json") { Stop-Smoke "a fresh machine: doctor --json did not run through the launcher" }
   # The git check's URL, whole: `"$Repo.git"` inside a string is member access and would have
   # asked git for "git@github.com:" (the fake says yes to anything, so only this line shows it).
   Assert-Contains "a fresh machine" ($calls -join "`n") "git ls-remote git@github.com:${repo}.git"

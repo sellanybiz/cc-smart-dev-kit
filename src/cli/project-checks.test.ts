@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { tempDir, withGitVersion } from "../testing/temp";
+import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
 import { projectChecks, renamedCommand } from "./project-checks";
 
@@ -50,12 +51,10 @@ const ENGINE_HOOKS: Record<string, Array<{ hooks: Array<Record<string, unknown>>
 
 /** The doctor line for leftover engine lines in one settings file, written out by hand. */
 const engineLine = (file: string, names: string[]) =>
-  `✗ project: ${file} still runs ${names.map((name) => `cc-smart-dev-kit hook ${name}`).join(", ")}, retired with the plugin's worktree engine in 1.0.0, so ${names.length === 1 ? "it fails" : "each of them fails"} every time: run cc-smart-dev-kit project init, which takes ${names.length === 1 ? "the line" : "those lines"} out (Claude Code's own worktrees need no hook)`;
+  `✗ project: ${file} still runs ${names.map((name) => `cc-smart-dev-kit hook ${name}`).join(", ")}, retired with the plugin's worktree engine in 1.0.0, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook) Fix: cc-smart-dev-kit project init (it takes ${names.length === 1 ? "the line" : "those lines"} out)`;
 
 function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
-  return projectChecks(repo, env, cliPaths(env), hooksFile).map(
-    (line) => `${line.info ? "·" : line.warn ? "!" : line.ok ? "✓" : "✗"} ${line.text}`,
-  );
+  return projectChecks(repo, env, cliPaths(env), hooksFile).map(checkLine);
 }
 
 /** The repo ignores `.claude/worktrees/`, where Claude Code makes its worktrees. */
@@ -135,7 +134,7 @@ describe("Claude Code's own worktrees, and the retired engine", () => {
       worktrees: { base: "main", prefix: "app-wt-" },
     });
     expect(check(repo)).toEqual([
-      `✗ project: Invalid ${file}: worktrees.prefix is no longer supported: remove it — Claude Code's own worktrees need none. \`cc-smart-dev-kit project init\` removes it (README § Worktrees).`,
+      `✗ project: Invalid ${file}: worktrees.prefix is no longer supported: remove it — Claude Code's own worktrees need none. \`cc-smart-dev-kit project init\` removes it (README § Worktrees). Fix: correct the file as this line says, or run: cc-smart-dev-kit project init`,
     ]);
   });
 
@@ -187,7 +186,7 @@ describe("Claude Code's own worktrees, and the retired engine", () => {
     });
     writeClaudeFile(repo, "settings.json", { hooks: ENGINE_HOOKS });
     expect(check(repo)).toEqual([
-      `✗ project: Invalid ${file}: worktrees.engine is no longer supported: remove it — Claude Code's own worktrees need none. \`cc-smart-dev-kit project init\` removes it (README § Worktrees).`,
+      `✗ project: Invalid ${file}: worktrees.engine is no longer supported: remove it — Claude Code's own worktrees need none. \`cc-smart-dev-kit project init\` removes it (README § Worktrees). Fix: correct the file as this line says, or run: cc-smart-dev-kit project init`,
       engineLine(".claude/settings.json", ["worktree-create", "worktree-remove", "subagent-stop"]),
     ]);
   });
@@ -211,7 +210,7 @@ describe("Claude Code's own worktrees, and the retired engine", () => {
     const repo = makeRepo();
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktree: {} });
     expect(check(repo)).toEqual([
-      `✗ project: Invalid ${file}: worktree: unknown field (a newer cc-smart-dev-kit may be needed)`,
+      `✗ project: Invalid ${file}: worktree: unknown field (a newer cc-smart-dev-kit may be needed) Fix: correct the file as this line says, or run: cc-smart-dev-kit project init`,
     ]);
   });
 });

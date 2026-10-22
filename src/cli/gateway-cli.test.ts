@@ -28,6 +28,7 @@ import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
+import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
 import { runRestore, stageOneDone } from "./restore";
 
@@ -814,7 +815,7 @@ describe("cc-smart-dev-kit gateway setup: the key is tested before it is saved",
     );
     expect(saved.exitCode).toBe(0);
     expect(saved.stdout).toContain(
-      "WARN the key was saved WITHOUT its backend accepting it (/v1/models answered HTTP 503)",
+      "! the key was saved WITHOUT its backend accepting it (/v1/models answered HTTP 503)",
     );
     expect(saved.stdout).toContain(
       "Check it when the backend answers: cc-smart-dev-kit gateway check",
@@ -982,7 +983,7 @@ describe("cc-smart-dev-kit gateway setup: OmniRoute's dashboard password", () =>
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("answered HTTP 401 for this key");
     expect(result.stderr).toContain(
-      "WARN the key this run made in OmniRoute could not be removed (cc-smart-dev-kit-router-",
+      "! the key this run made in OmniRoute could not be removed (cc-smart-dev-kit-router-",
     );
     expect(result.stderr).toContain("id key-1");
     expect(result.stderr).toContain("remove it in OmniRoute's dashboard by hand");
@@ -1540,8 +1541,9 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
     const server = fakeServer();
     m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] });
     await m.run(["gateway", "setup"]);
-    const doctor = await m.run(["doctor"]);
-    expect(doctor.stdout).toEndWith(
+    const doctor = await m.run(["doctor", "--verbose"]);
+    // The gateway's group is the report's last: its lines, then the verdict after a blank line.
+    expect(doctor.stdout).toContain(
       [
         "✓ the router service (cc-smart-dev-kit-router.service) is active",
         "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
@@ -1555,7 +1557,10 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
         "· slot cc-smart-dev-kit-opus: Claude (opus goes to Anthropic as Claude Code sent it)",
         "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
         "",
-      ].join("\n"),
+        "",
+      ]
+        .map((line) => (line === "" ? "" : `  ${line}`))
+        .join("\n"),
     );
   });
 
@@ -1566,16 +1571,16 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
     await m.run(["gateway", "setup"]);
     writeFileSync(m.state, "inactive\n");
     writeFileSync(m.paths.copy, "// an older router\n");
-    const doctor = await m.run(["doctor"]);
+    const doctor = await m.run(["doctor", "--verbose"]);
     expect(doctor.exitCode).toBe(1);
     expect(doctor.stdout).toContain(
-      "✗ the router service (cc-smart-dev-kit-router.service) is inactive. Run: cc-smart-dev-kit gateway setup\n",
+      "✗ the router service (cc-smart-dev-kit-router.service) is inactive\n    Fix: cc-smart-dev-kit gateway setup\n",
     );
     expect(doctor.stdout).toContain(
-      "✗ the router copy ~/.local/share/cc-smart-dev-kit/router.js is not this plugin version's router. Run: cc-smart-dev-kit gateway setup\n",
+      "✗ the router copy ~/.local/share/cc-smart-dev-kit/router.js is not this plugin version's router\n    Fix: cc-smart-dev-kit gateway setup\n",
     );
     expect(doctor.stdout).toContain(
-      `✗ backend omniroute (http://127.0.0.1:${server.port}) answered HTTP 401; check its key\n`,
+      `✗ backend omniroute (http://127.0.0.1:${server.port}) answered HTTP 401\n    Fix: check its key: cc-smart-dev-kit gateway setup --backend-key-stdin\n`,
     );
   });
 
@@ -1588,7 +1593,7 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
     m.writeConfig(server.port);
     expect((await m.run(["gateway", "setup"])).exitCode).toBe(0);
     chmodSync(m.paths.config, 0o644);
-    const doctor = await m.run(["doctor"]);
+    const doctor = await m.run(["doctor", "--verbose"]);
     expect(doctor.stdout).toContain(
       `✗ gateway config: ${m.paths.config} can be read by other users (mode 644); it holds API keys. Run: chmod 600 ${m.paths.config}\n`,
     );
@@ -1600,7 +1605,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
     const m = machine();
     const server = fakeServer();
     m.writeConfig(server.port);
-    const doctor = await m.run(["doctor"]);
+    const doctor = await m.run(["doctor", "--verbose"]);
     expect(doctor.stdout).toContain(
       "· gateway.json kept (~/.config/cc-smart-dev-kit/gateway.json); the gateway is not installed. To use it: cc-smart-dev-kit gateway setup\n",
     );
@@ -1612,10 +1617,10 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
     const m = machine();
     mkdirSync(join(m.configDir, "cc-smart-dev-kit"), { recursive: true });
     writeFileSync(join(m.configDir, "cc-smart-dev-kit", "restart-pending"), "pending\n");
-    const doctor = await m.run(["doctor"]);
+    const doctor = await m.run(["doctor", "--verbose"]);
     expect(doctor.exitCode).toBe(1);
     expect(doctor.stdout).toContain(
-      "✗ a gateway setup did not finish; run: cc-smart-dev-kit gateway setup\n· gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup\n",
+      "✗ a gateway setup did not finish\n    Fix: cc-smart-dev-kit gateway setup\n  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup\n",
     );
   });
 
@@ -1672,7 +1677,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
         throw new DOMException("The operation timed out.", "TimeoutError");
       },
     });
-    const lines = checks.map((check) => `${check.info ? "·" : check.ok ? "✓" : "✗"} ${check.text}`);
+    const lines = checks.map(checkLine);
     return { asked, lines };
   }
 
@@ -1684,7 +1689,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
     });
     expect(lines.slice(3, 5)).toEqual([
       "✓ the router's socket (cc-smart-dev-kit-router.socket) holds 127.0.0.1:20100",
-      "✗ the socket holds 127.0.0.1:20100, but the router does not answer (The operation timed out.): every request waits in the socket and gets no answer. See why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then: cc-smart-dev-kit gateway setup",
+      "✗ the socket holds 127.0.0.1:20100, but the router does not answer (The operation timed out.): every request waits in the socket and gets no answer Fix: see why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then: cc-smart-dev-kit gateway setup",
     ]);
   });
 
@@ -1696,8 +1701,8 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
     });
     expect(asked).toContain("show -p Result --value cc-smart-dev-kit-router.socket");
     expect(lines.slice(3, 5)).toEqual([
-      "✗ the router's socket (cc-smart-dev-kit-router.socket) is failed. Run: cc-smart-dev-kit gateway setup",
-      "✗ the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:20100 is refused (The operation timed out.). See why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then: cc-smart-dev-kit gateway setup",
+      "✗ the router's socket (cc-smart-dev-kit-router.socket) is failed Fix: cc-smart-dev-kit gateway setup",
+      "✗ the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:20100 is refused (The operation timed out.) Fix: see why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then: cc-smart-dev-kit gateway setup",
     ]);
   });
 
@@ -1708,7 +1713,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
       socket: "inactive",
     });
     expect(lines[4]).toBe(
-      "✗ the router does not answer on 127.0.0.1:20100 (The operation timed out.)",
+      "✗ the router does not answer on 127.0.0.1:20100 (The operation timed out.) Fix: see why: journalctl --user -u cc-smart-dev-kit-router -n 30. Then: cc-smart-dev-kit gateway setup",
     );
   });
 });
@@ -1818,7 +1823,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
         'judge test: omniroute:m1 blocked "git push --force origin main"',
         "cc-smart-dev-kit-judge: (new)",
         "  now: omniroute:m2 → omniroute:m1  (fallback on)",
-        "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+        "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
         "The router uses it from its next request.",
         "",
       ].join("\n"),
@@ -1890,7 +1895,8 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
     });
     expect(checks.at(-1)).toEqual({
       ok: false,
-      text: "slot cc-smart-dev-kit-judge: omniroute:m1 has not passed the judge test, so the router ignores it. Run: cc-smart-dev-kit gateway slot judge omniroute:m1",
+      text: "slot cc-smart-dev-kit-judge: omniroute:m1 has not passed the judge test, so the router ignores it",
+      fix: "cc-smart-dev-kit gateway slot judge omniroute:m1",
     });
   });
 
@@ -2192,7 +2198,7 @@ describe("cc-smart-dev-kit gateway history", () => {
     expect(history.stderr).toBe("");
     expect(history.exitCode).toBe(0);
     expect(history.stdout).toContain(
-      "History, last 1h (1-minute buckets), by target. Cost is estimated: Claude at its list price, a backend at the price its own list gives.\n",
+      "History, last 1h (1-minute buckets), by target\nCost is estimated: Claude at its list price, a backend at the price its own list gives.\n",
     );
     // One target, two rows: 100 and 300 ms, one error, the tokens and the cost summed.
     expect(history.stdout).toMatch(
@@ -2462,7 +2468,7 @@ describe("secrets", () => {
     record(await m.run(["gateway", "on"]));
     record(await m.run(["gateway", "status"]));
     record(await m.run(["gateway", "off"]));
-    record(await m.run(["doctor"]));
+    record(await m.run(["doctor", "--verbose"]));
     record(await m.run(["gateway", "help"]));
     record(await m.run(["gateway", "setup", "--backend-key-stdin"], PLANTED_KEY));
     // A broken file: the error must not quote the text around the mistake.
@@ -2474,7 +2480,7 @@ describe("secrets", () => {
     record(await m.run(["gateway", "models"]));
     record(await m.run(["gateway", "slot", "worker", "claude-sonnet-5-5"]));
     record(await m.run(["gateway", "breaker", "worker", "on"]));
-    record(await m.run(["doctor"]));
+    record(await m.run(["doctor", "--verbose"]));
     // Valid JSON that fails the schema: the error names fields, not values.
     writeFileSync(
       m.paths.config,
@@ -2486,7 +2492,7 @@ describe("secrets", () => {
       { mode: 0o600 },
     );
     record(await m.run(["gateway", "models"]));
-    record(await m.run(["doctor"]));
+    record(await m.run(["doctor", "--verbose"]));
     const all = outputs.join("\n");
 
     // The backend did receive the key: the test would see a leak if one were printed.
@@ -2623,9 +2629,7 @@ describe("cc-smart-dev-kit gateway on Windows: the router as a Scheduled Task", 
         runner: m.windowsRunner,
         service: "scheduled-task",
       });
-    const line = (check: { info?: boolean; ok: boolean; text: string }) =>
-      `${check.info === true ? "·" : check.ok ? "✓" : "✗"} ${check.text}`;
-    expect((await checks()).map(line).slice(0, 4)).toEqual([
+    expect((await checks()).map(checkLine).slice(0, 4)).toEqual([
       "✓ the router service (the task cc-smart-dev-kit-router) is active",
       "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
       "✓ the task definition ~/.local/share/cc-smart-dev-kit/router-task.xml is up to date",
@@ -2634,10 +2638,10 @@ describe("cc-smart-dev-kit gateway on Windows: the router as a Scheduled Task", 
 
     // A task someone removed by hand: doctor says so, and the definition with it.
     m.task.registered = false;
-    expect((await checks()).map(line).slice(0, 3)).toEqual([
-      "✗ the router service (the task cc-smart-dev-kit-router) is not registered. Run: cc-smart-dev-kit gateway setup",
+    expect((await checks()).map(checkLine).slice(0, 3)).toEqual([
+      "✗ the router service (the task cc-smart-dev-kit-router) is not registered Fix: cc-smart-dev-kit gateway setup",
       "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
-      "✗ the task definition ~/.local/share/cc-smart-dev-kit/router-task.xml is not registered as the task cc-smart-dev-kit-router. Run: cc-smart-dev-kit gateway setup",
+      "✗ the task definition ~/.local/share/cc-smart-dev-kit/router-task.xml is not registered as the task cc-smart-dev-kit-router Fix: cc-smart-dev-kit gateway setup",
     ]);
 
     // A task re-pointed at another program: the definition is right, the task is not.
@@ -2647,10 +2651,10 @@ describe("cc-smart-dev-kit gateway on Windows: the router as a Scheduled Task", 
       execute: "C:\\other\\bun.exe",
       workingDirectory: "C:\\other",
     };
-    expect((await checks()).map(line).slice(0, 3)).toEqual([
+    expect((await checks()).map(checkLine).slice(0, 3)).toEqual([
       "✓ the router service (the task cc-smart-dev-kit-router) is active",
       "✓ the router copy ~/.local/share/cc-smart-dev-kit/router.js is up to date",
-      "✗ the task cc-smart-dev-kit-router does not run ~/.local/share/cc-smart-dev-kit/router.js. Run: cc-smart-dev-kit gateway setup",
+      "✗ the task cc-smart-dev-kit-router does not run ~/.local/share/cc-smart-dev-kit/router.js Fix: cc-smart-dev-kit gateway setup",
     ]);
   });
 
@@ -2711,7 +2715,7 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
           "cc-smart-dev-kit-worker: (new)",
           "  now: omniroute:m1 → omniroute:m2  (fallback on)",
           `  Auto mode's checks: Claude first; while Claude is limited or down: omniroute:m1 (fallback on); not tested, so never judging: omniroute:m2 (cc-smart-dev-kit gateway setup tests them)`,
-          "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
           "The router uses it from its next request.",
           "",
         ].join("\n"),
@@ -2787,7 +2791,7 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
       expect(setup.exitCode).toBe(0);
       expect(setup.stdout).toContain(`${PASSED_LINE}\n${FAILED_LINE}\n`);
       expect(setup.stdout).toContain(
-        "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action\n",
+        "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action\n",
       );
       expect(JSON.parse(readFileSync(m.paths.config, "utf8")).judgeTested).toEqual({
         "omniroute:m1": proofOf("omniroute:m1", server.port),
@@ -2816,7 +2820,7 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
           "  cc-smart-dev-kit-fable Claude: fable goes to Anthropic as Claude Code sent it, on your own login",
           "  cc-smart-dev-kit-opus Claude: opus goes to Anthropic as Claude Code sent it, on your own login",
           "  cc-smart-dev-kit-judge Claude: Claude first; while Claude is limited or down: omniroute:m1 (fallback on); not tested, so never judging: omniroute:m2 (cc-smart-dev-kit gateway setup tests them)",
-          "    WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "    ! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
           "",
         ].join("\n"),
       );
@@ -2869,7 +2873,7 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
           "cc-smart-dev-kit-judge: fallback off → on",
           "  Claude first; while Claude is limited or down: omniroute:m1 (fallback on)",
           "  The worker's tested targets answer when Claude is limited or down.",
-          "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
           "The router uses it from its next request.",
           "",
         ].join("\n"),
@@ -2895,7 +2899,7 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
           'judge test: omniroute:m2 blocked "git push --force origin main"',
           "cc-smart-dev-kit-judge: (new)",
           "  now: claude-sonnet-5-5 → omniroute:m2  (fallback on)",
-          "WARN a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
+          "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
           "The router uses it from its next request.",
           "",
         ].join("\n"),

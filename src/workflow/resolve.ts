@@ -28,7 +28,6 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
-import { statuslineSetting } from "../cli/setup";
 import type { CcSmartDevKitConfig } from "../project/config";
 import {
   type Checkout,
@@ -36,6 +35,7 @@ import {
   type CommittedOptions,
   readCommittedConfig,
 } from "../project/resolve";
+import { statuslineSetting } from "../setup/statusline";
 import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {

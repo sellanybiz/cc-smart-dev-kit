@@ -127,12 +127,36 @@ plugin runs needs anything a bunfig would give it, and `src/hooks/bun-shim.test.
 `src/setup/bun-shim.test.ts` run the real bundles with it, in a folder whose own
 `bunfig.toml` preload would print a line.
 
+## How the command prints
+
+The command prints through one module, `src/cli/ui/out.ts`, which `src/cli/ui/terminal.ts`
+tells what the terminal can do (read once: a TTY or not, `NO_COLOR`, `TERM=dumb`, the width,
+an old Windows console). On a terminal it adds colour on the marks and the verdict, wraps to the
+width (at most 100 columns) and shows a progress line while a slow step runs; anywhere else it
+prints the same words with none of that, so what a log, a test or a pipe reads is what a person
+reads. `doctor` prints entirely through it; `setup` and `browser setup` draw their marks with it,
+and every `--dry-run` ends with its one line. The other commands move to it as they are rebuilt.
+It is in-house, because a colour or prompt library would be a second runtime dependency in
+every bundle. Its marks: ✓ passed, ✗ failed, `·` information, `!` a warning, `+` `~` `-` a
+change; an old Windows console gets `[ok]` `[x]` `[i]` `[!]`.
+
+A check is one type, `Check` (`src/cli/check.ts`), whichever part makes it: a failure must carry
+its `fix`, so `doctor` can print a `Fix:` line under every ✗, and the portal shows the same fix.
+`doctor` runs its checks group by group (`CHECK_GROUPS`) and prints each group as soon as it is
+done, so a slow check (the MCP servers start once; the gateway asks its backends) never leaves the
+screen blank. The router bundle, the hooks and `browser mcp` never import the module: their stdout
+is read by a program (`out.test.ts` walks their imports). The status-line setting has its own
+module (`src/setup/statusline.ts`) for the same reason: the workflow's resolution, which every
+hook loads, compares it, and importing it from `setup` pulled all of setup in.
+
 ## The installer
 
 `install.sh` (macOS and Linux) and `install.ps1` (native Windows) are **the one command**
 that takes a machine from nothing to a working plugin: the marketplaces, the plugin install,
-`migrate` and then `setup`, the three secrets only a person has, and `doctor` at the end.
-Each step prints one line and is skipped when it is already done, so a second run only fixes
+`migrate` and then `setup`, the three secrets only a person has, and `doctor` at the end —
+its `--json` report, from which the list of what is left takes each failure and its fix (the
+text a person reads folds, wraps and changes its marks with the terminal, so no installer
+reads it). Each step prints one line and is skipped when it is already done, so a second run only fixes
 what is missing. A step that fails stops with the exact command that retries it, and the run
 goes on from there next time.
 
@@ -271,8 +295,8 @@ What the installers do **not** own: the plugin's version (it comes from
 it, the way CI's setup-bun comment says a test keeps its number equal).
 
 The two scripts are proved by `scripts/install.test.ts` (bash, in a fake world: a temp HOME
-and fakes for `claude`, `bun`, `git`, `gh`, `curl` and `uname` on PATH — the fake `doctor`
-fails while the browser's token is missing, the way the real one does, which is what the
+and fakes for `claude`, `bun`, `git`, `gh`, `curl` and `uname` on PATH — the fake
+`doctor --json` reports a failure while the browser's token is missing, the way the real one does, which is what the
 exit-3 path is proved against) and `scripts/install-windows-smoke.ps1` (on the Windows CI
 runner, under pwsh AND under Windows PowerShell 5.1). The Windows fakes are one-line `.cmd`
 wrappers around the real `bun.exe` running `scripts/install-windows-fakes/*.ts`, so a fake

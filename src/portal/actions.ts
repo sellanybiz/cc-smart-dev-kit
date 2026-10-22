@@ -26,6 +26,7 @@ import {
   tokenSavedLine,
   writeBrowserToken,
 } from "../browser/token";
+import { COMMAND } from "../build-info";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import { runUpdate } from "../cli/update";
 import { runCrewAnswer } from "../crew/answer";
@@ -568,7 +569,12 @@ export async function runDoctorPass(
   const options = source();
   if ("error" in options) {
     // One failed check, in the page's own shape: what happened, and what to do about it.
-    return { checks: [{ ok: false, text: options.error }], lines: [options.error], ok: false };
+    const failed: Check = {
+      ok: false,
+      text: options.error,
+      fix: `run it in a terminal: ${COMMAND} doctor`,
+    };
+    return { checks: [failed], lines: [checkLine(failed)], ok: false };
   }
   const checks = await doctorChecks(action.portal.paths, action.portal.env, options);
   return {

@@ -46,6 +46,7 @@ import {
   type WorkflowKey,
 } from "../workflow/schema";
 import { cliPaths, tildify } from "./paths";
+import { dryRunEnding } from "./ui/out";
 
 type Env = Record<string, string | undefined>;
 
@@ -614,7 +615,7 @@ export function runProjectInit(
   }
   printPlan(plan, context);
   if (flags.dryRun) {
-    context.print("A dry run: nothing was written.");
+    context.print(dryRunEnding(["written"]));
     return 0;
   }
   if (context.terminal !== null && !flags.yes) {

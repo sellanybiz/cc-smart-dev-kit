@@ -85,26 +85,26 @@ import {
   UNREACHABLE_FAILS_AFTER_HOURS,
   updateFiles,
 } from "../update/state";
+import {
+  CHECK_GROUPS,
+  type Check,
+  type CheckGroup,
+  type CheckStatus,
+  checkStatus,
+  FIX_LABEL,
+  groupTitle,
+} from "./check";
 import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
 import { projectChecks } from "./project-checks";
+import { type Mark, markText, type Out } from "./ui/out";
+import type { Terminal } from "./ui/terminal";
 
-/** One line of the report. What `doctor` prints, and what the portal's Machine page shows. */
-export interface Check {
-  ok: boolean;
-  /** Information only: printed with `·`, never a failure. */
-  info?: boolean;
-  /** A warning: printed with `!`, never a failure. */
-  warn?: boolean;
-  /**
-   * Which part of the report the line belongs to. Only the browser's lines carry it, because the
-   * portal draws those on the Browser card and leaves them out of the Doctor card's list: one
-   * home per line, and the same words a person reads in `cc-smart-dev-kit doctor`.
-   */
-  section?: "browser";
-  text: string;
-}
+/** The fix most checks name: setup puts the plugin's files back in place. */
+const SETUP_FIX = `${COMMAND} setup`;
+
+export type { Check } from "./check";
 
 /** The marketplace command that refreshes Claude Code's local copy of the marketplace. */
 export const MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
@@ -142,14 +142,16 @@ export function checkPlugin(paths: CliPaths): Check {
   if (!install) {
     return {
       ok: false,
-      text: `the ${PLUGIN_ID} plugin is not installed. Run: ${PLUGIN_INSTALL_COMMAND}`,
+      text: `the ${PLUGIN_ID} plugin is not installed`,
+      fix: PLUGIN_INSTALL_COMMAND,
     };
   }
   const where = tildify(install.installPath, paths.home);
   if (!existsSync(install.installPath)) {
     return {
       ok: false,
-      text: `the plugin folder is missing: ${where}. Run: ${PLUGIN_INSTALL_COMMAND}`,
+      text: `the plugin folder is missing: ${where}`,
+      fix: PLUGIN_INSTALL_COMMAND,
     };
   }
   // Installed is not on: Claude Code loads only a plugin whose `enabledPlugins` entry is
@@ -159,7 +161,8 @@ export function checkPlugin(paths: CliPaths): Check {
   if (!pluginEnabled(paths, PLUGIN_ID)) {
     return {
       ok: false,
-      text: `${PLUGIN_ID} ${install.version ?? "(no version)"} is installed, but the user settings turn it off: none of its hooks, skills or commands run. Run: claude plugin enable ${PLUGIN_ID}`,
+      text: `${PLUGIN_ID} ${install.version ?? "(no version)"} is installed, but the user settings turn it off: none of its hooks, skills or commands run`,
+      fix: `claude plugin enable ${PLUGIN_ID}`,
     };
   }
   return {
@@ -202,27 +205,27 @@ function checkLauncher(paths: CliPaths, platform: NodeJS.Platform): Check[] {
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
   if (!existsSync(launcher))
-    return [{ ok: false, text: `no launcher at ${where}. Run: cc-smart-dev-kit setup` }];
+    return [{ ok: false, text: `no launcher at ${where}`, fix: SETUP_FIX }];
   if (!win && !isExecutable(launcher)) {
     return [
       {
         ok: false,
-        text: `the launcher ${where} is not executable. Run: cc-smart-dev-kit setup`,
+        text: `the launcher ${where} is not executable`,
+        fix: SETUP_FIX,
       },
     ];
   }
   const script = readFileSync(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
-    return [
-      { ok: false, text: `the launcher ${where} is out of date. Run: cc-smart-dev-kit setup` },
-    ];
+    return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
   }
   if (!isUsableBun(bun, platform)) {
     return [
       {
         ok: false,
-        text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
+        text: `the launcher's bun ${tildify(bun, paths.home)} is missing or not executable`,
+        fix: SETUP_FIX,
       },
     ];
   }
@@ -233,7 +236,9 @@ function checkLauncher(paths: CliPaths, platform: NodeJS.Platform): Check[] {
     ];
   const result = run([launcher, "version"]);
   if (!result.ok)
-    return [{ ok: false, text: `the launcher ${where} does not run: ${result.output}` }];
+    return [
+      { ok: false, text: `the launcher ${where} does not run: ${result.output}`, fix: SETUP_FIX },
+    ];
   return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
 }
 
@@ -248,7 +253,8 @@ function checkLauncherCmd(paths: CliPaths, shLauncher: string): Check {
   if (!existsSync(cmd)) {
     return {
       ok: false,
-      text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ${shLauncher}). Run: cc-smart-dev-kit setup`,
+      text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run ${COMMAND} (Git Bash runs ${shLauncher})`,
+      fix: SETUP_FIX,
     };
   }
   const script = readFileSync(cmd, "utf8");
@@ -256,18 +262,24 @@ function checkLauncherCmd(paths: CliPaths, shLauncher: string): Check {
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
       ok: false,
-      text: `the Windows launcher ${where} is out of date. Run: cc-smart-dev-kit setup`,
+      text: `the Windows launcher ${where} is out of date`,
+      fix: SETUP_FIX,
     };
   }
   if (!isUsableBun(bun, "win32")) {
     return {
       ok: false,
-      text: `the Windows launcher's bun ${tildify(bun, paths.home)} is missing or not executable. Run: cc-smart-dev-kit setup`,
+      text: `the Windows launcher's bun ${tildify(bun, paths.home)} is missing or not executable`,
+      fix: SETUP_FIX,
     };
   }
   const result = run(launcherCmdArgv(cmd, ["version"]));
   if (!result.ok)
-    return { ok: false, text: `the Windows launcher ${where} does not run: ${result.output}` };
+    return {
+      ok: false,
+      text: `the Windows launcher ${where} does not run: ${result.output}`,
+      fix: SETUP_FIX,
+    };
   return { ok: true, text: `the Windows launcher ${where} runs ${result.output}` };
 }
 
@@ -287,20 +299,33 @@ async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check>
     case "missing":
       return {
         ok: false,
-        text: `the ${MARKETPLACE} marketplace is not added. Run: ${MARKETPLACE_ADD_COMMAND}`,
+        text: `the ${MARKETPLACE} marketplace is not added`,
+        fix: MARKETPLACE_ADD_COMMAND,
       };
     case "unknown":
-      return { ok: false, text: `cannot check the marketplace source (${source.type})` };
+      return {
+        ok: false,
+        text: `cannot check the marketplace source (${source.type})`,
+        fix: `remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}), then add it again: ${MARKETPLACE_ADD_COMMAND}`,
+      };
     case "local":
       return existsSync(source.path)
         ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` }
-        : { ok: false, text: `the marketplace folder is missing: ${source.path}` };
+        : {
+            ok: false,
+            text: `the marketplace folder is missing: ${source.path}`,
+            fix: `put the folder back, or remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}) and add it again: ${MARKETPLACE_ADD_COMMAND}`,
+          };
     case "http": {
       const url = redactUrl(source.url);
       const result = await canReadHttp(source.url);
       return result.ok
         ? { ok: true, text: `can read the marketplace at ${url}` }
-        : { ok: false, text: `cannot read the marketplace at ${url}: ${result.detail}` };
+        : {
+            ok: false,
+            text: `cannot read the marketplace at ${url}: ${result.detail}`,
+            fix: `check this machine's network and that the URL opens, then run: ${COMMAND} doctor`,
+          };
     }
     case "git": {
       const failures: string[] = [];
@@ -320,11 +345,9 @@ async function checkMarketplaceAccess(paths: CliPaths, env: Env): Promise<Check>
       const advice = marketplaceAccessAdvice(cause, repo);
       return {
         ok: false,
-        text:
-          `cannot read the marketplace (${failures.join("; ")}). ` +
-          (advice === ""
-            ? "Check your git access: an SSH key, or a git credential helper."
-            : advice),
+        text: `cannot read the marketplace (${failures.join("; ")})`,
+        fix:
+          advice === "" ? "check your git access: an SSH key, or a git credential helper" : advice,
       };
     }
   }
@@ -344,14 +367,16 @@ function checkInstalledVersion(paths: CliPaths): Check | null {
   if (location === null) {
     return {
       ok: false,
-      text: `the ${MARKETPLACE} marketplace has no local copy. Run: ${MARKETPLACE_UPDATE_COMMAND}`,
+      text: `the ${MARKETPLACE} marketplace has no local copy`,
+      fix: MARKETPLACE_UPDATE_COMMAND,
     };
   }
   const { manifest, version: latest } = marketplaceCopyVersion(location, PLUGIN);
   if (latest === null) {
     return {
       ok: false,
-      text: `cannot read the version in ${tildify(manifest, paths.home)}. Run: ${MARKETPLACE_UPDATE_COMMAND}`,
+      text: `cannot read the version in ${tildify(manifest, paths.home)}`,
+      fix: MARKETPLACE_UPDATE_COMMAND,
     };
   }
   const installed = install.version;
@@ -362,6 +387,7 @@ function checkInstalledVersion(paths: CliPaths): Check | null {
     return {
       ok: false,
       text: `cannot compare the installed version ${installed} with the marketplace's ${latest}`,
+      fix: PLUGIN_UPDATE_COMMAND,
     };
   }
   if (order < 0 && isNewMajor(installed, latest)) {
@@ -376,10 +402,14 @@ function checkInstalledVersion(paths: CliPaths): Check | null {
   if (order < 0) {
     return {
       ok: false,
-      text: `installed ${installed ?? "(no version)"}, marketplace has ${latest}. Run: ${PLUGIN_UPDATE_COMMAND}`,
+      text: `installed ${installed ?? "(no version)"}, marketplace has ${latest}`,
+      fix: PLUGIN_UPDATE_COMMAND,
     };
   }
-  return { ok: true, text: `the installed version ${installed} is not behind the marketplace` };
+  return {
+    ok: true,
+    text: `the installed version ${installed} is up to date with the marketplace`,
+  };
 }
 
 /**
@@ -395,7 +425,11 @@ function checkAutoUpdate(paths: CliPaths): Check {
   try {
     state = autoUpdateState(paths);
   } catch (error) {
-    return { ok: false, text: `cannot read Claude Code's plugin auto-update: ${messageOf(error)}` };
+    return {
+      ok: false,
+      text: `cannot read Claude Code's plugin auto-update: ${messageOf(error)}`,
+      fix: `make ${settingsFile} valid JSON again, then run: ${COMMAND} doctor`,
+    };
   }
   switch (state) {
     case "off":
@@ -406,17 +440,20 @@ function checkAutoUpdate(paths: CliPaths): Check {
     case "ours":
       return {
         ok: false,
-        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, set by an older setup): ${risk}. Run: ${COMMAND} setup`,
+        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, set by an older setup): ${risk}`,
+        fix: SETUP_FIX,
       };
     case "yours":
       return {
         ok: false,
-        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, not set by ${COMMAND}): ${risk}. Remove that key from ${settingsFile} by hand, then run: ${COMMAND} setup`,
+        text: `Claude Code's own plugin auto-update is on (${key} is true in ${settingsFile}, not set by ${COMMAND}): ${risk}`,
+        fix: `remove that key from ${settingsFile} by hand, then run: ${COMMAND} setup`,
       };
     case "known":
       return {
         ok: false,
-        text: `Claude Code's own plugin auto-update is on (its own record, ${tildify(paths.knownMarketplacesFile, paths.home)}, says so): ${risk}. Run: ${COMMAND} setup`,
+        text: `Claude Code's own plugin auto-update is on (its own record, ${tildify(paths.knownMarketplacesFile, paths.home)}, says so): ${risk}`,
+        fix: SETUP_FIX,
       };
   }
 }
@@ -458,7 +495,7 @@ function checkUpdatesNotOff(
   if (forced) {
     return { ok: true, text: `plugin updates are on (${FORCE_PLUGIN_UPDATES_VAR} is set)` };
   }
-  if (blocking.length === 0) return { ok: true, text: "plugin updates are not switched off" };
+  if (blocking.length === 0) return { ok: true, text: "plugin updates are on" };
   const settingsPlace = `the env of ${tildify(paths.settingsFile, paths.home)}`;
   const named = blocking
     .map((v) => {
@@ -469,9 +506,8 @@ function checkUpdatesNotOff(
   const names = blocking.map((v) => v.name);
   return {
     ok: false,
-    text:
-      `plugin updates are switched off: ${named} ${names.length === 1 ? "is" : "are"} set, so the background update skips them too. ` +
-      `Set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${names.join(" and ")}.`,
+    text: `plugin updates are switched off: ${named} ${names.length === 1 ? "is" : "are"} set, so the background update skips them too`,
+    fix: `set ${FORCE_PLUGIN_UPDATES_VAR}=1 as well, or remove ${names.join(" and ")}`,
   };
 }
 
@@ -537,7 +573,8 @@ function checkSelfUpdate(paths: CliPaths): Check[] {
       case "failed":
         checks.push({
           ok: false,
-          text: `background update: the last check, ${last.at}, failed: ${last.detail}. The log: ${log}. To try now: ${COMMAND} update`,
+          text: `background update: the last check, ${last.at}, failed: ${last.detail}. The log: ${log}`,
+          fix: `${COMMAND} update`,
         });
         break;
     }
@@ -564,7 +601,8 @@ function checkNameClash(settings: Record<string, unknown> | null): Check {
     ? { ok: true, text: `no other enabled plugin is named ${PLUGIN}` }
     : {
         ok: false,
-        text: `another plugin named ${PLUGIN} is enabled: ${clashes.join(", ")}. Disable it.`,
+        text: `another plugin named ${PLUGIN} is enabled: ${clashes.join(", ")}`,
+        fix: clashes.map((id) => `claude plugin disable ${id}`).join(", then "),
       };
 }
 
@@ -606,7 +644,8 @@ function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPath
     if (!enabled) return null;
     return {
       ok: false,
-      text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall ${OLD_PLUGIN_ID}`,
+      text: `the old plugin ${OLD_PLUGIN_ID} is still enabled: two copies of the same hooks would run`,
+      fix: `claude plugin uninstall ${OLD_PLUGIN_ID}`,
     };
   }
   const short = (path: string) => tildify(path, paths.home);
@@ -627,12 +666,12 @@ function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPath
   if (left.length === 0) return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
   const canRun = existsSync(launcher) && isExecutable(launcher) && run([launcher, "version"]).ok;
-  const steps = canRun
-    ? `Run \`${OLD_NAME} restore\` first, then \`${then}.`
-    : `Its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}.`;
   return {
     ok: false,
-    text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}. ${steps}`,
+    text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
+    fix: canRun
+      ? `run \`${OLD_NAME} restore\` first, then \`${then}`
+      : `its launcher cannot run, so remove by hand ${short(launcher)} and "${OLD_NAME}" under extraKnownMarketplaces in ${short(paths.settingsFile)}; then run \`${then}`,
   };
 }
 
@@ -656,7 +695,8 @@ function checkInstructions(paths: CliPaths, source: string): Check {
   if (!copyInstalled(where)) {
     return {
       ok: false,
-      text: `the instructions are not installed in ${copy}. Run: cc-smart-dev-kit setup`,
+      text: `the instructions are not installed in ${copy}`,
+      fix: SETUP_FIX,
     };
   }
   const why = copyDifferences(where);
@@ -666,14 +706,16 @@ function checkInstructions(paths: CliPaths, source: string): Check {
   if (why.length > 0) {
     return {
       ok: false,
-      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")}). Run: cc-smart-dev-kit setup`,
+      text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")})`,
+      fix: SETUP_FIX,
     };
   }
   const text = existsSync(where.claudeMd) ? readFileSync(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
-      text: `${claudeMd} does not import the instructions (its cc-smart-dev-kit block is missing or changed). Run: cc-smart-dev-kit setup`,
+      text: `${claudeMd} does not import the instructions (its ${COMMAND} block is missing or changed)`,
+      fix: SETUP_FIX,
     };
   }
   return {
@@ -775,7 +817,8 @@ function checkProjectImports(paths: CliPaths, cwd: string): Check | null {
   }
   return {
     ok: false,
-    text: `${list}, which is missing: it loads nothing. Run: cc-smart-dev-kit setup`,
+    text: `${list}, which is missing: it loads nothing`,
+    fix: SETUP_FIX,
   };
 }
 
@@ -822,7 +865,8 @@ function claudeMemStartBlocksCheck(
   if (unset.length > 0) {
     return {
       ok: false,
-      text: `${base}. Together they overflow Claude Code's start context in about one start in six. Run: ${COMMAND} setup`,
+      text: `${base}. Together they overflow Claude Code's start context in about one start in six`,
+      fix: SETUP_FIX,
     };
   }
   // Both off, or one left on by the person: their machine, their call. Information only.
@@ -858,7 +902,8 @@ function claudeMemTodoToolsCheck(
   if (!current.found) {
     return {
       ok: false,
-      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a session has no to-do list while claude-mem's work state is off. Run: ${COMMAND} setup`,
+      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a session has no to-do list while claude-mem's work state is off`,
+      fix: SETUP_FIX,
     };
   }
   // A value the person set is theirs: information, never a failure.
@@ -973,8 +1018,9 @@ export function checkUserNotifyHook(paths: CliPaths): Check {
     ok: false,
     text:
       state === "elsewhere"
-        ? `agent view's notification hook in ${where} does not run ${USER_NOTIFY_COMMAND}, so agent view's alerts never reach the notifier. Run: ${COMMAND} setup`
-        : `agent view's notification hook is missing from ${where}, so agent view's alerts never arrive. Run: ${COMMAND} setup`,
+        ? `agent view's notification hook in ${where} does not run ${USER_NOTIFY_COMMAND}, so agent view's alerts never reach the notifier`
+        : `agent view's notification hook is missing from ${where}, so agent view's alerts never arrive`,
+    fix: SETUP_FIX,
   };
 }
 
@@ -1054,7 +1100,11 @@ function checkBun(bun: DoctorBun, paths: CliPaths): Check {
   const tooOld = bunTooOld(bun.version, where);
   return tooOld === null
     ? { ok: true, text: `Bun ${bun.version} at ${where} (cc-smart-dev-kit needs ≥ ${MIN_BUN})` }
-    : { ok: false, text: `${tooOld} Upgrade this Bun, then run: ${COMMAND} doctor` };
+    : {
+        ok: false,
+        text: tooOld.replace(/\.$/, ""),
+        fix: `upgrade this Bun (bun upgrade), then run: ${COMMAND} doctor`,
+      };
 }
 
 /** The portal's line: what runs, its address, and what to do when it cannot. */
@@ -1070,7 +1120,8 @@ export function checkPortal(state: PortalState, port: number = DEFAULT_PORTAL_PO
   if (state.kind === "other") {
     return {
       ok: false,
-      text: `Another program holds 127.0.0.1:${port}, so the portal cannot start. Stop that program, then run: ${COMMAND} portal`,
+      text: `another program holds 127.0.0.1:${port}, so the portal cannot start`,
+      fix: `stop that program, then run: ${COMMAND} portal`,
     };
   }
   const running = `the portal is running at ${address} (version ${state.version}, process ${state.pid})`;
@@ -1120,75 +1171,318 @@ export interface DoctorOptions {
   live: LiveDeps | null;
 }
 
+/** What `doctor` runs for one group of its report. */
+interface GroupRun {
+  group: CheckGroup;
+  run: () => Promise<Check[]>;
+}
+
 /**
- * Every check, in order, and nothing printed. `runDoctor` prints them; the portal's Machine
- * page shows the same list, so the two can never disagree about a machine.
+ * Every group of checks, in the order the report prints them, each run only when asked: so
+ * `runDoctor` can say which group it is checking while that group runs (UX-4), and print each
+ * group as soon as it is done.
  *
  * On a Bun older than `MIN_BUN` the gateway checks are skipped: they send the backend key,
  * and that Bun would send it through a proxy from the environment.
  */
-export async function doctorChecks(
+function doctorGroups(
   paths: CliPaths,
   env: Env,
   { browser, bun, gateway, local, mcp, portal, project, live }: DoctorOptions,
-): Promise<Check[]> {
+): GroupRun[] {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
-  const mcpDeps = mcp ?? null;
-  const skipped: Check = {
-    ok: true,
-    info: true,
-    text: "gateway: not checked on this Bun (its checks send the backend key)",
-  };
-  const gitBash = checkGitBash(gateway.machine.platform, env, gateway.machine);
-  const checks = [
-    runtime,
-    checkPlugin(paths),
-    checkInstalledVersion(paths),
-    ...(portal == null ? [] : [checkPortal(await portal())]),
-    ...checkLauncher(paths, gateway.machine.platform),
-    gitBash,
-    checkInstructions(paths, local.instructionsSource),
-    checkProjectImports(paths, local.cwd),
-    await checkMarketplaceAccess(paths, env),
-    checkAutoUpdate(paths),
-    checkRetryWatchdog(paths),
-    checkUpdatesNotOff(settings, env, paths),
-    ...checkSelfUpdate(paths),
-    checkNameClash(settings),
-    checkOldPlugin(settings, paths),
-    ...companionChecks(paths),
-    ...claudeMemChecks(paths),
-    ...(mcpDeps === null ? [] : mcpChecks(paths, mcpDeps, env, local.cwd)),
-    ...(browser == null ? [] : browserChecks(paths, browser)),
-    warpCheck(gateway.machine, paths),
-    ...checkTmux(paths, env, gateway.machine),
-    checkUserNotifyHook(paths),
-    ...checkDesktopExtras(gateway.machine.platform, env, gateway.machine),
-    ...(project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
-    ...(runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [skipped]),
-    ...(await omnirouteCheck(paths, env, gateway)),
-    live === null ? checkLiveRecord(paths) : null,
-    ...(live === null ? [] : runLiveCheck(paths, env, live)),
-  ].filter((check): check is Check => check !== null);
-  return checks;
-}
-
-/** One check's line, as `doctor` prints it and the portal's page shows its mark. */
-export function checkLine(check: Check): string {
-  return `${check.warn === true ? "!" : check.info === true ? "·" : check.ok ? "✓" : "✗"} ${check.text}`;
+  const machine = gateway.machine;
+  const present = (checks: (Check | null)[]) =>
+    checks.filter((check): check is Check => check !== null);
+  const groups: { group: CheckGroup; run: () => Check[] | Promise<Check[]> }[] = [
+    {
+      group: "plugin",
+      run: async () =>
+        present([
+          runtime,
+          checkPlugin(paths),
+          checkInstalledVersion(paths),
+          ...(portal == null ? [] : [checkPortal(await portal())]),
+          ...checkLauncher(paths, machine.platform),
+          checkGitBash(machine.platform, env, machine),
+          checkInstructions(paths, local.instructionsSource),
+          checkNameClash(settings),
+          checkOldPlugin(settings, paths),
+        ]),
+    },
+    {
+      group: "updates",
+      run: async () => [
+        await checkMarketplaceAccess(paths, env),
+        checkAutoUpdate(paths),
+        checkUpdatesNotOff(settings, env, paths),
+        ...checkSelfUpdate(paths),
+      ],
+    },
+    {
+      group: "companions",
+      run: () => [...companionChecks(paths), ...claudeMemChecks(paths), warpCheck(machine, paths)],
+    },
+    {
+      group: "mcp",
+      run: () => (mcp == null ? [] : mcpChecks(paths, mcp, env, local.cwd)),
+    },
+    { group: "browser", run: () => (browser == null ? [] : browserChecks(paths, browser)) },
+    {
+      group: "alerts",
+      run: () => [
+        checkUserNotifyHook(paths),
+        ...checkTmux(paths, env, machine),
+        ...checkDesktopExtras(machine.platform, env, machine),
+        checkRetryWatchdog(paths),
+      ],
+    },
+    {
+      group: "project",
+      run: () =>
+        present([
+          checkProjectImports(paths, local.cwd),
+          ...(project === null
+            ? []
+            : projectChecks(project.cwd, env, paths, project.pluginHooksFile)),
+        ]),
+    },
+    {
+      group: "gateway",
+      run: async () => [
+        ...(runtime.ok
+          ? await gatewayChecks({ paths, ...gateway })
+          : [
+              {
+                ok: true,
+                info: true,
+                text: "gateway: not checked on this Bun (its checks send the backend key)",
+              } satisfies Check,
+            ]),
+        ...(await omnirouteCheck(paths, env, gateway)),
+      ],
+    },
+    {
+      group: "live",
+      run: () =>
+        live === null ? present([checkLiveRecord(paths)]) : runLiveCheck(paths, env, live),
+    },
+  ];
+  return groups.map(({ group, run }) => ({
+    group,
+    run: async () => (await run()).map((check) => ({ ...check, group })),
+  }));
 }
 
 /**
- * Prints one ✓ or ✗ line per check, `·` for information (the gateway, when it was never
- * set up, is optional) and `!` for a warning. Exit code 1 when any check fails.
+ * Every check, in order, and nothing printed, each with its `group`. `runDoctor` prints them;
+ * the portal's Machine page shows the same list, so the two can never disagree about a machine.
+ */
+export async function doctorChecks(
+  paths: CliPaths,
+  env: Env,
+  options: DoctorOptions,
+): Promise<Check[]> {
+  const checks: Check[] = [];
+  for (const { run } of doctorGroups(paths, env, options)) checks.push(...(await run()));
+  return checks;
+}
+
+/** A check's status as a mark of `out.ts`. */
+function markOf(check: Check): Mark {
+  return checkStatus(check);
+}
+
+/** A check's mark as the portal and `checkLine` show it: always the Unicode one. */
+export function checkMark(check: Check): string {
+  return markText(UNICODE_TERMINAL, markOf(check));
+}
+
+/** The terminal the portal's words and `checkLine` are made for: Unicode, no colour, no wrap. */
+const UNICODE_TERMINAL: Terminal = {
+  color: false,
+  rich: false,
+  unicode: true,
+  width: Number.POSITIVE_INFINITY,
+};
+
+/** One check on one line, its fix after it: the portal's list, and a test's way to read one. */
+export function checkLine(check: Check): string {
+  const fix = check.fix === undefined ? "" : ` ${FIX_LABEL} ${check.fix}`;
+  return `${checkMark(check)} ${check.text}${fix}`;
+}
+
+/** How many checks of each status a list holds. */
+export type CheckCounts = Record<CheckStatus, number>;
+
+export function countChecks(checks: readonly Check[]): CheckCounts {
+  const counts: CheckCounts = { fail: 0, info: 0, ok: 0, warn: 0 };
+  for (const check of checks) counts[checkStatus(check)] += 1;
+  return counts;
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** What a group holds, in words: "1 to fix, 4 passed, 1 note". */
+export function groupSummary(counts: CheckCounts): string {
+  return [
+    counts.fail > 0 ? `${counts.fail} to fix` : null,
+    counts.warn > 0 ? plural(counts.warn, "warning", "warnings") : null,
+    counts.ok > 0 ? `${counts.ok} passed` : null,
+    counts.info > 0 ? plural(counts.info, "note", "notes") : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(", ");
+}
+
+/** A group's own mark: its worst line. A group of notes only is a note. */
+function groupMark(counts: CheckCounts): Mark {
+  if (counts.fail > 0) return "fail";
+  if (counts.warn > 0) return "warn";
+  return counts.ok > 0 ? "ok" : "info";
+}
+
+/**
+ * The lines a group shows under its own line. A group with a failure or a warning opens: every
+ * line, so the cause is read with what passed around it. A group that passed folds: only its
+ * notes, which say something a person may act on. `--verbose` opens every group.
+ */
+function shownLines(checks: readonly Check[], counts: CheckCounts, verbose: boolean): Check[] {
+  const open = verbose || counts.fail > 0 || counts.warn > 0;
+  return open ? [...checks] : checks.filter((check) => checkStatus(check) === "info");
+}
+
+/** The report's last line: what the whole run found, in words. */
+export function doctorVerdict(counts: CheckCounts): { mark: Mark; text: string } {
+  if (counts.fail > 0) {
+    const warnings = counts.warn > 0 ? `, ${plural(counts.warn, "warning", "warnings")}` : "";
+    return {
+      mark: "fail",
+      text: `${counts.fail} to fix, ${counts.ok} passed${warnings}. Run each ${FIX_LABEL} line above, then: ${COMMAND} doctor`,
+    };
+  }
+  if (counts.warn > 0) {
+    return {
+      mark: "warn",
+      text: `Nothing to fix: ${counts.ok} passed, and ${plural(counts.warn, "warning", "warnings")} to read above.`,
+    };
+  }
+  return { mark: "ok", text: `Everything works: ${counts.ok} checks passed.` };
+}
+
+/** What `doctor --json` prints. `format` goes up when a field changes meaning. */
+export interface DoctorReport {
+  format: 1;
+  version: string;
+  ok: boolean;
+  counts: CheckCounts;
+  groups: {
+    id: CheckGroup;
+    title: string;
+    status: CheckStatus;
+    checks: { status: CheckStatus; text: string; fix?: string }[];
+  }[];
+}
+
+/** The JSON report of a run, for a program: the installers read it (UX-19). */
+export function doctorReport(
+  results: readonly { group: CheckGroup; checks: Check[] }[],
+): DoctorReport {
+  const all = results.flatMap((result) => result.checks);
+  const counts = countChecks(all);
+  return {
+    format: 1,
+    version: VERSION,
+    ok: counts.fail === 0,
+    counts,
+    groups: results
+      .filter((result) => result.checks.length > 0)
+      .map((result) => ({
+        id: result.group,
+        title: groupTitle(result.group),
+        status: checkStatus(worst(result.checks)),
+        checks: result.checks.map((check) => ({
+          status: checkStatus(check),
+          text: check.text,
+          ...(check.fix === undefined ? {} : { fix: check.fix }),
+        })),
+      })),
+  };
+}
+
+/** The check that says most about a group: a failure, then a warning, then a pass, then a note. */
+function worst(checks: readonly Check[]): Check {
+  const order: CheckStatus[] = ["fail", "warn", "ok", "info"];
+  return [...checks].sort(
+    (a, b) => order.indexOf(checkStatus(a)) - order.indexOf(checkStatus(b)),
+  )[0] as Check;
+}
+
+/** The options `doctor` takes; `help.ts`'s doctor text explains each. */
+export const DOCTOR_FLAGS: readonly string[] = ["--json", "--live", "--verbose"];
+
+/** How `doctor` was asked to print. */
+export interface DoctorPrint {
+  /** Print the JSON report only (`--json`). */
+  json: boolean;
+  /** Open every group (`--verbose`). */
+  verbose: boolean;
+}
+
+/**
+ * Runs every check and prints the report: a heading, one line per group — a passing group
+ * folds to that line and its notes — each failure with its `Fix:` line, then one verdict line.
+ * Each group prints as soon as it is done, and a rich terminal shows which group is running
+ * (UX-4, UX-5). `--json` prints the report as JSON and nothing else. Exit code 1 when any check
+ * fails.
  */
 export async function runDoctor(
   paths: CliPaths,
   env: Env,
   options: DoctorOptions,
+  out: Out,
+  print: DoctorPrint = { json: false, verbose: false },
 ): Promise<number> {
-  const checks = await doctorChecks(paths, env, options);
-  for (const check of checks) console.log(checkLine(check));
-  return checks.every((check) => check.ok) ? 0 : 1;
+  const titleWidth = Math.max(...CHECK_GROUPS.map((entry) => entry.title.length));
+  const results: { group: CheckGroup; checks: Check[] }[] = [];
+  let folded = 0;
+  if (!print.json) {
+    out.heading(`${COMMAND} ${VERSION}: checking this machine`);
+    out.blank();
+  }
+  for (const { group, run } of doctorGroups(paths, env, options)) {
+    const checks = await out.progress(`${groupTitle(group)}…`, run);
+    results.push({ group, checks });
+    if (print.json || checks.length === 0) continue;
+    const counts = countChecks(checks);
+    const shown = shownLines(checks, counts, print.verbose);
+    folded += checks.length - shown.length;
+    out.group(
+      {
+        mark: groupMark(counts),
+        summary: groupSummary(counts),
+        title: groupTitle(group),
+        titleWidth,
+      },
+      shown.map((check) => ({
+        fix: check.fix,
+        mark: markOf(check),
+        text: check.text,
+      })),
+    );
+  }
+  const counts = countChecks(results.flatMap((result) => result.checks));
+  if (print.json) {
+    out.json(doctorReport(results));
+  } else {
+    const verdict = doctorVerdict(counts);
+    out.blank();
+    out.verdict(verdict.mark, verdict.text);
+    if (folded > 0)
+      out.say(`To see the ${folded} lines that passed too: ${COMMAND} doctor --verbose`);
+  }
+  return counts.fail === 0 ? 0 : 1;
 }

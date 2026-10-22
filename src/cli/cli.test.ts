@@ -31,10 +31,12 @@ import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { workflowDefaults } from "../workflow/schema";
-import { ccSmartDevKitImports, runDoctor } from "./doctor";
+import { ccSmartDevKitImports, type DoctorReport, runDoctor } from "./doctor";
 import { COMMAND_HELP, HELP_COMMAND } from "./help";
 import { cliPaths } from "./paths";
 import { type SetupOptions as RunSetupOptions, runSetup } from "./setup";
+import { createOut, textSink } from "./ui/out";
+import { detectTerminal } from "./ui/terminal";
 
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
@@ -914,6 +916,22 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
   });
 });
 
+/**
+ * doctor's lines that `keep` picks, without their group's indent, each followed by the `Fix:`
+ * line under it: what a test of a few lines compares.
+ */
+function doctorLines(stdout: string, keep: (line: string) => boolean): string[] {
+  const lines = stdout.split("\n");
+  const picked: string[] = [];
+  for (const [index, line] of lines.entries()) {
+    if (line.trimStart().startsWith("Fix: ") || !keep(line)) continue;
+    picked.push(line.trim());
+    const next = lines[index + 1] ?? "";
+    if (next.trimStart().startsWith("Fix: ")) picked.push(next.trim());
+  }
+  return picked;
+}
+
 describe("cc-smart-dev-kit doctor", () => {
   test("all green after setup, through the launcher; git reads the marketplace over SSH", () => {
     const { home, run, gitCalls } = setup();
@@ -921,50 +939,74 @@ describe("cc-smart-dev-kit doctor", () => {
     // Setup asked git about the project it ran in (none: the fake knows no repo).
     const afterSetup = gitCalls().length;
     const result = run(["doctor"]);
+    // A passing machine: each group folds to its one line, and keeps only its notes (`·`).
+    // Plain output (a pipe), so no colour, no progress line and no wrapping.
     expect(result.stdout).toBe(
       [
-        // The bun running the tests: the preload stops one older than 1.4.3.
-        `✓ Bun ${Bun.version} at ${process.execPath} (cc-smart-dev-kit needs ≥ 1.4.3)`,
-        `✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
-        `✓ the installed version ${VERSION} is not behind the marketplace`,
-        "· the portal is not running; it starts with the next Claude Code session, or now: cc-smart-dev-kit portal",
-        `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}`,
-        INSTRUCTIONS_OK,
-        "✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git",
-        "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
-        "· retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
-        "✓ plugin updates are not switched off",
+        `cc-smart-dev-kit ${VERSION}: checking this machine`,
+        "",
+        "✓ The plugin         6 passed, 1 note",
+        // The portal starts with the next session: information, not a failure.
+        "  · the portal is not running; it starts with the next Claude Code session, or now: cc-smart-dev-kit portal",
+        "✓ Updates            3 passed, 1 note",
         // The self-update has not checked yet: information, not a failure.
-        "· background update: no check yet (a new Claude session checks, at most once an hour)",
-        "✓ no other enabled plugin is named cc-smart-dev-kit",
-        "✓ claude-mem@thedotmack 13.39.0 is installed and on",
-        "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
-        // D23: claude-mem's two start blocks off, and Claude Code's own task tools on.
-        "✓ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)",
-        '✓ Claude Code\'s task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ~/.claude/settings.json',
-        ...MCP_DOCTOR_OK,
+        "  · background update: no check yet (a new Claude session checks, at most once an hour)",
+        "✓ Companion plugins  4 passed, 1 note",
+        // Warp is optional.
+        "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
+        "✓ MCP servers        2 passed, 1 note",
         // Tavily is optional: without a key its server is skipped, never a failure.
-        tavilyDoctorSkipped(home),
-        // The browser's own lines. This world's Chrome is the path it claims (host.exists is
-        // the whole truth there), and the profile, the extension and the token are its own.
-        `✓ Google Chrome is at ${CHROME_ON_PATH}`,
-        `✓ the Chrome profile "claude-code" is at ${join(browserChromeDir(home), "claude-code")} (found by its folder)`,
-        "✓ the Playwright extension 0.4.0 is installed in that profile",
-        "✓ no other extension is in that profile",
-        "✓ that profile lets the extension open file:// pages",
-        `✓ the browser token is set (${join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token")}, mode 600)`,
-        // Warp is optional too.
-        "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
-        `✓ agent view's notification hook is set in ~/.claude/settings.json: "$HOME/.local/bin/cc-smart-dev-kit" hook notify`,
+        `  ${tavilyDoctorSkipped(home)}`,
+        "✓ Browser            6 passed",
+        "✓ Alerts and limits  1 passed, 1 note",
+        "  · retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
         // The gateway is optional: never set up is information, not a failure.
-        "· gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
+        "· Gateway            1 note",
+        "  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
+        "",
+        "✓ Everything works: 22 checks passed.",
+        "To see the 22 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
     );
     expect(result.exitCode).toBe(0);
+    const doctorGitCalls = gitCalls().slice(afterSetup);
+    // `--verbose` opens every group: each line that passed, under its group's line.
+    const verbose = run(["doctor", "--verbose"]).stdout;
+    for (const line of [
+      // The bun running the tests: the preload stops one older than 1.4.3.
+      `✓ Bun ${Bun.version} at ${process.execPath} (cc-smart-dev-kit needs ≥ 1.4.3)`,
+      `✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
+      `✓ the installed version ${VERSION} is up to date with the marketplace`,
+      `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}`,
+      INSTRUCTIONS_OK,
+      "✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git",
+      "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
+      "✓ plugin updates are on",
+      "✓ no other enabled plugin is named cc-smart-dev-kit",
+      "✓ claude-mem@thedotmack 13.39.0 is installed and on",
+      "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
+      // D23: claude-mem's two start blocks off, and Claude Code's own task tools on.
+      "✓ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)",
+      '✓ Claude Code\'s task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ~/.claude/settings.json',
+      ...MCP_DOCTOR_OK,
+      // The browser's own lines. This world's Chrome is the path it claims (host.exists is
+      // the whole truth there), and the profile, the extension and the token are its own.
+      `✓ Google Chrome is at ${CHROME_ON_PATH}`,
+      `✓ the Chrome profile "claude-code" is at ${join(browserChromeDir(home), "claude-code")} (found by its folder)`,
+      "✓ the Playwright extension 0.4.0 is installed in that profile",
+      "✓ no other extension is in that profile",
+      "✓ that profile lets the extension open file:// pages",
+      `✓ the browser token is set (${join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token")}, mode 600)`,
+      `✓ agent view's notification hook is set in ~/.claude/settings.json: "$HOME/.local/bin/cc-smart-dev-kit" hook notify`,
+    ]) {
+      expect(verbose).toContain(`\n  ${line}\n`);
+    }
+    expect(verbose).not.toContain("--verbose");
+    expect(verbose).toEndWith("\n✓ Everything works: 22 checks passed.\n");
     // git is asked for the user's own ssh command, then told never to ask for a password.
     // Then which project the folder is in (this fake git says: none).
-    expect(gitCalls().slice(afterSetup)).toBe(
+    expect(doctorGitCalls).toBe(
       [
         "config --get core.sshCommand | prompt=0 | ssh=",
         "ls-remote git@github.com:example-org/cc-smart-dev-kit.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
@@ -972,6 +1014,50 @@ describe("cc-smart-dev-kit doctor", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("--json: the whole report for a program, every check with its group, a failure with its fix", () => {
+    const { run } = setup();
+    // No setup: no launcher and no instructions, so the report holds failures.
+    const result = run(["doctor", "--json"]);
+    expect(result.exitCode).toBe(1);
+    // Nothing but the JSON: no heading, no verdict, no progress line.
+    expect(result.stdout.startsWith("{\n")).toBe(true);
+    const report = JSON.parse(result.stdout) as DoctorReport;
+    expect(report.format).toBe(1);
+    expect(report.version).toBe(VERSION);
+    expect(report.ok).toBe(false);
+    expect(report.groups.map((group) => group.id)).toEqual([
+      "plugin",
+      "updates",
+      "companions",
+      "mcp",
+      "browser",
+      "alerts",
+      "gateway",
+    ]);
+    const plugin = report.groups[0];
+    expect(plugin?.title).toBe("The plugin");
+    expect(plugin?.status).toBe("fail");
+    expect(plugin?.checks.find((check) => check.text.startsWith("no launcher"))).toEqual({
+      fix: "cc-smart-dev-kit setup",
+      status: "fail",
+      text: "no launcher at ~/.local/bin/cc-smart-dev-kit",
+    });
+    // Every failure carries its fix; the counts are the checks' own.
+    const all = report.groups.flatMap((group) => group.checks);
+    for (const check of all.filter((one) => one.status === "fail")) {
+      expect(check.fix).toBeString();
+    }
+    expect(report.counts.fail).toBe(all.filter((one) => one.status === "fail").length);
+    expect(report.counts.ok + report.counts.fail + report.counts.warn + report.counts.info).toBe(
+      all.length,
+    );
+    // After setup: the same shape, and ok.
+    run(["setup"]);
+    const fine = run(["doctor", "--json"]);
+    expect(fine.exitCode).toBe(0);
+    expect((JSON.parse(fine.stdout) as DoctorReport).ok).toBe(true);
   });
 
   test("tmux: the managed passthrough line, and the fix when the running server does not pass alerts through", () => {
@@ -984,7 +1070,7 @@ describe("cc-smart-dev-kit doctor", () => {
       );
     writeFileSync(join(fakeBin, "tmux"), tmuxFake("allow-passthrough off"));
     chmodSync(join(fakeBin, "tmux"), 0o755);
-    const result = run(["doctor"], { TMUX: "/tmp/tmux-1001/default,1234,0" });
+    const result = run(["doctor", "--verbose"], { TMUX: "/tmp/tmux-1001/default,1234,0" });
     expect(result.exitCode).toBe(0); // information, never a failure
     expect(result.stdout).toContain(
       '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup\n',
@@ -996,16 +1082,18 @@ describe("cc-smart-dev-kit doctor", () => {
     // The line in place, and the running server on `all`: nothing about tmux at all.
     writeFileSync(join(home, ".tmux.conf"), "set -g allow-passthrough all\n");
     writeFileSync(join(fakeBin, "tmux"), tmuxFake("all"));
-    expect(run(["doctor"], { TMUX: "/tmp/tmux-1001/default,1234,0" }).stdout).not.toContain("tmux");
+    expect(
+      run(["doctor", "--verbose"], { TMUX: "/tmp/tmux-1001/default,1234,0" }).stdout,
+    ).not.toContain("tmux");
 
     // Outside tmux the running server is not read: only the config file is checked.
     writeFileSync(join(home, ".tmux.conf"), "");
     expect(
-      run(["doctor"], { TMUX: "" })
+      run(["doctor", "--verbose"], { TMUX: "" })
         .stdout.split("\n")
         .filter((line) => line.includes("tmux")),
     ).toEqual([
-      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup',
+      '  · ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup',
     ]);
   });
 
@@ -1013,9 +1101,9 @@ describe("cc-smart-dev-kit doctor", () => {
     const { fakeBin, run } = setup();
     run(["setup"]);
     // No DISPLAY: an SSH session or a headless machine — nothing about the desktop at all.
-    expect(run(["doctor"]).stdout).not.toContain("xdotool");
+    expect(run(["doctor", "--verbose"]).stdout).not.toContain("xdotool");
     // A desktop with none of the extras' tools: one line each, information, never a failure.
-    const desktop = run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
+    const desktop = run(["doctor", "--verbose"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
     expect(desktop.exitCode).toBe(0);
     expect(desktop.stdout).toContain(
       "· gdbus is not installed (glib's libglib2.0-bin provides it): a desktop alert has no minute on screen, and two alerts of one session can stay there together\n",
@@ -1027,15 +1115,15 @@ describe("cc-smart-dev-kit doctor", () => {
       "· xfconf-query is not installed: an alert's sound plays while XFCE's Do Not Disturb is on\n",
     );
     // Another desktop (or none named): the XFCE setting is not this machine's to miss.
-    expect(run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "GNOME" }).stdout).not.toContain(
-      "xfconf-query",
-    );
+    expect(
+      run(["doctor", "--verbose"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "GNOME" }).stdout,
+    ).not.toContain("xfconf-query");
     // The tools installed: nothing about them.
     for (const tool of ["gdbus", "xdotool", "xfconf-query"]) {
       writeFileSync(join(fakeBin, tool), "#!/bin/sh\nexit 0\n");
       chmodSync(join(fakeBin, tool), 0o755);
     }
-    const complete = run(["doctor"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
+    const complete = run(["doctor", "--verbose"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
     expect(complete.stdout).not.toContain("gdbus");
     expect(complete.stdout).not.toContain("xdotool");
     expect(complete.stdout).not.toContain("xfconf-query");
@@ -1094,10 +1182,14 @@ describe("cc-smart-dev-kit doctor", () => {
     writeFileSync(join(omniroute, "bin", "omniroute.mjs"), "// the program\n");
     // doctor's Warp check reads nothing of the host this test runs on.
     const fakeMachine = noHostMachine(home, null);
-    const out: string[] = [];
-    const log = spyOn(console, "log").mockImplementation((...parts: unknown[]) => {
-      out.push(parts.join(" "));
-    });
+    // A pipe's terminal: plain words, so the text below is exactly what a log would hold.
+    let printed = "";
+    const out = createOut(
+      detectTerminal({ env: {}, isTTY: false, platform: "linux" }),
+      textSink((text) => {
+        printed += text;
+      }),
+    );
     let exitCode: number;
     try {
       exitCode = await runDoctor(
@@ -1127,31 +1219,48 @@ describe("cc-smart-dev-kit doctor", () => {
           project: null,
           live: null,
         },
+        out,
       );
     } finally {
-      log.mockRestore();
       fake.stop(true);
     }
-    expect(out).toEqual([
-      "✗ cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun). Upgrade this Bun, then run: cc-smart-dev-kit doctor",
-      `✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
-      `✓ the installed version ${VERSION} is not behind the marketplace`,
-      "✗ no launcher at ~/.local/bin/cc-smart-dev-kit. Run: cc-smart-dev-kit setup",
-      "✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/. Run: cc-smart-dev-kit setup",
-      "✓ the marketplace folder ~/marketplace exists",
-      "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
-      "· retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
-      "✓ plugin updates are not switched off",
-      "· background update: no check yet (a new Claude session checks, at most once an hour)",
-      "✓ no other enabled plugin is named cc-smart-dev-kit",
-      "✓ claude-mem@thedotmack 13.39.0 is installed and on",
-      "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
-      // No setup ran here: claude-mem's two start blocks are still on (D23).
-      "✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). Together they overflow Claude Code's start context in about one start in six. Run: cc-smart-dev-kit setup",
-      "· Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
-      "✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive. Run: cc-smart-dev-kit setup",
-      "· gateway: not checked on this Bun (its checks send the backend key)",
-    ]);
+    // A group with a failure opens: every line, each failure with its Fix: line under it. A
+    // group that passed folds to its line and its notes. Then the verdict, in words.
+    expect(printed).toBe(
+      [
+        `cc-smart-dev-kit ${VERSION}: checking this machine`,
+        "",
+        "✗ The plugin         3 to fix, 3 passed",
+        "  ✗ cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun)",
+        "    Fix: upgrade this Bun (bun upgrade), then run: cc-smart-dev-kit doctor",
+        `  ✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
+        `  ✓ the installed version ${VERSION} is up to date with the marketplace`,
+        "  ✗ no launcher at ~/.local/bin/cc-smart-dev-kit",
+        "    Fix: cc-smart-dev-kit setup",
+        "  ✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/",
+        "    Fix: cc-smart-dev-kit setup",
+        "  ✓ no other enabled plugin is named cc-smart-dev-kit",
+        "✓ Updates            3 passed, 1 note",
+        "  · background update: no check yet (a new Claude session checks, at most once an hour)",
+        "✗ Companion plugins  1 to fix, 2 passed, 1 note",
+        "  ✓ claude-mem@thedotmack 13.39.0 is installed and on",
+        "  ✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
+        // No setup ran here: claude-mem's two start blocks are still on (D23).
+        "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). Together they overflow Claude Code's start context in about one start in six",
+        "    Fix: cc-smart-dev-kit setup",
+        "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
+        "✗ Alerts and limits  1 to fix, 1 note",
+        "  ✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive",
+        "    Fix: cc-smart-dev-kit setup",
+        "  · retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
+        "· Gateway            1 note",
+        "  · gateway: not checked on this Bun (its checks send the backend key)",
+        "",
+        "✗ 5 to fix, 8 passed. Run each Fix: line above, then: cc-smart-dev-kit doctor",
+        "To see the 3 lines that passed too: cc-smart-dev-kit doctor --verbose",
+        "",
+      ].join("\n"),
+    );
     expect(exitCode).toBe(1);
     expect(seen).toEqual([]);
     expect(ran).toEqual([]);
@@ -1200,7 +1309,7 @@ describe("cc-smart-dev-kit doctor", () => {
     expect(setupResult.exitCode).toBe(0);
     // No `claude plugin …` step: the companions are there, and this world's claude is a fake.
     expect(setupResult.stdout).toContain("+ MCP server playwright registered for your user\n");
-    const result = run(["doctor"], host);
+    const result = run(["doctor", "--verbose"], host);
     expect(result.stdout).toContain(
       "· Warp is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)\n",
     );
@@ -1210,13 +1319,13 @@ describe("cc-smart-dev-kit doctor", () => {
   test("no access to the marketplace: ✗ naming both URLs tried, exit 1", () => {
     const { run, gitCalls } = setup({ gitOk: false });
     run(["setup"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
       "✗ cannot read the marketplace (" +
         "git@github.com:example-org/cc-smart-dev-kit.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403; " +
-        "https://github.com/example-org/cc-smart-dev-kit.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403). " +
-        "Check your git access: an SSH key, or a git credential helper.",
+        "https://github.com/example-org/cc-smart-dev-kit.git: fatal: unable to access 'https://***@git.example.com/r.git/': 403)\n" +
+        "    Fix: check your git access: an SSH key, or a git credential helper\n",
     );
     expect(gitCalls().match(/ls-remote/g)).toHaveLength(2);
   });
@@ -1230,13 +1339,13 @@ describe("cc-smart-dev-kit doctor", () => {
         "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
     });
     run(["setup"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
       "✗ cannot read the marketplace (" +
         "git@github.com:example-org/cc-smart-dev-kit.git: fatal: Could not read from remote repository.; " +
-        "https://github.com/example-org/cc-smart-dev-kit.git: fatal: Could not read from remote repository.). " +
-        "SSH to GitHub was refused: add the marketplace over HTTPS instead. " +
+        "https://github.com/example-org/cc-smart-dev-kit.git: fatal: Could not read from remote repository.)\n" +
+        "    Fix: SSH to GitHub was refused: add the marketplace over HTTPS instead. " +
         "Run: claude plugin marketplace add https://github.com/example-org/cc-smart-dev-kit.git",
     );
   });
@@ -1251,13 +1360,13 @@ describe("cc-smart-dev-kit doctor", () => {
         "Please make sure you have the correct access rights\nand the repository exists.",
     });
     run(["setup"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
       "✗ cannot read the marketplace (" +
         "git@github.com:example-org/cc-smart-dev-kit.git: and the repository exists.; " +
-        "https://github.com/example-org/cc-smart-dev-kit.git: and the repository exists.). " +
-        "The GitHub account cannot read the repository: ask the repository's owner for read " +
+        "https://github.com/example-org/cc-smart-dev-kit.git: and the repository exists.)\n" +
+        "    Fix: The GitHub account cannot read the repository: ask the repository's owner for read " +
         "access, then accept the invitation at " +
         "https://github.com/example-org/cc-smart-dev-kit/invitations.",
     );
@@ -1268,11 +1377,11 @@ describe("cc-smart-dev-kit doctor", () => {
       source: "git",
       url: "https://bot:secret-token@git.example.com/tools.git?x=1",
     };
-    const ok = setup({ source }).run(["doctor"]);
+    const ok = setup({ source }).run(["doctor", "--verbose"]);
     expect(ok.stdout).toContain(
       "✓ can read the marketplace at https://***@git.example.com/tools.git?***\n",
     );
-    const failed = setup({ source, gitOk: false }).run(["doctor"]);
+    const failed = setup({ source, gitOk: false }).run(["doctor", "--verbose"]);
     expect(failed.stdout).toContain(
       "✗ cannot read the marketplace (https://***@git.example.com/tools.git?***: fatal:",
     );
@@ -1282,9 +1391,9 @@ describe("cc-smart-dev-kit doctor", () => {
   test("the marketplace is not added: ✗ with the add command", () => {
     const { configDir, run } = setup();
     writeFileSync(join(configDir, "plugins", "known_marketplaces.json"), "{}");
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.stdout).toContain(
-      `✗ the cc-smart-dev-kit marketplace is not added. Run: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
+      `✗ the cc-smart-dev-kit marketplace is not added\n    Fix: claude plugin marketplace add ${MARKETPLACE_SOURCE}\n`,
     );
   });
 
@@ -1293,17 +1402,17 @@ describe("cc-smart-dev-kit doctor", () => {
     const newerMinor = `${VERSION.split(".")[0]}.99.0`;
     const { run } = setup({ marketplaceVersion: newerMinor });
     run(["setup"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ installed ${VERSION}, marketplace has ${newerMinor}. Run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit\n`,
+      `✗ installed ${VERSION}, marketplace has ${newerMinor}\n    Fix: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit\n`,
     );
   });
 
   test("D33: a new major version in the marketplace: a · line naming update, never `claude plugin update`", () => {
     const { run } = setup({ marketplaceVersion: "99.0.0" });
     run(["setup"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
       `· installed ${VERSION}; 99.0.0 is a major version: it waits for \`cc-smart-dev-kit update\`\n`,
@@ -1314,11 +1423,11 @@ describe("cc-smart-dev-kit doctor", () => {
   test("the marketplace's local copy has no plugin manifest: ✗ with the marketplace update command", () => {
     const { run } = setup({ marketplaceVersion: null });
     run(["setup"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ cannot read the version in ~/.claude/plugins/marketplaces/cc-smart-dev-kit/plugin/.claude-plugin/plugin.json. " +
-        "Run: claude plugin marketplace update cc-smart-dev-kit\n",
+      "✗ cannot read the version in ~/.claude/plugins/marketplaces/cc-smart-dev-kit/plugin/.claude-plugin/plugin.json\n" +
+        "    Fix: claude plugin marketplace update cc-smart-dev-kit\n",
     );
   });
 
@@ -1327,13 +1436,13 @@ describe("cc-smart-dev-kit doctor", () => {
     (name) => {
       const { run } = setup();
       run(["setup"]);
-      const off = run(["doctor"], { [name]: "1" });
+      const off = run(["doctor", "--verbose"], { [name]: "1" });
       expect(off.exitCode).toBe(1);
       expect(off.stdout).toContain(
-        `✗ plugin updates are switched off: ${name} (in your environment) is set, so the background update skips them too. ` +
-          `Set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove ${name}.\n`,
+        `✗ plugin updates are switched off: ${name} (in your environment) is set, so the background update skips them too\n` +
+          `    Fix: set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove ${name}\n`,
       );
-      const forced = run(["doctor"], { [name]: "1", FORCE_AUTOUPDATE_PLUGINS: "1" });
+      const forced = run(["doctor", "--verbose"], { [name]: "1", FORCE_AUTOUPDATE_PLUGINS: "1" });
       expect(forced.stdout).toContain(
         "✓ plugin updates are on (FORCE_AUTOUPDATE_PLUGINS is set)\n",
       );
@@ -1347,9 +1456,9 @@ describe("cc-smart-dev-kit doctor", () => {
     const settings = readJson(settingsFile);
     settings.env = { DISABLE_UPDATES: "true" };
     writeFileSync(settingsFile, JSON.stringify(settings));
-    expect(run(["doctor"], { DISABLE_AUTOUPDATER: "0" }).stdout).toContain(
-      "✗ plugin updates are switched off: DISABLE_UPDATES (in the env of ~/.claude/settings.json) is set, so the background update skips them too. " +
-        "Set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove DISABLE_UPDATES.\n",
+    expect(run(["doctor", "--verbose"], { DISABLE_AUTOUPDATER: "0" }).stdout).toContain(
+      "✗ plugin updates are switched off: DISABLE_UPDATES (in the env of ~/.claude/settings.json) is set, so the background update skips them too\n" +
+        "    Fix: set FORCE_AUTOUPDATE_PLUGINS=1 as well, or remove DISABLE_UPDATES\n",
     );
   });
 
@@ -1360,7 +1469,7 @@ describe("cc-smart-dev-kit doctor", () => {
     const otherBun = join(tempDir("other-bun"), "bun");
     symlinkSync(process.execPath, otherBun);
     installLauncher(binDir, { stateDir, bunPath: otherBun });
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.stdout).toContain(
       `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}\n`,
     );
@@ -1371,10 +1480,10 @@ describe("cc-smart-dev-kit doctor", () => {
     run(["setup"]);
     const gone = join(tempDir("gone"), "bun");
     installLauncher(binDir, { stateDir, bunPath: gone });
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ the launcher's bun ${gone} is missing or not executable. Run: cc-smart-dev-kit setup\n`,
+      `✗ the launcher's bun ${gone} is missing or not executable\n    Fix: cc-smart-dev-kit setup\n`,
     );
   });
 
@@ -1382,14 +1491,14 @@ describe("cc-smart-dev-kit doctor", () => {
     const { launcher, run } = setup();
     run(["setup"]);
     writeFileSync(launcher, `${readFileSync(launcher, "utf8")}# edited\n`);
-    expect(run(["doctor"]).stdout).toContain(
-      "✗ the launcher ~/.local/bin/cc-smart-dev-kit is out of date. Run: cc-smart-dev-kit setup\n",
+    expect(run(["doctor", "--verbose"]).stdout).toContain(
+      "✗ the launcher ~/.local/bin/cc-smart-dev-kit is out of date\n    Fix: cc-smart-dev-kit setup\n",
     );
   });
 
   test("before setup: no launcher, exit 1; with no key and no record, Claude Code's own auto-update is off", () => {
     const { run } = setup();
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain("✗ no launcher at ~/.local/bin/cc-smart-dev-kit");
     expect(result.stdout).toContain(
@@ -1412,10 +1521,10 @@ describe("cc-smart-dev-kit doctor", () => {
         ownedFile,
         readFileSync(ownedFile, "utf8").replace('"value": false', '"value": true'),
       );
-      const result = run(["doctor"]);
+      const result = run(["doctor", "--verbose"]);
       expect(result.exitCode).toBe(1);
       expect(result.stdout).toContain(
-        `✗ Claude Code's own plugin auto-update is on (${KEY} is true in ~/.claude/settings.json, set by an older setup): ${RISK}. Run: cc-smart-dev-kit setup\n`,
+        `✗ Claude Code's own plugin auto-update is on (${KEY} is true in ~/.claude/settings.json, set by an older setup): ${RISK}\n    Fix: cc-smart-dev-kit setup\n`,
       );
     });
 
@@ -1424,9 +1533,9 @@ describe("cc-smart-dev-kit doctor", () => {
       const settings = readJson(settingsFile);
       settings.extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate = true;
       writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
-      const result = run(["doctor"]);
+      const result = run(["doctor", "--verbose"]);
       expect(result.stdout).toContain(
-        `✗ Claude Code's own plugin auto-update is on (${KEY} is true in ~/.claude/settings.json, not set by cc-smart-dev-kit): ${RISK}. Remove that key from ~/.claude/settings.json by hand, then run: cc-smart-dev-kit setup\n`,
+        `✗ Claude Code's own plugin auto-update is on (${KEY} is true in ~/.claude/settings.json, not set by cc-smart-dev-kit): ${RISK}\n    Fix: remove that key from ~/.claude/settings.json by hand, then run: cc-smart-dev-kit setup\n`,
       );
     });
 
@@ -1436,9 +1545,9 @@ describe("cc-smart-dev-kit doctor", () => {
       const record = readJson(known);
       record["cc-smart-dev-kit"].autoUpdate = true;
       writeFileSync(known, JSON.stringify(record));
-      const result = run(["doctor"]);
+      const result = run(["doctor", "--verbose"]);
       expect(result.stdout).toContain(
-        `✗ Claude Code's own plugin auto-update is on (its own record, ~/.claude/plugins/known_marketplaces.json, says so): ${RISK}. Run: cc-smart-dev-kit setup\n`,
+        `✗ Claude Code's own plugin auto-update is on (its own record, ~/.claude/plugins/known_marketplaces.json, says so): ${RISK}\n    Fix: cc-smart-dev-kit setup\n`,
       );
     });
 
@@ -1449,7 +1558,7 @@ describe("cc-smart-dev-kit doctor", () => {
       const record = readJson(known);
       record["cc-smart-dev-kit"].autoUpdate = true;
       writeFileSync(known, JSON.stringify(record));
-      expect(run(["doctor"]).stdout).toContain(
+      expect(run(["doctor", "--verbose"]).stdout).toContain(
         "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin\n",
       );
     });
@@ -1457,7 +1566,7 @@ describe("cc-smart-dev-kit doctor", () => {
     test("a settings file that is not valid JSON: ✗, naming the file", () => {
       const { settingsFile, run } = setup();
       writeFileSync(settingsFile, "{ not json");
-      expect(run(["doctor"]).stdout).toContain(
+      expect(run(["doctor", "--verbose"]).stdout).toContain(
         `✗ cannot read Claude Code's plugin auto-update: ${settingsFile} is not valid JSON`,
       );
     });
@@ -1466,9 +1575,9 @@ describe("cc-smart-dev-kit doctor", () => {
   test("not installed: one ✗ for it, and no version line", () => {
     const { configDir, run } = setup();
     rmSync(join(configDir, "plugins", "installed_plugins.json"));
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.stdout).toContain(
-      "✗ the cc-smart-dev-kit@cc-smart-dev-kit plugin is not installed. Run: claude plugin install cc-smart-dev-kit@cc-smart-dev-kit\n",
+      "✗ the cc-smart-dev-kit@cc-smart-dev-kit plugin is not installed\n    Fix: claude plugin install cc-smart-dev-kit@cc-smart-dev-kit\n",
     );
     expect(result.stdout).not.toContain("marketplace has");
     expect(result.stdout).not.toContain("not behind");
@@ -1477,20 +1586,20 @@ describe("cc-smart-dev-kit doctor", () => {
   test("the old plugin id is still enabled: ✗ naming it, with the uninstall command", () => {
     const { settingsFile, run } = setup();
     run(["setup"]);
-    const before = run(["doctor"]);
+    const before = run(["doctor", "--verbose"]);
     expect(before.stdout).not.toContain("cc@cc-agentic");
     const settings = readJson(settingsFile);
     settings.enabledPlugins["cc@cc-agentic"] = true;
     writeFileSync(settingsFile, JSON.stringify(settings));
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ the old plugin cc@cc-agentic is still enabled: two copies of the same hooks would run. Run: claude plugin uninstall cc@cc-agentic\n",
+      "✗ the old plugin cc@cc-agentic is still enabled: two copies of the same hooks would run\n    Fix: claude plugin uninstall cc@cc-agentic\n",
     );
     // Disabled (false) is no clash.
     settings.enabledPlugins["cc@cc-agentic"] = false;
     writeFileSync(settingsFile, JSON.stringify(settings));
-    expect(run(["doctor"]).stdout).not.toContain("cc@cc-agentic");
+    expect(run(["doctor", "--verbose"]).stdout).not.toContain("cc@cc-agentic");
   });
 
   /** The old plugin's state folder: the old `setup` ran on this machine. */
@@ -1509,10 +1618,11 @@ describe("cc-smart-dev-kit doctor", () => {
     settings.enabledPlugins["cc@cc-agentic"] = true;
     settings.extraKnownMarketplaces["cc-agentic"] = { autoUpdate: true };
     writeFileSync(settingsFile, JSON.stringify(settings));
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ the old plugin cc@cc-agentic (before 0.2.0) left the plugin enabled, its launcher ~/.local/bin/cc-agentic, extraKnownMarketplaces.cc-agentic in ~/.claude/settings.json. Run `cc-agentic restore` first, then `claude plugin uninstall cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`.\n",
+      "✗ the old plugin cc@cc-agentic (before 0.2.0) left the plugin enabled, its launcher ~/.local/bin/cc-agentic, extraKnownMarketplaces.cc-agentic in ~/.claude/settings.json\n" +
+        "    Fix: run `cc-agentic restore` first, then `claude plugin uninstall cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`\n",
     );
   });
 
@@ -1536,10 +1646,11 @@ describe("cc-smart-dev-kit doctor", () => {
     const plugins = readJson(installed);
     plugins.plugins["cc@cc-agentic"] = [{ installPath: "/gone", scope: "user", version: "0.1.0" }];
     writeFileSync(installed, JSON.stringify(plugins));
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      '✗ the old plugin cc@cc-agentic (before 0.2.0) left the plugin installed, its launcher ~/.local/bin/cc-agentic, the cc-agentic marketplace. Its launcher cannot run, so remove by hand ~/.local/bin/cc-agentic and "cc-agentic" under extraKnownMarketplaces in ~/.claude/settings.json; then run `claude plugin uninstall cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`.\n',
+      "✗ the old plugin cc@cc-agentic (before 0.2.0) left the plugin installed, its launcher ~/.local/bin/cc-agentic, the cc-agentic marketplace\n" +
+        '    Fix: its launcher cannot run, so remove by hand ~/.local/bin/cc-agentic and "cc-agentic" under extraKnownMarketplaces in ~/.claude/settings.json; then run `claude plugin uninstall cc@cc-agentic`, then `claude plugin marketplace remove cc-agentic`\n',
     );
   });
 
@@ -1547,7 +1658,7 @@ describe("cc-smart-dev-kit doctor", () => {
     const { configDir, run } = setup();
     run(["setup"]);
     oldSetupRan(configDir);
-    expect(run(["doctor"]).stdout).not.toContain("cc-agentic");
+    expect(run(["doctor", "--verbose"]).stdout).not.toContain("cc-agentic");
   });
 
   test("another plugin named cc-smart-dev-kit is enabled: ✗, exit 1", () => {
@@ -1556,7 +1667,7 @@ describe("cc-smart-dev-kit doctor", () => {
     const settings = readJson(settingsFile);
     settings.enabledPlugins["cc-smart-dev-kit@someone-else"] = true;
     writeFileSync(settingsFile, JSON.stringify(settings));
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
       "✗ another plugin named cc-smart-dev-kit is enabled: cc-smart-dev-kit@someone-else",
@@ -1567,12 +1678,12 @@ describe("cc-smart-dev-kit doctor", () => {
 describe("cc-smart-dev-kit doctor: the instructions", () => {
   /** doctor's lines, without the ones for other checks. */
   const instructionLines = (stdout: string) =>
-    stdout.split("\n").filter((line) => /instructions|CLAUDE\.md/.test(line));
+    doctorLines(stdout, (line) => /instructions|CLAUDE\.md/.test(line));
 
   test("left out by choice: information, not a failure", () => {
     const { run } = setup();
     run(["setup", "--no-instructions"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(instructionLines(result.stdout)).toEqual([
       "· instructions: left out (cc-smart-dev-kit setup --no-instructions). To add them: cc-smart-dev-kit setup --instructions",
     ]);
@@ -1581,8 +1692,9 @@ describe("cc-smart-dev-kit doctor: the instructions", () => {
 
   test("never installed: ✗ with the setup command", () => {
     const { run } = setup();
-    expect(instructionLines(run(["doctor"]).stdout)).toEqual([
-      "✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/. Run: cc-smart-dev-kit setup",
+    expect(instructionLines(run(["doctor", "--verbose"]).stdout)).toEqual([
+      "✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/",
+      "Fix: cc-smart-dev-kit setup",
     ]);
   });
 
@@ -1590,9 +1702,10 @@ describe("cc-smart-dev-kit doctor: the instructions", () => {
     const { stateDir, run } = setup();
     run(["setup"]);
     writeFileSync(join(stateDir, "instructions", "core.md"), "# Edited by hand\n");
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(instructionLines(result.stdout)).toEqual([
-      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (core.md differs). Run: cc-smart-dev-kit setup",
+      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (core.md differs)",
+      "Fix: cc-smart-dev-kit setup",
     ]);
     expect(result.exitCode).toBe(1);
   });
@@ -1601,9 +1714,10 @@ describe("cc-smart-dev-kit doctor: the instructions", () => {
     const { stateDir, run } = setup();
     run(["setup"]);
     writeFileSync(versionStampFile(stateDir), "0.0.1\n");
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(instructionLines(result.stdout)).toEqual([
-      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (written by 0.0.1). Run: cc-smart-dev-kit setup",
+      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (written by 0.0.1)",
+      "Fix: cc-smart-dev-kit setup",
     ]);
     expect(result.exitCode).toBe(1);
   });
@@ -1612,8 +1726,9 @@ describe("cc-smart-dev-kit doctor: the instructions", () => {
     const { configDir, run } = setup();
     run(["setup"]);
     writeFileSync(join(configDir, "CLAUDE.md"), "# Mine\n");
-    expect(instructionLines(run(["doctor"]).stdout)).toEqual([
-      "✗ ~/.claude/CLAUDE.md does not import the instructions (its cc-smart-dev-kit block is missing or changed). Run: cc-smart-dev-kit setup",
+    expect(instructionLines(run(["doctor", "--verbose"]).stdout)).toEqual([
+      "✗ ~/.claude/CLAUDE.md does not import the instructions (its cc-smart-dev-kit block is missing or changed)",
+      "Fix: cc-smart-dev-kit setup",
     ]);
   });
 });
@@ -1630,7 +1745,7 @@ describe("cc-smart-dev-kit doctor: a project's imports of cc-smart-dev-kit files
     return sub;
   }
   const projectLines = (stdout: string) =>
-    stdout.split("\n").filter((line) => line.includes("imports ~/"));
+    doctorLines(stdout, (line) => line.includes("imports ~/"));
 
   test("an imported cc-smart-dev-kit file that is there: ✓", () => {
     const { home, run } = setup();
@@ -1639,7 +1754,7 @@ describe("cc-smart-dev-kit doctor: a project's imports of cc-smart-dev-kit files
       home,
       "# My app\n\n@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md\n",
     );
-    const result = run(["doctor"], {}, cwd);
+    const result = run(["doctor", "--verbose"], {}, cwd);
     expect(projectLines(result.stdout)).toEqual([
       "✓ the project's CLAUDE.md imports ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md, and it is there",
     ]);
@@ -1653,9 +1768,10 @@ describe("cc-smart-dev-kit doctor: a project's imports of cc-smart-dev-kit files
       "@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md\n",
       join(".claude", "CLAUDE.md"),
     );
-    const result = run(["doctor"], {}, cwd);
+    const result = run(["doctor", "--verbose"], {}, cwd);
     expect(projectLines(result.stdout)).toEqual([
-      "✗ ~/my-app/.claude/CLAUDE.md imports ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md, which is missing: it loads nothing. Run: cc-smart-dev-kit setup",
+      "✗ ~/my-app/.claude/CLAUDE.md imports ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md, which is missing: it loads nothing",
+      "Fix: cc-smart-dev-kit setup",
     ]);
     expect(result.exitCode).toBe(1);
   });
@@ -1664,7 +1780,7 @@ describe("cc-smart-dev-kit doctor: a project's imports of cc-smart-dev-kit files
     const { home, run } = setup();
     run(["setup", "--no-instructions"]);
     const cwd = project(home, "@~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md\n");
-    const result = run(["doctor"], {}, cwd);
+    const result = run(["doctor", "--verbose"], {}, cwd);
     expect(projectLines(result.stdout)).toEqual([
       "· ~/my-app/CLAUDE.md imports ~/.claude/cc-smart-dev-kit/instructions/optin/worktrees.md, which is missing: it loads nothing while the instructions are left out here. To add them: cc-smart-dev-kit setup --instructions",
     ]);
@@ -1675,7 +1791,7 @@ describe("cc-smart-dev-kit doctor: a project's imports of cc-smart-dev-kit files
     const { home, run } = setup();
     run(["setup"]);
     const cwd = project(home, "# My app\n\n@docs/rules.md\n");
-    expect(projectLines(run(["doctor"], {}, cwd).stdout)).toEqual([]);
+    expect(projectLines(run(["doctor", "--verbose"], {}, cwd).stdout)).toEqual([]);
   });
 });
 
@@ -1848,11 +1964,11 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
   test("not added, turned off, or outside the range: one ✗ each, with what to run", () => {
     const missing = setup({ companions: false });
     missing.run(["setup"]);
-    const none = missing.run(["doctor"]);
+    const none = missing.run(["doctor", "--verbose"]);
     expect(none.exitCode).toBe(1);
     expect(none.stdout).toContain(
-      "✗ the thedotmack marketplace is not added, so claude-mem@thedotmack is missing and cc-smart-dev-kit does not load. Run: cc-smart-dev-kit setup\n" +
-        "✗ the claude-plugins-official marketplace is not added, so frontend-design@claude-plugins-official is missing and cc-smart-dev-kit does not load. Run: cc-smart-dev-kit setup\n",
+      "✗ the thedotmack marketplace is not added, so claude-mem@thedotmack is missing and cc-smart-dev-kit does not load\n    Fix: cc-smart-dev-kit setup\n" +
+        "  ✗ the claude-plugins-official marketplace is not added, so frontend-design@claude-plugins-official is missing and cc-smart-dev-kit does not load\n    Fix: cc-smart-dev-kit setup\n",
     );
 
     const { configDir, settingsFile, run } = setup();
@@ -1864,11 +1980,11 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     const plugins = readJson(installed);
     plugins.plugins["claude-mem@thedotmack"][0].version = "13.28.0";
     writeFileSync(installed, JSON.stringify(plugins));
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ claude-mem@thedotmack 13.28.0 is outside >=13.36.0. Run: claude plugin update claude-mem@thedotmack\n" +
-        "✗ frontend-design@claude-plugins-official is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable frontend-design@claude-plugins-official\n",
+      "✗ claude-mem@thedotmack 13.28.0 is outside >=13.36.0\n    Fix: claude plugin update claude-mem@thedotmack\n" +
+        "  ✗ frontend-design@claude-plugins-official is turned off, and cc-smart-dev-kit does not load without it\n    Fix: claude plugin enable frontend-design@claude-plugins-official\n",
     );
   });
 
@@ -1879,7 +1995,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     const plugins = readJson(installed);
     plugins.plugins["claude-mem@thedotmack"][0].version = "13.36.0-8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
-    expect(run(["doctor"]).stdout).toContain(
+    expect(run(["doctor", "--verbose"]).stdout).toContain(
       "✓ claude-mem@thedotmack 13.36.0-8713c5b11005 is installed and on\n",
     );
   });
@@ -1891,12 +2007,13 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     plugins.plugins["claude-mem@thedotmack"][0].version = "8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     const unknown =
-      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.36.0. Run: claude plugin update claude-mem@thedotmack";
-    expect(run(["doctor"]).stdout).toContain(`✗ ${unknown}\n`);
+      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.36.0";
+    const update = "claude plugin update claude-mem@thedotmack";
+    expect(run(["doctor", "--verbose"]).stdout).toContain(`✗ ${unknown}\n    Fix: ${update}\n`);
     // With the gateway there, claude-mem's own check would say it again: it does not.
     writeGatewayConfig(home, "http://127.0.0.1:9");
     const result = run(["setup"]);
-    expect(result.stdout).toContain(`! ${unknown}\n`);
+    expect(result.stdout).toContain(`! ${unknown}. Run: ${update}\n`);
     expect(result.stdout).not.toContain("older");
     expect(result.stdout).not.toContain("claude-mem settings left alone");
   });
@@ -3170,24 +3287,23 @@ describe("D42: setup offers Claude Code's retry watchdog", () => {
 
   test("doctor: off, on by setup, on by the person, off by the person: one · line each, never a failure", () => {
     const { settingsFile, run } = setup();
-    const line = (stdout: string) =>
-      stdout.split("\n").filter((text) => text.includes("retry watchdog"));
-    expect(run(["doctor"]).stdout).toContain(DOCTOR_OFF);
-    expect(line(run(["doctor"]).stdout)).toEqual([DOCTOR_OFF.trimEnd()]);
+    const line = (stdout: string) => doctorLines(stdout, (text) => text.includes("retry watchdog"));
+    expect(run(["doctor", "--verbose"]).stdout).toContain(DOCTOR_OFF);
+    expect(line(run(["doctor", "--verbose"]).stdout)).toEqual([DOCTOR_OFF.trimEnd()]);
 
     expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(0);
-    expect(line(run(["doctor"]).stdout)).toEqual([
+    expect(line(run(["doctor", "--verbose"]).stdout)).toEqual([
       "· retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog",
     ]);
 
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
     setEnv(settingsFile, { [WATCHDOG]: "1" });
-    expect(line(run(["doctor"]).stdout)).toEqual([
+    expect(line(run(["doctor", "--verbose"]).stdout)).toEqual([
       `· retry watchdog: on (your own ${WATCHDOG} in ~/.claude/settings.json)`,
     ]);
 
     setEnv(settingsFile, { [WATCHDOG]: "0" });
-    expect(line(run(["doctor"]).stdout)).toEqual([
+    expect(line(run(["doctor", "--verbose"]).stdout)).toEqual([
       `· retry watchdog: off (your own ${WATCHDOG} in ~/.claude/settings.json leaves it off; change it by hand to turn it on)`,
     ]);
   });
@@ -3211,7 +3327,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     });
 
     // doctor: each one is registered and starts (the fake `claude mcp get` says Connected).
-    const checked = run(["doctor"]);
+    const checked = run(["doctor", "--verbose"]);
     expect(checked.stdout).toContain('✓ MCP server "playwright": Connected\n');
     expect(checked.stdout).toContain('✓ MCP server "sequential-thinking": Connected\n');
 
@@ -3247,8 +3363,8 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     writeFileSync(join(where.recordDir, "11111111-2222-3333-4444-555555555555.txt"), "unknown");
 
     const owed =
-      '✗ Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered, Serena\'s context ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml, the serena-root records in ~/.claude/cc-smart-dev-kit/serena-root/ yet. Run: cc-smart-dev-kit setup\n';
-    const before = run(["doctor"]);
+      '✗ Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered, Serena\'s context ~/.local/share/cc-smart-dev-kit/serena/contexts/worktree.yml, the serena-root records in ~/.claude/cc-smart-dev-kit/serena-root/ yet\n    Fix: cc-smart-dev-kit setup\n';
+    const before = run(["doctor", "--verbose"]);
     expect(before.exitCode).toBe(1);
     expect(before.stdout).toContain(owed);
 
@@ -3297,7 +3413,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(listBackups(stateDir, where.contextFile).at(-1)?.absent).toBe(false);
 
     // doctor has nothing more to say about it, and a second setup has nothing to do.
-    const after = run(["doctor"]);
+    const after = run(["doctor", "--verbose"]);
     expect(after.stdout).not.toContain("Serena");
     expect(after.stdout).not.toContain("serena");
     expect(run(["setup"]).stdout).toBe(
@@ -3321,7 +3437,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
       args: ["serena", "start-mcp-server"],
       command: "uvx",
     });
-    const checked = run(["doctor"]);
+    const checked = run(["doctor", "--verbose"]);
     expect(checked.stdout).toContain(
       '· the "serena" MCP server is registered (uvx serena start-mcp-server), and cc-smart-dev-kit has no record of registering it as it is: cc-smart-dev-kit no longer registers it (0.6.0) and leaves it alone. To remove it: claude mcp remove serena --scope user\n',
     );
@@ -3376,7 +3492,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(`${result.stdout}${result.stderr}`).not.toContain("tvly-file-secret");
     expect(result.stdout).toContain("(a secret)");
     // doctor sees the key and checks the server; it never prints the key either.
-    const checked = run(["doctor"]);
+    const checked = run(["doctor", "--verbose"]);
     expect(checked.stdout).toContain('✓ MCP server "tavily-websearch": Connected\n');
     expect(checked.stdout).not.toContain("tvly-file-secret");
     // restore removes it again, and never prints it either.
@@ -3529,7 +3645,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     );
     expect(`${result.stdout}${result.stderr}`).not.toContain("tvly-exposed-secret");
     // And doctor reports it as information, never a failure.
-    const checked = run(["doctor"]);
+    const checked = run(["doctor", "--verbose"]);
     expect(checked.exitCode).toBe(0);
     expect(checked.stdout).toContain("· the Tavily MCP server is skipped: ");
     expect(checked.stdout).not.toContain("tvly-exposed-secret");
@@ -3633,17 +3749,19 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
     run(["setup"], windowsHost());
     // The .cmd is gone (a person removed it, or an older setup never wrote one).
     rmSync(join(binDir, "cc-smart-dev-kit.cmd"));
-    const result = run(["doctor"], windowsHost());
+    const result = run(["doctor", "--verbose"], windowsHost());
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ no Windows launcher at ~/.local/bin/cc-smart-dev-kit.cmd, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ~/.local/bin/cc-smart-dev-kit). Run: cc-smart-dev-kit setup",
+      "✗ no Windows launcher at ~/.local/bin/cc-smart-dev-kit.cmd, so cmd and PowerShell cannot run cc-smart-dev-kit (Git Bash runs ~/.local/bin/cc-smart-dev-kit)\n    Fix: cc-smart-dev-kit setup",
     );
     // The sh launcher is still checked, and is in place: Git Bash runs it.
     expect(result.stdout).toContain(
       "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
     );
     expect(result.stdout).toContain("✗ Git Bash was not found");
-    expect(result.stdout).toContain("Install Git for Windows (https://git-scm.com/download/win)");
+    expect(result.stdout).toContain(
+      "    Fix: install Git for Windows (https://git-scm.com/download/win), or set CLAUDE_CODE_GIT_BASH_PATH to bash.exe, then run: cc-smart-dev-kit doctor\n",
+    );
     // The Linux-only parts are information, never a failure.
     expect(result.stdout).toContain(
       "· tmux: not on Windows, so no passthrough line is managed there",
@@ -3652,9 +3770,9 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
 
   test("doctor on Windows with no launcher at all names the sh one first", () => {
     const { run } = setup();
-    const result = run(["doctor"], windowsHost());
+    const result = run(["doctor", "--verbose"], windowsHost());
     expect(result.stdout).toContain(
-      "✗ no launcher at ~/.local/bin/cc-smart-dev-kit. Run: cc-smart-dev-kit setup",
+      "✗ no launcher at ~/.local/bin/cc-smart-dev-kit\n    Fix: cc-smart-dev-kit setup",
     );
   });
 
@@ -3663,10 +3781,10 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
     run(["setup"], windowsHost());
     const gone = join(tempDir("gone"), "bun.exe");
     installLauncherCmd(binDir, { stateDir, bunPath: gone });
-    const result = run(["doctor"], windowsHost());
+    const result = run(["doctor", "--verbose"], windowsHost());
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      `✗ the Windows launcher's bun ${gone} is missing or not executable. Run: cc-smart-dev-kit setup`,
+      `✗ the Windows launcher's bun ${gone} is missing or not executable\n    Fix: cc-smart-dev-kit setup`,
     );
   });
 
@@ -3681,7 +3799,7 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
     installLauncher(binDir, { stateDir, bunPath: bun });
     installLauncherCmd(binDir, { stateDir, bunPath: bun });
     chmodSync(join(binDir, "cc-smart-dev-kit"), 0o755);
-    const result = run(["doctor"], windowsHost());
+    const result = run(["doctor", "--verbose"], windowsHost());
     expect(result.stdout).toContain(
       "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
     );
@@ -3702,7 +3820,7 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
     chmodSync(bash, 0o755);
 
     run(["setup"], windowsHost());
-    const result = run(["doctor"], windowsHost({ CLAUDE_CODE_GIT_BASH_PATH: bash }));
+    const result = run(["doctor", "--verbose"], windowsHost({ CLAUDE_CODE_GIT_BASH_PATH: bash }));
     expect(result.stdout).toContain(
       "✓ the launcher ~/.local/bin/cc-smart-dev-kit is in place (Git Bash runs it)",
     );
@@ -3718,7 +3836,7 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
   test("doctor off Windows knows nothing of Git Bash or a .cmd", () => {
     const { run } = setup();
     run(["setup"]);
-    const result = run(["doctor"]);
+    const result = run(["doctor", "--verbose"]);
     expect(result.stdout).not.toContain("Git Bash");
     expect(result.stdout).not.toContain(".cmd");
     expect(result.stdout).not.toContain("tmux: not on Windows");

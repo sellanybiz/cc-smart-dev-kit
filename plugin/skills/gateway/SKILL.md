@@ -59,7 +59,7 @@ repository (the installed plugin does not carry the docs).
    Either way the key is **tested before it is saved**: a 401/403 refuses it and keeps the key
    already in the file, saying which key that backend wants. A backend that cannot be asked
    (down, a 5xx) saves nothing either unless you add `--save-unchecked`, which saves it with a
-   WARN line. The file as it was is kept in the state folder's `backups/` whenever a key really
+   warning line (`!`). The file as it was is kept in the state folder's `backups/` whenever a key really
    changes.
    No key yet: `cc-smart-dev-kit gateway setup --no-backend-key` (every slot Claude: every model
    plain Claude).

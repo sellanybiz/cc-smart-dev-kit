@@ -83,13 +83,27 @@ export function tokenFile(home: string): string {
   return join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token");
 }
 
-/** The line the real `doctor` prints while the token is missing (`src/browser/doctor.ts`). */
-export function doctorTokenMissingLine(home: string): string {
-  return (
-    `✗ the browser token is not set, so the browser cannot connect ` +
-    `(no token file at ${tokenFile(home)}): run: cc-smart-dev-kit browser setup, ` +
-    `then cc-smart-dev-kit browser token`
-  );
+/** The failure the real `doctor` reports while the token is missing (`src/browser/doctor.ts`). */
+export function doctorTokenMissing(home: string): { fix: string; text: string } {
+  return {
+    fix: "cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token",
+    text: `the browser token is not set, so the browser cannot connect (no token file at ${tokenFile(home)})`,
+  };
+}
+
+/**
+ * What the real `doctor --json` prints (`DoctorReport`, `src/cli/doctor.ts`), with the one check
+ * this world has: the browser's token. The installers read nothing else of it.
+ */
+export function doctorReport(home: string, tokenSet: boolean): string {
+  const check = tokenSet
+    ? { status: "ok", text: `the browser token is set (${tokenFile(home)})` }
+    : { status: "fail", ...doctorTokenMissing(home) };
+  return JSON.stringify({
+    format: 1,
+    groups: [{ checks: [check], id: "browser", status: check.status, title: "Browser" }],
+    ok: tokenSet,
+  });
 }
 
 export async function answer(
@@ -184,14 +198,10 @@ export async function answer(
     }
     return 0;
   }
-  if (joined.includes("dist/cli.js doctor")) {
-    const file = tokenFile(context.home);
-    if (existsSync(file)) {
-      say(`✓ the browser token is set (${file})`);
-      return 0;
-    }
-    say(doctorTokenMissingLine(context.home));
-    return 1;
+  if (joined.includes("dist/cli.js doctor --json")) {
+    const tokenSet = existsSync(tokenFile(context.home));
+    say(doctorReport(context.home, tokenSet));
+    return tokenSet ? 0 : 1;
   }
   return 0;
 }

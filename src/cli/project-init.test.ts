@@ -486,7 +486,7 @@ describe("the run", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
-    expect(run.lines).toContain("A dry run: nothing was written.");
+    expect(run.lines).toContain("Dry run: nothing was written.");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
@@ -585,7 +585,7 @@ describe("the run", () => {
       `${local} also changes, merged with what it has:`,
       "  - hooks.SubagentStop: cc-smart-dev-kit  hook  subagent-stop",
       "! the plugin's worktree engine was retired in 1.0.0: worktrees.prefix, worktrees.setup and its hook lines go, because Claude Code's own worktrees need none",
-      "A dry run: nothing was written.",
+      "Dry run: nothing was written.",
     ]);
     expect([file, settings, local].map((one) => readFileSync(one, "utf8"))).toEqual(before);
   });

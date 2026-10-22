@@ -267,7 +267,7 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   cheap authenticated request (`GET /v1/models`, `KEY_CHECK_TIMEOUT_MS`) with the key. 401/403
   refuses it — nothing written, the key in the file kept, the message naming the key that
   backend wants. Anything else (unreachable, a 5xx) is not a silent save either: only with
-  `--save-unchecked`, with a WARN line. A key that really changes is backed up first
+  `--save-unchecked`, with a warning line (`!`). A key that really changes is backed up first
   (`backupFile`, the state folder's `backups/`). Live, 2026-10-17: a pasted provider key
   overwrote the router's working key, OmniRoute answered 401 to everything, and every affordable
   subagent fell back to Claude.

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
-import { DEPENDENCIES } from "../build-info";
+import { COMMAND, DEPENDENCIES } from "../build-info";
 import type { Dependency } from "../build-info/manifest";
+import type { Check } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
 import { isValidRange } from "../project/version-range";
 import { findUserInstall } from "../setup/installed-plugins";
@@ -164,7 +165,9 @@ export function companionPlan(
         );
         break;
       case "unknown-version":
-        notes.push(`! ${unknownVersionText(companion, state.version)}`);
+        notes.push(
+          `! ${unknownVersionText(companion, state.version)}. Run: ${updateCommand(companion)}`,
+        );
         break;
       case "ok":
         break;
@@ -199,43 +202,56 @@ export function runCompanionSteps(
 
 /** A companion whose recorded version is a commit id, not a version number. */
 function unknownVersionText(companion: Companion, version: string | null): string {
-  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against ${companion.range}. Run: claude plugin update ${companion.id}`;
+  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so ${COMMAND} cannot check it against ${companion.range}`;
+}
+
+/** What updates a companion: Claude Code's own command. */
+function updateCommand(companion: Companion): string {
+  return `claude plugin update ${companion.id}`;
 }
 
 /** One doctor line per companion. */
 export function companionChecks(
   paths: CliPaths,
   list: readonly Companion[] = companions(),
-): { ok: boolean; text: string }[] {
+): Check[] {
   return list.map((companion) => companionCheck(paths, companion));
 }
 
-function companionCheck(paths: CliPaths, companion: Companion): { ok: boolean; text: string } {
+function companionCheck(paths: CliPaths, companion: Companion): Check {
   {
     const state = companionState(paths, companion);
     switch (state.kind) {
       case "no-marketplace":
         return {
           ok: false,
-          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and cc-smart-dev-kit does not load. Run: cc-smart-dev-kit setup`,
+          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and ${COMMAND} does not load`,
+          fix: `${COMMAND} setup`,
         };
       case "not-installed":
         return {
           ok: false,
-          text: `${companion.id} is not installed, and cc-smart-dev-kit does not load without it. Run: cc-smart-dev-kit setup`,
+          text: `${companion.id} is not installed, and ${COMMAND} does not load without it`,
+          fix: `${COMMAND} setup`,
         };
       case "off":
         return {
           ok: false,
-          text: `${companion.id} is turned off, and cc-smart-dev-kit does not load without it. Run: claude plugin enable ${companion.id}`,
+          text: `${companion.id} is turned off, and ${COMMAND} does not load without it`,
+          fix: `claude plugin enable ${companion.id}`,
         };
       case "outside-range":
         return {
           ok: false,
-          text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}. Run: claude plugin update ${companion.id}`,
+          text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}`,
+          fix: updateCommand(companion),
         };
       case "unknown-version":
-        return { ok: false, text: unknownVersionText(companion, state.version) };
+        return {
+          ok: false,
+          text: unknownVersionText(companion, state.version),
+          fix: updateCommand(companion),
+        };
       case "ok":
         return {
           ok: true,

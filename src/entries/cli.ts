@@ -8,7 +8,7 @@ import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
-import { runDoctor } from "../cli/doctor";
+import { DOCTOR_FLAGS, runDoctor } from "../cli/doctor";
 import {
   asksForHelp,
   commandWords,
@@ -28,6 +28,8 @@ import { runRestore } from "../cli/restore";
 import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
+import { createOut, dryRunEnding } from "../cli/ui/out";
+import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { runCrew } from "../crew/command";
@@ -358,32 +360,43 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "doctor": {
-      const unknown = rest.filter((arg) => arg !== "--live");
+      const unknown = rest.filter((arg) => !DOCTOR_FLAGS.includes(arg));
       if (unknown.length > 0) {
         console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "doctor"));
         return 2;
       }
-      return runDoctor(paths, process.env, {
-        browser: realBrowserDoctorDeps(realMachine(process.env, null), paths.home),
-        bun: { path: process.execPath, version: Bun.version },
-        gateway: {
-          bundle: routerBundle(),
-          runner,
-          service,
-          machine: realMachine(process.env, null),
+      const doctorOut = createOut(currentTerminal(process.env));
+      const doctorPrint = { json: rest.includes("--json"), verbose: rest.includes("--verbose") };
+      return runDoctor(
+        paths,
+        process.env,
+        {
+          browser: realBrowserDoctorDeps(realMachine(process.env, null), paths.home),
+          bun: { path: process.execPath, version: Bun.version },
+          gateway: {
+            bundle: routerBundle(),
+            runner,
+            service,
+            machine: realMachine(process.env, null),
+          },
+          local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
+          mcp: realMcpDoctorDeps(),
+          portal: () =>
+            testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
+          project: {
+            cwd: process.cwd(),
+            pluginHooksFile: join(pluginDir(), "hooks", "hooks.json"),
+          },
+          live: rest.includes("--live")
+            ? {
+                pluginDir: pluginDir(),
+                run: liveRunner,
+              }
+            : null,
         },
-        local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
-        mcp: realMcpDoctorDeps(),
-        portal: () =>
-          testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-        project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
-        live: rest.includes("--live")
-          ? {
-              pluginDir: pluginDir(),
-              run: liveRunner,
-            }
-          : null,
-      });
+        doctorOut,
+        doctorPrint,
+      );
     }
     case "hook": {
       const [name, ...extra] = rest;
@@ -597,14 +610,14 @@ async function main(argv: string[]): Promise<number> {
         }
         const apply = !extra.includes("--dry-run");
         const result = browserSetup(paths, browserDeps, { apply });
-        const lines = [
+        const browserOut = createOut(currentTerminal(process.env));
+        browserOut.marked([
           ...(result.changes.length > 0 ? result.changes : ["Nothing to change."]),
           ...result.info,
           ...result.notes,
           ...result.guide,
-        ];
-        console.log(lines.join("\n"));
-        if (!apply) console.log("Dry run: nothing was written or run.");
+        ]);
+        if (!apply) browserOut.say(dryRunEnding(["written", "run"]));
         return result.ok ? 0 : 1;
       }
       if (sub === "token") {

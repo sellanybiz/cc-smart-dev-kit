@@ -66,7 +66,7 @@ import {
   removeInstructions,
   setInstructionsOptOut,
 } from "../setup/instructions";
-import { installLauncher, LAUNCHER_NAME, shellWord } from "../setup/launcher";
+import { installLauncher } from "../setup/launcher";
 import { installLauncherCmd, launcherArgv } from "../setup/launcher-cmd";
 import { withLock } from "../setup/lock";
 import {
@@ -89,12 +89,15 @@ import {
   retryWatchdogDeclinedFile,
   retryWatchdogKeysPresent,
 } from "../setup/retry-watchdog";
+import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
 import { readUserJson } from "../setup/user-json";
 import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
 import { atomicWrite, realTarget } from "../setup/write";
 import { retiredRepoLines } from "../update/retired-repos";
 import { type CliPaths, tildify } from "./paths";
+import { createOut, dryRunEnding, type Out } from "./ui/out";
+import { currentTerminal } from "./ui/terminal";
 
 export interface SetupOptions {
   /** Show every change; write and run nothing (and reach no network). */
@@ -165,17 +168,9 @@ function marketplaceKnown(settingsFile: string): boolean {
   }
 }
 
-/** Claude Code's status line setting, an owned key when setup sets it. */
-export const STATUSLINE_KEY: KeyPath = ["statusLine"];
-
 /** Says the person answered "no" to the status line: setup does not ask again. */
 export function statuslineDeclinedFile(stateDir: string): string {
   return join(stateDir, "statusline-declined");
-}
-
-/** The status line setting: the launcher, so it follows plugin updates. */
-export function statuslineSetting(paths: CliPaths): Record<string, string> {
-  return { command: `${shellWord(join(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 /** True when settings.json has a `statusLine` of any kind. */
@@ -767,6 +762,7 @@ function planWarp(paths: CliPaths, options: SetupOptions): WarpWork | { error: s
 export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<number> {
   const short = (path: string) => tildify(path, paths.home);
   const machine = options.machine;
+  const out = createOut(currentTerminal(process.env, machine.platform));
 
   if (!marketplaceKnown(paths.settingsFile)) {
     console.error(
@@ -915,6 +911,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     const watchdogNote = retryWatchdogDryNote(paths, machine, managed);
     if (watchdogNote !== null) report.info.push(watchdogNote);
     printReport(
+      out,
       {
         changes,
         info: [...warp.info, ...planned.info, ...report.info],
@@ -922,7 +919,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       },
       "Nothing to change.",
     );
-    console.log("Dry run: nothing was written or run.");
+    out.say(dryRunEnding(["written", "run"]));
     return 0;
   }
 
@@ -1019,7 +1016,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   report.info.push(...written.info);
   report.notes.push(...written.notes);
 
-  printReport(report, "Nothing to change. Setup is up to date.");
+  printReport(out, report, "Nothing to change. Setup is up to date.");
   if (written.changes.length > 0) {
     console.log(`Done. Each changed file has a backup in ${short(paths.stateDir)}/backups/.`);
   }
@@ -1039,12 +1036,15 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   return ok ? 0 : 1;
 }
 
-/** Changes first (or `nothing`), then information, then notes. */
-function printReport(report: Report, nothing: string): void {
-  const lines = [
+/**
+ * Changes first (or `nothing`), then information, then notes, each line's mark drawn by the
+ * output module (`Out.marked`): the same words as before, with colour on a terminal and ASCII on
+ * an old Windows console. How the report is ordered and worded is B3's to rebuild on the module.
+ */
+function printReport(out: Out, report: Report, nothing: string): void {
+  out.marked([
     ...(report.changes.length > 0 ? report.changes : [nothing]),
     ...report.info,
     ...report.notes,
-  ];
-  console.log(lines.join("\n"));
+  ]);
 }

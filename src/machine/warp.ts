@@ -1,5 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
+import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import { messageOf } from "../gateway/config";
 import { findUserInstall } from "../setup/installed-plugins";
@@ -465,10 +467,7 @@ export function showCommand(argv: readonly string[]): string {
  * Warp is optional, and so is its plugin: the app without the plugin, or with the plugin
  * turned off, is information, never a failure.
  */
-export function warpCheck(
-  machine: Machine,
-  paths: CliPaths,
-): { ok: boolean; info?: boolean; text: string } {
+export function warpCheck(machine: Machine, paths: CliPaths): Check {
   const app = detectWarpApp(machine, detectSystem(machine));
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
   const version = app.version === null ? "" : ` ${app.version}`;
@@ -482,7 +481,8 @@ export function warpCheck(
   if (!app.installed) {
     return {
       ok: false,
-      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not. Run: cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp)`,
+      text: `the Warp Claude plugin ${WARP_PLUGIN_ID} is installed, but the Warp app is not`,
+      fix: `${COMMAND} setup --remove-warp (or ${COMMAND} setup --warp to install the app)`,
     };
   }
   if (!plugin) {

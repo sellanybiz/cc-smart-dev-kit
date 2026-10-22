@@ -115,14 +115,18 @@ with --yes.
   ${NO_RETRY_WATCHDOG_FLAG}  take it out again, and do not ask again
   --dry-run            print what would change, and write, run and check nothing`;
 
-const DOCTOR_HELP = `Usage: ${COMMAND} doctor [--live]
+const DOCTOR_HELP = `Usage: ${COMMAND} doctor [--verbose] [--json] [--live]
 
-Checks the install, the cc-smart-dev-kit files the current project's CLAUDE.md imports, and
-the project of the current folder. Exit code 1 when a check fails.
+Checks the install, the ${COMMAND} files the current project's CLAUDE.md imports, and
+the project of the current folder, in groups. A group that passed shows one line; a failure
+shows a Fix: line under it; the last line says what the run found. Exit code 1 when a check
+fails.
 
-  --live    also run two throwaway Claude Code sessions in temp repos, to prove the hooks and
-            the worktree engine on this Claude Code (uses your login; a few cents). Records
-            the version it passed on.`;
+  --verbose  show every line, the ones that passed too
+  --json     print the whole report as JSON, for a program (the installers read it)
+  --live     also run two throwaway Claude Code sessions in temp repos, to prove the hooks and
+             the worktree engine on this Claude Code (uses your login; a few cents). Records
+             the version it passed on.`;
 
 const BROWSER_HELP = `Usage: ${COMMAND} browser <mcp|setup|token|check> [options]
 

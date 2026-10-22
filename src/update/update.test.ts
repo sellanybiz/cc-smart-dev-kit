@@ -938,7 +938,7 @@ describe("running sessions and the version they loaded", () => {
 
   test("doctor: no check yet; then an older running session after an update; a failed check is a ✗", async () => {
     const m = machine();
-    const before = await m.cli(["doctor"]);
+    const before = await m.cli(["doctor", "--verbose"]);
     expect(before.stdout).toContain(
       "· background update: no check yet (a new Claude session checks, at most once an hour)\n",
     );
@@ -953,7 +953,7 @@ describe("running sessions and the version they loaded", () => {
       detail: "1.1.0 (was 1.0.0)",
       result: "updated",
     });
-    const after = await m.cli(["doctor"]);
+    const after = await m.cli(["doctor", "--verbose"]);
     expect(after.stdout).toContain(
       "✓ background update: last check 2026-10-15T10:00:00Z: installed 1.1.0 (was 1.0.0)\n",
     );
@@ -962,10 +962,10 @@ describe("running sessions and the version they loaded", () => {
     );
     writeLastCheck(m.files, { at: "2026-10-15T11:00:00Z", detail: "boom", result: "failed" });
     writeFileSync(m.files.hold, "2026-10-15T11:30:00Z\n");
-    const failed = await m.cli(["doctor"]);
+    const failed = await m.cli(["doctor", "--verbose"]);
     expect(failed.exitCode).toBe(1);
     expect(failed.stdout).toContain(
-      "· background updates are on hold (since 2026-10-15T11:30:00Z). To resume: cc-smart-dev-kit update --resume\n✗ background update: the last check, 2026-10-15T11:00:00Z, failed: boom. The log: ~/.claude/cc-smart-dev-kit/update.log. To try now: cc-smart-dev-kit update\n",
+      "· background updates are on hold (since 2026-10-15T11:30:00Z). To resume: cc-smart-dev-kit update --resume\n  ✗ background update: the last check, 2026-10-15T11:00:00Z, failed: boom. The log: ~/.claude/cc-smart-dev-kit/update.log\n    Fix: cc-smart-dev-kit update\n",
     );
   }, 30_000);
 });

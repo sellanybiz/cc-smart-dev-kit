@@ -7092,52 +7092,6 @@ function loadProjectConfig(checkout, pluginVersion) {
 // src/workflow/resolve.ts
 import { existsSync as existsSync6, readFileSync as readFileSync6 } from "fs";
 
-// src/browser/chrome.ts
-var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
-var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
-var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
-
-// src/browser/legacy.ts
-var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
-
-// src/browser/token.ts
-var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
-var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
-
-// src/browser/setup.ts
-var WINDOWS_KEY = `HKCU\\Software\\Google\\Chrome\\Extensions\\${PLAYWRIGHT_EXTENSION_ID}`;
-
-// src/setup/marketplace-access.ts
-var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
-
-// src/machine/claude-mem.ts
-var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
-var PROVIDER = "CLAUDE_MEM_PROVIDER";
-var START_BLOCK_KEYS = [
-  "CLAUDE_MEM_WORK_STATE_ENABLED",
-  "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED"
-];
-var WORK_STATE_KEY = START_BLOCK_KEYS[0];
-var UNCHOSEN = {
-  [PROVIDER]: ["", "claude"],
-  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
-  [API_KEY]: [""],
-  [START_BLOCK_KEYS[0]]: ["", "true"],
-  [START_BLOCK_KEYS[1]]: ["", "true"]
-};
-
-// src/machine/warp.ts
-var WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
-var YUM_REPO_TEXT = `[warpdotdev]
-name=warpdotdev
-baseurl=https://releases.warp.dev/linux/rpm/stable
-enabled=1
-gpgcheck=1
-gpgkey=${WARP_KEY_URL}
-`;
-
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
 var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
@@ -7151,52 +7105,6 @@ var FIND_INSTALL_JS = [
 
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-
-// src/setup/managed-hook.ts
-var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
-
-// src/setup/launcher-cmd.ts
-var FIND_INSTALL_JS2 = [
-  "const f=process.argv[process.argv.length-1];",
-  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
-  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
-  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
-// src/hooks/notify-types.ts
-var PLUGIN_NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "worker_permission_prompt"
-];
-var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
-var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
-var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
-var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
-
-// src/setup/user-notify-hook.ts
-var USER_NOTIFY_HOOK_NAME = "notify";
-var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
-
-// src/hooks/settings-hooks.ts
-var RETIRED_ENGINE_HOOKS = [
-  "worktree-create",
-  "worktree-remove",
-  "subagent-stop"
-];
-var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
-
-// src/workflow/reviews.ts
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-
-// src/sessions/command.ts
-var TAIL_BYTES = 512 * 1024;
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -7373,6 +7281,9 @@ function windowsToastArgv(shell, title, body, critical = false) {
 function windowsToastArgvFor(title, body, critical = false) {
   return windowsToastArgv(TOAST_SHELL, title, body, critical);
 }
+
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/update/major.ts
 import { join as join7 } from "path";

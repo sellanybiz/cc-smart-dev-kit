@@ -21,10 +21,10 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
-import { STATUSLINE_KEY, statuslineSetting } from "../cli/setup";
 import { checkCcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
+import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { atomicWrite, backupFile, realTarget } from "../setup/write";
 import { heldSince, hold, resume, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";

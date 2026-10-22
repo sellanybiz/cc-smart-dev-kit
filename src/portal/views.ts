@@ -17,7 +17,8 @@
 import type { BrowserGuide } from "../browser/setup";
 import { COMMAND } from "../build-info";
 import { PLUGIN } from "../build-info/names";
-import type { Check as DoctorCheck } from "../cli/doctor";
+import { FIX_LABEL } from "../cli/check";
+import { checkMark, type Check as DoctorCheck } from "../cli/doctor";
 import { UNIT_NAME } from "../gateway/service";
 import { JUDGE_SLOT } from "../gateway/targets";
 import type { LastCheck } from "../update/state";
@@ -877,7 +878,11 @@ ${
  * Nothing here is invented; the words are `doctor`'s own (`checkLine` prints the same ones).
  */
 function checkItem(check: DoctorCheck): string {
-  return `<li class="${check.ok ? "" : "fail"}"><span class="mark ${check.ok ? "ok" : "badmark"}" aria-hidden="true">${check.warn === true ? "!" : check.info === true ? "·" : check.ok ? "✓" : "✗"}</span><span class="wrap-any">${escapeHtml(check.text)}</span></li>`;
+  const fix =
+    check.fix === undefined
+      ? ""
+      : `<br><span class="small">${FIX_LABEL} <span class="mono">${escapeHtml(check.fix)}</span></span>`;
+  return `<li class="${check.ok ? "" : "fail"}"><span class="mark ${check.ok ? "ok" : "badmark"}" aria-hidden="true">${checkMark(check)}</span><span class="wrap-any">${escapeHtml(check.text)}${fix}</span></li>`;
 }
 
 /**
@@ -1014,9 +1019,9 @@ ${
   // The browser's own lines are drawn on the Browser card above (the same words, one home): this
   // list is everything else, so no line appears twice on one page.
   const doctorChecks =
-    doctor === null ? [] : doctor.checks.filter((check) => check.section !== "browser");
+    doctor === null ? [] : doctor.checks.filter((check) => check.group !== "browser");
   const browserChecks =
-    doctor === null ? [] : doctor.checks.filter((check) => check.section === "browser");
+    doctor === null ? [] : doctor.checks.filter((check) => check.group === "browser");
   const failed = doctorChecks.filter((check) => !check.ok).length;
   const doctorCard = `<section class="card pad">
 <div class="spread">

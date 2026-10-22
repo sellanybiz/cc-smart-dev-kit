@@ -14306,109 +14306,8 @@ function measure(checkout, { head, branch, base }, candidates, limits, git, obje
 // src/workflow/resolve.ts
 import { existsSync as existsSync14, readFileSync as readFileSync20 } from "fs";
 
-// src/cli/setup.ts
-import { delimiter, dirname as dirname10, join as join24 } from "path";
-
-// src/browser/chrome.ts
-var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
-var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
-var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
-
-// src/browser/legacy.ts
-var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
-
-// src/browser/token.ts
-var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
-var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
-
-// src/browser/setup.ts
-var WINDOWS_KEY = `HKCU\\Software\\Google\\Chrome\\Extensions\\${PLAYWRIGHT_EXTENSION_ID}`;
-
-// src/setup/marketplace-access.ts
-var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
-
-// src/machine/claude-mem.ts
-var API_KEY = "CLAUDE_MEM_OPENAI_COMPAT_API_KEY";
-var PROVIDER = "CLAUDE_MEM_PROVIDER";
-var START_BLOCK_KEYS = [
-  "CLAUDE_MEM_WORK_STATE_ENABLED",
-  "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED"
-];
-var WORK_STATE_KEY = START_BLOCK_KEYS[0];
-var UNCHOSEN = {
-  [PROVIDER]: ["", "claude"],
-  CLAUDE_MEM_OPENAI_COMPAT_PRESET: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: [""],
-  CLAUDE_MEM_OPENAI_COMPAT_MODEL: [""],
-  [API_KEY]: [""],
-  [START_BLOCK_KEYS[0]]: ["", "true"],
-  [START_BLOCK_KEYS[1]]: ["", "true"]
-};
-
-// src/machine/warp.ts
-var WARP_KEY_URL = "https://releases.warp.dev/linux/keys/warp.asc";
-var YUM_REPO_TEXT = `[warpdotdev]
-name=warpdotdev
-baseurl=https://releases.warp.dev/linux/rpm/stable
-enabled=1
-gpgcheck=1
-gpgkey=${WARP_KEY_URL}
-`;
-
-// src/setup/managed-hook.ts
-var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
-
-// src/setup/launcher-cmd.ts
-var FIND_INSTALL_JS2 = [
-  "const f=process.argv[process.argv.length-1];",
-  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
-  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
-  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
-// src/setup/retry-watchdog.ts
-var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
-var RETRY_WATCHDOG_VALUE = "1";
-var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
-var RETRY_WATCHDOG_RECHECK_MS = 300000;
-var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
-var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
-var RETRY_WATCHDOG_SETTINGS = [
-  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
-  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)]
-];
-var RETRY_WATCHDOG_QUESTION = "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " + 'Every Claude session on this machine then waits ("Retrying in \u2026"; Esc cancels) with no time limit, ' + "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
-
-// src/hooks/notify-types.ts
-var PLUGIN_NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "worker_permission_prompt"
-];
-var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
-var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
-var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
-var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
-
-// src/setup/user-notify-hook.ts
-var USER_NOTIFY_HOOK_NAME = "notify";
-var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
-
-// src/hooks/settings-hooks.ts
-var RETIRED_ENGINE_HOOKS = [
-  "worktree-create",
-  "worktree-remove",
-  "subagent-stop"
-];
-var RETIRED_ENGINE_LINE = new RegExp(String.raw`(^|[\s/"'])${COMMAND}(\.cmd)?["']?\s+["']?hook["']?\s+["']?(${RETIRED_ENGINE_HOOKS.join("|")})["']?(\s|;|$)`);
-
-// src/sessions/command.ts
-var TAIL_BYTES = 512 * 1024;
-
-// src/cli/setup.ts
+// src/setup/statusline.ts
+import { join as join24 } from "path";
 function statuslineSetting(paths) {
   return { command: `${shellWord(join24(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
@@ -14556,8 +14455,21 @@ function resolveWorkflow(paths, projectConfig) {
   };
 }
 
+// src/setup/retry-watchdog.ts
+var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
+var RETRY_WATCHDOG_VALUE = "1";
+var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+var RETRY_WATCHDOG_RECHECK_MS = 300000;
+var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
+var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
+var RETRY_WATCHDOG_SETTINGS = [
+  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
+  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)]
+];
+var RETRY_WATCHDOG_QUESTION = "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " + 'Every Claude session on this machine then waits ("Retrying in \u2026"; Esc cancels) with no time limit, ' + "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
+
 // src/crew/transcript.ts
-var TAIL_BYTES2 = 256 * 1024;
+var TAIL_BYTES = 256 * 1024;
 
 // src/crew/watch.ts
 var CLIP_CHARS = 120;
@@ -15402,7 +15314,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname11, isAbsolute as isAbsolute6, relative, resolve as resolve8 } from "path";
+import { dirname as dirname10, isAbsolute as isAbsolute6, relative, resolve as resolve8 } from "path";
 
 // src/ports.ts
 var DEFAULT_PORTAL_PORT = 20150;
@@ -15659,7 +15571,7 @@ function movedTo2(invocation, folder, ctx) {
   return isAbsolute6(path) ? resolve8(path) : folder === null ? null : resolve8(folder, path);
 }
 function protectedNeedles(paths) {
-  const settings = dirname11(paths.workflowConfigFile);
+  const settings = dirname10(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative(paths.home, folder);
@@ -15802,7 +15714,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname11);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname10);
   const inside = (folder) => folderForms(folder).some((form) => isInside(path, form, true));
   if (settingsFolders.some(inside))
     return SETTINGS_WHAT;

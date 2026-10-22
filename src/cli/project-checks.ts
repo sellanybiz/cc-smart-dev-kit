@@ -31,7 +31,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { COMMAND } from "../build-info/names";
+import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
 import { runGit } from "../hooks/git";
 import {
   allWiredHandlers,
@@ -50,19 +50,17 @@ import {
 } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
+import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunner } from "./project-init";
 
-export interface ProjectLine {
-  ok: boolean;
-  /** Information only, never a failure. */
-  info?: boolean;
-  /** Worth a look, but not a failure (`ok` stays true). */
-  warn?: boolean;
-  text: string;
-}
+/** One project line of doctor's report: a check like any other (`check.ts`). */
+export type ProjectLine = Check;
 
 type Env = Record<string, string | undefined>;
+
+/** What fixes a git that cannot read this folder's checkout. */
+const GIT_FIX = `check that git works in this folder (git status), then run: ${COMMAND} doctor`;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -153,7 +151,8 @@ function engineLines(sources: string[], projectDir: string, home: string): Proje
     const hooks = names.map((name) => `${COMMAND} hook ${name}`).join(", ");
     lines.push({
       ok: false,
-      text: `project: ${shown(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time: run ${COMMAND} project init, which takes ${names.length === 1 ? "the line" : "those lines"} out (Claude Code's own worktrees need no hook)`,
+      text: `project: ${shown(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook)`,
+      fix: `${COMMAND} project init (it takes ${names.length === 1 ? "the line" : "those lines"} out)`,
     });
   }
   return lines;
@@ -277,7 +276,11 @@ function ownCopyLines(
     pluginHooks = readPluginHooks(pluginHooksFile);
   } catch (error) {
     return [
-      { ok: false, text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}` },
+      {
+        ok: false,
+        text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}`,
+        fix: PLUGIN_UPDATE_COMMAND,
+      },
     ];
   }
   const own: string[] = config.ownHooks ?? [];
@@ -377,7 +380,7 @@ export function projectChecks(
   try {
     checkout = existsSync(cwd) ? locateCheckout(cwd, { env }) : null;
   } catch (error) {
-    return [{ ok: false, text: `project: ${message(error)}` }];
+    return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
   if (checkout === null) return [];
   // Where Claude Code reads the project's settings: the folder the session started in.
@@ -394,7 +397,14 @@ export function projectChecks(
     config = loadProjectConfig(checkout).config;
   } catch (error) {
     if (!(error instanceof CcSmartDevKitConfigError)) throw error;
-    return [{ ok: false, text: `project: ${error.message}` }, ...engine];
+    return [
+      {
+        ok: false,
+        text: `project: ${error.message}`,
+        fix: `correct the file as this line says, or run: ${COMMAND} project init`,
+      },
+      ...engine,
+    ];
   }
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),

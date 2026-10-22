@@ -286,17 +286,41 @@ valid across updates.
 
 ## Command output
 
+- **One way to print: `src/cli/ui/out.ts`** (with `terminal.ts`, which reads the terminal once).
+  New or rebuilt output prints headings, marked lines, groups, `Fix:` lines, a verdict,
+  progress and JSON through it, never its own marks or colour codes (`doctor` does all of it;
+  `setup` and `browser setup` draw their marks with `Out.marked`; the gateway, workflow,
+  migrate and restore lines move when those commands are rebuilt). Rich on a terminal (colour on the marks and the
+  verdict only, wrapping to the width, at most 100 columns; a progress line while a slow step
+  runs), plain otherwise (a pipe, a file, `NO_COLOR` with a value, `TERM=dumb`) with **the same
+  words**: a test of the plain text is a test of what a person reads. An old Windows console on
+  screen gets ASCII marks and words (`[ok]` `[x]` `[i]` `[!]`, `-` for `—`); plain output keeps
+  Unicode everywhere. In-house: no colour or spinner library.
+- **Every mark comes with words.** A group line says "1 to fix, 4 passed"; a verdict says what
+  the run found. Colour never carries the meaning alone.
+- **Never in a program's stream**: the router bundle, a hook's stdout and `browser mcp`'s stdout
+  never import `src/cli/ui/` (`out.test.ts` › "who never imports it" walks their imports).
+- **A failed check carries its fix**: `ok: false` needs `fix` (`src/cli/check.ts`, enforced by
+  the type), and `text` says only what is wrong. `doctor` prints `Fix: <fix>` under it; the
+  portal shows it too. Say what is true without a double negative ("is up to date", not "is not
+  behind").
+- **A `--dry-run` ends with `dryRunEnding`** ("Dry run: nothing was written or run."), one form
+  for every command.
 - `setup` prints one line per change: `+` created, `~` changed, `-` removed, with `~`
   for the home folder (`tildify`); then information lines (two spaces: what it left
   alone); then notes (`!`). With no change it prints "Nothing to change. Setup is up to
   date." first; information may follow. "Done. Each changed file has a backup in
   ~/.claude/cc-smart-dev-kit/backups/." (the state folder's `backups/`) comes only when a file
   was written.
-- `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. A part
-  the person may leave out (the gateway, never set up; Warp, with or without its plugin)
-  is a `·` line: information, never a failure. A `!` line is a warning (claude-mem older
-  than 13.35.0), never a failure either. The list of checks is in `README.md`
-  § Commands; keep it in step.
+- `doctor` prints its checks in groups (`CHECK_GROUPS` in `src/cli/check.ts`), each as it is
+  done. A group that passed folds to its line and its `·` notes; one with a `✗` or a `!` shows
+  every line, each `✗` with its `Fix:` line. Then one verdict line. `--verbose` opens every
+  group; `--json` prints `DoctorReport` and nothing else, and **the installers read only that**,
+  never the text a person reads (its folds, wraps and marks change with the terminal). A part
+  the person may leave out (the gateway, never set up; Warp, with or without its plugin) is a
+  `·` line: information, never a failure. A `!` line is a warning (claude-mem older than
+  13.35.0), never a failure either. The list of checks is in `README.md` § Commands; keep it in
+  step.
 - Exit codes: 0 done, 1 a failed check or an error, 2 a wrong command or option.
 - A check that reaches the network has a timeout and no password prompt in a terminal:
   `git ls-remote` with `GIT_TERMINAL_PROMPT=0`. It adds ssh `BatchMode` only when the

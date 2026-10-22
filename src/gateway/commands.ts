@@ -21,6 +21,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
+import { createOut, type Out } from "../cli/ui/out";
+import { currentTerminal } from "../cli/ui/terminal";
 import { withLock } from "../setup/lock";
 import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
@@ -1018,7 +1020,7 @@ function printSlots(config: GatewayConfig, print: (line: string) => void): void 
       if (saved !== null) print(`    ${keptWords(key, saved)}`);
       // The worker's tested targets are judges while Claude cannot: the trade-off is shown.
       if (key === JUDGE_SLOT && fallbackOn(config, key) && workerJudgeTargets(config).length > 0) {
-        print(`    WARN ${JUDGE_WARNING}`);
+        print(`    ! ${JUDGE_WARNING}`);
       }
       continue;
     }
@@ -1034,7 +1036,7 @@ function printSlots(config: GatewayConfig, print: (line: string) => void): void 
       );
     }
     print(`  ${key.padEnd(16)} Custom: ${targets.join(" → ")}  (${notes.join("; ")})`);
-    if (key === JUDGE_SLOT) print(`    WARN ${JUDGE_WARNING}`);
+    if (key === JUDGE_SLOT) print(`    ! ${JUDGE_WARNING}`);
   }
   const aliases = Object.entries(config.aliases).sort(([a], [b]) => (a < b ? -1 : 1));
   if (aliases.length > 0) {
@@ -1148,7 +1150,7 @@ function sayStandInTradeOff(ctx: GatewayContext, config: GatewayConfig): void {
     fallbackOn(config, JUDGE_SLOT) &&
     workerJudgeTargets(config).length > 0
   ) {
-    ctx.print(`WARN ${JUDGE_WARNING}`);
+    ctx.print(`! ${JUDGE_WARNING}`);
   }
 }
 
@@ -1281,7 +1283,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
       `  To let the next target answer when ${plan.next[0]} fails or rests: ${COMMAND} gateway fallback ${slotName(plan.key)} on`,
     );
   }
-  if (plan.key === JUDGE_SLOT && plan.next.length > 0) ctx.print(`WARN ${JUDGE_WARNING}`);
+  if (plan.key === JUDGE_SLOT && plan.next.length > 0) ctx.print(`! ${JUDGE_WARNING}`);
   // Where the judge is Claude first, the stand-ins it names are the ones that just changed.
   if (plan.key === WORKER_SLOT || (plan.key === JUDGE_SLOT && plan.next.length === 0)) {
     if (plan.key === WORKER_SLOT && !Object.hasOwn(plan.config.slots, JUDGE_SLOT)) {
@@ -1383,12 +1385,12 @@ function printOverrides(
 ): void {
   if (report.subagentOverrides.length > 0) {
     print(
-      `  WARN ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`,
+      `  ! ${report.subagentOverrides.join(", ")} set: every agent launched without a model runs on it, with the gateway possibly an affordable slot. Remove it by hand unless you want that.`,
     );
   }
   if (report.loginOverrides.length > 0) {
     print(
-      `  WARN ${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`,
+      `  ! ${report.loginOverrides.join(", ")} set: that replaces your own Claude login. Remove it for the gateway.`,
     );
   }
 }
@@ -1410,7 +1412,7 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
       `router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`,
     );
     if (body.port !== port)
-      ctx.print(`  WARN the config says port ${port}; restart the router to move it`);
+      ctx.print(`  ! the config says port ${port}; restart the router to move it`);
     const cooling = isJsonObject(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling)
       ctx.print(`  resting: ${target} for ${String(seconds)} s more`);
@@ -1486,11 +1488,24 @@ function formatUsd(usd: number): string {
 }
 
 /**
+ * The output module over the gateway's own print sink: the same words through `ctx.print` (the
+ * portal hands its own), with colour and wrapping only when stdout is a terminal. A table is
+ * printed through `ctx.print` as it is: its columns must not wrap.
+ */
+function gatewayOut(ctx: GatewayContext): Out {
+  return createOut(currentTerminal(process.env, ctx.platform), {
+    line: (text) => ctx.print(text),
+    raw: () => undefined,
+  });
+}
+
+/**
  * `gateway history`: the request history's totals by target, slot, model or session (D51).
  * The portal's history page reads the same module (`history-read.ts`) for its chart and its
  * recent-requests table; this view is the terminal's.
  */
 async function commandHistory(ctx: GatewayContext, args: string[]): Promise<number> {
+  const out = gatewayOut(ctx);
   const options = historyOptions(args);
   if (options === null) {
     ctx.error(USAGE);
@@ -1505,7 +1520,7 @@ async function commandHistory(ctx: GatewayContext, args: string[]): Promise<numb
   }
   const retentionDays = config === null ? HISTORY_RETENTION_DAYS : historyRetentionDays(config);
   if (retentionDays <= 0) {
-    ctx.print(
+    out.say(
       `The request history is off (history.retentionDays: 0 in ${tildify(ctx.paths.gatewayConfigFile, ctx.paths.home)}): nothing is logged.`,
     );
     return 0;
@@ -1516,15 +1531,18 @@ async function commandHistory(ctx: GatewayContext, args: string[]): Promise<numb
     range: options.range,
   });
   if (answer.series.length === 0) {
-    ctx.print(
+    out.say(
       historyDbExists(ctx.paths.historyDbFile)
         ? `No request in the last ${options.range} matched.`
         : `No request logged yet: ${tildify(ctx.paths.historyDbFile, ctx.paths.home)} is made by the router's first row.`,
     );
     return 0;
   }
-  ctx.print(
-    `History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}. Cost is estimated: Claude at its list price, a backend at the price its own list gives.`,
+  out.heading(
+    `History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}`,
+  );
+  out.say(
+    "Cost is estimated: Claude at its list price, a backend at the price its own list gives.",
   );
   const header = [
     options.by,
@@ -1773,7 +1791,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     const gone = await discard.discard();
     if (gone.ok) throw error;
     throw new Error(
-      `${messageOf(error)}\n  WARN the key this run made in OmniRoute could not be removed (${discard.name}, id ${discard.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`,
+      `${messageOf(error)}\n  ! the key this run made in OmniRoute could not be removed (${discard.name}, id ${discard.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`,
     );
   };
   let code: number;
@@ -1855,7 +1873,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
         }
         if (unchecked !== "") {
           ctx.print(
-            `  WARN the key was saved WITHOUT its backend accepting it (${unchecked}). Check it when the backend answers: ${COMMAND} gateway check`,
+            `  ! the key was saved WITHOUT its backend accepting it (${unchecked}). Check it when the backend answers: ${COMMAND} gateway check`,
           );
         }
         // The question was answered above: the warning is not repeated, and nothing asks again.
@@ -1926,7 +1944,7 @@ async function proveWorkerTargets(ctx: GatewayContext): Promise<void> {
     sayStandInTradeOff(ctx, saved);
   } catch (error) {
     ctx.print(
-      `WARN the judge test of the worker's targets could not finish (${messageOf(error)}). Run ${COMMAND} gateway setup again to retry it.`,
+      `! the judge test of the worker's targets could not finish (${messageOf(error)}). Run ${COMMAND} gateway setup again to retry it.`,
     );
   }
 }

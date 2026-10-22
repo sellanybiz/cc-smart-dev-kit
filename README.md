@@ -53,8 +53,9 @@ The installer does the whole install, in order: it checks the machine, installs 
 [Bun](https://bun.sh) 1.4.3 or later when it is missing or older, adds the three marketplaces,
 installs the plugin, runs `migrate` and then `setup` (the move is a no-op on a machine without
 the old names), asks for the three things only you have — the browser's token, the gateway's
-key, the Tavily key — and ends with `doctor` and, when something is left, the list of what is
-left. It asks before it installs or upgrades anything, it prints the exact command that retries
+key, the Tavily key — and ends with `doctor` (it reads its `--json` report) and, when something
+is left, the list of what is left: each item the run skipped, and each of doctor's failures with
+its `Fix:` line. It asks before it installs or upgrades anything, it prints the exact command that retries
 a step that failed, and running it again goes on from there.
 
 - **Run it in your own terminal.** Every question reads the terminal, never the pipe the
@@ -717,7 +718,7 @@ Five pages say how, and what still has to be tested there:
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Default: the last 6 hours. It also shows auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). Read only; no message text. |
 | `cc-smart-dev-kit report [--hours <n> \| --days <n>] [--project <folder or name>] [--session <id>] [--json]` | What this machine's Claude Code sessions did in the window (default: the last 7 days; at most 8): per session, the time Claude Code timed for its turns, agent launches and the parallel share, the minutes blocked on permission prompts and which guard asked, the questions, the waits on background work, the idle time until the person wrote, the compactions, auto-mode's blocks by rule, and the merges that asked — then the totals, every prompt's cause, and the calls waiting on you now. Read only; no message text. A prompt's wait is an upper bound: from the tool call's line to the person's answer. `--json` prints the whole report. |
 | `cc-smart-dev-kit mcp status [--json]` | Read-only: the three MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
-| `cc-smart-dev-kit doctor [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below). Prints ✓ or ✗ for each check, `·` for information and `!` for a warning (neither is a failure), and exits with 1 when a check fails. `--live` also proves the hooks and Claude Code's own worktrees on the Claude Code installed here (below); it never runs without the flag. |
+| `cc-smart-dev-kit doctor [--verbose] [--json] [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below), in groups. A group that passed shows one line; a group with a ✗ or a `!` shows every line, and each ✗ has a `Fix:` line under it. `·` is information and `!` a warning (neither is a failure). The last line is the verdict, and the exit code is 1 when a check fails. `--verbose` opens every group; `--json` prints the whole report for a program (the installers read it). `--live` also proves the hooks and Claude Code's own worktrees on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit hook <notify>` | The notifier hook (below): `setup` wires `hook notify` in your user settings for agent view; it reads the hook's input on stdin and answers as Claude Code expects. The three worktree names of the plugin's retired worktree engine (**retired in 1.0.0**) only print the fix on stderr and exit 1 — a non-blocking error, so a leftover line never blocks a subagent's stop; `cc-smart-dev-kit project init` takes such a line out of the project's settings (§ Worktrees). |
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the guards, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
 | `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the merge guard's own judgment: each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it asks); exit 0 when every one is allowed, 1 when any asks. A lead uses `--branch` as its hand-back gate (§ [The workflow](#the-workflow)). |
@@ -867,17 +868,44 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
 1.4.3 cannot start a hook at all: the shim stops first, and a guard asks instead (see
 [Install](#install)).
 
+`doctor` prints its checks in groups (the plugin, updates, companion plugins, MCP servers,
+the browser, alerts and limits, this project, the gateway, the live check), each as soon as it
+is done; on a terminal the group being checked stands on the line meanwhile. A group that
+passed folds to one line and keeps only its `·` notes; a group with a failure or a warning
+shows every line, each failure with its fix under it. The last line says what the run found:
+
+```
+✓ The plugin         6 passed
+✗ Updates            1 to fix, 2 passed, 1 note
+  ✗ installed 1.0.0, marketplace has 1.1.0
+    Fix: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit
+  ✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git
+  ✓ plugin updates are on
+  · background update: no check yet (a new Claude session checks, at most once an hour)
+· Gateway            1 note
+  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup
+
+✗ 1 to fix, 8 passed. Run each Fix: line above, then: cc-smart-dev-kit doctor
+```
+
+On a terminal the marks and the verdict are in colour and long lines wrap to its width (at most
+100 columns). Anything else — a pipe, a file, CI, `NO_COLOR` set, `TERM=dumb` — gets the same
+words with no colour, no progress line and no wrapping. An old Windows console (no Windows
+Terminal, no VS Code) gets ASCII marks: `[ok]`, `[x]`, `[i]`, `[!]`. `--json` prints the report
+as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, each with its `id`,
+`title`, `status` and `checks` (`status`, `text`, and `fix` on a failure).
+
 `doctor` checks that:
 
 - the Bun running it is 1.4.3 or later. On an older one it skips the gateway checks:
   they send the backend key;
 - the plugin is installed **and turned on**: an install whose `enabledPlugins` entry in
-  `~/.claude/settings.json` is not `true` loads no hook, skill or command, so ✗ says
-  "Run: claude plugin enable cc-smart-dev-kit@cc-smart-dev-kit";
-- the installed version is not behind the marketplace's local copy. When it is, ✗ says
-  "installed X, marketplace has Y. Run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit". When the
-  local copy or its version cannot be read, it says "Run: claude plugin marketplace
-  update cc-smart-dev-kit". A new major version in the copy is no failure: a `·` line says it
+  `~/.claude/settings.json` is not `true` loads no hook, skill or command, so its fix is
+  `claude plugin enable cc-smart-dev-kit@cc-smart-dev-kit`;
+- the installed version is up to date with the marketplace's local copy. When it is behind, ✗
+  says "installed X, marketplace has Y", fixed by `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`.
+  When the local copy or its version cannot be read, the fix is `claude plugin marketplace
+  update cc-smart-dev-kit`. A new major version in the copy is no failure: a `·` line says it
   waits for `cc-smart-dev-kit update`;
 - the launcher matches the script setup would write for the `bun` baked into it, and
   that `bun` is executable;
@@ -887,12 +915,12 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   ignores), and `tmux: not on Windows` is a `·` line (§ Windows);
 - the instructions: the copy in `~/.claude/cc-smart-dev-kit/instructions/` is this plugin
   version's (its version stamp, and each file against the plugin's), and `~/.claude/CLAUDE.md`
-  still holds the block that imports it. A ✗ says "Run: cc-smart-dev-kit setup". After
+  still holds the block that imports it. A ✗'s fix is `cc-smart-dev-kit setup`. After
   `--no-instructions`, a `·` line says they are left out, as information;
 - the current project: when a `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` in the
   current folder or a folder above it imports a cc-smart-dev-kit file
   (`@~/.claude/cc-smart-dev-kit/instructions/…`), that file exists. A missing one loads nothing and
-  Claude Code says nothing about it, so doctor fails with "Run: cc-smart-dev-kit setup" (or, after
+  Claude Code says nothing about it, so doctor fails, fixed by `cc-smart-dev-kit setup` (or, after
   `--no-instructions`, a `·` line with `cc-smart-dev-kit setup --instructions`). No import, no line;
 - git can read the marketplace (`git ls-remote`, with no password prompt in a terminal:
   `GIT_TERMINAL_PROMPT=0`; a git credential helper with a window of its own may still
@@ -940,13 +968,13 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   MCP servers' own line, just below;
 - the MCP servers setup registers (the `playwright` browser, `sequential-thinking`,
   `tavily-websearch`): each is registered at user scope and starts
-  (`claude mcp get`, which starts it once). ✗ when one is missing ("Run: cc-smart-dev-kit setup")
+  (`claude mcp get`, which starts it once). ✗ when one is missing (fix: `cc-smart-dev-kit setup`)
   or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
   what to remove. Without a Tavily key its server is skipped, as a `·` line that names the
   key file: a person who never wanted web search loses nothing. A key is never printed;
 - what an older setup left for Serena ([0.6.0](#060-serena-is-removed)): one ✗ line while
   setup still has to take back the `serena` registration it made, its context file or the
-  `serena-root` records ("Run: cc-smart-dev-kit setup"), and nothing once it has. A `serena`
+  `serena-root` records (fix: `cc-smart-dev-kit setup`), and nothing once it has. A `serena`
   of your own is a `·` line: it stays;
 - OmniRoute, when it is installed here: a `·` line when a newer release has been out for
   three days (with `cc-smart-dev-kit omniroute update`), and nothing when it is the newest or
@@ -964,7 +992,7 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   ([The portal](#the-portal));
 - agent view's notification hook: the user-level `Notification` hook setup writes into
   `~/.claude/settings.json` (matcher `agent_needs_input|agent_completed`). A ✗ says it is
-  missing or runs something else, with "Run: cc-smart-dev-kit setup" (§ Notifications);
+  missing or runs something else, fixed by `cc-smart-dev-kit setup` (§ Notifications);
 - the Linux desktop extras of the alerts (§ Notifications), when a desktop is there: a `·`
   line for each tool that is missing — `gdbus` for the minute on screen and one alert per
   session, `xdotool` for the raise on a click, `xfconf-query` for XFCE's Do Not Disturb —
@@ -983,7 +1011,7 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
   Scheduled Task — is there): the
   router service is active, the router copy is this plugin version's, the socket unit
   `cc-smart-dev-kit-router.socket` is there, listens on the config's port and is active (a
-  router set up by an older version has none: ✗ "Run: cc-smart-dev-kit gateway setup"), the
+  router set up by an older version has none: ✗, fixed by `cc-smart-dev-kit gateway setup`), the
   router answers on its port (when it does not, the ✗ says which of two cases it is: the
   socket is open but no router answers, so every request waits; or the router failed to
   start again and again, so systemd closed the socket and every request is refused; both
@@ -1274,7 +1302,7 @@ show its size. [docs/gateway.md](docs/gateway.md) § The request history.
      provider key such as an Ollama Cloud one.
    - **Anything else (unreachable, a 5xx): not refused, but not saved silently either.** setup
      says it could not be checked and saves nothing unless you add `--save-unchecked`, which
-     saves it with a WARN line naming `cc-smart-dev-kit gateway check` for later.
+     saves it with a warning line (`!`) naming `cc-smart-dev-kit gateway check` for later.
    - **A key that replaces one in the file is backed up first**: the whole file as it was, in
      `~/.claude/cc-smart-dev-kit/backups/<the file's path, encoded>/gateway.json.bak-cc-smart-dev-kit-<stamp>`
      (the state folder, never beside the config — a backup beside it would sit in `~/.config`
