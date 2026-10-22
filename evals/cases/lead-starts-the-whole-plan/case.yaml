@@ -1,0 +1,41 @@
+schema_version: "1.1"
+name: lead-starts-the-whole-plan
+description: >-
+  D47: a lead turn that ends with a ready phase not started is a fault. An approved plan with two
+  phases in wave 1 and one in wave 2 that builds on S1: at plan approval the lead starts all
+  three in that turn, S3 with `--waits-for S1`, so the watch starts it once S1 is merged. A lead
+  that starts only wave 1, or only S1, fails. In the eval sandbox the command cannot start a real
+  session, so the case grades the attempt.
+tags: [watch, workflow, needs-shell]
+plugins: ["../../.under-test/plugin", "../../harness"]
+execution:
+  max_turns: 25
+  allowed_tools: [Read, Glob, Grep, Skill, Bash, Agent, Edit, Write]
+  prompt: |
+    The plan in .claude/plans/2026-01-01-lookup.md is approved. Start building it.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: fires-lead
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?lead"'
+  - name: starts-s1
+    type: tool_used
+    tool: 'Bash'
+    input_match: '\bcrew\s+start\s+S1\b'
+  - name: starts-s2
+    type: tool_used
+    tool: 'Bash'
+    input_match: '\bcrew\s+start\s+S2\b'
+  - name: starts-s3-waiting-for-s1
+    type: tool_used
+    tool: 'Bash'
+    input_match: '\bcrew\s+start\s+S3\b(?:(?!crew\s+start)[\s\S])*--waits-for[\s=]+\S*S1'
+  - name: no-inline-build
+    type: tool_used
+    tool: 'Edit'
+    input_match: '"file_path"\s*:\s*"[^"]*/src/'
+    min: 0
+    max: 0
+    arm: 'both'

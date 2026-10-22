@@ -157,6 +157,13 @@ export function eventLine(
     }
     case "question":
       return `${name}: question · ${clip(event.text ?? "")} · answer it: crew answer "${name}" "<text>"`;
+    case "tell": {
+      // A crew session told another a contract change or asked it a contract question (D47):
+      // the lead sees it, because it is the one that answers what the two cannot settle.
+      const told = event.tell?.to ?? [];
+      const kind = event.tell?.kind ?? "note";
+      return `${name}: told ${told.join(", ")} · ${kind} · ${clip(event.text ?? "")}`;
+    }
     default:
       return null;
   }

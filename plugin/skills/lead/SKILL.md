@@ -44,14 +44,17 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   --files <glob,...> [--waits-for <phase,...>] [--base <ref>]
 ```
 
-- **Start every phase of a wave in one message.** Each call returns at once with one line:
-  `started`, `queued` or `failed`, with the reason. Your reply names each crew session with the model
-  and effort its line shows (the core instructions' "say it when you launch").
+- **At plan approval, start the whole plan at once**, in one message: every phase of every
+  wave, each later one with `--waits-for` the phases it builds on. You never keep a list of what
+  is ready: the queue and the watch start each phase when what it waits for is merged and a
+  place is free. Each call returns at once with one line: `started`, `queued` or `failed`, with
+  the reason. Your reply names each crew session with the model and effort its line shows (the
+  core instructions' "say it when you launch").
 - **`queued` is not an error.** A cap, the free memory or `--waits-for` holds it, and it starts
   by itself when its place frees. Never start it a second time.
-- **A phase that builds on another phase's code** uses `--waits-for <phase,...>`: it holds a
-  phase until each of those is merged (or removed). The watch marks a merged branch and starts
-  the waiting session by itself, cut from your branch with the merge in it.
+- **`--waits-for <phase,...>`** holds a phase until each of those is merged (or removed). The
+  watch marks a merged branch and starts the waiting session by itself, cut from your branch
+  with the merge in it. A phase the plan adds later is started the moment it is written.
 - **`failed`:** read the reason and fix that. `Workspace not trusted`: the person opens the
   repository once with `claude` and accepts the trust prompt.
 
@@ -74,8 +77,24 @@ How to brief well, and how to brief an affordable model: `/cc-smart-dev-kit:suba
 
 Running this skill starts the `crew-events` monitor. It prints one line per change of your
 crew sessions — a start, a step, a question, a permission wait, a quiet crew session, a report, a crash, a
-queued crew session that started — and each line reaches you as a notification, also when you are
-idle. So after the starts, **go on**: answer, merge, plan the next wave, or end the turn.
+queued crew session that started, a note one crew session told another — and each line reaches you as a notification, also when you are
+idle. So after the starts, **go on**.
+
+**On each line, act in that turn:**
+
+| The line | You |
+|---|---|
+| a hand-back (`<name>: done`) | check and merge it (§ 6); the watch starts the phases that waited for it |
+| `question`, a technical one | answer it (§ 5) |
+| `question`, one that is the person's | `AskUserQuestion` (§ 5) |
+| `needs you` (a permission wait) | give the person `claude attach <name>` |
+| `told` (one crew session told another a contract change or question) | nothing, unless it changes the plan or the two cannot settle it: then `crew answer` both |
+| `failed`, `blocked`, `quiet`, a turn ended with no report | § 6 |
+
+**Between lines:** the integration work that is yours — the merges, the full check after each,
+the shared files, the plan file — and stay free for the person. **Never poll, wait or sleep.**
+A turn that ends with a ready phase not started is a fault: before you end the turn, every
+phase whose waits are met runs or is queued.
 
 **Where monitors do not run** (telemetry off: `DISABLE_TELEMETRY` in the environment or in a
 settings file's `env`), run `cc-smart-dev-kit crew watch --once` with
@@ -119,7 +138,8 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
 4. **One full check after each merge, in the background** (`run_in_background: true`); go on
    while it runs. A failure belongs to the merge it followed: fix it on your branch, or give it
    to a new crew session.
-5. **In the same turn,** start every phase the merge unblocked (§ 3).
+5. **In the same turn,** check that the watch started the phases that waited for this merge,
+   and start any phase it unblocked that was never started (§ 3).
 
 **Read the diff only when something does not add up** — a red line in the report, a file
 outside the brief, a failed check after the merge, a report that contradicts itself — and then
@@ -164,6 +184,7 @@ heavy cleanup, starts only once everything is verified live (`/cc-smart-dev-kit:
 ## Never
 
 - Wait, `sleep` or poll; ask a crew session whether it is done.
+- End a turn with a ready phase not started, or start the plan one wave at a time.
 - Build a phase yourself, or read a crew session's whole diff to check it.
 - Start a crew session from a crew session, or a raw `claude --bg` in place of `crew start`.
 - Answer the person's decision for them, or a crew session's permission prompt.

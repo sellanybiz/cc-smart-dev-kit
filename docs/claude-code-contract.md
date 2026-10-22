@@ -322,6 +322,7 @@ help text only.
 | `claude stop <id>` stops one background session and keeps its conversation. | 2.1.306 | written here from `claude --help`. Not proved: its exit code for a session it does not know (`crew stop` counts a session agent view does not list as gone). |
 | `claude respawn <id>` restarts one background session with its conversation. | 2.1.306 | written here from `claude --help`; not proved live. |
 | `claude attach <id>` opens a background session in a terminal (`crew attach` prints the line; it needs a terminal). | 2.1.306 | written here from `claude --help`. |
+| **`SendMessage`** takes the target's name (`to`: as `ListAgents` shows it, maybe with a ` [ref]`) and the text (`message`), reaches a `PreToolUse` hook with both in `tool_input`, and delivers same-machine over the session's own socket. `crew tell` and `crew answer` print the tool's arguments as JSON for the session to send, and the message guard reads `to` and `message` there. | 2.1.306 | written here from the docs (cross-session messaging, tools reference) and the crew design research (`.claude/research/archive/2026-10-22-crew-design.md` § A), not proved live on this machine; unit (our reader): `src/hooks/guards.test.ts` › "the message guard: crew sessions talk in contract notes (D47)". |
 
 ## Relied on, not proved yet
 

@@ -85,7 +85,35 @@ The lead answers, or asks the person. **Then go on** with every part of the phas
 does not block. `--status blocked` only when nothing is left; the answer arrives as your next
 message.
 
-## 6. Hand-off
+## 6. Telling another crew session
+
+Your status, your questions about scope and the end of your phase go to the lead, through
+`crew report`. **Never message a peer how it goes, or that you are done.** Another crew
+session hears from you only when one contract touches the other, in one of two kinds:
+
+- **`contract`:** you changed something another session uses — a file, a symbol, a commit it
+  builds on. Name it (`file:symbol`, the commit) and what changed. It needs no reply.
+- **`question`:** you need to know what another session's contract accepts ("does your
+  `lookup` take an empty query?").
+
+`cc-smart-dev-kit crew list` shows each session's phase and the files it owns: there you see
+who uses what you changed. Then:
+
+```sh
+cc-smart-dev-kit crew tell "<name>" ["<name>"…] --kind contract "<file:symbol — what changed, commit>"
+```
+
+It records the note for the lead and prints one `SendMessage` line per receiver; send each
+exactly as printed. Its first line, `[<phase>] CONTRACT: …` or `[<phase>] QUESTION: …`, is
+the preview the receiver sees, so your text's first line says the whole point. One note per
+change, related facts together; the facts live in your commits, the note points at them. The
+message guard refuses a message to another crew session without that first line.
+
+**A note to you:** a contract note — build on the new contract, or ask the lead when it breaks
+your phase. A question — answer with `crew tell <asker> --kind contract`, saying what your
+contract accepts.
+
+## 7. Hand-off
 
 When the `crew-self` monitor says you reached the hand-off line (your context, or your time
 cap): commit your work in progress, step `handoff`, then `crew report --status handoff` —
@@ -97,5 +125,6 @@ head.
 - Wait on the lead, `sleep` or poll.
 - Push, open a pull request, merge, or start a crew session.
 - Ask the person anything.
+- Message another crew session but through `crew tell`, or tell it status or "done".
 - Work outside your worktree, or change a file outside the brief without saying why.
 - Skip the failing test, the whole suite or the review; or run a second review.

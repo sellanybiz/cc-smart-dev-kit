@@ -1290,7 +1290,7 @@ that, so the plugin ships no worktree hook at all.
 | `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit) | `worktrees.guardMainFolder` | Denies an edit of a file in the main checkout itself, with the way into a worktree. (Until 0.6.0 it also placed Serena's edits, with the `serena-root` hook's record; both went with Serena.) |
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request. Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
-| `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records). |
+| `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Denies a message to a session that works outside this repo (from Claude Code's session records), and a crew session's message to another crew session of this repo that does not carry the `crew tell` tag (§ The crew talks). |
 | `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port and before an edit of the kit's own settings. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
@@ -2234,10 +2234,12 @@ rots it) and over agent teams (no worktree isolation, no resume).
 
 This section holds the contracts every part of it builds on — the switch, the kinds, the names
 and the store — and the commands that act on them so far: `crew lead` and the launcher,
-`crew start` (§ The lead and the launch, below), and the board and the end of a crew session, `crew
+`crew start` (§ The lead and the launch, below), the board and the end of a crew session, `crew
 list`, `status`, `kinds`, `attach`, `stop`, `resume` and `rm` (§ The board and the end of a
-crew session). The watch that brings the lead its news, the hand-back report command, and the crew session
-and lead hooks are later parts, and extend this section.
+crew session), and what a crew session says: its steps, its report, its question, the lead's
+answer, the lead's watch, the hand-off, its own time line, and a note to another crew session
+(§ The crew session's steps, its report, and the lead's watch, § The crew talks). The crew
+session and lead hooks are later parts, and extend this section.
 
 **The instructions** say when a phase goes to a crew session (`core.md` § Lead the work: a phase with
 its own worktree, branch and review, or work longer than about 30 minutes), and two skills hold
@@ -2449,7 +2451,9 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   each. The state's age is the newest `state` or `created` event about the crew session, not
   `updatedAt`: the watch writes a line or a memory reading every few seconds, and that changes
   the record without changing what the crew session does. Its last step or line is its newest event
-  with a line, else `lastLine`. A queued crew session says what holds it, recomputed from the store the
+  with a line, else `lastLine`. **The files its brief gives it** (`--files`) are one line of the
+  block when it names any, so the board is the ownership map too: two crew sessions that list one
+  file collide. A queued crew session says what holds it, recomputed from the store the
   way `crew start` decides (`placeFor`: the phases it waits for, then the cap of all crew sessions,
   the opus cap, the memory), or that a place is free and only its lead's watch is left to start
   it. `--json` prints the records as stored. A record that cannot be read is named on stderr and
@@ -2656,6 +2660,58 @@ re-arm it; the watch's own help names the fallback too. **`claude plugin validat
 this file** (it checks a monitors path or an inline list in the manifest, not the default
 location), so `monitors.test.ts` is what keeps it to the loader's shape; one wrong key would stop
 the whole plugin from loading.
+
+### The crew talks
+
+**Hub and spoke** (D47, `.claude/research/archive/2026-10-22-crew-design.md` § 3). Status flows
+through the lead: a crew session tells it what it did and what it needs with `crew report`, and
+the lead answers with `crew answer`; both are recorded in the store, so the watch's line wakes
+the lead and a restart loses nothing. Two crew sessions talk **directly only when one's contract
+touches the other's**, and then in one of two kinds and no other.
+
+**`crew tell <name…> --kind contract|question "<text>"`** (`src/crew/tell.ts`) is the one way.
+Each `<name>` must be **a live crew session of the same lead in the store** — the name or id the
+board shows, its record in a `RUNNING_STATES` state with a session id. A name the store does not
+know, the lead itself, a crew session of another lead, one that is not running, and the sender's
+own name are each refused with one line, and **nothing is recorded or printed: all or none**. A
+third kind is a usage mistake (exit 2). So the store, never a name, decides who a crew session may
+tell, as it decides everything else about a crew session.
+
+- **The words are one home** (`src/crew/tell-format.ts`): `crew tell` writes them and the
+  message guard checks them, so the two can never disagree about what a tagged message is.
+- **The first line is the tag and the point**, because it is the preview the receiver sees (and
+  the summary a `SendMessage` line carries): `[<phase>] CONTRACT: <what changed: file:symbol,
+  commit>` — a contract note ends with `No reply needed.` — or `[<phase>] QUESTION: <the ask>`.
+  The phase is the sender's own. The facts live in the files and commits; the note points at them,
+  and one note carries the related facts together.
+- **The command records a `tell` event** — the kind, from, to, and the first line — so the lead's
+  watch shows it as one line (`<name>: told <names> · <kind> · <first line>`), and then prints
+  **one `SendMessage` line per receiver**, the JSON form `crew answer` prints: only a session holds
+  the tool, so the crew session sends it.
+- **Never status.** "How it goes" and "done" are the lead's, through `crew report`: the crew
+  skill says so, and the guard below refuses the alternative.
+
+**The message guard** (`src/hooks/message-guard.ts`, PreToolUse on `SendMessage`) is the
+enforcement. Its other-repo rule is unchanged and runs first (§ The hooks): a message to a session
+that works outside this repo is denied. Then, when the sender is a crew session (its environment
+names a crew id, `CREW_ENV`) whose record this repo's store holds, and the target is the name of
+**another crew session of the same repo**, the message's first line must carry the tag
+`[<its phase>] CONTRACT:` or `[<its phase>] QUESTION:`; an untagged one is **denied**, and the
+refusal names `crew tell`, its two kinds, and `crew report --status done` for a hand-back. A
+message **to or from the lead**, and one to a session the store does not record (a person's own
+session, a subagent, a session on another machine), is not judged. A store the guard cannot read
+says nothing about the two sessions, so the message goes through, as every check a guard cannot
+make does.
+
+**The lead's loop** (the procedure is the `lead` skill, which copies no table). At plan approval
+the lead **starts the whole plan at once**, each later phase with `--waits-for` the phases it
+builds on: the queue and the watch start each phase when what it waits for is merged and a place
+is free, so the lead never keeps a list of what is ready. On each watch line it acts in that
+turn — a hand-back is checked and merged (the watch starts the dependants), a technical question
+is answered with `crew answer`, the person's question goes to `AskUserQuestion`, "needs you" is
+`claude attach <name>` — and between lines it does the integration work that is its own and stays
+free for the person. **It never polls, waits or sleeps**, and a turn that ends with a ready phase
+not started is a fault (an eval case, `evals/cases/lead-starts-the-whole-plan`).
 
 ## Sessions and worktrees
 

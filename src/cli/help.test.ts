@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, VERSION } from "../build-info";
 import { CREW_USAGE } from "../crew/command";
-import { BOARD_COMMANDS } from "../crew/usage";
+import { BOARD_COMMANDS, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
@@ -112,6 +112,9 @@ describe("the command table", () => {
     // The commands that are not in the table still print the whole usage.
     expect(helpTextFor(["crew", "start"])).toBe(CREW_USAGE);
     expect(helpTextFor(["crew", "lead"])).toBe(CREW_USAGE);
+    // `crew tell` has its own text, a crew session's one note to another (D47).
+    expect(helpTextFor(["crew", "tell"])).toBe(TELL_USAGE);
+    expect(usage).toContain("  tell <name…> --kind contract|question");
   });
 
   test("CM-12: the hook help names the one hook left, from the constant that names it", () => {

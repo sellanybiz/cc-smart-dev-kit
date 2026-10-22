@@ -2,9 +2,9 @@
  * `cc-smart-dev-kit crew <command>`: the lead and its crew (`docs/design.md` § Lead and
  * crew sessions). This file reads the arguments and hands each command its checked values: `lead`
  * (`lead.ts`), `start` (`start.ts`), `step` (`step.ts`), `report` (`report.ts`), `answer`
- * (`answer.ts`), `watch` (`watch.ts`), `self-watch` (`self-watch.ts`), the board — `list`,
- * `status`, `kinds`, `attach` (`board.ts`) — and the end of a crew session — `stop`, `resume`
- * (`end.ts`) and `rm` (`remove.ts`).
+ * (`answer.ts`), `tell` (`tell.ts`), `watch` (`watch.ts`), `self-watch` (`self-watch.ts`), the
+ * board — `list`, `status`, `kinds`, `attach` (`board.ts`) — and the end of a crew session —
+ * `stop`, `resume` (`end.ts`) and `rm` (`remove.ts`).
  *
  * Exit codes, as everywhere in the command: 0 done, 1 a refusal or an error, 2 a wrong command
  * or option — one line, then where the help is.
@@ -23,7 +23,9 @@ import { isReportStatus, REPORT_STATUS_NAMES, type ReportArgs, runCrewReport } f
 import { runCrewSelfWatch } from "./self-watch";
 import { runCrewStart, type StartArgs } from "./start";
 import { CREW_STEPS, isCrewStep, runCrewStep } from "./step";
-import { BOARD_COMMANDS, boardCommand } from "./usage";
+import { runCrewTell, type TellArgs } from "./tell";
+import { isTellKind, TELL_KINDS } from "./tell-format";
+import { BOARD_COMMANDS, boardCommand, TELL_ARGS, TELL_SUMMARY, TELL_USAGE } from "./usage";
 import { runCrewWatch, type WatchArgs } from "./watch";
 
 /** Every kind, with the model it names and what it is for: built from `CREW_KINDS`. */
@@ -105,6 +107,10 @@ Commands:
                  The lead's answer to a crew session's question. A running crew session
                  gets it as a message (the command prints the line the lead
                  sends); a stopped one is resumed with it.
+  tell ${TELL_ARGS}
+                 ${wrapText(TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
+                 It records the note for your lead, and prints one SendMessage
+                 line per receiver. Status goes to the lead, never a peer.
   watch [--lead <session>] [--once] [--timeout <seconds>]
                  One line per change in this lead's crew sessions: their steps, their
                  reports, their questions, what they need from you. It also
@@ -284,7 +290,7 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       ctx.error(usageError("Say which crew command"));
       return 2;
     }
-    ctx.print(boardCommand(sub)?.help ?? CREW_USAGE);
+    ctx.print(sub === "tell" ? TELL_USAGE : (boardCommand(sub)?.help ?? CREW_USAGE));
     return 0;
   }
   if (sub === "list") {
@@ -358,6 +364,14 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       return 2;
     }
     return await runCrewAnswer(args, ctx);
+  }
+  if (sub === "tell") {
+    const args = parseTellArgs(rest);
+    if ("error" in args) {
+      ctx.error(usageError(args.error, sub));
+      return 2;
+    }
+    return await guarded(sub, ctx, () => runCrewTell(args, ctx));
   }
   if (sub === "watch") {
     const args = parseWatchArgs(rest);
@@ -462,6 +476,32 @@ export function parseAnswerArgs(argv: readonly string[]): AnswerArgs | { error: 
   return { text, crew };
 }
 
+/**
+ * `crew tell`'s arguments, checked; or the mistake. The receivers come first and the text last,
+ * because a receiver is a name (one quoted word) and the text is the sentence it says.
+ */
+export function parseTellArgs(argv: readonly string[]): TellArgs | { error: string } {
+  const parsed = parseOptions(argv, ["--kind"]);
+  if ("error" in parsed) return parsed;
+  const kindText = parsed.options.get("--kind");
+  if (kindText === undefined) {
+    return { error: `Say the kind of the note: --kind <${TELL_KINDS.join("|")}>` };
+  }
+  if (!isTellKind(kindText)) {
+    return {
+      error: `Unknown kind: ${kindText} (a crew session tells ${TELL_KINDS.join(" or ")}, nothing else)`,
+    };
+  }
+  const rest = parsed.positionals.slice(0, -1);
+  const text = parsed.positionals.at(-1) ?? "";
+  if (rest.length === 0) {
+    return { error: `Say who you tell: crew tell <name…> --kind ${kindText} "<text>"` };
+  }
+  if (text.trim() === "") {
+    return { error: `Say what you tell: crew tell <name…> --kind ${kindText} "<text>"` };
+  }
+  return { kind: kindText, text, to: rest };
+}
 /** `crew watch`'s arguments, checked; or the mistake. */
 export function parseWatchArgs(argv: readonly string[]): WatchArgs | { error: string } {
   const parsed = parseOptions(argv, ["--lead", "--timeout"], ["--once"]);

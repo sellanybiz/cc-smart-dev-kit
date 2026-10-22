@@ -101,8 +101,12 @@ export function isKnownState(state: string): state is CrewState {
   return (CREW_STATES as readonly string[]).includes(state);
 }
 
-/** What one line of the events log says happened: `question` is a crew session asking its lead (D36). */
-export const CREW_EVENT_TYPES = ["created", "state", "step", "report", "question"] as const;
+/**
+ * What one line of the events log says happened: `question` is a crew session asking its lead
+ * (D36); `tell` is a crew session telling other crew sessions a contract change or a contract
+ * question (D47), kept so the lead sees it.
+ */
+export const CREW_EVENT_TYPES = ["created", "state", "step", "report", "question", "tell"] as const;
 export type CrewEventType = (typeof CREW_EVENT_TYPES)[number];
 
 /** How a crew session's hand-back ends. */
@@ -401,6 +405,11 @@ const eventFields = z.object({
   note: z.string().nullable().optional(),
   /** The memory the crew session's process held, in MB, when the event happened. */
   memoryMb: z.number().min(0).nullable().optional(),
+  /** A `tell` event only: the kind of the note and the names of the crew sessions told. */
+  tell: z
+    .looseObject({ kind: text, to: z.array(text) })
+    .nullable()
+    .optional(),
 });
 
 export const crewEventSchema = eventFields.loose();

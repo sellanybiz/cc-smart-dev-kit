@@ -219,6 +219,29 @@ describe("crew watch", () => {
     ]);
   });
 
+  test("D47: a note a crew session told another is one line for the lead", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        tell: { kind: "contract", to: ["C my-app B2 api"] },
+        text: "[B6b] CONTRACT: x.ts:lookup is gone",
+        type: "tell",
+      },
+      T0,
+    );
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: told C my-app B2 api · contract · [B6b] CONTRACT: x.ts:lookup is gone",
+    ]);
+  });
+
   test("D25: a report is one line, with the review, the phases it unblocks and the report", async () => {
     const world = await leadWorld();
     const record = await addCrew(world, "working");

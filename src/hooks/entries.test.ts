@@ -304,7 +304,7 @@ describe("the entries, run as Claude Code runs them", () => {
     "job-route": "whether this project routes heavy commands through its job queue",
     "main-folder-guard": "whether this edit belongs in a worktree",
     "merge-guard": "whether this merge may happen by itself",
-    "message-guard": "whether this message stays in this repo",
+    "message-guard": "whether this message may go to that session",
     "session-escape-guard": "whether this call goes around the limits set for the session",
   };
 

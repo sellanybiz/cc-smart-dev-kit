@@ -51,7 +51,7 @@ const GUARD_CASES: { spec: HookSpec; what: string; input: Record<string, unknown
   },
   {
     spec: messageGuardHook,
-    what: "whether this message stays in this repo",
+    what: "whether this message may go to that session",
     input: { tool_name: "SendMessage", tool_input: { to: "other", message: "hi" } },
   },
   {

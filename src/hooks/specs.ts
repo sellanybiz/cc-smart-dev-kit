@@ -199,11 +199,11 @@ export const messageGuardHook: HookSpec = {
   name: "message-guard",
   events: ["PreToolUse"],
   onConfigProblem: (message) =>
-    toolDecision("ask", cannotCheck("whether this message stays in this repo", message)),
+    toolDecision("ask", cannotCheck("whether this message may go to that session", message)),
   // A crash must not let a message through: the guard asks about the message it was asked
   // to judge.
   onCrash: guardCrash(
-    "whether this message stays in this repo",
+    "whether this message may go to that session",
     (input) => toolOf(input) === "SendMessage",
   ),
   run: messageGuard,

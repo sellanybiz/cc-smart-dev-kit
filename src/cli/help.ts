@@ -21,7 +21,7 @@
  */
 import { COMMAND, VERSION } from "../build-info";
 import { CREW_USAGE } from "../crew/command";
-import { BOARD_COMMANDS } from "../crew/usage";
+import { BOARD_COMMANDS, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
@@ -294,6 +294,8 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "mcp status", help: MCP_HELP },
   // The board and the end of a crew session: a row each, from their own table (`crew/usage.ts`).
   ...BOARD_COMMANDS.map((one) => ({ name: `crew ${one.name}`, help: one.help })),
+  // A crew session's note to another: its help sits beside the board's, so both read one text.
+  { name: "crew tell", help: TELL_USAGE },
   { name: "session-name", help: SESSION_NAME_HELP },
   { name: ALERT_WORKER_COMMAND, help: ALERT_WORKER_HELP },
   // `help` prints the top-level help, which is built from this table (see `helpTextFor`).

@@ -243,7 +243,11 @@ export function heldBy(
   return withMemory.start ? "a place is free; its lead's watch starts it" : withMemory.why;
 }
 
-/** One crew session's block of the board: three lines, and the one it last said or what holds it. */
+/**
+ * One crew session's block of the board: three lines, the files it owns when its brief names
+ * them (the ownership map: two crew sessions with one file in common collide), and the one it
+ * last said or what holds it.
+ */
 export function boardLines(
   record: CrewRecord,
   events: readonly CrewEvent[],
@@ -257,6 +261,7 @@ export function boardLines(
     }`,
   ];
   const said = lastSaid(record, events);
+  if (record.files.length > 0) lines.push(`  files: ${record.files.join(", ")}`);
   const last =
     options.held !== null ? `held: ${options.held}` : said === null ? null : `last: ${said}`;
   if (last !== null) lines.push(`  ${last}`);

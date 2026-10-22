@@ -4,7 +4,8 @@
  * can never drift (`dynamic.md` § One source per value).
  *
  * The commands themselves: `board.ts` (`list`, `status`, `kinds`, `attach`), `end.ts` (`stop`,
- * `resume`) and `remove.ts` (`rm`).
+ * `resume`), `remove.ts` (`rm`) and `tell.ts` (`tell`, one of the crew's own commands, whose help
+ * is here so `crew tell --help` and the help table read the same text).
  */
 import { COMMAND } from "../build-info/names";
 
@@ -34,7 +35,9 @@ export const BOARD_COMMANDS: readonly BoardCommand[] = [
 
 The board: every crew session of this repository, newest first. For each: its name, phase and kind,
 the model it runs on (and the gateway slot that answers it), its effort, its state and since
-when, its branch, the memory its session holds, its lead, and the last step or line it said.
+when, its branch, the files its brief gives it, the memory its session holds, its lead, and
+the last step or line it said. So it is the address book and the ownership map in one: two
+crew sessions that list one file would collide.
 A queued crew session says what holds it: the phases it waits for, a cap, or the memory.
 
   --all    every repository on this machine, not only this one
@@ -124,3 +127,26 @@ on an affordable gateway slot, and what it is for.`,
 export function boardCommand(name: string): BoardCommand | undefined {
   return BOARD_COMMANDS.find((one) => one.name === name);
 }
+
+/** What `crew tell <name…>` is, in the usage line that names the crew's own commands. */
+export const TELL_ARGS = '<name…> --kind contract|question "<text>"';
+
+/** `crew tell`'s one short line in the list of commands. */
+export const TELL_SUMMARY =
+  "Tell other crew sessions of your lead a contract change, or ask one a contract question.";
+
+/** `crew tell --help`: what it does, the two kinds, and the two lines it writes. */
+export const TELL_USAGE = `Usage: ${COMMAND} crew tell ${TELL_ARGS}
+
+Tells one or more crew sessions of your lead a contract change, or asks them a contract
+question. Only these two kinds cross between crew sessions; status, and that a phase is
+done, go to the lead with crew report. Each <name> is a live crew session of the same lead.
+
+The first line carries the tag and the point, because it is the line the receiver sees:
+  [<phase>] CONTRACT: <what changed: file:symbol, commit>   and the note ends "No reply needed."
+  [<phase>] QUESTION: <the ask>
+The note is recorded, so your lead's watch shows it as one line, and the command prints one
+SendMessage line per receiver, to send as it is: only a session can send a message.
+
+The message guard refuses a crew session's message to another crew session without that
+first line, and names this command.`;

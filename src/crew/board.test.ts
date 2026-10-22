@@ -84,6 +84,28 @@ describe("crew list", () => {
     ]);
   });
 
+  test("D47: the files a crew session's brief gives it are on the board: the ownership map", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ files: ["src/lookup/index.ts", "src/lookup/rank.ts"] });
+    await world.addCrew({
+      atMs: NOW - 5 * MINUTE,
+      phase: "B2",
+      slug: "api",
+      worktree: false,
+    });
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "C my-app B2 api — working, 5 min ago",
+      "  B2 · build · sonnet · high",
+      "  crew/B2-api · memory - · lead LEAD my-app master-plan",
+      "",
+      "C my-app B1 help — working, 12 min ago",
+      "  B1 · build · sonnet · high",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  files: src/lookup/index.ts, src/lookup/rank.ts",
+    ]);
+  });
+
   test("a queued crew session says what holds it: the phases it waits for first, then the cap", async () => {
     const world = await boardWorld();
     world.writeConfig({ max: 1 });
