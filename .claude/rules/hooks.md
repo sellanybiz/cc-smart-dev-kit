@@ -155,16 +155,21 @@ specs in it.
 
 ## A crew session's own limits
 
-D24 and D47 give a crew session three refusals that **no project can switch off**: it never
-pushes, it opens no pull request, and its message to another crew session carries the
-`crew tell` tag (and its message to its own lead goes through `crew report`). They are the
-**crew part** of the three guards that own their detectors — `crewPushAnswer`
-(`git-guard.ts`), `crewPrAnswer` (`merge-guard.ts`), `crewMessageAnswer`
-(`message-guard.ts`) — and the frame runs each before `ownHooks` and before
-`cc-smart-dev-kit.json` is read. So the refusal holds in a project that never opted in, in
-one whose file is broken or too new, and in one whose `ownHooks` lists its own copy of the
-guard. Without `CC_SMART_DEV_KIT_CREW` the part is silent: an ordinary session pays nothing,
-and the guard's other answers are exactly as they were.
+D24 and D47 give a crew session four refusals that **no project can switch off**: it never
+pushes; it never runs a git command that would throw work away — every ask the git guard
+would put to the person (a discarding `checkout`, `reset --hard`, `clean -f`, `worktree
+remove -f`, `branch -D`, `stash clear`, an unnamed `stash drop`, a bare `git stash`) is a
+deny that names the step doing the same job without a question; it opens no pull request;
+and its message to another crew session carries the `crew tell` tag (its message to its own
+lead goes through `crew report`). They are the **crew part** of the three guards that own
+their detectors — `crewGitAnswer` (`git-guard.ts`), `crewPrAnswer` (`merge-guard.ts`),
+`crewMessageAnswer` (`message-guard.ts`) — and the frame runs each before `ownHooks` and
+before `cc-smart-dev-kit.json` is read. So the refusal holds in a project that never opted
+in, in one whose file is broken or too new, and in one whose `ownHooks` lists its own copy
+of the guard. Without `CC_SMART_DEV_KIT_CREW` the part is silent: an ordinary session pays
+nothing, and the guard's other answers are exactly as they were. One ask can still reach a
+crew session: a guard's own crash, or input that is not JSON (`onCrash`), asks as it does
+for any session. That is a bug path, and the ask is what shows it.
 
 This is the same reason `alwaysOn` exists for `job-route` and `session-escape-guard`: a
 limit on what the session itself may do cannot live behind a switch the session can reach.
@@ -294,10 +299,11 @@ Where both exist, **the project says which plugin hooks to keep quiet**: `ownHoo
   plugin hook: it may be a logger, a different check, or a copy that does not cover the same
   commands — and a guard that goes quiet for something that does not replace it leaves the
   person unguarded.
-- **A listed name silences a guard's project part only.** A crew session's three refusals —
-  its push, its pull request, its peer message without the tag — are the guard's crew part,
-  which the frame has already run before this step (§ A crew session's own limits): no
-  `ownHooks` list, and no missing file, can switch them off.
+- **A listed name silences a guard's project part only.** A crew session's four refusals —
+  its push, its work-destroying git commands (each denied with the step), its pull request,
+  its peer message without the tag — are the guard's crew part, which the frame has already
+  run before this step (§ A crew session's own limits): no `ownHooks` list, and no missing
+  file, can switch them off.
 - Only `ownHooks` is read there (`ownHooksOf` in `src/project/resolve.ts`, on its own, like
   `requires`), so it works even when the rest of the file is broken or needs a newer plugin.
 - The names are validated against the plugin's own (`PLUGIN_HOOK_NAMES` in
@@ -333,8 +339,11 @@ the message (which names the update command, the file and field) reaches someone
 
 For a plugin hook's project part `ownHooks` still comes first: a project that lists its own
 copy there keeps it running. A guard's crew part has already run before both (§ A crew
-session's own limits), so a broken or too new file never lets a crew session push, open a
-pull request or send an untagged peer message.
+session's own limits), so a broken or too new file never lets a crew session push, run a
+work-destroying git command, open a pull request or send an untagged peer message. For
+`git-guard` the file cannot change a crew session's answer at all — the crew rule reads no
+project value — so its `onConfigProblem` stays silent for a crew session instead of asking a
+person who is not there.
 
 ## Quiet output
 
@@ -455,8 +464,9 @@ a command must never report success when it did not run.
 - A guard asks rather than denies when the person may mean it (a force-push, a pull request
   opening outside the project's base); it denies
   only what is never right in that project (an edit in a guarded main checkout, a message
-  to another project's session, a crew session's push, pull request or raw message to its
-  lead — D24, D47: the lead merges locally and hears its crew through `crew report`).
+  to another project's session, a crew session's push, its work-destroying git command
+  denied with the step, pull request or raw message to its lead — D24, D47: the lead merges
+  locally and hears its crew through `crew report`).
   The crew refusals are the guard's crew part: they hold with no file and whatever
   `ownHooks` says (§ A crew session's own limits).
 - **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching

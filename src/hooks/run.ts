@@ -121,7 +121,8 @@ export interface HookSpec {
   ) => HookResult | Promise<HookResult>;
   /**
    * A guard's **crew part**: what a crew session may never do, whatever the project's file
-   * says — it never pushes, opens no pull request (`D24`), and its message to another crew
+   * says — it never pushes, never runs a git command that destroys work without reading the
+   * step that replaces it, opens no pull request (`D24`), and its message to another crew
    * session carries the `crew tell` tag (`D47`). The frame runs it after finding the
    * checkout and **before `ownHooks` and the file**, because those are the two ways a session
    * could switch the limit off, and it holds in a project with no file at all. It judges no
