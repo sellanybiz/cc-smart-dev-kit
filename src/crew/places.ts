@@ -315,6 +315,11 @@ export interface LeadStartInput {
  * Null when no start would queue: crew sessions are off in this project (a start is refused then,
  * never queued), or the store, the project's file or the caps cannot be read. The caller lets the
  * launch through: a guard that cannot work out the queue never blocks.
+ *
+ * It reads **without the places lock**: this is a question, not a start, so it writes nothing and
+ * takes no place. A count that moves a moment later is corrected by the next call — the guard
+ * refuses or lets a launch through, and a start that took the last place in between is exactly
+ * the state the next call reads.
  */
 export async function placeForLeadStart(input: LeadStartInput): Promise<null | Place> {
   let records: CrewRecord[];

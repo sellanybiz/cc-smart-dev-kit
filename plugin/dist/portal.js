@@ -26194,6 +26194,9 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs) {
     return null;
   if (checkout === null)
     return null;
+  const building = judged.kind === "workflow" ? buildsWorkflow(toolInput(input)) : buildsFiles(judged.launch);
+  if (!building)
+    return null;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
     return null;
@@ -26204,9 +26207,6 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs) {
     return null;
   }
   if (lead === null)
-    return null;
-  const building = judged.kind === "workflow" ? buildsWorkflow(toolInput(input)) : buildsFiles(judged.launch);
-  if (!building)
     return null;
   const opus = judged.kind === "workflow" ? judged.call.results.some((one) => one.verdict.real?.tier === OPUS_TIER) : judged.verdict.real?.tier === OPUS_TIER;
   let place;

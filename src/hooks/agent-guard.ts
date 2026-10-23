@@ -1683,6 +1683,11 @@ async function queuedLaunch(
   // A crew session has its own refusals (`crewAgentAnswer`), and it never leads.
   if (inCrew(env)) return null;
   if (checkout === null) return null;
+  // A launch that only reads is never held, and the two checks above and below it are the
+  // cheapest: the store is read only for a launch that can change files in a lead's session.
+  const building =
+    judged.kind === "workflow" ? buildsWorkflow(toolInput(input)) : buildsFiles(judged.launch);
+  if (!building) return null;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId)) return null;
   let lead: ReturnType<typeof readLead>;
@@ -1692,9 +1697,6 @@ async function queuedLaunch(
     return null;
   }
   if (lead === null) return null;
-  const building =
-    judged.kind === "workflow" ? buildsWorkflow(toolInput(input)) : buildsFiles(judged.launch);
-  if (!building) return null;
   const opus =
     judged.kind === "workflow"
       ? judged.call.results.some((one) => one.verdict.real?.tier === OPUS_TIER)
