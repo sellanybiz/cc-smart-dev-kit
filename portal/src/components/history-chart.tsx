@@ -139,6 +139,12 @@ export function HistoryChart({
     }
     return out;
   }, [colours, by, names, metric.mode]);
+  // A line chart cannot fold the rest into "Other" (a median does not add up): say how many
+  // series it leaves out, so a missing one is never a silent gap.
+  const notDrawn =
+    metric.mode === "each"
+      ? [...colours.values()].filter((colour) => colour === "other").length
+      : 0;
   const config = useMemo<ChartConfig>(
     () =>
       Object.fromEntries(
@@ -308,6 +314,11 @@ export function HistoryChart({
                 </span>
               </li>
             ))}
+            {notDrawn > 0 && (
+              <li className="text-muted-foreground">
+                and {notDrawn} more, not drawn: filter to one to see it
+              </li>
+            )}
           </ul>
         )}
         {footer}

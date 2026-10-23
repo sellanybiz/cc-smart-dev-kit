@@ -13,9 +13,11 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -102,6 +104,27 @@ function fakeBackend(
 /** The repo's `plugin/` folder: what a doctor source needs, and nothing of a real machine. */
 function worldPluginFolder(): string {
   return join(import.meta.dir, "..", "..", "plugin");
+}
+
+/**
+ * A plugin folder whose CLI is this branch's source: every entry of the repo's `plugin/` linked
+ * in, except `dist/cli.js`, which imports `src/entries/cli.ts`. The flow report runs the CLI in a
+ * child (`flow-read.ts`), and a test proves the source, not a committed bundle the lead rebuilds
+ * after a merge.
+ */
+function sourceCliPluginFolder(): string {
+  const repoPlugin = worldPluginFolder();
+  const folder = tempDir("plugin");
+  for (const name of readdirSync(repoPlugin)) {
+    if (name !== "dist") symlinkSync(join(repoPlugin, name), join(folder, name));
+  }
+  mkdirSync(join(folder, "dist"));
+  for (const name of readdirSync(join(repoPlugin, "dist"))) {
+    if (name !== "cli.js") symlinkSync(join(repoPlugin, "dist", name), join(folder, "dist", name));
+  }
+  const source = join(import.meta.dir, "..", "entries", "cli.ts");
+  writeFileSync(join(folder, "dist", "cli.js"), `import ${JSON.stringify(source)};\n`);
+  return folder;
 }
 
 /** A Machine that answers nothing and changes nothing: enough for a doctor source. */
@@ -677,6 +700,7 @@ describe("every answer", () => {
 
   test("a key is never sent to a page", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
+    const plugin = sourceCliPluginFolder();
     // With an OmniRoute installed, so its own card and its own facts are drawn too — and a
     // password in the backend's address (PB-7): the Overview's dashboard link took it raw.
     const world = await open({
@@ -685,6 +709,8 @@ describe("every answer", () => {
       omniroute: "3.8.51",
       // A project of its own, so the crew page and the project page have one to answer for.
       projectFiles: {},
+      // The flow report's child runs this branch's CLI.
+      pluginFolder: () => ({ folder: plugin }),
     });
     try {
       const first = await world.call("/");
@@ -4479,7 +4505,11 @@ describe("the JSON API", () => {
 
   test("flow: the report for the range, and the kept window said when the range is longer", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port });
+    const plugin = sourceCliPluginFolder();
+    const world = await open({
+      backendPort: backend.port,
+      pluginFolder: () => ({ folder: plugin }),
+    });
     try {
       const oneDay = JSON.parse((await world.call("/api/flow?range=1d")).body) as {
         note: null | string;

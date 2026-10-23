@@ -294,7 +294,7 @@ export function UsageView() {
               <CardDescription>
                 {topSession === undefined
                   ? `No session sent a request in ${words}.`
-                  : `${topSession.name} cost the most: ${usd(topSession.cost)} (estimated).`}
+                  : `${names.get(topSession.key) ?? topSession.key.slice(0, 8)} cost the most: ${usd(topSession.cost)} (estimated).`}
               </CardDescription>
             </CardHeader>
             <CardContent>

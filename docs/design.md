@@ -926,6 +926,20 @@ the install as it happens. The new actions for D52 — `crew.answer`, `crew.stop
 `crew.rm`, `worktrees.clean` — call the CLI's own functions (`src/crew/`, `runWorktrees` with
 its own sinks), not a copy; `worktrees.clean` needs the page's confirmation.
 
+**A read never blocks the server either.** The flow report (`readFlow`, `src/sessions/flow.ts`)
+reads every saved transcript with synchronous file reads: about 200 ms on a warm cache and 10 s on
+a cold one, measured on a machine with gigabytes of transcripts. Work and Needs ask it for the
+open permission prompts, and Flow for its window, so the portal never calls it in the server: it
+runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read.ts`,
+`Bun.spawn`, the plugin's two bun flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, a
+2-minute timeout). Requests for the same window at once share one child, and an answer is
+reused for 5 s; a failure is not kept. When the child fails, Flow answers 500 with its reason,
+Needs says the permission prompts could not be read (`permissionsError`), and Work says no
+session can show a wait (`waitsError`) — never an empty list that looks like "nothing waits".
+Still on the loop, and owed to a later phase: the Health page's `systemctl --user is-active`
+(about 6 ms) and the Health and Overview `journalctl -n 200` (20–65 ms), through the doctor
+check's synchronous `Runner`.
+
 ### The pages' facts and actions (B6d)
 
 Each fact a page draws comes from the module that already owns it, through `facts.ts` and the

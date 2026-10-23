@@ -30,7 +30,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { targetModel, until } from "@/lib/format";
+import { count, targetModel, until } from "@/lib/format";
 
 const ROLE_WORDS: Record<string, string> = {
   affordable: "affordable work",
@@ -107,9 +107,9 @@ function BreakerNote({ breaker }: { breaker: OpenBreaker }) {
       <AlertTitle>The breaker is open: every target is limited or down</AlertTitle>
       <AlertDescription>
         <p>
-          {breaker.heldNow} request{breaker.heldNow === 1 ? "" : "s"} wait
-          {breaker.heldNow === 1 ? "s" : ""} now, {breaker.held} held since it opened. Claude Code
-          retries each one by itself.
+          {count(breaker.heldNow)} request{breaker.heldNow === 1 ? "" : "s"} wait
+          {breaker.heldNow === 1 ? "s" : ""} now, {count(breaker.held)} held since it opened. Claude
+          Code retries each one by itself.
         </p>
         <ul className="mt-1">
           {breaker.targets.map((target) => (

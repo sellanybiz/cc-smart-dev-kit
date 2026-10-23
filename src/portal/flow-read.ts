@@ -129,8 +129,8 @@ function reportOf(output: string): FlowReport | null {
     return null;
   }
   if (typeof value !== "object" || value === null) return null;
-  const { open, sessions, sinceMs, untilMs } = value as Record<string, unknown>;
+  const { hours, open, sessions, sinceMs, untilMs } = value as Record<string, unknown>;
   if (typeof sinceMs !== "number" || typeof untilMs !== "number") return null;
-  if (!Array.isArray(sessions) || !Array.isArray(open)) return null;
+  if (!Array.isArray(sessions) || !Array.isArray(open) || !Array.isArray(hours)) return null;
   return value as FlowReport;
 }

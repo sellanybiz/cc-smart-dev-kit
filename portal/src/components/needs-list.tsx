@@ -17,7 +17,7 @@ import { HeldMajorActions } from "@/components/held-major";
 import { AppLink } from "@/components/router";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { ago, slotName, until } from "@/lib/format";
+import { ago, count, slotName, until } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const KIND: Record<NeedsItem["kind"], { icon: typeof CircleHelpIcon; label: string }> = {
@@ -199,10 +199,10 @@ function Body({ item, onSettled }: { item: NeedsItem; onSettled: OnSettled }): {
       const waiting =
         heldNow === null
           ? "How many wait right now is not known (the router did not answer)"
-          : `${heldNow} request${heldNow === 1 ? "" : "s"} wait${heldNow === 1 ? "s" : ""} right now`;
+          : `${count(heldNow)} request${heldNow === 1 ? "" : "s"} wait${heldNow === 1 ? "s" : ""} right now`;
       return {
         who: <span className="font-medium">The {slotName(item.slot)} slot</span>,
-        what: `Every target is limited or down. ${waiting}; ${held} held since it opened. Give it another target on Slots, or let Claude answer it:`,
+        what: `Every target is limited or down. ${waiting}; ${count(held)} held since it opened. Give it another target on Slots, or let Claude answer it:`,
         action: (
           <div className="flex flex-col gap-2">
             <BreakerTargets item={item} />

@@ -270,8 +270,8 @@ function HealthPage({ data }: { data: HealthData }) {
                 {breakers.map(([slot, breaker]) => (
                   <div key={slot} className="flex flex-col gap-1">
                     <StatusMark tone="bad">
-                      The {slotName(slot)} breaker is open: {breaker.heldNow} waiting,{" "}
-                      {breaker.held} held
+                      The {slotName(slot)} breaker is open: {count(breaker.heldNow)} waiting,{" "}
+                      {count(breaker.held)} held
                     </StatusMark>
                     <ul className="pl-[1.125rem] text-muted-foreground">
                       {breaker.targets.map((target) => (

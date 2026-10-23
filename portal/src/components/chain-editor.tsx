@@ -91,15 +91,18 @@ function ItemBody({
       >
         {index + 1}
       </span>
+      {/* The whole name, wrapped where it must: a cut name cannot be read on a phone. */}
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate font-mono text-sm">{model}</span>
-        <span className="text-xs text-muted-foreground">{targetBackend(item.target)}</span>
-      </span>
-      {answering && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
-          answers now
+        <span className="font-mono text-sm break-all">{model}</span>
+        <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          {targetBackend(item.target)}
+          {answering && (
+            <span className="inline-flex items-center rounded-full bg-primary px-2 py-0.5 font-medium text-primary-foreground">
+              answers now
+            </span>
+          )}
         </span>
-      )}
+      </span>
       {stats !== undefined && stats.requests > 0 && (
         <span className="hidden items-center gap-3 text-xs text-muted-foreground tabular-nums @xl/main:flex">
           <span className={cn(stats.success < 0.95 && "text-warn")}>
@@ -354,7 +357,7 @@ export function ChainEditor({
           size="sm"
           value={adding}
           onChange={(event) => setAdding(event.target.value)}
-          className="min-w-56"
+          className="w-72 max-w-full"
           disabled={disabled}
         >
           <NativeSelectOption value="">Choose a model…</NativeSelectOption>

@@ -24,8 +24,9 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice
 const mode = process.env.FLOW_MODE;
 if (mode === "fail") { console.error("a first line\\nthe last line says why"); process.exit(3); }
 if (mode === "garbage") { console.log("not json"); process.exit(0); }
+if (mode === "older") { console.log(JSON.stringify({ open: [], sessions: [], sinceMs: 1, untilMs: 2 })); process.exit(0); }
 if (mode === "slow") await Bun.sleep(1500);
-console.log(JSON.stringify({ open: [{ asker: "Claude Code", at: 5, cwd: null, kind: null, project: "p", session: "s1", tool: "Bash" }], sessions: [], sinceMs: 1, totals: {}, untilMs: 2 }));
+console.log(JSON.stringify({ open: [{ asker: "Claude Code", at: 5, cwd: null, kind: null, project: "p", session: "s1", tool: "Bash" }], sessions: [], sinceMs: 1, totals: {}, untilMs: 2, hours: [] }));
 `,
   );
   return { folder, log };
@@ -66,6 +67,7 @@ describe("the flow report, off the server's loop", () => {
     // The child's answer, as it printed it: nothing added, nothing dropped.
     expect(JSON.parse(JSON.stringify(read))).toEqual({
       report: {
+        hours: [],
         open: [
           {
             asker: "Claude Code",
@@ -118,6 +120,13 @@ describe("the flow report, off the server's loop", () => {
 
   test("an answer that is not a report is refused in words", async () => {
     const w = world("garbage");
+    expect(await readFlowOffLoop(w.ctx, DAY_MS)).toEqual({
+      error: "the flow report's answer was not one this portal reads",
+    });
+  });
+
+  test("a report without the hours this portal draws (an older CLI) is refused, never drawn", async () => {
+    const w = world("older");
     expect(await readFlowOffLoop(w.ctx, DAY_MS)).toEqual({
       error: "the flow report's answer was not one this portal reads",
     });
