@@ -889,7 +889,13 @@ describe("the B6d facts", () => {
         backends: ["omniroute"],
         blocked: null,
         current: {
-          fallback: { idle: null, model: null, provider: "claude", source: "default" },
+          fallback: {
+            idle: null,
+            model: null,
+            provider: "claude",
+            source: "default",
+            target: null,
+          },
           key: { pool: false, source: "portal", state: "gateway" },
           route: {
             address: "http://127.0.0.1:20128/v1",

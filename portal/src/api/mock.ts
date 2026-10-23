@@ -909,7 +909,13 @@ export function mockData(empty: boolean): MockData {
         backends: ["omniroute"],
         blocked: null,
         current: {
-          fallback: { idle: null, model: null, provider: "claude", source: "default" },
+          fallback: {
+            idle: null,
+            model: null,
+            provider: "claude",
+            source: "default",
+            target: null,
+          },
           key: { pool: false, source: "setup", state: "gateway" },
           route: {
             address: "http://127.0.0.1:20128/v1",

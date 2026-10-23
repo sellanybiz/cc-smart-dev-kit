@@ -167,7 +167,7 @@ describe("PM1: the claude-mem actions", () => {
       target: "omniroute:glm/flash",
     });
     expect(result.ok).toBe(true);
-    expect(result.lines.at(-1)).toBe(
+    expect(result.lines[0]).toBe(
       "claude-mem reads its settings each time it uses them: its next summaries go to glm/flash on omniroute.",
     );
     expect(w.backend.chats).toEqual([{ key: GATEWAY_KEY, model: "glm/flash" }]);

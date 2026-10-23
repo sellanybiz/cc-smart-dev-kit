@@ -130,6 +130,8 @@ export interface ClaudeMemCurrent {
     provider: string;
     /** A Claude fallback's model; null: claude-mem's own Claude model. */
     model: null | string;
+    /** A backend fallback's `<backend>:<model>`, when its address is a gateway backend's. */
+    target: null | string;
     /** Why it can never take over now (the same provider as the route); null when it can. */
     idle: null | string;
     source: ClaudeMemSource;
@@ -280,6 +282,9 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
   const key = textOf(read, API_KEY);
   const fallback = fallbackProvider(read, version);
   const fallbackModel = textOf(read, FALLBACK_MODEL);
+  // claude-mem has one OpenAI-compatible setup: the route's, or a Claude route's fallback.
+  const compatTarget =
+    backend !== null && compatModel !== "" ? `${backend.name}:${compatModel}` : null;
   return {
     ...base,
     blocked: null,
@@ -292,6 +297,7 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
         model: fallbackModel === "" ? null : fallbackModel,
         provider: fallback,
         source: sourceOf(read, FALLBACK_PROVIDER),
+        target: fallback === OPENAI_COMPATIBLE ? compatTarget : null,
       },
       key: {
         pool: textOf(read, API_KEY_POOL).trim() !== "",
@@ -300,7 +306,7 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
           key === "" ? "none" : backend !== null && backend.apiKey === key ? "gateway" : "other",
       },
       route: {
-        address: baseUrl === "" ? null : backendAddress(baseUrl),
+        address: kind === "claude" || baseUrl === "" ? null : backendAddress(baseUrl),
         kind,
         model:
           kind === "claude"
@@ -310,7 +316,7 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
               : compatModel,
         provider,
         source: sourceOf(read, kind === "backend" ? MODEL : PROVIDER),
-        target: backend !== null && compatModel !== "" ? `${backend.name}:${compatModel}` : null,
+        target: kind === "backend" ? compatTarget : null,
       },
     },
     version,
@@ -390,6 +396,19 @@ async function save(
       read.at(key),
       value,
     ]);
+    // A value the person set by hand is theirs: said in their words, before any write.
+    for (const [key, value] of set) {
+      const path = read.at(key);
+      const current = getKey(read.data, path);
+      if (current.found && current.value !== value && sourceOf(read, key) === "hand") {
+        return {
+          lines: [
+            `Nothing was saved: ${key} is ${shownClaudeMemValue(path, current.value)} in ${read.short}, set by hand. Change it there, or remove it there to set it here.`,
+          ],
+          ok: false,
+        };
+      }
+    }
     let result: ManagedJsonResult;
     try {
       result = applyManagedJson({
@@ -416,7 +435,7 @@ async function save(
       lines:
         lines.length === 0
           ? [`claude-mem already uses that: nothing to change. ${done}`]
-          : [...lines, done],
+          : [done, ...lines],
       ok: true,
     };
   });

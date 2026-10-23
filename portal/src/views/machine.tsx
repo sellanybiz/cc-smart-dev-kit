@@ -19,6 +19,7 @@ import type {
   McpServerRow,
 } from "@/api/types";
 import { ActionButton, ActionResultLine, useAction } from "@/components/action-button";
+import { ClaudeMemCard } from "@/components/claude-mem-card";
 import { CommandLine } from "@/components/copy-button";
 import { HeavyJobsCard } from "@/components/heavy-jobs";
 import { UpdatesCard, WorktreesCard } from "@/components/machine-cards";
@@ -602,6 +603,7 @@ function MachinePage({ data }: { data: MachineData }) {
         <McpCard servers={data.mcp} />
         <BrowserCard data={data} />
         <OmnirouteCard data={data} />
+        <ClaudeMemCard facts={data.claudeMem} />
         {data.autoMode !== null && <AutoModeCard change={data.autoMode} />}
         <Card>
           <CardHeader>

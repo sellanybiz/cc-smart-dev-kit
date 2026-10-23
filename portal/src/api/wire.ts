@@ -380,6 +380,7 @@ export interface ClaudeMemCurrent {
     provider: string;
     model: null | string;
     idle: null | string;
+    target: null | string;
     source: ClaudeMemSource;
   };
 }

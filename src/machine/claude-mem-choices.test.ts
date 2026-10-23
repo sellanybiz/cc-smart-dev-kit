@@ -168,6 +168,7 @@ describe("PM1: what the card reads", () => {
           model: null,
           provider: "claude",
           source: "default",
+          target: null,
         },
         key: { pool: false, source: "default", state: "none" },
         route: {
@@ -195,6 +196,7 @@ describe("PM1: what the card reads", () => {
       model: null,
       provider: "off",
       source: "default",
+      target: null,
     });
   });
 
@@ -228,7 +230,7 @@ describe("PM1: what the card reads", () => {
     });
     const facts = readClaudeMemFacts(w.paths);
     expect(facts.current).toEqual({
-      fallback: { idle: null, model: null, provider: "gemini", source: "hand" },
+      fallback: { idle: null, model: null, provider: "gemini", source: "hand", target: null },
       key: { pool: true, source: "hand", state: "other" },
       route: {
         address: "https://models.example.com/v1",
@@ -264,12 +266,12 @@ describe("PM1: the route", () => {
     ]);
     expect(result).toEqual({
       lines: [
+        "claude-mem reads its settings each time it uses them: its next summaries go to glm/flash on omniroute.",
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "claude" -> "openai-compatible"',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_PRESET: "" -> "custom"',
         `~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "" -> "${BACKEND_URL}/v1"`,
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "glm/flash"',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "" -> "••••0001"',
-        "claude-mem reads its settings each time it uses them: its next summaries go to glm/flash on omniroute.",
       ],
       ok: true,
     });
@@ -331,14 +333,30 @@ describe("PM1: the route", () => {
       { backend: "omniroute", kind: "backend", model: "glm/flash" },
       w.check(),
     );
-    expect(result.ok).toBe(false);
-    expect(result.lines[0]).toContain(
-      'CLAUDE_MEM_OPENAI_COMPAT_MODEL is "their-model", set by someone else.',
-    );
-    expect(result.lines[1]).toBe(
-      "That value is yours, set in ~/.claude-mem/settings.json by hand: change it there, or remove it to set it here.",
-    );
+    expect(result).toEqual({
+      lines: [
+        'Nothing was saved: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "their-model" in ~/.claude-mem/settings.json, set by hand. Change it there, or remove it there to set it here.',
+      ],
+      ok: false,
+    });
     expect(w.settingsText()).toBe(before);
+    // The person's own key by hand: named as masked, never whole.
+    const keyed = machine({
+      settings: {
+        ...SEEDED,
+        CLAUDE_MEM_PROVIDER: "openai-compatible",
+        CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: `${BACKEND_URL}/v1`,
+        CLAUDE_MEM_OPENAI_COMPAT_MODEL: "m",
+        CLAUDE_MEM_OPENAI_COMPAT_API_KEY: OWN_KEY,
+      },
+    });
+    const refused = await chooseKey(keyed.paths, { kind: "gateway" }, keyed.check());
+    expect(refused).toEqual({
+      lines: [
+        'Nothing was saved: CLAUDE_MEM_OPENAI_COMPAT_API_KEY is "••••0002" in ~/.claude-mem/settings.json, set by hand. Change it there, or remove it there to set it here.',
+      ],
+      ok: false,
+    });
   });
 
   test("PM1: the person's own key stays when the route moves, and the chat uses it", async () => {
@@ -378,7 +396,7 @@ describe("PM1: the route", () => {
     w.setup();
     expect(w.settings().CLAUDE_MEM_PROVIDER).toBe("openai-compatible");
     const result = await chooseRoute(w.paths, { kind: "claude" }, w.check());
-    expect(result.lines[0]).toBe(
+    expect(result.lines[1]).toBe(
       '~ ~/.claude-mem/settings.json: CLAUDE_MEM_PROVIDER: "openai-compatible" -> "claude"',
     );
     const before = w.settingsText();
@@ -459,8 +477,8 @@ describe("PM1: the key", () => {
     });
     expect(result).toEqual({
       lines: [
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "••••0001" -> "••••0002"',
         "claude-mem uses the key you pasted for omniroute. It is in claude-mem's file, readable only by you, and never shown again.",
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "••••0001" -> "••••0002"',
       ],
       ok: true,
     });
@@ -538,8 +556,8 @@ describe("PM1: the quota fallback", () => {
     const result = await chooseFallback(w.paths, { kind: "off" }, w.check());
     expect(result).toEqual({
       lines: [
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude" -> "off"',
         "claude-mem has no fallback now: while its provider is limited, it waits.",
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "claude" -> "off"',
       ],
       ok: true,
     });
@@ -551,6 +569,7 @@ describe("PM1: the quota fallback", () => {
       model: null,
       provider: "off",
       source: "portal",
+      target: null,
     });
   });
 
@@ -570,8 +589,8 @@ describe("PM1: the quota fallback", () => {
     );
     expect(result).toEqual({
       lines: [
-        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "" -> "claude-sonnet-5-5"',
         "While its route's provider is limited, claude-mem uses claude-sonnet-5-5 on your own Claude login.",
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "" -> "claude-sonnet-5-5"',
       ],
       ok: true,
     });
@@ -599,7 +618,7 @@ describe("PM1: the quota fallback", () => {
       },
     ]);
     expect(result.ok).toBe(true);
-    expect(result.lines.at(-1)).toBe(
+    expect(result.lines[0]).toBe(
       "While its route's provider is limited, claude-mem sends its summaries to glm/flash on omniroute.",
     );
     expect(w.settings()).toMatchObject({
@@ -607,7 +626,13 @@ describe("PM1: the quota fallback", () => {
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: "glm/flash",
       CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: "openai-compatible",
     });
-    expect(readClaudeMemFacts(w.paths).current?.fallback.idle).toBeNull();
+    expect(readClaudeMemFacts(w.paths).current?.fallback).toMatchObject({
+      idle: null,
+      provider: "openai-compatible",
+      target: "omniroute:glm/flash",
+    });
+    // The Claude route names no backend: the address and the model are the fallback's.
+    expect(readClaudeMemFacts(w.paths).current?.route).toMatchObject({ address: null, target: null });
     // On a backend route, a backend fallback is refused: claude-mem has one compat backend.
     await chooseRoute(w.paths, { backend: "omniroute", kind: "backend", model: "m" }, w.check());
     expect(
