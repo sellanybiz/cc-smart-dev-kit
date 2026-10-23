@@ -606,7 +606,7 @@ and OmniRoute. The screens the owner approved (2026-10-16) are `views.ts`, and t
 each one follows them.
 
 **Settings and the Project card.** `/settings` shows every workflow setting — the flow after
-a finished step, the alerts, the switches — one row each, with the value now and where it
+a finished step, the alerts, the switches, the crew caps — one row each, with the value now and where it
 came from (`yours`, `this project`, `default`). A change is one POST that runs the module's
 own `writePersonalSetting` (the two project switches go to `writeProjectSetting`), so the
 page and `cc-smart-dev-kit workflow show` can never disagree; a row the project sets is
@@ -876,9 +876,9 @@ before: the switch-over costs nothing.
 client on a page the kit's server serves, the mock client with `?mock=<state>` in the address
 or under `next dev` (and then the header says "Mock data"). The live client fetches
 `GET /api/…` on the same origin and nothing else; each answer goes through `adapt.ts`, the one
-translation into the shape its page draws. A fact the server does not send yet is `null` there
-and the page says it does not know (the Machine page's Claude Code and Bun versions, the
-router's socket unit, a project's last use): never a value made up to fill a field.
+translation into the shape its page draws. A fact the machine cannot give is `null` there and
+the page says it does not know (a version `claude --version` did not name, a project with no
+session record, the plan's 7-day windows): never a value made up to fill a field.
 
 **The API types have one mirror** (`portal/src/api/wire.ts`): every type
 `src/portal/api/types.ts` exports, by the same name, written out because the server's file
@@ -925,6 +925,42 @@ step's last line and the action's result go out on the stream (`action` events),
 the install as it happens. The new actions for D52 — `crew.answer`, `crew.stop`, `crew.resume`,
 `crew.rm`, `worktrees.clean` — call the CLI's own functions (`src/crew/`, `runWorktrees` with
 its own sinks), not a copy; `worktrees.clean` needs the page's confirmation.
+
+### The pages' facts and actions (B6d)
+
+Each fact a page draws comes from the module that already owns it, through `facts.ts` and the
+API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
+
+- **Machine**: Claude Code's version from an asynchronous `claude --version` (the home folder,
+  `commandContext`'s environment, a 10 s timeout; a missing or silent `claude` is a reason, not
+  a number), the last `doctor --live` proof (`readLiveRecord`), the Bun the portal runs on
+  against `MIN_BUN`, the MCP servers from `mcp status`'s own reader (`mcpServerStatus`: files
+  only, no `claude mcp` call), and the heavy jobs' CPU and I/O weights from `/api/jobs`.
+- **Health**: what holds the router's port, in doctor's own words: `portHolderCheck`
+  (`src/gateway/doctor.ts`) for systemd's socket unit or the Windows task; null where the machine
+  runs neither. The router-down card names the unit from that socket, so the page never types it.
+- **Overview**: the plan's 5-hour window as the status line recorded it
+  (`src/cli/usage-window.ts`, null for a window that is over). The 7-day windows are written
+  nowhere, so the page says so. Counting Claude's replies from the transcripts was the other
+  choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
+  read must never block the server.
+- **Work**: another session's model is its tail's last reply (`describeSession`, skipping
+  Claude Code's `<synthetic>` stand-in), and its state is `ended` (the end marker), `waiting`
+  (an open permission prompt, from the flow report's waits), `working` (written in the last
+  `SESSION_WORKING_MS`), or `idle`. A crew session's summary adds the files its brief owns, what
+  it waits for, its newest line and its memory readings, and its "since" is its own newest
+  state event (`stateSince` takes one session's events, newest first).
+- **Flow**: the report's window hour by hour (`FlowReport.hours`, summed from the flow cache's
+  own hourly buckets); the page draws an hour per bar for 24 hours and six for 7 days.
+- **Settings**: the crew caps (`crew.perLead`, `crew.perLeadOpus`, `crew.max`,
+  `crew.usagePercent`) are rows of the one table (`src/portal/settings.ts`), written by
+  `writePersonalSetting` like every row; a number row names its unit there.
+
+Every action the server has is drawn where it belongs, asked first when it restarts or writes
+something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the
+Slots page's fallback and breaker), the router restart, `doctor`, a companion's enable, the
+OmniRoute update and rollback, the browser's setup and token, the auto-mode rules' write (with
+the hash of the change shown), and the update check.
 
 ### What it runs from
 
