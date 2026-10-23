@@ -2783,6 +2783,22 @@ describe("cc-smart-dev-kit version and help", () => {
     expect(world.gitCalls()).not.toBe("");
   });
 
+  test("`worktrees --json` prints the list only: it refuses --clean and --remove", () => {
+    const world = setup();
+    for (const args of [
+      ["worktrees", "--json", "--clean"],
+      ["worktrees", "--json", "--remove", "/home/user/one-worktree"],
+    ]) {
+      const refused = world.run(args);
+      expect(refused.exitCode).toBe(2);
+      expect(refused.stderr).toBe(
+        `--json prints the list: it takes neither --clean nor --remove\nSee: ${COMMAND} worktrees --help\n`,
+      );
+    }
+    // The conflict is decided before anything scans or removes.
+    expect(world.gitCalls()).toBe("");
+  });
+
   test("UX-17: the help names the commands from the table, so a list cannot drift", () => {
     const world = setup();
     // The top-level help used to list the gateway's subcommands by hand — and missed `check`

@@ -85,6 +85,7 @@ import {
 } from "./facts";
 import { parseSettingValue, settingSpec } from "./settings";
 import type { ProjectInitAnswers, ProjectInitPlan, WorkflowAdapter } from "./workflow-adapter";
+import { forgetWorktrees } from "./worktrees-read";
 
 /**
  * The OmniRoute context every portal action uses: the portal's own network, clock and runner,
@@ -1261,10 +1262,22 @@ async function crewCliAction(
     cwd: record.repo,
     onLine: (line) => action.publish?.("action", { action: name, line }),
   });
+  // `crew rm` removes the crew session's worktree: the Worktrees page's kept answer is stale.
+  forgetWorktrees(action.portal);
   const lines = [...run.lines];
   if (run.error !== null) lines.push(run.error);
-  if (run.timedOut) lines.push(`crew ${args[0]} did not answer in time`);
+  if (run.timedOut) lines.push(crewTimeoutLine(args[0] ?? "", record.id));
   return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
+/**
+ * The line a crew action shows when its child passed `CLI_CHILD_TIMEOUT_MS`: `crew stop`,
+ * `crew resume` and `crew rm` each make several calls, so one cut at the limit may have done
+ * part of its work. The line says so and names the two ways to find out where the crew session
+ * stands: the same command again, or `crew status`.
+ */
+export function crewTimeoutLine(command: string, recordId: string): string {
+  return `crew ${command} did not answer in time, so it may have done part of its work: run it again, or ${COMMAND} crew status ${recordId} to see where it is.`;
 }
 
 /**
@@ -1277,6 +1290,8 @@ async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
     cwd: action.cwd,
     onLine: (line) => action.publish?.("action", { action: "worktrees.clean", line }),
   });
+  // The list the page reads next must be the one after the clean, not the one from before it.
+  forgetWorktrees(action.portal);
   const lines = [...run.lines];
   if (run.error !== null) lines.push(run.error);
   if (run.timedOut) lines.push("worktrees --clean did not answer in time");

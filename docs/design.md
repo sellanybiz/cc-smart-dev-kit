@@ -943,15 +943,21 @@ spawns (`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call,
 makes several — and `worktrees --clean` fetches, scans and removes the same way. Run in the
 server, one click froze every page, every other action and the stream for that long. So those
 four actions run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
-stop|resume|rm <id>` or `dist/cli.js worktrees --clean`, with the plugin's two bun flags, the
-portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is
-not a crew session, D52), a 3-minute timeout, and the record's own repository as the folder.
+stop|resume|rm <id>`, each **in the record's own repository**, or `dist/cli.js worktrees
+--clean`, which has no crew record and runs **in the portal's own folder** — the folder the
+portal was started in. Each child gets the plugin's two bun flags, the portal's own `HOME` and
+`CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52)
+and a 3-minute timeout; one cut at that timeout says so and points at `crew status` and at
+running it again, because a `crew rm` may have done part of its work.
 Every line goes out on the stream as it is printed. The record is found on **the machine**
 (`listAllCrew`): the portal usually runs from the home folder, which is no git project, so its
 own folder's store would find nothing. `crew.answer` runs in a child too
 (`dist/cli.js crew answer --as-person -- <id> <text>`): a stopped crew session is resumed with
 a synchronous `claude --bg --resume`, so its path blocks as well; `--as-person` says the click
-is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. **No
+is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. The
+flag means no Claude Code session runs the command, so a session above it refuses the flag
+with one line — the portal's child has none, because the portal starts detached
+(`src/hooks/detached.ts`) and is reparented away from the session that started it. **No
 synchronous spawn is reachable from these five actions**, and no action ever forces anything.
 Two others are still owed a child, named here so the rule is never read as already true
 everywhere: `doctor.run` (its launcher and `claude --version` checks spawn synchronously,
@@ -969,6 +975,12 @@ runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read
 reused for 5 s; a failure is not kept. When the child fails, Flow answers 500 with its reason,
 Needs says the permission prompts could not be read (`permissionsError`), and Work says no
 session can show a wait (`waitsError`) — never an empty list that looks like "nothing waits".
+**The worktrees read runs the same way** (`src/portal/worktrees-read.ts`): the scan behind
+`/api/worktrees` reads every worktree's git status, the running sessions, the programs and the
+Docker containers synchronously, so the portal runs the CLI's own `worktrees --json` in a child
+— the one builder (`worktreesAnswerOf`, `src/worktrees/command.ts`) whose answer the page shows
+— shared by requests at once and reused for 5 s; a failure is not kept, and the page shows the
+child's reason in its `note`.
 Still on the loop, and owed to a later phase: the Health page's `systemctl --user is-active`
 (about 6 ms) and the Health and Overview `journalctl -n 200` (20–65 ms), through the doctor
 check's synchronous `Runner`.
@@ -998,7 +1010,9 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   reply (`describeSession`, skipping Claude Code's `<synthetic>` stand-in), and its state is
   `ended` (the end marker), `waiting` (an open permission prompt, from the flow report's waits),
   `working` (written in the last `SESSION_WORKING_MS`), or `idle`; the "other sessions" list is
-  the project of the folder the portal runs in (or none outside a git project). A crew
+  the project of the folder the portal runs in (or none outside a git project). A folder that
+  is no project is the portal's normal start, so its line on the page is quiet (`folderNote`,
+  muted); a store or a folder that could not be read is a warning (`note`). A crew
   session's summary adds the files its brief owns, what it waits for, its newest line and its
   memory readings, and its "since" is its own newest state event (`stateSince` takes one
   session's events, newest first).
@@ -1778,7 +1792,7 @@ that, so the plugin ships no worktree hook at all.
 | `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` only when the person asks — D13); an affordable slot needs `effort: "max"`; the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. **A crew session is judged as a session nobody watches** (D36): every launch it would ask the person about — Fable, an Opus-family model it cannot read, Opus at `max`, an unreadable Workflow — is denied with the step that puts the question to its lead (`crew report --question`), in the guard's **crew part** (`crewAgentAnswer`), which judges without recording and runs before `ownHooks`. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. **A crew session is never asked**: each ask is a denial naming the step that reaches its lead — the kit's own limits are the person's, and the portal is no place for a crew session (`CREW_KIT_REFUSAL`, `CREW_PORTAL_REFUSAL`) — and the `alwaysOn` flag carries that answer into every path the guard answers through. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
-| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's `crew start` is denied; a polling loop over `crew list|status` or `claude agents --json` (a repeating `while`/`until`/`do` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read; a `for`/`foreach` over a fixed list is no poll) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). **A crew session is never asked** (D36): a `claude -p` launch the launch policy would question is refused by the policy's unattended rule, and a heavy command whose routing cannot be read because the project's file is broken or too new is refused too — each with the step that puts the question to its lead. § The Bash judge and the job route. |
+| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`) showing the `crew start` line; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); a crew session's lead commands (`crew start`, `answer`, `stop`, `rm`, `resume`, `watch`, `lead`, `lead tell`) are denied; a polling loop over `crew list|status` or `claude agents --json` (a repeating `while`/`until`/`do` loop or a `watch`, or a `sleep`/`Start-Sleep` beside a read; a `for`/`foreach` over a fixed list is no poll) is denied. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the project's `jobs.route`, Bash only: a line whose every command is heavy, a `cd` or an assignment is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). **In a lead**, a CI watch, a routed heavy job and the full check get `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on 2.1.306). **A crew session is never asked** (D36): a `claude -p` launch the launch policy would question is refused by the policy's unattended rule, and a heavy command whose routing cannot be read because the project's file is broken or too new is refused too — each with the step that puts the question to its lead. § The Bash judge and the job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send **the other leads of the repo and the person's own sessions — never a crew session** when it went into `worktrees.base`, one `merge` event per other lead so its watch says the line, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). The message says what to do after the merge: never commit unfinished work for it, run the project's install if a lock file changed, run the tests it touched. A form that names no pull request gets no note (§ The crew talks). |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
@@ -2363,15 +2377,19 @@ with the one shell reader and answers four things:
   A program the line works out when it runs (`$(which claude) --bg`) is judged by the same
   words: `--bg` is a background launch, and `-p` counts as one only when a word names Claude
   Code (`cp -p` is no launch).
-- **a crew session's `crew start`**: denied, in the launcher's own words (`CREW_NEVER_DOES`,
-  `src/crew/brief.ts`): the need goes to the lead with `crew report --question`.
+- **a crew session's lead commands** (`crew start`, `crew answer`, `crew stop`, `crew rm`,
+  `crew resume`, `crew watch`, `crew lead`, `crew lead tell`): denied, in the launcher's own
+  words (`CREW_NEVER_RUNS`, `src/crew/brief.ts`): the need goes to the lead with `crew report
+  --question`. The hook's environment is the session's own, so a line that unsets the variable
+  itself (`env -u CC_SMART_DEV_KIT_CREW …`) does not get past it.
 - **polling**: a `crew list` / `crew status` read or a `claude agents --json` read that repeats
   over time — inside a `while` / `until` / `do` loop (bash, the condition included) or a
   PowerShell `while` / `do`, or a `watch` — or beside a `sleep` or `Start-Sleep`, is denied — a
   crew session's news arrives by itself, through the lead's watch and the monitors. A
   `for` / `foreach` over a fixed list with no wait is no poll (F2a-6), and neither is a read
-  whose output a later loop walks (`claude agents --json | … | while read id; do …`). One read,
-  and `crew watch` itself, pass.
+  whose output a later loop walks (`claude agents --json | … | while read id; do …`). One read
+  passes. `crew watch` is a lead's command, so a crew session is denied it (above), never
+  read as a poll.
 
 **The route** is the heavy-job queue's door, and the project's opt-in: with
 `"jobs": { "route": true }` in its `.claude/cc-smart-dev-kit.json` (the `switches.jobRoute`

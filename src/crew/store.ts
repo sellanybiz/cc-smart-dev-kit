@@ -642,18 +642,34 @@ export function listCrew(stateDir: string, repo: string): Listed<CrewRecord> {
   return listRecords(crewRecordSchema, join(crewStoreDir(stateDir, repo), "crew"));
 }
 
-/** Every crew session on this machine, of every repository, oldest first: what a machine-wide cap counts. */
-export function listAllCrew(stateDir: string): Listed<CrewRecord> {
+/**
+ * Every record of one store folder (`crew`, `leads`) in every repository of this machine,
+ * oldest first, two records of one time ordered by `tie`: the one walk both machine-wide
+ * readers use, so they can never list a machine's store differently.
+ */
+function listAllRecords<T extends { createdAt: string }>(
+  schema: z.ZodType<T>,
+  stateDir: string,
+  folder: string,
+  tie: (one: T) => string,
+): Listed<T> {
   const root = crewRootDir(stateDir);
-  const all: Listed<CrewRecord> = { broken: [], records: [] };
+  const all: Listed<T> = { broken: [], records: [] };
   if (!existsSync(root)) return all;
   for (const key of readdirSync(root).sort()) {
-    const one = listRecords(crewRecordSchema, join(root, key, "crew"));
+    const one = listRecords(schema, join(root, key, folder));
     all.broken.push(...one.broken);
     all.records.push(...one.records);
   }
-  all.records.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  all.records.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || tie(a).localeCompare(tie(b)),
+  );
   return all;
+}
+
+/** Every crew session on this machine, of every repository, oldest first: what a machine-wide cap counts. */
+export function listAllCrew(stateDir: string): Listed<CrewRecord> {
+  return listAllRecords(crewRecordSchema, stateDir, "crew", (one) => one.id);
 }
 
 /**
@@ -661,18 +677,7 @@ export function listAllCrew(stateDir: string): Listed<CrewRecord> {
  * it shows every lead whose crew the machine's store holds, whatever folder the portal runs in.
  */
 export function listAllLeads(stateDir: string): Listed<LeadRecord> {
-  const root = crewRootDir(stateDir);
-  const all: Listed<LeadRecord> = { broken: [], records: [] };
-  if (!existsSync(root)) return all;
-  for (const key of readdirSync(root).sort()) {
-    const one = listRecords(leadRecordSchema, join(root, key, "leads"));
-    all.broken.push(...one.broken);
-    all.records.push(...one.records);
-  }
-  all.records.sort(
-    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId),
-  );
-  return all;
+  return listAllRecords(leadRecordSchema, stateDir, "leads", (one) => one.sessionId);
 }
 
 /**

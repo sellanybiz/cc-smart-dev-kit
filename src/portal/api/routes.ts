@@ -107,7 +107,7 @@ export const API_READS: Readonly<
   "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
   "/api/needs": async (deps) => ok(await needsAnswer(deps)),
-  "/api/worktrees": (deps) => ok(worktreesAnswer(deps)),
+  "/api/worktrees": async (deps) => ok(await worktreesAnswer(deps)),
   "/api/update": (deps) => ok(updateAnswer(deps)),
   "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
   "/api/facts": async (deps) => ok(await deps.facts()),

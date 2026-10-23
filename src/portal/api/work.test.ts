@@ -208,9 +208,12 @@ describe("Work from a folder that is no git project", () => {
       NOW - 1_500,
     );
     const answer = await workAnswer(w.deps);
-    // This folder is no project, so no other session is listed — the crew data still is.
+    // This folder is no project, so no other session is listed — the crew data still is. The
+    // line is the quiet one (`folderNote`): the portal's normal start is the home folder, and
+    // `note` is kept for a store or a folder that could not be read.
     expect(answer.repo).toBe(null);
-    expect(answer.note).toContain("not in a git project");
+    expect(answer.note).toBe(null);
+    expect(answer.folderNote).toContain("not in a git project");
     expect(answer.sessions).toEqual([]);
     expect(answer.crew.map((one) => [one.id, one.repo])).toEqual([
       ["crew-B-1", w.repoB],

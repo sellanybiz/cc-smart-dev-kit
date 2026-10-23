@@ -304,8 +304,14 @@ export interface OtherSession {
 export interface WorkData {
   leads: { lead: LeadRecord; crew: CrewRecord[]; lastStep: Record<string, CrewEvent> }[];
   /**
+   * A quiet line about this portal's own folder (it is no git project, the portal's normal
+   * start), shown muted: the other sessions of a project are not listed; null when it is one.
+   */
+  folderNote: null | string;
+  /**
    * Why the machine's crew store, or this folder's own sessions, could not be read; null when
-   * they were. Shown once on the page, so an empty list is never left unexplained.
+   * they were. Shown once on the page, in the warning colour, so an empty list is never left
+   * unexplained.
    */
   note: null | string;
   others: OtherSession[];

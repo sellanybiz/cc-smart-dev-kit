@@ -255,6 +255,73 @@ describe("a crew session starting crew sessions", () => {
   });
 });
 
+describe("a crew session running a lead's command", () => {
+  // The hook's environment is the session's own, so a command line that unsets the variable
+  // (`env -u CC_SMART_DEV_KIT_CREW …`) is still read as the crew session's, and the launcher's
+  // own refusal (`readCaller`) is what the judge says here first.
+  const denied: [string, string][] = [
+    ["cc-smart-dev-kit crew answer C-x 'yes'", "answers its lead's questions"],
+    [
+      "env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit crew answer C-x 'yes'",
+      "answers its lead's questions",
+    ],
+    // A program the line works out when it runs is read from its own words, as a launch is.
+    ["$BIN crew answer C-x 'yes'", "answers its lead's questions"],
+    ["cc-smart-dev-kit crew watch", "watches its lead's crew sessions"],
+    ["cc-smart-dev-kit crew stop C-x", "stops, removes or resumes crew sessions"],
+    ["cc-smart-dev-kit crew rm C-x", "stops, removes or resumes crew sessions"],
+    ["cc-smart-dev-kit crew resume C-x", "stops, removes or resumes crew sessions"],
+    ["cc-smart-dev-kit crew lead --plan plan", "leads"],
+    ["cc-smart-dev-kit crew lead tell LEAD-y --kind contract 'a note'", "tells another lead"],
+  ];
+  for (const [command, phrase] of denied) {
+    test(`denied: ${command}`, async () => {
+      const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect(answer.decision).toBe("deny");
+      expect(answer.reason).toContain(`a crew session never ${phrase}`);
+      expect(answer.reason).toContain("cc-smart-dev-kit crew report --question");
+    });
+  }
+
+  test("a crew session's own commands pass: its steps, reports, notes and the board", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "cc-smart-dev-kit crew step tests-green",
+      "cc-smart-dev-kit crew report --status done",
+      "cc-smart-dev-kit crew tell C-y --kind contract 'a note'",
+      "cc-smart-dev-kit crew list",
+      "cc-smart-dev-kit crew status C-x",
+      // A lead command's help only prints help: reading it is no act of leading.
+      "cc-smart-dev-kit crew answer --help",
+      "cc-smart-dev-kit crew lead --help",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("the same commands in a plain session are the launcher's to judge: silent", async () => {
+    const { env, repo } = project({});
+    expect(
+      (await judge(repo, "cc-smart-dev-kit crew answer C-x 'yes'", env)).decision,
+    ).toBeUndefined();
+    expect((await judge(repo, "cc-smart-dev-kit crew watch", env)).decision).toBeUndefined();
+  });
+
+  test("a crew session's lead command in PowerShell is denied too", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    const answer = await judge(
+      repo,
+      "cc-smart-dev-kit crew answer C-x 'yes'",
+      { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID },
+      "PowerShell",
+    );
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toContain("answers its lead's questions");
+  });
+});
+
 describe("polling for crew news", () => {
   const denied = [
     "while true; do cc-smart-dev-kit crew list; sleep 10; done",

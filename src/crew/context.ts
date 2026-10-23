@@ -36,12 +36,6 @@ export interface CrewContext {
   /** The full path of a command on PATH (`env.PATH`), or null. */
   which: (command: string) => null | string;
   /**
-   * True when the person acts through the portal (D52): no Claude Code session runs this
-   * command, and the portal's own environment may name the crew session that started it. Set
-   * only by `src/portal/actions.ts`; a CLI run never sets it, so every refusal below stays.
-   */
-  asPerson?: boolean;
-  /**
    * The machine's facts `crew rm` judges a worktree by: the running sessions, the programs and
    * the Docker containers. A test gives them; left out, they are read from the machine.
    */

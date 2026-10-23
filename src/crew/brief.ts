@@ -32,9 +32,11 @@ export const REPORT_COMMAND = `${COMMAND} crew report`;
 
 /**
  * The commands a lead runs, and what a crew session never does with each (D45): one home for
- * the words the launcher's refusal (`readCaller`) uses for every command, and the Bash judge
- * (`src/hooks/bash-judge.ts`) uses for `start`. The keys are the commands; the values complete
- * "a crew session never …".
+ * the words the launcher's refusal (`readCaller`) uses for every command. The keys are the
+ * commands; the values complete "a crew session never …". `resume`'s words name all three end
+ * commands (`stop`, `resume`, `rm`), because one refusal answers each of them
+ * (`src/crew/end.ts`). The Bash judge (`src/hooks/bash-judge.ts`) says the same words, read
+ * through `CREW_NEVER_RUNS` below.
  */
 export const CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
@@ -44,6 +46,29 @@ export const CREW_NEVER_DOES = {
   start: "starts crew sessions",
   watch: "watches its lead's crew sessions",
 } as const;
+
+/**
+ * Every `crew` subcommand a crew session never runs, and the phrase that completes "a crew
+ * session never …" for it. The launcher refuses the lead commands through `CREW_NEVER_DOES`
+ * (`readCaller`) and the three end commands in `end.ts`; the Bash judge denies them all from
+ * this map, so it denies exactly the commands the launcher refuses. `satisfies` keeps the map
+ * whole: a lead command added to `CREW_NEVER_DOES` must appear here too, or this file does not
+ * type-check. The judge denies them by the hook's own environment, which a command line that
+ * unsets `CC_SMART_DEV_KIT_CREW` (`env -u …`) cannot reach.
+ */
+export const CREW_NEVER_RUNS = {
+  answer: CREW_NEVER_DOES.answer,
+  lead: CREW_NEVER_DOES.lead,
+  "lead tell": CREW_NEVER_DOES["lead tell"],
+  resume: CREW_NEVER_DOES.resume,
+  rm: CREW_NEVER_DOES.resume,
+  start: CREW_NEVER_DOES.start,
+  stop: CREW_NEVER_DOES.resume,
+  watch: CREW_NEVER_DOES.watch,
+} as const satisfies Record<LeadCommand | "rm" | "stop", string>;
+
+/** One `crew` subcommand a crew session never runs. */
+export type CrewNeverRun = keyof typeof CREW_NEVER_RUNS;
 
 /** One command a lead runs: `crew <this>`. */
 export type LeadCommand = keyof typeof CREW_NEVER_DOES;

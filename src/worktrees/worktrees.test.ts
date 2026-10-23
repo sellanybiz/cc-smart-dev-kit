@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
-import { baseBranch, DEFAULT_BASE, runWorktrees } from "./command";
+import { baseBranch, DEFAULT_BASE, runWorktrees, type WorktreesAnswer } from "./command";
 import {
   containersUsing,
   hostPath,
@@ -863,7 +863,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: true, noFetch: true, remove: null },
+          { clean: true, json: false, noFetch: true, remove: null },
           cleanGitEnv(),
           worktree,
         ),
@@ -874,6 +874,107 @@ describe("the worktrees command", () => {
     }
     expect(errors[0]).toContain(`Run this in the main checkout, ${main}.`);
     expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("`--json` prints the same facts as one object, and changes nothing", async () => {
+    const { main, worktree } = repo();
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    // One line on stdout, nothing else: the answer a page reads.
+    expect(out).toHaveLength(1);
+    const answer = JSON.parse(out[0] ?? "") as {
+      autoClean: unknown;
+      base: string;
+      from: string;
+      note: null | string;
+      worktrees: { kind: string; path: string }[];
+    };
+    expect(answer.base).toBe("main");
+    // No project file: the remote's own default branch is the base.
+    expect(answer.from).toBe("origin");
+    expect(answer.note).toBe(null);
+    expect(answer.autoClean).toBe(null);
+    expect(answer.worktrees.map((one) => [one.kind, one.path])).toEqual([
+      ["main", main],
+      // Freshly made, so not finished yet: the verdict itself has its own tests.
+      ["kept", worktree],
+    ]);
+    // A read: the worktree is still there.
+    expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("`--json` from a folder that is no git project says so, as the portal's normal start does", async () => {
+    // The portal usually starts in the home folder, which is no project: the page shows this
+    // line, never an empty list that looks like a machine without worktrees.
+    const home = tempDir("worktrees-home-no-git");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude-config"), HOME: home });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          home,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    const answer = JSON.parse(out[0] ?? "") as WorktreesAnswer;
+    expect(answer).toEqual({
+      autoClean: null,
+      base: "",
+      from: "default",
+      note: "this folder is not in a git project, so there is no work to show",
+      worktrees: [],
+    });
+  });
+
+  test("`--json` answers with the reason when the project's file cannot be read", async () => {
+    const { main } = repo();
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude", "cc-smart-dev-kit.json"), "{ not json\n");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    // A note, never a stack trace: the page shows the reason it could not read the project.
+    expect(out).toHaveLength(1);
+    const answer = JSON.parse(out[0] ?? "") as { note: null | string; worktrees: unknown[] };
+    expect(answer.note).toContain("cc-smart-dev-kit.json");
+    expect(answer.worktrees).toEqual([]);
   });
 
   test("`--remove <path>` removes one now, without the one-hour wait", async () => {
@@ -887,7 +988,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),
@@ -912,7 +1013,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),
@@ -940,7 +1041,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),
@@ -975,7 +1076,7 @@ describe("the worktrees command", () => {
         expect(
           await runWorktrees(
             paths,
-            { clean: false, noFetch: true, remove: worktree },
+            { clean: false, json: false, noFetch: true, remove: worktree },
             cleanGitEnv(),
             main,
           ),
@@ -1009,7 +1110,7 @@ describe("the worktrees command", () => {
       expect(
         await runWorktrees(
           paths,
-          { clean: false, noFetch: true, remove: worktree },
+          { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
         ),

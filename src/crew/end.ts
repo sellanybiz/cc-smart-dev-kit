@@ -29,7 +29,7 @@ import { isInside, runGit } from "../hooks/git";
 import { agentRows, claudeDeps } from "./agents";
 import { resumePlace, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
-import { REPORT_COMMAND } from "./brief";
+import { CREW_NEVER_RUNS, REPORT_COMMAND } from "./brief";
 import { agentRow, callClaude, findClaude, parseAgents } from "./claude";
 import type { CrewContext } from "./context";
 import { lastLine } from "./display";
@@ -73,13 +73,11 @@ export function relative(repo: string, path: string): string {
 }
 
 /** The refusal of a session that is a crew session's own: it never ends a crew session. */
-function crewSessionRefusal(command: string, ctx: CrewContext): null | Refusal {
-  // The person through the portal is not a crew session, whatever started the portal (D52).
-  if (ctx.asPerson === true) return null;
+function crewSessionRefusal(command: "resume" | "rm" | "stop", ctx: CrewContext): null | Refusal {
   const crew = crewIdOf(ctx.env);
   if (crew === null) return null;
   return failure(
-    `crew ${command}: this session is the crew session ${crew}, and a crew session never stops, removes or resumes crew sessions`,
+    `crew ${command}: this session is the crew session ${crew}, and a crew session never ${CREW_NEVER_RUNS[command]}`,
     `Fix: hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`,
   );
 }
@@ -87,7 +85,7 @@ function crewSessionRefusal(command: string, ctx: CrewContext): null | Refusal {
 /** The crew session `ref` names in this repository, for a command that acts on it; or the refusal. */
 export function actOn(
   ref: string,
-  command: string,
+  command: "resume" | "rm" | "stop",
   ctx: CrewContext,
 ): { read: Records; record: CrewRecord } | Refusal {
   const own = crewSessionRefusal(command, ctx);

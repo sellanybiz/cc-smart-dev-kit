@@ -15,7 +15,7 @@ import { createCrew, type NewCrew } from "../crew/store";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { makeRepo } from "../testing/hooks";
 import { cleanGitEnv, tempDir } from "../testing/temp";
-import { type ActionContext, portalOmnirouteContext, runAction } from "./actions";
+import { type ActionContext, crewTimeoutLine, portalOmnirouteContext, runAction } from "./actions";
 import { testPortalContext } from "./api/test-context";
 
 /** The lead every record in this test answers to. */
@@ -202,6 +202,14 @@ describe("a crew action runs the CLI's own command in a child", () => {
     const result = await runAction("crew.resume", { crew: id }, w.action);
     expect(result.ok).toBe(false);
     expect(result.lines).toEqual([`crew crew resume ${id}: done`]);
+  });
+
+  test("a crew action cut at its timeout says part of its work may be done, and points at crew status", () => {
+    // `crew rm` makes several calls with 30 s limits each: one cut at the child's own timeout
+    // may have removed the worktree, the record, or neither.
+    expect(crewTimeoutLine("rm", "crew-P-rm")).toBe(
+      "crew rm did not answer in time, so it may have done part of its work: run it again, or cc-smart-dev-kit crew status crew-P-rm to see where it is.",
+    );
   });
 
   test("an id no record of the machine has is refused, and nothing runs", async () => {

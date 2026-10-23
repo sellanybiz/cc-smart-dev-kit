@@ -142,7 +142,9 @@ function crewRecord(
 }
 
 function workData(now: number, empty: boolean): WorkData {
-  if (empty) return { leads: [], note: null, others: [], memory: {}, waitsNote: null };
+  if (empty) {
+    return { folderNote: null, leads: [], note: null, others: [], memory: {}, waitsNote: null };
+  }
   const lead: LeadRecord = {
     sessionId: "9c3a7e5d-lead",
     name: "LEAD my-app release-1.1.0",
@@ -229,6 +231,7 @@ function workData(now: number, empty: boolean): WorkData {
     text,
   });
   return {
+    folderNote: null,
     memory: {
       a1f04c2e: memorySeries(now, 3, 412),
       b7c19d03: memorySeries(now, 5, 388),

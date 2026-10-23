@@ -4416,9 +4416,13 @@ describe("the JSON API", () => {
 
   test("worktrees: every worktree's verdict, its idle minutes, and the last auto-clean", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
+    // The read runs the CLI's own `worktrees --json` in a child (`worktrees-read.ts`): the
+    // source CLI, so the test runs this branch's code, not the committed bundle.
+    const plugin = sourceCliPluginFolder();
     const world = await open({
       backendPort: backend.port,
       env: { PATH: process.env.PATH ?? "" },
+      pluginFolder: () => ({ folder: plugin }),
       projectFiles: {},
     });
     try {
@@ -4506,11 +4510,53 @@ describe("the JSON API", () => {
     }
   });
 
-  test("worktrees: no auto-clean has run yet, so the answer says so", async () => {
+  test("worktrees: the scan runs in a child, so the server answers while it runs", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
+    // A CLI child slow enough to measure: the scan never runs in the server, so its loop is
+    // free while the child works (`worktrees-read.ts`).
+    const folder = tempDir("plugin-slow-worktrees");
+    mkdirSync(join(folder, "dist"), { recursive: true });
+    writeFileSync(join(folder, "bunfig.toml"), "");
+    writeFileSync(
+      join(folder, "dist", "cli.js"),
+      `await Bun.sleep(400);
+console.log(JSON.stringify({ autoClean: null, base: "main", from: "config", note: null, worktrees: [] }));
+`,
+    );
     const world = await open({
       backendPort: backend.port,
       env: { PATH: process.env.PATH ?? "" },
+      pluginFolder: () => ({ folder }),
+    });
+    try {
+      const started = performance.now();
+      const slow = world.call("/api/worktrees");
+      const health = await world.call("/api/health");
+      const answeredAfter = performance.now() - started;
+      expect(health.status).toBe(200);
+      // A synchronous scan would have held the loop for the child's 400 ms.
+      expect(answeredAfter).toBeLessThan(300);
+      const body = JSON.parse((await slow).body) as Record<string, unknown>;
+      expect(body).toEqual({
+        autoClean: null,
+        base: "main",
+        from: "config",
+        note: null,
+        worktrees: [],
+      });
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("worktrees: no auto-clean has run yet, so the answer says so", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const plugin = sourceCliPluginFolder();
+    const world = await open({
+      backendPort: backend.port,
+      env: { PATH: process.env.PATH ?? "" },
+      pluginFolder: () => ({ folder: plugin }),
       projectFiles: {},
     });
     try {

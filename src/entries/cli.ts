@@ -751,6 +751,7 @@ async function main(argv: string[]): Promise<number> {
       const unknown = rest.filter(
         (arg, index) =>
           arg !== "--clean" &&
+          arg !== "--json" &&
           arg !== "--no-fetch" &&
           arg !== "--remove" &&
           (removeAt === -1 || index !== removeAt + 1),
@@ -759,10 +760,18 @@ async function main(argv: string[]): Promise<number> {
         console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "worktrees"));
         return 2;
       }
+      // `--json` is the answer a page reads: it lists, and changes nothing.
+      if (rest.includes("--json") && (rest.includes("--clean") || removeAt !== -1)) {
+        console.error(
+          usageError("--json prints the list: it takes neither --clean nor --remove", "worktrees"),
+        );
+        return 2;
+      }
       return await runWorktrees(
         paths,
         {
           clean: rest.includes("--clean"),
+          json: rest.includes("--json"),
           noFetch: rest.includes("--no-fetch"),
           remove: removeTarget,
         },

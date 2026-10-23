@@ -410,11 +410,16 @@ function WorkPage({ data }: { data: WorkData }) {
         />
       </SectionCards>
       <PagePad className="flex flex-col gap-4 md:gap-6">
-        {/* An empty list says why: the machine's store or this folder's own sessions could not
-            be read, or the portal runs in a folder that is no project (its normal start). */}
+        {/* An empty list says why. A store or a folder the server could not read is a warning;
+            a folder that is no git project is the portal's normal start, so its line is quiet. */}
         {data.note === null ? null : (
           <p role="status" className="text-warn text-sm">
             {data.note}
+          </p>
+        )}
+        {data.folderNote === null ? null : (
+          <p role="status" className="text-muted-foreground text-sm">
+            {data.folderNote}
           </p>
         )}
         {data.leads.length === 0 ? (

@@ -383,7 +383,7 @@ export function routeFacts(input: HookInput, context: HookEnvContext): Record<st
   const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
   const facts: Record<string, unknown> = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);
-  if (reading.crewStarts > 0) facts.crew_starts = reading.crewStarts;
+  if (reading.crewNeverRuns.length > 0) facts.crew_commands = reading.crewNeverRuns;
   if (reading.statusReads > 0) {
     facts.status_reads = reading.statusReads;
     facts.waits = reading.waits;

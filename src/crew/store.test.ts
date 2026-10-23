@@ -29,6 +29,7 @@ import {
   isKnownState,
   leadFile,
   listAllCrew,
+  listAllLeads,
   listCrew,
   listLeads,
   type NewCrew,
@@ -591,6 +592,53 @@ describe("reading the store", () => {
     expect(listAllCrew(state).records.map((one) => [one.id, one.repo])).toEqual([
       ["crew-b", OTHER],
       ["crew-a", REPO],
+    ]);
+  });
+
+  test("every repository's leads are listed together, oldest first, then by session id", async () => {
+    const state = tempDir("state");
+    expect(listAllLeads(state)).toEqual({ broken: [], records: [] });
+    // Two leads recorded in the same millisecond: the session id is the tiebreak the walk keeps.
+    await writeLead(
+      state,
+      {
+        cwd: REPO,
+        name: "LEAD b plan",
+        plan: "p",
+        repo: REPO,
+        sessionId: "22222222-aaaa",
+        tag: "b",
+      },
+      T1,
+    );
+    await writeLead(
+      state,
+      {
+        cwd: OTHER,
+        name: "LEAD a plan",
+        plan: "p",
+        repo: OTHER,
+        sessionId: "11111111-aaaa",
+        tag: "a",
+      },
+      T1,
+    );
+    await writeLead(
+      state,
+      {
+        cwd: OTHER,
+        name: "LEAD old plan",
+        plan: "p",
+        repo: OTHER,
+        sessionId: "33333333-aaaa",
+        tag: "o",
+      },
+      T0,
+    );
+    expect(listAllLeads(state).records.map((one) => [one.sessionId, one.repo])).toEqual([
+      ["33333333-aaaa", OTHER],
+      ["11111111-aaaa", OTHER],
+      ["22222222-aaaa", REPO],
     ]);
   });
 });

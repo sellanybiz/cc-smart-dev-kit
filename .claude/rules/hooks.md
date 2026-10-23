@@ -213,7 +213,8 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 
 Some hooks answer about the machine, not a project: `agent-guard` (the model a launch runs
 on), `job-route` (the shell judge, on Bash and PowerShell: a raw `--bg` launch, a `-p` run's
-model and effort, a crew session's `crew start`, a polling loop), `fable-session` (the model the
+model and effort, a crew session's lead commands — `crew start`, `answer`, `stop`, `rm`,
+`resume`, `watch`, `lead`, `lead tell` — a polling loop), `fable-session` (the model the
 session itself runs on),
 `crew-role` (a crew session's own card, the person's own prompt, the ask and the report),
 `lead-notes` (a lead's missed crew news) and `notify` (the alerts).

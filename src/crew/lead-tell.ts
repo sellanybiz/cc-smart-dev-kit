@@ -68,10 +68,10 @@ function findLead(
 }
 
 /**
- * Records the note for each receiver, and prints each one's `SendMessage` line as soon as its
- * event is in the store. **A failure never hides what was recorded:** the receivers before it
- * hold the note and their lines are printed, so the note still reaches them; the receiver whose
- * note is missing is named, and the exit code is 1.
+ * Records the note for each receiver, and prints each one's `SendMessage` line once every
+ * receiver was tried. **A failure never hides what was recorded or what was not:** a write
+ * that fails never stops the notes after it, every receiver whose note is missing is named
+ * with its reason, one sentence names them all, and the exit code is 1.
  */
 export async function recordLeadNotes(
   receivers: readonly LeadRecord[],
@@ -80,26 +80,29 @@ export async function recordLeadNotes(
   sinks: { error: (line: string) => void; print: (line: string) => void },
 ): Promise<number> {
   const recorded: LeadRecord[] = [];
+  const missed: { name: string; why: string }[] = [];
   for (const one of receivers) {
     try {
       await record(one);
+      recorded.push(one);
     } catch (error) {
-      sinks.error(
-        `crew lead tell: the store could not record the note for ${one.name}: ${reasonOf(error)}`,
-      );
-      if (recorded.length > 0) {
-        const names = recorded.map((done) => done.name).join(", ");
-        sinks.error(
-          `The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${one.name} again.`,
-        );
-        for (const done of recorded) sinks.print(sendMessageLine(done.name, message));
-      }
-      return 1;
+      missed.push({ name: one.name, why: reasonOf(error) });
     }
-    recorded.push(one);
+  }
+  for (const one of missed) {
+    sinks.error(`crew lead tell: the store could not record the note for ${one.name}: ${one.why}`);
+  }
+  const missing = missed.map((one) => one.name).join(", ");
+  if (recorded.length > 0 && missed.length > 0) {
+    const names = recorded.map((done) => done.name).join(", ");
+    sinks.error(
+      `The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${missing} again.`,
+    );
+  } else if (recorded.length === 0 && missed.length > 1) {
+    sinks.error(`No note was recorded: tell ${missing} again.`);
   }
   for (const one of recorded) sinks.print(sendMessageLine(one.name, message));
-  return 0;
+  return missed.length === 0 ? 0 : 1;
 }
 
 /** `crew lead tell`; the exit code. */
