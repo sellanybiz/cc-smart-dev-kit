@@ -20,6 +20,7 @@ import {
   unknownCommand,
   usageError,
 } from "../cli/help";
+import { realRunSession, runLaunch } from "../cli/launch";
 import type { LiveRunner } from "../cli/live-check";
 import { runMigrate } from "../cli/migrate";
 import { cliPaths } from "../cli/paths";
@@ -179,6 +180,26 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
       });
       return { note: list.note, projects: list.projects };
     },
+  };
+}
+
+/**
+ * What `launch` needs: the gateway's config (a port, a profile), the state folder for its
+ * settings file, and this machine's `claude`. The session runs attached to this terminal,
+ * so its stdin, stdout and stderr are this process's own (`realRunSession`).
+ */
+function launchContext(paths: ReturnType<typeof cliPaths>) {
+  return {
+    configPath: paths.gatewayConfigFile,
+    cwd: process.cwd(),
+    env: process.env,
+    error: (line: string) => console.error(line),
+    home: paths.home,
+    platform: process.platform,
+    print: (line: string) => console.log(line),
+    runSession: realRunSession,
+    stateDir: paths.stateDir,
+    which: (command: string) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
   };
 }
 
@@ -718,6 +739,10 @@ async function main(argv: string[]): Promise<number> {
       );
       return 2;
     }
+    case "launch":
+      // One session on a model path of its own, attached to this terminal (`src/cli/launch.ts`).
+      // Everything after `--` is Claude Code's: the command reads its own options and no more.
+      return await runLaunch(rest, launchContext(paths));
     case "sessions": {
       const unknown = rest.filter((arg) => arg !== "--open" && arg !== "--dry-run");
       if (unknown.length > 0) {

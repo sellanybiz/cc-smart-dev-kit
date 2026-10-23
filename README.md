@@ -356,6 +356,7 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, th
 
 | Command | What it does |
 |---|---|
+| `cc-smart-dev-kit launch [--no-gateway \| --gateway \| --profile <name>] [-- <claude args>]` | Starts **one** Claude Code session in this folder on a model path of its own, whatever the machine's and the project's settings say ([docs/gateway.md](docs/gateway.md) § One session): `--no-gateway` plain Claude at Anthropic, on your own claude.ai login; `--gateway` this machine's router; `--profile <name>` the router with one profile's chains; with no mode, the settings decide, exactly as for `claude`. Everything after `--` goes to Claude Code (`--model`, `-p`, `--resume`). It writes one small settings file (mode 600, in `~/.claude/cc-smart-dev-kit/launch/`, its name carrying the process so two launches at once never clash; it is removed when the session ends) and passes it with `--settings`, because a settings file's `env` beats both a shell export and the project's files. The session runs in this folder, attached to this terminal, and its exit code is passed on. It refuses a profile the gateway does not have, `--gateway` on a machine without a gateway, and running inside a Claude Code session. |
 | `cc-smart-dev-kit sessions [--open] [--dry-run]` | This project's Claude Code sessions of the last two days, by name and worktree, with the command that resumes each ([Sessions](#sessions)). With Warp installed it also saves a Warp tab for each. `--open` reopens every session that was open when the machine went down or its window closed (Warp tabs, or a terminal window each: XFCE Terminal on Linux, Windows Terminal on Windows); `--dry-run` says what it would open and opens nothing. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch] [--json]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--json` prints the same facts as one object, changes nothing and fetches nothing (it takes neither `--clean` nor `--remove`): it is the answer the portal's Worktrees page reads. `--clean` and `--remove` run in the main checkout only, one at a time. |
 
@@ -796,6 +797,12 @@ gateway sends your own Claude login. `gateway projects` shows every project with
 gets a **profile** (`gateway profile <name> slot …` — the first chain makes it) and points at
 it: `gateway project on --profile <name>`.
 [docs/gateway.md](docs/gateway.md) § Per project.
+
+**One session, another path.** `cc-smart-dev-kit launch --no-gateway` starts one session on
+plain Claude even where `gateway on` sends everything to the router, and `launch --gateway` or
+`launch --profile <name>` does the opposite for one session. It passes a `--settings` file,
+which beats the project's personal file, its team file and the machine's settings — for that
+session only. [docs/gateway.md](docs/gateway.md) § One session.
 
 **The request history.** The router logs one row per routed request — the time, the Claude
 Code session id, the model, slot, profile, target and status, the latency, the tokens the

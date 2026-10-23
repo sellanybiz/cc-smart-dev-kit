@@ -22684,7 +22684,7 @@ function writeStoreFile(file, text) {
   mkdirSync12(dirname14(file), { mode: 448, recursive: true });
   atomicWrite(file, text, 384);
 }
-function writeRecord(file, value) {
+function writeJsonFile(file, value) {
   writeStoreFile(file, `${JSON.stringify(value, null, 2)}
 `);
 }
@@ -22782,7 +22782,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan) {
       merged.mergedBeforeRemoval = before.state === "merged" || before.mergedBeforeRemoval === true;
     }
     const after = checked(crewRecordSchema, merged, file);
-    writeRecord(file, after);
+    writeJsonFile(file, after);
     const line = event(after);
     if (line !== null)
       appendEvent(stateDir, repo, line);

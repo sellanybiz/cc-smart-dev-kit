@@ -1,6 +1,6 @@
 ---
 name: gateway
-description: Use when the person wants more affordable models behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute, Ollama Cloud or an affordable model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback and breaker switches, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, and what never to do. Trigger phrases - "use GLM for subagents", "more affordable subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "every target is limited", "use GLM until it resets", "how much is on Opus".
+description: Use when the person wants more affordable models behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute, Ollama Cloud or an affordable model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback and breaker switches, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, running one session on plain Claude, the gateway or a profile (`launch`), and what never to do. Trigger phrases - "use GLM for subagents", "more affordable subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "every target is limited", "use GLM until it resets", "how much is on Opus".
 ---
 
 # The AI Gateway
@@ -250,6 +250,23 @@ The command refuses, in one line with the fix: another gateway's URL already in 
 personal file git already tracks (for on), a login key or `apiKeyHelper` anywhere in the project's
 chain (with on or off), `--team` with on, and a profile the config does not have. **For the
 project this session itself runs in, the person runs it** (§ A change to your own model path).
+
+## One session, on a path of its own ("plain Claude just this once")
+
+`cc-smart-dev-kit launch [--no-gateway | --gateway | --profile <name>] [-- <claude args>]` starts
+one session, in the folder it runs in, whatever the machine's and the project's settings say:
+
+- `--no-gateway`: plain Claude at Anthropic, on the person's own claude.ai login. Use it for a
+  task that must not go through an affordable model.
+- `--gateway`: this machine's router; `--profile <name>`: the router with one profile's chains.
+- No mode: no `--settings` file, and the settings decide as for `claude`.
+- Everything after `--` goes to Claude Code (`--model`, `-p`, `--resume`). The session is
+  attached to that terminal and its exit code is passed on.
+
+It passes a `--settings` file holding only `env.ANTHROPIC_BASE_URL`, because a settings file
+beats the shell and the project's files for that one session. It refuses an unknown profile,
+`--gateway` on a machine with no gateway, and running inside a Claude Code session — the person
+runs it in their own terminal.
 
 ## Profiles: a project's own chains
 

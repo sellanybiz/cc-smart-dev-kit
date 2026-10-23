@@ -238,6 +238,58 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
   main checkout's root on every platform. On Windows, check `gateway project status` in a
   project once before relying on it.
 
+## One session: `launch` (GP3)
+
+A project's state and the machine's settings decide for every session in a folder. Sometimes one
+session should go elsewhere: plain Claude for a task that must not leave the person's own login,
+or a profile for one long job. `cc-smart-dev-kit launch` starts exactly that session.
+
+```sh
+cc-smart-dev-kit launch [--no-gateway | --gateway | --profile <name>] [-- <claude args>]
+```
+
+| Mode | `env.ANTHROPIC_BASE_URL` in the session | The line it prints |
+|---|---|---|
+| `--no-gateway` | `https://api.anthropic.com`: Anthropic, on the person's own claude.ai login (P1) | `launch: plain Claude (no gateway) · …` |
+| `--gateway` | the machine's router, `http://127.0.0.1:<port>` from `gateway.json` | `launch: the gateway · …` |
+| `--profile <name>` | the router with the profile, `…/p/<name>` | `launch: the gateway, profile "<name>" · …` |
+| none | no file and no `--settings`: the machine's and the project's settings decide, as for `claude` | `launch: this machine's settings · no --settings file` |
+
+Everything after `--` goes to Claude Code itself (`--model`, `-p`, `--resume`, `--help`). The
+session runs in the folder the command runs in, attached to that terminal, and its exit code is
+the command's.
+
+- **Why a settings file** (R6): a settings file's `env` beats a shell export (P4), and a
+  `--settings` file beats the project's personal file, its team file, the user file and the
+  shell (P3). So the launch writes one small file holding only `env.ANTHROPIC_BASE_URL` and
+  passes it with `--settings`; every other setting stays the person's. An environment variable
+  would lose to any settings file.
+- **Where the file is:** `<stateDir>/launch/<mode>-<pid>.json` (`no-gateway-<pid>.json`,
+  `gateway-<pid>.json`, `profile-<name>-<pid>.json`), mode 0600 in a 0700 folder, written by the
+  kit's one JSON writer (`writeJsonFile`, `src/crew/store.ts`), which `crew start` uses for its
+  own `--settings` file too. **Two launches at once never clash**: they are two processes, so
+  each has its own name, and a second launch cannot rewrite a running session's URL — a settings
+  file that changes reaches a running session within about a second (P7), so one shared file
+  would. It is removed when the session ends. A launch that is killed leaves its file behind;
+  nothing reads it again (the next launch has its own name), and it holds one URL at mode 0600.
+- **While it runs, that one session beats the project's own state**, because `--settings` is
+  earlier in the chain (P3). `gateway project status` says so: it cannot see a launch's file.
+- **Refused, one line each with the fix:** `--profile` with a name `gateway.json` does not have
+  (the line lists the profiles it has, and `gateway profile <name> slot …` makes one), a name
+  `isProfileName` refuses, `--gateway` or `--profile` on a machine with no `gateway.json` yet
+  (`gateway setup`), a config that cannot be read, and `launch` itself **inside a Claude Code
+  session** (`CLAUDECODE`): that would be a session inside a session, on a different path from
+  the one that started it. A wrong option is a usage mistake (exit 2), never a guess.
+- **It does not replace its own process.** Bun has no `execve`, so the command stays in front of
+  the session: the session gets the same stdin, stdout and stderr, and the command returns the
+  session's exit code. The terminal sees one session either way.
+- **A stopped router is not refused here.** `--gateway` checks that the gateway is set up (its
+  config exists and reads), not that it answers: a router that is down is `gateway status` and
+  `doctor`'s question, and starting a session anyway is the person's choice.
+- **Windows is unproved** (P11 is owed): the CLI writes the file before it starts `claude`, and
+  a `claude.cmd` runs through `cmd.exe` on one quoted line (`claudeArgv`), so no `.cmd` launcher
+  has to write a file first. The path and the quoting are tested; the live run is not.
+
 ## Anthropic's server tools
 
 A **server tool** is a tool Anthropic's servers run, such as web search. Claude Code sends the
@@ -1244,6 +1296,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | Config: backend keys, slots, profiles, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused — off Windows, where the bits decide: on Windows a mode says nothing and the profile's ACL protects the file, so no config is refused there (`isOwnerOnly`). Read again when it changes, so `gateway slot` and `gateway profile` are live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
 | A project's own gateway state | `<main checkout>/.claude/settings.local.json` (the personal file, excluded from git by a managed line in `.git/info/exclude`), or `<folder>/.claude/settings.json` (the team file) with `--team`. Written as an owned key through `src/setup/`, so `restore` takes it back (§ Per project) |
 | A setup that did not finish | `~/.claude/cc-smart-dev-kit/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
+| A launch's settings file | `~/.claude/cc-smart-dev-kit/launch/<mode>-<pid>.json`, mode 600: the one key `cc-smart-dev-kit launch` passes with `--settings` (§ One session). One file per launch, its name carrying the process, removed when the session ends; the session that passed it is its only reader |
 | The router that runs | `~/.local/share/cc-smart-dev-kit/router.js`, a copy of the plugin's `dist/router.js` |
 | The service | Linux: the systemd user unit `~/.config/systemd/user/cc-smart-dev-kit-router.service`. Windows: the per-user Scheduled Task `cc-smart-dev-kit-router`, from its definition `~/.local/share/cc-smart-dev-kit/router-task.xml` (`docs/windows-gateway.md`) |
 | The socket that holds the port | `~/.config/systemd/user/cc-smart-dev-kit-router.socket` (`ListenStream=127.0.0.1:<port>`) |
