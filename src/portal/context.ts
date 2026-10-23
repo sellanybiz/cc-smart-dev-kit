@@ -24,12 +24,16 @@ export interface CommandAnswer {
 
 /**
  * Runs a **read** command off the server's event loop (`Bun.spawn`, never `spawnSync`): the
- * router's journal (`journalctl`), its listener's state (`systemctl is-active`). A page load
- * asks these, and a synchronous spawn froze every page, every action and the live stream for
- * as long as the command ran (B6e measured `journalctl -n 200` at 20–65 ms). The actions' own
- * changing commands keep `runner`.
+ * router's journal (`journalctl`), its listener's state (`systemctl is-active`), `claude mcp
+ * get`. A page load asks these, and a synchronous spawn froze every page, every action and the
+ * live stream for as long as the command ran (B6e measured `journalctl -n 200` at 20–65 ms).
+ * The actions' own changing commands keep `runner`. `env` adds variables to the child's own
+ * environment (the MCP checks' `MCP_TIMEOUT`).
  */
-export type ReadRunner = (cmd: string[]) => Promise<CommandAnswer>;
+export type ReadRunner = (
+  cmd: string[],
+  env?: Record<string, string>,
+) => Promise<CommandAnswer>;
 
 export interface PortalContext {
   /** `Bun.version`, for the header. */

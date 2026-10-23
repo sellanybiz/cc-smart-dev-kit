@@ -20,8 +20,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { legacyBrowserLeftovers, processCommandLinesAsync } from "../browser/legacy";
 import {
   type BrowserGuide,
+  type BrowserSetupDeps,
   type BrowserSetupState,
   browserGuide,
   browserSetup,
@@ -868,6 +870,11 @@ export interface OmnirouteRow {
  * What the Machine page's Browser card shows. The guide and the state come from the same module
  * `browser setup` prints from (`src/browser/setup.ts`), so the card can never describe a different
  * browser than the command does; the check lines beside them are doctor's own (`section: "browser"`).
+ *
+ * **Awaits the context's read runner** for the 0.3.0 leftovers' process list: `ps` (macOS) or
+ * PowerShell (Windows) ran synchronously here on every Machine load, which blocked every page
+ * and the stream — the same debt as `journalctl` and `systemctl`. It is read only when 0.3.0
+ * left something (its own first question), so a machine that never ran it spawns nothing.
  */
 export interface BrowserCardData {
   /** The whole guide, structured: the card draws its numbered steps. */
@@ -877,10 +884,12 @@ export interface BrowserCardData {
   state: BrowserSetupState;
 }
 
-export function browserCardData(ctx: PortalContext): BrowserCardData {
-  const result = browserSetup(ctx.paths, realBrowserSetupDeps(ctx.machine, ctx.paths.home), {
-    apply: false,
-  });
+export async function browserCardData(ctx: PortalContext): Promise<BrowserCardData> {
+  const processes = legacyBrowserLeftovers(ctx.paths)
+    ? await processCommandLinesAsync(ctx.machine.platform, ctx.runRead)
+    : null;
+  const deps: BrowserSetupDeps = { ...realBrowserSetupDeps(ctx.machine, ctx.paths.home), processes: () => processes };
+  const result = browserSetup(ctx.paths, deps, { apply: false });
   const state = result.state;
   // A browser-less machine's note is the same sentence as the check line above it: the check
   // lines win, so the note is left out then (one home per sentence, on the page too).

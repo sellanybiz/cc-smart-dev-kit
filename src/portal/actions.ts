@@ -670,14 +670,16 @@ async function updateInstall(action: ActionContext): Promise<ActionResult> {
  * is the point: the portal runs from a copy, and a path made at startup points at the version
  * folder the update deleted.
  */
-export type DoctorSource = () => DoctorOptions | { error: string };
+export type DoctorSource =
+  | (() => DoctorOptions | { error: string })
+  | (() => Promise<DoctorOptions | { error: string }>);
 
 /** Runs the doctor pass, and hands the checks back so the page can store and show them. */
 export async function runDoctorPass(
   action: ActionContext,
   source: DoctorSource,
 ): Promise<{ checks: Check[]; lines: string[]; ok: boolean }> {
-  const options = source();
+  const options = await source();
   if ("error" in options) {
     // One failed check, in the page's own shape: what happened, and what to do about it.
     const failed: Check = {

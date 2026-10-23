@@ -120,7 +120,7 @@ export async function machineData(deps: PageDataDeps): Promise<MachineData> {
   const updates = updateFacts(deps.action);
   return {
     autoMode: autoModeCard(deps),
-    browser: browserCardData(deps.action.portal),
+    browser: await browserCardData(deps.action.portal),
     companions: companionRows(deps.action.portal),
     doctor,
     jobs: await jobLines(deps.action),

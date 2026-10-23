@@ -436,11 +436,20 @@ function processCommandLines(platform, run) {
   if (platform === "linux")
     return linuxProcessCommandLines();
   if (platform === "darwin") {
-    return run === undefined ? null : parsedLines(run(["ps", "-ww", "-axo", "pid=,command="]));
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.darwin));
   }
   if (platform === "win32") {
-    return run === undefined ? null : parsedLines(run(["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST]));
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.win32));
   }
+  return null;
+}
+async function processCommandLinesAsync(platform, run) {
+  if (platform === "linux")
+    return linuxProcessCommandLines();
+  if (platform === "darwin")
+    return parsedLines(await run(PROCESS_LIST_ARGV.darwin));
+  if (platform === "win32")
+    return parsedLines(await run(PROCESS_LIST_ARGV.win32));
   return null;
 }
 function parsedLines(result) {
@@ -462,6 +471,10 @@ function parsedLines(result) {
   return processes;
 }
 var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+var PROCESS_LIST_ARGV = {
+  darwin: ["ps", "-ww", "-axo", "pid=,command="],
+  win32: ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST]
+};
 function linuxProcessCommandLines() {
   let names;
   try {
@@ -512,13 +525,17 @@ function runningLine(first, others, profile, platform, home) {
 function unknownLine(profile, home) {
   return `cannot read this machine's process list, so whether the 0.3.0 shared Chrome is still running ` + `with --user-data-dir=${tildify(profile, home)} is unknown: if that Chrome is open, close it`;
 }
+function legacyBrowserLeftovers(paths, exists = existsSync2) {
+  const { picker, profile } = legacyBrowserPaths(paths);
+  return exists(profile) || exists(picker);
+}
 function legacyBrowserFacts(paths, deps) {
   const exists = deps.exists ?? existsSync2;
+  if (!legacyBrowserLeftovers(paths, exists))
+    return [];
   const { picker, profile } = legacyBrowserPaths(paths);
   const profileThere = exists(profile);
   const pickerThere = exists(picker);
-  if (!profileThere && !pickerThere)
-    return [];
   const facts = [];
   if (profileThere) {
     facts.push({
@@ -12385,9 +12402,13 @@ function readKeyFile(paths, platform) {
 
 // src/mcp/doctor.ts
 var FIRST_START_LIMIT_MS = 180000;
-function realMcpDoctorDeps() {
+function realMcpDoctorDeps(read) {
   return {
-    run: (argv, extraEnv) => {
+    run: async (argv, extraEnv) => {
+      if (read !== undefined) {
+        const answer = await read(argv, extraEnv);
+        return { ok: answer.exitCode === 0, output: answer.output };
+      }
       try {
         const result = Bun.spawnSync(argv, {
           env: { ...process.env, ...extraEnv },
@@ -12410,7 +12431,7 @@ function field(report, label) {
   const line = report.split(/\r?\n/).find((text) => text.trim().startsWith(`${label}:`));
   return line === undefined ? "unknown" : line.slice(line.indexOf(":") + 1).trim();
 }
-function mcpChecks(paths, deps, env, cwd = process.cwd()) {
+async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
   const names = SERVER_NAMES.filter((name) => name !== "tavily-websearch" || readTavilyKey(paths, env).source !== "none");
   const checks = [];
   const servers = readUserServers(paths.userConfigFile);
@@ -12465,9 +12486,9 @@ function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       });
       continue;
     }
-    const report = deps.run(["claude", "mcp", "get", name], {
+    const report = (await deps.run(["claude", "mcp", "get", name], {
       MCP_TIMEOUT: String(FIRST_START_LIMIT_MS)
-    }).output;
+    })).output;
     const scope = field(report, "Scope");
     const status = field(report, "Status").replace(/^[^A-Za-z]+/, "");
     if (status === "" || status === "unknown") {
@@ -17734,12 +17755,11 @@ function warpAppFrom(system, machine, answer) {
       return machine.which(PACKAGE) !== null ? { installed: true, version: null } : { installed: false, version: null };
   }
 }
-function detectWarpApp(machine, system) {
+async function warpCheck(machine, paths, read) {
+  const system = detectSystem(machine);
   const command = warpAppCommand(system);
-  return warpAppFrom(system, machine, command === null ? null : machine.run(command));
-}
-function warpCheck(machine, paths) {
-  return warpCheckFrom(detectWarpApp(machine, detectSystem(machine)), paths);
+  const app = warpAppFrom(system, machine, command === null ? null : await (read ?? machine.run)(command));
+  return warpCheckFrom(app, paths);
 }
 function warpCheckFrom(app, paths) {
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
@@ -31255,15 +31275,15 @@ function readSettings2(file) {
     return null;
   }
 }
-function run2(argv) {
+var syncRead = (argv) => {
   try {
     const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe", timeout: 20000 });
     const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
-    return { ok: result.exitCode === 0, output };
+    return { exitCode: result.exitCode ?? 1, output };
   } catch (error) {
-    return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
-}
+};
 function checkPlugin(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
   if (!install) {
@@ -31304,7 +31324,7 @@ function isExecutable(file) {
 function isUsableBun(bun, platform) {
   return platform === "win32" ? existsSync48(bun) : isExecutable(bun);
 }
-function checkLauncher(paths, platform) {
+async function checkLauncher(paths, platform, read) {
   const win = platform === "win32";
   const launcher = join55(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
@@ -31335,17 +31355,17 @@ function checkLauncher(paths, platform) {
   }
   if (win)
     return [
-      checkLauncherCmd(paths, where),
+      await checkLauncherCmd(paths, where, read),
       { ok: true, text: `the launcher ${where} is in place (Git Bash runs it)` }
     ];
-  const result = run2([launcher, "version"]);
-  if (!result.ok)
+  const result = await read([launcher, "version"]);
+  if (result.exitCode !== 0)
     return [
       { ok: false, text: `the launcher ${where} does not run: ${result.output}`, fix: SETUP_FIX }
     ];
   return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
 }
-function checkLauncherCmd(paths, shLauncher) {
+async function checkLauncherCmd(paths, shLauncher, read) {
   const cmd = join55(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
   if (!existsSync48(cmd)) {
@@ -31371,8 +31391,8 @@ function checkLauncherCmd(paths, shLauncher) {
       fix: SETUP_FIX
     };
   }
-  const result = run2(launcherCmdArgv(cmd, ["version"]));
-  if (!result.ok)
+  const result = await read(launcherCmdArgv(cmd, ["version"]));
+  if (result.exitCode !== 0)
     return {
       ok: false,
       text: `the Windows launcher ${where} does not run: ${result.output}`,
@@ -31654,7 +31674,7 @@ function hasEntry(data, field, key) {
   const node = field === null ? data : data?.[field];
   return isJsonObject13(node) && Object.hasOwn(node, key);
 }
-function checkOldPlugin(settings, paths) {
+async function checkOldPlugin(settings, paths, read) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject13(plugins) && plugins[OLD_PLUGIN_ID] === true;
   if (!existsSync48(join55(paths.claudeConfigDir, OLD_NAME2))) {
@@ -31678,7 +31698,7 @@ function checkOldPlugin(settings, paths) {
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync48(launcher) && isExecutable(launcher) && run2([launcher, "version"]).ok;
+  const canRun = existsSync48(launcher) && isExecutable(launcher) && (await read([launcher, "version"])).exitCode === 0;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -31727,11 +31747,11 @@ function checkInstructions(paths, source) {
     text: `the instructions copy ${copy} is this version's, and ${claudeMd} imports it`
   };
 }
-function checkLiveRecord(paths) {
+async function checkLiveRecord(paths, read) {
   const record = readLiveRecord(paths.stateDir);
   if (record === null)
     return null;
-  const now = parseClaudeVersion(run2(["claude", "--version"]).output);
+  const now = parseClaudeVersion((await read(["claude", "--version"])).output);
   if (now !== null && now !== record.claudeCode) {
     return {
       ok: true,
@@ -32014,10 +32034,11 @@ function checkPortal(state, port = DEFAULT_PORTAL_PORT) {
     text: `${running}, newer than this install (${VERSION}); it is left as it is`
   };
 }
-function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, project, live }) {
+function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, project, read, live }) {
   const settings = readSettings2(paths.settingsFile);
   const runtime = checkBun(bun, paths);
   const machine = gateway.machine;
+  const readCommand = read ?? syncRead;
   const present = (checks) => checks.filter((check) => check !== null);
   const groups = [
     {
@@ -32027,11 +32048,11 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
         checkPlugin(paths),
         checkInstalledVersion(paths),
         ...portal == null ? [] : [checkPortal(await portal())],
-        ...checkLauncher(paths, machine.platform),
+        ...await checkLauncher(paths, machine.platform, readCommand),
         checkGitBash(machine.platform, env, machine),
         checkInstructions(paths, local.instructionsSource),
         checkNameClash(settings),
-        checkOldPlugin(settings, paths)
+        await checkOldPlugin(settings, paths, readCommand)
       ])
     },
     {
@@ -32045,7 +32066,11 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     },
     {
       group: "companions",
-      run: () => [...companionChecks(paths), ...claudeMemChecks(paths), warpCheck(machine, paths)]
+      run: async () => [
+        ...companionChecks(paths),
+        ...claudeMemChecks(paths),
+        await warpCheck(machine, paths, readCommand)
+      ]
     },
     {
       group: "mcp",
@@ -32083,7 +32108,7 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
     },
     {
       group: "live",
-      run: () => live === null ? present([checkLiveRecord(paths)]) : runLiveCheck(paths, env, live)
+      run: async () => live === null ? present([await checkLiveRecord(paths, readCommand)]) : runLiveCheck(paths, env, live)
     }
   ];
   return groups.map(({ group, run }) => ({
@@ -34289,10 +34314,10 @@ function companionRows(ctx) {
     };
   });
 }
-function browserCardData(ctx) {
-  const result = browserSetup(ctx.paths, realBrowserSetupDeps(ctx.machine, ctx.paths.home), {
-    apply: false
-  });
+async function browserCardData(ctx) {
+  const processes = legacyBrowserLeftovers(ctx.paths) ? await processCommandLinesAsync(ctx.machine.platform, ctx.runRead) : null;
+  const deps = { ...realBrowserSetupDeps(ctx.machine, ctx.paths.home), processes: () => processes };
+  const result = browserSetup(ctx.paths, deps, { apply: false });
   const state = result.state;
   return { guide: browserGuide(state), notes: result.ok ? result.notes : [], state };
 }
@@ -34804,7 +34829,7 @@ async function machineData(deps) {
   const updates = updateFacts(deps.action);
   return {
     autoMode: autoModeCard(deps),
-    browser: browserCardData(deps.action.portal),
+    browser: await browserCardData(deps.action.portal),
     companions: companionRows(deps.action.portal),
     doctor,
     jobs: await jobLines(deps.action),
@@ -36247,7 +36272,7 @@ async function updateInstall(action) {
   return { lines: sinks.lines, ok: code === 0 };
 }
 async function runDoctorPass(action, source) {
-  const options = source();
+  const options = await source();
   if ("error" in options) {
     const failed = {
       ok: false,
@@ -40101,9 +40126,10 @@ var runner = (cmd) => {
     return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
 };
-var runRead = async (cmd) => {
+var runRead = async (cmd, extraEnv) => {
   try {
     const child = Bun.spawn(cmd, {
+      env: extraEnv === undefined ? process.env : { ...process.env, ...extraEnv },
       stderr: "pipe",
       stdin: "ignore",
       stdout: "pipe",
@@ -40192,13 +40218,14 @@ async function runServer(paths, options) {
     systemd: process.platform === "linux" && which("systemctl") !== null,
     which
   };
-  const doctor = () => {
+  const doctor = async () => {
     const found = ctx.pluginFolder();
     if ("error" in found)
       return found;
     const { folder } = found;
+    const processes = legacyBrowserLeftovers(ctx.paths) ? await processCommandLinesAsync(machine.platform, runRead) : null;
     return {
-      browser: realBrowserDoctorDeps(machine, ctx.paths.home),
+      browser: { ...realBrowserDoctorDeps(machine, ctx.paths.home), processes: () => processes },
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
         bundle: join68(folder, "dist", "router.js"),
@@ -40209,9 +40236,10 @@ async function runServer(paths, options) {
       },
       live: null,
       local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join68(folder, "dist")) },
-      mcp: realMcpDoctorDeps(),
+      mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join68(folder, "hooks", "hooks.json") }
+      project: { cwd: process.cwd(), pluginHooksFile: join68(folder, "hooks", "hooks.json") },
+      read: runRead
     };
   };
   const portal = await startPortal(ctx, {

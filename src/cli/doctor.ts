@@ -127,15 +127,21 @@ function readSettings(file: string): Record<string, unknown> | null {
   }
 }
 
-function run(argv: string[]): { ok: boolean; output: string } {
+/**
+ * How a read command runs for `doctor` itself: `Bun.spawnSync`, answered where it stands
+ * (the launcher's `version`, the old launcher's). A caller off the server's event loop
+ * (the portal's Machine page) passes its own asynchronous runner (`DoctorOptions.read`,
+ * `Bun.spawn`) and never freezes a page on one (`.claude/rules/portal.md`).
+ */
+const syncRead: CommandRunner = (argv) => {
   try {
     const result = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe", timeout: 20_000 });
     const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
-    return { ok: result.exitCode === 0, output };
+    return { exitCode: result.exitCode ?? 1, output };
   } catch (error) {
-    return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
-}
+};
 
 /** This plugin itself: installed, its folder there, and turned on in the user settings. */
 export function checkPlugin(paths: CliPaths): Check {
@@ -201,7 +207,11 @@ function isUsableBun(bun: string, platform: NodeJS.Platform): boolean {
  * "does it run" question is answered by the `.cmd`; the mode and the execute bit mean nothing
  * on Windows either.
  */
-function checkLauncher(paths: CliPaths, platform: NodeJS.Platform): Check[] {
+async function checkLauncher(
+  paths: CliPaths,
+  platform: NodeJS.Platform,
+  read: CommandRunner,
+): Promise<Check[]> {
   const win = platform === "win32";
   const launcher = join(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
@@ -232,11 +242,11 @@ function checkLauncher(paths: CliPaths, platform: NodeJS.Platform): Check[] {
   }
   if (win)
     return [
-      checkLauncherCmd(paths, where),
+      await checkLauncherCmd(paths, where, read),
       { ok: true, text: `the launcher ${where} is in place (Git Bash runs it)` },
     ];
-  const result = run([launcher, "version"]);
-  if (!result.ok)
+  const result = await read([launcher, "version"]);
+  if (result.exitCode !== 0)
     return [
       { ok: false, text: `the launcher ${where} does not run: ${result.output}`, fix: SETUP_FIX },
     ];
@@ -248,7 +258,11 @@ function checkLauncher(paths: CliPaths, platform: NodeJS.Platform): Check[] {
  * started through `cmd.exe` — a `.cmd` is not an executable, so `Bun.spawn` cannot start one
  * (`launcherCmdArgv`).
  */
-function checkLauncherCmd(paths: CliPaths, shLauncher: string): Check {
+async function checkLauncherCmd(
+  paths: CliPaths,
+  shLauncher: string,
+  read: CommandRunner,
+): Promise<Check> {
   const cmd = join(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
   if (!existsSync(cmd)) {
@@ -274,8 +288,8 @@ function checkLauncherCmd(paths: CliPaths, shLauncher: string): Check {
       fix: SETUP_FIX,
     };
   }
-  const result = run(launcherCmdArgv(cmd, ["version"]));
-  if (!result.ok)
+  const result = await read(launcherCmdArgv(cmd, ["version"]));
+  if (result.exitCode !== 0)
     return {
       ok: false,
       text: `the Windows launcher ${where} does not run: ${result.output}`,
@@ -638,7 +652,11 @@ function hasEntry(data: Record<string, unknown> | null, field: string | null, ke
  * runs; then the plugin; then the marketplace. A launcher that cannot run cannot restore,
  * so the two things the old setup wrote are named for removal by hand.
  */
-function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPaths): Check | null {
+async function checkOldPlugin(
+  settings: Record<string, unknown> | null,
+  paths: CliPaths,
+  read: CommandRunner,
+): Promise<Check | null> {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject(plugins) && plugins[OLD_PLUGIN_ID] === true;
   if (!existsSync(join(paths.claudeConfigDir, OLD_NAME))) {
@@ -666,7 +684,10 @@ function checkOldPlugin(settings: Record<string, unknown> | null, paths: CliPath
   ].filter((thing): thing is string => thing !== null);
   if (left.length === 0) return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME}\``;
-  const canRun = existsSync(launcher) && isExecutable(launcher) && run([launcher, "version"]).ok;
+  const canRun =
+    existsSync(launcher) &&
+    isExecutable(launcher) &&
+    (await read([launcher, "version"])).exitCode === 0;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -730,10 +751,10 @@ function checkInstructions(paths: CliPaths, source: string): Check {
  * machine that never asked for it sees no line. When the installed Claude Code is not the
  * one it passed on, the line says to run it again.
  */
-function checkLiveRecord(paths: CliPaths): Check | null {
+async function checkLiveRecord(paths: CliPaths, read: CommandRunner): Promise<Check | null> {
   const record = readLiveRecord(paths.stateDir);
   if (record === null) return null;
-  const now = parseClaudeVersion(run(["claude", "--version"]).output);
+  const now = parseClaudeVersion((await read(["claude", "--version"])).output);
   if (now !== null && now !== record.claudeCode) {
     return {
       ok: true,
@@ -1175,6 +1196,13 @@ export interface DoctorOptions {
   portal?: null | (() => PortalState | Promise<PortalState>);
   /** Check the project of this folder (`project-checks.ts`); null: no project checks. */
   project: DoctorProject | null;
+  /**
+   * How `doctor`'s own reads run: the launcher's `version`, the old launcher's, Warp's package
+   * manager. Default: the command line's `Bun.spawnSync`. The portal passes its asynchronous
+   * runner (`ReadRunner`), because it shows this pass on the Machine page and a page load must
+   * never freeze on one (`Bun.spawnSync`) — `.claude/rules/portal.md`.
+   */
+  read?: CommandRunner;
   /** Also run the live check (`doctor --live`), which starts real Claude Code sessions. */
   live: LiveDeps | null;
 }
@@ -1196,11 +1224,13 @@ interface GroupRun {
 function doctorGroups(
   paths: CliPaths,
   env: Env,
-  { browser, bun, gateway, local, mcp, portal, project, live }: DoctorOptions,
+  { browser, bun, gateway, local, mcp, portal, project, read, live }: DoctorOptions,
 ): GroupRun[] {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
   const machine = gateway.machine;
+  /** How `doctor`'s own reads run: the command line's synchronous one, or the caller's. */
+  const readCommand = read ?? syncRead;
   const present = (checks: (Check | null)[]) =>
     checks.filter((check): check is Check => check !== null);
   const groups: { group: CheckGroup; run: () => Check[] | Promise<Check[]> }[] = [
@@ -1212,11 +1242,11 @@ function doctorGroups(
           checkPlugin(paths),
           checkInstalledVersion(paths),
           ...(portal == null ? [] : [checkPortal(await portal())]),
-          ...checkLauncher(paths, machine.platform),
+          ...(await checkLauncher(paths, machine.platform, readCommand)),
           checkGitBash(machine.platform, env, machine),
           checkInstructions(paths, local.instructionsSource),
           checkNameClash(settings),
-          checkOldPlugin(settings, paths),
+          await checkOldPlugin(settings, paths, readCommand),
         ]),
     },
     {
@@ -1230,7 +1260,11 @@ function doctorGroups(
     },
     {
       group: "companions",
-      run: () => [...companionChecks(paths), ...claudeMemChecks(paths), warpCheck(machine, paths)],
+      run: async () => [
+        ...companionChecks(paths),
+        ...claudeMemChecks(paths),
+        await warpCheck(machine, paths, readCommand),
+      ],
     },
     {
       group: "mcp",
@@ -1273,8 +1307,10 @@ function doctorGroups(
     },
     {
       group: "live",
-      run: () =>
-        live === null ? present([checkLiveRecord(paths)]) : runLiveCheck(paths, env, live),
+      run: async () =>
+        live === null
+          ? present([await checkLiveRecord(paths, readCommand)])
+          : runLiveCheck(paths, env, live),
     },
   ];
   return groups.map(({ group, run }) => ({

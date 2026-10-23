@@ -24,6 +24,9 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
+import { legacyBrowserLeftovers, legacyBrowserPaths, processCommandLinesAsync } from "../browser/legacy";
+import { realMcpDoctorDeps } from "../mcp/doctor";
+import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
 import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
 import {
@@ -237,6 +240,24 @@ async function open(options: {
   systemctlGate?: Promise<void>;
   /** Runs when the doctor pass's service read starts: the test's sign that it is in flight. */
   onSystemctlRead?: () => void;
+  /**
+   * A launcher of this version's own in the temp `bin` folder, valid enough for the pass's
+   * launcher check to reach its read (its `version`). Left out: the check answers "no launcher".
+   */
+  launcher?: boolean;
+  /**
+   * Held open until the test releases it: the doctor pass's launcher read waits on it, so a test
+   * can prove another request answers while the launcher's own command is still out.
+   */
+  launcherGate?: Promise<void>;
+  /** Runs when the launcher read starts: the test's sign that it is in flight. */
+  onLauncherRead?: () => void;
+  /**
+   * 0.3.0's browser left its shared profile and picker here, and a Chrome still runs with that
+   * profile: what the Browser card and doctor's legacy lines read. The listing is answered by
+   * the world's own read runner, and `Machine.run` refuses it (the blocking path).
+   */
+  legacyBrowser?: boolean;
   /** The open breakers the router's health page reports: where `heldNow` comes from. */
   routerBreakers?: Record<
     string,
@@ -274,6 +295,22 @@ async function open(options: {
     }
   }
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+  /** This version's own launcher: the path the doctor pass's launcher check reads. */
+  const launcherPath = join(paths.binDir, LAUNCHER_NAME);
+  if (options.launcher === true) {
+    // This version's own launcher script, with this test's bun baked in: the pass's launcher
+    // check accepts it and goes on to ask its `version`.
+    mkdirSync(paths.binDir, { recursive: true });
+    writeFileSync(launcherPath, launcherScript(process.execPath));
+    chmodSync(launcherPath, 0o755);
+  }
+  if (options.legacyBrowser === true) {
+    // What 0.3.0 left: its shared profile folder and its picker, so the legacy check asks the
+    // running processes for a Chrome on that profile.
+    const legacy = legacyBrowserPaths(paths);
+    mkdirSync(legacy.profile, { recursive: true });
+    writeFileSync(legacy.picker, "// 0.3.0's file picker\n");
+  }
   // The plugin's own folder, as a machine really has it: the repo's `plugin/` here.
   const pluginFolder = join(import.meta.dir, "..", "..", "plugin");
   if (options.omniroute !== undefined) {
@@ -324,7 +361,15 @@ async function open(options: {
     macApp: "/Applications/Warp.app",
     osRelease: () => 'NAME="Ubuntu"\n',
     platform: options.platform ?? "linux",
-    run: (argv) => ({ exitCode: 0, output: `ran ${argv.join(" ")}` }),
+    run: (argv) => {
+      // The 0.3.0 leftovers' process list is a page's read (`processCommandLinesAsync`,
+      // awaited through `runRead`): `Machine.run` is `Bun.spawnSync`, and asking it here froze
+      // every page and the stream — the debt this phase's browser change fixes.
+      if (argv[0] === "ps" || argv.join(" ").includes("Get-CimInstance Win32_Process")) {
+        throw new Error("the process list was read through the blocking machine runner");
+      }
+      return { exitCode: 0, output: `ran ${argv.join(" ")}` };
+    },
     runOnTerminal: () => 0,
     spawnDetached: () => undefined,
     which: () => null,
@@ -381,6 +426,10 @@ async function open(options: {
         options.onSystemctlRead?.();
         await options.systemctlGate;
       }
+      if (cmd[0] === launcherPath && options.launcherGate !== undefined) {
+        options.onLauncherRead?.();
+        await options.launcherGate;
+      }
       return fakeRunner(cmd);
     },
     runner: (cmd) => {
@@ -394,6 +443,9 @@ async function open(options: {
       if (cmd[0] === "systemctl" && options.systemctlGate !== undefined) {
         throw new Error("the service was read through the blocking runner");
       }
+      if (cmd[0] === launcherPath && options.launcherGate !== undefined) {
+        throw new Error("the launcher was read through the blocking runner");
+      }
       return fakeRunner(cmd);
     },
     // No system folders of the host: a real `/usr/lib/node_modules/omniroute` is not this test.
@@ -406,6 +458,15 @@ async function open(options: {
 
   /** The machine's commands: a fake `systemctl` and `journalctl`, and nothing else. */
   function fakeRunner(cmd: string[]): { exitCode: number; output: string } {
+    // The legacy listing (macOS): a Chrome still running on 0.3.0's own profile, when the test
+    // set the leftovers up. The line has the shape `ps -ww -axo pid=,command=` prints.
+    if (cmd[0] === "ps" && options.legacyBrowser === true) {
+      const profile = legacyBrowserPaths(paths).profile;
+      return {
+        exitCode: 0,
+        output: `4242 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profile}\n`,
+      };
+    }
     if (options.systemd !== true) return { exitCode: 1, output: `no ${cmd[0]} here` };
     if (cmd[0] === "systemctl") return { exitCode: 0, output: "" };
     // The router's journal, as `journalctl -o json` prints it: one JSON object per line, in
@@ -427,25 +488,36 @@ async function open(options: {
     cwd,
     doctor:
       options.doctor ??
-      (() => ({
-        browser: realBrowserDoctorDeps(machine, paths.home),
-        bun: { path: process.execPath, version: Bun.version },
-        gateway: {
-          bundle: join(pluginFolder, "dist", "router.js"),
-          // The router's health page, answered by the world's own probe: a test's doctor pass
-          // never reaches a port of this machine.
-          fetch: ctx.probe.fetch,
-          machine,
-          // The pass's own reads go through the portal's read runner, as the entry does: a
-          // `systemctl` on the blocking runner is what the test's `runner` refuses.
+      (async () => {
+        // The pass's own reads run through the portal's read runner, as the entry's do: the
+        // 0.3.0 leftovers' process list is read here, off the loop, and handed in.
+        const processes = legacyBrowserLeftovers(paths)
+          ? await processCommandLinesAsync(machine.platform, ctx.runRead)
+          : null;
+        return {
+          browser: { ...realBrowserDoctorDeps(machine, paths.home), processes: () => processes },
+          bun: { path: process.execPath, version: Bun.version },
+          gateway: {
+            bundle: join(pluginFolder, "dist", "router.js"),
+            // The router's health page, answered by the world's own probe: a test's doctor pass
+            // never reaches a port of this machine.
+            fetch: ctx.probe.fetch,
+            machine,
+            // The pass's own reads go through the portal's read runner, as the entry does: a
+            // `systemctl` on the blocking runner is what the test's `runner` refuses.
+            read: ctx.runRead,
+            runner: ctx.runner,
+            service: options.systemd === true ? "systemd" : "none",
+          },
+          live: null,
+          local: { cwd, instructionsSource: join(pluginFolder, "instructions") },
+          mcp: realMcpDoctorDeps(ctx.runRead),
+          project: null,
+          // The pass's own reads (the launcher's `version`, Warp's package manager) run through
+          // the portal's read runner, as the entry does; the test's sync `runner` refuses them.
           read: ctx.runRead,
-          runner: ctx.runner,
-          service: options.systemd === true ? "systemd" : "none",
-        },
-        live: null,
-        local: { cwd, instructionsSource: join(pluginFolder, "instructions") },
-        project: null,
-      })),
+        };
+      }),
     port: 0,
     // No poller in a test: the live stream's sources are driven by their own test
     // (`src/portal/live/sources.test.ts`), so no timer runs beside an assertion here.
@@ -1195,6 +1267,82 @@ describe("every answer", () => {
       expect(body.doctor?.checks.map((check) => check.text)).toContain(
         "the router service (cc-smart-dev-kit-router.service) is active",
       );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the doctor pass's launcher read is off the loop: a page answers while it is still out", async () => {
+    // `checkLauncher` asked the launcher's `version` through the command line's synchronous
+    // runner (`Bun.spawnSync`): one Machine page load held every page, every action and the
+    // stream while it ran. The pass's own reads go through its `read` runner now — the portal's
+    // `ReadRunner` — as the service read above does.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    let release: () => void = () => undefined;
+    const launcherGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let readingStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      readingStarted = resolve;
+    });
+    const world = await open({
+      backendPort: backend.port,
+      launcher: true,
+      launcherGate,
+      onLauncherRead: () => readingStarted(),
+    });
+    try {
+      const machine = world.call("/api/machine");
+      await readStarted;
+      // The launcher read is in flight. A second request on the same server answers anyway.
+      const door = await world.call("/healthz");
+      expect(door.status).toBe(200);
+      release();
+      const answer = await machine;
+      expect(answer.status).toBe(200);
+      const body = JSON.parse(answer.body) as {
+        doctor: null | { checks: { text: string }[] };
+      };
+      // The check reached that read and says so in the command line's own words (the world's
+      // fake answers every unknown command with "no <program> here", exit 1).
+      expect(body.doctor?.checks.map((check) => check.text)).toContain(
+        `the launcher ~/.local/bin/${LAUNCHER_NAME} does not run: no ${join(
+          world.paths.binDir,
+          LAUNCHER_NAME,
+        )} here`,
+      );
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the 0.3.0 leftovers' process list is a read off the loop, never through Machine.run", async () => {
+    // On macOS the legacy listing is `ps` (Windows: PowerShell), and `Machine.run` is
+    // `Bun.spawnSync`: run on the path of the Browser card and the doctor pass, one Machine load
+    // froze every page and the stream. Both read it through `runRead` now, and this world's
+    // `Machine.run` throws when anything asks it for that listing.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({
+      backendPort: backend.port,
+      legacyBrowser: true,
+      platform: "darwin",
+    });
+    try {
+      const page = await world.call("/machine");
+      expect(page.status).toBe(200);
+      // The doctor's own browser line, drawn on the card: the Chrome on 0.3.0's profile, read
+      // by the awaited listing.
+      expect(page.body).toContain("the 0.3.0 shared Chrome is still running");
+      const api = JSON.parse((await world.call("/api/machine")).body) as {
+        doctor: null | { checks: { section?: string; text: string }[] };
+      };
+      const legacy = api.doctor?.checks.find((check) =>
+        check.text.startsWith("the 0.3.0 shared Chrome is still running"),
+      );
+      expect(legacy?.text).toContain("(pid 4242, --user-data-dir=~/.local/share");
     } finally {
       world.portal.stop();
       backend.stop();
