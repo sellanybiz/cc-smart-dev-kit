@@ -327,6 +327,18 @@ describe("launch", () => {
     expect(runLog(home)).toEqual([]);
   });
 
+  test("a session that will not start leaves no settings file behind", async () => {
+    const home = world();
+    const ctx = context(home, {
+      runSession: async () => {
+        throw new Error("the spawner refused");
+      },
+    });
+    expect(await runLaunch(["--no-gateway"], ctx)).toBe(1);
+    expect(ctx.errors[0]).toBe("launch: claude did not start: the spawner refused");
+    expect(existsSync(settingsFileOf(home, "no-gateway"))).toBe(false);
+  });
+
   test("no claude on the machine: one line, exit 1", async () => {
     const home = world();
     const ctx = context(home, { which: () => null });
