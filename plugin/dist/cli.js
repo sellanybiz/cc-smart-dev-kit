@@ -47974,7 +47974,7 @@ function worktreesAnswerOf(paths, env, cwd, now) {
     return none(error instanceof Error ? error.message : String(error));
   }
 }
-async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CONSOLE_SINKS2) {
+async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CONSOLE_SINKS2, hold = holdCleanLock) {
   const { error, print } = sinks;
   if (options.remove !== null && options.remove === "") {
     error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
@@ -47997,7 +47997,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
       error(`Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`);
       return 1;
     }
-    lock = await holdCleanLock();
+    lock = await hold();
     if (lock === null) {
       print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
       return 0;
