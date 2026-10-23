@@ -53,29 +53,33 @@ import { readBrowserToken, type TokenDeps } from "./token";
  */
 export const CHECK_LIMIT_MS = 120_000;
 
-/** Every limit of a run, from its one whole-check number. */
-interface CheckLimits {
+/** Every limit of a run. */
+export interface CheckLimits {
   /** The whole run. */
   wholeMs: number;
   /** One answer to `initialize`: how long the launcher and the MCP get to start. */
-  readyMs: number;
+  startMs: number;
   /** One answer to a `tools/call`. */
-  stepMs: number;
+  answerMs: number;
   /** A child, after close-input and SIGTERM, before SIGKILL. */
   stopMs: number;
 }
 
-/** The limits of a run whose whole budget is `wholeMs`; each one is shorter than the whole. */
-function limitsFor(wholeMs: number): CheckLimits {
-  return {
-    wholeMs,
-    // The MCP's own connect deadline is 30 s: an answer gets a little more, so a failed call
-    // reports the MCP's own words (the profile, the token) rather than this file's timeout.
-    stepMs: Math.round(wholeMs / 3),
-    readyMs: Math.round(wholeMs / 4),
-    stopMs: Math.round(wholeMs / 24),
-  };
-}
+/**
+ * The limits every run gets unless a caller names its own, each derived from the one whole-check
+ * number. A caller that makes one limit different (a test of the whole run, say) names that one
+ * and leaves the rest here, so shortening the whole run does not also shorten the time a child
+ * gets to start. Every wait is still cut at what is left of the whole run (see `Session.request`),
+ * so no wait can outlast it.
+ */
+const DEFAULT_LIMITS: CheckLimits = {
+  wholeMs: CHECK_LIMIT_MS,
+  // The MCP's own connect deadline is 30 s: an answer gets a little more, so a failed call
+  // reports the MCP's own words (the profile, the token) rather than this file's timeout.
+  answerMs: Math.round(CHECK_LIMIT_MS / 3),
+  startMs: Math.round(CHECK_LIMIT_MS / 4),
+  stopMs: Math.round(CHECK_LIMIT_MS / 24),
+};
 
 type ToolResult = { images: number; isError: boolean; text: string };
 
@@ -195,7 +199,7 @@ class Session {
         clientInfo: { name: this.name, version: "1" },
         protocolVersion: "2025-06-18",
       },
-      this.limits.readyMs,
+      this.limits.startMs,
     );
     if (answer.error !== undefined) {
       return { ok: false, why: `${answer.error.message} — ${this.lastStderr()}` };
@@ -210,7 +214,7 @@ class Session {
     const message = await this.request(
       "tools/call",
       { arguments: args, name: tool },
-      this.limits.stepMs,
+      this.limits.answerMs,
     );
     const content = message.result?.content ?? [];
     return {
@@ -350,8 +354,11 @@ export interface BrowserCheckDeps {
   /** The machine's own facts; a test hands in a temp home. */
   machine: CheckPrerequisitesDeps;
   paths: CliPaths;
-  /** The whole check's budget; a test makes it short. Default: `CHECK_LIMIT_MS`. */
-  limitsMs?: number;
+  /**
+   * The limits of this run; a test makes one or more short. Each one left out is
+   * `DEFAULT_LIMITS`'s, so a short whole run keeps the real time a child gets to start.
+   */
+  limits?: Partial<CheckLimits>;
 }
 
 /**
@@ -374,7 +381,7 @@ export async function runBrowserCheck(
     check("the browser is ready to connect", false, prerequisites.why);
     return { failed: 1, total: 1 };
   }
-  const limits = limitsFor(deps.limitsMs ?? CHECK_LIMIT_MS);
+  const limits: CheckLimits = { ...DEFAULT_LIMITS, ...deps.limits };
   const version = extensionVersion(prerequisites.profileDir, deps.machine);
   deps.log(
     `This drives your own Chrome, in the "${CLAUDE_CODE_PROFILE}" profile` +

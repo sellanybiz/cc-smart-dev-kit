@@ -105,7 +105,9 @@ describe("the check always ends", () => {
     const result = await runBrowserCheck({
       check: reported.check,
       cli: fakeCli("process.stdin.resume();\n"),
-      limitsMs: 1_200,
+      // Only the start limit is short: the child never answers, so nothing else can end this
+      // run first. A live child is stopped within the short stop limit too.
+      limits: { startMs: 1_200, stopMs: 200 },
       log: () => undefined,
       machine: world.deps,
       paths: world.paths,
@@ -130,12 +132,14 @@ describe("the check always ends", () => {
       cli: fakeCli(
         'process.stderr.write("the browser cannot connect. Open Google Chrome.\\n"); process.exit(2);\n',
       ),
-      limitsMs: 4_000, // the answer limit here is 1 s
+      // The real start limit (30 s), not a fraction of a short whole run: a bun child on a loaded
+      // machine must still get to exit on its own, which is the path this test is about.
+      limits: { startMs: 30_000 },
       log: () => undefined,
       machine: world.deps,
       paths: world.paths,
     });
-    expect(Date.now() - began).toBeLessThan(900);
+    expect(Date.now() - began).toBeLessThan(5_000);
     expect(result).toEqual({ failed: 1, total: 1 });
     expect(reported.seen[0]?.why).toContain("exited before answering");
     expect(reported.seen[0]?.why).toContain("Open Google Chrome");
@@ -143,7 +147,10 @@ describe("the check always ends", () => {
 
   test("a child that answers initialize and not its tools ends at the whole check's limit", async () => {
     // Every call is answered by nothing: each has its own limit, and the whole run has the one
-    // that ends it (before this, eight calls could each wait 90 s).
+    // that ends it (before this, eight calls could each wait 90 s). Only the whole run is made
+    // short: the start keeps its own, longer limit, so a bun child on a loaded machine still gets
+    // time to answer initialize. Every wait is still cut at what is left of the whole, so the run
+    // still ends at the whole run's limit.
     const world = chromeWorld();
     world.withProfile({ fileUrls: true });
     writeWorldToken(world);
@@ -166,7 +173,7 @@ describe("the check always ends", () => {
         });
         process.stdin.resume();
       `),
-      limitsMs: 1_200,
+      limits: { wholeMs: 3_000, startMs: 30_000, stopMs: 200 },
       log: () => undefined,
       machine: world.deps,
       paths: world.paths,
@@ -175,6 +182,6 @@ describe("the check always ends", () => {
     expect(result.failed).toBeGreaterThan(0);
     const said = reported.seen.map((one) => one.why ?? "").join("\n");
     expect(said).toContain("ran out of its");
-    expect(said).toContain("1.2 s limit");
+    expect(said).toContain("3 s limit");
   });
 });
