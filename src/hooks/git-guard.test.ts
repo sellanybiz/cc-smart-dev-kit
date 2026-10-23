@@ -1226,7 +1226,7 @@ const WORK_COMMANDS = [
   ],
   [
     "git reset --merge HEAD~1",
-    "`git reset --merge` throws away changes that are staged but not committed: a staged change to a tracked file goes back to the target version, and a staged new file is deleted from the folder (measured). Unstaged changes are kept, and the reset refuses instead when the target changed a file with unstaged work. Approve only if you want the staged work gone; a WIP commit keeps it first.",
+    "`git reset --merge` throws away changes that are staged but not committed: a staged change to a tracked file goes back to the target version, and a staged new file is deleted from the folder (measured). Your working files are kept: it refuses rather than overwrite one whose working copy differs from the target, including a file with both staged and unstaged changes (measured on git 2.53). Approve only if you want the staged work gone; a WIP commit keeps it first.",
     CREW_STEPS.resetMerge,
   ],
   [
@@ -1332,10 +1332,12 @@ describe("CC6: a crew session is denied, never asked, before a command that dest
     });
   });
 
-  it("CC8: git reset --keep loses nothing, so it asks nobody and is never refused", async () => {
-    // Measured on git 2.53: --keep refuses rather than overwrite a local change, keeps a
-    // staged change as an unstaged one, and keeps untracked files. Nothing can be lost, so
-    // there is no question to put to a person and no step to name for a crew session.
+  it("CC8: git reset --keep loses no working file, so it asks nobody and is never refused", async () => {
+    // Measured on git 2.53: --keep never overwrites a working file (it refuses instead), and a
+    // staged change becomes unstaged when the target does not touch the file. It does reset
+    // the index, so a version staged and not also in the working file is dropped — the crew
+    // step says to commit it first — but no working file is lost, so there is no question to
+    // put to a person and no step to name for a crew session.
     const { env, repo } = policyRepo();
     for (const command of ["git reset --keep HEAD~1", "git reset --keep", "git reset --ke HEAD"]) {
       expect([command, await pushAnswer(env, repo, command)]).toEqual([command, null]);

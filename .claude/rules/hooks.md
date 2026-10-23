@@ -186,12 +186,17 @@ both.
 
 **The bun shim answers the same way.** With `--missing=ask` and `CC_SMART_DEV_KIT_CREW` set,
 the answers a guard gets when it cannot run (no bun, a Bun older than `MIN_BUN`, a missing
-bundle) are denies that name the fix and the `crew report --question` step, not asks. Its
-`--missing=quiet` and `--missing=fail` modes are unchanged.
+bundle) are denies: they say to end the turn and say so in its last message, and to report
+with `crew report --question` only while shell commands still run — with no bun, or one too
+old, a guard that cannot run refuses every shell call, so the report command could not run
+either. Its `--missing=quiet` and `--missing=fail` modes are unchanged.
 
-One ask can still reach a crew session: a guard's own crash, or input that is not JSON
-(`onCrash`), asks as it does for any session. That is a bug path, and the ask is what shows
-it — and `"onFailure": "block"` in `hooks.json` stays for the same reason.
+Two asks can still reach a crew session. A guard's own crash, or input that is not JSON
+(`onCrash`), asks as it does for any session: that is a bug path, and the ask is what shows
+it. And `main-folder-guard` and `message-guard` ask through `onConfigProblem` on a broken or
+too new `cc-smart-dev-kit.json`, where they cannot read the policy they judge with (the other
+guards deny or stay silent there, § Fail safe). `"onFailure": "block"` in `hooks.json` stays
+for the same reason.
 
 ## Find the project from the input's `cwd`
 
@@ -435,9 +440,9 @@ let a call through. Each hook's answer to its own failure, in one table (the sam
 |---|---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call in the guard's domain (a call outside it: silent; on PostToolUse: silent, one stderr line) | one stderr line, exit 0 | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard`, `session-escape-guard`, `crew-role` and `lead-notes` judge the call anyway) | one line of context, or on stderr | not read |
-| No bun, or one older than `MIN_BUN` | the shim's `--missing=ask`: **ask** | the shim's `--missing=quiet`: one stderr line, exit 0 | the launcher's line on stderr, exit 1 (Claude Code reads exit 1 as a failure that goes on) |
-| The bundle file is gone (an update removed the version folder) | the shim **asks** | bun's own error, exit 1 | not applicable: the launcher runs the installed version |
+| `cc-smart-dev-kit.json` broken or too new | `onConfigProblem`: **ask** (`agent-guard`, `session-escape-guard`, `crew-role` and `lead-notes` judge the call anyway); in a crew session: silence for `git-guard`/`merge-guard`, a deny for `agent-guard`/`job-route`/`session-escape-guard`, and an ask still for `main-folder-guard`/`message-guard` (§ A crew session's own limits) | one line of context, or on stderr | not read |
+| No bun, or one older than `MIN_BUN` | the shim's `--missing=ask`: **ask**; in a crew session: a **deny** naming what the session can do | the shim's `--missing=quiet`: one stderr line, exit 0 | the launcher's line on stderr, exit 1 (Claude Code reads exit 1 as a failure that goes on) |
+| The bundle file is gone (an update removed the version folder) | the shim **asks**; in a crew session: a **deny** naming what the session can do | bun's own error, exit 1 | not applicable: the launcher runs the installed version |
 | The hook cannot start, times out, or fails (an exit code other than 0 and 2) | `"onFailure": "block"` in `hooks.json`: Claude Code **blocks** the call | Claude Code goes on | Claude Code goes on |
 
 **The portal's start part is inside the `update-check` hook, and its failures never reach that

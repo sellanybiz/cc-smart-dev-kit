@@ -20,9 +20,11 @@
  *   cannot be read asks. A `--dry-run` sends nothing and asks nothing;
  * - `git reset --hard`; `git reset --merge` (it throws away changes that are staged but not
  *   committed: a staged change to a tracked file goes back to the target version, and a staged
- *   new file is deleted from the folder — measured on git 2.53. `git reset --keep` loses
- *   nothing — it refuses rather than overwrite a local change, and a staged change simply
- *   becomes unstaged — so it asks nothing);
+ *   new file is deleted from the folder — measured on git 2.53; a file whose working copy
+ *   differs from the target and has unstaged changes makes it refuse). `git reset --keep` asks
+ *   nothing: it never overwrites a working file (it refuses instead), but it still resets the
+ *   index, so a version staged and not also in the working file is dropped — commit it first
+ *   when it is needed);
  * - `git clean -f` (not a `-n` dry run); `git worktree remove -f`;
  * - a checkout that discards changes: `git checkout -- <path>`, `checkout .`,
  *   `checkout -f`, `git switch -f` / `--discard-changes`, `git restore <path>` without
@@ -165,10 +167,11 @@ export const CREW_STEPS = {
     "A crew session never runs `git reset --merge`: it throws away changes that are staged but " +
     "not committed — a staged change to a tracked file goes back to the target version, and a " +
     "staged new file is deleted for good — and nobody is at the machine to answer the guard's " +
-    "question. `git reset --keep <commit>` moves the branch and keeps the content of staged and " +
-    "unstaged changes (a staged change simply becomes unstaged); it refuses rather than lose " +
-    "one. To undo a deliberate break, copy the file back (`cp path.bak path`), delete the copy " +
-    "(`rm path.bak`), and check it with `git diff --quiet -- path`.",
+    "question. `git reset --keep <commit>` moves the branch and never overwrites a working " +
+    "file (it refuses instead), but it still resets the index, so a version staged and not " +
+    "also in the working file is dropped: commit it first when it is needed. To undo a " +
+    "deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm " +
+    "path.bak`), and check it with `git diff --quiet -- path`.",
   /** `git clean -f`. */
   clean:
     "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody " +
@@ -574,8 +577,9 @@ const RESET_MERGE_ASK: AskStep = {
   ask:
     "`git reset --merge` throws away changes that are staged but not committed: a staged " +
     "change to a tracked file goes back to the target version, and a staged new file is " +
-    "deleted from the folder (measured). Unstaged changes are kept, and the reset refuses " +
-    "instead when the target changed a file with unstaged work. Approve only if you want the " +
+    "deleted from the folder (measured). Your working files are kept: it refuses rather than " +
+    "overwrite one whose working copy differs from the target, including a file with both " +
+    "staged and unstaged changes (measured on git 2.53). Approve only if you want the " +
     "staged work gone; a WIP commit keeps it first.",
   crew: CREW_STEPS.resetMerge,
 };

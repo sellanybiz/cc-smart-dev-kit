@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { CREW_ENV } from "../crew/session";
+import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { hookEnv, makeClone, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -1440,12 +1440,32 @@ describe("CC8: a crew session is never asked", () => {
     expect(asked?.reason).toContain("writes to a path it works out when it runs");
   });
 
-  test("a computed program whose words name the kit: refused, where the person is asked", async () => {
+  test("a computed program whose words name the kit: refused with its own fix and the step", async () => {
     const command = `$(which ${KIT}) doctor`;
     const [refused, asked] = await both(shellInput(command, repo));
-    expect(refused).toEqual({ decision: "deny", reason: CREW_KIT_REFUSAL });
+    // The person's ask names the fix (`write the command out in full`); the crew denial keeps
+    // it and adds the step, rather than saying the session changes the kit's limits — the
+    // line may be `crew report`, which a crew session does.
+    expect(refused?.decision).toBe("deny");
+    expect(refused?.reason).toContain("cannot tell whether it runs it");
+    expect(refused?.reason).toContain("Write the command out in full");
+    expect(refused?.reason).toContain(CREW_QUESTION_STEP);
+    expect(refused?.reason).not.toContain("never changes the kit's own limits");
     expect(asked?.decision).toBe("ask");
     expect(asked?.reason).toContain("cannot tell whether it runs it");
+  });
+
+  test("a computed `crew report`: refused with the fix it can take, not the limits refusal", async () => {
+    // A crew session hands back with `crew report`; a computed spelling is refused, but the
+    // answer names the fix it can take (`write the command out in full`) and the lead step.
+    const [refused, asked] = await both(
+      shellInput(`$(which ${KIT}) crew report --status done`, repo),
+    );
+    expect(refused?.decision).toBe("deny");
+    expect(refused?.reason).toContain("Write the command out in full");
+    expect(refused?.reason).toContain(CREW_QUESTION_STEP);
+    expect(refused?.reason).not.toContain("never changes the kit's own limits");
+    expect(asked?.decision).toBe("ask");
   });
 
   test("the portal: refused, where the person is asked", async () => {

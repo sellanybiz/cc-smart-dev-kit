@@ -21,7 +21,7 @@ import {
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
-import { locateCheckout } from "../project/resolve";
+import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import {
   commitConfig,
   hookEnv,
@@ -36,6 +36,7 @@ import { GUARD_BUDGET_ENV } from "./budget";
 import {
   CREW_MERGE_REFUSAL,
   CREW_PR_REFUSAL,
+  mergeGuard,
   OPENING_DEFAULT_UNREAD,
   opensElsewhere,
 } from "./merge-guard";
@@ -2163,6 +2164,29 @@ describe("CC8: a crew session is never asked before a merge", () => {
         env: { ...env, ...CREW },
       }),
     ).toEqual({});
+  });
+
+  test("the run's own crew belt: a question it would put is a denial too", () => {
+    // The frame runs the crew part first, so this path is unreachable through the hook; it is
+    // the belt for a spelling the crew part missed, and it must not ask a person either. Call
+    // the run directly, the way the frame would after the crew part stayed silent.
+    const { env, repo } = ready();
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const answer = mergeGuard({
+      input: input(repo, "gh pr merge 7 --admin"),
+      event: "PreToolUse",
+      cwd: repo,
+      project: loadProjectConfig(checkout),
+      env: { ...env, ...CREW },
+      paths: cliPaths(env),
+      nowMs: 0,
+    });
+    expect(JSON.parse(answer.stdout ?? "{}").hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: CREW_MERGE_REFUSAL,
+    });
   });
 });
 

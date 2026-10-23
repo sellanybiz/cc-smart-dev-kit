@@ -34,7 +34,7 @@ import {
   writeSessionRecord,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { CREW_PUSH_REFUSAL } from "./git-guard";
+import { CREW_PUSH_REFUSAL, CREW_STEPS } from "./git-guard";
 import type { HookResult } from "./io";
 import { CREW_MERGE_REFUSAL, CREW_PR_REFUSAL } from "./merge-guard";
 import type { HookSpec } from "./run";
@@ -865,6 +865,7 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
   /** The Agent guard's refusal of an opus-tier launch at `max`, in the guard's own words. */
   const CREW_LAUNCH = [
     "A launch on Claude Opus at effort `max` is approved by the person, one by one, and this session has nobody to answer.",
+    "Run it at `medium`, `high` or `xhigh`.",
     CREW_QUESTION_STEP,
   ].join("\n");
 
@@ -872,6 +873,11 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     denied(
       await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), crew),
       CREW_PUSH_REFUSAL,
+    );
+    // CC8: a work-destroying git command is denied with its own step too, with no file.
+    denied(
+      await runHook(gitGuardHook, shell(repo, "git reset --hard"), crew),
+      CREW_STEPS.resetHard,
     );
     denied(
       await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), crew),
@@ -932,12 +938,12 @@ describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1,
     // and no file and no ownHooks list can soften it.
     for (const config of [undefined, { ownHooks: ["git-guard", "merge-guard"] }]) {
       const { crew, repo } = await world(config);
-      for (const command of [
-        "$GH pr create --fill",
-        "$(which gh) pr create --fill",
-        "$GH pr merge 7",
-      ]) {
+      for (const command of ["$GH pr create --fill", "$(which gh) pr create --fill"]) {
         denied(await runHook(mergeGuardHook, shell(repo, command), crew), CREW_PR_REFUSAL);
+      }
+      // A computed merge's words name a merge, the refusal that says the lead merges.
+      for (const command of ["$GH pr merge 7", "$(which gh) pr merge 7"]) {
+        denied(await runHook(mergeGuardHook, shell(repo, command), crew), CREW_MERGE_REFUSAL);
       }
       for (const command of ["$GIT push origin fix/x", "$(which git) push origin fix/x"]) {
         denied(await runHook(gitGuardHook, shell(repo, command), crew), CREW_PUSH_REFUSAL);

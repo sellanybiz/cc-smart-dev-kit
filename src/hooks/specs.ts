@@ -36,14 +36,15 @@
  * a project used to wire itself is retired (1.0.0): its three hook names only print the fix
  * (`src/hooks/settings-hooks.ts`).
  *
- * Three guards — `git-guard`, `merge-guard` and `message-guard` — also carry a **crew part**
- * (`HookSpec.crewLimits`): a crew session never pushes, never runs a git command that would
- * throw work away without reading the step that replaces it, opens no pull request, and its
- * peer messages carry the `crew tell` tag (D24, D47). The frame runs that part **before
- * `ownHooks` and before the project's file is read**, so a project with no
- * `cc-smart-dev-kit.json`, and one whose `ownHooks` lists its own copy of the guard, cannot
- * lose it. Each part is the guard's own detector (`crewGitAnswer`, `crewPrAnswer`,
- * `crewMessageAnswer`), never a copy.
+ * Four guards — `git-guard`, `merge-guard`, `agent-guard` and `message-guard` — also carry a
+ * **crew part** (`HookSpec.crewLimits`): a crew session never pushes, never runs a git command
+ * that would throw work away without reading the step that replaces it, opens no pull request
+ * and merges none, is never asked about a launch (each question is a denial naming the step
+ * that reaches its lead), and its peer messages carry the `crew tell` tag (D24, D36, D47). The
+ * frame runs that part **before `ownHooks` and before the project's file is read**, so a
+ * project with no `cc-smart-dev-kit.json`, and one whose `ownHooks` lists its own copy of the
+ * guard, cannot lose it. Each part is the guard's own detector (`crewGitAnswer`,
+ * `crewPullRequestAnswer`, `crewAgentAnswer`, `crewMessageAnswer`), never a copy.
  */
 
 import { crewIdOf } from "../crew/session";

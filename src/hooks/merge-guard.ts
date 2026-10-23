@@ -63,11 +63,12 @@
  * `worktrees.bases` prefix mapping for the head branch — and one with no `--base` when the
  * repository's default branch is not that base (read with `gh repo view`, then git's
  * `origin/HEAD`). The question names both branches; the person may mean it. **And a crew
- * session opens no pull request at all** (D24): `gh pr create` pushes the branch, so it is denied, whatever `openPr`
- * says (`CC_SMART_DEV_KIT_CREW` is set in a crew session's environment). That refusal is the
- * guard's **crew part** (`crewPrAnswer`, `HookSpec.crewLimits`): the frame runs it before
- * `ownHooks` and before the project's file, so no project — one with no file, or one whose
- * `ownHooks` names `merge-guard` — can lose it.
+ * session opens no pull request and merges none** (D24): `gh pr create` pushes the branch, so
+ * it is denied, whatever `openPr` says, and every question this guard would put before a merge
+ * is one denial whose step is the lead's local merge. That is the guard's **crew part**
+ * (`crewPullRequestAnswer`, `HookSpec.crewLimits`): the frame runs it before `ownHooks` and
+ * before the project's file, so no project — one with no file, or one whose `ownHooks` names
+ * `merge-guard` — can lose it.
  *
  * Every merge in the command is judged, in the order it runs them — `gh pr merge 5 && gh pr
  * merge 6` checks both — and the first the policy does not allow asks, naming its pull
@@ -182,6 +183,9 @@ export function crewPullRequestAnswer(input: HookInput, env: Env, cwd: string): 
   // A program the line works out when it runs (`$GH pr create`, `$(which gh) pr create`)
   // cannot be named: its words name an opening or a merge, which a crew session never does
   // (D24), so it is denied here rather than left to the guard's project part (F5-1).
+  // A program named at run time cannot be read, but its words can: a merge is the merge
+  // refusal, and any other pull request change the opening refusal.
+  if (computedMergeRisk(command, dialect)) return toolDecision("deny", CREW_MERGE_REFUSAL);
   if (computedPullRequestRisk(command, dialect)) return toolDecision("deny", CREW_PR_REFUSAL);
   // Every call the reader finds, with a `gh <word>` alias expanded (`gh np` may be a create,
   // and `gh mg` a merge), so each one is refused by what it really does:

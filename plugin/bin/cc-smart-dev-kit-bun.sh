@@ -41,9 +41,12 @@
 #                    reads as a failure that lets the call through.
 #                    In a crew session (`CC_SMART_DEV_KIT_CREW` set) the same answer is a
 #                    **deny**: nobody is at the machine to answer, and the crew session reads
-#                    the fix and the step that puts the question to its lead (`crew report
-#                    --question`). `crewIdOf` (src/crew/session.ts) trims the value; a set,
-#                    non-empty one counts here, and shell built-ins are all it takes.
+#                    what it can do — end its turn and say so in its last message, and report
+#                    through `crew report --question` only while shell commands still run (a
+#                    guard that cannot run refuses every shell call it matches; with no bun,
+#                    or one too old, that is all of them). `crewIdOf` (src/crew/session.ts)
+#                    trims the value; a set, non-empty one counts here, and shell built-ins
+#                    are all it takes.
 #   --missing=quiet  one line on stderr, exit 0.
 #   --missing=fail   one line on stderr, exit 1: for a command that must not report success
 #                    when it did not run (`plugin/bin/cc-smart-dev-kit`, the CLI).
@@ -61,10 +64,11 @@ case $1 in
 esac
 
 # The PreToolUse answer for a guard that cannot run: an ask, or — in a crew session — a deny
-# naming the fix and the crew step. "$1" is the reason, in the words a person reads.
+# naming the fix and what the crew session can do about it. "$1" is the reason, in the words a
+# person reads.
 guard_answer() {
   if [ -n "${CC_SMART_DEV_KIT_CREW:-}" ]; then
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s A crew session has nobody to answer, so the call is refused. Fix it, or report it to your lead with `cc-smart-dev-kit crew report --question \\"<the question>\\" --option \\"<choice>\\" --option \\"<choice>\\" --recommend <n>`."}}\n' "$1"
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s A crew session has nobody to answer, so the call is refused. End your turn and say this in your last message for your lead; if shell commands still run, report it with `cc-smart-dev-kit crew report --question \\"<the question>\\" --option \\"<choice>\\" --option \\"<choice>\\" --recommend <n>` instead."}}\n' "$1"
   else
     printf '%s\n' "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"$1\"}}"
   fi

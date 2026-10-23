@@ -175,10 +175,12 @@ describe("cc-smart-dev-kit-bun.sh finds bun without PATH", () => {
   });
 
   // CC8: a crew session has nobody to answer the guard's question, so every answer the shim
-  // gives with --missing=ask is a denial that names the fix and the step that reaches its lead.
-  // The step, in the shim's own words (it cannot use the TypeScript constant).
+  // gives with --missing=ask is a denial that names the fix and what the session can do: end
+  // its turn and say so (a guard that cannot run refuses every shell call it matches, so with
+  // no bun, or one too old, `crew report` cannot run either), or report while shell still
+  // runs. The step, in the shim's own words (it cannot use the TypeScript constant).
   const CREW_STEP =
-    ' A crew session has nobody to answer, so the call is refused. Fix it, or report it to your lead with `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`.';
+    ' A crew session has nobody to answer, so the call is refused. End your turn and say this in your last message for your lead; if shell commands still run, report it with `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>` instead.';
   const CREW = { CC_SMART_DEV_KIT_CREW: "B2-api-aaaaaa" };
 
   test("no bun and --missing=ask in a crew session: a deny that names the fix and the crew step", () => {

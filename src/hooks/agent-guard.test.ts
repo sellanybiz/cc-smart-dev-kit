@@ -2627,26 +2627,29 @@ describe("D50: UI/UX work runs only on opus or fable, at high or above", () => {
 describe("CC8: a crew session is judged as a session nobody watches", () => {
   const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
 
-  it("the opus tier at max: denied, with the step that reaches the lead", () => {
-    // The person's own session asks (D11); a crew session is refused instead.
+  it("the opus tier at max: denied, with the fix it can take and the step that reaches the lead", () => {
+    // The person's own session asks (D11); a crew session is refused instead, and reads both
+    // the effort it can run at without an answer and the step that reaches its lead.
     expect(verdict({ effort: "max", model: "opus", prompt: "build it" }).decision).toBe("ask");
     const result = verdict({ effort: "max", model: "opus", prompt: "build it" }, CTX, CREW);
     expect(result.decision).toBe("deny");
     expect(result.reason).toBe(
       [
         "A launch on Claude Opus at effort `max` is approved by the person, one by one, and this session has nobody to answer.",
+        "Run it at `medium`, `high` or `xhigh`.",
         CREW_QUESTION_STEP,
       ].join("\n"),
     );
   });
 
-  it("a name it cannot read as Opus: denied, with the step", () => {
+  it("a name it cannot read as Opus: denied, with the fix it can take and the step", () => {
     expect(verdict({ effort: "high", model: "inherit", prompt: "build it" }).decision).toBe("ask");
     const result = verdict({ effort: "high", model: "inherit", prompt: "build it" }, CTX, CREW);
     expect(result.decision).toBe("deny");
     expect(result.reason).toBe(
       [
         "This launch names `inherit`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer.",
+        "Name `opus` (or a Claude Opus id) as its model.",
         CREW_QUESTION_STEP,
       ].join("\n"),
     );
@@ -2684,6 +2687,7 @@ describe("CC8: a crew session is judged as a session nobody watches", () => {
     const output = JSON.parse(refused.stdout ?? "{}").hookSpecificOutput;
     expect(output.permissionDecision).toBe("deny");
     expect(output.permissionDecisionReason).toContain("does not exist");
+    expect(output.permissionDecisionReason).toContain("pass the script inline");
     expect(output.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
     // A refusal judges only: no launch record is written for a call that never runs.
     expect(existsSync(agentLaunchesFile(paths.stateDir))).toBe(false);
@@ -2704,5 +2708,15 @@ describe("CC8: a crew session is judged as a session nobody watches", () => {
     expect(verdict({ effort: "high", model: "opus", prompt: "build it" }, CTX, CREW).decision).toBe(
       "allow",
     );
+    // An ordinary deny is the guard's project policy, not a former question: a project whose
+    // `ownHooks` lists `agent-guard` runs its own copy and this part must not answer for it.
+    const lowEffort = agentCall({ effort: "low", model: "sonnet", prompt: "find it" });
+    expect(crewAgentAnswer(lowEffort, CREW, paths, "/")).toEqual({});
+    // The guard's own run still denies it, with its own words: the part was narrowed, the
+    // guard was not.
+    const guard = agentGuard(lowEffort, CREW, paths, "/");
+    const refused = JSON.parse(guard.stdout ?? "{}").hookSpecificOutput;
+    expect(refused.permissionDecision).toBe("deny");
+    expect(refused.permissionDecisionReason).not.toContain(CREW_QUESTION_STEP);
   });
 });

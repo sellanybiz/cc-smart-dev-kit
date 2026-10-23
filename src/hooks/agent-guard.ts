@@ -157,6 +157,7 @@ import {
   reasonParts,
   SESSION_EFFORT,
 } from "./agent-launches";
+import { isAttended } from "./attended";
 import {
   type HookInput,
   type HookResult,
@@ -836,6 +837,14 @@ const UNREADABLE_UNATTENDED =
   "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
 
 /**
+ * Said in a crew session after the reasons a run cannot be read: the same self-serve fix the
+ * `claude -p` line names, without "run it in an interactive session", which a crew session
+ * cannot do. `CREW_QUESTION_STEP` follows it.
+ */
+const UNREADABLE_CREW =
+  "The guard cannot see the model and effort its launches run on: pass the script inline (`script`), or by `scriptPath` to a file the guard can read.";
+
+/**
  * The one answer for a whole Workflow call: a refusal or any denied launch denies it; a script
  * it cannot read asks (denied in `claude -p`, where nobody can answer); else the ask names each
  * launch that asks; else it is allowed.
@@ -850,7 +859,10 @@ function workflowAnswer(
   if (call.unreadable.length > 0 && nobodyWatches(env)) {
     return {
       decision: "deny",
-      reason: [...call.unreadable, nobodyStep(env, UNREADABLE_UNATTENDED)].join("\n"),
+      reason: [
+        ...call.unreadable,
+        ...(inCrew(env) ? [UNREADABLE_CREW, CREW_QUESTION_STEP] : [UNREADABLE_UNATTENDED]),
+      ].join("\n"),
     };
   }
   const asks = [
@@ -1234,7 +1246,11 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
         return deny(
           real,
           inCrew(env)
-            ? [`${why}.`, CREW_QUESTION_STEP].join("\n")
+            ? [
+                `${why}.`,
+                "Name `opus` (or a Claude Opus id) as its model.",
+                CREW_QUESTION_STEP,
+              ].join("\n")
             : [`${why} (\`claude -p\`).`, "Name `opus` (or a Claude Opus id) as its model."].join(
                 "\n",
               ),
@@ -1257,7 +1273,9 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
       return deny(
         real,
         inCrew(env)
-          ? [`${nobody}.`, CREW_QUESTION_STEP].join("\n")
+          ? [`${nobody}.`, `Run it at ${levelsText(OPUS_FREE_EFFORTS)}.`, CREW_QUESTION_STEP].join(
+              "\n",
+            )
           : [
               `${nobody} (\`claude -p\`).`,
               `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`,
@@ -1300,17 +1318,12 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
  * lead (`CREW_QUESTION_STEP`) rather than "run it in an interactive session".
  */
 function nobodyWatches(env: Env): boolean {
-  return inCrew(env) || (env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0";
+  return inCrew(env) || !isAttended(env);
 }
 
 /** True when the session is a crew session: nobody watches it, and its step is `crew report`. */
 function inCrew(env: Env): boolean {
   return crewIdOf(env) !== null;
-}
-
-/** What a session nobody watches reads after the reason: the crew step, or `claude -p`'s line. */
-function nobodyStep(env: Env, line: string): string {
-  return inCrew(env) ? CREW_QUESTION_STEP : line;
 }
 
 /**
@@ -1609,6 +1622,11 @@ export function agentGuard(
  * is recorded, because the run records a launch that runs and this part only ever refuses; the
  * launch it refuses never runs, so it is recorded nowhere, exactly as for `claude -p`.
  *
+ * **Only the former questions.** A launch the guard denies for a person (no model or effort, a
+ * low effort, the UI rule) stays the project's own policy: a project whose `ownHooks` lists
+ * `agent-guard` runs its own copy, and this part must not answer for it. So the part denies
+ * exactly the answers that name `CREW_QUESTION_STEP` — the four rules that ask a person.
+ *
  * Not a crew session, a call outside the guard's tools, or a call it allows: silence.
  */
 export function crewAgentAnswer(
@@ -1622,5 +1640,7 @@ export function crewAgentAnswer(
   if (judged === null) return SILENT;
   const decision = judged.kind === "workflow" ? judged.decision : judged.verdict.decision;
   const reason = judged.kind === "workflow" ? judged.reason : judged.verdict.reason;
-  return decision === "deny" ? toolDecision("deny", reason) : SILENT;
+  return decision === "deny" && reason.includes(CREW_QUESTION_STEP)
+    ? toolDecision("deny", reason)
+    : SILENT;
 }

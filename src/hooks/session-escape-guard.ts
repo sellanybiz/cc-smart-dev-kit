@@ -703,7 +703,18 @@ function judgeShell(
     // A crew session is never asked: each question is a denial, and the portal is one no
     // crew session has any business with.
     if (portal) return toolDecision("deny", CREW_PORTAL_REFUSAL);
-    return found.asks.size > 0 ? toolDecision("deny", CREW_KIT_REFUSAL) : SILENT;
+    // A computed kit command keeps its own fix ("write it out in full"), which a crew session
+    // can take — `crew report` is such a command, and it is how the session hands back. The
+    // kit-file asks get the limits refusal, which says the limits are the person's.
+    const computedKit = found.asks.has(COMPUTED_KIT_ASK);
+    const limits = [...found.asks].some((ask) => ask !== COMPUTED_KIT_ASK);
+    if (!computedKit && !limits) return SILENT;
+    return toolDecision(
+      "deny",
+      limits
+        ? [CREW_KIT_REFUSAL, ...(computedKit ? [COMPUTED_KIT_ASK] : [])].join("\n")
+        : [COMPUTED_KIT_ASK, CREW_QUESTION_STEP].join("\n"),
+    );
   }
   if (portal) found.asks.add(PORTAL_QUESTION);
   return found.asks.size > 0 ? toolDecision("ask", [...found.asks].join("\n")) : SILENT;

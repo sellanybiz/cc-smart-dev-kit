@@ -98,9 +98,11 @@ describe("the hooks' bun shim", () => {
     });
   });
 
-  test("--missing=ask in a crew session: a deny that names the fix and the crew step", () => {
+  test("--missing=ask in a crew session: a deny that names the fix and what the session can do", () => {
     // A crew session has nobody to answer the guard's question, so the same answer is a
-    // denial naming the fix and the step that puts the question to its lead (D36).
+    // denial naming the fix and the step that puts the question to its lead (D36). With no
+    // bun, every shell call is refused by a guard that cannot run, so `crew report` cannot
+    // run either: the answer says to end the turn first.
     const home = tempDir("shim");
     const run = runShim({ CC_SMART_DEV_KIT_CREW: "B2-api-aaaaaa", HOME: home, PATH: NO_BUN_PATH }, [
       "--missing=ask",
@@ -113,7 +115,7 @@ describe("the hooks' bun shim", () => {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason:
-          'cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup. A crew session has nobody to answer, so the call is refused. Fix it, or report it to your lead with `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`.',
+          'cc-smart-dev-kit cannot run its guard: bun was not found. Install bun or run cc-smart-dev-kit setup. A crew session has nobody to answer, so the call is refused. End your turn and say this in your last message for your lead; if shell commands still run, report it with `cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>` instead.',
       },
     });
   });
