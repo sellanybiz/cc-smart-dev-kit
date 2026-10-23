@@ -77,12 +77,9 @@ function cliChildArgv(folder: string, args: readonly string[]): string[] {
  * `CC_SMART_DEV_KIT_CREW`: the person's click is not a crew session (D52), whatever process
  * started the portal.
  */
-function cliChildEnv(
-  ctx: PortalContext,
-  context: ReturnType<typeof commandContext>,
-): Record<string, string> {
+function cliChildEnv(ctx: PortalContext): Record<string, string> {
   const env: Record<string, string> = {
-    ...context.env,
+    ...commandContext(ctx.env, ctx.paths.home).env,
     CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir,
     HOME: ctx.paths.home,
   };
@@ -92,7 +89,8 @@ function cliChildEnv(
 
 /**
  * Starts `dist/cli.js <args>` in `cwd` (the portal's folder unless the caller asks for another:
- * the crew record's repository, or the worktrees scan's folder), asynchronously. Never throws.
+ * the crew record's repository, or the worktrees scan's folder), asynchronously. Never throws:
+ * a folder that is gone, or a spawn Bun refuses (a `cwd` that does not exist), is `error`.
  */
 function spawnCliChild(
   ctx: PortalContext,
@@ -101,11 +99,12 @@ function spawnCliChild(
 ): CliStart | CliStartFailure {
   const folder = ctx.pluginFolder();
   if ("error" in folder) return { error: folder.error, kind: "folder" };
-  const context = commandContext(ctx.env, ctx.paths.home);
   try {
+    // Inside the `try`: a `cwd` that does not exist makes `Bun.spawn` throw before a child
+    // exists (a worktree a crew session's folder was in and is not any more).
     const child = Bun.spawn(cliChildArgv(folder.folder, args), {
-      cwd: options.cwd ?? context.cwd,
-      env: cliChildEnv(ctx, context),
+      cwd: options.cwd ?? commandContext(ctx.env, ctx.paths.home).cwd,
+      env: cliChildEnv(ctx),
       stderr: "pipe",
       stdin: "ignore",
       stdout: "pipe",

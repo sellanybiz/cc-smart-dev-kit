@@ -34514,9 +34514,9 @@ function cliChildArgv(folder, args) {
     ...args
   ];
 }
-function cliChildEnv(ctx, context) {
+function cliChildEnv(ctx) {
   const env = {
-    ...context.env,
+    ...commandContext(ctx.env, ctx.paths.home).env,
     CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir,
     HOME: ctx.paths.home
   };
@@ -34527,11 +34527,10 @@ function spawnCliChild(ctx, args, options) {
   const folder = ctx.pluginFolder();
   if ("error" in folder)
     return { error: folder.error, kind: "folder" };
-  const context = commandContext(ctx.env, ctx.paths.home);
   try {
     const child = Bun.spawn(cliChildArgv(folder.folder, args), {
-      cwd: options.cwd ?? context.cwd,
-      env: cliChildEnv(ctx, context),
+      cwd: options.cwd ?? commandContext(ctx.env, ctx.paths.home).cwd,
+      env: cliChildEnv(ctx),
       stderr: "pipe",
       stdin: "ignore",
       stdout: "pipe",
