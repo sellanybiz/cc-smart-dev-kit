@@ -12,6 +12,11 @@
  * `cc-smart-dev-kit.json`, so the frame skips the `ownHooks` step for this hook. It runs
  * outside git too, and with a broken or too new `cc-smart-dev-kit.json`.
  *
+ * **A crew session is never asked** (D36): a `claude -p` launch the policy would question is
+ * refused by the launch policy's unattended rule, with the step that reaches the lead (its
+ * words: `CREW_QUESTION_STEP`), and so is a heavy command whose routing cannot be read because
+ * the project's file is broken or too new (`jobRouteConfigAnswer`).
+ *
  * **Both shells.** The hook is wired on Bash and PowerShell, and it reads a line in the
  * dialect of the tool that runs it (`dialectOfTool`): on native Windows the PowerShell tool is
  * one command away, and a judge that read only Bash would let a launch or a poll through
@@ -50,6 +55,8 @@
  * A command already inside `cc-smart-dev-kit job run` stays as it is (the queue would nest), and
  * anything the hook cannot read lets the call through.
  */
+
+import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { readLead } from "../crew/store";
 import { classifyHeavyCommand, classifyRoutableLine, type ScriptSource } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
@@ -322,6 +329,11 @@ export function jobRoute(context: HookContext): HookResult {
  * The answer when cc-smart-dev-kit.json is broken or needs a newer plugin. The judge runs
  * anyway (it ignores the file). Otherwise routing cannot be read: a heavy command is asked
  * about rather than run raw, exactly as before. A line outside both is left alone.
+ *
+ * A crew session is never asked (D36): the same answer is a denial, naming the step that puts
+ * the question to its lead. `job-route` is `alwaysOn`, so this answer runs whatever the
+ * project's file or `ownHooks` says; its crew rule lives here rather than in a crew part, so
+ * each call is judged once.
  */
 export function jobRouteConfigAnswer(
   message: string,
@@ -339,10 +351,10 @@ export function jobRouteConfigAnswer(
   ) {
     return SILENT;
   }
-  return toolDecision(
-    "ask",
-    `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`,
-  );
+  const why = `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`;
+  return crewIdOf(context.env) === null
+    ? toolDecision("ask", why)
+    : toolDecision("deny", `${why}\n${CREW_QUESTION_STEP}`);
 }
 
 /** The answer outside git: the judge alone (routing is a project's, and there is none here). */

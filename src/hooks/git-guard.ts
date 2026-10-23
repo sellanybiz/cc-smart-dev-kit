@@ -18,7 +18,14 @@
  *   person's own `workflow.json`, and the project's file as committed on `origin/<base>`, never
  *   this checkout's copy, so a session cannot switch it on in its own worktree. A policy that
  *   cannot be read asks. A `--dry-run` sends nothing and asks nothing;
- * - `git reset --hard`; `git clean -f` (not a `-n` dry run); `git worktree remove -f`;
+ * - `git reset --hard`; `git reset --merge` (it throws away changes that are staged but not
+ *   committed: a staged change to a tracked file goes back to the target version, and a staged
+ *   new file is deleted from the folder — measured on git 2.53; a file whose working copy
+ *   differs from the target and has unstaged changes makes it refuse). `git reset --keep` asks
+ *   nothing: it never overwrites a working file (it refuses instead), but it still resets the
+ *   index, so a version staged and not also in the working file is dropped — commit it first
+ *   when it is needed);
+ * - `git clean -f` (not a `-n` dry run); `git worktree remove -f`;
  * - a checkout that discards changes: `git checkout -- <path>`, `checkout .`,
  *   `checkout -f`, `git switch -f` / `--discard-changes`, `git restore <path>` without
  *   `--staged`;
@@ -155,6 +162,16 @@ export const CREW_STEPS = {
     "work in progress first; `git reset --soft <commit>` moves the branch and keeps the " +
     "changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak " +
     "path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
+  /** `git reset --merge`. */
+  resetMerge:
+    "A crew session never runs `git reset --merge`: it throws away changes that are staged but " +
+    "not committed — a staged change to a tracked file goes back to the target version, and a " +
+    "staged new file is deleted for good — and nobody is at the machine to answer the guard's " +
+    "question. `git reset --keep <commit>` moves the branch and never overwrites a working " +
+    "file (it refuses instead), but it still resets the index, so a version staged and not " +
+    "also in the working file is dropped: commit it first when it is needed. To undo a " +
+    "deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm " +
+    "path.bak`), and check it with `git diff --quiet -- path`.",
   /** `git clean -f`. */
   clean:
     "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody " +
@@ -556,6 +573,17 @@ const RESET_HARD_ASK: AskStep = {
   crew: CREW_STEPS.resetHard,
 };
 
+const RESET_MERGE_ASK: AskStep = {
+  ask:
+    "`git reset --merge` throws away changes that are staged but not committed: a staged " +
+    "change to a tracked file goes back to the target version, and a staged new file is " +
+    "deleted from the folder (measured). Your working files are kept: it refuses rather than " +
+    "overwrite one whose working copy differs from the target, including a file with both " +
+    "staged and unstaged changes (measured on git 2.53). Approve only if you want the " +
+    "staged work gone; a WIP commit keeps it first.",
+  crew: CREW_STEPS.resetMerge,
+};
+
 const CLEAN_FORCE_ASK: AskStep = {
   ask:
     "`git clean -f` deletes untracked files for good: git cannot bring them back. " +
@@ -839,6 +867,11 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
   if (sub === "branch" && forceDeletesBranch(rest)) return answer(BRANCH_DELETE_ASK, run);
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
     return answer(RESET_HARD_ASK, run);
+  }
+  // `--merge` loses staged work too (the measurement is in the file's header); `--keep` loses
+  // nothing and stays silent.
+  if (sub === "reset" && rest.some((arg) => longOption(arg, "--merge", 4))) {
+    return answer(RESET_MERGE_ASK, run);
   }
   if (sub === "clean") {
     const force = rest.some(

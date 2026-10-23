@@ -5,17 +5,24 @@
  * ever ignores that, a denial naming the command.
  */
 import { describe, expect, it } from "bun:test";
+import { cliPaths } from "../cli/paths";
+import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import { mergeKinds } from "../jobs/kinds";
+import { hookEnv } from "../testing/hooks";
 import { pullRequestMerges } from "./after-merge";
 import { guardQuestions, PUSH_FREE } from "./git-guard";
+import type { HookInput, HookResult } from "./io";
 import {
+  jobRouteConfigAnswer,
   jobRunCommand,
+  judgeCommandAnswer,
   rewriteAnswer,
   routeDenial,
   routedShell,
   routeHeavyCommand,
   runsJobRun,
 } from "./job-route";
+import type { HookEnvContext } from "./run";
 
 const KINDS = mergeKinds(undefined);
 const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
@@ -209,5 +216,90 @@ describe("the two answers", () => {
     expect(answer.permissionDecision).toBe("deny");
     expect(answer.permissionDecisionReason).toContain(routed.command);
     expect(answer.permissionDecisionReason).toContain("heavy command (tsc)");
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CC8: a crew session is never asked. The launch policy judges its `claude -p` run as
+// unattended, and a heavy command beside a broken or too new project file is refused too;
+// both name the step that puts the question to the lead (D36). A person's session is asked
+// exactly as before.
+// ---------------------------------------------------------------------------------------
+
+describe("CC8: a crew session is never asked", () => {
+  const input = (command: string, tool = "Bash"): HookInput => ({
+    hook_event_name: "PreToolUse",
+    tool_input: { command },
+    tool_name: tool,
+  });
+  const context = (env: Record<string, string>): HookEnvContext => ({
+    env,
+    nowMs: 0,
+    paths: cliPaths(env),
+  });
+  const decisionOf = (result: HookResult | null) =>
+    JSON.parse(result?.stdout ?? "{}").hookSpecificOutput;
+
+  it("a `claude -p` launch the policy questions: refused in a crew session, asked for a person", () => {
+    const env = hookEnv();
+    const command = "claude -p --model opus --effort max 'do it'";
+    // The person's own session asks about the model and effort.
+    const person = decisionOf(judgeCommandAnswer(input(command), context(env)));
+    expect(person.permissionDecision).toBe("ask");
+    const crew = decisionOf(
+      judgeCommandAnswer(input(command), context({ ...env, [CREW_ENV]: "B2-api-aaaaaa" })),
+    );
+    expect(crew.permissionDecision).toBe("deny");
+    expect(crew.permissionDecisionReason).toContain("nobody to answer");
+    expect(crew.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
+  });
+
+  it("a heavy command beside a broken or too new project file: refused, with the step", () => {
+    const env = hookEnv();
+    const command = "bunx vitest run src/a.test.ts";
+    const why =
+      "cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: the file needs a newer plugin";
+    expect(
+      jobRouteConfigAnswer("the file needs a newer plugin", input(command), context(env)),
+    ).toEqual({
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: why,
+        },
+      }),
+    });
+    expect(
+      jobRouteConfigAnswer(
+        "the file needs a newer plugin",
+        input(command),
+        context({
+          ...env,
+          [CREW_ENV]: "B2-api-aaaaaa",
+        }),
+      ),
+    ).toEqual({
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: `${why}\n${CREW_QUESTION_STEP}`,
+        },
+      }),
+    });
+  });
+
+  it("a light command, and a PowerShell heavy command: silence either way", () => {
+    const crew = { ...hookEnv(), [CREW_ENV]: "B2-api-aaaaaa" };
+    expect(jobRouteConfigAnswer("broken", input("git status"), context(crew))).toEqual({});
+    // The queue route is Bash only: a PowerShell line is never rewritten, so it never asks.
+    expect(
+      jobRouteConfigAnswer(
+        "broken",
+        input("bunx vitest run src/a.test.ts", "PowerShell"),
+        context(crew),
+      ),
+    ).toEqual({});
   });
 });

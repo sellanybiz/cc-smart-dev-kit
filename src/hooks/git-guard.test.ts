@@ -26,6 +26,7 @@ import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
   CREW_PUSH_REFUSAL,
   CREW_STEPS,
+  crewGitAnswer,
   DEFAULT_PROTECTED_BRANCHES,
   guardQuestions,
   guardVerdict,
@@ -1224,6 +1225,11 @@ const WORK_COMMANDS = [
     "A crew session never runs `git reset --hard`: it throws away every uncommitted change in this folder, and nobody is at the machine to answer the guard's question. Commit the work in progress first; `git reset --soft <commit>` moves the branch and keeps the changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
   ],
   [
+    "git reset --merge HEAD~1",
+    "`git reset --merge` throws away changes that are staged but not committed: a staged change to a tracked file goes back to the target version, and a staged new file is deleted from the folder (measured). Your working files are kept: it refuses rather than overwrite one whose working copy differs from the target, including a file with both staged and unstaged changes (measured on git 2.53). Approve only if you want the staged work gone; a WIP commit keeps it first.",
+    CREW_STEPS.resetMerge,
+  ],
+  [
     "git clean -f",
     "`git clean -f` deletes untracked files for good: git cannot bring them back. `git clean -n` shows what it would delete, without deleting.",
     "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody is at the machine to answer the guard's question. Run `git clean -n` and read the list first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
@@ -1324,5 +1330,49 @@ describe("CC6: a crew session is denied, never asked, before a command that dest
       decision: "deny",
       reason: CREW_STEPS.resetHard,
     });
+  });
+
+  it("CC8: git reset --keep loses no working file, so it asks nobody and is never refused", async () => {
+    // Measured on git 2.53: --keep never overwrites a working file (it refuses instead), and a
+    // staged change becomes unstaged when the target does not touch the file. It does reset
+    // the index, so a version staged and not also in the working file is dropped — the crew
+    // step says to commit it first — but no working file is lost, so there is no question to
+    // put to a person and no step to name for a crew session.
+    const { env, repo } = policyRepo();
+    for (const command of ["git reset --keep HEAD~1", "git reset --keep", "git reset --ke HEAD"]) {
+      expect([command, await pushAnswer(env, repo, command)]).toEqual([command, null]);
+      expect([command, await pushAnswer({ ...env, ...CREW }, repo, command)]).toEqual([
+        command,
+        null,
+      ]);
+    }
+  });
+
+  it("CC8: with the tool unknown, the crew part reads both dialects on its own", async () => {
+    // PowerShell reads its own curly quotes (“ ”) as quoting; Bash does not. The crew part
+    // passes no dialect when the tool is not told, so it reads both — exactly as the guard's
+    // own run does — and sees the reset.
+    const { env, repo } = policyRepo();
+    const command = "git reset “--hard”";
+    const call = (tool?: string) => ({
+      hook_event_name: "PreToolUse",
+      tool_input: { command },
+      ...(tool === undefined ? {} : { tool_name: tool }),
+    });
+    const crew = { ...env, ...CREW };
+    const answerOf = (result: unknown) =>
+      JSON.parse((result as { stdout?: string }).stdout ?? "{}").hookSpecificOutput;
+    expect(answerOf(crewGitAnswer(call("SomeTool"), crew, repo))).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: CREW_STEPS.resetHard,
+    });
+    // Told PowerShell, the part reads that dialect alone and still denies; told Bash, the
+    // same line is no reset it can read, so the part stays silent (the guard's own run, which
+    // reads both, is what answers a hook call).
+    expect(answerOf(crewGitAnswer(call("PowerShell"), crew, repo)).permissionDecision).toBe("deny");
+    expect(crewGitAnswer(call("Bash"), crew, repo)).toEqual({});
+    // Through the whole hook, a call whose tool is unknown is denied too.
+    expect((await pushAnswer(crew, repo, command, "SomeTool"))?.decision).toBe("deny");
   });
 });

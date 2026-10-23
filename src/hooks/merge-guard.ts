@@ -14,7 +14,9 @@
  *   command, a wrapper, an alias, a branch or URL instead of a number, an unknown flag, an
  *   armed `--auto` merge that lands later) stays silent when the policy passes, as before, and
  *   auto mode's own rule still applies to it.
- *   **A crew session never gets `allow`** (D24: it never merges — the lead does).
+ *   **A crew session never gets `allow`** (D24: it never merges — the lead does), and every
+ *   question below is a denial for it instead: nobody is at the machine to answer, and the
+ *   step is the same for every one of them — commit on the branch, and the lead merges.
  * - `ask` — for every other merge the policy does not allow, with the reason. **The judgment
  *   itself is one home:** `src/workflow/merge-check.ts` (`checkPullRequest`), which
  *   `cc-smart-dev-kit workflow merge-check` prints too.
@@ -61,11 +63,12 @@
  * `worktrees.bases` prefix mapping for the head branch — and one with no `--base` when the
  * repository's default branch is not that base (read with `gh repo view`, then git's
  * `origin/HEAD`). The question names both branches; the person may mean it. **And a crew
- * session opens no pull request at all** (D24): `gh pr create` pushes the branch, so it is denied, whatever `openPr`
- * says (`CC_SMART_DEV_KIT_CREW` is set in a crew session's environment). That refusal is the
- * guard's **crew part** (`crewPrAnswer`, `HookSpec.crewLimits`): the frame runs it before
- * `ownHooks` and before the project's file, so no project — one with no file, or one whose
- * `ownHooks` names `merge-guard` — can lose it.
+ * session opens no pull request and merges none** (D24): `gh pr create` pushes the branch, so
+ * it is denied, whatever `openPr` says, and every question this guard would put before a merge
+ * is one denial whose step is the lead's local merge. That is the guard's **crew part**
+ * (`crewPullRequestAnswer`, `HookSpec.crewLimits`): the frame runs it before `ownHooks` and
+ * before the project's file, so no project — one with no file, or one whose `ownHooks` names
+ * `merge-guard` — can lose it.
  *
  * Every merge in the command is judged, in the order it runs them — `gh pr merge 5 && gh pr
  * merge 6` checks both — and the first the policy does not allow asks, naming its pull
@@ -116,7 +119,6 @@ import {
   type MergeCall,
   pullRequestCallsWithAliases,
   pullRequestMerges,
-  pullRequestOpenings,
   repositoryKey,
   requestsPullRequestChange,
 } from "./after-merge";
@@ -142,20 +144,35 @@ export const CREW_PR_REFUSAL =
   "at your commit and say so in your report.";
 
 /**
- * The guard's crew part (D24): a crew session opens no pull request, whatever `openPr` says.
- * The forms are the guard's own reader's (`pullRequestOpenings`, and the aliases
- * `pullRequestCallsWithAliases` expands), so an alias that expands to `gh pr create` is
- * denied here exactly as it is denied in `mergeGuard`, and so is a program the line works out
- * when it runs whose words name an opening or a merge (`computedPullRequestRisk`). The frame
- * runs this before `ownHooks` and before the project's file, so a project with no
- * `cc-smart-dev-kit.json`, or one whose `ownHooks` names `merge-guard`, keeps the refusal.
- *
- * A merge the reader can name is none of this part's business: `mergeGuard` judges it (and a
- * crew session is never answered `allow` for one). Only a computed program's words, which
- * cannot be told apart as an opening or a merge, are denied here. Not a crew session, or a
- * line with nothing to judge: silence.
+ * Why a crew session's `gh pr merge` is denied (D24): nobody is at the machine to answer the
+ * guard's question, and no answer would change the step — it never merges. It covers every
+ * question the guard puts for a merge (the policy off, `--admin`, another repository, a check
+ * that is not green, no covering review, a policy or a form it cannot read, its own budget),
+ * because each one ends at the same step.
  */
-export function crewPrAnswer(input: HookInput, env: Env, cwd: string): HookResult {
+export const CREW_MERGE_REFUSAL =
+  "A crew session never merges a pull request: nobody is at the machine to answer the guard's " +
+  "question, and the step is the same without one. It commits on its own branch, and the lead " +
+  "merges that branch locally (`git merge`). Stop at your commit and say so in your report.";
+
+/**
+ * The guard's crew part (D24): a crew session opens no pull request, whatever `openPr` says,
+ * and merges none, whatever `autoMerge` says. The forms are the guard's own reader's
+ * (`pullRequestCalls`, and the aliases `pullRequestCallsWithAliases`
+ * expands), so an alias that expands to `gh pr create` or `gh pr merge` is refused here exactly
+ * as `mergeGuard` refuses it, and so is a program the line works out when it runs whose words
+ * name an opening or a merge (`computedPullRequestRisk`). **Every question the guard would put
+ * for a merge is the merge refusal here**, naming the step: a crew session is never asked, and
+ * commits on its branch for its lead to merge. The frame runs this before `ownHooks` and
+ * before the project's file, so a project with no `cc-smart-dev-kit.json`, or one whose
+ * `ownHooks` names `merge-guard`, keeps the refusals.
+ *
+ * A `--disable-auto` merge lands nothing (it takes an armed merge back), so it is no merge
+ * here: it stays silent, as it does for anyone.
+ *
+ * Not a crew session, or a line with nothing to judge: silence.
+ */
+export function crewPullRequestAnswer(input: HookInput, env: Env, cwd: string): HookResult {
   if (crewIdOf(env) === null) return SILENT;
   const command = stringField(toolInput(input).command);
   if (command === null) return SILENT;
@@ -166,11 +183,18 @@ export function crewPrAnswer(input: HookInput, env: Env, cwd: string): HookResul
   // A program the line works out when it runs (`$GH pr create`, `$(which gh) pr create`)
   // cannot be named: its words name an opening or a merge, which a crew session never does
   // (D24), so it is denied here rather than left to the guard's project part (F5-1).
+  // A program named at run time cannot be read, but its words can: a merge is the merge
+  // refusal, and any other pull request change the opening refusal.
+  if (computedMergeRisk(command, dialect)) return toolDecision("deny", CREW_MERGE_REFUSAL);
   if (computedPullRequestRisk(command, dialect)) return toolDecision("deny", CREW_PR_REFUSAL);
-  if (pullRequestOpenings(command, null, dialect).length > 0) {
-    return toolDecision("deny", CREW_PR_REFUSAL);
-  }
+  // Every call the reader finds, with a `gh <word>` alias expanded (`gh np` may be a create,
+  // and `gh mg` a merge), so each one is refused by what it really does:
+  // - a merge (or a word that may expand to one) is the merge refusal;
+  // - an opening is the pull request refusal.
   const calls = pullRequestCallsWithAliases(command, cwd, env, ALIAS_LIMIT_MS, dialect);
+  if (calls.some((one) => isMerge(one) && !one.disarms)) {
+    return toolDecision("deny", CREW_MERGE_REFUSAL);
+  }
   return calls.some((one) => !isMerge(one)) ? toolDecision("deny", CREW_PR_REFUSAL) : SILENT;
 }
 
@@ -275,21 +299,27 @@ export async function mergeGuard(context: HookContext): Promise<HookResult> {
   // A project that never opted in must not notice the plugin (`.claude/rules/hooks.md`):
   // the policy it would judge with lives in the project's own file. (A crew session's
   // opening refusal is not here: the guard's crew part already answered it before the file,
-  // `crewPrAnswer`.)
+  // `crewPullRequestAnswer`.)
   if (config === null) return SILENT;
+  // A crew session is never asked (D24): nobody is at the machine, and every question about a
+  // merge ends at the same step — it commits on its branch and the lead merges. So each question
+  // below is that refusal instead. The crew part (`crewPullRequestAnswer`) has already refused
+  // every merge it can read; this is the belt for a spelling it missed.
+  const crew = crewIdOf(env) !== null;
+  const refuseMerge = (why: string): HookResult =>
+    crew ? toolDecision("deny", CREW_MERGE_REFUSAL) : toolDecision("ask", why);
+  const refuseOpening = (why: string): HookResult =>
+    crew ? toolDecision("deny", CREW_PR_REFUSAL) : toolDecision("ask", why);
   // A program the line works out when it runs cannot be named: the guard asks.
   if (computedMergeRisk(command, dialect)) {
-    return toolDecision("ask", notByItself(COMPUTED_MERGE));
+    return refuseMerge(notByItself(COMPUTED_MERGE));
   }
-  // The crew bit here is only for the `allow` below: a crew session never merges by itself
-  // (D24), and an `allow` skips auto mode's own rule.
-  const crew = crewIdOf(env) !== null;
   // `--admin` asks whatever the policy says, so it is read first, from the line alone: no
   // policy, no gh, and the question names the real risk even where the policy would ask anyway.
   // (A merge an alias runs is read below, once its expansion is known.)
   const admin = adminMerge(pullRequestMerges(command, null, dialect));
   if (admin !== undefined) {
-    return toolDecision("ask", notByItself(adminRefusal(admin.target?.ref ?? null)));
+    return refuseMerge(notByItself(adminRefusal(admin.target?.ref ?? null)));
   }
 
   // One deadline for the whole run (`budget.ts`: a killed hook blocks nothing, so an overrun
@@ -383,15 +413,14 @@ export async function mergeGuard(context: HookContext): Promise<HookResult> {
     try {
       early = gateOf(integration);
     } catch (error) {
-      return toolDecision("ask", notByItself(workflowUnread(error)));
+      return refuseMerge(notByItself(workflowUnread(error)));
     }
-    if (early === "late")
-      return toolDecision("ask", notInTime(`the policy committed on ${integration}`));
-    if (!early.ok) return toolDecision("ask", notByItself(policyUnread(integration, early.why)));
+    if (early === "late") return refuseMerge(notInTime(`the policy committed on ${integration}`));
+    if (!early.ok) return refuseMerge(notByItself(policyUnread(integration, early.why)));
     // The project runs its own merge guard, as its committed policy says: that one answers.
     if (early.gate.config?.ownHooks?.includes("merge-guard") === true) return SILENT;
     const off = autoMergeOff(early.gate.resolved, integration);
-    if (off !== null) return toolDecision("ask", notByItself(off));
+    if (off !== null) return refuseMerge(notByItself(off));
   }
 
   // The one judgment, shared with `workflow merge-check` (`src/workflow/merge-check.ts`).
@@ -426,38 +455,40 @@ export async function mergeGuard(context: HookContext): Promise<HookResult> {
   for (const merge of merges) {
     const number = numericRef(merge.target?.ref ?? null);
     if (merge.admin) {
-      return toolDecision("ask", notByItself(adminRefusal(merge.target?.ref ?? null)));
+      return refuseMerge(notByItself(adminRefusal(merge.target?.ref ?? null)));
     }
-    if (merge.unread !== null) return toolDecision("ask", notChecked(merge.unread, env));
-    if (merge.refusal !== null) return toolDecision("ask", notByItself(merge.refusal, number));
+    if (merge.unread !== null) return refuseMerge(notChecked(merge.unread, env));
+    if (merge.refusal !== null) return refuseMerge(notByItself(merge.refusal, number));
     const target = merge.target;
     if (target === null) continue;
     // The policy covers this project's own repository only: a merge that names another one
     // asks, whatever the facts say (and the origin is read once, only when one is named).
     if (target.repo !== null) {
       const foreign = foreignReason(target.repo);
-      if (foreign.late) return toolDecision("ask", notInTime("this project's own repository"));
+      if (foreign.late) return refuseMerge(notInTime("this project's own repository"));
       if (foreign.reason !== null) {
-        return toolDecision("ask", notByItself(foreign.reason, number));
+        return refuseMerge(notByItself(foreign.reason, number));
       }
     }
     const verdict = await checkPullRequest(world, target, defaultBranches);
-    if (verdict.kind === "silent") return SILENT;
-    if (verdict.kind !== "allowed") return toolDecision("ask", askFor(verdict, env));
+    // A crew session never merges: even a merge no policy covers is refused (D24).
+    if (verdict.kind === "silent") {
+      return crew ? toolDecision("deny", CREW_MERGE_REFUSAL) : SILENT;
+    }
+    if (verdict.kind !== "allowed") return refuseMerge(askFor(verdict, env));
     allowed = verdict.reason;
   }
 
   // Then every pull request the command opens or readies (D16): `openPr` decides.
   for (const opening of openings) {
     if (opening.refusal !== null) {
-      return toolDecision("ask", notOpenedByItself(opening, opening.refusal));
+      return refuseOpening(notOpenedByItself(opening, opening.refusal));
     }
     const repo = opening.target?.repo ?? null;
     if (repo !== null) {
       const foreign = foreignReason(repo);
       if (foreign.late) {
-        return toolDecision(
-          "ask",
+        return refuseOpening(
           notOpenedByItself(
             opening,
             "reading this project's own repository would have taken longer than the guard's own budget allows",
@@ -465,18 +496,17 @@ export async function mergeGuard(context: HookContext): Promise<HookResult> {
         );
       }
       if (foreign.reason !== null) {
-        return toolDecision("ask", notOpenedByItself(opening, foreign.reason));
+        return refuseOpening(notOpenedByItself(opening, foreign.reason));
       }
     }
     let read: GateRead | "late";
     try {
       read = gateOf(integration);
     } catch (error) {
-      return toolDecision("ask", notOpenedByItself(opening, workflowUnread(error)));
+      return refuseOpening(notOpenedByItself(opening, workflowUnread(error)));
     }
     if (read === "late") {
-      return toolDecision(
-        "ask",
+      return refuseOpening(
         notOpenedByItself(
           opening,
           "reading the policy would have taken longer than the guard's own budget allows",
@@ -484,8 +514,7 @@ export async function mergeGuard(context: HookContext): Promise<HookResult> {
       );
     }
     if (!read.ok) {
-      return toolDecision(
-        "ask",
+      return refuseOpening(
         notOpenedByItself(opening, policyUnread(integration, read.why, "openPr policy")),
       );
     }
@@ -495,23 +524,26 @@ export async function mergeGuard(context: HookContext): Promise<HookResult> {
       draft: opening.draft === true,
       kind: opening.opens ?? "create",
     });
-    if (why !== null) return toolDecision("ask", notOpenedByItself(opening, why));
+    if (why !== null) return refuseOpening(notOpenedByItself(opening, why));
     // WA1: a `gh pr create` outside the base its head branch belongs to asks, never denies:
     // the person may mean it.
     const outside = await opensOutsideBase(opening, read.gate.config?.worktrees);
     if (outside === "late") {
-      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_LATE));
+      return refuseOpening(notOpenedByItself(opening, OPENING_DEFAULT_LATE));
     }
     if (outside === "unread") {
-      return toolDecision("ask", notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
+      return refuseOpening(notOpenedByItself(opening, OPENING_DEFAULT_UNREAD));
     }
-    if (outside !== null) return toolDecision("ask", notOpenedByItself(opening, outside));
+    if (outside !== null) return refuseOpening(notOpenedByItself(opening, outside));
   }
   // D31: an exact `gh pr merge <n>` the whole policy allowed skips auto mode's "Merge Without
   // Review" rule for the call. Any other passing line stays silent, as before. A crew session
-  // is never allowed: it never merges.
+  // is never allowed, and never merges: the merge is refused (D24).
   if (allowed !== null && !crew && exactMergeOf(command, dialect) !== null) {
     return toolDecision("allow", allowed);
+  }
+  if (crew && (merges.length > 0 || openings.length > 0)) {
+    return toolDecision("deny", merges.length > 0 ? CREW_MERGE_REFUSAL : CREW_PR_REFUSAL);
   }
   return SILENT;
 }
