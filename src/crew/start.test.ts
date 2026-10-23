@@ -1100,6 +1100,47 @@ describe("a name already in use", () => {
     expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(1);
   });
 
+  test("the same name, from two slugs a long name cuts to the same words", async () => {
+    // The longest tag (12), plan (16) and phase (8) leave the slug 19 characters, so two slugs
+    // that share a prefix longer than that make the SAME name. The branches differ — the branch
+    // check passes — and the name does not, so `crew answer`, `crew tell` and `findNamed` would
+    // reach whichever session they found first. The name is an address: it may not be shared.
+    const world = await ledWorld();
+    world.writeConfig({ tag: "my-app-tools" });
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app-tools release-2026-q4",
+        plan: "release-2026-q4-big",
+        repo: world.repo,
+        sessionId: LEAD_SESSION,
+        tag: "my-app-tools",
+      },
+      T0,
+    );
+    const args = (slug: string) => [
+      "start",
+      "E1a-E1b",
+      "--slug",
+      slug,
+      "--kind",
+      "build",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(args("review-fixes-for-the-guard"), world.ctx())).toBe(0);
+    const held = "C my-app-tools release-2026-q4 E1a-E1b review-fixes-for-the";
+    expect(onlyCrew(world.paths.stateDir, world.repo).name).toBe(held);
+    world.err.length = 0;
+    expect(await runCrew(args("review-fixes-for-the-merge"), world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      `crew start: ${held} is recorded already, starting, on crew/E1a-E1b-review-fixes-for-the-guard`,
+      `Fix: pick a shorter --slug, so this phase's name is not cut to the same words, or remove it first (${COMMAND} crew rm "${held}")`,
+    ]);
+    expect(listCrew(world.paths.stateDir, world.repo).records).toHaveLength(1);
+  });
+
   test("the branch is there already", async () => {
     const world = await ledWorld();
     git(world.repo, "branch", "crew/B6b-portal-live");

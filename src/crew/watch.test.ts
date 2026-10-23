@@ -25,6 +25,7 @@ import {
   readCrew,
   readWatchState,
   type WatchState,
+  updateCrew,
   writeLead,
   writeStoreFile,
 } from "./store";
@@ -1011,6 +1012,137 @@ describe("crew watch", () => {
     expect(
       listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)?.state,
     ).toBe("queued");
+  });
+
+  /** A working crew session of another phase, holding one place. */
+  async function holderCrew(world: Awaited<ReturnType<typeof leadWorld>>) {
+    return await addCrew(world, "working", {
+      branch: "crew/B6a-x",
+      id: "B6a-x-111111",
+      name: "C my-app B6a x",
+      phase: "B6a",
+      shortId: "bbbb2222",
+      sessionId: "bbbb2222-2222-3333-4444-555555555555",
+      slug: "x",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6a-x"),
+    });
+  }
+
+  /** A step event of the lead's crew session, so a pass that says it ends a `--once`. */
+  async function stepEvent(world: Awaited<ReturnType<typeof leadWorld>>): Promise<void> {
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "committed",
+        type: "step",
+        crew: ID,
+      },
+      T0,
+    );
+  }
+
+  /** The state of the queued crew session of the world. */
+  function queuedState(world: Awaited<ReturnType<typeof leadWorld>>): string | undefined {
+    return listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)
+      ?.state;
+  }
+
+  /** The agent view of the world's holder crew session, so no pass reads a real transcript. */
+  const HOLDER_VIEW = agentsJson([
+    agentRowOf({ id: "bbbb2222", sessionId: "bbbb2222-2222-3333-4444-555555555555" }),
+  ]);
+
+  test("D60: a cap the person lowers reaches the next pass of the same watch", async () => {
+    // The watch read the workflow once, before its loop, and passed that value to every pass:
+    // on 2026-10-23 the owner set `crew.max 16` (the CPU was 5x overloaded) and every lead's
+    // watch went on starting queued phases up to the old 24. A cap is the person's answer to
+    // what the machine can take, so each pass reads it again.
+    const world = await leadWorld();
+    world.writeConfig({ max: 2 });
+    await holderCrew(world);
+    const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
+    const ctx = world.ctx(
+      {
+        sleep: async () => {
+          // Between two passes the wait clears and the cap drops to what already runs: the
+          // second pass must start nothing. On the value read once, it would start on max 2.
+          world.writeConfig({ max: 1 });
+          await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
+          await stepEvent(world);
+        },
+      },
+      { FAKE_AGENTS_JSON: HOLDER_VIEW },
+    );
+    expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
+    expect(queuedState(world)).toBe("queued");
+    // The step is what ended it: the watch ran a second pass.
+    expect(world.out).toEqual([`${NAME}: committed`]);
+  });
+
+  test("D60: a cap the person raises reaches the next pass of the same watch", async () => {
+    // The other way round, and the same rule: a value that was read is never kept past a
+    // successful read — the second pass starts the queued crew session on the new cap.
+    const world = await leadWorld();
+    world.writeConfig({ max: 1 });
+    await holderCrew(world);
+    const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
+    const ctx = world.ctx(
+      {
+        sleep: async () => {
+          world.writeConfig({ max: 2 });
+          await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
+          // A line for the second pass to say either way, so the `--once` ends on it: what is
+          // asserted is the start itself, not the line.
+          await stepEvent(world);
+        },
+      },
+      { FAKE_AGENTS_JSON: HOLDER_VIEW },
+    );
+    expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(queuedState(world)).toBe("starting");
+    expect(world.out).toEqual([
+      `${NAME}: committed`,
+      `${NAME}: starting — started from the queue`,
+    ]);
+  });
+
+  test("D60: a workflow that cannot be read keeps the last good caps, and says so once", async () => {
+    // A project file broken while a lead's watch runs must not stop the watch, and must not
+    // quietly widen the caps either: the last good value stands for that pass, one line says
+    // what happened, and a later pass that fails the same way says nothing more.
+    const world = await leadWorld();
+    world.writeConfig({ max: 1 });
+    await holderCrew(world);
+    const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
+    let passes = 0;
+    const ctx = world.ctx(
+      {
+        sleep: async () => {
+          passes += 1;
+          if (passes > 1) {
+            await stepEvent(world);
+            return;
+          }
+          writeFileSync(join(world.repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
+          // The wait clears as well: only the cap that was read and kept holds it back now.
+          await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
+        },
+      },
+      { FAKE_AGENTS_JSON: HOLDER_VIEW },
+    );
+    expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
+    expect(world.err.length).toBe(1);
+    expect(world.err[0]).toStartWith("crew watch: ");
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
+    expect(queuedState(world)).toBe("queued");
+    expect(world.out).toEqual([`${NAME}: committed`]);
   });
 
   test("D25: a queued crew session waits for the merge of its phase, not for its report", async () => {

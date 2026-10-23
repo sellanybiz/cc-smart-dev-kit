@@ -38,7 +38,7 @@ import {
   wrongFolderReason,
 } from "./crew-role";
 import type { HookResult } from "./io";
-import { addContext, toolDecision } from "./io";
+import { addContext, addContextAndTitle, toolDecision } from "./io";
 import { crewRoleHook } from "./specs";
 
 const CREW_ID = "W2-x-1a2b3c";
@@ -1160,6 +1160,60 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
       type: "person",
       version: 1,
     });
+  });
+
+  test("a title that is not the record's name: the record's name comes back", async () => {
+    // 1.1.1 let a crew session name itself after its task, and 1.1.2 refused new renames
+    // without setting the title back: the name its lead, `crew answer` and the message guard
+    // address it by stayed lost. The crew record is the one owner of the title.
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      { ...promptInput(world.repo, "a word"), session_title: "Fix the login page" },
+      world.env,
+    );
+    expect(result).toEqual(
+      addContextAndTitle(
+        "UserPromptSubmit",
+        "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
+        "C app W2 hooks",
+      ),
+    );
+    expect(personEvents(world.stateDir, world.repo).length).toBe(1);
+  });
+
+  test("a title that is the record's name already: nothing about it", async () => {
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      { ...promptInput(world.repo, "a word"), session_title: "C app W2 hooks" },
+      world.env,
+    );
+    expect(result).toEqual(
+      addContext(
+        "UserPromptSubmit",
+        "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
+      ),
+    );
+  });
+
+  test("the lead's own delivery, with a title that is not the record's: the name alone", async () => {
+    // A crew session its lead drives gets no person prompt at all, so the name comes back on
+    // the turns that are the lead's too — one answer, the title and nothing else.
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      {
+        ...promptInput(
+          world.repo,
+          '<cross-session-message from="uds:/run/user/1001/cc-socks/1.sock" from-name="LEAD app plan" from-mode="prompting">\nthe port is 3210\n</cross-session-message>',
+        ),
+        session_title: "Fix the login page",
+      },
+      world.env,
+    );
+    expect(result).toEqual(addContextAndTitle("UserPromptSubmit", null, "C app W2 hooks"));
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
   });
 
   test("a message another session sent (SendMessage): silent, nothing recorded", async () => {
