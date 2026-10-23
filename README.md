@@ -1555,14 +1555,16 @@ project's own setting); then it shows "Working…" and the command's newest line
 beside the button — `✓` with what changed, or `✗ Not done:` with the command's own words,
 **Details** and **Try again**. The page is never reloaded to show it, so an edit elsewhere on the
 page is never lost. A page drawn from mock data (`?mock=` in its address, for a look at its other
-states) says "Mock data" in its header and sends nothing.
+states) says "Mock data" in its header and sends nothing. A page whose subject is not there (a
+crew session removed after its merge, an unknown project) says so and links back, with no
+**Try again**.
 
 The pages, each following the design the owner approved (2026-10-16):
 
 | Screen | What it shows |
 |---|---|
 | **Overview** | The traffic now: requests a minute, fallbacks, open breakers, the crew sessions running, and the plan's **5-hour window** as Claude Code's status line last recorded it (its share and when it resets; the 7-day windows are written nowhere, so none is shown). Requests and the estimated cost over time, the heavy-job queue at a glance, the newest of **Needs you**, and the three **switches** — the gateway, your own judge, the opus and fable slots — each asked first and saved at once. The fallbacks and the plan limits the router saw are tabs of the requests table. |
-| **Needs you** | Everything that waits for you, newest first: a crew session's question with its options (answer it here); a permission prompt in a session's terminal, with a **Copy** for its `claude attach <id>` command when the session is a crew session; each failing `doctor` check with its fix and the report group it belongs to; every open breaker with how many requests wait right now; and a held major update. |
+| **Needs you** | Everything that waits for you, newest first: a crew session's question with its options (answer it here); a permission prompt in a session's terminal, with a **Copy** for its `claude attach <id>` command when the session is a crew session; each failing `doctor` check with its fix and the report group it belongs to; every open breaker with how many requests wait right now; and a held major update. When the permission prompts cannot be read (the flow report did not run), the page says so and why, never an empty list. |
 | **Usage** | Tokens and the estimated cost over time, by slot, target, model and session, with each session's own totals under them. |
 | **Work** | Each lead with its crew sessions nested: each one's state and for how long, the files it owns, what it waits for, its model and slot, its newest line, its memory over time, and **Stop**, **Resume**, **Remove** and a **Copy** of its `claude attach` command. Under them, your other Claude Code sessions of this project from the last two days, with the model of their last reply and their state — working, waiting for your answer, idle, or ended — and a **Copy** of `claude --resume` for one that is not running. |
 | **A crew session's page** | Opened from Work: its brief, its steps, the diff against its base with each changed file's own lines, its memory over time, the merge check with the review and what that review still covers, the reviews recorded on its branch, and its hand-back report. |
