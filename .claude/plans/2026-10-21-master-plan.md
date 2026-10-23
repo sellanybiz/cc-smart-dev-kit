@@ -467,6 +467,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **CC8 merged** (`8599a72`, bundles `d5bf4f9`): in a crew session the merge, agent, job-route and session-escape guards' asks and the bun shim's no-bun ask are denies that name the step; a person's session keeps every ask; `git reset --merge` now asks a person where it can lose work; the matrix proves every crew refusal. Its Opus review found no fail-open. Integration: CC8's direct merge-guard test awaits the guard B8 made async. Left in a crew session only: a guard's own crash, non-JSON input, and `main-folder-guard`/`message-guard` on a broken project file.
 
+- 2026-10-23 (overnight): **CR1 merged** (`bf0fc57`, bundles `031647b`): every resume path (`crew resume`, `--paused`, `crew answer` to a stopped session, the watch) brings a crew session back with `claude --bg --resume <id>` from its worktree, with the session's own settings and the lean flags (one flag builder, `sessionFlags`), and a live session is messaged, never copied; an agent view it cannot read is unknown, never dead. One name finder: a name with one live and only removed others means the live one; `crew start` warns when a phase already has a live record. Proved by a test world: with two leads in one repo each lead's watch reads only its own crew. **The live probe is owed** (its exact `!` steps are in CR1's report, kept in the crew store): until it passes, continue a stuck crew session as a new round from its branch head.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
@@ -476,7 +478,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 5. Any crew session still waiting on a permission prompt (`claude attach <name>`).
 6. CC4's live proof, after 1.1.0 is installed: reply once in an interactive session, then `cat ~/.claude/cc-smart-dev-kit/context-window.json` — it must hold the session's model with `"size": 1000000` for claude-opus-5-5.
 7. CC3's after-number, after 1.1.0 is installed: start one crew session and read its first request's tokens (`src/crew/transcript.ts`'s reader); it proves `claude --bg` takes `--strict-mcp-config --mcp-config <file> --settings <file>` too (only `-p` was proved).
-8. Claude Code 2.1.309 is installed on this machine; the tested version is 2.1.308 (`.claude-code-version`). The `claude-code-upgrade` skill moves the plugin to it — its own session, after 1.1.0.
+8. CR1's resume probe (the exact `!` steps are in its report, `~/.claude/cc-smart-dev-kit/crew/<repo>/reports/CR1-resume-and-names-*.json`, `needsLead`): a scratch repo, a `--bg -w` session, then `respawn` vs `--bg --resume` from the worktree, with and without a prompt; it settles which form `crew resume` must run.
+9. Claude Code 2.1.309 is installed on this machine; the tested version is 2.1.308 (`.claude-code-version`). The `claude-code-upgrade` skill moves the plugin to it — its own session, after 1.1.0.
 
 ### Decided overnight (for the owner's review)
 
