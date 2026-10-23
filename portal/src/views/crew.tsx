@@ -336,18 +336,24 @@ function CrewPage({ data }: { data: CrewDetail }) {
         <StatCard
           label="Changed"
           value={
-            <span className="tabular-nums">
-              <span className="text-ok">+{count(added)}</span>{" "}
-              <span className="text-bad">−{count(removed)}</span>
-            </span>
+            diffError !== null ? (
+              "—"
+            ) : (
+              <span className="tabular-nums">
+                <span className="text-ok">+{count(added)}</span>{" "}
+                <span className="text-bad">−{count(removed)}</span>
+              </span>
+            )
           }
           headline={
             diffError !== null ? "The diff could not be read" : `${files} files against ${base}`
           }
           detail={
-            report !== null && report.outsideBrief.length > 0
-              ? `${report.outsideBrief.length} outside its brief`
-              : "All inside its brief"
+            report === null
+              ? "Its report names any file outside its brief"
+              : report.outsideBrief.length > 0
+                ? `${report.outsideBrief.length} outside its brief`
+                : "All inside its brief"
           }
         />
         <StatCard
@@ -396,7 +402,11 @@ function CrewPage({ data }: { data: CrewDetail }) {
             <CardDescription>What the lead asked of it.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Markdown>{data.brief}</Markdown>
+            {data.brief === "" ? (
+              <p className="text-sm text-muted-foreground">No brief file is kept for it.</p>
+            ) : (
+              <Markdown>{data.brief}</Markdown>
+            )}
           </CardContent>
         </Card>
         <Card>

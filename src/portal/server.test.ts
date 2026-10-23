@@ -37,13 +37,15 @@ import { askLogFile } from "../hooks/ask-log";
 import { currentFileHolder } from "../jobs/store";
 import type { Machine } from "../machine/machine";
 import { parseCcSmartDevKitConfig } from "../project/config";
+import { projectFolderName } from "../sessions/saved-sessions";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
 import { autoCleanFiles } from "../worktrees/auto-state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
-import { NO_SESSION_RECORDS } from "./api/projects";
+import { NO_SESSION_RECORDS, projectId } from "./api/projects";
+import { API_READS } from "./api/routes";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
@@ -681,6 +683,8 @@ describe("every answer", () => {
       backendPort: backend.port,
       backendUserinfo: "planted-user:PLANTED_PASSWORD",
       omniroute: "3.8.51",
+      // A project of its own, so the crew page and the project page have one to answer for.
+      projectFiles: {},
     });
     try {
       const first = await world.call("/");
@@ -690,6 +694,28 @@ describe("every answer", () => {
         // The masked form may appear; the whole key never does, nor the address's password.
         expect(page.body).not.toContain("PLANTED");
         expect(page.body).not.toContain("planted-user");
+      }
+      // Every JSON read route, from the route table itself, and the two with a name in the
+      // path: a page draws from these, so they hold no key and no password either.
+      await createCrew(world.paths.stateDir, crewFixture(world.cwd), Date.now());
+      // A session record in the project's folder: what lists it as a project.
+      const records = join(world.paths.projectsDir, projectFolderName(world.cwd));
+      mkdirSync(records, { recursive: true });
+      writeFileSync(
+        join(records, "s1.jsonl"),
+        `${JSON.stringify({ cwd: world.cwd, type: "user" })}\n`,
+      );
+      const reads = [
+        ...Object.keys(API_READS),
+        "/api/crew/crew-K-contracts",
+        `/api/projects/${projectId(world.cwd)}`,
+      ];
+      for (const path of reads) {
+        const answer = await world.call(path);
+        expect({ path, status: answer.status }).toEqual({ path, status: 200 });
+        expect(answer.body).not.toContain(KEY);
+        expect(answer.body).not.toContain("PLANTED");
+        expect(answer.body).not.toContain("planted-user");
       }
       // PB-7: the dashboard link is still there, at the address without its credential.
       expect((await world.call("/")).body).toContain(

@@ -18,7 +18,7 @@ function ConnectionPill() {
     <span
       role="status"
       className={cn(
-        "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium",
+        "inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-xs font-medium",
         live ? "text-muted-foreground" : "border-warn/40 bg-warn/10 text-warn",
       )}
     >
@@ -41,7 +41,7 @@ function RouterPill() {
   if (facts.status !== "ready") return null;
   const router = facts.data.router;
   return (
-    <span className="hidden h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs text-muted-foreground md:inline-flex">
+    <span className="hidden h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-xs text-muted-foreground lg:inline-flex">
       {router === null ? (
         "Gateway not set up"
       ) : (
@@ -73,14 +73,16 @@ export function SiteHeader() {
         <SidebarTrigger className="-ml-1" />
         <Separator orientation="vertical" className="mx-2 data-[orientation=vertical]:h-4" />
         <div className="flex min-w-0 items-baseline gap-3">
-          <h1 className="text-base font-medium">{item?.title ?? "Portal"}</h1>
+          <h1 className="shrink-0 whitespace-nowrap text-base font-medium">
+            {item?.title ?? "Portal"}
+          </h1>
           {item !== null && (
-            <p className="hidden truncate text-sm text-muted-foreground lg:block">{item.about}</p>
+            <p className="hidden truncate text-sm text-muted-foreground xl:block">{item.about}</p>
           )}
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {mounted && portalClient().kind === "mock" && (
-            <span className="inline-flex h-7 items-center rounded-full border border-warn/40 bg-warn/10 px-2.5 text-xs font-medium text-warn">
+            <span className="inline-flex h-7 shrink-0 items-center whitespace-nowrap rounded-full border border-warn/40 bg-warn/10 px-2.5 text-xs font-medium text-warn">
               Mock data
             </span>
           )}

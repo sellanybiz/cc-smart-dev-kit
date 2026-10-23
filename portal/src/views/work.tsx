@@ -274,7 +274,15 @@ const SESSION_TONE: Record<OtherSession["state"], Tone> = {
   ended: "info",
 };
 
-function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: number }) {
+function OtherSessions({
+  sessions,
+  now,
+  note,
+}: {
+  sessions: OtherSession[];
+  now: number;
+  note: null | string;
+}) {
   return (
     <Card className="gap-0 overflow-hidden py-0">
       <CardHeader className="border-b py-4">
@@ -283,6 +291,7 @@ function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: numbe
           Claude sessions of this project from the last two days that no lead started. A session
           that still runs is answered in its own terminal; resuming one opens a copy.
         </CardDescription>
+        {note === null ? null : <p className="text-warn text-sm">{note}</p>}
       </CardHeader>
       {sessions.length === 0 ? (
         <div className="p-6">
@@ -412,7 +421,7 @@ function WorkPage({ data }: { data: WorkData }) {
             <LeadCard key={entry.lead.sessionId} entry={entry} now={now} memory={data.memory} />
           ))
         )}
-        <OtherSessions sessions={data.others} now={now} />
+        <OtherSessions sessions={data.others} now={now} note={data.waitsNote} />
       </PagePad>
     </>
   );

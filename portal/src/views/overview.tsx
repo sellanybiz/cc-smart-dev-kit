@@ -238,7 +238,7 @@ function PlanCard({
       }
       detail={
         limit !== undefined
-          ? `${limit.model} ran out of its ${limit.claim} window`
+          ? `${limit.model} ran out of ${limit.claim}`
           : "From the status line; the 7-day windows are written nowhere"
       }
     />

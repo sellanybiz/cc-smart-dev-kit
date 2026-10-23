@@ -38,13 +38,7 @@ import { oneLine } from "../../gateway/plain-text";
 import { askLogFile } from "../../hooks/ask-log";
 import { locateCheckout, locateCheckoutAsync } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
-import {
-  FLOW_DAYS_KEPT,
-  OPEN_WAIT_MAX_AGE_MS,
-  type OpenWait,
-  openWaits,
-  readFlow,
-} from "../../sessions/flow";
+import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, type OpenWait } from "../../sessions/flow";
 import type { SavedSession } from "../../sessions/saved-sessions";
 import {
   type MergeVerdict as CheckVerdict,
@@ -56,6 +50,7 @@ import { autoCleanFiles, readRepoRecord } from "../../worktrees/auto-state";
 import { baseBranch } from "../../worktrees/command";
 import { scanWorktrees } from "../../worktrees/scan";
 import { routerFacts, shownDetail } from "../facts";
+import { openWaitsOffLoop, readFlowOffLoop } from "../flow-read";
 import { type PageDataDeps, updateFacts } from "../page-data";
 import {
   type BreakerNeed,
@@ -184,9 +179,11 @@ function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: nu
 }
 
 /** `/api/work`: the lead, its crew nested, and the other sessions of this project. */
-export function workAnswer(deps: PageDataDeps): WorkAnswer {
+export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   const found = repoOf(deps);
-  if ("note" in found) return { crew: [], lead: null, note: found.note, repo: null, sessions: [] };
+  if ("note" in found) {
+    return { crew: [], lead: null, note: found.note, repo: null, sessions: [], waitsError: null };
+  }
   const { repo } = found;
   const events = readCrewEvents(deps.action.portal.paths.stateDir, repo).events;
   const records = listCrew(deps.action.portal.paths.stateDir, repo).records;
@@ -221,16 +218,10 @@ export function workAnswer(deps: PageDataDeps): WorkAnswer {
   ).filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id));
   // The open permission prompts, read once (the flow report's own cache), only when a session
   // could be waiting on one.
-  const waiting = new Set(
-    others.some((session) => !session.endedCleanly)
-      ? openWaits(deps.action.portal.paths, {
-          nowMs: now,
-          project: null,
-          session: null,
-          sinceMs: now - OPEN_WAIT_MAX_AGE_MS,
-        }).map((wait) => wait.session)
-      : [],
-  );
+  const waits = others.some((session) => !session.endedCleanly)
+    ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS)
+    : { open: [] };
+  const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
   const sessions: SessionSummary[] = others.map((session) => ({
     branch: session.branch,
     folder: session.folder,
@@ -240,7 +231,14 @@ export function workAnswer(deps: PageDataDeps): WorkAnswer {
     name: session.name,
     state: sessionStateOf(session, waiting, now),
   }));
-  return { crew, lead, note: null, repo, sessions };
+  return {
+    crew,
+    lead,
+    note: null,
+    repo,
+    sessions,
+    waitsError: "error" in waits ? waits.error : null,
+  };
 }
 
 /** A merge verdict, in the API's own shape (the command's kinds). One home for every page. */
@@ -484,12 +482,9 @@ export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
       recommended: question.recommended,
     });
   }
-  const permissions: PermissionWait[] = openWaits(paths, {
-    nowMs: now,
-    project: null,
-    session: null,
-    sinceMs: now - OPEN_WAIT_MAX_AGE_MS,
-  }).map((wait) => permissionWaitOf(wait, records));
+  const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
+  const permissions: PermissionWait[] =
+    "open" in waits ? waits.open.map((wait) => permissionWaitOf(wait, records)) : [];
   const doctor = await deps.doctor();
   const update = updateFacts(deps.action).held;
   return {
@@ -510,6 +505,7 @@ export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
       ),
     },
     permissions,
+    permissionsError: "error" in waits ? waits.error : null,
     update,
   };
 }
@@ -794,18 +790,19 @@ export function worktreesAnswer(deps: PageDataDeps): WorktreesAnswer {
   }
 }
 
-/** `/api/flow?range=…`: the flow report for the window (one reader, `src/sessions/flow.ts`). */
-export function flowAnswer(deps: PageDataDeps, range: HistoryRange): FlowAnswer {
-  const now = deps.action.portal.now();
+/**
+ * `/api/flow?range=…`: the flow report for the window (one reader, `src/sessions/flow.ts`, run
+ * off the server's loop by `flow-read.ts`), or why it could not be read.
+ */
+export async function flowAnswer(
+  deps: PageDataDeps,
+  range: HistoryRange,
+): Promise<{ error: string } | FlowAnswer> {
   const wanted = HISTORY_RANGES[range];
   const kept = FLOW_DAYS_KEPT * 86_400_000;
-  const window = Math.min(wanted, kept);
-  const report = readFlow(deps.action.portal.paths, {
-    nowMs: now,
-    project: null,
-    session: null,
-    sinceMs: now - window,
-  });
+  const read = await readFlowOffLoop(deps.action.portal, Math.min(wanted, kept));
+  if ("error" in read) return read;
+  const { report } = read;
   return {
     from: report.sinceMs,
     note:

@@ -11,7 +11,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { slotName, targetModel } from "@/lib/format";
-import { HISTORY_RANGES, hasFilter, isRange } from "@/lib/history";
+import { HISTORY_RANGES, hasFilter, isRange, sessionLabel } from "@/lib/history";
 
 /** The range switch every chart uses: a toggle group on a wide page, a select on a narrow one. */
 export function RangeSwitch({
@@ -112,7 +112,7 @@ function optionsOf(keys: HistoryKeys | null) {
     models: (keys?.models ?? []).map((model) => ({ value: model, label: model })),
     sessions: (keys?.sessions ?? []).map((session) => ({
       value: session.id,
-      label: session.name ?? `${session.project} ${session.id.slice(0, 8)}`,
+      label: sessionLabel(session),
     })),
   };
 }

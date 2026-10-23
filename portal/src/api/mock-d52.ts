@@ -42,8 +42,9 @@ export function needsData(
   empty: boolean,
   breaker: OpenBreaker | undefined,
 ): NeedsData {
-  if (empty) return { items: [] };
+  if (empty) return { items: [], note: null };
   return {
+    note: null,
     items: [
       {
         kind: "question",

@@ -57,6 +57,7 @@ function NeedsPage({ data }: { data: NeedsData }) {
             <CardDescription>
               What it is, who it is about, since when, and what to do.
             </CardDescription>
+            {data.note === null ? null : <p className="text-warn text-sm">{data.note}</p>}
           </CardHeader>
           <CardContent>
             {/* Always the list: an answer just sent stays in it after its item is gone. */}

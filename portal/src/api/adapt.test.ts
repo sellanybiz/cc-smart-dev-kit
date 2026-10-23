@@ -198,6 +198,7 @@ describe("the adapters", () => {
       lead: null,
       note: null,
       repo: "/home/user/my-app",
+      waitsError: null,
       sessions: [],
     };
     const data = overviewOf(answer, work);
@@ -262,6 +263,7 @@ describe("the adapters", () => {
       },
       note: null,
       repo: "/home/user/my-app",
+      waitsError: null,
       sessions: [
         {
           branch: "main",
@@ -305,6 +307,7 @@ describe("the adapters", () => {
       lead: null,
       note: null,
       repo: "/home/user/my-app",
+      waitsError: null,
       sessions: [],
     });
     expect(data.leads.map((group) => [group.lead.name, group.crew.map((one) => one.id)])).toEqual([
@@ -457,6 +460,7 @@ describe("the adapters", () => {
           { fix: null, section: null, text: "something else" },
         ],
       },
+      permissionsError: null,
       permissions: [
         {
           asker: "git-guard",
@@ -941,5 +945,33 @@ describe("the B6d facts", () => {
       { blockedMs: 15_000, launches: 15, t: T0 },
       { blockedMs: 51_000, launches: 51, t: T0 + 6 * HOUR },
     ]);
+  });
+});
+
+describe("the flow report that did not run (B6e)", () => {
+  test("Needs you says the permission prompts are missing, and why", () => {
+    const data = needsOf(
+      {
+        breakers: [],
+        crew: [],
+        doctor: { at: null, failures: [] },
+        permissions: [],
+        permissionsError: "the flow report did not run (exit 3): no bun",
+        update: null,
+      },
+      "1.1.0",
+    );
+    expect(data).toEqual({
+      items: [],
+      note: "Permission prompts could not be read: the flow report did not run (exit 3): no bun",
+    });
+  });
+
+  test("Work says no session can show a wait, and why; none when the report ran", () => {
+    const answer = { crew: [], lead: null, note: null, repo: "/home/user/my-app", sessions: [] };
+    expect(workOf({ ...answer, waitsError: "the plugin is not installed" }).waitsNote).toBe(
+      "No session can show that it waits on a prompt: the plugin is not installed",
+    );
+    expect(workOf({ ...answer, waitsError: null }).waitsNote).toBe(null);
   });
 });

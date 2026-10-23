@@ -19,7 +19,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         Skip to the page
       </a>
       <AppSidebar variant="inset" />
-      <SidebarInset>
+      <SidebarInset className="min-w-0">
         <SiteHeader />
         <div id="main" tabIndex={-1} className="flex flex-1 flex-col outline-none">
           <div className="@container/main flex flex-1 flex-col gap-2">

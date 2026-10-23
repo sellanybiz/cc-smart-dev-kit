@@ -553,6 +553,7 @@ export interface WorkAnswer {
   note: null | string;
   repo: null | string;
   sessions: SessionSummary[];
+  waitsError: null | string;
 }
 
 export interface CrewStepItem {
@@ -711,6 +712,7 @@ export interface NeedsAnswer {
   crew: CrewNeed[];
   doctor: { at: null | number; failures: DoctorFailure[] };
   permissions: PermissionWait[];
+  permissionsError: null | string;
   update: null | { at: string; from: null | string; notes: string[]; version: string };
 }
 

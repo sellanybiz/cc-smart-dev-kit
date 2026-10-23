@@ -11,6 +11,7 @@ import {
   isBy,
   isRange,
   queryWithFilter,
+  sessionLabel,
 } from "@/lib/history";
 
 /** Session id → the name a person reads (its session name, else its project and short id). */
@@ -18,13 +19,7 @@ export function useSessionNames(): Map<string, string> {
   const keys = useResource((client) => client.historyKeys());
   const sessions = keys.status === "ready" ? keys.data.sessions : null;
   return useMemo(
-    () =>
-      new Map(
-        (sessions ?? []).map((session) => [
-          session.id,
-          session.name ?? `${session.project} ${session.id.slice(0, 8)}`,
-        ]),
-      ),
+    () => new Map((sessions ?? []).map((session) => [session.id, sessionLabel(session)])),
     [sessions],
   );
 }

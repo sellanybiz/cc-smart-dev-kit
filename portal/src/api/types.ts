@@ -304,6 +304,8 @@ export interface OtherSession {
 export interface WorkData {
   leads: { lead: LeadRecord; crew: CrewRecord[]; lastStep: Record<string, CrewEvent> }[];
   others: OtherSession[];
+  /** Why no session can say it waits on a prompt (the flow report did not run); null when it ran. */
+  waitsNote: null | string;
   /** Crew id → its memory over time, from the events log's `memoryMb` (`CrewEvent`). */
   memory: Record<string, { at: number; mb: number }[]>;
 }
@@ -717,6 +719,8 @@ export type NeedsItem =
 
 export interface NeedsData {
   items: NeedsItem[];
+  /** Why the permission prompts are missing from the list (the flow report did not run); null when they are not. */
+  note: null | string;
 }
 
 // ── A crew session's page (D52; planned: `GET /api/crew/<id>`) ────────────────────────
