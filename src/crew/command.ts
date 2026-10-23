@@ -95,7 +95,7 @@ Commands:
         [--files <glob,...>] [--model <model>] [--effort <effort>]
         [--waits-for <phase,...>] [--continue <crew session>]
                  Starts one crew session: a background Claude Code session named
-                 C <tag> <phase> <slug>, in its own worktree on the branch
+                 C <tag> <plan> <phase> <slug>, in its own worktree on the branch
                  crew/<phase>-<slug>, cut from --base or the lead's branch. It
                  returns at once: started, queued (the caps, the free memory, or
                  the phases it waits for), or failed, with the reason.

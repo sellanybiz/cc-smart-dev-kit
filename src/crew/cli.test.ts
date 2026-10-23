@@ -73,7 +73,7 @@ describe("crew through the CLI", () => {
     expect(started.err).toBe("");
     expect(started.code).toBe(0);
     expect(started.out).toBe(
-      `started C my-app B1 help (${SHORT_ID}) · sonnet high · crew/B1-help @ ${head}\n`,
+      `started C my-app master-plan B1 help (${SHORT_ID}) · sonnet high · crew/B1-help @ ${head}\n`,
     );
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     // `starting`: its own SessionStart hook says when it is in its worktree.

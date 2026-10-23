@@ -73,6 +73,8 @@ function leadMerges(repo: string, branch: string): void {
   git(repo, "merge", "--no-ff", "-m", "merge the crew session", branch);
 }
 
+/** Agent view still lists the crew session of the board world: a failed `claude rm` is a real failure. */
+const STILL_LISTED = JSON.stringify([{ id: "a1b2c3d4", state: "stopped", status: "idle" }]);
 describe("crew stop", () => {
   test("stops that one session, keeps the conversation, and the store says stopped", async () => {
     const world = await boardWorld();
@@ -516,7 +518,10 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     leadMerges(world.repo, branch);
 
     expect(
-      await runCrew(["rm", record.id], world.ctx({}, { FAKE_RM: "fail", FAKE_WORKTREE: worktree })),
+      await runCrew(
+        ["rm", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: STILL_LISTED, FAKE_RM: "fail", FAKE_WORKTREE: worktree }),
+      ),
     ).toBe(1);
     expect(world.out).toEqual([
       "stopped session a1b2c3d4",
@@ -544,8 +549,35 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     expect(world.claudeCalls()).toEqual([
       ["stop", "a1b2c3d4"],
       ["rm", "a1b2c3d4"],
+      ["agents", "--json", "--all"],
       ["rm", "a1b2c3d4"],
     ]);
+    expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
+      state: "removed",
+    });
+  });
+
+  test("`claude rm` of a session Claude Code no longer has: it was gone already, and the record goes", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew();
+    const { branch, worktree } = places(world.repo);
+    leadMerges(world.repo, branch);
+
+    // `claude rm` fails ("No job matching") and agent view lists no such session.
+    expect(
+      await runCrew(
+        ["rm", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: "[]", FAKE_RM: "fail", FAKE_WORKTREE: worktree }),
+      ),
+    ).toBe(0);
+    expect(world.out).toEqual([
+      "stopped session a1b2c3d4",
+      `removed ${worktree}`,
+      `deleted branch ${branch}`,
+      "session a1b2c3d4 was gone already",
+      "removed C my-app B1 help",
+    ]);
+    expect(world.err).toEqual([]);
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "removed",
     });
@@ -560,7 +592,12 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
     git(world.repo, "worktree", "remove", "--force", worktree);
     const other = join(world.repo, ".claude", "worktrees", "other");
     git(world.repo, "worktree", "add", other, branch);
-    expect(await runCrew(["rm", record.id], world.ctx({}, { FAKE_RM: "fail" }))).toBe(1);
+    expect(
+      await runCrew(
+        ["rm", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: STILL_LISTED, FAKE_RM: "fail" }),
+      ),
+    ).toBe(1);
     expect(world.out[1]).toStartWith(`kept branch ${branch}: `);
     expect(world.err).toEqual([
       "crew rm: claude rm a1b2c3d4 failed (exit 1): could not delete",
