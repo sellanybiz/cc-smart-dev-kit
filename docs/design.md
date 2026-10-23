@@ -954,7 +954,10 @@ Every line goes out on the stream as it is printed. The record is found on **the
 own folder's store would find nothing. `crew.answer` runs in a child too
 (`dist/cli.js crew answer --as-person -- <id> <text>`): a stopped crew session is resumed with
 a synchronous `claude --bg --resume`, so its path blocks as well; `--as-person` says the click
-is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. **No
+is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. The
+flag means no Claude Code session runs the command, so a session above it refuses the flag
+with one line — the portal's child has none, because the portal starts detached
+(`src/hooks/detached.ts`) and is reparented away from the session that started it. **No
 synchronous spawn is reachable from these five actions**, and no action ever forces anything.
 Two others are still owed a child, named here so the rule is never read as already true
 everywhere: `doctor.run` (its launcher and `claude --version` checks spawn synchronously,
