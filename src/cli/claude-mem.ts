@@ -82,7 +82,9 @@ function routeText(route: ClaudeMemCurrent["route"]): string {
   if (route.kind === "backend") {
     return `${route.model ?? "no model"} on ${route.target ?? route.address ?? route.provider} — ${sourceWords(route.source)}`;
   }
-  return `${route.provider}${route.model === null ? "" : `, its model ${route.model}`} — ${sourceWords(route.source)}`;
+  // Another provider, which the kit does not set: its own model is claude-mem's business, and the
+  // model the facts carry for it is the OpenAI-compatible one, which belongs to the fallback.
+  return `${route.provider} — ${sourceWords(route.source)}`;
 }
 
 /** The key as one line. Never the key itself: none, the gateway's own, or the person's. */

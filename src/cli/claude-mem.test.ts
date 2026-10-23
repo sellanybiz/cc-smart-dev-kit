@@ -6,12 +6,11 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { cliPaths } from "./paths";
-import { cliPaths as _unused } from "./paths";
-import { detectTerminal } from "./ui/terminal";
-import { createOut, textSink } from "./ui/out";
-import { type ClaudeMemDeps, runClaudeMem } from "./claude-mem";
 import { tempDir } from "../testing/temp";
+import { type ClaudeMemDeps, runClaudeMem } from "./claude-mem";
+import { cliPaths } from "./paths";
+import { createOut, textSink } from "./ui/out";
+import { detectTerminal } from "./ui/terminal";
 
 /** The key the gateway holds for its backend, and the one the person pastes. */
 const GATEWAY_KEY = "sk-gateway-PLANTED-0001";
@@ -65,11 +64,9 @@ function world(options: Options = {}) {
     );
   }
   mkdirSync(dirname(paths.claudeMemSettingsFile), { recursive: true });
-  writeFileSync(
-    paths.claudeMemSettingsFile,
-    JSON.stringify(options.settings ?? SEEDED, null, 2),
-    { mode: 0o644 },
-  );
+  writeFileSync(paths.claudeMemSettingsFile, JSON.stringify(options.settings ?? SEEDED, null, 2), {
+    mode: 0o644,
+  });
   mkdirSync(dirname(paths.gatewayConfigFile), { recursive: true });
   writeFileSync(
     paths.gatewayConfigFile,
@@ -89,7 +86,7 @@ function world(options: Options = {}) {
     },
     confirm:
       options.confirm === undefined || options.confirm === null
-        ? options.confirm ?? null
+        ? (options.confirm ?? null)
         : () => options.confirm === true,
     list: async () => {
       const models = options.models === undefined ? ["glm/flash", "scout/model"] : options.models;
@@ -97,7 +94,10 @@ function world(options: Options = {}) {
         ? { error: "it did not answer" }
         : { models: models.map((id) => ({ contextLength: null, id })), status: 200 };
     },
-    out: createOut(PLAIN, textSink((text) => lines.push(text))),
+    out: createOut(
+      PLAIN,
+      textSink((text) => lines.push(text)),
+    ),
     paths,
     read: async () => options.stdin ?? "",
   };
@@ -159,13 +159,20 @@ describe("claude-mem route and fallback", () => {
     const { checks, deps, printed, settings } = world();
     expect(await runClaudeMem(["route", "omniroute:glm/flash"], deps)).toBe(0);
     expect(checks).toEqual([
-      { apiKey: GATEWAY_KEY, backend: "omniroute", baseUrl: `${BACKEND_URL}/v1`, model: "glm/flash" },
+      {
+        apiKey: GATEWAY_KEY,
+        backend: "omniroute",
+        baseUrl: `${BACKEND_URL}/v1`,
+        model: "glm/flash",
+      },
     ]);
     expect(settings()).toMatchObject({
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: "glm/flash",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
     });
-    expect(printed()).toContain('~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "glm/flash"');
+    expect(printed()).toContain(
+      '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "" -> "glm/flash"',
+    );
     // A model the backend does not list: refused before any chat, by the same rule as the card.
     const other = world();
     expect(await runClaudeMem(["route", "omniroute:not-there"], other.deps)).toBe(1);

@@ -148,22 +148,22 @@ describe("PM1: the claude-mem actions", () => {
       ),
     );
     // What the person set by hand refuses the route, through the facts the card reads.
-    expect(await w.run("claudemem.route", { confirm: true, target: "omniroute:glm/flash" })).toEqual(
-      {
-        lines: [
-          'Nothing was saved: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "their-model" in ~/.claude-mem/settings.json, set by hand. Change it there, or remove it there to set it here.',
-        ],
-        ok: false,
-      },
-    );
+    expect(
+      await w.run("claudemem.route", { confirm: true, target: "omniroute:glm/flash" }),
+    ).toEqual({
+      lines: [
+        'Nothing was saved: CLAUDE_MEM_OPENAI_COMPAT_MODEL is "their-model" in ~/.claude-mem/settings.json, set by hand. Change it there, or remove it there to set it here.',
+      ],
+      ok: false,
+    });
     const before = w.settingsText();
     const taken = await w.run("claudemem.takeover", { confirm: true });
     expect(taken.ok).toBe(true);
     // Nothing in claude-mem's file changes: the values stay until the person picks another.
     expect(w.settingsText()).toBe(before);
-    expect(await w.run("claudemem.route", { confirm: true, target: "omniroute:glm/flash" })).toMatchObject(
-      { ok: true },
-    );
+    expect(
+      await w.run("claudemem.route", { confirm: true, target: "omniroute:glm/flash" }),
+    ).toMatchObject({ ok: true });
     expect(JSON.parse(w.settingsText()).CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("glm/flash");
   });
 

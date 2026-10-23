@@ -674,4 +674,20 @@ describe("a key cc-smart-dev-kit takes over, and one it gives back", () => {
     expect(readFileSync(file, "utf8")).toBe(before);
     expect(read(join(stateDir, "owned.json"))).toEqual({});
   });
+
+  test("release: a value the person changed since is theirs, and is never written over", () => {
+    const { file, stateDir } = setup({ a: "theirs" });
+    applyManagedJson({ file, stateDir, claim: [[["a"], "theirs"]] });
+    // The person edits claude-mem's file by hand, after the take-over.
+    writeFileSync(file, `${JSON.stringify({ a: "their-newer-value" }, null, 2)}\n`);
+    const result = applyManagedJson({ file, stateDir, release: [[["a"], "theirs"]] });
+    expect(result.changes).toEqual([]);
+    expect(result.written).toBe(false);
+    expect(read(file).a).toBe("their-newer-value");
+    expect(result.skipped).toEqual([
+      { path: ["a"], reason: "changed since cc-smart-dev-kit managed it; left alone" },
+    ]);
+    // The claim goes with it: nothing of ours is left to take out of that key.
+    expect(read(join(stateDir, "owned.json"))).toEqual({});
+  });
 });

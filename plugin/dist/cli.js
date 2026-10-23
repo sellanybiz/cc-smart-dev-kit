@@ -1981,6 +1981,11 @@ function applyOnce(file, options, owned) {
   }
   for (const [path, value] of options.release ?? []) {
     const current = getKey(data, path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      dropped.push(path);
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
     dropped.push(path);
     released.push(path);
     if (current.found && Bun.deepEquals(current.value, value, true)) {
@@ -39924,7 +39929,7 @@ function routeText(route) {
   if (route.kind === "backend") {
     return `${route.model ?? "no model"} on ${route.target ?? route.address ?? route.provider} \u2014 ${sourceWords(route.source)}`;
   }
-  return `${route.provider}${route.model === null ? "" : `, its model ${route.model}`} \u2014 ${sourceWords(route.source)}`;
+  return `${route.provider} \u2014 ${sourceWords(route.source)}`;
 }
 function keyText(key) {
   const where = key.state === "none" ? "none" : key.state === "gateway" ? "the gateway's own key for that backend" : "your own key";

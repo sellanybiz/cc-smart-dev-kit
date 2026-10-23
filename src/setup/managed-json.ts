@@ -383,7 +383,8 @@ export function createdObjects(stateDir: string, file: string): (path: KeyPath) 
  *   becomes cc-smart-dev-kit's, and the record keeps the value it held (`was`), so `restore`
  *   writes that value back instead of removing a value cc-smart-dev-kit never wrote.
  * - `release` writes a value and gives the key up: the file holds it, nothing of cc-smart-dev-kit's
- *   is left there, and `restore` has nothing to remove.
+ *   is left there, and `restore` has nothing to remove. A key the person changed since it was
+ *   taken over keeps their value: the claim goes, their change stays.
  * - An object cc-smart-dev-kit created (`createdObject`) that a removal empties goes with its
  *   last key; an object the person had stays as it is, also when it is empty.
  * - No change means no write: no backup, no new file.
@@ -492,6 +493,14 @@ function applyOnce(
   // to remove, and a later setup sees the value as the person's again.
   for (const [path, value] of options.release ?? []) {
     const current = getKey(data, path);
+    // A key the person changed — or took away — since cc-smart-dev-kit took it over is theirs:
+    // writing the older value back would undo their own change. The claim goes with it, so a
+    // later restore has nothing of ours to take out of it.
+    if (ownership(ownedHere, path, current) !== "ours") {
+      dropped.push(path);
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
     dropped.push(path);
     released.push(path);
     if (current.found && Bun.deepEquals(current.value, value, true)) {

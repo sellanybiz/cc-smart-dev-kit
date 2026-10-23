@@ -12272,6 +12272,11 @@ function applyOnce(file, options, owned) {
   }
   for (const [path, value] of options.release ?? []) {
     const current = getKey(data, path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      dropped.push(path);
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
     dropped.push(path);
     released.push(path);
     if (current.found && Bun.deepEquals(current.value, value, true)) {
