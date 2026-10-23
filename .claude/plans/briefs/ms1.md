@@ -54,13 +54,31 @@ There is also no command for any of this outside the portal.
    provider means Claude, with `CLAUDE_MEM_MODEL` as its model. Make `status` and the card show
    that truthfully (for example "Claude (claude-mem's default), its model: <id>"), so the person
    sees the fallback is on and which Haiku it uses. Never write a model the person did not pick.
-4. **The portal's server side.**
+4. **The fallback can be another OmniRoute model** (the owner: "make sure claude-mem's fallback can
+   also change to another OmniRoute model they support"). That includes when the route itself is
+   an OmniRoute model through claude-mem's `openai-compatible` provider.
+   - **The catch:** in claude-mem 13.40.0, a fallback with the same provider as the route never
+     takes over, so `openai-compatible` → `openai-compatible` does nothing. Read in the worker:
+     - how the fallback picks its provider and model (`CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` /
+       `_MODEL`);
+     - whether its `openrouter` provider honours `CLAUDE_MEM_OPENROUTER_BASE_URL` (OmniRoute's
+       `/v1` speaks the same API) and `CLAUDE_MEM_OPENROUTER_MODEL`, and with which key setting.
+   - **If it does,** a backend fallback while the route is a backend uses that provider, pointed at
+     the same OmniRoute. The person picks the model from the same live list. The card's existing
+     "a backend model" fallback (`FallbackPart`), `chooseFallback` and the command then offer it in
+     every route. This is one rule in `claude-mem-choices.ts`.
+   - **If it does not,** say so in your report, show the refusal in words wherever the choice is
+     offered, and never offer a fallback that claude-mem would ignore.
+   - **Proof:** a test with claude-mem's real settings shape, plus a quote of the worker lines you
+     relied on, in your report and in a contract row (the companion section of
+     `docs/claude-code-contract.md`) with the version.
+5. **The portal's server side.**
    - The take-over action, which calls the same function.
    - The claude-mem answer says, per choice, whether it is refused because a value was set by hand,
      and that the take-over opens it.
    - Mirror the types in `portal/src/api/wire.ts` (`src/portal/api/wire-mirror.test.ts`).
    - **No UI changes:** MS2 does those.
-5. **Docs.**
+6. **Docs.**
    - `README.md`: § claude-mem from the portal, a new § for the command, and the command table.
    - `docs/design/`: the claude-mem page, from `docs/design.md`'s index.
    - `CHANGELOG.md`: one `## 1.2.0` bullet.
@@ -88,6 +106,7 @@ Run `bun install` in your own worktree. Never link another checkout's `node_modu
 
 1. Tests, each seen failing first:
    - the take-over records the old values, and `restore` puts them back;
+   - a backend fallback while the route is a backend (or its refusal, if claude-mem cannot);
    - a route change refused before the take-over succeeds after it;
    - each command and each of its refusals;
    - the key never reaches argv or output;
