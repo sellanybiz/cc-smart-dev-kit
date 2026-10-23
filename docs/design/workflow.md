@@ -154,6 +154,33 @@ disagrees with the guard, even while the checkout's file says something else; `w
 set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) refuses inside Claude Code, and
 the guard's "autoMerge is off" question says to commit the change to the base and push it.
 
+**A project's policy changes through a pull request** (D57, `src/workflow/propose.ts`).
+Because the gate is read from the base's committed file, a change that counts must be merged,
+and the plugin never writes the project's main checkout. `cc-smart-dev-kit workflow propose
+<setting> <value>` (and the portal's Workflow card, through the same command in a child):
+
+1. finds the project (`--folder`, else the current folder), its `worktrees.base`, and the
+   value the resolver holds now — one the project already sets, or an `--unset` of one it does
+   not, ends with one line and no branch;
+2. checks `gh` (`ghLoginState`: installed, and `gh api user` answers) and fetches
+   `origin/<base>` — both before anything is made;
+3. cuts a branch and a worktree from `origin/<base>`, named
+   `worktree-workflow-<setting>-<YYYYMMDD>` under the repository's `.claude/worktrees/`
+   (Claude Code's own layout, so the auto-clean removes it after the merge; the same day's
+   second change takes `-2`), and refuses when the base's own commit has no project file —
+   a change counts only once merged;
+4. writes the one value with `writeProjectSetting`, the writer `set --project` uses, inside
+   the worktree, and refuses unless the worktree's own `git status` shows the change: the
+   main checkout's file is never touched;
+5. commits (the person's identity, `workflow: <setting> <from> → <to>`), pushes, and opens
+   the pull request with `gh pr create` into the base, with a body saying it counts once
+   merged. `--json` prints `{ url, branch, worktree, setting, from, to }`.
+
+A step that fails after the branch exists takes the worktree, the branch, and the pushed
+branch back, and the line says what is left if any of that fails. Inside Claude Code a gate
+key refuses, as `set` does; outside it — a terminal, the portal — every key is allowed: the
+pull request's review is the gate.
+
 **Every merge of the line is judged**, in the order it runs them: `gh pr merge 5 && gh pr merge
 6` reads both, and the first the policy does not allow asks, naming that pull request
 (`mergeCalls`, in `after-merge.ts` — the one reader of a merge command line, on the one lexer

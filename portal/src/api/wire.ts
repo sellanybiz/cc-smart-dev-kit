@@ -523,6 +523,27 @@ export interface ProjectAnswer {
   project: ProjectSummary;
 }
 
+/** One workflow setting of a project: its value now, and where that value comes from. */
+export interface ProjectWorkflowSetting {
+  /** One of `WORKFLOW_KEYS` (`src/workflow/schema.ts`): the page labels it. */
+  key: string;
+  source: "project" | "personal" | "default";
+  value: unknown;
+}
+
+/** What a `gh` on this machine can do now (`src/workflow/propose.ts` › `ghLoginState`). */
+export type GhLoginState = "in" | "missing" | "out";
+
+/** `GET /api/projects/<id>/workflow` (D57): every setting, the base, and gh's state. */
+export interface ProjectWorkflowAnswer {
+  base: null | string;
+  gh: GhLoginState;
+  /** Why the settings could not be read; null when they were. */
+  note: null | string;
+  /** Every setting, in `WORKFLOW_KEYS`' order. Empty when `note` says why. */
+  settings: ProjectWorkflowSetting[];
+}
+
 // ── Work, crew, needs ──────────────────────────────────────────────────────────────────
 
 export interface CrewSummary {
@@ -994,6 +1015,7 @@ export const ACTION_NAMES = [
   "omniroute.update",
   "project.add",
   "project.preview",
+  "project.workflow.propose",
   "project.write",
   "router.restart",
   "slot.breaker",
@@ -1019,6 +1041,8 @@ export interface ActionResult {
   preview?: ProjectInitPlan;
   filesHash?: string;
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
+  /** `project.workflow.propose` only: the pull request it opened, for the card's own link. */
+  url?: string;
 }
 
 // ── The live stream ────────────────────────────────────────────────────────────────────

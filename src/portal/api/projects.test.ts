@@ -18,26 +18,32 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import { createCrew, type NewCrew } from "../../crew/store";
 import { projectFolderName } from "../../sessions/saved-sessions";
 import { type FakeWorkflow, fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
-import { commitConfig, makeRepo } from "../../testing/hooks";
+import { commitConfig, makeRepo, writePersonalWorkflow } from "../../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import type { GhRunner } from "../../workflow/merge-check";
+import { WORKFLOW_KEYS } from "../../workflow/schema";
 import { ACTION_NAMES, type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PageDataDeps } from "../page-data";
+import { workflowAdapter } from "../workflow-adapter";
 import {
   addProjectRoot,
+  forgetGhLogin,
   forgetProjectBranches,
   forgetProjectsList,
+  ghLoginOf,
   NO_SESSION_RECORDS,
+  PROJECT_GH_LOGIN_CACHE_MS,
   PROJECT_GIT_AT_ONCE,
   PROJECT_VERDICTS_AT_ONCE,
   type ProjectsWorld,
   projectBranches,
   projectsList,
+  projectWorkflowAnswerFor,
   readAddedProjects,
 } from "./projects";
 import { answerApi } from "./routes";
@@ -72,7 +78,11 @@ function binPath(withGh: boolean, gitLog?: string, gitHold?: string): string {
     chmodSync(script, 0o755);
   }
   if (withGh) {
-    writeFileSync(join(bin, "gh"), "#!/bin/sh\nexit 0\n");
+    // `repo view` answers the repository, as a logged-in gh does; every other call prints nothing.
+    writeFileSync(
+      join(bin, "gh"),
+      '#!/bin/sh\nif [ "$1" = "repo" ]; then echo "example-org/app"; fi\nexit 0\n',
+    );
     chmodSync(join(bin, "gh"), 0o755);
   }
   return bin;
@@ -943,5 +953,159 @@ describe("the project actions (B8)", () => {
     expect(again.ok).toBe(true);
     expect(again.lines).toEqual([`${repo} is already in the projects list.`]);
     expect(readAddedProjects(w.paths)).toEqual([repo]);
+  });
+});
+
+// ── A project's workflow settings (D57) ─────────────────────────────────────────
+
+/** One project's workflow answer through the **real** workflow module, never the test's fake. */
+async function workflowAnswer(
+  w: TestWorld,
+  repo: string,
+): Promise<Awaited<ReturnType<typeof projectWorkflowAnswerFor>>> {
+  return await projectWorkflowAnswerFor({ ...w.deps, workflow: workflowAdapter }, expectedId(repo));
+}
+
+/** Every key the answer must carry, one per row `workflow set --project` takes. */
+const KEY_COUNT = WORKFLOW_KEYS.length;
+
+describe("a project's workflow settings (D57)", () => {
+  test("every setting with its value and source, the base, and gh logged in", async () => {
+    const w = testWorld({ gh: true, withGh: async () => "test-user" });
+    const repo = committedRepo("workflow-app", {
+      requires: ">=0.1",
+      workflow: { autoCommit: true, openPr: "draft" },
+      worktrees: { base: "main" },
+    });
+    await addProjectRoot(w.paths, repo);
+    forgetGhLogin();
+    forgetProjectsList();
+
+    const answer = await workflowAnswer(w, repo);
+    if ("error" in answer) throw new Error(answer.error);
+    expect(answer.base).toBe("main");
+    expect(answer.gh).toBe("in");
+    expect(answer.note).toBeNull();
+    // Every key, in the schema's own order: the list is the schema's, never a copy here.
+    expect(answer.settings.map((one) => one.key)).toEqual([...WORKFLOW_KEYS]);
+    expect(answer.settings).toHaveLength(KEY_COUNT);
+    const of = (key: string) => answer.settings.find((one) => one.key === key);
+    expect(of("autoCommit")).toEqual({ key: "autoCommit", source: "project", value: true });
+    expect(of("openPr")).toEqual({ key: "openPr", source: "project", value: "draft" });
+    expect(of("autoPush")).toEqual({ key: "autoPush", source: "default", value: false });
+    expect(of("fixesAfterReview.lines")).toEqual({
+      key: "fixesAfterReview.lines",
+      source: "default",
+      value: 200,
+    });
+    expect(of("switches.sessionNames")).toEqual({
+      key: "switches.sessionNames",
+      source: "default",
+      value: false,
+    });
+  });
+
+  test("the person's own file is the source of a value the project does not set", async () => {
+    const w = testWorld();
+    const repo = committedRepo("personal-app", {
+      requires: ">=0.1",
+      worktrees: { base: "main" },
+    });
+    await addProjectRoot(w.paths, repo);
+    writePersonalWorkflow(w.env, { openPr: "ready" });
+    forgetGhLogin();
+    forgetProjectsList();
+
+    const answer = await workflowAnswer(w, repo);
+    if ("error" in answer) throw new Error(answer.error);
+    expect(answer.settings.find((one) => one.key === "openPr")).toEqual({
+      key: "openPr",
+      source: "personal",
+      value: "ready",
+    });
+  });
+
+  test("no project file: a note, and no base or settings — never a default it has not got", async () => {
+    const w = testWorld();
+    const repo = makeRepo("not-set-up");
+    await addProjectRoot(w.paths, repo);
+    forgetGhLogin();
+    forgetProjectsList();
+
+    const answer = await workflowAnswer(w, repo);
+    expect(answer).toEqual({
+      base: null,
+      gh: "missing",
+      note: `${repo} has no .claude/cc-smart-dev-kit.json yet: set it up with \`cc-smart-dev-kit project init\` there.`,
+      settings: [],
+    });
+  });
+
+  test("the route answers an unknown id with 404 and a known one with the settings", async () => {
+    const w = testWorld();
+    const repo = committedRepo("routed-app", {
+      requires: ">=0.1",
+      worktrees: { base: "main" },
+    });
+    await addProjectRoot(w.paths, repo);
+    forgetGhLogin();
+    forgetProjectsList();
+
+    const unknown = await answerApi(
+      w.deps,
+      new URL("http://127.0.0.1:1/api/projects/nothing/workflow"),
+    );
+    expect(unknown).toEqual({
+      body: { error: 'no project has the id "nothing"; the list on /api/projects names them' },
+      status: 404,
+    });
+    const known = await answerApi(
+      w.deps,
+      new URL(`http://127.0.0.1:1/api/projects/${expectedId(repo)}/workflow`),
+    );
+    if (known === null) throw new Error("the workflow route answered nothing");
+    expect(known.status).toBe(200);
+    expect((known.body as { base: null | string }).base).toBe("main");
+  });
+
+  test("gh is asked once a minute, and again after it", async () => {
+    let clock = T0;
+    let asked = 0;
+    const w = testWorld({
+      clock: () => clock,
+      gh: true,
+      withGh: async () => {
+        asked += 1;
+        return "test-user";
+      },
+    });
+    const repo = committedRepo("gh-cache", { requires: ">=0.1", worktrees: { base: "main" } });
+    await addProjectRoot(w.paths, repo);
+    forgetGhLogin();
+    forgetProjectsList();
+
+    expect(await ghLoginOf(w.projects, repo)).toBe("in");
+    expect(await ghLoginOf(w.projects, repo)).toBe("in");
+    expect(asked).toBe(1);
+    clock = T0 + PROJECT_GH_LOGIN_CACHE_MS;
+    expect(await ghLoginOf(w.projects, repo)).toBe("in");
+    expect(asked).toBe(2);
+  });
+
+  test("gh not logged in is its own word; a broken personal file is a note, not defaults", async () => {
+    const w = testWorld({ gh: true, withGh: async () => null });
+    const repo = committedRepo("gh-out", { requires: ">=0.1", worktrees: { base: "main" } });
+    await addProjectRoot(w.paths, repo);
+    forgetGhLogin();
+    forgetProjectsList();
+    expect(await ghLoginOf(w.projects, repo)).toBe("out");
+
+    mkdirSync(dirname(w.paths.workflowConfigFile), { recursive: true });
+    writeFileSync(w.paths.workflowConfigFile, "{ not json");
+    const answer = await workflowAnswer(w, repo);
+    if ("error" in answer) throw new Error(answer.error);
+    expect(answer.settings).toEqual([]);
+    expect(answer.note).toContain("not valid JSON");
+    expect(answer.base).toBe("main");
   });
 });

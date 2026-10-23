@@ -12,8 +12,10 @@
  *
  * The child gets the plugin's two bun flags (`--no-env-file`, the plugin's own `--config`), the
  * portal's own `HOME` and `CLAUDE_CONFIG_DIR` (whatever its environment says), and no
- * `CC_SMART_DEV_KIT_CREW`: the person at the portal is the caller, not the crew session whose
- * session start may have started the portal (D52).
+ * `CC_SMART_DEV_KIT_CREW` and no `CLAUDECODE`: the person at the portal is the caller, not the
+ * crew session whose session start may have started the portal (D52), and not a Claude Code
+ * session either (D9) — a command that refuses a session (a review-gate setting, D57) must not
+ * refuse the person's own click.
  */
 import { join } from "node:path";
 import { bunConfigArg } from "../setup/bun-config";
@@ -84,6 +86,12 @@ export async function runCliChild(
   };
   // The person's click is not a crew session (D52), whatever process started the portal.
   delete env.CC_SMART_DEV_KIT_CREW;
+  // …and it is not a Claude Code session either (D9, D57). The portal usually starts from a
+  // SessionStart hook, so it inherits `CLAUDECODE=1` and hands it to every child; a command that
+  // refuses inside a session — a review-gate setting above all — would then refuse the person's
+  // own click. From the browser the person changes the project's policy through a pull request,
+  // which they review and merge: the button is the person's, and the pull request is the gate.
+  delete env.CLAUDECODE;
   const lines: string[] = [];
   const push = (line: string): void => {
     const trimmed = line.replace(/\r$/, "");

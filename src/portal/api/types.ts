@@ -38,6 +38,7 @@ import type {
 import type { FlowReport } from "../../sessions/flow";
 import type { LastCheck } from "../../update/state";
 import type { MergeDetail } from "../../workflow/merge-check";
+import type { WorkflowSource } from "../../workflow/resolve";
 import type { ActionName, ActionResult } from "../actions";
 import type {
   BackendRow,
@@ -239,6 +240,38 @@ export interface ProjectAnswer {
   /** When the verdicts were read (ISO); they are kept for about a minute. */
   checkedAt: string;
   project: ProjectSummary;
+}
+
+/** One workflow setting of a project: its value now, and where that value comes from. */
+export interface ProjectWorkflowSetting {
+  /**
+   * One of `WORKFLOW_KEYS` (`src/workflow/schema.ts`): every setting `workflow set --project`
+   * takes, the four switches included. A page labels it; the server never sends its words.
+   */
+  key: string;
+  source: WorkflowSource;
+  /** What the resolver holds for it: a boolean, a number, a string, a list, or null. */
+  value: unknown;
+}
+
+/** What a `gh` on this machine can do now (`ghLoginState` in `src/workflow/propose.ts`). */
+export type GhLoginState = "in" | "missing" | "out";
+
+/**
+ * `GET /api/projects/<id>/workflow` (D57): every workflow setting of this project, its value
+ * and where it came from — from `resolveWorkflow`/`resolvedValueOf`, the same resolver
+ * `workflow show` prints from — plus the base a change's pull request would go into and
+ * whether a pull request can be opened right now. A change is `project.workflow.propose`.
+ */
+export interface ProjectWorkflowAnswer {
+  /** The branch a change's pull request goes into (`worktrees.base`); null when it names none. */
+  base: null | string;
+  /** Whether `gh` can open the pull request: installed and logged in, or why not. */
+  gh: GhLoginState;
+  /** Why the settings could not be read; null when they were. Never a made-up value. */
+  note: null | string;
+  /** Every setting, in `WORKFLOW_KEYS`' order. Empty when `note` says why. */
+  settings: ProjectWorkflowSetting[];
 }
 
 /** A crew session, as the Work view and a crew page show it. */

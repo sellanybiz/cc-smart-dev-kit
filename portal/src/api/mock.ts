@@ -650,6 +650,7 @@ export interface MockData {
   settings: SettingsData;
   projects: ProjectList;
   projectPages: Record<string, ProjectData>;
+  workflowPages: ProjectMocks["workflowPages"];
   /** A `project.*` action's mock answer; null: the generic "sent nothing" line. */
   act: ProjectMocks["act"];
 }
@@ -1041,5 +1042,6 @@ export function mockData(empty: boolean): MockData {
     settings: { autoMerge: null, error: null, projectNote: null, rows: settingsRows(false) },
     projects: projects.projects,
     projectPages: projects.projectPages,
+    workflowPages: projects.workflowPages,
   };
 }

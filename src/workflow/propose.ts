@@ -6,29 +6,35 @@
  * counts once it is merged, never from a session's own checkout. So a change is never a write
  * in the project's main checkout. It is a small pull request:
  *
- *   1. the project, its `worktrees.base`, and the value it holds now (`resolveWorkflow`, the
- *      same resolver `workflow show` reads) — a value the project already has, or an `--unset`
- *      of one it does not set, stops here with one line and no branch;
- *   2. `git fetch origin <base>`, so the branch starts from the base as it is now;
- *   3. a branch and a worktree cut from `origin/<base>`, named `worktree-workflow-<setting>-
+ *   1. the project and its `worktrees.base`;
+ *   2. `gh` (installed, and logged in), `git fetch origin <base>`, and the base's own copy of
+ *      the project's file — every step that can fail cheaply runs before a branch exists;
+ *   3. the value **as the base commits it** (`resolveWorkflow` over the file at `origin/<base>`,
+ *      the same resolver `workflow show` reads) — a value the base already has, or an `--unset`
+ *      of one it does not set, stops here with one line and no branch. This checkout's
+ *      working copy is never the comparison: an uncommitted edit here is not a policy;
+ *   4. a branch and a worktree cut from `origin/<base>`, named `worktree-workflow-<setting>-
  *      <YYYYMMDD>` (a second change the same day takes `-2`), under the repository's
  *      `.claude/worktrees/` — Claude Code's own layout, so the plugin's auto-clean removes it
  *      after the merge;
- *   4. the one value, written by **the same writer `workflow set --project` uses**
+ *   5. the one value, written by **the same writer `workflow set --project` uses**
  *      (`writeProjectSetting`: it validates the value, raises `requires`, and refuses a
  *      setting that is not the project's) — never a second writer. The worktree is a checkout
  *      of the base, so the write lands in the branch's own file and the main checkout's file is
  *      never touched; a write that does not show up in the worktree's own `git status` is
  *      refused before anything is committed;
- *   5. the commit (the person's git identity, a message naming the setting and both values),
+ *   6. the commit (the person's git identity, a message naming the setting and both values),
  *      the push, and `gh pr create` into the base with a short body saying what changed and
  *      that it counts once merged;
- *   6. the pull request's URL, or with `--json` `{ url, branch, worktree, setting, from, to }`.
+ *   7. the pull request's URL, or with `--json` `{ url, branch, worktree, setting, from, to }`.
  *
- * **Nothing is left half-made.** Every step that can fail cheaply (the project, the value, gh,
- * the fetch, the base's own file) runs before the branch exists. A step that fails after it
- * removes the worktree, the branch and — when the push already went out — the branch on
- * origin, and the one line says what is left if any of that fails.
+ * **Nothing is left half-made.** A step that fails after the branch exists removes the
+ * worktree, the branch and — when the push already went out — the branch on origin, and the one
+ * line says what is left if any of that fails.
+ *
+ * **A crew session never runs it** (D24): the command pushes a branch and opens a pull request,
+ * in children no hook sees, and a crew session does neither — it commits on its own branch and
+ * its lead does the rest.
  *
  * **Inside Claude Code a review-gate key (`REVIEW_GATE_KEYS`) is refused** before this module
  * runs (`commands.ts`, as `workflow set` refuses it there). Outside Claude Code — the portal,
@@ -38,6 +44,7 @@ import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { runGit } from "../hooks/git";
 import {
   type Checkout,
@@ -46,7 +53,7 @@ import {
   locateCheckout,
   readCommittedConfig,
 } from "../project/resolve";
-import { type GhRunner, GH_TIMEOUT_MS, ghMissing, spawnGh } from "./merge-check";
+import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
 import { showValue, type WorkflowKey } from "./schema";
 import { writeProjectSetting } from "./write";
@@ -73,9 +80,12 @@ const NAME_TRIES = 50;
 export type GhLoginState = "in" | "missing" | "out";
 
 /**
- * Whether `gh` is installed and logged in, in three words. `gh api user` is the one call that
- * answers it without writing anything: its own login name on stdout when the token works, and
- * nothing when it does not. A key never leaves gh: only whether it answered is kept.
+ * Whether a pull request can be opened from `folder`, in three words: `missing` (no `gh` on the
+ * PATH), `out` (gh cannot read this repository on GitHub: it is not logged in, there is no
+ * network, or `origin` is not a GitHub repository), and `in`. The one call is `gh repo view`,
+ * read-only, which finds the repository's own host from its remote — so a GitHub Enterprise
+ * project is judged by its own login, never github.com's. Only whether gh answered is kept:
+ * nothing it prints is shown.
  */
 export async function ghLoginState(
   folder: string,
@@ -84,8 +94,12 @@ export async function ghLoginState(
   timeoutMs: number = GH_TIMEOUT_MS,
 ): Promise<GhLoginState> {
   if (ghMissing(env)) return "missing";
-  const login = await run(["api", "user", "--jq", ".login"], { env, folder, timeoutMs });
-  return login === null ? "out" : "in";
+  const answer = await run(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], {
+    env,
+    folder,
+    timeoutMs,
+  });
+  return answer === null ? "out" : "in";
 }
 
 /** Everything one `workflow propose` run is given. */
@@ -127,7 +141,12 @@ function settingSlug(key: WorkflowKey): string {
   return key.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-/** True when no branch and no worktree of this repository holds `name`. */
+/**
+ * True when nothing of this repository holds `name`: no local branch, no worktree folder, and no
+ * branch on origin (a teammate's proposal of the same setting the same day, which only the push
+ * would otherwise find). `ls-remote --exit-code` exits 0 for a match, 2 for none; a call that
+ * cannot answer (no network) counts as free — the push says it, with its own line.
+ */
 function nameFree(repo: string, name: string, env: Env): boolean {
   const branch = runGit(
     repo,
@@ -136,7 +155,14 @@ function nameFree(repo: string, name: string, env: Env): boolean {
     QUICK_GIT_TIMEOUT_MS,
   );
   if (branch.ok) return false;
-  return !existsSync(join(repo, ".claude", "worktrees", name));
+  if (existsSync(join(repo, ".claude", "worktrees", name))) return false;
+  const remote = runGit(
+    repo,
+    ["ls-remote", "--exit-code", "--heads", "origin", name],
+    env,
+    FETCH_TIMEOUT_MS,
+  );
+  return !remote.ok;
 }
 
 /** The first free name from `wanted` on: the same day's second change is `-2`, then `-3`. */
@@ -150,8 +176,25 @@ function freeName(repo: string, wanted: string, env: Env): string {
 }
 
 /**
+ * Removes a worktree **only when git lists it**: a folder that merely holds the name (another
+ * run's, or a person's) is never removed. Answers the failure's own words, or null.
+ */
+function removeOwnWorktree(repo: string, worktree: string, env: Env): null | string {
+  const listed = runGit(repo, ["worktree", "list", "--porcelain"], env, QUICK_GIT_TIMEOUT_MS);
+  if (!listed.ok || !listed.out.includes(`worktree ${worktree}\n`)) return null;
+  const removed = runGit(
+    repo,
+    ["worktree", "remove", "--force", worktree],
+    env,
+    WORKTREE_TIMEOUT_MS,
+  );
+  return removed.ok ? null : `the worktree ${worktree} (${lastLine(removed.err)})`;
+}
+
+/**
  * Removes what a failed step made: the worktree, the branch, and — when the push already went
- * out — the branch on origin. Answers the tail of the failure's line: nothing left, or what is.
+ * out — the branch on origin. Only called after the worktree was made (so both are this run's).
+ * Answers the tail of the failure's line: nothing left, or what is.
  */
 function takeBack(
   repo: string,
@@ -161,15 +204,8 @@ function takeBack(
   env: Env,
 ): string {
   const left: string[] = [];
-  if (existsSync(worktree)) {
-    const removed = runGit(
-      repo,
-      ["worktree", "remove", "--force", worktree],
-      env,
-      WORKTREE_TIMEOUT_MS,
-    );
-    if (!removed.ok) left.push(`the worktree ${worktree} (${lastLine(removed.err)})`);
-  }
+  const worktreeProblem = removeOwnWorktree(repo, worktree, env);
+  if (worktreeProblem !== null) left.push(worktreeProblem);
   const exists = runGit(
     repo,
     ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
@@ -207,10 +243,11 @@ function bodyOf(key: WorkflowKey, from: unknown, to: unknown, base: string): str
   ].join("\n");
 }
 
-/** What `gh pr create` answered: the pull request's URL, or why it was refused. */
-type Created =
-  | { ok: true; url: string }
-  | { ok: false; why: string };
+/** How long `gh pr create` may take: a write, so longer than a read — see `createPullRequest`. */
+const GH_CREATE_TIMEOUT_MS = 60_000;
+
+/** What `gh pr create` answered: the pull request's URL, why it was refused, or that it timed out. */
+type Created = { ok: true; url: string } | { ok: false; timedOut: boolean; why: string };
 
 /** The URL in `gh pr create`'s output, or null when it printed none. */
 function urlIn(text: string): string | null {
@@ -218,12 +255,12 @@ function urlIn(text: string): string | null {
   return found === null ? null : found[0];
 }
 
-/** `gh pr create` in the worktree, with its own stderr kept for the refusal's line. */
-async function createPullRequest(
-  worktree: string,
-  env: Env,
-  args: string[],
-): Promise<Created> {
+/**
+ * `gh pr create` in the worktree, with its own stderr kept for the refusal's line. A **timeout
+ * is its own answer**: GitHub may have made the pull request just before the call was ended, and
+ * taking the pushed branch back then would close it — so the caller leaves everything as it is.
+ */
+async function createPullRequest(worktree: string, env: Env, args: string[]): Promise<Created> {
   try {
     const child = Bun.spawn(["gh", ...args], {
       cwd: worktree,
@@ -231,7 +268,7 @@ async function createPullRequest(
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
-      timeout: GH_TIMEOUT_MS,
+      timeout: GH_CREATE_TIMEOUT_MS,
       windowsHide: true,
     });
     const [out, err, code] = await Promise.all([
@@ -239,13 +276,14 @@ async function createPullRequest(
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    if (code !== 0) return { ok: false, why: lastLine(err) };
+    if (child.signalCode !== null) return { ok: false, timedOut: true, why: "no answer in time" };
+    if (code !== 0) return { ok: false, timedOut: false, why: lastLine(err) };
     const url = urlIn(out);
     return url === null
-      ? { ok: false, why: `gh printed no pull request URL (${lastLine(out)})` }
+      ? { ok: false, timedOut: false, why: `gh printed no pull request URL (${lastLine(out)})` }
       : { ok: true, url };
   } catch (error) {
-    return { ok: false, why: reasonOf(error) };
+    return { ok: false, timedOut: false, why: reasonOf(error) };
   }
 }
 
@@ -266,7 +304,16 @@ export async function proposeWorkflow(
     return 1;
   };
 
-  // 1. The project, its base, and the value it holds now.
+  // A crew session never pushes and never opens a pull request (D24): its own `git push` and
+  // `gh pr create` are denied by the guards, but this command makes both in children no hook
+  // sees — so it refuses first, with the step a crew session really has.
+  if (crewIdOf(context.env) !== null) {
+    return fail(
+      `${COMMAND} workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never pushes (D24). ${CREW_QUESTION_STEP}`,
+    );
+  }
+
+  // 1. The project and the base its change goes into.
   let checkout: Checkout | null;
   try {
     checkout = locateCheckout(context.folder, { env: context.env });
@@ -284,9 +331,7 @@ export async function proposeWorkflow(
     return fail(reasonOf(error));
   }
   if (loaded.config === null) {
-    return fail(
-      `${repo} has no ${CONFIG_PATH}: run \`${COMMAND} project init\` there first.`,
-    );
+    return fail(`${repo} has no ${CONFIG_PATH}: run \`${COMMAND} project init\` there first.`);
   }
   const base = loaded.config.worktrees?.base;
   if (base === undefined) {
@@ -294,40 +339,9 @@ export async function proposeWorkflow(
       `${repo} names no worktrees.base, so a change has no branch to go into: run \`${COMMAND} project init\` there.`,
     );
   }
-  let resolved: ResolvedWorkflow;
-  try {
-    resolved = resolveWorkflow(context.paths, loaded.config);
-  } catch (error) {
-    return fail(reasonOf(error));
-  }
-  const current = resolvedValueOf(resolved, key);
-  if (value === undefined) {
-    if (current.source !== "project") {
-      context.print(
-        `= ${key} was not set in ${CONFIG_PATH}; no branch or pull request was made.`,
-      );
-      return 0;
-    }
-  } else if (current.source === "project" && Bun.deepEquals(current.value, value, true)) {
-    context.print(
-      `= ${key} = ${saidValue(key, value)} in ${CONFIG_PATH} (already set); no branch or pull request was made.`,
-    );
-    return 0;
-  }
 
-  // 2. gh, before anything is made: no pull request, no change.
-  const login = await ghLoginState(repo, context.env);
-  if (login === "missing") {
-    return fail(
-      "gh is not installed, so no pull request can be opened: install GitHub's CLI from https://cli.github.com, then run `gh auth login`.",
-    );
-  }
-  if (login === "out") {
-    return fail("gh is not logged in: run `gh auth login`, then try again.");
-  }
-
-  // 3. The base as it is now, and its own copy of the project's file: the change counts once
-  //    merged, so a file that is not committed there has nothing to propose into.
+  // 2. The base as it is now, and its own copy of the project's file: the value this changes
+  //    is the one committed there, and a file that is not committed has nothing to propose into.
   const fetched = runGit(repo, ["fetch", "origin", base], context.env, FETCH_TIMEOUT_MS);
   if (!fetched.ok) {
     return fail(
@@ -346,22 +360,75 @@ export async function proposeWorkflow(
     );
   }
 
-  // 4. The branch and the worktree, cut from origin/<base>.
-  const branch = freeName(
-    repo,
-    `worktree-workflow-${settingSlug(key)}-${dayStamp(now())}`,
-    context.env,
-  );
-  const worktree = join(repo, ".claude", "worktrees", branch);
-  const added = runGit(
-    repo,
-    ["worktree", "add", "-b", branch, worktree, `origin/${base}`],
-    context.env,
-    WORKTREE_TIMEOUT_MS,
-  );
-  if (!added.ok) {
+  // 3. The value **as the base commits it**, never this checkout's working copy: an uncommitted
+  //    edit here must not read as "already set", and a change that counts is one to the base.
+  //    A value that is already there needs no pull request, and no gh to say so.
+  let resolved: ResolvedWorkflow;
+  try {
+    resolved = resolveWorkflow(context.paths, committed.config);
+  } catch (error) {
+    return fail(reasonOf(error));
+  }
+  const current = resolvedValueOf(resolved, key);
+  if (value === undefined) {
+    if (current.source !== "project") {
+      context.print(`= ${key} was not set in ${CONFIG_PATH}; no branch or pull request was made.`);
+      return 0;
+    }
+  } else if (current.source === "project" && Bun.deepEquals(current.value, value, true)) {
+    context.print(
+      `= ${key} = ${saidValue(key, value)} in ${CONFIG_PATH} (already set); no branch or pull request was made.`,
+    );
+    return 0;
+  }
+
+  // 4. gh, before anything is made: no pull request can be opened without it, so no branch.
+  const login = await ghLoginState(repo, context.env);
+  if (login === "missing") {
     return fail(
-      `git worktree add failed: ${lastLine(added.err)}${takeBack(repo, worktree, branch, false, context.env)}`,
+      "gh is not installed, so no pull request can be opened: install GitHub's CLI from https://cli.github.com, then run `gh auth login`.",
+    );
+  }
+  if (login === "out") {
+    return fail(
+      "gh cannot read this repository on GitHub (it is not logged in, there is no network, or origin is not a GitHub repository): run `gh auth status` to see which, then try again.",
+    );
+  }
+
+  // 5. The branch and the worktree, cut from origin/<base>.
+  const wanted = `worktree-workflow-${settingSlug(key)}-${dayStamp(now())}`;
+  let branch = freeName(repo, wanted, context.env);
+  let worktree = join(repo, ".claude", "worktrees", branch);
+  const add = (): ReturnType<typeof runGit> =>
+    runGit(
+      repo,
+      ["worktree", "add", "-b", branch, worktree, `origin/${base}`],
+      context.env,
+      WORKTREE_TIMEOUT_MS,
+    );
+  // A folder that was already there is never removed, whatever the add made of it; one this
+  // attempt made is.
+  let existedBefore = existsSync(worktree);
+  let added = add();
+  if (!added.ok && /already exists/.test(added.err)) {
+    // A name another proposal took between the check and the add (a teammate's branch, or a
+    // worktree folder): one more free name, once. Only a worktree this attempt made is taken
+    // back — a branch git may have made under a folder that was already there is left alone,
+    // since it can only be the other run's.
+    if (!existedBefore) {
+      const left = removeOwnWorktree(repo, worktree, context.env);
+      if (left !== null)
+        return fail(`git worktree add failed: ${left}. Nothing was committed or pushed.`);
+    }
+    branch = freeName(repo, wanted, context.env);
+    worktree = join(repo, ".claude", "worktrees", branch);
+    existedBefore = existsSync(worktree);
+    added = add();
+  }
+  if (!added.ok) {
+    const left = existedBefore ? null : removeOwnWorktree(repo, worktree, context.env);
+    return fail(
+      `git worktree add failed: ${lastLine(added.err)}${left === null ? ". Nothing was committed or pushed." : `; what is left: ${left}`}`,
     );
   }
   // The worktree is a checkout of the base, so it holds the base's own file. The check is the
@@ -373,7 +440,7 @@ export async function proposeWorkflow(
     );
   }
 
-  // 5. The one value, by the writer `workflow set --project` uses, inside the branch's checkout.
+  // 6. The one value, by the writer `workflow set --project` uses, inside the branch's checkout.
   try {
     writeProjectSetting(worktree, key, value, context.env);
   } catch (error) {
@@ -386,7 +453,7 @@ export async function proposeWorkflow(
     );
   }
 
-  // 6. The commit (the person's identity), the push, and the pull request.
+  // 7. The commit (the person's identity), the push, and the pull request.
   const title = titleOf(key, current.value, value);
   const staged = runGit(worktree, ["add", "--", CONFIG_PATH], context.env, QUICK_GIT_TIMEOUT_MS);
   if (!staged.ok) {
@@ -405,12 +472,7 @@ export async function proposeWorkflow(
       `git commit failed: ${lastLine(commit.err)}. Check your git name and email (\`git config user.name\`), then try again${takeBack(repo, worktree, branch, false, context.env)}`,
     );
   }
-  const pushed = runGit(
-    worktree,
-    ["push", "-u", "origin", branch],
-    context.env,
-    PUSH_TIMEOUT_MS,
-  );
+  const pushed = runGit(worktree, ["push", "-u", "origin", branch], context.env, PUSH_TIMEOUT_MS);
   if (!pushed.ok) {
     return fail(
       `git push -u origin ${branch} failed: ${lastLine(pushed.err)}. Check that you may push to this repository, then try again${takeBack(repo, worktree, branch, false, context.env)}`,
@@ -429,8 +491,14 @@ export async function proposeWorkflow(
     bodyOf(key, current.value, value, base),
   ]);
   if (!created.ok) {
+    if (created.timedOut) {
+      // Not taken back: the pull request may already exist, and the pushed branch is its head.
+      return fail(
+        `gh pr create did not answer in time, so the pull request may be open: look at ${repo}'s pull requests on GitHub before running this again. The branch ${branch} is pushed, from ${worktree}.`,
+      );
+    }
     return fail(
-      `gh pr create failed: ${created.why}. Check that gh is logged in to the account that owns this repository, then try again${takeBack(repo, worktree, branch, true, context.env)}`,
+      `gh pr create failed: ${created.why}. Check that gh is logged in (\`gh auth login\`) and that your account may open a pull request on this repository, then try again${takeBack(repo, worktree, branch, true, context.env)}`,
     );
   }
 
@@ -448,9 +516,7 @@ export async function proposeWorkflow(
     return 0;
   }
   context.print(`+ ${key} = ${saidValue(key, value)} in ${CONFIG_PATH}`);
-  context.print(
-    `+ ${branch} (${relative(repo, worktree)}), cut from origin/${base} and pushed`,
-  );
+  context.print(`+ ${branch} (${relative(repo, worktree)}), cut from origin/${base} and pushed`);
   context.print(`+ pull request into ${base}: ${created.url}`);
   return 0;
 }

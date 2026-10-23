@@ -28,6 +28,7 @@
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
  * written (or a merge that asks), 2 a setting or a value that is not one of the settings there are.
  */
+import { resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
@@ -593,7 +594,8 @@ async function propose(context: WorkflowContext, argv: string[]): Promise<number
   return await proposeWorkflow(
     {
       env: context.env,
-      folder: parsed.folder ?? context.cwd,
+      // A relative `--folder` is relative to the folder the command runs in, as a shell reads it.
+      folder: parsed.folder === null ? context.cwd : resolve(context.cwd, parsed.folder),
       paths: context.paths,
       print: context.print,
       error: context.error,

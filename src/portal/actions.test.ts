@@ -8,6 +8,7 @@
  * a temp home that is no git project, as the starter starts it ([D10]).
  */
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
@@ -16,6 +17,7 @@ import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { makeRepo } from "../testing/hooks";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import { type ActionContext, crewTimeoutLine, portalOmnirouteContext, runAction } from "./actions";
+import { addProjectRoot, forgetProjectsList } from "./api/projects";
 import { testPortalContext } from "./api/test-context";
 
 /** The lead every record in this test answers to. */
@@ -68,10 +70,14 @@ function fakePlugin(): { done: string; folder: string; log: string } {
   writeFileSync(
     join(folder, "dist", "cli.js"),
     `import { appendFileSync, writeFileSync } from "node:fs";
-appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), config: process.env.CLAUDE_CONFIG_DIR, crew: process.env.CC_SMART_DEV_KIT_CREW ?? null, cwd: process.cwd() }) + "\\n");
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), claudeCode: process.env.CLAUDECODE ?? null, config: process.env.CLAUDE_CONFIG_DIR, crew: process.env.CC_SMART_DEV_KIT_CREW ?? null, cwd: process.cwd() }) + "\\n");
 if (process.env.FAKE_CLI_SLEEP === "1") await Bun.sleep(400);
 writeFileSync(${JSON.stringify(done)}, "done\\n");
 console.log("crew " + process.argv.slice(2).join(" ") + ": done");
+// workflow propose prints the pull request's URL alone on its last line, as the real one does.
+if (process.argv[2] === "workflow" && process.argv[3] === "propose") {
+  console.log("https://github.com/example-org/app/pull/42");
+}
 process.exit(process.env.FAKE_CLI_EXIT === undefined ? 0 : Number(process.env.FAKE_CLI_EXIT));
 `,
   );
@@ -81,7 +87,7 @@ process.exit(process.env.FAKE_CLI_EXIT === undefined ? 0 : Number(process.env.FA
 /** Every run the fake CLI logged. */
 function runsOf(
   log: string,
-): { args: string[]; config: string; crew: null | string; cwd: string }[] {
+): { args: string[]; claudeCode: null | string; config: string; crew: null | string; cwd: string }[] {
   let text = "";
   try {
     text = readFileSync(log, "utf8");
@@ -104,8 +110,11 @@ function world(options: { exit?: number; sleep?: boolean } = {}) {
     paths,
     {
       ...cleanGitEnv(),
-      // The portal's own environment may name the crew session whose start began it (D52).
+      // The portal's own environment may name the crew session whose start began it (D52), and
+      // it inherits `CLAUDECODE=1` from the session start that launched it (D9): a child is
+      // given neither.
       CC_SMART_DEV_KIT_CREW: "B1-x-1a2b3c",
+      CLAUDECODE: "1",
       ...(options.sleep === true ? { FAKE_CLI_SLEEP: "1" } : {}),
       ...(options.exit === undefined ? {} : { FAKE_CLI_EXIT: String(options.exit) }),
       CLAUDE_CONFIG_DIR: paths.claudeConfigDir,
@@ -158,7 +167,13 @@ describe("a crew action runs the CLI's own command in a child", () => {
     // A synchronous spawn would have held the loop for the child's 400 ms: no timer could fire.
     expect(firedAfter).toBeLessThan(300);
     expect(runsOf(w.log)).toEqual([
-      { args: ["crew", "stop", id], config: w.paths.claudeConfigDir, crew: null, cwd: w.repoB },
+      {
+        args: ["crew", "stop", id],
+        claudeCode: null,
+        config: w.paths.claudeConfigDir,
+        crew: null,
+        cwd: w.repoB,
+      },
     ]);
   });
 
@@ -182,6 +197,7 @@ describe("a crew action runs the CLI's own command in a child", () => {
     expect(runsOf(w.log)).toEqual([
       {
         args: ["crew", "answer", "--as-person", "--", id, "-- port 3210"],
+        claudeCode: null,
         config: w.paths.claudeConfigDir,
         crew: null,
         cwd: w.repoA,
@@ -233,6 +249,86 @@ describe("a crew action runs the CLI's own command in a child", () => {
     };
     const resumed = await runAction("crew.resume", { crew: id }, action);
     expect(resumed).toEqual({ lines: ["the plugin's folder is gone"], ok: false });
+    expect(runsOf(w.log)).toEqual([]);
+  });
+});
+
+describe("project.workflow.propose runs the CLI's own command in a child", () => {
+  /** The project's id, as the list gives it: 12 hex of sha256 of its root. */
+  function idOf(root: string): string {
+    return createHash("sha256").update(root).digest("hex").slice(0, 12);
+  }
+
+  test("the project's folder, the CLI's own command, and the pull request's URL in place", async () => {
+    const w = world();
+    await addProjectRoot(w.paths, w.repoA);
+    forgetProjectsList();
+    const proposed = await runAction(
+      "project.workflow.propose",
+      { confirm: true, project: idOf(w.repoA), setting: "autoCommit", value: "true" },
+      w.action,
+    );
+    expect(proposed.ok).toBe(true);
+    expect(proposed.url).toBe("https://github.com/example-org/app/pull/42");
+    expect(proposed.lines).toContain("https://github.com/example-org/app/pull/42");
+    // The command, in the project's folder, and the person's own click: the portal's
+    // environment names a crew session and carries `CLAUDECODE=1`, and the child is given
+    // neither (D52, D9) — so a review-gate setting is the person's to change from the card.
+    expect(runsOf(w.log)).toEqual([
+      {
+        args: ["workflow", "propose", "autoCommit", "true"],
+        claudeCode: null,
+        config: w.paths.claudeConfigDir,
+        crew: null,
+        cwd: w.repoA,
+      },
+    ]);
+  });
+
+  test("--unset removes the project's value, and no confirmation means nothing runs", async () => {
+    const w = world();
+    await addProjectRoot(w.paths, w.repoA);
+    forgetProjectsList();
+    expect(
+      await runAction(
+        "project.workflow.propose",
+        { project: idOf(w.repoA), setting: "autoCommit", unset: true },
+        w.action,
+      ),
+    ).toEqual({
+      lines: ["Nothing was proposed: the page's confirmation did not come with the request."],
+      ok: false,
+    });
+    expect(runsOf(w.log)).toEqual([]);
+
+    const removed = await runAction(
+      "project.workflow.propose",
+      { confirm: true, project: idOf(w.repoA), setting: "autoCommit", unset: true },
+      w.action,
+    );
+    expect(removed.ok).toBe(true);
+    expect(runsOf(w.log)).toMatchObject([
+      { args: ["workflow", "propose", "autoCommit", "--unset"], cwd: w.repoA },
+    ]);
+  });
+
+  test("a setting the command does not have, or no value, is refused before the child", async () => {
+    const w = world();
+    await addProjectRoot(w.paths, w.repoA);
+    forgetProjectsList();
+    const unknown = await runAction(
+      "project.workflow.propose",
+      { confirm: true, project: idOf(w.repoA), setting: "worktree.base", value: "main" },
+      w.action,
+    );
+    expect(unknown.ok).toBe(false);
+    expect(unknown.lines[0]).toStartWith('"worktree.base" is not a setting: the settings are ');
+    const empty = await runAction(
+      "project.workflow.propose",
+      { confirm: true, project: idOf(w.repoA), setting: "autoCommit", value: " " },
+      w.action,
+    );
+    expect(empty.lines).toEqual(["Type the setting's value, or remove it from the project."]);
     expect(runsOf(w.log)).toEqual([]);
   });
 });

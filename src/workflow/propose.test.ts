@@ -45,7 +45,10 @@ interface World {
   ghLog: () => string[];
   origin: string;
   repo: string;
-  run: (args: string[], env?: Record<string, string>) => Promise<{
+  run: (
+    args: string[],
+    env?: Record<string, string>,
+  ) => Promise<{
     errors: string[];
     lines: string[];
     status: number;
@@ -82,7 +85,7 @@ function world(
       options.gh === "out"
         ? 'echo "not logged in" >&2\nexit 1'
         : `case "$1" in
-  api) echo "octocat"; exit 0 ;;
+  repo) echo "example-org/app"; exit 0 ;;
   pr)
     ${options.gh === "create-fails" ? 'echo "a pull request already exists for this branch" >&2; exit 1' : 'echo "https://github.com/example-org/app/pull/42"; exit 0'} ;;
 esac
@@ -170,7 +173,7 @@ describe("workflow propose: one setting through a pull request", () => {
     // The push landed on origin, and gh was asked for the pull request into the base.
     expect(git(w.origin, "branch", "--list", branch)).toContain(branch);
     expect(w.ghLog()).toEqual([
-      "api user --jq .login",
+      "repo view --json nameWithOwner --jq .nameWithOwner",
       `pr create --base main --head ${branch} --title workflow: autoCommit false → true --body Updated by \`${COMMAND} workflow propose\`: the project's workflow setting autoCommit, from false to true.
 It counts once this pull request is merged into main: the merge guard reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
     ]);
@@ -185,7 +188,10 @@ It counts once this pull request is merged into main: the merge guard reads the 
 
   test("--unset removes the project's value, and the branch carries the file without it", async () => {
     const w = world();
-    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", { ...SETTINGS, workflow: { autoCommit: true } });
+    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { autoCommit: true },
+    });
     git(w.repo, "add", "--", ".claude/cc-smart-dev-kit.json");
     git(w.repo, "commit", "-q", "-m", "autoCommit on");
     git(w.repo, "push", "-q", "origin", "main");
@@ -229,9 +235,57 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
   });
 
+  test("a crew session never pushes or opens a pull request: refused, with the step it has", async () => {
+    const w = world();
+    const run = await w.run(["propose", "autoCommit", "true"], {
+      CC_SMART_DEV_KIT_CREW: "P1a-x-1a2b3c",
+    });
+    expect(run.status).toBe(1);
+    expect(run.errors).toEqual([
+      `cc-smart-dev-kit workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never pushes (D24). Nobody is at the machine to answer this question, so the call is refused. Ask your lead with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\`, and go on with the rest of your phase.`,
+    ]);
+    expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
+    expect(w.ghLog()).toEqual([]);
+  });
+
+  test("a switch that lives in the person's own file: the writer refuses, and nothing is left", async () => {
+    const w = world();
+    const run = await w.run(["propose", "switches.statusLine", "true"]);
+    expect(run.status).toBe(1);
+    expect(run.errors).toEqual([
+      "switches.statusLine is your own setting, not the project's: run it without --project (the status line is per person, per machine); the worktree and the branch were removed again; nothing was left behind",
+    ]);
+    expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
+  });
+
+  test("a value only this checkout sets is not 'already set': the change goes to the base", async () => {
+    // The working copy holds autoCommit true and was never committed: the base does not have it,
+    // so the proposal is real, and the person's own uncommitted file is left as it was.
+    const w = world();
+    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { autoCommit: true },
+    });
+
+    const run = await w.run(["propose", "autoCommit", "true"]);
+    expect(run.status).toBe(0);
+    expect(run.lines[0]).toBe("+ autoCommit = true in .claude/cc-smart-dev-kit.json");
+    expect(fileOn(w.repo, "worktree-workflow-autoCommit-20261023").workflow).toEqual({
+      autoCommit: true,
+    });
+    // The person's checkout still holds its own uncommitted file, untouched.
+    expect(JSON.parse(readFileSync(join(w.repo, ".claude/cc-smart-dev-kit.json"), "utf8"))).toEqual(
+      { ...SETTINGS, workflow: { autoCommit: true } },
+    );
+    expect(git(w.repo, "status", "--porcelain").trim()).toContain("cc-smart-dev-kit.json");
+  });
+
   test("a value already set in the project: said, and no branch or pull request", async () => {
     const w = world();
-    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", { ...SETTINGS, workflow: { autoCommit: true } });
+    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { autoCommit: true },
+    });
     git(w.repo, "add", "--", ".claude/cc-smart-dev-kit.json");
     git(w.repo, "commit", "-q", "-m", "autoCommit on");
     git(w.repo, "push", "-q", "origin", "main");
@@ -284,11 +338,13 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
   });
 
-  test("gh not logged in: refused with the fix, and nothing made", async () => {
+  test("gh that cannot read this repository: refused with the fix, and nothing made", async () => {
     const w = world({ gh: "out" });
     const run = await w.run(["propose", "autoCommit", "true"]);
     expect(run.status).toBe(1);
-    expect(run.errors).toEqual(["gh is not logged in: run `gh auth login`, then try again."]);
+    expect(run.errors).toEqual([
+      "gh cannot read this repository on GitHub (it is not logged in, there is no network, or origin is not a GitHub repository): run `gh auth status` to see which, then try again.",
+    ]);
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
   });
 
@@ -303,14 +359,16 @@ It counts once this pull request is merged into main: the merge guard reads the 
 
     const run = await w.run(["propose", "autoCommit", "true"]);
     expect(run.status).toBe(1);
-    expect(run.errors[0]).toContain("git push -u origin worktree-workflow-autoCommit-20261023 failed:");
+    expect(run.errors[0]).toContain(
+      "git push -u origin worktree-workflow-autoCommit-20261023 failed:",
+    );
     expect(run.errors[0]).toContain(
       "the worktree and the branch were removed again; nothing was left behind",
     );
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
-    expect(existsSync(join(w.repo, ".claude/worktrees/worktree-workflow-autoCommit-20261023"))).toBe(
-      false,
-    );
+    expect(
+      existsSync(join(w.repo, ".claude/worktrees/worktree-workflow-autoCommit-20261023")),
+    ).toBe(false);
   });
 
   test("a base that cannot be fetched: refused with the fix, and nothing made", async () => {
@@ -319,9 +377,7 @@ It counts once this pull request is merged into main: the merge guard reads the 
     const run = await w.run(["propose", "autoCommit", "true"]);
     expect(run.status).toBe(1);
     expect(run.errors[0]).toContain("git fetch origin main failed:");
-    expect(run.errors[0]).toContain(
-      "Check the network and that origin has main, then try again.",
-    );
+    expect(run.errors[0]).toContain("Check the network and that origin has main, then try again.");
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
   });
 
@@ -330,7 +386,9 @@ It counts once this pull request is merged into main: the merge guard reads the 
     const run = await w.run(["propose", "autoCommit", "true"]);
     const branch = "worktree-workflow-autoCommit-20261023";
     expect(run.status).toBe(1);
-    expect(run.errors[0]).toContain("gh pr create failed: a pull request already exists for this branch");
+    expect(run.errors[0]).toContain(
+      "gh pr create failed: a pull request already exists for this branch",
+    );
     expect(run.errors[0]).toContain("nothing was left behind");
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
     expect(git(w.origin, "branch", "--list", branch).trim()).toBe("");

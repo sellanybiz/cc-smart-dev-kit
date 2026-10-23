@@ -1,6 +1,6 @@
 // @bun
 // src/entries/portal.ts
-import { join as join70 } from "path";
+import { join as join71 } from "path";
 
 // src/browser/doctor.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
@@ -13502,7 +13502,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname24, join as join69 } from "path";
+import { dirname as dirname24, join as join70 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync48, readFileSync as readFileSync57 } from "fs";
@@ -32327,7 +32327,7 @@ function jobsFingerprint(home) {
 // src/portal/actions.ts
 import { createHash as createHash10 } from "crypto";
 import { existsSync as existsSync54, statSync as statSync18 } from "fs";
-import { isAbsolute as isAbsolute8, join as join67 } from "path";
+import { isAbsolute as isAbsolute8, join as join68 } from "path";
 
 // src/browser/setup.ts
 import { existsSync as existsSync49, mkdirSync as mkdirSync20, readdirSync as readdirSync17, readFileSync as readFileSync58 } from "fs";
@@ -33362,15 +33362,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 // src/portal/api/projects.ts
 import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync63 } from "fs";
-import { basename as basename10, dirname as dirname23, relative as relative6 } from "path";
-
-// src/portal/facts.ts
-import { createHash as createHash8 } from "crypto";
-import { readFileSync as readFileSync61 } from "fs";
-import { basename as basename9, join as join62 } from "path";
-
-// src/portal/workflow-adapter.ts
-import { join as join61 } from "path";
+import { basename as basename10, dirname as dirname23, join as join66, relative as relative6 } from "path";
 
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync22 } from "fs";
@@ -33541,7 +33533,25 @@ function writeUpdateHold(paths, value) {
   return resume(files) ? `- ${tildify(files.hold, paths.home)}: background updates resume` : "= background updates were not on hold";
 }
 
+// src/workflow/propose.ts
+async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_MS2) {
+  if (ghMissing(env))
+    return "missing";
+  const answer = await run(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], {
+    env,
+    folder,
+    timeoutMs
+  });
+  return answer === null ? "out" : "in";
+}
+
+// src/portal/facts.ts
+import { createHash as createHash8 } from "crypto";
+import { readFileSync as readFileSync61 } from "fs";
+import { basename as basename9, join as join62 } from "path";
+
 // src/portal/workflow-adapter.ts
+import { join as join61 } from "path";
 function projectInitDefaults(input) {
   const facts = detectFacts(realRunner(input.env), input.root);
   const existing = readExisting(join61(input.root, ".claude", "cc-smart-dev-kit.json"));
@@ -35804,6 +35814,57 @@ async function projectRootById(world, id) {
   const list = await projectsList(world);
   return list.projects.find((one) => one.id === id)?.root ?? null;
 }
+var PROJECT_GH_LOGIN_CACHE_MS = 60000;
+var keptGhLogins = new Map;
+async function ghLoginOf(world, root) {
+  const now = world.now();
+  const kept = keptGhLogins.get(root);
+  if (kept !== undefined && now - kept.at < PROJECT_GH_LOGIN_CACHE_MS)
+    return kept.state;
+  const state = await ghLoginState(root, world.env, world.gh ?? spawnGh);
+  keptGhLogins.set(root, { at: now, state });
+  return state;
+}
+function configAt(root) {
+  try {
+    const config = loadCcSmartDevKitConfig(join66(root, CONFIG_PATH));
+    return config === null ? {
+      ok: false,
+      why: `${root} has no ${CONFIG_PATH} yet: set it up with \`${COMMAND} project init\` there.`
+    } : { ok: true, base: config.worktrees?.base ?? null, config };
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+}
+async function projectWorkflowAnswerFor(deps, id) {
+  const world = projectsWorldOf(deps);
+  const list = await projectsList(world);
+  const project = list.projects.find((one) => one.id === id);
+  if (project === undefined) {
+    return { error: `no project has the id "${id}"; the list on /api/projects names them` };
+  }
+  const gh = await ghLoginOf(world, project.root);
+  const read = configAt(project.root);
+  if (!read.ok)
+    return { base: null, gh, note: read.why, settings: [] };
+  let resolved;
+  try {
+    resolved = deps.workflow.resolveWorkflow(world.paths, read.config);
+  } catch (error) {
+    return {
+      base: read.base,
+      gh,
+      note: error instanceof Error ? error.message : String(error),
+      settings: []
+    };
+  }
+  return {
+    base: read.base,
+    gh,
+    note: null,
+    settings: WORKFLOW_KEYS.map((key) => ({ key, ...resolvedValueOf(resolved, key) }))
+  };
+}
 async function projectsAnswerFor(deps) {
   const current = projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow);
   const list = await projectsList(projectsWorldOf(deps));
@@ -35811,7 +35872,7 @@ async function projectsAnswerFor(deps) {
 }
 
 // src/portal/cli-child.ts
-import { join as join66 } from "path";
+import { join as join67 } from "path";
 var CLI_CHILD_TIMEOUT_MS = 180000;
 async function readLines(stream, push) {
   if (stream === undefined || typeof stream === "number")
@@ -35846,6 +35907,7 @@ async function runCliChild(ctx, args, options) {
     HOME: ctx.paths.home
   };
   delete env.CC_SMART_DEV_KIT_CREW;
+  delete env.CLAUDECODE;
   const lines = [];
   const push = (line) => {
     const trimmed = line.replace(/\r$/, "");
@@ -35860,7 +35922,7 @@ async function runCliChild(ctx, args, options) {
       process.execPath,
       "--no-env-file",
       bunConfigArg(folder.folder),
-      join66(folder.folder, "dist", "cli.js"),
+      join67(folder.folder, "dist", "cli.js"),
       ...args
     ], {
       cwd: options.cwd ?? context.cwd,
@@ -35942,7 +36004,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join67(folder.folder, "dist", "router.js"),
+      bundle: join68(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -36360,6 +36422,44 @@ async function setWorkflowSetting(action, body) {
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
+}
+async function projectWorkflowPropose(action, body) {
+  if (body.confirm !== true)
+    return notConfirmed("proposed");
+  const target = await projectTarget(action, body);
+  if ("why" in target)
+    return { lines: [target.why], ok: false };
+  const setting = typeof body.setting === "string" ? body.setting.trim() : "";
+  if (!WORKFLOW_KEYS.includes(setting)) {
+    return {
+      lines: [`"${setting}" is not a setting: the settings are ${WORKFLOW_KEYS.join(", ")}.`],
+      ok: false
+    };
+  }
+  const unset = body.unset === true;
+  const value = typeof body.value === "string" ? body.value.trim() : "";
+  if (!unset && value === "") {
+    return { lines: ["Type the setting's value, or remove it from the project."], ok: false };
+  }
+  if (!unset && value.startsWith("-")) {
+    return { lines: [`"${value}" is not a value: it starts with "-".`], ok: false };
+  }
+  const run = await runCliChild(action.portal, ["workflow", "propose", setting, ...unset ? ["--unset"] : [value]], {
+    cwd: target.cwd,
+    onLine: (line) => action.publish?.("action", { action: "project.workflow.propose", line })
+  });
+  const lines = [...run.lines];
+  if (run.error !== null)
+    lines.push(run.error);
+  if (run.timedOut) {
+    lines.push("workflow propose did not answer in time, so it may have opened the pull request: look on GitHub before running it again");
+  }
+  const url = [...run.lines].reverse().map((line) => /https:\/\/\S+\/pull\/\d+/.exec(line)).find((found) => found !== null)?.[0];
+  return {
+    ...url === undefined ? {} : { url },
+    lines,
+    ok: run.error === null && !run.timedOut && run.exitCode === 0
+  };
 }
 function parseProjectForm(value) {
   if (!isObject2(value))
@@ -36833,6 +36933,8 @@ async function runAction(name, body, action) {
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.workflow.propose":
+      return projectWorkflowPropose(action, body);
     case "project.add":
       return projectAdd(action, body);
     case "crew.answer": {
@@ -37234,7 +37336,12 @@ async function answerApi(deps, url) {
       return { body: { error: "name a project" }, status: 400 };
     }
     if (id === "" || id.includes("/")) {
-      return { body: { error: "name a project" }, status: 400 };
+      const suffix = "/workflow";
+      const named = id.endsWith(suffix) ? id.slice(0, -suffix.length) : "";
+      if (named === "" || named.includes("/"))
+        return { body: { error: "name a project" }, status: 400 };
+      const workflow = await projectWorkflowAnswerFor(deps, named);
+      return "error" in workflow ? { body: workflow, status: 404 } : ok(workflow);
     }
     const answer = await projectAnswerFor(deps, id);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);
@@ -38797,7 +38904,7 @@ function createLiveSources(deps) {
 
 // src/portal/static.ts
 import { existsSync as existsSync55, readFileSync as readFileSync65, statSync as statSync19 } from "fs";
-import { extname, join as join68, resolve as resolve11, sep as sep5 } from "path";
+import { extname, join as join69, resolve as resolve11, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -38826,7 +38933,7 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve11(join68(folder, decoded));
+  const file = resolve11(join69(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
@@ -38848,7 +38955,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync65(join68(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync65(join69(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -38863,7 +38970,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve11(folder);
-  if (!existsSync55(join68(absolute, "index.html")))
+  if (!existsSync55(join69(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -39806,7 +39913,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join69(dirname24(import.meta.path), "portal-ui");
+  return join70(dirname24(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -40110,7 +40217,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join70(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join71(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -40165,16 +40272,16 @@ async function runServer(paths, options) {
       browser: realBrowserDoctorDeps(machine, ctx.paths.home),
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join70(folder, "dist", "router.js"),
+        bundle: join71(folder, "dist", "router.js"),
         machine,
         runner,
         service: ctx.systemd ? "systemd" : "none"
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join70(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join71(folder, "dist")) },
       mcp: realMcpDoctorDeps(),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join70(folder, "hooks", "hooks.json") }
+      project: { cwd: process.cwd(), pluginHooksFile: join71(folder, "hooks", "hooks.json") }
     };
   };
   const portal = await startPortal(ctx, {

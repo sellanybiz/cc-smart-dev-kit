@@ -267,7 +267,8 @@ covers the store as the portal found it. The doctor pass and an action's lines a
 the server publishes them when it has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
-`health`, `machine`, `settings`, `projects`, `projects/<id>`, `work`, `crew/<id>`, `flow`, `needs`,
+`health`, `machine`, `settings`, `projects`, `projects/<id>`, `projects/<id>/workflow`, `work`,
+`crew/<id>`, `flow`, `needs`,
 `guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
 through the door. Each answer is built from the same readers the server-rendered pages use
 (`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
@@ -290,6 +291,20 @@ memory over time, the merge verdict's review, its limits and what the review sti
 every open breaker with the router's live count of what waits, each doctor failure with its
 fix and section, and each worktree's idle minutes and the removals auto-clean has not reported
 yet. Nothing carries a key or a prompt.
+
+**A project's workflow settings, and the one action that changes them** (D57):
+`projects/<id>/workflow` answers every key `workflow set --project` takes, each with its value
+and where that value came from (`resolveWorkflow` + `resolvedValueOf`, the resolver
+`workflow show` prints from), the base a change would go into (`worktrees.base`) and whether
+`gh` can open a pull request now (`ghLoginState`, one cached answer a minute, as the branch
+verdicts are). A project's file that cannot be read is a `note` and no settings — never a
+`default` for a value the project really sets. The change itself is `project.workflow.propose`:
+the page asks first (`confirm`), then `runCliChild` runs the CLI's own `workflow propose` in a
+child in the project's folder — a branch, a worktree, a commit and a push never run in the
+server's process — and the answer carries the pull request's URL for the card's link. A crew
+session cannot reach it: the session-escape guard denies a crew session's call into the
+portal's port, and the child of a click is the person's, not the crew session whose start
+began the portal (`runCliChild` drops `CC_SMART_DEV_KIT_CREW`, D52).
 
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its

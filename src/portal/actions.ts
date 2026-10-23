@@ -81,6 +81,7 @@ import {
   readLastCheck,
   updateFiles,
 } from "../update/state";
+import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
 import {
   addProjectRoot,
   forgetProjectsList,
@@ -150,6 +151,11 @@ export interface ActionResult {
   filesHash?: string;
   /** `slot.test` only: one result per target, for the chain's own marks. */
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
+  /**
+   * `project.workflow.propose` only: the pull request it opened, for the card's own link.
+   * Taken from the CLI's last line, which prints the URL alone — the command's own contract.
+   */
+  url?: string;
 }
 
 /** Everything an action is given: the portal's own context, the CLI's two, and the workflow. */
@@ -878,6 +884,67 @@ async function setWorkflowSetting(
   }
 }
 
+/**
+ * `project.workflow.propose` (D57): one of the project's workflow settings, changed through a
+ * pull request. The page asks first (`confirm`), and the CLI's own `workflow propose` runs in a
+ * child (`runCliChild`) in the project's folder: the command makes a branch, a worktree, a
+ * commit and a push, and those must never run inside the server's process
+ * (`.claude/rules/portal.md`). The child is the same command the terminal runs, with the same
+ * checks and words; the answer carries the pull request's URL for the card's own link.
+ *
+ * A crew session cannot reach this: the session-escape guard denies a crew session's call into
+ * the portal's port (D36), and the child of a click is the person's — `runCliChild` drops
+ * `CC_SMART_DEV_KIT_CREW` whatever the portal's own environment says (D52).
+ */
+async function projectWorkflowPropose(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("proposed");
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const setting = typeof body.setting === "string" ? body.setting.trim() : "";
+  if (!WORKFLOW_KEYS.includes(setting as WorkflowKey)) {
+    return {
+      lines: [`"${setting}" is not a setting: the settings are ${WORKFLOW_KEYS.join(", ")}.`],
+      ok: false,
+    };
+  }
+  const unset = body.unset === true;
+  const value = typeof body.value === "string" ? body.value.trim() : "";
+  if (!unset && value === "") {
+    return { lines: ["Type the setting's value, or remove it from the project."], ok: false };
+  }
+  // A value never starts with "-"; letting one through would read as the command's own option.
+  if (!unset && value.startsWith("-")) {
+    return { lines: [`"${value}" is not a value: it starts with "-".`], ok: false };
+  }
+  const run = await runCliChild(
+    action.portal,
+    ["workflow", "propose", setting, ...(unset ? ["--unset"] : [value])],
+    {
+      cwd: target.cwd,
+      onLine: (line) => action.publish?.("action", { action: "project.workflow.propose", line }),
+    },
+  );
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut) {
+    lines.push(
+      "workflow propose did not answer in time, so it may have opened the pull request: look on GitHub before running it again",
+    );
+  }
+  const url = [...run.lines]
+    .reverse()
+    .map((line) => /https:\/\/\S+\/pull\/\d+/.exec(line))
+    .find((found) => found !== null)?.[0];
+  return {
+    ...(url === undefined ? {} : { url }),
+    lines,
+    ok: run.error === null && !run.timedOut && run.exitCode === 0,
+  };
+}
+
 // ── The project's two files ─────────────────────────────────────────────────────
 
 /** The form's own fields: everything the Project card shows, and nothing else. */
@@ -1542,6 +1609,7 @@ export const ACTION_NAMES = [
   "omniroute.update",
   "project.add",
   "project.preview",
+  "project.workflow.propose",
   "project.write",
   "router.restart",
   "slot.breaker",
@@ -1639,6 +1707,8 @@ export async function runAction(
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.workflow.propose":
+      return projectWorkflowPropose(action, body);
     case "project.add":
       return projectAdd(action, body);
     case "crew.answer": {
