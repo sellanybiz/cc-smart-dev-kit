@@ -245,8 +245,8 @@ export const UNREADABLE_VIEW_WHY =
  * launched with (`sessionFlags`, the same home the launch reads them from) — and then the text,
  * when there is one. **The text comes after a bare `--`**: a text that starts with `-` ("-1 is
  * wrong: use 2") would otherwise be read as a flag, and the resume fails with `unknown option`
- * (proved live on 2.1.309: without `--` the CLI answered `error: unknown option '-1 is wrong:
- * use 2'`; with it the fake Anthropic's log held the text as the prompt,
+ * (proved live on 2.1.309 with `claude -p`: without `--` it answered `error: unknown option
+ * '-1 is wrong: use 2'`; with it the fake Anthropic's log held the text as the prompt,
  * `docs/claude-code-contract.md`). Without the files a resumed session is a plain session: no
  * `CREW_ENV` (so no longer a crew session), every plugin and connector back, every MCP server
  * loaded, the lean start undone (`crew start`). The files are read from the store, never rebuilt.

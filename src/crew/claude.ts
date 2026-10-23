@@ -208,8 +208,8 @@ export function sessionFlags(
  * `MCP config file not found: …/Say ok`). `--settings` takes one value and ends the list.
  *
  * **The first line comes after a bare `--`**, like a resume's text (`resumeArgs`): a first line
- * that starts with `-` would be read as a flag, and `claude` refuses the launch with `unknown
- * option` (proved live on 2.1.309, `docs/claude-code-contract.md`).
+ * that starts with `-` would be read as a flag, and `claude -p` refuses such a prompt with
+ * `unknown option` (proved live on 2.1.309, `docs/claude-code-contract.md`).
  */
 export function launchArgs(spec: CrewLaunchSpec): string[] {
   return [

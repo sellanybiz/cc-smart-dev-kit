@@ -304,6 +304,8 @@ interface ShellContext {
   paths: CliPaths;
   /** The input's `cwd`, or null; where a relative target is looked for, besides a `cd`'s. */
   cwd: string | null;
+  /** The line's text names the kit command as a token, never a path through its name (`KIT_WORD`). */
+  namesKit: boolean;
   /** The platform whose paths the line names (the hook's own; a test may pass another). */
   platform: NodeJS.Platform;
   /** The whole command text, for the check that reads text rather than commands. */
@@ -514,14 +516,17 @@ function innerKitPrefix(program: string, operands: readonly string[]): string[] 
 const COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
 
 /**
- * The kit command as a token of a line's text (`K=${COMMAND}; $(which $K) …` names it too),
- * never as part of a path: `/repo/${COMMAND}/src/x.test.ts` is an argument to another program,
- * and the computed program beside it runs that program, not the kit (the false alarm of 1.1.0,
- * in a crew session working in this repository, whose name every path holds). A token that
- * ends a word still counts when a substitution closes it (`$(which ${COMMAND})`).
+ * The kit command as a token of a line's text (`K=${COMMAND}; $(which $K) …` names it too,
+ * and so does a launcher named by its path, `/…/bin/${COMMAND}` or `${COMMAND}.cmd`), but never
+ * a path that only passes through a folder of that name: a path separator may come before the
+ * name and never after it, so `/repo/${COMMAND}/src/x.test.ts` is an argument to another
+ * program, and the computed program beside it runs that program (the false alarm of 1.1.0, in
+ * a crew session working in this repository, whose name every path holds). A token that ends a
+ * word still counts when a substitution or an assignment closes it (`$(which ${COMMAND})`,
+ * `K=${COMMAND}`).
  */
 const KIT_WORD = new RegExp(
-  `(^|[^\\w.\\-/\\\\])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^\\w.\\-/\\\\])`,
+  `(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`,
   "i",
 );
 
@@ -593,8 +598,6 @@ function readLine(
   const { dialect, joinLines } = reading;
   let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
   let where = folder;
-  /** The line's text names the kit command as a token, never as part of a path (`KIT_WORD`). */
-  const textNamesKit = KIT_WORD.test(ctx.text);
   /**
    * A command before this one in the line runs the kit: a computed program after it can be
    * that command's output (`$(/…/cc-smart-dev-kit) workflow …`), so it asks like a named one.
@@ -627,11 +630,11 @@ function readLine(
         judgeKitCommand(kit, here ?? inside, found);
       }
       // A computed program cannot be named. Ask when the line names the kit command — a
-      // bundle among the program's own words (`$(which bun) …/dist/cli.js`), a word the line
-      // binds to the launcher, or a path the text holds (but a path that merely holds the
-      // name is no command, `KIT_WORD`) — or when an earlier command in the line runs it and
-      // its output could be this program.
-      if (invocation.computed && (kit !== null || textNamesKit || ranKit)) {
+      // bundle among the program's own words (`$(which bun) …/dist/cli.js`), a launcher the
+      // line binds or holds by path (`ctx.namesKit`), or an earlier command that runs it whose
+      // output could be this program — and never for a path that merely passes through its
+      // name.
+      if (invocation.computed && (kit !== null || ctx.namesKit || ranKit)) {
         found.asks.add(COMPUTED_KIT_ASK);
       }
       ranKit ||= isKitWord(program);
@@ -708,8 +711,9 @@ function judgeShell(
   if (command === "") return SILENT;
   const found: Findings = { denials: new Set(), asks: new Set() };
   const ctx: ShellContext = {
-    paths,
     cwd: stringField(input.cwd),
+    namesKit: KIT_WORD.test(command),
+    paths,
     platform,
     text: command,
   };
