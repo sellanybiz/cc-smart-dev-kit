@@ -72,3 +72,32 @@ watchdog on, and stay as they are.
 3. `git grep -n -iE "default (is )?no|asked once|RETRY_WATCHDOG_QUESTION"` shows nothing stale
    about the watchdog outside `.claude/plans/` and the archives.
 4. Your review, then your report.
+
+## Round 2 (the owner, 2026-10-23): a 24-hour cap, and you are a subagent now
+
+- **The work so far is commit `d5abf0f` on `crew/RW1-watchdog-on`**, in the worktree
+  `.claude/worktrees/crew-RW1-watchdog-on`. The first session was stopped by the lead (it ran
+  without the kit loaded: LS1). Read that commit first, judge it against this brief, and go on
+  from it. You are the lead's subagent, not a crew session: no `crew report`, no `crew step`; you
+  commit on that branch and report back to the lead.
+- **The cap:** setup writes a third owned key with the other two:
+  `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS` = `86400000` (24 hours), one named
+  constant in `src/setup/retry-watchdog.ts` with the others, in `RETRY_WATCHDOG_SETTINGS`. Why:
+  a weekly limit can reset days away, and Claude Code's own automatic continue refuses a wait
+  past 24 h for that reason; with the cap the request ends instead of holding a `claude -p`
+  script for days. The 5-hour limit and an overloaded or failing model are still waited out
+  with no limit (the cap only applies to a usage limit's reset distance). Proved: the contract
+  row on `CLAUDE_CODE_RETRY_WATCHDOG=1` (`…_MAX_USAGE_LIMIT_WAIT_MS` ends it at that distance:
+  900 000 → 901 s, on 2.1.308); say in that row that setup now writes it.
+- **A machine that already has our two keys** gets the third at its next `setup` (one line).
+  **A person's own `CLAUDE_CODE_RETRY_WATCHDOG`** (not ours): setup adds no cap beside it — their
+  watchdog, their limits. `--no-retry-watchdog` and `restore` take all three of ours out.
+- **The `·` line** also says: a limit that resets more than 24 hours away ends the wait.
+- **Crew sessions are unchanged:** `src/crew/start.ts` keeps its own two keys and no cap (D42).
+  Check that a new constant in the module does not reach the crew settings.
+- **`CHANGELOG.md` is now the lead's**: do not edit it. Everything else in "Your files" stands.
+- The docs: README § Waiting at a limit, `docs/design/retry-watchdog.md` and the rule say the
+  cap and why, in one sentence each.
+- Done when `bun run check` is green on the branch head; one commit on top of `d5abf0f`
+  (squash nothing). Report: the commit, the files with one line each, the commands and results,
+  and anything left open.
