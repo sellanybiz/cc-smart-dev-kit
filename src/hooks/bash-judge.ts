@@ -222,10 +222,16 @@ function claudeLaunch(step: Step): ClaudeLaunch | null {
  * null: `cc-smart-dev-kit crew start|answer|stop|rm|resume|watch|lead|lead tell …`, whatever
  * path the launcher is named by. A crew session's own commands (`step`, `report`, `tell`,
  * `self-watch`, the board reads) are not in the map, so they pass.
+ *
+ * A program the line works out when it runs (`$BIN crew answer …`) is read from its own
+ * words, as the launches are: a crew session's lead command is denied whatever runs it, and
+ * a line that names one in a crew session is refused rather than let through.
  */
-function crewNeverRunOf(program: string, args: string[]): CrewNeverRun | null {
-  if (program !== COMMAND || args[0] !== "crew") return null;
-  const sub = args[1] === "lead" && args[2] === "tell" ? "lead tell" : (args[1] ?? "");
+function crewNeverRunOf(step: Step): CrewNeverRun | null {
+  if (step.args[0] !== "crew") return null;
+  if (!step.computed && step.program !== COMMAND) return null;
+  const sub =
+    step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : (step.args[1] ?? "");
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? (sub as CrewNeverRun) : null;
 }
 
@@ -391,7 +397,7 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   let waits = state.loops;
   const launches: ClaudeLaunch[] = [];
   for (const step of steps) {
-    const never = crewNeverRunOf(step.program, step.args);
+    const never = crewNeverRunOf(step);
     if (never !== null) crewNeverRuns.push(never);
     if (isStatusRead(step.program, step.args)) {
       statusReads++;

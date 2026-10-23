@@ -265,6 +265,8 @@ describe("a crew session running a lead's command", () => {
       "env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit crew answer C-x 'yes'",
       "answers its lead's questions",
     ],
+    // A program the line works out when it runs is read from its own words, as a launch is.
+    ["$BIN crew answer C-x 'yes'", "answers its lead's questions"],
     ["cc-smart-dev-kit crew watch", "watches its lead's crew sessions"],
     ["cc-smart-dev-kit crew stop C-x", "stops, removes or resumes crew sessions"],
     ["cc-smart-dev-kit crew rm C-x", "stops, removes or resumes crew sessions"],
