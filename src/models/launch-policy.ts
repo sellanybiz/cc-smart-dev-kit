@@ -28,6 +28,7 @@ import {
   CLAUDE_FAMILIES,
   type ClaudeFamily,
   claudeFamily,
+  familyEnv,
   familySlotKey,
   isSlotKey,
   MODEL_SLOTS,
@@ -183,11 +184,6 @@ function premiumTier(family: ClaudeFamily | null): "fable" | "opus" | null {
  */
 function tierOfReading(family: ClaudeFamily | null): "fable" | "opus" | null {
   return family === null ? "opus" : premiumTier(family);
-}
-
-/** Claude Code's override for a family: `ANTHROPIC_DEFAULT_OPUS_MODEL`, … */
-export function familyEnv(family: ClaudeFamily): string {
-  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
 
 /**

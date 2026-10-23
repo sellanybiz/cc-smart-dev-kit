@@ -38,7 +38,7 @@ import {
   messageOf,
   profileNames,
 } from "./config";
-import { readGatewaySettings, routerBaseUrl, shownValue } from "./settings";
+import { type ModelKeyFact, readGatewaySettings, routerBaseUrl, shownValue } from "./settings";
 import { isProfileName, PROFILE_PATH_PREFIX } from "./targets";
 
 /** What a base URL means for a project. */
@@ -56,8 +56,12 @@ export interface SettingsFileState {
   url: null | string;
   /** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper`: they replace the login. */
   loginOverrides: string[];
+  /** Claude Code's own model keys it sets (`model`, `ANTHROPIC_DEFAULT_*_MODEL`), as written. */
+  modelKeys: ModelKeyFact[];
   /** Why the file cannot be used, in words; null when it can. Never quotes the file's text. */
   problem: null | string;
+  /** `CLAUDE_CODE_SUBAGENT_MODEL[_FORCE]`: they move an agent launched without a `model`. */
+  subagentOverrides: string[];
 }
 
 /** What one stretch of the settings chain decides. */
@@ -192,18 +196,38 @@ export function urlMeaning(
  * a subfolder's session does not read (P6) and a status line warns about.
  */
 export function settingsFileState(path: string, kind: SettingsLevel): SettingsFileState {
-  if (!existsSync(path)) return { kind, loginOverrides: [], path, problem: null, url: null };
+  if (!existsSync(path)) {
+    return {
+      kind,
+      loginOverrides: [],
+      modelKeys: [],
+      path,
+      problem: null,
+      subagentOverrides: [],
+      url: null,
+    };
+  }
   try {
     const facts = readGatewaySettings(path);
     return {
       kind,
       loginOverrides: facts.loginOverrides,
+      modelKeys: facts.modelKeys,
       path,
       problem: facts.baseUrlProblem,
+      subagentOverrides: facts.subagentOverrides,
       url: facts.baseUrl,
     };
   } catch (error) {
-    return { kind, loginOverrides: [], path, problem: messageOf(error), url: null };
+    return {
+      kind,
+      loginOverrides: [],
+      modelKeys: [],
+      path,
+      problem: messageOf(error),
+      subagentOverrides: [],
+      url: null,
+    };
   }
 }
 

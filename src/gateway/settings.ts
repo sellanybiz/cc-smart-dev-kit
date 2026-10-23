@@ -20,6 +20,7 @@ import {
 } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
+import { CLAUDE_FAMILIES, familyEnv } from "./targets";
 
 /**
  * The env keys `gateway on` writes. No model is pinned: Claude Code sends each Claude
@@ -308,6 +309,18 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
 }
 
 /**
+ * One of Claude Code's own model keys, and the value it holds. The kit never writes these keys
+ * (`FORBIDDEN_ENV_KEYS` covers the subagent ones); it reads them only to warn: a project file
+ * that names a slot or a backend target there sends that name past the gateway's slots
+ * (`doctor`, GP4a). A value is a model name, never a secret.
+ */
+export interface ModelKeyFact {
+  /** The key as a person reads it: `model`, `env.ANTHROPIC_DEFAULT_HAIKU_MODEL`. */
+  key: string;
+  value: string;
+}
+
+/**
  * A settings file's gateway facts as they are written, for a reader that must compare the URL
  * itself — the project's effective-state reader (`project-state.ts`), which tells this
  * machine's router from another gateway's address. Never for output: `settingsReport` masks.
@@ -319,6 +332,9 @@ export function readGatewaySettings(settingsPath: string): {
   baseUrl: null | string;
   baseUrlProblem: null | string;
   loginOverrides: string[];
+  /** Claude Code's own model keys the file sets, in one fixed order: `model` first, then each
+   * family's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`. */
+  modelKeys: ModelKeyFact[];
   subagentOverrides: string[];
 } {
   const settings = readSettings(settingsPath);
@@ -332,7 +348,26 @@ export function readGatewaySettings(settingsPath: string): {
   const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   if (Object.hasOwn(settings, "apiKeyHelper")) loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  return { baseUrl: usable ? held : null, baseUrlProblem, loginOverrides, subagentOverrides };
+  // Claude Code's own model keys, read for the doctor's warning: a slot key or a backend target
+  // here reaches past the gateway's slots. Read as they are written; a value that is not a text
+  // names no model.
+  const modelKeys: ModelKeyFact[] = [];
+  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+    modelKeys.push({ key: "model", value: settings.model });
+  }
+  for (const family of CLAUDE_FAMILIES) {
+    const key = familyEnv(family);
+    const value = env[key];
+    if (typeof value === "string" && value.trim() !== "")
+      modelKeys.push({ key: `env.${key}`, value });
+  }
+  return {
+    baseUrl: usable ? held : null,
+    baseUrlProblem,
+    loginOverrides,
+    modelKeys,
+    subagentOverrides,
+  };
 }
 
 /** What Claude Code's settings say about the gateway, as output may show them: names only, never a value. */

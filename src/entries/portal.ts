@@ -34,6 +34,7 @@ import { startDetached } from "../hooks/detached";
 import { type Machine, realMachine } from "../machine/machine";
 import { openUrlOnDesktop } from "../machine/open-url";
 import { realMcpDoctorDeps } from "../mcp/doctor";
+import { projectsList } from "../portal/api/projects";
 import {
   claudeCodeProfileHere,
   installedPluginFolder,
@@ -224,6 +225,17 @@ async function runServer(
         machine,
         runner,
         service: ctx.systemd ? "systemd" : "none",
+        // The per-project doctor lines read the portal's own list: the same reader the
+        // Projects page uses, so the page and the doctor cannot disagree (GP4a).
+        projects: async (projectFolder) => {
+          const list = await projectsList({
+            cwd: projectFolder,
+            env: ctx.env,
+            now: ctx.now,
+            paths: ctx.paths,
+          });
+          return { note: list.note, projects: list.projects };
+        },
       },
       live: null,
       local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join(folder, "dist")) },

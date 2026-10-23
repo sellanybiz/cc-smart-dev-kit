@@ -153,6 +153,24 @@ const prompts = terminalPrompts(currentTerminal(process.env));
 const ask = prompts === null ? null : (question: string) => prompts.confirm(question, false);
 
 /**
+ * The projects list the kit shows, in one place: `gateway projects`, `gateway off`'s
+ * "still on" lines and `doctor`'s per-project lines all read the portal's own `projectsList`,
+ * so the command, the doctor and the Projects page can never disagree about which projects
+ * exist.
+ */
+function projectsReader(paths: ReturnType<typeof cliPaths>) {
+  return async (folder: string) => {
+    const list = await projectsList({
+      cwd: folder,
+      env: process.env,
+      now: () => Date.now(),
+      paths,
+    });
+    return { note: list.note, projects: list.projects };
+  };
+}
+
+/**
  * The gateway commands' context. `src/gateway/context.ts` owns it — including the one decision
  * `--omniroute-password` needs (`readSecret` on a terminal whose echo can be switched off, and
  * nothing on a pipe), which this entry used to leave out.
@@ -171,15 +189,7 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     }),
     // `gateway projects` lists the portal's own projects (`projectsList`): one reader for the
     // page and the command, so the two can never disagree about which projects exist.
-    projects: async (folder) => {
-      const list = await projectsList({
-        cwd: folder,
-        env: process.env,
-        now: () => Date.now(),
-        paths,
-      });
-      return { note: list.note, projects: list.projects };
-    },
+    projects: projectsReader(paths),
   };
 }
 
@@ -426,6 +436,7 @@ async function main(argv: string[]): Promise<number> {
             runner,
             service,
             machine: realMachine(process.env, null),
+            projects: projectsReader(paths),
           },
           local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
           mcp: realMcpDoctorDeps(),

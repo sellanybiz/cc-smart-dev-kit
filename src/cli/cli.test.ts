@@ -1064,11 +1064,14 @@ describe("cc-smart-dev-kit doctor", () => {
     expect(verbose).not.toContain("--verbose");
     expect(verbose).toEndWith("\n✓ Everything works: 22 checks passed.\n");
     // git is asked for the user's own ssh command, then told never to ask for a password.
-    // Then which project the folder is in (this fake git says: none).
+    // Then which project the folder is in (this fake git says: none) — once for the project
+    // group, once by the gateway's project list (the portal's own reader, GP4a: the doctor
+    // asks it about every known project, and that reader finds the folder's checkout too).
     expect(doctorGitCalls).toBe(
       [
         "config --get core.sshCommand | prompt=0 | ssh=",
         "ls-remote git@github.com:example-org/cc-smart-dev-kit.git HEAD | prompt=0 | ssh=ssh -o BatchMode=yes -o ConnectTimeout=8",
+        "rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir | prompt= | ssh=",
         "rev-parse --path-format=absolute --show-toplevel --absolute-git-dir --git-common-dir | prompt= | ssh=",
         "",
       ].join("\n"),

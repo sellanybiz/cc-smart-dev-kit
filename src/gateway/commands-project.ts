@@ -124,7 +124,10 @@ export function projectOptions(args: string[]): null | ProjectOptions | { error:
 }
 
 /** A folder's state, from the two files the reader is given. */
-function stateOf(ctx: GatewayContext, folder: string): ProjectGatewayState {
+export function projectStateOf(
+  ctx: Pick<GatewayContext, "paths">,
+  folder: string,
+): ProjectGatewayState {
   return projectGatewayState(folder, {
     configPath: ctx.paths.gatewayConfigFile,
     settingsFile: ctx.paths.settingsFile,
@@ -280,7 +283,7 @@ async function applyProjectChange(
   return await withLock(
     paths.stateDir,
     async () => {
-      const view = stateOf(ctx, folder);
+      const view = projectStateOf(ctx, folder);
       const plan = planProjectChange(view, {
         config: readGatewayConfig(paths.gatewayConfigFile).config,
         configPath: paths.gatewayConfigFile,
@@ -303,7 +306,7 @@ async function applyProjectChange(
         plan.value === null
           ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir })
           : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
-      return { exclude, plan, result, saved: stateOf(ctx, folder) };
+      return { exclude, plan, result, saved: projectStateOf(ctx, folder) };
     },
     { waitMs: 10_000 },
   );
@@ -360,7 +363,7 @@ function markOf(decision: GatewayDecision): "fail" | "info" | "ok" | "warn" {
  * personal and team files say where they live and whether they are committed; the machine's
  * file is the person's own, and the shell may still set a value this cannot see (P3).
  */
-function projectSourceWords(
+export function projectSourceWords(
   decision: Pick<GatewayDecision, "source">,
   home: string,
   view: ProjectGatewayState,
@@ -383,7 +386,7 @@ function projectSourceWords(
 function projectStatus(ctx: GatewayContext, folder: string): number {
   const out = gatewayOut(ctx);
   const { paths } = ctx;
-  const view = stateOf(ctx, folder);
+  const view = projectStateOf(ctx, folder);
   const { effective } = view;
   out.heading(`Gateway in this project (${tildify(view.folder, paths.home)}):`);
   out.line(markOf(effective), decisionWords(effective), { indent: 2 });
@@ -523,7 +526,7 @@ export async function commandProject(
   if (options.state === "on") {
     // The same check as `gateway on`: a project pointed at a router that is not there fails
     // every request from its next session.
-    const port = portOf(stateOf(ctx, options.folder));
+    const port = portOf(projectStateOf(ctx, options.folder));
     const health = await routerHealth(port, ctx.probe.fetch);
     if ("error" in health) {
       throw new Error(
@@ -627,7 +630,7 @@ export async function commandProjects(
   }
   out.heading("Projects (the same list as the portal's Projects page):");
   for (const project of list.projects) {
-    const view = stateOf(ctx, project.root);
+    const view = projectStateOf(ctx, project.root);
     ctx.print(
       `  ${project.name}  ${tildify(project.root, ctx.paths.home)}${project.current ? "  (here)" : ""}`,
     );

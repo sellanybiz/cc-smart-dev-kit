@@ -2037,6 +2037,137 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
   });
 });
 
+describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", () => {
+  /** A git project under the temp home's `Code/`, so its lines tildify. */
+  function project(home: string, label: string): string {
+    const root = join(home, "Code", label);
+    mkdirSync(root, { recursive: true });
+    git(root, "init", "-q", "-b", "main");
+    writeFileSync(join(root, "README.md"), "app\n");
+    git(root, "add", "README.md");
+    git(root, "commit", "-qm", "init");
+    return root;
+  }
+
+  /** A settings file with exactly the content given (and a folder for it). */
+  function writeSettings(path: string, body: Record<string, unknown>): void {
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(body, null, 2)}\n`);
+  }
+
+  /** A gateway config with the backends given, so a `<backend>:<model>` warning has a target. */
+  function writeGatewayConfig(m: ReturnType<typeof machine>, backends: Record<string, unknown>) {
+    mkdirSync(dirname(m.paths.config), { recursive: true });
+    writeFileSync(
+      m.paths.config,
+      `${JSON.stringify({ backends, port: 20999, slots: {}, version: 1 }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+  }
+
+  /** The checks for the projects given, on a machine where the gateway was never installed. */
+  async function checksFor(
+    m: ReturnType<typeof machine>,
+    roots: string[],
+  ): Promise<{ check: string; warn: boolean }[]> {
+    const checks = await gatewayChecks({
+      paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+      bundle: BUILT_ROUTER,
+      runner: () => ({ exitCode: 0, output: "active\n" }),
+      service: "systemd",
+      fetch: m.probe.fetch,
+      folder: roots[0] ?? m.home,
+      projects: async () => ({
+        note: null,
+        projects: roots.map((root) => ({
+          current: root === roots[0],
+          name: root.slice(root.lastIndexOf("/") + 1),
+          root,
+        })),
+      }),
+    });
+    return checks.map((check) => ({
+      check: checkLine(check),
+      warn: check.ok && check.warn === true,
+    }));
+  }
+
+  test("one line per known project: its state, and the file it comes from (also with no gateway)", async () => {
+    const m = machine();
+    const on = project(m.home, "app");
+    const off = project(m.home, "site");
+    const bare = project(m.home, "bare");
+    // The personal file (the main checkout's) says on; the team file says off; `bare` sets
+    // nothing, so the machine's settings decide.
+    writeSettings(join(on, ".claude", "settings.local.json"), {
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20100" },
+    });
+    writeSettings(join(off, ".claude", "settings.json"), {
+      env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+    });
+    const lines = await checksFor(m, [on, off, bare]);
+    expect(lines.map((line) => line.check)).toEqual([
+      "· gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
+      "· ~/Code/app (here): on → http://127.0.0.1:20100  · from the personal file ~/Code/app/.claude/settings.local.json (never committed)",
+      "· ~/Code/site: off → https://api.anthropic.com  · from the team file ~/Code/site/.claude/settings.json (committed with the project)",
+      "· ~/Code/bare: default: no file of this project sets a gateway address, so the machine's settings decide",
+    ]);
+    expect(lines.every((line) => !line.warn)).toBe(true);
+  });
+
+  test("! a project's model key that names a slot or a backend target bypasses the slots", async () => {
+    const m = machine();
+    // The backend target must be one the config knows: `omniroute` is, so its key warns.
+    writeGatewayConfig(m, { omniroute: { apiKey: "omni-key", baseUrl: "http://omni.test" } });
+    const root = project(m.home, "warny");
+    const file = join(root, ".claude", "settings.local.json");
+    writeSettings(file, {
+      env: {
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "omniroute:glm-5.3-flash",
+        // Claude Code's own keys, naming a Claude model: nothing to warn about.
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5-5",
+        // A `<name>:<model>` the config does not have is no backend target: the router sends
+        // it to Anthropic as Claude Code sent it, so nothing is warned about either.
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "notaconfigured:m1",
+      },
+      model: "cc-smart-dev-kit-worker",
+    });
+    const lines = await checksFor(m, [root]);
+    expect(lines.filter((line) => line.warn).map((line) => line.check)).toEqual([
+      "! ~/Code/warny/.claude/settings.local.json sets model to \"cc-smart-dev-kit-worker\": it is Claude Code's own model key, and cc-smart-dev-kit never writes it. It names a slot, so it bypasses the slots: Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
+      "! ~/Code/warny/.claude/settings.local.json sets env.ANTHROPIC_DEFAULT_HAIKU_MODEL to \"omniroute:glm-5.3-flash\": it is Claude Code's own model key, and cc-smart-dev-kit never writes it. It names a backend target, so it bypasses the slots: the request goes to that backend alone, with no fallback. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
+    ]);
+  });
+
+  test("✗ a project file that cannot be read names the file and its own error", async () => {
+    const m = machine();
+    const root = project(m.home, "broken");
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(join(root, ".claude", "settings.local.json"), "{not json\n");
+    const lines = await checksFor(m, [root]);
+    expect(lines[1]?.check).toBe(
+      "✗ ~/Code/broken (here): unknown: a settings file in the way cannot be read (~/Code/broken/.claude/settings.local.json: is not valid JSON. Fix it by hand, then run again.) Fix: fix that settings file by hand, or move it aside; nothing in this project is guessed past it",
+    );
+  });
+
+  test("! a project's subagent model keys: an agent launched without a model leaves Claude", async () => {
+    const m = machine();
+    const root = project(m.home, "agents");
+    const file = join(root, ".claude", "settings.local.json");
+    writeSettings(file, {
+      env: {
+        CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-scout",
+        CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "cc-smart-dev-kit-scout",
+      },
+    });
+    const lines = await checksFor(m, [root]);
+    expect(lines.filter((line) => line.warn).map((line) => line.check)).toEqual([
+      "! ~/Code/agents/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL: it is Claude Code's own key, and cc-smart-dev-kit never writes it. An agent launched without a model runs on whatever it names, so a review could leave Claude. Remove it by hand. Fix: remove it by hand from ~/Code/agents/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
+      "! ~/Code/agents/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE: it is Claude Code's own key, and cc-smart-dev-kit never writes it. It overrides the model of every Agent call, so a review cannot stay on Claude. Remove it by hand. Fix: remove it by hand from ~/Code/agents/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
+    ]);
+  });
+});
+
 describe("cc-smart-dev-kit gateway slot: the file", () => {
   test("a field this version does not know survives a slot change; the file stays mode 600", async () => {
     const m = machine();

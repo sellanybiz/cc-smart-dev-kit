@@ -635,3 +635,42 @@ describe("gateway projects", () => {
     expect(m.output()).toContain("here");
   });
 });
+
+describe("gateway off: the projects still on (GP4a)", () => {
+  test("a project's own on keeps it on the router after the machine goes off; the line names the command", async () => {
+    const m = machine();
+    // A folder with a space in it: the Fix line must quote it, or the copied command breaks.
+    const on = repo("gp4a off on");
+    const off = repo("gp4a-off-off");
+    const bare = repo("gp4a-off-bare");
+    await m.run(["project", "on", "--folder", on]);
+    await m.run(["project", "off", "--folder", off]);
+    m.ctx.projects = async () => ({
+      note: null,
+      projects: [
+        { current: false, name: "on", root: on },
+        { current: false, name: "off", root: off },
+        { current: false, name: "bare", root: bare },
+      ],
+    });
+    m.reset();
+
+    expect(await m.run(["off"])).toBe(0);
+    // The machine's own key is gone (there was none); the project's own value still points
+    // at the router, so `off` says which projects keep it on and how to turn each off.
+    expect(m.lines).toEqual([
+      `! ${on} stays on: on → ${ROUTER}  · from the personal file ${join(on, ".claude", "settings.local.json")} (never committed)`,
+      // The folder has a space in it: the command as printed is one the person can paste.
+      `  Fix: cc-smart-dev-kit gateway project off --folder '${on}'`,
+      "! The gateway is off on this machine; 1 project still points at the router (above).",
+    ]);
+  });
+
+  test("with no project list to read, off says only what it did to this machine", async () => {
+    const m = machine();
+    expect(await m.run(["off"])).toBe(0);
+    expect(m.lines).toEqual([
+      "✓ Nothing to remove: cc-smart-dev-kit set no gateway key in ~/.claude/settings.json.",
+    ]);
+  });
+});

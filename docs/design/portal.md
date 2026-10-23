@@ -478,8 +478,11 @@ doctor's synchronous runner and the portal's asynchronous one run the same comma
 same words. Still on the loop, and owed to a later phase: the Machine page's doctor pass, whose
 gateway checks ask the service through doctor's synchronous `Runner` (`service.state`,
 `service.running`) besides that check; `doctor.run`; the project read's git (`resolveProject`, and
-`projectInitDefaults`' `gh`); and the browser card's legacy process list (`ps`, when 0.3.0's
-leftovers are on the machine).
+`projectInitDefaults`' `gh`); the browser card's legacy process list (`ps`, when 0.3.0's
+leftovers are on the machine); and, since GP4a, that pass's per-project lines
+(`projectChecks`), which read each known project's checkout and personal file through
+`projectGatewayState`'s synchronous git (`locateCheckout`, `personalTracked`) — a cost that
+grows with the number of projects.
 
 ### The pages' facts and actions (B6d)
 
