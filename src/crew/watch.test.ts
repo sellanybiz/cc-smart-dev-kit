@@ -18,12 +18,15 @@ import {
   appendCrewEvent,
   type CrewRecord,
   createCrew,
+  crewMcpFile,
+  crewSettingsFile,
   eventsEndOffset,
   listCrew,
   readCrew,
   readWatchState,
   type WatchState,
   writeLead,
+  writeStoreFile,
 } from "./store";
 import type { GatewayNow } from "./wait";
 import { eventLine, type WatchScope, watchPass } from "./watch";
@@ -1183,8 +1186,11 @@ describe("D42: the watch resumes a paused crew session", () => {
       waitingFor: SLOT_WAIT,
       ...change,
     });
-    // Its worktree is there: a resume runs in it, and one with no folder is refused.
+    // Its worktree is there: a resume runs in it, and one with no folder is refused. Its own
+    // settings and MCP files are there too, as `crew start` writes them: a resume carries both.
     if (change.worktree === undefined) mkdirSync(record.worktree, { recursive: true });
+    writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, record.id), "{}\n");
+    writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, record.id), '{"mcpServers":{}}\n');
     return record;
   }
 
@@ -1280,6 +1286,11 @@ describe("D42: the watch resumes a paused crew session", () => {
         "--bg",
         "--resume",
         record.sessionId ?? "",
+        "--strict-mcp-config",
+        "--mcp-config",
+        crewMcpFile(world.paths.stateDir, world.repo, record.id),
+        "--settings",
+        crewSettingsFile(world.paths.stateDir, world.repo, record.id),
         "The wait is over: Claude's limit reset at 09:58. Go on with phase B6b, then hand it back as usual.",
       ],
     ]);

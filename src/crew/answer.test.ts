@@ -14,19 +14,30 @@ import { runCrew } from "./command";
 import {
   addCrewQuestion,
   createCrew,
+  crewMcpFile,
   crewReportFile,
+  crewSettingsFile,
   listCrew,
   readCrewEvents,
   writeLead,
+  writeStoreFile,
 } from "./store";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
 const NAME = "C my-app B6b portal-live";
 
-/** The crew session's worktree, as the world records it. */
+/** The crew session's worktree and its own two files, as the world records them. */
 function worktreeOf(world: ReturnType<typeof crewWorld>): string {
   return join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+}
+
+/** The record's own files, as `crew start` writes them: a resume carries both. */
+function filesOf(world: ReturnType<typeof crewWorld>): { mcp: string; settings: string } {
+  return {
+    mcp: crewMcpFile(world.paths.stateDir, world.repo, ID),
+    settings: crewSettingsFile(world.paths.stateDir, world.repo, ID),
+  };
 }
 
 /** A world with one crew session that asked a question, in `state`. */
@@ -85,6 +96,9 @@ async function askedWorld(state: "working" | "stopped" | "blocked" | "done" = "w
     { options: ["3210", "3211"], question: "which port?", recommended: 1 },
     T0,
   );
+  // Its own files, as `crew start` writes them: a resume carries them.
+  writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, ID), "{}\n");
+  writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, ID), '{"mcpServers":{}}\n');
   return world;
 }
 
@@ -184,22 +198,46 @@ describe("crew answer", () => {
     expect(world.err[0]).toBe(`crew answer: ${NAME} is done, and it takes no more answers`);
   });
 
-  test("D35: a stopped crew session is resumed with the answer as its next prompt, in its worktree", async () => {
+  test("D35: a stopped crew session is resumed with the answer as its next prompt, in its worktree, with its own files", async () => {
     const world = await askedWorld("stopped");
+    const { mcp, settings } = filesOf(world);
     const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     // One read of agent view (is the session gone?), then the resume — the exact argv, in the
-    // crew session's own worktree and never the main checkout.
+    // crew session's own worktree and never the main checkout, and the record's own settings and
+    // MCP files, so the resumed session is still this crew session and still lean.
     expect(world.claudeCalls()).toEqual([
       ["agents", "--json", "--all"],
-      ["--bg", "--resume", "aaaa1111-2222-3333-4444-555555555555", "the port is 3210"],
+      [
+        "--bg",
+        "--resume",
+        "aaaa1111-2222-3333-4444-555555555555",
+        "--strict-mcp-config",
+        "--mcp-config",
+        mcp,
+        "--settings",
+        settings,
+        "the port is 3210",
+      ],
     ]);
     expect(world.cwdCalls()).toEqual([world.repo, worktreeOf(world)]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBe("the port is 3210");
     // It is running again, so it holds a place and the watch must not stop it.
     expect(record?.state).toBe("working");
+  });
+
+  test("D35: a stopped crew session whose settings file is gone is not resumed: it would be no crew session", async () => {
+    const world = await askedWorld("stopped");
+    const { settings } = filesOf(world);
+    rmSync(settings);
+    const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME} has no settings file any more (${settings}), so a resume would come back as a plain session`,
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
   });
 
   test("D35: a stopped crew session with no worktree is refused with one line: nothing to resume in", async () => {

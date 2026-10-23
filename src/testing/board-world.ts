@@ -11,11 +11,19 @@
  *   FAKE_WORKTREE     a folder: `claude rm` refuses while it exists, in Claude Code's own words
  *                     (proved live, L1a.1: it refuses a worktree that is still there).
  *   FAKE_RESPAWN      `fail` (exit 1, "could not respawn").
+ *   FAKE_BG           `fail` (exit 4, "something broke"): a resume claude refuses.
  */
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { crewBranch, worktreeName } from "../crew/start";
-import { type CrewRecord, createCrew, writeLead } from "../crew/store";
+import {
+  type CrewRecord,
+  createCrew,
+  crewMcpFile,
+  crewSettingsFile,
+  writeLead,
+  writeStoreFile,
+} from "../crew/store";
 import type { CrewKind } from "../models/launch-policy";
 import { type CrewWorld, crewWorld, LEAD_SESSION, SHORT_ID } from "./crew-world";
 import { git } from "./temp";
@@ -37,6 +45,8 @@ for a in "$@"; do printf '%s\\n' "$a" >> "$FAKE_CLAUDE_LOG"; done
 printf -- '----\\n' >> "$FAKE_CLAUDE_LOG"
 printf '%s\\n' "$(pwd -P)" >> "$FAKE_CLAUDE_CWD_LOG"
 case "$1" in
+  --bg)
+    if [ "$FAKE_BG" = fail ]; then echo "something broke" >&2; exit 4; fi ;;
   agents)
     if [ -z "$FAKE_AGENTS_JSON" ]; then echo "[]"; else printf '%s\\n' "$FAKE_AGENTS_JSON"; fi ;;
   stop)
@@ -119,6 +129,13 @@ export async function boardWorld(): Promise<BoardWorld> {
     if (made) git(world.repo, "worktree", "add", "-b", branch, worktree, "HEAD");
     const sha = git(world.repo, "rev-parse", "HEAD").trim();
     const shortId = change.shortId === undefined ? SHORT_ID : change.shortId;
+    const id = `${phase}-${slug}-${change.suffix ?? "1a2b3c"}`;
+    // A started crew session has its own settings and MCP files (`crew start` writes them), and a
+    // resume reads them: without a session there are none.
+    if (shortId !== null) {
+      writeStoreFile(crewSettingsFile(world.paths.stateDir, repo, id), "{}\n");
+      writeStoreFile(crewMcpFile(world.paths.stateDir, repo, id), '{"mcpServers":{}}\n');
+    }
     return await createCrew(
       world.paths.stateDir,
       {
@@ -127,7 +144,7 @@ export async function boardWorld(): Promise<BoardWorld> {
         branch,
         effort: change.effort ?? "high",
         files: change.files ?? [],
-        id: `${phase}-${slug}-${change.suffix ?? "1a2b3c"}`,
+        id,
         kind: change.kind ?? "build",
         lastLine: change.lastLine ?? null,
         leadName: LEAD_NAME,

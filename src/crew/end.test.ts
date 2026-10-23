@@ -12,7 +12,14 @@ import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../test
 import { OTHER_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { parseResumeArgs, runCrew } from "./command";
-import { readCrew, readCrewEvents, writeLead } from "./store";
+import {
+  crewMcpFile,
+  crewSettingsFile,
+  listCrew,
+  readCrew,
+  readCrewEvents,
+  writeLead,
+} from "./store";
 
 /** The session of another lead of the world: its paused crew sessions are not this lead's. */
 const OTHER_LEAD = OTHER_SESSION;
@@ -21,6 +28,21 @@ const OTHER_LEAD = OTHER_SESSION;
 const LISTED = JSON.stringify([
   { id: "a1b2c3d4", sessionId: "a1b2c3d4-0000-1111-2222-333333333333" },
 ]);
+
+/** The `claude --bg --resume` a record's resume runs: its own settings and MCP files, then any text. */
+function resumeCall(world: BoardWorld, id: string, shortId: string, text?: string): string[] {
+  return [
+    "--bg",
+    "--resume",
+    `${shortId}-0000-1111-2222-333333333333`,
+    "--strict-mcp-config",
+    "--mcp-config",
+    crewMcpFile(world.paths.stateDir, world.repo, id),
+    "--settings",
+    crewSettingsFile(world.paths.stateDir, world.repo, id),
+    ...(text === undefined ? [] : [text]),
+  ];
+}
 
 /** The crew session B1 "help"'s branch and worktree, as `boardWorld().addCrew` makes them. */
 function places(repo: string) {
@@ -194,7 +216,10 @@ describe("crew stop", () => {
       suffix: "bbbbbb",
     });
     expect(await runCrew(["resume", "C my-app B1 help"], world.ctx())).toBe(0);
-    expect(world.claudeCalls()).toEqual([["respawn", "a1b2c3d4"]]);
+    expect(world.claudeCalls()).toEqual([
+      ["agents", "--json", "--all"],
+      resumeCall(world, "B1-again-bbbbbb", "a1b2c3d4"),
+    ]);
     expect(world.out).toEqual(["resumed C my-app B1 help (a1b2c3d4)"]);
     expect(await readCrew(world.paths.stateDir, world.repo, live.id)).toMatchObject({
       state: "working",
@@ -689,15 +714,20 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
 });
 
 describe("crew resume", () => {
-  test("respawns that ONE session from its worktree, never --all, and the store says working again", async () => {
+  test("resumes that ONE session in its worktree, with its own files, never a respawn", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped" });
     expect(await runCrew(["resume", "C my-app B1 help"], world.ctx())).toBe(0);
-    expect(world.claudeCalls()).toEqual([["respawn", "a1b2c3d4"]]);
-    expect(world.claudeCalls().flat()).not.toContain("--all");
-    // The folder is the bug of 2026-10-23: from the main checkout the session came back there,
-    // not in its worktree.
-    expect(world.cwdCalls()).toEqual([places(world.repo).worktree]);
+    // One read of agent view (is a process still there?), then the resume in its worktree, with
+    // the settings and MCP files `crew start` wrote for it.
+    expect(world.claudeCalls()).toEqual([
+      ["agents", "--json", "--all"],
+      resumeCall(world, record.id, "a1b2c3d4"),
+    ]);
+    // Never `claude respawn`: it does not re-apply `-w`, so the session would come back in the
+    // main checkout (the bug of 2026-10-23).
+    expect(world.claudeCalls().map((call) => call[0])).not.toContain("respawn");
+    expect(world.cwdCalls()).toEqual([world.repo, places(world.repo).worktree]);
     expect(world.out).toEqual(["resumed C my-app B1 help (a1b2c3d4)"]);
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "working",
@@ -721,7 +751,28 @@ describe("crew resume", () => {
     });
   });
 
-  test("a crew session that ended with an outcome can be resumed too; one that works is only respawned", async () => {
+  test("a session that still has a process is not resumed: --bg --resume would start a copy", async () => {
+    const world = await boardWorld();
+    const working = await world.addCrew();
+    const live = JSON.stringify([
+      {
+        cwd: places(world.repo).worktree,
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(await runCrew(["resume", working.id], world.ctx({}, { FAKE_AGENTS_JSON: live }))).toBe(
+      0,
+    );
+    expect(world.out).toEqual([
+      "C my-app B1 help is running already (a1b2c3d4); there is nothing to resume",
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+  });
+
+  test("a crew session that ended with an outcome is resumed too; one with no process is", async () => {
     const world = await boardWorld();
     const done = await world.addCrew({ state: "done" });
     const working = await world.addCrew({
@@ -733,8 +784,10 @@ describe("crew resume", () => {
     expect(await runCrew(["resume", done.id], world.ctx())).toBe(0);
     expect(await runCrew(["resume", working.id], world.ctx())).toBe(0);
     expect(world.claudeCalls()).toEqual([
-      ["respawn", "a1b2c3d4"],
-      ["respawn", "b2c3d4e5"],
+      ["agents", "--json", "--all"],
+      resumeCall(world, done.id, "a1b2c3d4"),
+      ["agents", "--json", "--all"],
+      resumeCall(world, working.id, "b2c3d4e5"),
     ]);
     expect(await readCrew(world.paths.stateDir, world.repo, done.id)).toMatchObject({
       state: "working",
@@ -770,13 +823,13 @@ describe("crew resume", () => {
     ]);
   });
 
-  test("a respawn that fails says so and changes nothing", async () => {
+  test("a resume that claude refuses says so and changes nothing", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped" });
-    expect(await runCrew(["resume", record.id], world.ctx({}, { FAKE_RESPAWN: "fail" }))).toBe(1);
+    expect(await runCrew(["resume", record.id], world.ctx({}, { FAKE_BG: "fail" }))).toBe(1);
     expect(world.err).toEqual([
-      "crew resume: claude respawn a1b2c3d4 failed (exit 1): could not respawn",
-      `Fix: claude respawn a1b2c3d4 by hand, or ${COMMAND} crew list to see it`,
+      "crew resume: claude --bg --resume a1b2c3d4-0000-1111-2222-333333333333 failed (exit 4): something broke",
+      `Fix: ${COMMAND} crew status "C my-app B1 help" shows it; a phase that cannot come back can be continued from its branch`,
     ]);
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "stopped",
@@ -818,11 +871,23 @@ describe("D42: crew resume --paused", () => {
     });
     expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(0);
     expect(world.claudeCalls()).toEqual([
-      ["respawn", "a1b2c3d4"],
-      ["respawn", "b2c3d4e5"],
+      ["agents", "--json", "--all"],
+      resumeCall(
+        world,
+        first.id,
+        "a1b2c3d4",
+        "The wait is over: worker answers again. Go on with phase B1, then hand it back as usual.",
+      ),
+      resumeCall(
+        world,
+        second.id,
+        "b2c3d4e5",
+        "The wait is over: worker answers again. Go on with phase B2, then hand it back as usual.",
+      ),
     ]);
     // Each comes back in its own worktree, never in the main checkout.
     expect(world.cwdCalls()).toEqual([
+      world.repo,
       places(world.repo).worktree,
       join(world.repo, ".claude", "worktrees", "crew-B2-api"),
     ]);
@@ -838,14 +903,14 @@ describe("D42: crew resume --paused", () => {
     }
     expect(readCrewEvents(world.paths.stateDir, world.repo).events.at(-1)).toMatchObject({
       state: "working",
-      text: "resumed by the lead after a limit",
+      text: "the wait is over; it was resumed",
     });
   });
 
   test("--lead names the lead whose paused crew sessions to resume", async () => {
     const world = await boardWorld();
     await world.addCrew({ ...pausedChange(5) });
-    await world.addCrew({
+    const other = await world.addCrew({
       atMs: NOW - 2 * MINUTE,
       leadSessionId: OTHER_LEAD,
       phase: "B4",
@@ -854,7 +919,15 @@ describe("D42: crew resume --paused", () => {
       ...pausedChange(2),
     });
     expect(await runCrew(["resume", "--paused", "--lead", OTHER_LEAD], world.ctx())).toBe(0);
-    expect(world.claudeCalls()).toEqual([["respawn", "d4e5f6a7"]]);
+    expect(world.claudeCalls()).toEqual([
+      ["agents", "--json", "--all"],
+      resumeCall(
+        world,
+        other.id,
+        "d4e5f6a7",
+        "The wait is over: worker answers again. Go on with phase B4, then hand it back as usual.",
+      ),
+    ]);
     expect(world.out).toEqual(["resumed C my-app B4 y (d4e5f6a7)"]);
   });
 
@@ -866,7 +939,7 @@ describe("D42: crew resume --paused", () => {
     expect(world.claudeCalls()).toEqual([]);
   });
 
-  test("a respawn that fails is named, the others still go, and the exit code says so", async () => {
+  test("a resume that claude refuses is named, the others still go, and the exit code says so", async () => {
     const world = await boardWorld();
     await world.addCrew({ ...pausedChange(20) });
     await world.addCrew({
@@ -876,18 +949,22 @@ describe("D42: crew resume --paused", () => {
       slug: "api",
       ...pausedChange(10),
     });
-    expect(await runCrew(["resume", "--paused"], world.ctx({}, { FAKE_RESPAWN: "fail" }))).toBe(1);
-    expect(world.err).toEqual([
-      "crew resume: C my-app B1 help: claude respawn a1b2c3d4 failed (exit 1): could not respawn",
-      "crew resume: C my-app B2 api: claude respawn b2c3d4e5 failed (exit 1): could not respawn",
+    expect(await runCrew(["resume", "--paused"], world.ctx({}, { FAKE_BG: "fail" }))).toBe(1);
+    expect(world.out).toEqual([
+      "C my-app B1 help: not resumed — claude --bg --resume a1b2c3d4-0000-1111-2222-333333333333 failed (exit 4): something broke",
+      "C my-app B2 api: not resumed — claude --bg --resume b2c3d4e5-0000-1111-2222-333333333333 failed (exit 4): something broke",
     ]);
-    expect(world.out).toEqual([]);
+    // Each stayed paused, so the next run tries again.
+    expect(listCrew(world.paths.stateDir, world.repo).records.map((one) => one.state)).toEqual([
+      "paused",
+      "paused",
+    ]);
   });
 
   test("a paused crew session with no worktree is named, the others still go, and the exit code says so", async () => {
     const world = await boardWorld();
-    await world.addCrew({ ...pausedChange(20), worktree: false });
-    await world.addCrew({
+    const gone = await world.addCrew({ ...pausedChange(20), worktree: false });
+    const here = await world.addCrew({
       atMs: NOW - 10 * MINUTE,
       phase: "B2",
       shortId: "b2c3d4e5",
@@ -895,11 +972,21 @@ describe("D42: crew resume --paused", () => {
       ...pausedChange(10),
     });
     expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(1);
-    expect(world.err).toEqual([
-      `crew resume: C my-app B1 help has no worktree at ${places(world.repo).worktree} any more; remove it (${COMMAND} crew rm "C my-app B1 help")`,
+    expect(world.out).toEqual([
+      `C my-app B1 help: not resumed — C my-app B1 help has no worktree at ${places(world.repo).worktree} any more`,
+      "resumed C my-app B2 api (b2c3d4e5)",
     ]);
-    expect(world.claudeCalls()).toEqual([["respawn", "b2c3d4e5"]]);
-    expect(world.out).toEqual(["resumed C my-app B2 api (b2c3d4e5)"]);
+    expect(world.claudeCalls()).toEqual([
+      ["agents", "--json", "--all"],
+      resumeCall(
+        world,
+        here.id,
+        "b2c3d4e5",
+        "The wait is over: worker answers again. Go on with phase B2, then hand it back as usual.",
+      ),
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, gone.id)?.state).toBe("paused");
+    expect(readCrew(world.paths.stateDir, world.repo, here.id)?.state).toBe("working");
   });
 
   test("a crew session's own session never resumes every paused one", async () => {

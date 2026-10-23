@@ -460,11 +460,13 @@ async function resumePaused(
 /**
  * Takes one paused crew session out of its wait, the way `crew answer` reaches a crew session:
  * a message for one whose session still has a process (the CLI prints the `SendMessage` line;
- * only a session holds that tool), `claude --bg --resume <id> "<text>"` for one whose session
- * has none. The record is `working` again in the same act, so the watch never resumes it twice
- * and it holds its place. A resume that fails is one line, and the record stays `paused`.
+ * only a session holds that tool), `claude --bg --resume <id> "<text>"` in its worktree, with its
+ * own settings and MCP files, for one whose session has none. **One home for bringing a paused
+ * crew session back**: the watch and `crew resume --paused` (`end.ts`) both use it. The record is
+ * `working` again in the same act, so nothing resumes it twice and it holds its place. A resume
+ * that fails is one line, and the record stays `paused`.
  */
-async function resumeOne(
+export async function resumeOne(
   record: CrewRecord,
   ctx: CrewContext,
   now: number,

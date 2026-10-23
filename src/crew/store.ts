@@ -205,6 +205,15 @@ export function crewSettingsFile(stateDir: string, repo: string, id: string): st
   return join(crewFilesDir(stateDir, repo, id), "settings.json");
 }
 
+/**
+ * The MCP servers a crew session's launch loads (`--strict-mcp-config --mcp-config`): the lean
+ * start's own file, written beside its settings (`crew start`). A record started before the lean
+ * start has none, and its launch loaded every server.
+ */
+export function crewMcpFile(stateDir: string, repo: string, id: string): string {
+  return join(crewFilesDir(stateDir, repo, id), "mcp.json");
+}
+
 /** The repository's events log. */
 export function crewEventsFile(stateDir: string, repo: string): string {
   return join(crewStoreDir(stateDir, repo), "events.jsonl");

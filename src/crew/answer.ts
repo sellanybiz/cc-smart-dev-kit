@@ -31,7 +31,14 @@ import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
 import { callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
-import { answerCrewQuestion, type CrewRecord, listCrew, readReport } from "./store";
+import {
+  answerCrewQuestion,
+  type CrewRecord,
+  crewMcpFile,
+  crewSettingsFile,
+  listCrew,
+  readReport,
+} from "./store";
 
 /** What `crew answer` was asked, already checked to be well formed. */
 export interface AnswerArgs {
@@ -182,10 +189,12 @@ export type ResumeResult = { ok: true } | { ok: false; why: string };
 export type ResumePlace = { folder: string; ok: true } | { ok: false; why: string };
 
 /**
- * The folder a crew session's session is brought back in: **its own worktree**. A `--bg -w`
- * session respawned from the main checkout comes back there, and its own start hook marks it
- * failed (the bug of 2026-10-23) — so a resume never falls back to the caller's folder. A
- * worktree that is not there any more is a refusal: there is nowhere to resume in.
+ * The folder a crew session's session is brought back in: **its own worktree**. `claude respawn`
+ * does not re-apply `-w` (its restart flags leave it out, read from the 2.1.309 binary), so a
+ * respawned `--bg -w` session comes back in the folder it was launched from — the main checkout —
+ * and its own start hook marks it failed (the bug of 2026-10-23). A resume never falls back to
+ * the caller's folder, and a worktree that is not there any more is a refusal: there is nowhere
+ * to resume in.
  */
 export function resumePlace(record: CrewRecord): ResumePlace {
   if (!existsSync(record.worktree)) {
@@ -195,23 +204,56 @@ export function resumePlace(record: CrewRecord): ResumePlace {
 }
 
 /**
- * Resumes the stopped crew session `record` with `text` as its next prompt:
- * `claude --bg --resume <session id> "<text>"` in its own worktree (`resumePlace`), so the session
- * goes on where it stopped (it keeps its name, its worktree and its conversation). A crew session
- * with no session id cannot be resumed, and a `claude` that refuses is reported with its own
- * words. `crew answer` and the lead's watch (`watch.ts`) both resume this way: one home for the
- * transport (D42).
+ * The arguments that bring a crew session back: `claude --bg --resume <session id>` with **the
+ * record's own files** — `--strict-mcp-config --mcp-config <mcp.json>` and
+ * `--settings <settings.json>` — and then the text, when there is one. Without them a resumed
+ * session is a plain session: no `CREW_ENV` (so no longer a crew session), every plugin and
+ * connector back, and every MCP server loaded — the lean start undone (`crew start`). The files
+ * are read from the store, never rebuilt. **`--mcp-config` comes before `--settings`**: it takes
+ * any number of files, so a prompt after it would be read as one more config file (proved live on
+ * 2.1.309, `launchArgs`), and `--settings` takes one value and ends the flag list.
+ */
+export function resumeArgs(
+  sessionId: string,
+  files: { mcpFile: null | string; settingsFile: string },
+  text: null | string,
+): string[] {
+  const args = ["--bg", "--resume", sessionId];
+  if (files.mcpFile !== null) args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
+  args.push("--settings", files.settingsFile);
+  if (text !== null) args.push(text);
+  return args;
+}
+
+/**
+ * Resumes the crew session `record` in its own worktree (`resumePlace`), with `text` as its next
+ * prompt when there is one, so the session goes on where it stopped (it keeps its name, its
+ * worktree, its conversation and its lean start). `--bg --resume` starts in the folder the
+ * command runs in, which is why the folder is the worktree; on a session that still has a
+ * process it starts a copy and says so, so a caller reads agent view first. A crew session with
+ * no session id, whose settings file is gone, or a `claude` that refuses is reported with the
+ * reason. `crew answer`, `crew resume`, `crew resume --paused` and the lead's watch (`watch.ts`)
+ * all resume this way: one home for the transport (D42).
  */
 export async function resumeSession(
   ctx: CrewContext,
   record: CrewRecord,
-  text: string,
+  text: null | string,
 ): Promise<ResumeResult> {
   if (record.sessionId === null) {
     return { ok: false, why: `${record.name} has no session to resume` };
   }
   const place = resumePlace(record);
   if (!place.ok) return { ok: false, why: place.why };
+  // Its own settings: without them the session comes back as a plain one, not as this crew session.
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
+  if (!existsSync(settingsFile)) {
+    return {
+      ok: false,
+      why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`,
+    };
+  }
+  const mcpFile = crewMcpFile(ctx.paths.stateDir, record.repo, record.id);
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) {
     return {
@@ -223,7 +265,11 @@ export async function resumeSession(
   const called = callClaude(
     deps,
     claude,
-    ["--bg", "--resume", record.sessionId, text],
+    resumeArgs(
+      record.sessionId,
+      { mcpFile: existsSync(mcpFile) ? mcpFile : null, settingsFile },
+      text,
+    ),
     place.folder,
   );
   if (!called.ok) return { ok: false, why: called.why };
