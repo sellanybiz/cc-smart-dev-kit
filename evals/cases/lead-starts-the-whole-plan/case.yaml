@@ -9,7 +9,7 @@ description: >-
   It needs Sonnet 5.5: Haiku fired the lead skill in 0 of 3 runs, Sonnet in 3 of 3 (EV1), so
   it runs in the strong tier and stays out of fast.
 tags: [strong, workflow, needs-shell]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 25
   allowed_tools: [Read, Glob, Grep, Skill, Bash, Agent, Edit, Write]

@@ -4,7 +4,7 @@ description: >-
   The explain skill teaches in plain words, with an analogy, for someone who is not a
   programmer.
 tags: [judge, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 4
   allowed_tools: [Skill]

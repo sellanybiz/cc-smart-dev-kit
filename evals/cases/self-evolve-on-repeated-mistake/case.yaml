@@ -4,7 +4,7 @@ description: >-
   A mistake that repeats, with a request to make it a rule, is self-evolve's trigger. Finding:
   IN-21, IN-26.
 tags: [watch, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 10
   allowed_tools: [Read, Glob, Grep, Skill, Edit, Write]

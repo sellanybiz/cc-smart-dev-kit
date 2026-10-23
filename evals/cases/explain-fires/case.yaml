@@ -3,7 +3,7 @@ name: explain-fires
 description: >-
   "What is X, I don't get it" is the explain skill's trigger; it is not a research task.
 tags: [gate, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 4
   allowed_tools: [Skill]

@@ -58,9 +58,13 @@ case and run the cap left out.
 
 A case folder holds `case.yaml` (its prompt, tags, tools, graders, and an optional
 `scaffold_script` that builds the workspace) and `scaffold.sh`. Every case's `plugins` line
-names the copy under test (`../../.under-test/plugin`) and the test-only harness
+names the copy under test (`../../under-test/plugin`) and the test-only harness
 (`../../harness`), which loads `core.md` into the session. `schema_version` is `1.1` (the
 schema `claude plugin eval` reads).
+
+The copy under test lives in `under-test/`, which git ignores. Its name is plain (no leading
+dot) because `claude plugin eval` refuses an `--eval-dir` whose folder names start with
+anything but a letter or digit; a run removes an old `.under-test/` from before the rename.
 
 A case must be in exactly one of `gate`, `watch`, `strong` and `judge` (a `judge` case runs
 in `full` only). It may carry any other tags (`workflow`, `trigger`, `needs-shell`, …).

@@ -9,7 +9,7 @@
  *                    [--save-baseline]
  *   bun evals/run.ts compare <baseline.json> <run.json>
  *
- * WHAT IT TESTS. A copy of `plugin/` in `evals/.under-test/plugin` (git ignores it), with
+ * WHAT IT TESTS. A copy of `plugin/` in `evals/under-test/plugin` (git ignores it), with
  * two changes: its manifest drops `dependencies`, because an eval run installs nothing and
  * Claude Code refuses to load a plugin whose companion plugins are missing; and
  * `--without <name>` removes one skill, one agent, or (`core`) the general instructions, to
@@ -47,7 +47,7 @@
  * baseline, else a fixed reserve), so the total stays within one run's cost of the cap. The
  * summary names what the cap skipped.
  *
- * One run at a time per checkout: every run rebuilds `evals/.under-test`.
+ * One run at a time per checkout: every run rebuilds `evals/under-test`.
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -63,8 +63,14 @@ import { join, relative } from "node:path";
 
 export const EVALS = import.meta.dir;
 const REPO = join(EVALS, "..");
+/**
+ * The folder the runner owns: the copy under test, and a filtered run's cases. Its name is
+ * plain on purpose: `claude plugin eval` refuses an `--eval-dir` whose folder names start
+ * with anything but a letter or digit.
+ */
+export const UNDER_TEST_DIR = join(EVALS, "under-test");
 /** Where the copy under test goes; every case.yaml's `plugins` points at it. */
-export const UNDER_TEST = join(EVALS, ".under-test", "plugin");
+export const UNDER_TEST = join(UNDER_TEST_DIR, "plugin");
 /** The test-only plugin every case loads (core.md); a filtered run names it absolutely. */
 export const HARNESS = join(EVALS, "harness");
 const CASES = join(EVALS, "cases");
@@ -72,7 +78,12 @@ const CASES = join(EVALS, "cases");
  * A run that takes only some cases gets a copy here, because the suite filters by tag or by
  * one glob and cannot exclude: the copy's `plugins` paths are made absolute.
  */
-const FILTERED_CASES = join(EVALS, ".under-test", "cases");
+const FILTERED_CASES = join(UNDER_TEST_DIR, "cases");
+/**
+ * The copy's folder before it got a plain name. No run reads it now, and the runner owns it,
+ * so a run removes it instead of leaving a stale copy on the machine.
+ */
+const LEGACY_UNDER_TEST = join(EVALS, ".under-test");
 const RESULTS = join(EVALS, "results");
 const BASELINE = join(EVALS, "baseline");
 
@@ -229,7 +240,7 @@ export function prepare(source: string, target: string, without: string[]): void
 
 /**
  * Builds the eval dir for a run that takes only some cases: a copy of each named case under
- * `.under-test/cases`, its `plugins` made absolute, because the copy no longer sits two
+ * `under-test/cases`, its `plugins` made absolute, because the copy no longer sits two
  * folders below `evals/`. The source cases are never touched.
  */
 export function prepareCases(source: string, target: string, names: string[]): void {
@@ -693,6 +704,8 @@ function runTier(name: string, tier: Tier, options: Options): number {
   console.log(
     `Tier ${name}: model ${plan.model}, route ${options.route}${cap}${options.without.length > 0 ? `, without ${options.without.join(", ")}` : ""}`,
   );
+  // The copy's folder before it got a plain name: nothing reads it, and the runner owns it.
+  rmSync(LEGACY_UNDER_TEST, { force: true, recursive: true });
   prepare(join(REPO, "plugin"), UNDER_TEST, options.without);
   const filtered = plan.evalDir !== CASES;
   try {

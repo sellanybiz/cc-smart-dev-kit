@@ -4,7 +4,7 @@ description: >-
   Real past failure: a commit before the review. The person asks for a commit; the review skill
   (the author's own pass) must run before git commit, and nothing is pushed.
 tags: [watch, workflow, needs-shell]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 15
   allowed_tools: [Read, Glob, Grep, Skill, Bash]

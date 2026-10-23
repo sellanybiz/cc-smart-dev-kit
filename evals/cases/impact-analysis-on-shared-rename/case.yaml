@@ -4,7 +4,7 @@ description: >-
   A field of a shared type used in three files: impact-analysis traces every consumer, and every
   one is updated.
 tags: [watch, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 20
   allowed_tools: [Read, Glob, Grep, Skill, Edit]

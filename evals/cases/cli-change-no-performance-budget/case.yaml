@@ -3,7 +3,7 @@ name: cli-change-no-performance-budget
 description: >-
   A flag on a command-line script is not a frontend change. Finding: IN-23.
 tags: [watch, no-trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 10
   allowed_tools: [Read, Glob, Grep, Skill, Edit]

@@ -56,7 +56,7 @@ function fixtureCases(): string {
     mkdirSync(join(root, name), { recursive: true });
     writeFileSync(
       join(root, name, "case.yaml"),
-      `name: ${name}\ntags: [gate]\nplugins: ["../../.under-test/plugin", "../../harness"]\n`,
+      `name: ${name}\ntags: [gate]\nplugins: ["../../under-test/plugin", "../../harness"]\n`,
     );
     writeFileSync(join(root, name, "scaffold.sh"), "#!/bin/sh\n");
   }
@@ -151,7 +151,7 @@ describe("prepareCases", () => {
     expect(yaml).toContain(`plugins: ${JSON.stringify([UNDER_TEST, HARNESS])}`);
     // The source case is untouched.
     expect(readFileSync(join(source, "one", "case.yaml"), "utf8")).toContain(
-      'plugins: ["../../.under-test/plugin", "../../harness"]',
+      'plugins: ["../../under-test/plugin", "../../harness"]',
     );
     expect(readdirSync(source).sort()).toEqual(["one", "two"]);
   });
@@ -178,7 +178,7 @@ describe("the cases and the tiers", () => {
       const yaml = readFileSync(join(cases, name, "case.yaml"), "utf8");
       expect({ name, plugins: /^plugins: (.*)$/m.exec(yaml)?.[1] }).toEqual({
         name,
-        plugins: '["../../.under-test/plugin", "../../harness"]',
+        plugins: '["../../under-test/plugin", "../../harness"]',
       });
     }
   });
@@ -261,6 +261,66 @@ describe("the nested session", () => {
     expect(() =>
       planRun("watch", tier("watch"), { ...BASE, withoutNeedsShell: true }, NO_MARKERS, tags),
     ).toThrow("every case it selects needs the shell");
+  });
+});
+
+describe("the eval dir", () => {
+  /**
+   * The folder names `claude plugin eval` accepts in `--eval-dir`: a letter or digit first,
+   * then letters, digits, `.`, `_`, `-`, `@` or `+`. It refuses the run otherwise:
+   * `--eval-dir must use plain directory names (a letter or digit first, then letters,
+   * digits, . _ - @ +)`.
+   */
+  const PLAIN_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._@+-]*$/;
+
+  /** The path after `--eval-dir`, as the suite receives it. */
+  function evalDirArg(args: string[]): string {
+    const at = args.indexOf("--eval-dir");
+    const path = args[at + 1];
+    if (at < 0 || path === undefined) throw new Error("the run names no --eval-dir");
+    return path;
+  }
+
+  /** Every segment of a path, with whether the suite accepts its name. */
+  function namedSegments(path: string): { plain: boolean; segment: string }[] {
+    return path.split(/[\\/]/).map((segment) => ({ segment, plain: PLAIN_SEGMENT.test(segment) }));
+  }
+
+  test("a filtered run names a plain folder path, which Claude Code accepts", () => {
+    const tags = {
+      "a-gate": ["gate"],
+      "b-shell": ["watch", "needs-shell"],
+      "d-strong": ["strong"],
+    };
+    // Both ways a run takes only some cases: --without-needs-shell, and a tier's skip tags.
+    const filtered = [
+      [
+        "fast",
+        planRun(
+          "fast",
+          tier("fast"),
+          { ...BASE, withoutNeedsShell: true },
+          { CLAUDECODE: "1" },
+          tags,
+        ),
+      ],
+      ["full", planRun("full", tier("full"), BASE, NO_MARKERS, tags)],
+    ] as const;
+    for (const [name, plan] of filtered) {
+      // A filtered run reads a copy, so its path is the one this test guards.
+      expect(plan.evalDir).toBe(join(EVALS, "under-test", "cases"));
+      const path = evalDirArg(evalArgs(tier(name), BASE, "/out", plan));
+      for (const segment of namedSegments(path)) {
+        expect(segment).toEqual({ segment: segment.segment, plain: true });
+      }
+    }
+    // The whole suite stays `evals/cases`, whose names are plain too.
+    const all = planRun("gate", tier("gate"), BASE, NO_MARKERS, tags);
+    expect(all.evalDir).toBe(join(EVALS, "cases"));
+    const path = evalDirArg(evalArgs(tier("gate"), BASE, "/out", all));
+    for (const segment of namedSegments(path)) {
+      expect(segment).toEqual({ segment: segment.segment, plain: true });
+    }
   });
 });
 

@@ -5,7 +5,7 @@ description: >-
   files must go through plan-task, and no code is written in this turn: only a plan file, then
   the question. Finding: IN-4, IN-20, MD-9.
 tags: [watch, workflow, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 20
   allowed_tools: [Read, Glob, Grep, Skill, Edit, Write, AskUserQuestion, Bash]

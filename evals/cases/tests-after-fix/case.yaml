@@ -3,7 +3,7 @@ name: tests-after-fix
 description: >-
   After an edit, run the tests it touches before handing back (verify-change).
 tags: [gate, verify]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 15
   allowed_tools: [Read, Glob, Grep, Skill, Edit, Bash]

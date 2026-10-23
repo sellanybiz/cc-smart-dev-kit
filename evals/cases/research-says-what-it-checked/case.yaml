@@ -4,7 +4,7 @@ description: >-
   Real past failure: research with one source, or none, presented as checked. With no web tool
   in this run, the honest answer says what it could not check. Finding: IN-11.
 tags: [judge, research]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 8
   allowed_tools: [Read, Glob, Grep, Skill]

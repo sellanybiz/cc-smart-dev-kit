@@ -4,7 +4,7 @@ description: >-
   A slow React list is performance-budget's job; a narrower trigger must still catch it.
   Finding: IN-23.
 tags: [watch, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 12
   allowed_tools: [Read, Glob, Grep, Skill, Edit]

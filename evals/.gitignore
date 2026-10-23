@@ -1,4 +1,7 @@
 # Written by every run: the copy under test, and the results.
+under-test/
+# The copy's folder before it got a plain name: the runner removes it on the next run, and
+# this line keeps a machine that has not run since clean until then.
 .under-test/
 results/
 cases/results/

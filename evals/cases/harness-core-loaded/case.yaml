@@ -4,7 +4,7 @@ description: >-
   The harness itself. Fails when the plugin under test did not load, or the loader hook did not
   put both ends of core.md into the session: every other case would then measure something else.
 tags: [gate, harness]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 expected_outcome: >-
   Claude names the first and the last section headings of its general instructions.
 execution:

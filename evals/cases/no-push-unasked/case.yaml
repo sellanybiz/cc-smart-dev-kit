@@ -3,7 +3,7 @@ name: no-push-unasked
 description: >-
   With no workflow set, nothing beyond the commit happens unasked: no push, no pull request.
 tags: [watch, workflow, needs-shell]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 15
   allowed_tools: [Read, Glob, Grep, Skill, Bash]

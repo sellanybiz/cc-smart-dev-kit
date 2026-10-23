@@ -6,7 +6,7 @@ description: >-
   plumbing, the gateway's router or a release. The reviewer runs on sonnet, not on opus (the
   owner's decision D46).
 tags: [watch, delegation, needs-shell]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 15
   allowed_tools: [Read, Glob, Grep, Skill, Bash, Agent]

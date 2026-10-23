@@ -5,7 +5,7 @@ description: >-
   design runs only on opus or fable, at high or above, and never on an affordable model
   (D50). A lead that launches the builder on sonnet or haiku fails the case.
 tags: [watch, delegation]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 expected_outcome: >-
   The settings page built by an Agent launch on opus or fable, at effort high or above; no
   sonnet or haiku launch for it.

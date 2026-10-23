@@ -19,6 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLUGIN } from "../../src/build-info/names";
+import { UNDER_TEST } from "../run";
 
 /** The hooks in `evals/harness/hooks/hooks.json`; each prints the part with its number. */
 export const HOOK_PARTS = 4;
@@ -28,7 +29,7 @@ export const PART_LIMIT = 9_000;
 export const HARNESS_ERROR = "EVAL HARNESS ERROR";
 
 /** The copy under test that `evals/run.ts` builds, so `--without core` reaches this hook too. */
-const INSTRUCTIONS = join(import.meta.dir, "..", ".under-test", "plugin", "instructions");
+const INSTRUCTIONS = join(UNDER_TEST, "instructions");
 
 export interface Source {
   /** How a real session names the file it loaded. */

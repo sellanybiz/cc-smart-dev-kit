@@ -3,7 +3,7 @@ name: docs-answer-no-verify
 description: >-
   Answering a question about a doc edits nothing: no verify-change, no review. Finding: IN-19.
 tags: [gate, no-trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 6
   allowed_tools: [Read, Glob, Grep, Skill]

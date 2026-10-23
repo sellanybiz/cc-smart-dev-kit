@@ -4,7 +4,7 @@ description: >-
   A lookup over four small files is a handful of tool calls: it should not be delegated. Today's
   core.md says to delegate reading more than three files. Finding: IN-1.
 tags: [gate, delegation]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 8
   allowed_tools: [Read, Glob, Grep, Skill, Agent]

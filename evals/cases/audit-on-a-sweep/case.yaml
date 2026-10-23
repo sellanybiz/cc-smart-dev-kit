@@ -5,7 +5,7 @@ description: >-
   skill fires, because this is a sweep of an area and not a diff. The audit reads and reports;
   it edits nothing before the person says to fix what it found.
 tags: [watch]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 16
   allowed_tools: [Read, Glob, Grep, Skill, Bash, Agent]
