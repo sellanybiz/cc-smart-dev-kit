@@ -245,6 +245,11 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    queued ones, oldest first, so no lead starves another. A queued crew session has no worktree
    yet and its `base` is null: it is cut from its
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
+   **The same decision is what a lead's Agent guard asks** (D59): `placeForLeadStart` builds that
+   input for the lead a session id names, with no phases waited for and the memory read only when
+   nothing else holds, so the guard refuses a subagent that can change files exactly while a
+   `crew start` would queue, and keeps no second copy of a cap. A project with crew sessions off
+   has no queue to hold a phase: the reader answers nothing there.
    **A file clash is said, and never blocks** (D55): once the record exists, the phase's `--files`
    are compared with those of every running or queued crew session of **another lead** in this
    repository (`fileClashSessions`). The tracked files (`git ls-files`) decide; for a pattern

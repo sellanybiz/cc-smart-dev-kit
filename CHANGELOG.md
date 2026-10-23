@@ -33,6 +33,15 @@ you open it.
   again — a start, a resume, a clear, a compaction — and never at a prompt or on an edit. Words
   only (D61): the lead's context is re-read on the premium model every turn, so every file it
   reads or writes costs on every later turn.
+- **A lead never routes a phase around the crew queue.** The queue exists for the machine and for
+  each lead's share of it, and a builder subagent runs outside every one of those counts — with
+  none of a crew phase's worktree, review, report gate or to-do list. So in a session registered
+  as a lead, the agent guard refuses a launch that can change files while a `crew start` from it
+  would queue right now, and names the cap that holds and the `crew start` step. Read-only work
+  is never held: the kit's own reviewer, auditor and ui-verifier, the built-in Explore, Plan,
+  claude-code-guide and statusline-setup, and the kit's read-only Workflows — a project's own
+  read-only agent is exempt only when its `cc-smart-dev-kit.json` lists it. An ordinary session
+  or a crew session is judged exactly as before.
 
 **What to run:** nothing. The hooks come with the plugin update. A session that is already
 running keeps the old hooks until Claude Code restarts it, so only the crew sessions and leads

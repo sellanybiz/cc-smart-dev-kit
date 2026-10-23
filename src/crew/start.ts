@@ -227,7 +227,15 @@ export function chooseLaunch(
     return { refusal: uiRefusal() };
   }
   const verdict = judgeLaunch(
-    { effort, fork: false, model, prompt: "", subagentType: CREW_AGENT_TYPE, tool: "Agent" },
+    {
+      effort,
+      fork: false,
+      isolation: null,
+      model,
+      prompt: "",
+      subagentType: CREW_AGENT_TYPE,
+      tool: "Agent",
+    },
     { ...gateway, sessionModel: null },
     ctx.env,
   );

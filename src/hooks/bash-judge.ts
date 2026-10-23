@@ -518,6 +518,7 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
     {
       effort: launch.effort,
       fork: false,
+      isolation: null,
       model: launch.model,
       prompt: launch.prompt,
       subagentType: "general-purpose",

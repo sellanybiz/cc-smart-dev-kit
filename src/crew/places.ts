@@ -33,14 +33,24 @@
  * older ones wait: their own lead's watch starts them. Two starts at once never both take the
  * last place: the decision and the new record are made under one machine-wide lock
  * (`withPlacesLock`), which the watch takes too when it starts one.
+ *
+ * **The same decision, asked by a lead's guard** (D59): `placeForLeadStart` answers what a
+ * `crew start` from one lead would do now, from the same input `startPlanned` builds — so the
+ * guard refuses a building subagent exactly while the queue would hold its phase, and never
+ * carries a second copy of a cap.
  */
 import { mkdirSync } from "node:fs";
+import type { CliPaths } from "../cli/paths";
 import { DEFAULT_SLICE, jobsPaths, loadJobsConfig } from "../jobs/config";
 import { GIB, type MemoryFacts, machineMemory, sliceBytes } from "../jobs/memory";
 import { notYetUsedGb, oneDecimal } from "../jobs/queue";
 import { leaseStore } from "../jobs/store";
+import { type Checkout, loadProjectConfig } from "../project/resolve";
 import { withLock } from "../setup/lock";
-import { type CrewRecord, type CrewState, crewRootDir } from "./store";
+import type { ResolvedWorkflow } from "../workflow/resolve";
+import { resolveWorkflow } from "../workflow/resolve";
+import { type CrewRecord, type CrewState, crewRootDir, listAllCrew } from "./store";
+import { usageFacts } from "./usage-guard";
 
 /** The states in which a crew session holds a place on the machine: its session lives, its phase is open. */
 export const RUNNING_STATES: readonly CrewState[] = [
@@ -280,4 +290,75 @@ export async function freeForCrewGb(home: string, memory: MemoryFacts): Promise<
       ? null
       : sliceBytes(memory.read, uid, config.slice ?? DEFAULT_SLICE);
   return freeGb - notYetUsedGb(heldGb, slice);
+}
+
+/** What one lead's `crew start` would do now, as its guard asks it (D59). */
+export interface LeadStartInput {
+  /** The project the lead works in: its `cc-smart-dev-kit.json` holds the caps. */
+  checkout: Checkout;
+  /** The lead's Claude Code session id. */
+  leadSessionId: string;
+  /** The memory free now, as the machine reads it (`realMemoryFacts()`). */
+  memory: MemoryFacts;
+  nowMs: number;
+  /** True when the launch the guard is judging would spend the opus tier. */
+  opus: boolean;
+  paths: CliPaths;
+}
+
+/**
+ * What a `crew start` from this lead would do now: start, or wait in the queue and why. It builds
+ * the same input `startPlanned` builds — with **no phases waited for**, because `--waits-for`
+ * waits for a merge and a merge is never a place — and asks `placeFor`, the one decision rule.
+ * The memory is read only when nothing else holds, as `crew start` reads it.
+ *
+ * Null when no start would queue: crew sessions are off in this project (a start is refused then,
+ * never queued), or the store, the project's file or the caps cannot be read. The caller lets the
+ * launch through: a guard that cannot work out the queue never blocks.
+ *
+ * It reads **without the places lock**: this is a question, not a start, so it writes nothing and
+ * takes no place. A count that moves a moment later is corrected by the next call — the guard
+ * refuses or lets a launch through, and a start that took the last place in between is exactly
+ * the state the next call reads.
+ */
+export async function placeForLeadStart(input: LeadStartInput): Promise<null | Place> {
+  let records: CrewRecord[];
+  let crew: ResolvedWorkflow["crew"];
+  let usage: ReturnType<typeof usageFacts>;
+  try {
+    records = listAllCrew(input.paths.stateDir).records;
+    crew = resolveWorkflow(input.paths, loadProjectConfig(input.checkout).config).crew;
+    usage = usageFacts(input.paths, input.nowMs);
+  } catch {
+    return null;
+  }
+  if (!crew.enabled.value) return null;
+  const running = runningCrew(records);
+  const mine = runningForLead(records, input.leadSessionId);
+  const held: PlaceInput = {
+    freeGb: null,
+    leadRunning: mine.length,
+    leadRunningOpus: onOpusTier(mine).length,
+    max: crew.max.value,
+    maxOpus: crew.maxOpus.value,
+    needGb: crew.memoryGb.value,
+    opus: input.opus,
+    opusFallback: usage.opusFallback,
+    perLead: crew.perLead.value,
+    perLeadOpus: crew.perLeadOpus.value,
+    running: running.length,
+    runningOpus: onOpusTier(running).length,
+    unmet: [],
+    usageHoldPercent: crew.usagePercent.value,
+    usagePercent: usage.percent,
+  };
+  const first = placeFor(held);
+  if (!first.start) return first;
+  let freeGb: null | number;
+  try {
+    freeGb = await freeForCrewGb(input.paths.home, input.memory);
+  } catch {
+    return null;
+  }
+  return placeFor({ ...held, freeGb });
 }
