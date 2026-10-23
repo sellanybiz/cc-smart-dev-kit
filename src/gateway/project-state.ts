@@ -26,7 +26,7 @@
  * `unknown` — Claude Code's own answer past a file it cannot read is not known, and a state
  * nobody read is not a state to claim.
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { locateCheckout } from "../project/resolve";
 import {
@@ -178,8 +178,14 @@ export function settingsFileState(path: string, kind: SettingsLevel): SettingsFi
   }
 }
 
-/** The gateway config as the reader may use it: the port and the profile names. */
-function readConfig(path: string): { config: GatewayConfig | null; problem: null | string } {
+/**
+ * The gateway config as a reader may use it: the file's config (null with none), and why it
+ * cannot be read. One home, so the project's reader and its commands judge a bad config alike.
+ */
+export function readGatewayConfig(path: string): {
+  config: GatewayConfig | null;
+  problem: null | string;
+} {
   if (!existsSync(path)) return { config: null, problem: null };
   try {
     return { config: loadConfigFile(path), problem: null };
@@ -214,7 +220,7 @@ export function projectGatewayState(
   options: ProjectStateOptions,
 ): ProjectGatewayState {
   const asked = resolve(folder);
-  const { config, problem: configProblem } = readConfig(options.configPath);
+  const { config, problem: configProblem } = readGatewayConfig(options.configPath);
   const routerUrl = routerBaseUrl(config?.port ?? DEFAULT_PORT);
 
   let checkout: null | ProjectCheckout = null;
@@ -245,7 +251,7 @@ export function projectGatewayState(
     configProblem,
     effective: decide(files, routerUrl),
     files,
-    folder: asked,
+    folder: realFolder(asked),
     profiles: config === null ? [] : profileNames(config),
     routerUrl,
   };
@@ -270,6 +276,19 @@ export function decisionWords(decision: GatewayDecision): string {
       return "unknown: a settings file in the way cannot be read";
     default:
       return "default: no file of this project sets a gateway address, so the machine's settings decide";
+  }
+}
+
+/**
+ * A folder as git names it: the real path, so a symlinked temp or home folder compares equal to
+ * the checkout root `locateCheckout` answers (macOS's `/tmp` → `/private/tmp`, say). A folder
+ * that does not exist stays as it was given.
+ */
+function realFolder(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
   }
 }
 

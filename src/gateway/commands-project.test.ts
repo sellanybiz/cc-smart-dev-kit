@@ -415,7 +415,7 @@ describe("gateway project off and default", () => {
       "  The team file is committed with the project: commit it for your teammates.",
     );
     expect(m.output()).toContain(
-      "  A session started in this project's root or in a subfolder of it reads the file only when it starts in that same folder",
+      "  A session reads this file only when it starts in this same folder: one started in a subfolder does not.",
     );
   });
 

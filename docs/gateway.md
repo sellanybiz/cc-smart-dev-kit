@@ -214,6 +214,9 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
 - **`gateway projects`** lists every repository the portal's Projects page shows — the same
   `projectsList` reader — each with its own state and the file it comes from, and marks the one
   the command runs in.
+- **Windows is unproved for this row** (R6's P11 is owed): the reader and the commands use the
+  main checkout's root on every platform. On Windows, check `gateway project status` in a
+  project once before relying on it.
 
 ## Anthropic's server tools
 

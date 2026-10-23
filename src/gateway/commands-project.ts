@@ -24,7 +24,6 @@
  * What reaches a running session (P7): a **changed** value, within about a second; a **removed**
  * one never, so `default` says the session keeps the old value until it restarts.
  */
-import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { COMMAND } from "../build-info";
 import { tildify } from "../cli/paths";
@@ -37,7 +36,6 @@ import {
   DEFAULT_ANTHROPIC_BASE_URL,
   DEFAULT_PORT,
   type GatewayConfig,
-  loadConfigFile,
   PROFILE_NAME_RULE,
 } from "./config";
 import { routerHealth } from "./health";
@@ -50,12 +48,13 @@ import {
   type ProjectGatewayState,
   profileUrlOf,
   projectGatewayState,
+  readGatewayConfig,
   type SettingsFileState,
   type SettingsLevel,
   settingsFileState,
   urlMeaning,
 } from "./project-state";
-import { BASE_URL_PATH, clearGatewayBaseUrl, setGatewayBaseUrl } from "./settings";
+import { BASE_URL_PATH, clearGatewayBaseUrl, setGatewayBaseUrl, shownValue } from "./settings";
 import { isProfileName } from "./targets";
 
 /** The three states a project may be given. */
@@ -128,16 +127,6 @@ function stateOf(ctx: GatewayContext, folder: string): ProjectGatewayState {
     configPath: ctx.paths.gatewayConfigFile,
     settingsFile: ctx.paths.settingsFile,
   });
-}
-
-/** The gateway config as these commands may use it; null with none, and the reason otherwise. */
-function readConfig(configPath: string): { config: GatewayConfig | null; problem: null | string } {
-  if (!existsSync(configPath)) return { config: null, problem: null };
-  try {
-    return { config: loadConfigFile(configPath), problem: null };
-  } catch (error) {
-    return { config: null, problem: error instanceof Error ? error.message : String(error) };
-  }
 }
 
 /** The URL a state means on this machine: the router (with a profile), Anthropic's, or none. */
@@ -239,7 +228,7 @@ export function planProjectChange(
     !isOwnedValue(options.stateDir, target.path, BASE_URL_PATH, current)
   ) {
     return {
-      error: `${target.path} holds ${current} in env.ANTHROPIC_BASE_URL, which is neither this machine's router nor Anthropic's. It is not this command's to replace: remove it by hand first, or set the project's state in the other settings file.`,
+      error: `${target.path} holds ${shownValue(current)} in env.ANTHROPIC_BASE_URL, which is neither this machine's router nor Anthropic's. It is not this command's to replace: remove it by hand first, or set the project's state in the other settings file.`,
     };
   }
   return {
@@ -276,7 +265,7 @@ async function applyProjectChange(
     async () => {
       const view = stateOf(ctx, folder);
       const plan = planProjectChange(view, {
-        config: readConfig(paths.gatewayConfigFile).config,
+        config: readGatewayConfig(paths.gatewayConfigFile).config,
         configPath: paths.gatewayConfigFile,
         home: paths.home,
         request: options,
@@ -462,7 +451,7 @@ function savedStateLines(view: ProjectGatewayState, plan: ProjectChangePlan): st
   } else {
     lines.push("The team file is committed with the project: commit it for your teammates.");
     lines.push(
-      "A session started in this project's root or in a subfolder of it reads the file only when it starts in that same folder: one started in a subfolder does not read the root's team file.",
+      "A session reads this file only when it starts in this same folder: one started in a subfolder does not.",
     );
   }
   if (plan.state === "on" && plan.profile !== null) {
@@ -500,7 +489,7 @@ export async function commandProject(
   if (!isFolder(options.folder)) throw new Error(`${options.folder} is not a folder`);
   if (options.state === "status") return projectStatus(ctx, options.folder);
 
-  const { problem } = readConfig(ctx.paths.gatewayConfigFile);
+  const { problem } = readGatewayConfig(ctx.paths.gatewayConfigFile);
   if (problem !== null && options.state === "on") {
     throw new Error(`the gateway config cannot be read (${problem})`);
   }

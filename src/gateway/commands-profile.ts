@@ -389,7 +389,7 @@ export async function commandProfile(
     { waitMs: 10_000 },
   );
   out.marked([slotChangeLine(configPath, plan, ctx.paths.home)]);
-  out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, config)}`, 2);
+  out.say(`${plan.name}: ${plan.key}: ${slotNowWords(plan, plan.config)}`, 2);
   out.verdict(
     "ok",
     "The router uses it from its next request: it reads the config again within about a second.",
