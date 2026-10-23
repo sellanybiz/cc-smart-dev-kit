@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { type CliPaths, tildify } from "../cli/paths";
-import { type GatewayConfig, loadConfigFile, messageOf } from "../gateway/config";
+import { type GatewayConfig, loadConfigFile } from "../gateway/config";
 import { backendAddress } from "../gateway/settings";
 import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
@@ -20,6 +20,7 @@ import {
   type AffordableTarget,
   API_KEY,
   API_KEY_POOL,
+  applyClaudeMem,
   BASE_URL,
   type ChoiceRecord,
   CLAUDE_FALLBACK_SINCE,
@@ -27,9 +28,11 @@ import {
   CLAUDE_MEM_MIN_VERSION,
   CLAUDE_MODEL,
   CLAUDE_PROVIDER,
+  type ClaudeMemPlan,
   type ClaudeMemSettings,
   CUSTOM_PRESET,
   checkAffordableTarget,
+  claudeMemPlan,
   compatBaseUrl,
   FALLBACK_MODEL,
   FALLBACK_OFF,
@@ -41,6 +44,7 @@ import {
   OPENAI_COMPATIBLE,
   PRESET,
   PROVIDER,
+  PROVIDER_KEYS,
   readChoices,
   readClaudeMemSettings,
   shownClaudeMemValue,
@@ -326,12 +330,22 @@ export function readClaudeMemFacts(paths: CliPaths): ClaudeMemFacts {
 /**
  * The key a backend route or fallback uses: the person's own key when they set one (from the
  * portal, or by hand), else the gateway's own key for that backend — as setup uses it. `set`
- * is false when the key stays as it is.
+ * is false when the key stays as it is. A key that is one of the gateway's own backend keys is
+ * never "the person's own": it follows the backend, so moving from backend `a` to `b` never
+ * sends `a`'s key to `b`.
  */
-function keyFor(read: ClaudeMemSettings, gatewayKey: string): { key: string; set: boolean } {
+function keyFor(
+  read: ClaudeMemSettings,
+  gatewayKey: string,
+  gatewayKeys: readonly string[],
+): { key: string; set: boolean } {
   const current = textOf(read, API_KEY);
   const source = sourceOf(read, API_KEY);
-  if (current !== "" && (source === "portal" || source === "hand")) {
+  if (
+    current !== "" &&
+    !gatewayKeys.includes(current) &&
+    (source === "portal" || source === "hand")
+  ) {
     return { key: current, set: false };
   }
   return { key: gatewayKey, set: true };
@@ -340,11 +354,11 @@ function keyFor(read: ClaudeMemSettings, gatewayKey: string): { key: string; set
 /** The keys that point claude-mem's OpenAI-compatible provider at one gateway backend's model. */
 function compatKeys(
   read: ClaudeMemSettings,
-  backend: { name: string; baseUrl: string; apiKey: string },
+  backend: GatewayBackend,
   model: string,
 ): { set: Array<readonly [string, string]>; target: AffordableTarget } {
   const baseUrl = compatBaseUrl(backend.baseUrl);
-  const key = keyFor(read, backend.apiKey);
+  const key = keyFor(read, backend.apiKey, backend.allKeys);
   return {
     set: [
       [PRESET, CUSTOM_PRESET],
@@ -360,14 +374,30 @@ function compatKeys(
 function gatewayBackend(
   paths: CliPaths,
   name: string,
-): { backend: { name: string; baseUrl: string; apiKey: string } } | { why: string } {
+): { backend: GatewayBackend } | { why: string } {
   const config = gatewayConfig(paths);
   if (config === null) {
     return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
   }
   const backend = config.backends[name];
   if (backend === undefined) return { why: `The gateway has no backend named "${name}".` };
-  return { backend: { apiKey: backend.apiKey, baseUrl: backend.baseUrl, name } };
+  return {
+    backend: {
+      allKeys: Object.values(config.backends).map((one) => one.apiKey),
+      apiKey: backend.apiKey,
+      baseUrl: backend.baseUrl,
+      name,
+    },
+  };
+}
+
+/** One gateway backend as claude-mem uses it, and every backend key the gateway holds. */
+interface GatewayBackend {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  /** Every backend's key: none of them is ever the person's own key (`keyFor`). */
+  allKeys: string[];
 }
 
 /** One line per change, in setup's own words (`~ file: KEY: before -> after`), the key masked. */
@@ -402,13 +432,28 @@ function handRefusal(
   return null;
 }
 
+/** The keys a choice is planned from: the route's, the key's and the fallback's. */
+const PLANNED_FROM = [...PROVIDER_KEYS, FALLBACK_PROVIDER, FALLBACK_MODEL] as const;
+
+/** What a chooser read, to compare under the lock: the planned-from keys' values. */
+function plannedFrom(read: ClaudeMemSettings): unknown[] {
+  return PLANNED_FROM.map((key) => getKey(read.data, read.at(key)));
+}
+
+/** The refusal when claude-mem's settings changed between the chooser's read and the write. */
+const CHANGED_MEANWHILE =
+  "Nothing was saved: claude-mem's settings changed while the kit checked the model (another tab, setup, or claude-mem itself). Look at the card again, then choose again.";
+
 /**
- * Writes the person's choice under setup's lock: the settings again (another program may have
- * changed them since the check), `applyManagedJson`, then the choices file. A key the person
- * set by hand stops it in words, with nothing written.
+ * Writes the person's choice under setup's lock: the settings again, `applyManagedJson`, then
+ * the choices file. The values the choice was planned from (`before`, the chooser's read) must
+ * still be there: a tiny chat can take 30 seconds, and a write planned on an older file (the
+ * key another tab pasted meanwhile) would undo a change unseen. A key the person set by hand
+ * stops it in words, with nothing written.
  */
 async function save(
   paths: CliPaths,
+  before: ClaudeMemSettings,
   set: ReadonlyArray<readonly [string, string]>,
   done: string,
 ): Promise<ChoiceResult> {
@@ -416,11 +461,13 @@ async function save(
     const ready = readReady(paths);
     if ("blocked" in ready) return { lines: [ready.blocked.text], ok: false };
     const { read } = ready;
+    if (!Bun.deepEquals(plannedFrom(read), plannedFrom(before), true)) {
+      return { lines: [CHANGED_MEANWHILE], ok: false };
+    }
     const wanted: Array<readonly [KeyPath, string]> = set.map(([key, value]) => [
       read.at(key),
       value,
     ]);
-    // Again under the lock: the file may have changed since the chooser looked.
     const theirs = handRefusal(read, set);
     if (theirs !== null) return theirs;
     let result: ManagedJsonResult;
@@ -434,14 +481,10 @@ async function save(
       });
     } catch (error) {
       if (!(error instanceof ForeignKeyError)) throw error;
-      // The error names a secret as "a secret": it never holds the key.
-      return {
-        lines: [
-          `Nothing was saved: ${messageOf(error)}`,
-          `That value is yours, set in ${read.short} by hand: change it there, or remove it to set it here.`,
-        ],
-        ok: false,
-      };
+      // Only a race with another program's write gets here (the checks above agree with
+      // `applyManagedJson`'s own rules). Its text quotes a value as it is (an address with its
+      // password, say): it never reaches a page; these words do.
+      return { lines: [CHANGED_MEANWHILE], ok: false };
     }
     recordChoices(paths, wanted);
     const lines = changeLines(result, read.short);
@@ -496,6 +539,7 @@ export async function chooseRoute(
   if (choice.kind === "claude") {
     return save(
       paths,
+      ready.read,
       [[PROVIDER, CLAUDE_PROVIDER]],
       routeLine("Claude, on your own Claude login"),
     );
@@ -508,7 +552,7 @@ export async function chooseRoute(
   if (theirs !== null) return theirs;
   const problem = await check(keys.target);
   if (problem !== null) return { lines: [`Nothing was saved: ${problem}.`], ok: false };
-  return save(paths, set, routeLine(`${choice.model} on ${choice.backend}`));
+  return save(paths, ready.read, set, routeLine(`${choice.model} on ${choice.backend}`));
 }
 
 /**
@@ -563,6 +607,7 @@ export async function chooseKey(
   if (problem !== null) return { lines: [`The key was not saved: ${problem}.`], ok: false };
   return save(
     paths,
+    read,
     set,
     choice.kind === "gateway"
       ? `claude-mem uses the gateway's own key for ${name}.`
@@ -586,9 +631,13 @@ export async function chooseFallback(
   const { read } = ready;
   const route = routeProvider(read);
   if (choice.kind === "off") {
+    // `off` came in 13.37.0, with Claude as the empty value's meaning; before it, claude-mem
+    // refuses `off` (its `validateSettings`) and an empty value is what means none.
+    const off = Bun.semver.order(ready.version, CLAUDE_FALLBACK_SINCE) >= 0 ? FALLBACK_OFF : "";
     return save(
       paths,
-      [[FALLBACK_PROVIDER, FALLBACK_OFF]],
+      read,
+      [[FALLBACK_PROVIDER, off]],
       "claude-mem has no fallback now: while its provider is limited, it waits.",
     );
   }
@@ -603,6 +652,7 @@ export async function chooseFallback(
     }
     return save(
       paths,
+      read,
       [
         [FALLBACK_PROVIDER, CLAUDE_PROVIDER],
         [FALLBACK_MODEL, choice.model ?? ""],
@@ -628,7 +678,58 @@ export async function chooseFallback(
   if (problem !== null) return { lines: [`Nothing was saved: ${problem}.`], ok: false };
   return save(
     paths,
+    read,
     set,
     `While its route's provider is limited, claude-mem sends its summaries to ${choice.model} on ${choice.backend}.`,
   );
+}
+
+/**
+ * Hands claude-mem back to setup: forgets the person's portal choices, then runs setup's own
+ * claude-mem step for the provider keys and the retired fallback keys (`claudeMemPlan`, the
+ * same tiny chat before a backend write, `applyClaudeMem`), so claude-mem follows the scout
+ * slot again and its fallback goes back to claude-mem's own default. The start blocks are
+ * left to `setup` itself: turning them off also turns Claude Code's own task tools on, in
+ * another file. A value the person set by hand stays theirs, as it does for setup.
+ */
+export async function followSetup(
+  paths: CliPaths,
+  check: TargetCheck = checkAffordableTarget,
+): Promise<ChoiceResult> {
+  const ready = readReady(paths);
+  if ("blocked" in ready) return { lines: [ready.blocked.text], ok: false };
+  await withLock(paths.stateDir, () =>
+    writeChoices(paths.stateDir, realTarget(paths.claudeMemSettingsFile), []),
+  );
+  const planned = claudeMemPlan(paths);
+  if (!("plan" in planned)) {
+    return {
+      lines: [
+        "note" in planned && planned.note !== null
+          ? planned.note
+          : "claude-mem is not installed, so there is nothing to set.",
+      ],
+      ok: false,
+    };
+  }
+  const lines: string[] = [];
+  let plan: ClaudeMemPlan = { ...planned.plan, startBlocks: [] };
+  if (plan.provider !== null) {
+    const problem = await check(plan.provider.target);
+    if (problem !== null) {
+      lines.push(`claude-mem's route left as it is: ${problem}.`);
+      plan = { ...plan, provider: null };
+    }
+  }
+  const result = await withLock(paths.stateDir, () => applyClaudeMem(paths, plan, false));
+  const short = tildify(paths.claudeMemSettingsFile, paths.home);
+  return {
+    lines: [
+      "Your choices are forgotten: setup decides claude-mem's route again, from the scout slot.",
+      ...lines,
+      ...plan.notes.map((note) => note.trim()),
+      ...changeLines(result, short),
+    ],
+    ok: true,
+  };
 }

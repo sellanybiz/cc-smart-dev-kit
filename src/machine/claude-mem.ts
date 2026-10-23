@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
@@ -274,6 +274,18 @@ export function readChoices(stateDir: string, file: string): ChoiceRecord[] {
           typeof record.owned === "boolean",
       )
     : [];
+}
+
+/**
+ * `restore` takes the person's portal writes out, so their choices go too: a setup after a
+ * restore follows the scout slot again, and an old choice can never match a value setup writes
+ * later. Returns the file it removed, or null when there was none.
+ */
+export function forgetClaudeMemChoices(stateDir: string): string | null {
+  const file = join(stateDir, CHOICES_FILE);
+  if (!existsSync(file)) return null;
+  rmSync(file, { force: true });
+  return file;
 }
 
 /** Replaces one settings file's choices, mode 600, in one rename. Runs under setup's lock. */

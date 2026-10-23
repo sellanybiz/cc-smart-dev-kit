@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { HealthProbe } from "../gateway/health";
-import { TODO_TOOLS_KEY } from "../machine/claude-mem";
+import { CHOICES_FILE, TODO_TOOLS_KEY } from "../machine/claude-mem";
 import { mcpRecordsFile, recordMcpServer } from "../mcp/records";
 import { applyManagedJson } from "../setup/managed-json";
 import { capturePrinted, printed } from "../testing/fake-machine";
@@ -124,6 +124,19 @@ describe("restore: claude-mem's keys and the task tools (D23)", () => {
     expect(existsSync(paths.settingsFile)).toBe(false);
     expect(printed.join("\n")).toContain(
       "~ ~/.claude-mem/settings.json: removed CLAUDE_MEM_WORK_STATE_ENABLED, CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED; everything else kept",
+    );
+  });
+});
+
+describe("restore: claude-mem's choices from the portal (PM1)", () => {
+  test("PM1: restore removes the record of the person's portal choices, and says so", async () => {
+    const { options, paths } = machine();
+    const choices = join(paths.stateDir, CHOICES_FILE);
+    writeFileSync(choices, "{}\n", { mode: 0o600 });
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(existsSync(choices)).toBe(false);
+    expect(printed.join("\n")).toContain(
+      "- ~/.claude/cc-smart-dev-kit/claude-mem-choices.json: removed (your claude-mem choices from the portal; the next setup follows the scout slot again)",
     );
   });
 });

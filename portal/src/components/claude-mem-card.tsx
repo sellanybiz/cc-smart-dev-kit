@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowRightLeftIcon, KeyRoundIcon, LifeBuoyIcon } from "lucide-react";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { ArrowRightLeftIcon, KeyRoundIcon, LifeBuoyIcon, Undo2Icon } from "lucide-react";
+import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 import { useResource } from "@/api/hooks";
 import type { ClaudeMemCurrent, ClaudeMemFacts, ClaudeMemSource, ModelRow } from "@/api/types";
 import { ActionButton, ActionResultLine, useAction } from "@/components/action-button";
@@ -138,6 +138,8 @@ function RoutePart({ current, models }: { current: ClaudeMemCurrent; models: Mod
   const id = useId();
   const now = current.route.kind === "claude" ? CLAUDE : (current.route.target ?? "");
   const [choice, setChoice] = useState(now);
+  // The value changed under the list (another tab, setup, a hand-back): the list follows it.
+  useEffect(() => setChoice(now), [now]);
   const ready = models.status === "ready" ? models.models : [];
   const note = listNote(models);
   const toBackend = choice !== CLAUDE;
@@ -279,8 +281,8 @@ function KeyPart({ current }: { current: ClaudeMemCurrent }) {
         </div>
         <ActionResultLine state={state} />
         <p className="text-xs text-pretty text-muted-foreground">
-          It goes into claude-mem's own file, readable only by you, and is never shown again,
-          printed or logged.
+          It goes into claude-mem's own file, readable only by you, and is never shown, printed or
+          logged in full again: its last four characters at most.
         </p>
       </form>
       <ConfirmDialog
@@ -310,6 +312,7 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
         ? (fallback.model ?? CLAUDE)
         : (fallback.target ?? "");
   const [choice, setChoice] = useState(now);
+  useEffect(() => setChoice(now), [now]);
   const ready = models.status === "ready" ? models.models : [];
   const claudeRoute = route.kind === "claude";
   const backendRoute = route.kind === "backend";
@@ -373,7 +376,9 @@ function FallbackPart({ current, models }: { current: ClaudeMemCurrent; models: 
         <p className="text-xs text-pretty text-muted-foreground">
           {backendRoute
             ? "claude-mem has one backend setting, and the route uses it: the fallback can be Claude, or off."
-            : "On the Claude route, the fallback can be a backend model, or off."}
+            : claudeRoute
+              ? "On the Claude route, the fallback can be a backend model, or off."
+              : "The fallback can be Claude, a backend model, or off."}
         </p>
       </div>
       <ActionButton
@@ -419,6 +424,10 @@ export function ClaudeMemCard({ facts }: { facts: ClaudeMemFacts }) {
   const needsKey =
     current !== null &&
     (current.route.kind === "backend" || current.fallback.provider === "openai-compatible");
+  // Something here is the person's choice: the card offers to hand it back to setup.
+  const chosen =
+    current !== null &&
+    [current.route.source, current.key.source, current.fallback.source].includes("portal");
   return (
     <Card className="@4xl/main:col-span-2">
       <CardHeader>
@@ -472,9 +481,24 @@ export function ClaudeMemCard({ facts }: { facts: ClaudeMemFacts }) {
             </div>
             <p className="text-xs text-pretty text-muted-foreground">
               Saved in <span className="font-mono">{facts.file}</span> with a backup, and taken out
-              again by {KIT_NAME} restore. Setup never changes a value you choose here. claude-mem
-              reads the file each time it uses it: no restart.
+              again by {KIT_NAME} restore. Setup leaves a value you choose here until you hand it
+              back. claude-mem reads the file each time it uses it: no restart.
             </p>
+            {/* Always there, so its own result stays in place after the hand-back. */}
+            <ActionButton
+              action="claudemem.follow"
+              body={{ confirm: true }}
+              variant="outline"
+              disabled={!chosen}
+              icon={<Undo2Icon data-icon="inline-start" aria-hidden="true" />}
+              confirm={{
+                title: "Hand claude-mem back to setup?",
+                body: "Your choices here are forgotten, and setup's own claude-mem step runs now: claude-mem follows the gateway's scout slot again (after one tiny request to its model), and its fallback goes back to claude-mem's own default. A value you set by hand in the file stays yours.",
+                yes: "Hand it back",
+              }}
+            >
+              Let setup decide again
+            </ActionButton>
           </>
         )}
       </CardContent>

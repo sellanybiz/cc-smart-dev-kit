@@ -55,6 +55,7 @@ import {
   chooseKey,
   chooseRoute,
   type FallbackChoice,
+  followSetup,
   type KeyChoice,
 } from "../machine/claude-mem-choices";
 import { companions } from "../machine/companions";
@@ -1326,6 +1327,18 @@ async function claudeMemFallback(
   return claudeMemWrite(() => chooseFallback(paths, choice));
 }
 
+/**
+ * `claudemem.follow`: hands claude-mem back to setup (`followSetup`): the person's choices are
+ * forgotten, and setup's own claude-mem step runs, so it follows the scout slot again.
+ */
+async function claudeMemFollow(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("changed");
+  return claudeMemWrite(() => followSetup(action.portal.paths));
+}
+
 // ── The crew, and the worktrees (D52) ───────────────────────────────────────────
 
 /** The longest answer a page may send to a crew session: a message, not a document. */
@@ -1415,6 +1428,7 @@ export const ACTION_NAMES = [
   "browser.setup",
   "browser.token",
   "claudemem.fallback",
+  "claudemem.follow",
   "claudemem.key",
   "claudemem.route",
   "companion.enable",
@@ -1494,6 +1508,8 @@ export async function runAction(
       return claudeMemRoute(action, body);
     case "claudemem.key":
       return claudeMemKey(action, body);
+    case "claudemem.follow":
+      return claudeMemFollow(action, body);
     case "claudemem.fallback":
       return claudeMemFallback(action, body);
     case "update.check":

@@ -974,6 +974,7 @@ export const ACTION_NAMES = [
   "browser.setup",
   "browser.token",
   "claudemem.fallback",
+  "claudemem.follow",
   "claudemem.key",
   "claudemem.route",
   "companion.enable",

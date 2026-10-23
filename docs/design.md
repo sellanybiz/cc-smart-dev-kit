@@ -4029,10 +4029,16 @@ three writers; the actions `claudemem.route`, `claudemem.key` and `claudemem.fal
   `owned.json` keeps only its hash). So `restore` takes it out like any of setup's keys.
   Beside that, `<stateDir>/claude-mem-choices.json` (`CHOICES_FILE`) keeps a copy of each
   written key's record: `isPersonsChoice` is true while the file still holds that value **and**
-  setup's own record still matches, so a `restore` (which drops the record) ends the choice. A
-  choice of claude-mem's own seeded default (Claude, when the file already says `claude`)
-  writes nothing and owns nothing: it is recorded with `owned: false` and counts while nobody
-  owns the key and it still holds that default.
+  setup's own record still matches. A choice of claude-mem's own seeded default (Claude, when
+  the file already says `claude`) writes nothing and owns nothing: it is recorded with
+  `owned: false` and counts while nobody owns the key and it still holds that default.
+- **`restore` ends every choice.** It removes the owned keys and the choices file
+  (`forgetClaudeMemChoices`, beside the stored `--no-instructions` choice): a record left
+  behind would match the same value a later setup writes (`openai-compatible`, `custom`) and
+  stop setup following the scout for good. **Let setup decide again** (`claudemem.follow`,
+  `followSetup`) ends them without a restore: it empties the choices and runs setup's own
+  claude-mem step for the provider and retired fallback keys (the start blocks stay `setup`'s,
+  because turning them off also turns Claude Code's task tools on, in another file).
 - **Setup leaves it.** `planProvider` stops at a person's choice in any of the five provider
   keys (one note line), and the retired fallback keys are taken out only while they are not a
   person's choice: a fallback the person chose holds the same Claude value 0.4.3 wrote.
@@ -4041,18 +4047,27 @@ three writers; the actions `claudemem.route`, `claudemem.key` and `claudemem.fal
   chat with the key it will use (`checkAffordableTarget`); nothing is written when either
   fails. The page's lists are `/api/slots`' own `models`.
 - **A value set by hand is never overwritten.** The reader names each value's source
-  (`default`, `setup`, `portal`, `hand`); a write over a `hand` value is refused in words before
-  anything is written (`ForeignKeyError` stays the guard for a race).
-- **The key.** A route to a backend keeps a key the person set (here or by hand) and otherwise
-  uses the gateway's own key for that backend, as setup does. A pasted key is one line, no
+  (`default`, `setup`, `portal`, `hand`); a write over a `hand` value is refused in words
+  before the tiny chat (`handRefusal`), so a refused write sends no request.
+- **Planned on one read, written on the same.** The check runs outside the lock (it can take
+  30 seconds), so `save` reads the file again under the lock and writes nothing when any key
+  the choice was planned from changed meanwhile (another tab's pasted key, setup, claude-mem
+  itself): the refusal asks the person to choose again. A `ForeignKeyError` from a race with
+  another program's write gets the same words, never its own text, which quotes a value whole.
+- **The key.** A route to a backend keeps a key the person set (pasted here, or by hand) and
+  otherwise uses the gateway's own key for that backend, as setup does. A key that is one of
+  the gateway's backend keys is never the person's own: it follows the route, so moving from
+  backend `a` to `b` gives claude-mem `b`'s key, never `a`'s. A pasted key is one line, no
   spaces, at most 512 characters, and is checked with the chat before it is saved.
 - **The fallback, as claude-mem 13.40.0 reads it** (its `worker-service.cjs`: the settings
   defaults and `validateSettings`; its CHANGELOG): the provider takes `claude`, `gemini`,
   `openrouter`, `openai-compatible` or `off`; an empty one means Claude since 13.37.0 and none
-  before it (`CLAUDE_FALLBACK_SINCE`); a fallback equal to the route's provider never takes
-  over; the model applies to a Claude fallback only; and an `openai-compatible` fallback uses
-  the same `CLAUDE_MEM_OPENAI_COMPAT_*` keys as the route. So a backend fallback needs the
-  Claude route, and the writer refuses the rest in words.
+  before it (`CLAUDE_FALLBACK_SINCE`), where `off` is refused (13.34.2 and 13.35.0's
+  `validateSettings`), so "off" writes `""` there; a fallback equal to the route's provider
+  never takes over; the model applies to a Claude fallback only; and an `openai-compatible`
+  fallback uses the same `CLAUDE_MEM_OPENAI_COMPAT_*` keys as the route. So a backend fallback
+  needs a route that is not `openai-compatible`, a Claude fallback one that is not Claude, and
+  the writer refuses the rest in words.
 - **No restart.** claude-mem's `loadFromFile` reads the settings file at each use.
 - **No address shown with its credentials.** `shownClaudeMemValue` shows a base URL through
   `backendAddress` (no user name, password, query or fragment), in setup's lines too.

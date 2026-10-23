@@ -121,6 +121,10 @@ describe("PM1: the claude-mem actions", () => {
     expect(await w.run("claudemem.route", { target: "omniroute:glm/flash" })).toEqual(refused);
     expect(await w.run("claudemem.key", { key: OWN_KEY, use: "other" })).toEqual(refused);
     expect(await w.run("claudemem.fallback", { target: "off" })).toEqual(refused);
+    expect(await w.run("claudemem.follow", {})).toEqual({
+      lines: ["Nothing was changed: the page's confirmation did not come with the request."],
+      ok: false,
+    });
     expect(w.settingsText()).toBe(before);
     expect(w.backend.chats).toEqual([]);
   });

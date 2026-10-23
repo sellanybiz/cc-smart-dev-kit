@@ -9,11 +9,12 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { restore } from "../setup/restore";
 import { tempDir } from "../testing/temp";
-import { applyClaudeMem, CHOICES_FILE, claudeMemPlan } from "./claude-mem";
+import { applyClaudeMem, CHOICES_FILE, claudeMemPlan, forgetClaudeMemChoices } from "./claude-mem";
 import {
   chooseFallback,
   chooseKey,
   chooseRoute,
+  followSetup,
   readClaudeMemFacts,
   type TargetCheck,
 } from "./claude-mem-choices";
@@ -23,6 +24,9 @@ const GATEWAY_KEY = "sk-gateway-PLANTED-0001";
 /** A key the person pastes. */
 const OWN_KEY = "sk-own-PLANTED-0002";
 const BACKEND_URL = "http://127.0.0.1:18434";
+/** The gateway's second backend, and its own key. */
+const OTHER_KEY = "sk-other-PLANTED-0003";
+const OTHER_URL = "http://127.0.0.1:18435";
 
 /** claude-mem's settings.json as 13.40.0 seeds it on its first run (the keys that matter). */
 const SEEDED = {
@@ -84,7 +88,11 @@ function machine(options: Options = {}) {
       paths.gatewayConfigFile,
       JSON.stringify({
         version: 1,
-        backends: { omniroute: { apiKey: GATEWAY_KEY, baseUrl: BACKEND_URL } },
+        backends: {
+          omniroute: { apiKey: GATEWAY_KEY, baseUrl: BACKEND_URL },
+          // A second backend, with its own key: a route that moves must never take the first's.
+          other: { apiKey: OTHER_KEY, baseUrl: OTHER_URL },
+        },
         slots: gateway === "scout" ? { "cc-smart-dev-kit-scout": ["omniroute:scout/model"] } : {},
       }),
       { mode: 0o600 },
@@ -132,7 +140,7 @@ describe("PM1: what the card reads", () => {
       version: null,
     });
     expect(readClaudeMemFacts(machine({ settings: SEEDED, version: "13.20.0" }).paths)).toEqual({
-      backends: ["omniroute"],
+      backends: ["omniroute", "other"],
       blocked: {
         fix: "claude plugin update claude-mem@thedotmack",
         text: "claude-mem 13.20.0 is older than 13.29.0, which brought the openai-compatible provider and the fallback.",
@@ -461,6 +469,112 @@ describe("PM1: setup and restore after a portal write", () => {
     const planned = claudeMemPlan(w.paths);
     expect("plan" in planned && planned.plan.provider?.target.model).toBe("scout/model");
   });
+
+  test("PM1: after restore, setup, and a new scout model, setup follows the scout: the old choice never comes back", async () => {
+    const w = machine({ settings: SEEDED, gateway: "scout" });
+    await chooseRoute(
+      w.paths,
+      { backend: "omniroute", kind: "backend", model: "glm/flash" },
+      w.check(),
+    );
+    // What `cc-smart-dev-kit restore` does: the owned keys out, and the choices with them.
+    restore(w.paths.stateDir);
+    expect(forgetClaudeMemChoices(w.paths.stateDir)).toBe(join(w.paths.stateDir, CHOICES_FILE));
+    // setup writes the scout's values: the same provider and preset the old choice held.
+    w.setup();
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("scout/model");
+    // The scout moves on: the next setup follows it.
+    const config = JSON.parse(readFileSync(w.paths.gatewayConfigFile, "utf8"));
+    config.slots["cc-smart-dev-kit-scout"] = ["omniroute:scout/next"];
+    writeFileSync(w.paths.gatewayConfigFile, JSON.stringify(config), { mode: 0o600 });
+    const plan = w.setup();
+    expect(plan.notes).toEqual([]);
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("scout/next");
+  });
+});
+
+describe("PM1: back to setup", () => {
+  test("PM1: the person's choices are forgotten, and setup's own step puts the scout's model back", async () => {
+    const w = machine({ settings: SEEDED, gateway: "scout" });
+    await chooseRoute(
+      w.paths,
+      { backend: "omniroute", kind: "backend", model: "glm/flash" },
+      w.check(),
+    );
+    await chooseFallback(w.paths, { kind: "claude", model: "claude-sonnet-5-5" }, w.check());
+    const result = await followSetup(w.paths, w.check());
+    expect(result).toEqual({
+      lines: [
+        "Your choices are forgotten: setup decides claude-mem's route again, from the scout slot.",
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "glm/flash" -> "scout/model"',
+        '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-sonnet-5-5" -> (none)',
+      ],
+      ok: true,
+    });
+    expect(w.checks.at(-1)?.model).toBe("scout/model");
+    // The fallback provider held claude-mem's own default already: it is not the person's now.
+    expect(readClaudeMemFacts(w.paths).current).toMatchObject({
+      fallback: { provider: "claude", source: "default" },
+      route: { source: "setup", target: "omniroute:scout/model" },
+    });
+    // The start blocks are setup's own step: left as they were.
+    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("true");
+    // A later setup has nothing of the person's to leave alone.
+    expect(w.setup().notes).toEqual([]);
+  });
+});
+
+describe("PM1: a route that moves between backends, and a change while the check runs", () => {
+  test("PM1: from one backend to another, the key follows the backend: the first's key never goes to the second", async () => {
+    const w = machine({ settings: SEEDED });
+    await chooseRoute(w.paths, { backend: "omniroute", kind: "backend", model: "a" }, w.check());
+    const result = await chooseRoute(
+      w.paths,
+      { backend: "other", kind: "backend", model: "b" },
+      w.check(),
+    );
+    expect(result.ok).toBe(true);
+    expect(w.checks.at(-1)).toEqual({
+      apiKey: OTHER_KEY,
+      backend: "other",
+      baseUrl: `${OTHER_URL}/v1`,
+      model: "b",
+    });
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(OTHER_KEY);
+    expect(readClaudeMemFacts(w.paths).current?.key.state).toBe("gateway");
+  });
+
+  test("PM1: a key the person pasted moves with the route: it is theirs, not a gateway key", async () => {
+    const w = machine({ settings: SEEDED });
+    await chooseRoute(w.paths, { backend: "omniroute", kind: "backend", model: "a" }, w.check());
+    await chooseKey(w.paths, { key: OWN_KEY, kind: "other" }, w.check());
+    await chooseRoute(w.paths, { backend: "other", kind: "backend", model: "b" }, w.check());
+    expect(w.checks.at(-1)?.apiKey).toBe(OWN_KEY);
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(OWN_KEY);
+  });
+
+  test("PM1: the settings change while the check runs (another tab pastes a key): nothing is written", async () => {
+    const w = machine({ settings: SEEDED });
+    await chooseRoute(w.paths, { backend: "omniroute", kind: "backend", model: "a" }, w.check());
+    const pasteMeanwhile: TargetCheck = async () => {
+      await chooseKey(w.paths, { key: OWN_KEY, kind: "other" }, w.check());
+      return null;
+    };
+    const result = await chooseRoute(
+      w.paths,
+      { backend: "omniroute", kind: "backend", model: "b" },
+      pasteMeanwhile,
+    );
+    expect(result).toEqual({
+      lines: [
+        "Nothing was saved: claude-mem's settings changed while the kit checked the model (another tab, setup, or claude-mem itself). Look at the card again, then choose again.",
+      ],
+      ok: false,
+    });
+    // The other tab's key stays; the model stays as it was.
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_API_KEY).toBe(OWN_KEY);
+    expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("a");
+  });
 });
 
 describe("PM1: the key", () => {
@@ -554,6 +668,20 @@ describe("PM1: the key", () => {
 });
 
 describe("PM1: the quota fallback", () => {
+  test("PM1: off before 13.37.0 is the empty value (claude-mem refuses `off` there), and reads as off", async () => {
+    const w = machine({ settings: SEEDED, version: "13.36.0" });
+    const result = await chooseFallback(w.paths, { kind: "off" }, w.check());
+    expect(result.ok).toBe(true);
+    expect(w.settings().CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER).toBe("");
+    expect(readClaudeMemFacts(w.paths).current?.fallback).toEqual({
+      idle: null,
+      model: null,
+      provider: "off",
+      source: "portal",
+      target: null,
+    });
+  });
+
   test("PM1: off, then setup: the person's fallback stays (setup takes out only its own)", async () => {
     const w = machine({ settings: SEEDED, gateway: "scout" });
     const result = await chooseFallback(w.paths, { kind: "off" }, w.check());
