@@ -1101,10 +1101,10 @@ describe("a name already in use", () => {
   });
 
   test("the same name, from two slugs a long name cuts to the same words", async () => {
-    // The longest tag (12), plan (16) and phase (8) leave the slug 19 characters, so two slugs
-    // that share a prefix longer than that make the SAME name. The branches differ — the branch
-    // check passes — and the name does not, so `crew answer`, `crew tell` and `findNamed` would
-    // reach whichever session they found first. The name is an address: it may not be shared.
+    // The longest tag (12), plan (16) and phase (8) leave only 17-19 characters of the slug, so
+    // two slugs that share a longer prefix make the SAME name. The branches differ — the branch
+    // check passes — and the name does not, so the message guard's own lookup takes whichever
+    // record it finds first. The name is an address: it may not be shared.
     const world = await ledWorld();
     world.writeConfig({ tag: "my-app-tools" });
     await writeLead(

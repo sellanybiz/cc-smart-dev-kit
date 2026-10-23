@@ -25377,9 +25377,13 @@ function recordedLead(context, sessionId) {
     return false;
   }
 }
+
+class SessionNameRefused extends Error {
+  name = "SessionNameRefused";
+}
 function recordSessionName(sessionId, raw, env) {
   if (crewIdOf(env) !== null) {
-    throw new Error("a crew session keeps the name its lead gave it");
+    throw new SessionNameRefused("a crew session keeps the name its lead gave it");
   }
   if (!isSessionId(sessionId))
     throw new Error(`"${sessionId}" is not a session id`);
@@ -29983,21 +29987,31 @@ async function stopAnswer(input, id, repo, paths) {
   }
   return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
-async function personPromptAnswer(input, id, repo, paths, options) {
-  const prompt2 = stringField(input.prompt);
-  if (prompt2 === null)
-    return SILENT;
+function titleAnswer(input, record, env) {
+  const sessionId = stringField(input.session_id);
+  if (!isSessionId(sessionId))
+    return null;
+  return titleToSet(env, sessionId, record.name, stringField(input.session_title));
+}
+function titleOnly(title) {
+  return title === null ? SILENT : addContextAndTitle("UserPromptSubmit", null, title);
+}
+async function personPromptAnswer(input, id, repo, paths, env, options) {
   const found = recordOf2(id, repo, paths);
   if (!found.ok)
     return found.result;
   const record = found.record;
+  const title = titleAnswer(input, record, env);
+  const prompt2 = stringField(input.prompt);
+  if (prompt2 === null)
+    return titleOnly(title);
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
   if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
-    return SILENT;
+    return titleOnly(title);
   const line = personLine(prompt2);
   if (line === "")
-    return SILENT;
+    return titleOnly(title);
   try {
     await appendCrewEvent(paths.stateDir, repo, {
       crew: record.id,
@@ -30010,7 +30024,7 @@ async function personPromptAnswer(input, id, repo, paths, options) {
   } catch (error) {
     return storeProblem(reasonOf2(error));
   }
-  return addContext("UserPromptSubmit", personWroteLine());
+  return title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
 }
 function taskListGate(input, id, repo, paths, env) {
   const listId = taskListId(env, stringField(input.session_id));
@@ -30053,7 +30067,7 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   if (event === "SessionStart")
     return await startCard(input, id, repo, paths, options);
   if (event === "UserPromptSubmit")
-    return await personPromptAnswer(input, id, repo, paths, options);
+    return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")
@@ -33540,6 +33554,10 @@ function inUse(planned, records, ctx) {
   if (recorded !== undefined) {
     return refusal(`${recorded.name} is recorded already, ${recorded.state}, on ${branch}`, `remove it first (${COMMAND} crew rm "${recorded.name}"), or pick another --slug`);
   }
+  const sameName = records.find((one) => one.repo === caller.repo && one.name === name && holdsName(one));
+  if (sameName !== undefined) {
+    return refusal(`${sameName.name} is recorded already, ${sameName.state}, on ${sameName.branch}`, `pick a shorter --slug, so this phase's name is not cut to the same words, or remove it first (${COMMAND} crew rm "${sameName.name}")`);
+  }
   if (gitOut(caller.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env) !== null) {
     return refusal(`the branch ${branch} is there already, for ${name}`, "delete it, or pick another --slug");
   }
@@ -34657,11 +34675,22 @@ async function runCrewWatch(args, ctx) {
     return 2;
   }
   const mergeInto = leads.find((one) => one.sessionId === leadSessionId)?.cwd ?? repo;
-  const scope = { leadSessionId, mergeInto, repo, resolved };
   const known = readWatchState(ctx.paths.stateDir, repo, leadSessionId);
   let state = known ?? { noted: false, offset: 0, said: {} };
+  let caps = resolved;
+  let capsSaid = false;
   const deadline = args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;; ) {
+    const reread = readCaller("watch", ctx, { session: "optional" });
+    if (reread.ok) {
+      caps = reread.caller.resolved;
+      capsSaid = false;
+    } else if (!capsSaid) {
+      for (const line of reread.lines)
+        ctx.error(line);
+      capsSaid = true;
+    }
+    const scope = { leadSessionId, mergeInto, repo, resolved: caps };
     let pass;
     try {
       pass = await watchPass(state, ctx, scope);
@@ -48549,6 +48578,10 @@ Fix: run it in the project's folder, or run git init here first`);
       try {
         name = recordSessionName(sessionId, words.join(" "), process.env);
       } catch (error) {
+        if (error instanceof SessionNameRefused) {
+          console.error(error.message);
+          return 1;
+        }
         console.error(usageError2(error instanceof Error ? error.message : String(error), "session-name"));
         return 2;
       }

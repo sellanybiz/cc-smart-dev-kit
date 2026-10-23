@@ -36,7 +36,8 @@
  *   prompt counts — Claude Code runs this hook for every turn a session gets, and the input says
  *   nothing about where a prompt came from (proved live on 2.1.309, only `prompt`),
  *   so the prompt's own shape decides: a `SendMessage` delivery carries
- *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, and the three
+ *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, a subagent's
+ *   hand-back the session itself launched carries `<agent-message from=…>`, and the three
  *   prompts a lead's own transport gives a crew session bare — `crew start`'s launch line
  *   (`firstPrompt`, built for the record's own name, lead and brief file), `crew answer`'s
  *   resume of a stopped session, and the watch's `resumeText` of a paused one — are recognised
@@ -44,6 +45,11 @@
  *   in the kit gives a crew session a prompt); one the hook cannot read at all — no `prompt`, no
  *   record — records nothing. Never a block, never a question: the person's prompt always goes
  *   on.
+ *
+ *   Whatever the turn is, the crew record's name is put back on the session's title when the
+ *   title says something else (`titleAnswer`): the name is the address its lead, `crew answer`
+ *   and the message guard reach it by, and `session-name` is silent here (D26, one owner per
+ *   title).
  * - **Stop**: records the session's last line on its record (masked and clipped: a record is read
  *   by a person and by the lead) and **never gives context** — a Stop hook's `additionalContext`
  *   keeps the turn going and starves hand-backs (L1a.1). When the newest `step` or `report` event
@@ -91,6 +97,7 @@ import { maskedLine } from "../gateway/plain-text";
 import { isInside, realPath } from "./git";
 import {
   addContext,
+  addContextAndTitle,
   type HookInput,
   type HookResult,
   SILENT,
@@ -98,6 +105,7 @@ import {
   toolDecision,
 } from "./io";
 import type { Env } from "./run";
+import { isSessionId, titleToSet } from "./session-name";
 
 /** The two tools a crew session never calls: each one asks the person (D36). */
 export const CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"] as const;
@@ -183,13 +191,14 @@ export const ANSWER_RESUME_MS = 60_000;
 
 /**
  * True when `prompt` is the person's own words. Every other turn a crew session gets is its
- * lead's: a `SendMessage` delivery or a monitor's line (the wrappers), the kit's own Stop block
- * (a continuation that carries it), the line `crew start` launched this crew session with
- * (`firstPrompt`, built for this record — a hand-off's next crew session gets its own),
- * `crew answer`'s resume of a stopped crew session (with a question still open, or with the
- * answer the store recorded — the resume runs before the answer is written), and the watch's
- * resume of a paused one (the frame above). A bare prompt none of those explain is the person's:
- * nothing else in the kit gives a crew session a prompt.
+ * lead's or its own subagent's: a `SendMessage` delivery, a monitor's line, or a subagent's
+ * hand-back (the wrappers), the kit's own Stop block (a continuation that carries it), the line
+ * `crew start` launched this crew session with (`firstPrompt`, built for this record — a
+ * hand-off's next crew session gets its own), `crew answer`'s resume of a stopped crew session
+ * (with a question still open, or with the answer the store recorded — the resume runs before
+ * the answer is written), and the watch's resume of a paused one (the frame above). A bare
+ * prompt none of those explain is the person's: nothing else in the kit gives a crew session a
+ * prompt.
  */
 export function isPersonPrompt(
   record: CrewRecord,
@@ -467,30 +476,57 @@ async function stopAnswer(
 }
 
 /**
+ * The crew session's name to set at this turn, or null. **The crew record is the one owner of
+ * its session's title**: 1.1.1 let a crew session name itself after its task (`session-name`),
+ * and 1.1.2 refused new renames without setting the title back — so a session renamed then kept
+ * a task name while its lead, `crew answer` and the message guard went on addressing it by the
+ * record's name. `titleToSet` is the one rule and the one record (`session-name`, as for a
+ * lead's name in `lead-notes`), so a name the kit already set is never set twice, and a session
+ * whose title is already right is told nothing.
+ */
+function titleAnswer(input: HookInput, record: CrewRecord, env: Env): null | string {
+  const sessionId = stringField(input.session_id);
+  if (!isSessionId(sessionId)) return null;
+  return titleToSet(env, sessionId, record.name, stringField(input.session_title));
+}
+
+/** The title alone in a `UserPromptSubmit` answer, or nothing to say at all. */
+function titleOnly(title: null | string): HookResult {
+  return title === null ? SILENT : addContextAndTitle("UserPromptSubmit", null, title);
+}
+
+/**
  * UserPromptSubmit: the person typed into the crew session (D55). One `person` event, so the
  * lead's watch says it and the lead reads the next report against it, and one line of context
  * telling the session whose word it is. Never a block and never a question: the prompt goes on
  * whatever the store does. A store that cannot record is one line, and the prompt still reaches
  * the session — only the lead's line is missing.
+ *
+ * Whatever the turn is — the person's, the lead's, a subagent's — the name goes back with it
+ * when the session's title says something else (`titleAnswer`): the name is the address every
+ * other part of the kit reaches this crew session by, so it is put right on every turn, not
+ * only on the turns the person types.
  */
 async function personPromptAnswer(
   input: HookInput,
   id: string,
   repo: string,
   paths: CliPaths,
+  env: Env,
   options: CrewRoleOptions,
 ): Promise<HookResult> {
-  const prompt = stringField(input.prompt);
-  if (prompt === null) return SILENT;
   const found = recordOf(id, repo, paths);
   if (!found.ok) return found.result;
   const record = found.record;
+  const title = titleAnswer(input, record, env);
+  const prompt = stringField(input.prompt);
+  if (prompt === null) return titleOnly(title);
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
-  if (!isPersonPrompt(record, prompt, briefFile, nowMs)) return SILENT;
+  if (!isPersonPrompt(record, prompt, briefFile, nowMs)) return titleOnly(title);
   const line = personLine(prompt);
   // Nothing to say: a prompt of blank lines is the person's, but the lead gets no line for it.
-  if (line === "") return SILENT;
+  if (line === "") return titleOnly(title);
   try {
     await appendCrewEvent(
       paths.stateDir,
@@ -508,7 +544,9 @@ async function personPromptAnswer(
   } catch (error) {
     return storeProblem(reasonOf(error));
   }
-  return addContext("UserPromptSubmit", personWroteLine());
+  return title === null
+    ? addContext("UserPromptSubmit", personWroteLine())
+    : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
 }
 
 /**
@@ -584,7 +622,7 @@ export async function crewRoleAnswer(
   if (repo === null) return SILENT;
   if (event === "SessionStart") return await startCard(input, id, repo, paths, options);
   if (event === "UserPromptSubmit")
-    return await personPromptAnswer(input, id, repo, paths, options);
+    return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, options);
   return SILENT;

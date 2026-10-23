@@ -24,8 +24,8 @@ import {
   listCrew,
   readCrew,
   readWatchState,
-  type WatchState,
   updateCrew,
+  type WatchState,
   writeLead,
   writeStoreFile,
 } from "./store";
@@ -1051,11 +1051,6 @@ describe("crew watch", () => {
       ?.state;
   }
 
-  /** The agent view of the world's holder crew session, so no pass reads a real transcript. */
-  const HOLDER_VIEW = agentsJson([
-    agentRowOf({ id: "bbbb2222", sessionId: "bbbb2222-2222-3333-4444-555555555555" }),
-  ]);
-
   test("D60: a cap the person lowers reaches the next pass of the same watch", async () => {
     // The watch read the workflow once, before its loop, and passed that value to every pass:
     // on 2026-10-23 the owner set `crew.max 16` (the CPU was 5x overloaded) and every lead's
@@ -1065,18 +1060,15 @@ describe("crew watch", () => {
     world.writeConfig({ max: 2 });
     await holderCrew(world);
     const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
-    const ctx = world.ctx(
-      {
-        sleep: async () => {
-          // Between two passes the wait clears and the cap drops to what already runs: the
-          // second pass must start nothing. On the value read once, it would start on max 2.
-          world.writeConfig({ max: 1 });
-          await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
-          await stepEvent(world);
-        },
+    const ctx = world.ctx({
+      sleep: async () => {
+        // Between two passes the wait clears and the cap drops to what already runs: the
+        // second pass must start nothing. On the value read once, it would start on max 2.
+        world.writeConfig({ max: 1 });
+        await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
+        await stepEvent(world);
       },
-      { FAKE_AGENTS_JSON: HOLDER_VIEW },
-    );
+    });
     expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
@@ -1092,25 +1084,19 @@ describe("crew watch", () => {
     world.writeConfig({ max: 1 });
     await holderCrew(world);
     const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
-    const ctx = world.ctx(
-      {
-        sleep: async () => {
-          world.writeConfig({ max: 2 });
-          await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
-          // A line for the second pass to say either way, so the `--once` ends on it: what is
-          // asserted is the start itself, not the line.
-          await stepEvent(world);
-        },
+    const ctx = world.ctx({
+      sleep: async () => {
+        world.writeConfig({ max: 2 });
+        await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
+        // A line for the second pass to say either way, so the `--once` ends on it: what is
+        // asserted is the start itself, not the line.
+        await stepEvent(world);
       },
-      { FAKE_AGENTS_JSON: HOLDER_VIEW },
-    );
+    });
     expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
     expect(queuedState(world)).toBe("starting");
-    expect(world.out).toEqual([
-      `${NAME}: committed`,
-      `${NAME}: starting — started from the queue`,
-    ]);
+    expect(world.out).toEqual([`${NAME}: committed`, `${NAME}: starting — started from the queue`]);
   });
 
   test("D60: a workflow that cannot be read keeps the last good caps, and says so once", async () => {
@@ -1122,24 +1108,56 @@ describe("crew watch", () => {
     await holderCrew(world);
     const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
     let passes = 0;
-    const ctx = world.ctx(
-      {
-        sleep: async () => {
-          passes += 1;
-          if (passes > 1) {
-            await stepEvent(world);
-            return;
-          }
-          writeFileSync(join(world.repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
-          // The wait clears as well: only the cap that was read and kept holds it back now.
-          await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
-        },
+    const ctx = world.ctx({
+      sleep: async () => {
+        passes += 1;
+        if (passes > 1) {
+          await stepEvent(world);
+          return;
+        }
+        writeFileSync(join(world.repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
+        // The wait clears as well: only the cap that was read and kept holds it back now.
+        await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
       },
-      { FAKE_AGENTS_JSON: HOLDER_VIEW },
-    );
+    });
     expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
     expect(world.err.length).toBe(1);
     expect(world.err[0]).toStartWith("crew watch: ");
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
+    expect(queuedState(world)).toBe("queued");
+    expect(world.out).toEqual([`${NAME}: committed`]);
+  });
+
+  test("D60: a failed read is said once, and a good read starts saying it again", async () => {
+    // One line per run of failures: a watch whose file is broken for an hour does not repeat
+    // itself on every pass, and a file that reads again clears the mark — a later failure is
+    // news again, not something the watch has already said.
+    const world = await leadWorld();
+    world.writeConfig({ max: 2 });
+    await holderCrew(world);
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const configFile = join(world.repo, ".claude", "cc-smart-dev-kit.json");
+    let passes = 0;
+    const ctx = world.ctx({
+      sleep: async () => {
+        passes += 1;
+        if (passes === 1) {
+          writeFileSync(configFile, "{ not json");
+          return;
+        }
+        if (passes === 2) {
+          // The person fixed it: the next pass reads the workflow again and says nothing more.
+          world.writeConfig({ max: 2 });
+          return;
+        }
+        writeFileSync(configFile, "{ not json");
+        await stepEvent(world);
+      },
+    });
+    expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
+    expect(world.err.length).toBe(2);
+    expect(world.err[0]).toStartWith("crew watch: ");
+    expect(world.err[1]).toStartWith("crew watch: ");
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
     expect(queuedState(world)).toBe("queued");
     expect(world.out).toEqual([`${NAME}: committed`]);

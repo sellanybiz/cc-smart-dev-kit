@@ -50,7 +50,7 @@ import {
 } from "../hooks/desktop-alert";
 import { runtimeDir } from "../hooks/notify";
 import { runNotifyEntry } from "../hooks/notify-entry";
-import { recordSessionName } from "../hooks/session-name";
+import { recordSessionName, SessionNameRefused } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runJobCommand } from "../jobs/commands";
@@ -507,6 +507,13 @@ async function main(argv: string[]): Promise<number> {
       try {
         name = recordSessionName(sessionId, words.join(" "), process.env);
       } catch (error) {
+        // A crew session keeps the name its lead gave it: the arguments are well formed and the
+        // state refuses them, so this is a failed command — exit 1 and one line, never the
+        // usage exit 2 and its help pointer.
+        if (error instanceof SessionNameRefused) {
+          console.error(error.message);
+          return 1;
+        }
         // A wrong argument (a name that is not a session id, a name that is empty) is a
         // usage mistake, not a failed command: exit 2, and say what is wrong.
         console.error(

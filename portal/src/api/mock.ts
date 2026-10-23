@@ -14,6 +14,7 @@ import {
   seeded,
   TRAFFIC,
 } from "./mock-history";
+import { MOCK_PLAN, MOCK_TAG, mockCrewName } from "./mock-names";
 import { type ProjectMocks, projectMocks } from "./mock-projects";
 import type {
   AskerCount,
@@ -109,15 +110,14 @@ function crewRecord(
   now: number,
   fields: Partial<CrewRecord> & Pick<CrewRecord, "id" | "phase" | "slug" | "state" | "kind">,
 ): CrewRecord {
-  const tag = "my-app";
   return {
-    name: `C ${tag} ${fields.phase} ${fields.slug}`,
+    name: mockCrewName(fields.phase, fields.slug),
     sessionId: `${fields.id}-0000-4000-8000-000000000000`,
     shortId: fields.id.slice(0, 8),
     leadSessionId: "9c3a7e5d-lead",
-    leadName: "LEAD my-app release-1.1.0",
-    repo: `${PATH}/my-app`,
-    plan: ".claude/plans/release-1.1.0.md",
+    leadName: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
+    repo: `${PATH}/${MOCK_TAG}`,
+    plan: MOCK_PLAN,
     model: {
       named: "sonnet",
       slot: "cc-smart-dev-kit-worker",
@@ -126,9 +126,9 @@ function crewRecord(
     },
     effort: "high",
     permissionMode: "auto",
-    worktree: `${PATH}/my-app/.claude/worktrees/${fields.phase.toLowerCase()}-${fields.slug}`,
+    worktree: `${PATH}/${MOCK_TAG}/.claude/worktrees/${fields.phase.toLowerCase()}-${fields.slug}`,
     branch: `crew/${fields.phase.toLowerCase()}-${fields.slug}`,
-    baseRef: "release-1.1.0",
+    baseRef: MOCK_PLAN,
     waitsFor: [],
     files: [],
     lastLine: null,
@@ -147,11 +147,11 @@ function workData(now: number, empty: boolean): WorkData {
   }
   const lead: LeadRecord = {
     sessionId: "9c3a7e5d-lead",
-    name: "LEAD my-app release-1.1.0",
-    repo: `${PATH}/my-app`,
-    plan: ".claude/plans/release-1.1.0.md",
-    tag: "my-app",
-    cwd: `${PATH}/my-app`,
+    name: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
+    repo: `${PATH}/${MOCK_TAG}`,
+    plan: MOCK_PLAN,
+    tag: MOCK_TAG,
+    cwd: `${PATH}/${MOCK_TAG}`,
     createdAt: iso(now - 3 * HOUR),
     updatedAt: iso(now - MINUTE),
   };
@@ -243,14 +243,24 @@ function workData(now: number, empty: boolean): WorkData {
         lead,
         crew,
         lastStep: {
-          a1f04c2e: step("a1f04c2e", "C my-app B6b live-stream", 3, "GET /events behind the door"),
+          a1f04c2e: step(
+            "a1f04c2e",
+            mockCrewName("B6b", "live-stream"),
+            3,
+            "GET /events behind the door",
+          ),
           b7c19d03: step(
             "b7c19d03",
-            "C my-app B6c slots-page",
+            mockCrewName("B6c", "slots-page"),
             18,
             "The chain editor's draft state",
           ),
-          d9e2f7a4: step("d9e2f7a4", "C my-app C2 skills-agents", 9, "Agents' tool lists per R7"),
+          d9e2f7a4: step(
+            "d9e2f7a4",
+            mockCrewName("C2", "skills-agents"),
+            9,
+            "Agents' tool lists per R7",
+          ),
         },
       },
     ],

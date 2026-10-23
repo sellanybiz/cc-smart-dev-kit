@@ -69,8 +69,8 @@ and no grouping by lead — the name is how a person, and the portal, groups the
   8) is always whole in the name, never cut: it is the crew session's identity. What a long name
   loses is the end of its slug, never the phase or the hand-off number.
 - **A record keeps its name.** Crew records written by 1.1.1 and earlier say
-  `C <tag> <phase> <slug>`; nothing renames them, and `roleOf` and the store read both shapes.
-  Only a crew session started after the update gets the plan in its name.
+  `C <tag> <phase> <slug>`; nothing renames them, and `roleOf` recognises both shapes. Only a
+  crew session started after the update gets the plan in its name.
 - **ASCII only, no brackets or quotes**, so a name is safe in a title bar, a shell line and a file
   name, and it **never ends in `]`**: the message guard drops the ` [ref]` ListAgents prints after
   a name before it looks the name up (`withoutListRef`, one home), so a name of ours that ended in
@@ -81,10 +81,11 @@ and no grouping by lead — the name is how a person, and the portal, groups the
   `workflow.crew.tag` (`crewTag`). A folder name that leaves nothing (one of non-Latin
   letters only) is refused with the line to set the tag.
 - `roleOf(name)` reads the shape only — `lead`, `crew`, or null for any other name, a ListAgents
-  ` [ref]` read past. A person may name a session in that shape by hand, so **the store, never the
-  name, is what anything that stops or removes a session goes by.** The commands, the board, the
-  message guard and the portal look a crew session up by its record, never by splitting its name,
-  so both shapes work there.
+  ` [ref]` read past. **No crew command calls it**: it is the shape check the tests hold the names
+  to, here for a caller that must tell our names from a person's with no store to read. A person
+  may name a session in that shape by hand, so **the store, never the name, is what anything that
+  stops or removes a session goes by.** The commands, the board, the message guard and the portal
+  look a crew session up by its record, never by splitting its name, so both shapes work there.
 
 **The store** (`src/crew/store.ts`) is what the kit knows of each lead and crew session, per
 repository, under the state folder:
@@ -176,8 +177,13 @@ a lead taking its role name: a title is set only when the session is not already
 the kit did not set it. So the first prompt after `crew lead` replaces whatever name the
 session had, and a person's own `/rename` made after that stays: the kit takes the name back
 only when the lead registers again with another plan. Two names never compete: one title has
-one owner, so `session-name` is silent in a recorded lead, and in a crew session (whose launch name is its address; the command refuses there). A session id no naming record can be made for (not
-a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
+one owner, so `session-name` is silent in a recorded lead, and in a crew session (whose launch
+name is its address; the command refuses there). **The crew record owns the title**: `crew-role`
+puts `record.name` back on the title when the title says something else, through the same
+`titleToSet` (so a `/rename` the person makes after the kit set it stays, as with a lead's name).
+It is the fix for a session 1.1.1 renamed after its task and 1.1.2 left renamed, which lost the
+address its lead, `crew answer` and the message guard reach it by. A session id no naming record
+can be made for (not a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
 
 **`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
 **returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
@@ -759,16 +765,20 @@ each is silent unless its own session is the one it is about, and neither reads
   a report (`blocked` or `handoff`) before the turn ends. Claude Code runs this hook for every
   turn a session gets and its input carries no field that says where a turn came from
   (`docs/claude-code-contract.md`), so the prompt's own shape decides: a `SendMessage` delivery
-  (`<cross-session-message …>`), a monitor's line (`<task-notification>`) and a Stop hook's own
-  continuation (`Stop hook feedback:`, the kit's block line included) are its lead's, and so are
-  the three prompts a transport gives a crew session **bare** —
+  (`<cross-session-message …>`), a monitor's line (`<task-notification>`), a subagent's hand-back
+  the session itself launched (`<agent-message from=…>`, seen live on 2.1.309) and a Stop hook's
+  own continuation (`Stop hook feedback:`, the kit's block line included) are its lead's or its
+  own subagent's, and so are the three prompts a transport gives a crew session **bare** —
   `crew start`'s launch line (its own name, lead and brief file, from `firstPrompt`; a hand-off's
   next crew session gets its own), `crew answer`'s resume of a stopped session (a question still
   open, or the answer the store recorded) and the watch's `resumeText` of a paused one. A bare
   prompt none of those explain is recorded as the person's: nothing else in the kit gives a crew
   session a prompt, and a stopped crew session the person reopens by hand (`claude attach`) has
   no other way to be heard. One the hook cannot read at all records nothing. It never blocks and
-  never asks.
+  never asks. **Whatever the turn is, the record's name goes back on the title when the title says
+  something else** (`titleAnswer`, through `titleToSet`): a crew session its lead drives gets no
+  person prompt at all, so the address is put right on those turns too, and `session-name` stays
+  silent here (one title, one owner).
   At **Stop** it records the session's last line on its record (`lastLine`,
   masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew

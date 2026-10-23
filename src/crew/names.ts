@@ -16,8 +16,7 @@
  * itself there. State never goes into a name: the name is the address.
  *
  * A crew record keeps the name it was given: one written by 1.1.1 or earlier says
- * `C <tag> <phase> <slug>`, and every reader takes both shapes (`roleOf`, and the store,
- * which is what the commands go by).
+ * `C <tag> <phase> <slug>`, and both shapes are read (`roleOf` recognises each).
  *
  * `<tag>` names the repository: the main checkout's folder name, or `workflow.crew.tag` when
  * the person sets one (`crewTag`). One home for these rules: the launcher, the session-name
@@ -241,8 +240,12 @@ const CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 /**
  * The role a name shows: `lead`, `crew`, or null for any other name (a person's own). It reads
  * the name's shape only — a ListAgents ` [ref]` read past — so a person may name a session in
- * that shape by hand: the crew store, never the name, is what anything that stops or removes
- * a session goes by.
+ * that shape by hand.
+ *
+ * **Nothing that acts reads it.** No crew command calls this: the store is what every command
+ * goes by, and the name is only what the message guard looks a target up by
+ * (`withoutListRef`). It is the shape check the tests hold the names to, and it is here for a
+ * caller that must tell our names from a person's without a store to read.
  */
 export function roleOf(name: string): SessionRole | null {
   const plain = withoutListRef(name);

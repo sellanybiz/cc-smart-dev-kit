@@ -626,7 +626,10 @@ export function holdsName(record: CrewRecord): boolean {
   return !(record.state === "failed" && record.shortId === null && !existsSync(record.worktree));
 }
 
-/** Why the name is in use already, or null when it is free: the store, the branch, the folder. */
+/**
+ * Why the name is in use already, or null when it is free: the record of that branch, the name
+ * itself, the branch on disk, the folder.
+ */
 function inUse(planned: Plan, records: readonly CrewRecord[], ctx: CrewContext): null | Refusal {
   const { branch, caller, name, worktree } = planned;
   const recorded = records.find(
@@ -636,6 +639,21 @@ function inUse(planned: Plan, records: readonly CrewRecord[], ctx: CrewContext):
     return refusal(
       `${recorded.name} is recorded already, ${recorded.state}, on ${branch}`,
       `remove it first (${COMMAND} crew rm "${recorded.name}"), or pick another --slug`,
+    );
+  }
+  // **The name is an address**, and it is not the branch: a long tag, plan and phase leave only
+  // 17-19 characters of the slug, so two slugs of one phase that share a longer prefix make the
+  // SAME name on two DIFFERENT branches — the branch check above passes. `findCrew` then asks for
+  // an id, but the message guard's own lookup (`crewTellProblem`) takes whichever record it finds
+  // first, and the board and the portal show one name for two sessions. So the name is checked on
+  // its own, against the same live records.
+  const sameName = records.find(
+    (one) => one.repo === caller.repo && one.name === name && holdsName(one),
+  );
+  if (sameName !== undefined) {
+    return refusal(
+      `${sameName.name} is recorded already, ${sameName.state}, on ${sameName.branch}`,
+      `pick a shorter --slug, so this phase's name is not cut to the same words, or remove it first (${COMMAND} crew rm "${sameName.name}")`,
     );
   }
   if (

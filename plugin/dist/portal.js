@@ -26319,21 +26319,31 @@ async function stopAnswer(input, id, repo, paths) {
   }
   return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
-async function personPromptAnswer(input, id, repo, paths, options) {
-  const prompt2 = stringField(input.prompt);
-  if (prompt2 === null)
-    return SILENT;
+function titleAnswer(input, record, env) {
+  const sessionId = stringField(input.session_id);
+  if (!isSessionId(sessionId))
+    return null;
+  return titleToSet(env, sessionId, record.name, stringField(input.session_title));
+}
+function titleOnly(title) {
+  return title === null ? SILENT : addContextAndTitle("UserPromptSubmit", null, title);
+}
+async function personPromptAnswer(input, id, repo, paths, env, options) {
   const found = recordOf2(id, repo, paths);
   if (!found.ok)
     return found.result;
   const record = found.record;
+  const title = titleAnswer(input, record, env);
+  const prompt2 = stringField(input.prompt);
+  if (prompt2 === null)
+    return titleOnly(title);
   const nowMs = options.nowMs ?? Date.now();
   const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
   if (!isPersonPrompt(record, prompt2, briefFile, nowMs))
-    return SILENT;
+    return titleOnly(title);
   const line = personLine(prompt2);
   if (line === "")
-    return SILENT;
+    return titleOnly(title);
   try {
     await appendCrewEvent(paths.stateDir, repo, {
       crew: record.id,
@@ -26346,7 +26356,7 @@ async function personPromptAnswer(input, id, repo, paths, options) {
   } catch (error) {
     return storeProblem(reasonOf2(error));
   }
-  return addContext("UserPromptSubmit", personWroteLine());
+  return title === null ? addContext("UserPromptSubmit", personWroteLine()) : addContextAndTitle("UserPromptSubmit", personWroteLine(), title);
 }
 function taskListGate(input, id, repo, paths, env) {
   const listId = taskListId(env, stringField(input.session_id));
@@ -26389,7 +26399,7 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   if (event === "SessionStart")
     return await startCard(input, id, repo, paths, options);
   if (event === "UserPromptSubmit")
-    return await personPromptAnswer(input, id, repo, paths, options);
+    return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")

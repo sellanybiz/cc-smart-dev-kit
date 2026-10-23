@@ -773,14 +773,32 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   }
   // The lead merges in its own folder; where that is gone, in the main checkout.
   const mergeInto = leads.find((one) => one.sessionId === leadSessionId)?.cwd ?? repo;
-  const scope: WatchScope = { leadSessionId, mergeInto, repo, resolved };
   const known = readWatchState(ctx.paths.stateDir, repo, leadSessionId);
   // A watch with no mark yet reads the log from its start: no event is lost. The mark is written
   // when the lead records itself (`crew lead`), so the lines after it are this lead's.
   let state: WatchState = known ?? { noted: false, offset: 0, said: {} };
+  // **The workflow is read again at each pass.** Reading it once, before this loop, meant a cap
+  // a person changes while a lead's watch runs never reached it: on 2026-10-23 the owner set
+  // `crew.max 16` (the CPU was 5x overloaded) and every lead's watch went on starting queued
+  // phases up to the old 24. `readCaller` is the reader the start itself uses, so the project's
+  // file, the person's `workflow.json` and the schema are all read again — once a pass, cheap
+  // against the agent view a pass already runs. A read that fails in one pass keeps the last
+  // good value for that pass and says so once, so a file broken mid-run never stops a watch and
+  // never quietly widens a cap either.
+  let caps = resolved;
+  let capsSaid = false;
   const deadline =
     args.once && args.timeoutSeconds !== null ? ctx.now() + args.timeoutSeconds * 1000 : null;
   for (;;) {
+    const reread = readCaller("watch", ctx, { session: "optional" });
+    if (reread.ok) {
+      caps = reread.caller.resolved;
+      capsSaid = false;
+    } else if (!capsSaid) {
+      for (const line of reread.lines) ctx.error(line);
+      capsSaid = true;
+    }
+    const scope: WatchScope = { leadSessionId, mergeInto, repo, resolved: caps };
     let pass: { lines: number; state: WatchState };
     try {
       pass = await watchPass(state, ctx, scope);

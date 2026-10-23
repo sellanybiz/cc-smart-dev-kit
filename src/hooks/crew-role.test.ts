@@ -42,6 +42,8 @@ import { addContext, addContextAndTitle, toolDecision } from "./io";
 import { crewRoleHook } from "./specs";
 
 const CREW_ID = "W2-x-1a2b3c";
+/** The session id of a `UserPromptSubmit` input: Claude Code's own shape, a UUID. */
+const SESSION_UUID = "9f1c2d3e-1111-2222-3333-444444444444";
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 
@@ -1095,8 +1097,8 @@ describe("D42: a model limit pauses the crew session", () => {
 
 describe("D55: the person's own prompt is recorded, and a delivery that is not theirs is not", () => {
   /** A UserPromptSubmit input for the crew session. */
-  function promptInput(repo: string, prompt: string) {
-    return { hook_event_name: "UserPromptSubmit", session_id: "s", cwd: repo, prompt };
+  function promptInput(repo: string, prompt: string, sessionId = "s") {
+    return { hook_event_name: "UserPromptSubmit", session_id: sessionId, cwd: repo, prompt };
   }
 
   /** The `person` events the hook's run left for this crew session. */
@@ -1169,7 +1171,10 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     const world = await crewWorld();
     const result = await runHook(
       crewRoleHook,
-      { ...promptInput(world.repo, "a word"), session_title: "Fix the login page" },
+      {
+        ...promptInput(world.repo, "a word", SESSION_UUID),
+        session_title: "Fix the login page",
+      },
       world.env,
     );
     expect(result).toEqual(
@@ -1186,7 +1191,7 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     const world = await crewWorld();
     const result = await runHook(
       crewRoleHook,
-      { ...promptInput(world.repo, "a word"), session_title: "C app W2 hooks" },
+      { ...promptInput(world.repo, "a word", SESSION_UUID), session_title: "C app W2 hooks" },
       world.env,
     );
     expect(result).toEqual(
@@ -1207,6 +1212,7 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
         ...promptInput(
           world.repo,
           '<cross-session-message from="uds:/run/user/1001/cc-socks/1.sock" from-name="LEAD app plan" from-mode="prompting">\nthe port is 3210\n</cross-session-message>',
+          SESSION_UUID,
         ),
         session_title: "Fix the login page",
       },
