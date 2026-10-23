@@ -59,6 +59,7 @@ import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
+import { projectsList } from "../portal/api/projects";
 import { runPortal } from "../portal/command";
 import { probePortal, realPortalProbe, testPortalState } from "../portal/health";
 import { DEFAULT_PORTAL_PORT } from "../ports";
@@ -156,16 +157,29 @@ const ask = prompts === null ? null : (question: string) => prompts.confirm(ques
  * nothing on a pipe), which this entry used to leave out.
  */
 function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
-  return buildGatewayContext({
-    account,
-    bundle: routerBundle(),
-    confirm: ask,
-    paths,
-    platform: process.platform,
-    runner,
-    service,
-    terminal: process.stdin,
-  });
+  return {
+    ...buildGatewayContext({
+      account,
+      bundle: routerBundle(),
+      confirm: ask,
+      paths,
+      platform: process.platform,
+      runner,
+      service,
+      terminal: process.stdin,
+    }),
+    // `gateway projects` lists the portal's own projects (`projectsList`): one reader for the
+    // page and the command, so the two can never disagree about which projects exist.
+    projects: async () => {
+      const list = await projectsList({
+        cwd: process.cwd(),
+        env: process.env,
+        now: () => Date.now(),
+        paths,
+      });
+      return { note: list.note, projects: list.projects };
+    },
+  };
 }
 
 /** What `omniroute status`, `update` and `rollback` need: systemd, the registry, a question. */

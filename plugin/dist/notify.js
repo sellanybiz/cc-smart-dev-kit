@@ -7472,8 +7472,11 @@ function getKey(data, path) {
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`
+    ANTHROPIC_BASE_URL: routerBaseUrl(port)
   };
+}
+function routerBaseUrl(port) {
+  return `http://127.0.0.1:${port}`;
 }
 var RETIRED_GATEWAY_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -7515,15 +7518,25 @@ function shownValue(value) {
     return maskKey(text);
   return /^sk-|[A-Za-z0-9_-]{32,}/.test(text) ? maskKey(text) : text;
 }
-function settingsReport(settingsPath) {
+function readGatewaySettings(settingsPath) {
   const settings = readSettings(settingsPath);
   const env = isJsonObject(settings.env) ? settings.env : {};
-  const baseUrl = typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
+  const held = env.ANTHROPIC_BASE_URL;
+  const usable = typeof held === "string" && held.trim() !== "";
+  const baseUrlProblem = Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it` : null;
   const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   if (Object.hasOwn(settings, "apiKeyHelper"))
     loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  return { baseUrl, loginOverrides, subagentOverrides };
+  return { baseUrl: usable ? held : null, baseUrlProblem, loginOverrides, subagentOverrides };
+}
+function settingsReport(settingsPath) {
+  const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
+  return {
+    baseUrl: baseUrl === null ? null : shownValue(baseUrl),
+    loginOverrides,
+    subagentOverrides
+  };
 }
 
 // src/setup/retry-watchdog.ts

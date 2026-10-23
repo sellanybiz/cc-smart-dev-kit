@@ -220,6 +220,51 @@ up).
   setup's restart. `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then
   `cc-smart-dev-kit gateway setup` again (it asks before the restart).
 
+## One project, its own state ("use the gateway here", "keep this repo on Claude")
+
+`gateway on` is every session's default on the machine. One project can choose its own answer
+without touching the others:
+
+- `cc-smart-dev-kit gateway project status [--folder <dir>]`: what a session started in this
+  project gets, and which file says so (its personal file, its team file, the machine's). It
+  also warns when the router has no profile the URL names, or when a project file cannot be
+  read.
+- `cc-smart-dev-kit gateway project on`: this project's sessions go through the router. Add
+  `--profile <name>` when the project has a profile of its own (§ Profiles).
+- `cc-smart-dev-kit gateway project off`: Anthropic's own address, on the person's own Claude
+  login. Turning the gateway off never logs them out.
+- `cc-smart-dev-kit gateway project default`: no key of the project's own; the machine's
+  settings decide.
+- `--team` writes the project's `.claude/settings.json` instead of the personal file, and takes
+  `off` or `default` only: a team file never points teammates at one person's router. Commit it
+  for them, and note that a session started in a subfolder does not read it.
+- `cc-smart-dev-kit gateway projects`: every project the portal's Projects page lists, with its
+  state.
+
+The personal file is `.claude/settings.local.json` at the main checkout's root, which Claude Code
+reads for the checkout, its subfolders and its worktrees; a managed `.git/info/exclude` line keeps
+it out of git, and `restore` takes back both. A changed value reaches a running session within
+about a second; a removed key only after it restarts, so `default` keeps the old value until then.
+The command refuses, in one line with the fix: another gateway's URL already in the file, a login
+key or `apiKeyHelper` anywhere in the project's chain (with on or off), `--team` with on, and a
+profile the config does not have.
+
+## Profiles: a project's own chains
+
+A profile is a named set of chains and switches over the machine's, reached by the project's URL
+`…/p/<name>`. `gateway project on --profile <name>` points a project at one.
+
+- `cc-smart-dev-kit gateway profile <name> slot <slot> <target>,<target>…`: the profile's own chain
+  for a slot, checked against `gateway models` exactly as `gateway slot` checks the machine's.
+  The first chain makes the profile. A slot the profile does not name keeps the machine's chain.
+- `gateway profile <name> slot <slot> off` (`claude` says the same): plain Claude for that slot in
+  this profile. `clear` forgets the entry, so the machine's chain applies there again.
+- `gateway profile <name> fallback <slot> on|off`: may the profile's next target answer when the
+  one before it fails or rests?
+- `gateway profile <name> remove`: deletes the profile; a project whose URL still names it answers
+  as plain Claude.
+- The change is live: the router reads the config again within about a second.
+
 ## Turn it off
 
 `cc-smart-dev-kit gateway off` removes exactly the keys `on` set. Running sessions need a

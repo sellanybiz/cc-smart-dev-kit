@@ -26,7 +26,7 @@ import { shellQuote } from "../setup/launcher";
 import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";
-import { tempDir } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
@@ -2769,6 +2769,7 @@ describe("secrets", () => {
         creds: { apiKey: PLANTED_KEY, baseUrl: `http://user:SECRET-pass@127.0.0.1:${server.port}` },
         omniroute: { apiKey: PLANTED_KEY, baseUrl: `http://127.0.0.1:${server.port}` },
       },
+      profiles: { team: {} },
     });
     record(await m.run(["gateway", "setup", "--backend-key-stdin", "omniroute"], PLANTED_KEY));
     record(await m.run(["gateway", "setup", "--backend-key-stdin", "creds"], PLANTED_KEY));
@@ -2809,6 +2810,20 @@ describe("secrets", () => {
     record(await m.run(["gateway", "on"]));
     record(await m.run(["gateway", "status"]));
     record(await m.run(["gateway", "off"]));
+    // A project's own state (GP2): every word of its commands, on a throwaway repo. `--folder`
+    // keeps it away from this repo, and the key in the config must never show.
+    const project = join(tempDir("gateway-cli-project"), "app");
+    mkdirSync(project, { recursive: true });
+    git(project, "init", "-q", "-b", "main");
+    record(await m.run(["gateway", "project", "status", "--folder", project]));
+    record(await m.run(["gateway", "project", "on", "--folder", project]));
+    record(await m.run(["gateway", "project", "on", "--profile", "team", "--folder", project]));
+    record(await m.run(["gateway", "project", "off", "--team", "--folder", project]));
+    record(await m.run(["gateway", "project", "default", "--folder", project]));
+    record(await m.run(["gateway", "projects", "--folder", project]));
+    record(await m.run(["gateway", "profile", "team", "slot", "worker", "omniroute:m1"]));
+    record(await m.run(["gateway", "profile", "team", "fallback", "worker", "off"]));
+    record(await m.run(["gateway", "profile", "team", "remove"]));
     record(await m.run(["doctor", "--verbose"]));
     record(await m.run(["gateway", "help"]));
     record(await m.run(["gateway", "setup", "--backend-key-stdin"], PLANTED_KEY));

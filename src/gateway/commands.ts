@@ -21,14 +21,23 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
-import { createOut, type Mark, type Out, plural } from "../cli/ui/out";
+import { type Mark, type Out, plural } from "../cli/ui/out";
 import { INTERRUPTED_EXIT, type Prompts } from "../cli/ui/prompt";
-import { detectTerminal, type Terminal } from "../cli/ui/terminal";
+import type { Terminal } from "../cli/ui/terminal";
 import { withLock } from "../setup/lock";
-import { formatKeyPath, type ManagedJsonResult } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
+import { chainProblem, chainToCheck, notSlotName, SLOT_WORDS, slotName } from "./commands-chains";
+import { changeLines, gatewayOut, printChanges } from "./commands-out";
+import { commandProfile, PROFILE_HELP } from "./commands-profile";
+import {
+  commandProject,
+  commandProjects,
+  type KnownProjects,
+  PROJECT_HELP,
+  PROJECTS_HELP,
+} from "./commands-project";
 import {
   breakerOn,
   breakerWords,
@@ -95,11 +104,13 @@ import {
   isModelSlot,
   JUDGE_SLOT,
   parseTarget,
-  SLOT_PREFIX,
   slotKeyFromArg,
-  type Target,
   WORKER_SLOT,
 } from "./targets";
+
+// The slot words and the chain checks moved to `commands-chains.ts` (the profile commands use
+// them too); the portal and the tests still import them from here.
+export { chainProblem, chainToCheck, SLOT_WORDS };
 
 export const USAGE = `Usage: ${COMMAND} gateway <command>
 
@@ -157,6 +168,9 @@ Commands:
                          (it is down, or answers something else).
   on                     Point Claude Code at the router (every session on this machine).
   off                    Remove what "on" set. Restart the sessions afterwards.
+${PROJECT_HELP}
+${PROJECTS_HELP}
+${PROFILE_HELP}
   serve                  Run the router in this terminal.`;
 
 /** What the commands need from the outside; a test passes its own. */
@@ -197,6 +211,11 @@ export interface GatewayContext {
   account: null | string;
   /** This machine's platform (`process.platform`): the words of a refusal, nothing else. */
   platform: NodeJS.Platform;
+  /**
+   * The projects `gateway projects` lists: the portal's own list (`projectsList`) in use, read
+   * when the command runs; a test passes its own, so none reads Claude Code's session records.
+   */
+  projects?: () => Promise<KnownProjects>;
   /** Where a command's own lines go: `console.log` in use, a collector from the portal. */
   print: (line: string) => void;
   /**
@@ -913,19 +932,10 @@ export function upgradeConfig(
 }
 
 /**
- * The words `gateway slot <slot> …` takes in place of a chain. None of them can be a target:
- * a target is `claude-<id>` or `<backend>:<model>`.
+ * The words `gateway slot <slot> …` takes in place of a chain are `SLOT_WORDS`
+ * (`commands-chains.ts`, one home with the profile's slots). One slot change, planned: what it
+ * is, the config after it, and the chains before and after.
  */
-export const SLOT_WORDS: Readonly<Record<"claude" | "clear" | "custom", readonly string[]>> = {
-  /** No chain in use: the chain moves to `kept`. `off` is the word of 0.5.x and before. */
-  claude: ["claude", "off"],
-  /** Delete the chain, in use or saved. */
-  clear: ["clear"],
-  /** The saved chain in use again. */
-  custom: ["custom"],
-};
-
-/** One slot change, planned: what it is, the config after it, and the chains before and after. */
 export interface SlotPlan {
   /** `chain`: a new chain in use; `claude`, `custom`, `clear`: the words of `SLOT_WORDS`. */
   kind: "chain" | "claude" | "clear" | "custom";
@@ -937,43 +947,6 @@ export interface SlotPlan {
   next: string[];
 }
 
-/** Why a slot name cannot be used, in the words every slot command says it. */
-function notSlotName(slotArg: string): string {
-  return `"${slotArg}" is not a slot name (scout, worker, opus, fable, judge, or cc-smart-dev-kit-<name>)`;
-}
-
-/**
- * Why a chain cannot be used, or null when it can: each target parses, its backend exists,
- * and its model is in that backend's list. `claude-…` targets are taken as they are:
- * Anthropic's list is not reachable without the person's login. The portal's `slot.check`
- * asks it too, so a target typed on the Slots page is judged exactly as `gateway slot` would.
- */
-export function chainProblem(
-  config: GatewayConfig,
-  targets: readonly string[],
-  modelsByBackend: Readonly<Record<string, null | string[]>>,
-): null | string {
-  for (const text of targets) {
-    const parsed = parseTarget(text);
-    if ("error" in parsed) return parsed.error;
-    const target: Target = parsed.target;
-    if (target.kind === "anthropic") continue;
-    if (!Object.hasOwn(config.backends, target.backend)) {
-      return `"${text}": backend "${target.backend}" is not in the config`;
-    }
-    const models = Object.hasOwn(modelsByBackend, target.backend)
-      ? modelsByBackend[target.backend]
-      : undefined;
-    if (models === undefined || models === null) {
-      return `"${text}": could not list the models of "${target.backend}", so it cannot be checked`;
-    }
-    if (!models.includes(target.model)) {
-      return `"${text}": "${target.backend}" has no model "${target.model}" (see ${COMMAND} gateway models)`;
-    }
-  }
-  return null;
-}
-
 /** The planned config, checked as a whole (an alias that still points at the slot, say). */
 function checkedPlan(
   plan: Omit<SlotPlan, "config">,
@@ -981,25 +954,6 @@ function checkedPlan(
 ): SlotPlan | { error: string } {
   const checked = parseConfig(config);
   return "error" in checked ? { error: checked.error } : { ...plan, config: checked.config };
-}
-
-/**
- * The chain a slot change uses, for the checks before it: the targets given, or for `custom`,
- * the chain saved for the slot. None for the other words.
- */
-export function chainToCheck(config: GatewayConfig, slotArg: string, text: string): string[] {
-  const word = text.trim();
-  if (SLOT_WORDS.custom.includes(word)) {
-    const key = slotKeyFromArg(slotArg);
-    return key === null ? [] : (keptChain(config, key)?.targets ?? []);
-  }
-  if (SLOT_WORDS.claude.includes(word) || SLOT_WORDS.clear.includes(word)) {
-    return [];
-  }
-  return word
-    .split(",")
-    .map((target) => target.trim())
-    .filter((target) => target !== "");
 }
 
 /**
@@ -1192,11 +1146,6 @@ export function planBreakerChange(
   const checked = setSwitch(current, "breaker", breakerOn, key, now);
   if ("error" in checked) return { error: checked.error };
   return { config: checked.config, key, now, was };
-}
-
-/** A slot key's short name, as a person types it: `cc-smart-dev-kit-scout` → `scout`. */
-function slotName(key: string): string {
-  return key.startsWith(SLOT_PREFIX) ? key.slice(SLOT_PREFIX.length) : key;
 }
 
 /** What a slot with no chain in use means, in words. */
@@ -1837,19 +1786,6 @@ function formatUsd(usd: number): string {
 }
 
 /**
- * The output module over the gateway's own print sink: the same words through `ctx.print` (the
- * portal hands its own), with colour and wrapping only when `ctx.term` is a terminal. A table is
- * printed through `ctx.print` as it is: its columns must not wrap.
- */
-function gatewayOut(ctx: GatewayContext): Out {
-  const plain = detectTerminal({ env: {}, isTTY: false, platform: ctx.platform });
-  return createOut(ctx.term ?? plain, {
-    line: (text) => ctx.print(text),
-    raw: () => undefined,
-  });
-}
-
-/**
  * `gateway history`: the request history's totals by target, slot, model or session (D51).
  * The portal's history page reads the same module (`history-read.ts`) for its chart and its
  * recent-requests table; this view is the terminal's.
@@ -2354,10 +2290,6 @@ async function proveWorkerTargets(ctx: GatewayContext): Promise<void> {
   }
 }
 
-function show(value: unknown): string {
-  return value === undefined ? "(none)" : JSON.stringify(value);
-}
-
 /**
  * `gateway check`'s exit codes. One read-only question — does the gateway have an OmniRoute key
  * the backend accepts? — for the installer, which asks for a key only when the answer says the
@@ -2450,18 +2382,6 @@ async function commandCheck(ctx: GatewayContext): Promise<number> {
   }
   out.line("info", `the gateway could not be checked: ${check.detail}`);
   return CHECK_CODES.unchecked;
-}
-
-function changeLines(result: ManagedJsonResult, home: string): string[] {
-  return result.changes.map(
-    (change) =>
-      `~ ${tildify(result.file, home)}: ${formatKeyPath(change.path)}: ${show(change.before)} -> ${show(change.after)}`,
-  );
-}
-
-/** A settings change, each key on its own `~` line. */
-function printChanges(out: Out, result: ManagedJsonResult, home: string): void {
-  out.marked(changeLines(result, home));
 }
 
 async function commandOn(ctx: GatewayContext): Promise<number> {
@@ -2564,6 +2484,12 @@ export async function runGateway(args: string[], ctx: GatewayContext): Promise<n
       return noArgs(() => commandOn(ctx));
     case "off":
       return noArgs(() => commandOff(ctx));
+    case "project":
+      return commandProject(ctx, rest, USAGE);
+    case "projects":
+      return commandProjects(ctx, rest, USAGE);
+    case "profile":
+      return commandProfile(ctx, rest, USAGE);
     case "serve":
       return noArgs(async () => {
         await startRouter(ctx.paths);
