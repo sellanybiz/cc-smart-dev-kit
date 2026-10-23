@@ -126,8 +126,9 @@ An optional local router between Claude Code and the model providers
   plain unit cannot keep the port open (systemd will not open a socket while its service
   runs), and says so before it asks. Before anything, setup asks the port and stops when
   another program holds it; after the restart it waits for the health page.
-- Running sessions are taken to keep the router's address until they restart (one live
-  look saw otherwise; `claude-code-contract.md`). So `restore` takes the gateway out in
+- A changed value reaches a running session within about a second, but a removed key does not:
+  the session keeps the router's address until it restarts (both proved 2026-10-23;
+  `claude-code-contract.md` § The gateway). So `restore` takes the gateway out in
   two stages: first the env keys (the router keeps running), then, after the sessions
   restarted, the router (asked first). Stage 1 also puts back the launcher, and when it had
   created it the file is gone: the line it ends with then names the second run in full
