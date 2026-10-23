@@ -281,6 +281,10 @@ describe("the lead's name (LD1)", () => {
     expect(
       await runHook(leadNotesHook, leadInput(world.repo, { session_title: NAME }), world.env),
     ).toEqual({});
+    // The name the session already carries is the kit's now: a rename from here is the person's.
+    expect(
+      await runHook(leadNotesHook, leadInput(world.repo, { session_title: "mine now" }), world.env),
+    ).toEqual({});
   });
 
   test("the name is remembered where the session-name hook keeps the one it set", async () => {

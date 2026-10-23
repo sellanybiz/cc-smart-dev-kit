@@ -68,16 +68,23 @@ function appliedFile(env: Env, sessionId: string): string {
 }
 
 /** The name the kit last set for this session, or null. */
-export function readAppliedName(env: Env, sessionId: string): string | null {
+function readAppliedName(env: Env, sessionId: string): string | null {
   return readName(appliedFile(env, sessionId));
+}
+
+/** Records `title` as the name the kit last set for this session. */
+function rememberAppliedName(env: Env, sessionId: string, title: string): void {
+  mkdirSync(namesDir(env), { recursive: true });
+  writeAtomic(appliedFile(env, sessionId), title);
 }
 
 /**
  * The title a prompt should set, or null: `wanted` only when the session is not called that
  * already and the kit did not already set it. So a person's own `/rename` stays, and a name
  * the kit set is never set twice — even when its record was lost, the session's own title says
- * it. Records the title it returns as the one the kit last set. The one rule behind both
- * writers: a session's own task name here, a lead's role name in `lead-notes`.
+ * it. A session already called `wanted` has it recorded as the name the kit owns, so a rename
+ * the person makes from there stays. The one rule behind both writers: a session's own task
+ * name here, a lead's role name in `lead-notes`.
  */
 export function titleToSet(
   env: Env,
@@ -85,11 +92,9 @@ export function titleToSet(
   wanted: string,
   current: null | string,
 ): null | string {
-  if (wanted === current) return null;
   if (wanted === readAppliedName(env, sessionId)) return null;
-  mkdirSync(namesDir(env), { recursive: true });
-  writeAtomic(appliedFile(env, sessionId), wanted);
-  return wanted;
+  rememberAppliedName(env, sessionId, wanted);
+  return wanted === current ? null : wanted;
 }
 
 /**
