@@ -1,9 +1,8 @@
 # Moving from anymodel
 
-Until 0.3.0 the plugin, its marketplace, its command and its slots were named
-`anymodel`. This page is the move for a machine that ran 0.2.x, and what a project keeps from
-those names. The one command does it ([README](README.md#install)); the steps here are for a
-machine where you would rather run it yourself.
+This page is the move for a machine that ran 0.2.x, and what a project keeps from those names.
+The [one command](../README.md#install) does it; the steps here are for a machine where you
+would rather run it yourself.
 
 Until 0.3.0 the plugin, its marketplace, its command and its slots were named
 `anymodel` (the plugin id was `anymodel@anymodel`). A machine that ran 0.2.x still has

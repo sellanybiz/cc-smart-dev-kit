@@ -1,6 +1,7 @@
 /**
- * Doc references that must resolve: a design-page reference with a section names a heading on
- * that page, and a README reference with a section names a heading in the README.
+ * A reference must resolve. Three kinds: a design-page reference with a section (the page must
+ * hold it), a README reference with a section (the README must hold it), and a link to another
+ * heading in the same file (its anchor must be a heading's).
  *
  * The design doc is one page per part under `docs/design/`, with the index at the root. A code
  * comment, a rule or a skill points at a section by name; when a section moves, the pointer
@@ -104,6 +105,15 @@ export function headingNames(name: string): string[] {
   return names;
 }
 
+/** GitHub's anchor for a heading: lower case, no marks, no punctuation but a hyphen, spaces to hyphens. */
+export function slugOf(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[`*_]/g, "")
+    .replace(/[^\p{L}\p{N} -]/gu, "")
+    .replace(/ /g, "-");
+}
+
 /** The longest heading the text starts with, at a word boundary, or null. */
 export function longestHeadingIn(text: string, headings: readonly Heading[]): Heading | null {
   const t = normalizeHeading(text);
@@ -178,6 +188,22 @@ export function checkDocs(files: readonly SourceFile[]): BrokenRef[] {
     if (SKIPPED_FOLDERS.some((d) => file.path.startsWith(d))) continue;
     if (!TEXT.test(file.path)) continue;
     const text = file.text;
+
+    // A link to another heading in the same file: its anchor must be a heading's.
+    if (file.path.endsWith(".md")) {
+      const anchors = new Set(headingsOf(text).map((h) => slugOf(h.name)));
+      for (const m of text.matchAll(/\]\(#([\w-]+)\)/g)) {
+        const anchor = m[1] ?? "";
+        if (!anchors.has(anchor)) {
+          broken.push({
+            file: file.path,
+            line: lineAt(text, m.index ?? 0),
+            text: excerpt(text, m.index ?? 0),
+            why: `no heading in this file has the anchor "#${anchor}"`,
+          });
+        }
+      }
+    }
 
     // A design-page path, or the old index path, with a section after it.
     const design = /(?<![-\w])(docs\/design\/[\w-]+\.md|docs\/design\.md|design\.md)/g;

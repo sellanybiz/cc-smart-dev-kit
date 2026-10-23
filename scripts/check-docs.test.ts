@@ -122,6 +122,25 @@ describe("check-docs", () => {
     expect(checkDocs(files)).toEqual([]);
   });
 
+  test("a link to a missing heading in the same file fails", () => {
+    const files = world([
+      { path: "README.md", text: "# kit\n\n## Install\n\nSee [the gateway](#the-gateway).\n" },
+    ]);
+    const broken = checkDocs(files);
+    expect(broken).toHaveLength(1);
+    expect(broken[0]?.why).toContain('no heading in this file has the anchor "#the-gateway"');
+  });
+
+  test("a link to a heading in the same file resolves", () => {
+    const files = world([
+      {
+        path: "README.md",
+        text: "# kit\n\n## The `gateway` (optional)\n\nSee [it](#the-gateway-optional).\n",
+      },
+    ]);
+    expect(checkDocs(files)).toEqual([]);
+  });
+
   test("a build output folder is not read", () => {
     const files = world([{ path: "plugin/dist/cli.js", text: "docs/design.md § Gone" }]);
     expect(checkDocs(files)).toEqual([]);
