@@ -152,6 +152,15 @@ function worktreesOf(output: string): null | WorktreesAnswer {
   const items = worktrees.map(worktreeOf);
   if (items.some((one) => one === null)) return null;
   // The last clean's record: the page only reads it as written, or shows nothing.
-  if (autoClean !== null && !isObject(autoClean)) return null;
+  if (autoClean !== null) {
+    if (!isObject(autoClean)) return null;
+    if (
+      typeof autoClean.base !== "string" ||
+      typeof autoClean.lastRunAt !== "string" ||
+      !Array.isArray(autoClean.removed)
+    ) {
+      return null;
+    }
+  }
   return { autoClean, base, from, note, worktrees: items } as WorktreesAnswer;
 }
