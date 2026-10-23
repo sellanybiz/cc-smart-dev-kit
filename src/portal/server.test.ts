@@ -21,6 +21,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { CLAUDE_CODE_PROFILE, PLAYWRIGHT_EXTENSION_ID } from "../browser/chrome";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { VERSION } from "../build-info";
@@ -156,7 +157,6 @@ const registry = (): Response =>
     versions: { "3.9.0": {} },
   });
 
-/** A portal on a free port, with a temp home, a temp project and a fake backend. */
 /**
  * The plugin folder an action's child runs, with **the repo's own CLI source** as its
  * `dist/cli.js`: a test that runs a CLI child (`cli-child.ts`) then runs the code under test,
@@ -168,11 +168,13 @@ function sourceCliFolder(): () => PluginFolder {
   writeFileSync(join(folder, "bunfig.toml"), "");
   writeFileSync(
     join(folder, "dist", "cli.js"),
-    `import ${JSON.stringify(join(import.meta.dir, "..", "entries", "cli.ts"))};\n`,
+    // A `file:` URL, so the import resolves on Windows too (a `C:\…` specifier does not).
+    `import ${JSON.stringify(pathToFileURL(join(import.meta.dir, "..", "entries", "cli.ts")).href)};\n`,
   );
   return () => ({ folder });
 }
 
+/** A portal on a free port, with a temp home, a temp project and a fake backend. */
 async function open(options: {
   backendPort: number;
   /**

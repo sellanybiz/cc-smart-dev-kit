@@ -836,7 +836,8 @@ the server publishes them when it has them.
 `guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
 through the door. Each answer is built from the same readers the server-rendered pages use
 (`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
-can never disagree. `work` is the lead and its crew nested plus the other sessions; a crew page
+can never disagree. `work` is every lead on the machine with its crew nested, each naming its
+own repository, plus the other sessions of the folder the portal runs in; a crew page
 carries its brief, its log, the diff against its base, its report, the reviews recorded on its
 branch and the merge check's verdict; `needs` is everything waiting on the person (a crew
 question with its options, an open permission prompt, doctor's failures, an open breaker, a

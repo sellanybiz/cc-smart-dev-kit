@@ -212,6 +212,21 @@ describe("a crew action runs the CLI's own command in a child", () => {
     });
     expect(runsOf(w.log)).toEqual([]);
   });
+
+  test("no plugin folder: the action says why, and nothing runs", async () => {
+    const w = world();
+    const id = await w.crewIn(w.repoA, "crew-P-nofolder", { state: "stopped" });
+    const action = {
+      ...w.action,
+      portal: {
+        ...w.action.portal,
+        pluginFolder: () => ({ error: "the plugin's folder is gone" }),
+      },
+    };
+    const resumed = await runAction("crew.resume", { crew: id }, action);
+    expect(resumed).toEqual({ lines: ["the plugin's folder is gone"], ok: false });
+    expect(runsOf(w.log)).toEqual([]);
+  });
 });
 
 describe("the actions that end something ask first", () => {
