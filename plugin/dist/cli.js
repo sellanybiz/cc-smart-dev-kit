@@ -34690,6 +34690,9 @@ function notesLine(lines) {
 function leadTitle(input, event, env, sessionId, name) {
   return event === "UserPromptSubmit" ? titleToSet(env, sessionId, name, stringField(input.session_title)) : null;
 }
+function leadStartNote() {
+  return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
+}
 function taskListReminder() {
   return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
 }
@@ -34718,13 +34721,14 @@ function leadNotesAnswer(input, event, paths, repo, env) {
   const lead = readLead(paths.stateDir, repo, sessionId);
   if (lead === null)
     return SILENT;
+  const startNote = event === "SessionStart" ? [leadStartNote()] : [];
   const reminder = reminderFor(paths, env, sessionId, event);
   const cursor = readNotesState(paths.stateDir, repo, sessionId);
   if (cursor === null) {
     writeNotesState(paths.stateDir, repo, sessionId, {
       offset: eventsEndOffset(paths.stateDir, repo)
     });
-    return answered(event, reminder === null ? [] : [reminder], leadTitle(input, event, env, sessionId, lead.name));
+    return answered(event, [...startNote, ...reminder === null ? [] : [reminder]], leadTitle(input, event, env, sessionId, lead.name));
   }
   const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
   const mine = listCrew(paths.stateDir, repo).records.filter((one) => one.leadSessionId === sessionId);
@@ -34741,7 +34745,7 @@ function leadNotesAnswer(input, event, paths, repo, env) {
   }
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
   const note = notesLine(lines);
-  return answered(event, [...reminder === null ? [] : [reminder], ...note === null ? [] : [note]], leadTitle(input, event, env, sessionId, lead.name));
+  return answered(event, [...startNote, ...reminder === null ? [] : [reminder], ...note === null ? [] : [note]], leadTitle(input, event, env, sessionId, lead.name));
 }
 
 // src/hooks/main-folder-guard.ts

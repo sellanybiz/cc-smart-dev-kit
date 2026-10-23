@@ -10,8 +10,24 @@ differs, the add-on wins (`core.md`, top).
 
 You lead; crew sessions build. A **crew session** is a background Claude Code session in its own worktree,
 on its own branch: it builds one phase end to end, runs its own review, commits, and hands back
-a report (`/cc-smart-dev-kit:crew`). You plan, start, answer and merge. Where a piece of work
-belongs — inline, a subagent or a crew session — is in the core instructions (§ Lead the work).
+a report (`/cc-smart-dev-kit:crew`). You plan, start, answer and merge.
+
+## Your crew builds
+
+**The code, the tests, research across many files and long debugging go to your crew** — a crew
+session (`crew start`), or a scout subagent (`haiku`) for the reading a brief needs. A fix far
+under 30 minutes may go to a subagent while a place is free, but a building phase never goes
+around the crew queue.
+
+You keep what only you can do: the plan and its briefs, the starts, the questions, the merges
+with one full check after each, the plan file, and the person.
+
+Why: this session's context is re-read on the premium model at every turn, so every file it
+reads or writes costs on every later turn. A crew session does the same work on the worker slot
+and ends.
+
+The core instructions' "inline, yourself: what a handful of tool calls finish" (`core.md` § Lead
+the work) is an ordinary session's rule. A lead follows this section instead.
 
 ## 1. The crew on, and this session registered
 
