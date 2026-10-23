@@ -475,6 +475,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23: **Owner decision: 1.1.0 waits for C1 and C5b.** The owner saves C0's eval baseline (`bun run evals fast --concurrency 4 --save-baseline`, in a normal terminal at the repo root on `release-1.1.0`); **C1** (core.md to about 110 lines; Opus, architecture; brief `briefs/c1.md`) builds now, and the owner reads the new core.md and runs `bun run evals fast` on its worktree before it merges; **C5b** (the rules trimmed and split, README users-first with a CHANGELOG, design.md restructured with every `§` reference kept resolving; brief `briefs/c5b.md`) waits for C1 and PF1. The PR opens after C5b.
 
+- 2026-10-23: **Owner ask: a lead names itself, on by default.** `crew lead` printed `/rename LEAD <tag> <plan>` for the person to type; a `UserPromptSubmit` answer's `sessionTitle` renames a session (proved, the `session-name` hook uses it behind `sessionNames`). **LD1** (inside 1.1.0; brief `briefs/ld1.md`): a registered lead takes its name at its next prompt through `lead-notes`, with no setting, and never undoes the person's own `/rename`. The eval baseline the owner saved is committed (`be50982`: 31 cases, every gate case passes). C5b now waits for LD1 too.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
