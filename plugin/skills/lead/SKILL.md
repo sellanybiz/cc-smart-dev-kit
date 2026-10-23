@@ -86,7 +86,7 @@ How to brief well, and how to brief an affordable model: `/cc-smart-dev-kit:suba
 
 Running this skill starts the `crew-events` monitor. It prints one line per change of your
 crew sessions — a start, a step, a question, a permission wait, a quiet crew session, a report, a crash, a
-queued crew session that started, a note one crew session told another — and each line reaches you as a notification, also when you are
+queued crew session that started, a note one crew session told another, the person writing to one — and each line reaches you as a notification, also when you are
 idle. So after the starts, **go on**.
 
 **On each line, act in that turn:**

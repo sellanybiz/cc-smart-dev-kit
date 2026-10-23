@@ -684,9 +684,9 @@ describe("no cc-smart-dev-kit.json", () => {
 
   /**
    * D55, and the reason the row above is not enough: the person's prompt is the one answer of
-   * `crew-role` that reads the store, and the case's input is the ask. A crew session exists
-   * only where `crew start` recorded one, and its project may never have opted in, so the
-   * record — never the file — is what this answer is made from.
+   * `crew-role` made from the store alone, with no answer from the project's file. A crew
+   * session exists only where `crew start` recorded one, and its project may never have opted
+   * in, so the record — never the file — is what this answer is made from.
    */
   test("crew-role records the person's prompt to a crew session with no cc-smart-dev-kit.json", async () => {
     const { repo } = makeClone();

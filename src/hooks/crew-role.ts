@@ -27,8 +27,9 @@
  *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, and the two
  *   prompts a lead's own transport gives a crew session bare — `crew answer`'s resume of a
  *   stopped session and the watch's `resumeText` of a paused one — are recognised from the
- *   store. A prompt the hook cannot place is recorded as nothing: a false "the person wrote"
- *   is worse than none. Never a block, never a question: the person's prompt always goes on.
+ *   store. A bare prompt none of those explain is recorded as the person's (nothing else in the
+ *   kit gives a crew session a prompt); one the hook cannot read at all — no `prompt`, no record
+ *   — records nothing. Never a block, never a question: the person's prompt always goes on.
  * - **Stop**: records the session's last line on its record (masked and clipped: a record is read
  *   by a person and by the lead) and **never gives context** — a Stop hook's `additionalContext`
  *   keeps the turn going and starves hand-backs (L1a.1). When the newest `step` or `report` event
@@ -99,17 +100,24 @@ export function tellStep(): string {
 }
 
 /**
- * The wrappers Claude Code puts around a turn that is not the person's own words. Proved live on
- * 2.1.309 (`docs/claude-code-contract.md`): the hook input carries no field that says where a
- * prompt came from, so these first characters are the one signal there is.
+ * The wrappers and labels Claude Code puts around a turn that is not the person's own words.
+ * Proved live on 2.1.309 (`docs/claude-code-contract.md`): the hook input carries no field that
+ * says where a prompt came from, so these first characters are the one signal there is.
  *
  * - `<cross-session-message from=… from-name=… from-mode=…>`: another session's message, sent
  *   with `SendMessage` — a lead's note, `crew answer` to a running crew session, a peer's
  *   `crew tell`.
  * - `<task-notification>`: a monitor's line (the `crew-self` monitor), and any background task's
  *   event.
+ * - `Stop hook feedback:`: a Stop hook's block continued the turn with its reason (the kit's own
+ *   is `reportStep()`), and the same check catches the bare reason, should a transport drop the
+ *   label.
  */
-export const NOT_PERSON_PREFIXES = ["<cross-session-message", "<task-notification"] as const;
+export const NOT_PERSON_PREFIXES = [
+  "<cross-session-message",
+  "<task-notification",
+  "Stop hook feedback:",
+] as const;
 
 /**
  * The frame `resumeText` (`src/crew/wait.ts`) builds the prompt the watch resumes a paused crew
@@ -126,17 +134,25 @@ export const ANSWER_RESUME_MS = 60_000;
 
 /**
  * True when `prompt` is the person's own words. Every other turn a crew session gets is its
- * lead's: a `SendMessage` delivery or a monitor's line (the wrappers), `crew answer`'s resume of
- * a stopped crew session (the answer the store recorded — or a record still `stopped`, while
- * the answer is written behind the resume), and the watch's resume of a paused one (the frame
- * above). A prompt none of those explain is the person's. A prompt the hook cannot place this
- * way is never recorded: a false "the person wrote" is worse than none.
+ * lead's: a `SendMessage` delivery or a monitor's line (the wrappers), the kit's own Stop block
+ * (a continuation that carries it), `crew answer`'s resume of a stopped crew session (with a
+ * question still open, or with the answer the store recorded — the resume runs before the answer
+ * is written), and the watch's resume of a paused one (the frame above). A bare prompt none of
+ * those explain is the person's: nothing else in the kit gives a crew session a prompt.
  */
 export function isPersonPrompt(record: CrewRecord, prompt: string, nowMs: number): boolean {
   if (NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix))) return false;
-  // A stopped crew session has no process to type into: this prompt is the answer's resume,
-  // whether the store has written the answer yet or is about to.
-  if (record.state === "stopped") return false;
+  // The kit's own words are never the person's. A Stop block continues the turn with this line,
+  // and a transport that turned that continuation into a prompt would otherwise read as theirs.
+  if (prompt.startsWith(reportStep())) return false;
+  // `crew answer` resumes a stopped crew session with the answer as its next prompt, and the
+  // resume runs before the answer is recorded (`src/crew/answer.ts`): while a question still has
+  // no answer, a prompt in a stopped record is that resume. A stopped record with no open
+  // question takes no answer at all (`crew answer` refuses it), so a prompt there is a person
+  // who attached to the kept conversation and typed.
+  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+    return false;
+  }
   if (isWaitOverResume(record, prompt)) return false;
   return !isAnswerResume(record, prompt, nowMs);
 }
@@ -160,11 +176,13 @@ function isWaitOverResume(record: CrewRecord, prompt: string): boolean {
 }
 
 /**
- * The person's words as the store and the lead's watch keep them: the first line only, masked
- * and clipped by the same reader as the session's last line.
+ * The person's words as the store and the lead's watch keep them: the first line that holds
+ * anything, masked and clipped by the same reader as the session's last line. A prompt with no
+ * such line is "", and it is recorded as nothing: a blank line says nothing to the lead.
  */
 export function personLine(prompt: string): string {
-  return maskedLine(prompt.split("\n", 1)[0] ?? "", [], LAST_LINE_MAX, { mark: "…" });
+  const line = prompt.split(/\r?\n/).find((one) => one.trim() !== "") ?? "";
+  return maskedLine(line, [], LAST_LINE_MAX, { mark: "…" });
 }
 
 /** The one line a crew session gets when the person typed to it (D55): whose word it is, and what to do. */
@@ -387,6 +405,9 @@ async function personPromptAnswer(
   const record = found.record;
   const nowMs = options.nowMs ?? Date.now();
   if (!isPersonPrompt(record, prompt, nowMs)) return SILENT;
+  const line = personLine(prompt);
+  // Nothing to say: a prompt of blank lines is the person's, but the lead gets no line for it.
+  if (line === "") return SILENT;
   try {
     await appendCrewEvent(
       paths.stateDir,
@@ -396,7 +417,7 @@ async function personPromptAnswer(
         lead: record.leadSessionId,
         name: record.name,
         state: record.state,
-        text: personLine(prompt),
+        text: line,
         type: "person",
       },
       nowMs,

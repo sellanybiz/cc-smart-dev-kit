@@ -29,6 +29,7 @@ import { git, tempDir } from "../testing/temp";
 import {
   crewRoleAnswer,
   questionStep,
+  reportStep,
   roleCard,
   wrongFolderCard,
   wrongFolderReason,
@@ -928,6 +929,18 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     );
   });
 
+  test("a prompt whose first lines are blank: the first line that holds anything is recorded", async () => {
+    const world = await crewWorld();
+    await runHook(crewRoleHook, promptInput(world.repo, "\n  \nonly these words"), world.env);
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toBe("only these words");
+  });
+
+  test("a prompt of blank lines only: silent, and nothing recorded", async () => {
+    const world = await crewWorld();
+    expect(await runHook(crewRoleHook, promptInput(world.repo, "  \n\t\n"), world.env)).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
   test("a store that cannot be read: one stderr line, never a block", async () => {
     const world = await crewWorld();
     writeFileSync(crewFile(world.stateDir, world.repo, CREW_ID), "{ not json");
@@ -950,12 +963,52 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
   });
 
   test("crew answer's resume of a stopped session: silent, before and after the answer is recorded", async () => {
-    // Before: the record still says `stopped`, and no process is there to type into.
-    const stopped = await crewWorld({ state: "stopped" });
-    expect(await runHook(crewRoleHook, promptInput(stopped.repo, "yes"), stopped.env)).toEqual({});
+    // Before: the resume runs before the answer is written, so the record is still `stopped` —
+    // and a question with no answer is what says the answer is on its way.
+    const waiting = await crewWorld({
+      questions: [
+        {
+          answer: null,
+          answeredAt: null,
+          askedAt: new Date(Date.now() - 60_000).toISOString(),
+          options: ["keep the guard", "drop the guard"],
+          question: "keep the guard or drop it?",
+          recommended: 1,
+        },
+      ],
+      state: "stopped",
+    });
+    expect(await runHook(crewRoleHook, promptInput(waiting.repo, "yes"), waiting.env)).toEqual({});
     // After: the answer is on the record, and the prompt is the very words it carries.
     const world = await answered(5_000, "yes");
     expect(await runHook(crewRoleHook, promptInput(world.repo, "yes"), world.env)).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("a stopped session with no open question: the person attached and typed, so it is recorded", async () => {
+    // `crew stop` keeps the conversation and `claude attach` reopens it; `crew answer` refuses a
+    // crew session with no question waiting, so this prompt can only be the person's.
+    const world = await crewWorld({ state: "stopped" });
+    const result = await runHook(crewRoleHook, promptInput(world.repo, "stop here"), world.env);
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toBe("stop here");
+  });
+
+  test("the kit's own Stop block, should a transport turn it into a prompt: silent", async () => {
+    const world = await crewWorld();
+    expect(await runHook(crewRoleHook, promptInput(world.repo, reportStep()), world.env)).toEqual(
+      {},
+    );
+    // What Claude Code's own continuation carries in the transcript, label and all.
+    expect(
+      await runHook(
+        crewRoleHook,
+        promptInput(world.repo, `Stop hook feedback:\n${reportStep()}`),
+        world.env,
+      ),
+    ).toEqual({});
     expect(personEvents(world.stateDir, world.repo)).toEqual([]);
   });
 

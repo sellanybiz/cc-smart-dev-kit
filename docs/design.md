@@ -3376,12 +3376,14 @@ each is silent unless its own session is the one it is about, and neither reads
   a report (`blocked` or `handoff`) before the turn ends. Claude Code runs this hook for every
   turn a session gets and its input carries no field that says where a turn came from
   (`docs/claude-code-contract.md`), so the prompt's own shape decides: a `SendMessage` delivery
-  (`<cross-session-message …>`) and a monitor's line (`<task-notification>`) are its lead's, and
-  so are the two prompts a transport gives a crew session **bare** — `crew answer`'s resume of a
-  stopped session (the answer the store recorded, or a record still `stopped`, which has no
-  process to type into) and the watch's `resumeText` of a paused one. A prompt the hook cannot
-  place is recorded as nothing: a false "the person wrote" is worse than none. It never blocks
-  and never asks.
+  (`<cross-session-message …>`), a monitor's line (`<task-notification>`) and a Stop hook's own
+  continuation (`Stop hook feedback:`, the kit's block line included) are its lead's, and so are
+  the two prompts a transport gives a crew session **bare** —
+  `crew answer`'s resume of a stopped session (a question still open, or the answer the store
+  recorded) and the watch's `resumeText` of a paused one. A bare prompt none of those explain is
+  recorded as the person's: nothing else in the kit gives a crew session a prompt, and a stopped
+  crew session the person reopens by hand (`claude attach`) has no other way to be heard. One
+  the hook cannot read at all records nothing. It never blocks and never asks.
   At **Stop** it records the session's last line on its record (`lastLine`,
   masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew
