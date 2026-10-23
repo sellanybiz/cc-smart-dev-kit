@@ -305,6 +305,20 @@ describe("the lead's name (LD1)", () => {
     ).toEqual(addContext("UserPromptSubmit", stepLine("tests-green")));
   });
 
+  test("a session named after its task first: the lead's name takes over", async () => {
+    const world = await leadWorld({ named: false });
+    // `session-name` set a task name at an earlier prompt: its record, by hand.
+    mkdirSync(namesDir(world.env), { recursive: true });
+    writeFileSync(join(namesDir(world.env), LEAD_SESSION), "Fix login");
+    expect(
+      await runHook(
+        leadNotesHook,
+        leadInput(world.repo, { session_title: "Fix login" }),
+        world.env,
+      ),
+    ).toEqual(named(null, NAME));
+  });
+
   test("another plan registered later takes its new name", async () => {
     const world = await leadWorld();
     await writeLead(

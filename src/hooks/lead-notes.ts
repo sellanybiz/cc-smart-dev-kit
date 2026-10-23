@@ -12,8 +12,8 @@
  * - **Its name comes back with the first note** (LD1): a registered lead's `LEAD <tag> <plan>`
  *   goes out as `sessionTitle` in the same `UserPromptSubmit` answer, with no setting, so the
  *   person never types `/rename` (`crew lead` records it as data). The rule is `session-name.ts`'s
- *   `titleToSet`, on that hook's own record, so a name the person gave with `/rename` stays and
- *   the same name is never set twice. A prompt only: SessionStart's title was seen reach the
+ *   `titleToSet`, on that hook's own record, so a `/rename` the person gives after the kit set
+ *   the name stays, and the same name is never set twice. A prompt only: SessionStart's title was seen reach the
  *   transcript but not the name ListAgents shows (`session-name.ts`, the whole story).
  * - **Never twice**: the cursor moves past every event read, whether or not a line came of it, and
  *   it is seeded at the log's end the first time (the lines before it are history the lead already

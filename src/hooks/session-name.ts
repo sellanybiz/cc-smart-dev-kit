@@ -34,7 +34,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cleanSessionName } from "../crew/names";
 import { readLead } from "../crew/store";
-import { type HookResult, SILENT, stringField } from "./io";
+import { addContext, addContextAndTitle, type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
 
 /** Claude Code's session ids are UUIDs. Anything else never becomes part of a path. */
@@ -68,7 +68,7 @@ function appliedFile(env: Env, sessionId: string): string {
 }
 
 /** The name the kit last set for this session, or null. */
-function readAppliedName(env: Env, sessionId: string): string | null {
+export function readAppliedName(env: Env, sessionId: string): string | null {
   return readName(appliedFile(env, sessionId));
 }
 
@@ -80,9 +80,9 @@ function rememberAppliedName(env: Env, sessionId: string, title: string): void {
 
 /**
  * The title a prompt should set, or null: `wanted` only when the session is not called that
- * already and the kit did not already set it. So a person's own `/rename` stays, and a name
- * the kit set is never set twice — even when its record was lost, the session's own title says
- * it. A session already called `wanted` has it recorded as the name the kit owns, so a rename
+ * already and the kit did not already set it. So a `/rename` the person gives after the kit
+ * set the name stays, and a name the kit set is never set twice — even when its record was
+ * lost, the session's own title says it. A session already called `wanted` has it recorded as the name the kit owns, so a rename
  * the person makes from there stays. The one rule behind both writers: a session's own task
  * name here, a lead's role name in `lead-notes`.
  */
@@ -141,25 +141,9 @@ export function sessionName(context: HookContext): HookResult {
   if (recordedLead(context, sessionId)) return SILENT;
   const wanted = readName(join(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
-  if (event === "SessionStart") {
-    return {
-      stdout: JSON.stringify({
-        hookSpecificOutput: { hookEventName: event, additionalContext: note },
-      }),
-    };
-  }
+  if (event === "SessionStart") return addContext(event, note);
   const title =
     wanted === null ? null : titleToSet(env, sessionId, wanted, stringField(input.session_title));
-  if (title !== null) {
-    return {
-      stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } }),
-    };
-  }
-  return wanted === null
-    ? {
-        stdout: JSON.stringify({
-          hookSpecificOutput: { hookEventName: event, additionalContext: note },
-        }),
-      }
-    : SILENT;
+  if (title !== null) return addContextAndTitle(event, null, title);
+  return wanted === null ? addContext(event, note) : SILENT;
 }

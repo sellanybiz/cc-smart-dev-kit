@@ -1,9 +1,10 @@
 /** `crew lead` (`lead.ts`): the calling session recorded as a lead, and its name as data (D26). */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, renameSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { namesDir } from "../hooks/session-name";
 import { crewWorld, LEAD_SESSION, SESSION_PID, writeSessionRecord } from "../testing/crew-world";
-import { git } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
 import { CREW_STEPS } from "./step";
 import { listLeads, readLead } from "./store";
@@ -39,6 +40,30 @@ describe("D26: crew lead", () => {
     expect(world.out).toEqual([
       `lead LEAD my-app master-plan (plain-se): the crew this session starts in ${world.repo} report to it; this session's id cannot carry a session name, so type the next line in this session`,
       "/rename LEAD my-app master-plan",
+    ]);
+  });
+
+  test("LD1: this project runs its own lead-notes hook: the /rename line too", async () => {
+    const world = crewWorld();
+    writeFileSync(
+      join(world.repo, ".claude", "cc-smart-dev-kit.json"),
+      JSON.stringify({ ownHooks: ["lead-notes"], workflow: { crew: { enabled: true } } }),
+    );
+    expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `lead LEAD my-app master-plan (c00f9bb5): the crew this session starts in ${world.repo} report to it; this project runs its own lead-notes hook, so type the next line if the name does not appear`,
+      "/rename LEAD my-app master-plan",
+    ]);
+  });
+
+  test("LD1: a name the kit already set: no promise of another prompt", async () => {
+    const world = crewWorld();
+    const env = { TMPDIR: tempDir("names") };
+    mkdirSync(namesDir(env), { recursive: true });
+    writeFileSync(join(namesDir(env), LEAD_SESSION), "LEAD my-app master-plan");
+    expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx({}, env))).toBe(0);
+    expect(world.out).toEqual([
+      `lead LEAD my-app master-plan (c00f9bb5): the crew this session starts in ${world.repo} report to it; this session already took that name, and a name given with /rename stays`,
     ]);
   });
 

@@ -22,8 +22,9 @@ belongs — inline, a subagent or a crew session — is in the core instructions
   Turning crew sessions on is the person's choice, never yours.
 - **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
   names the session `LEAD <tag> <plan>`; the session takes that name at its next prompt by
-  itself (no setting, and it never overrides a name the person gave with `/rename`), so there
-  is nothing for the person to type. Only a session id no name record can be made for gets a
+  itself (no setting; it replaces the name the session had, and a name the person gives it
+  with `/rename` after that stays), so there is nothing for the person to type. Only a session
+  id no name record can be made for, or a project running its own `lead-notes` hook, gets a
   `/rename` line, which the person types once. `crew start` refuses until this session is a
   lead.
 

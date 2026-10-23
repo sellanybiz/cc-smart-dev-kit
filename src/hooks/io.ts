@@ -45,9 +45,10 @@ export interface HookInput {
   /** UserPromptSubmit. */
   prompt?: unknown;
   /**
-   * UserPromptSubmit: the title the session carries as the prompt arrives — the one Claude Code
-   * applied from an earlier answer (`sessionTitle`), or a `/rename` (`docs/claude-code-contract.md`).
-   * `titleToSet` (`session-name.ts`) reads it so a name the session already has is not set again.
+   * UserPromptSubmit: the session's current title as the prompt arrives — the same store `/rename`
+   * and a `sessionTitle` answer write (2.1.308's own construction fills it:
+   * `session_title: Ig(e.id)`; `docs/claude-code-contract.md`). `titleToSet` (`session-name.ts`)
+   * reads it so a name the session already carries is not set again.
    */
   session_title?: unknown;
   /** Stop: true when a Stop hook made this turn go on, so the next stop must not block again. */
