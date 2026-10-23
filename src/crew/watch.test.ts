@@ -1416,6 +1416,27 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 
+  test("an agent view that cannot be read is no resume: one line, and it stays paused", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "not json" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const done = await watchPass(fresh(world), ctx, scope);
+    expect(world.out).toEqual([
+      `${NAME}: not resumed — agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again`,
+    ]);
+    expect(done.state.resumedAt).toBeUndefined();
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
   test("a resume that claude refuses is one line, and the record stays paused", async () => {
     const world = await leadWorld();
     const resolved = resolvedOf(world);

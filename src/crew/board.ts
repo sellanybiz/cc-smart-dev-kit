@@ -12,8 +12,9 @@
  * question it waits on (D36), and its last few events.
  *
  * A crew session is named by its name (also the ` [ref]` form ListAgents prints), its id, its session's
- * short id or its full session id. A name that matches two crew sessions is refused and both are named:
- * the store, never a guess, decides which session is meant (D35).
+ * short id or its full session id. A name that matches two **live** crew sessions is refused and both are
+ * named; a name whose other matches are `removed` means the live one: the store, never a guess,
+ * decides which session is meant (D35).
  *
  * **When its state began** is its newest `state` (or `created`) event, not `updatedAt`: a line or
  * a memory reading changes the record without changing what it is doing.

@@ -29,7 +29,7 @@ import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
-import { CREW_AUTOCOMPACT, callClaude, findClaude } from "./claude";
+import { callClaude, findClaude, sessionFlags } from "./claude";
 import type { CrewContext } from "./context";
 import {
   answerCrewQuestion,
@@ -143,9 +143,14 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       return 1;
     }
     // The store says stopped; agent view says whether a process is there. `claude --bg --resume`
-    // on a session that runs starts a copy beside it, so a live one is sent the message instead.
-    const rows = agentRows(ctx);
-    if (!isLiveRow(rows === null ? null : rowOf(rows, record))) way = "resume";
+    // on a session that runs starts a copy beside it, so a live one is sent the message instead —
+    // and a view that cannot be read refuses rather than guessing (it could be either).
+    const liveness = sessionLiveness(ctx, record);
+    if (liveness === "unknown") {
+      ctx.error(`crew answer: ${record.name}: ${UNREADABLE_VIEW_WHY}`);
+      return 1;
+    }
+    if (liveness === "dead") way = "resume";
   } else if (!isReachable(record.state)) {
     ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
     return 1;
@@ -203,17 +208,44 @@ export function resumePlace(record: CrewRecord): ResumePlace {
   return { folder: record.worktree, ok: true };
 }
 
+/** What agent view says about a crew session's process: it runs, it does not, or the view cannot say. */
+export type Liveness = "dead" | "live" | "unknown";
+
+/**
+ * Whether a crew session's session still has a process. Agent view is the one witness: a live one
+ * must never be resumed (`--bg --resume` starts a copy beside it), and **a view that cannot be
+ * read must not be read as dead** — that would start the very copy the guard exists to prevent.
+ * A missing `claude` is the resume's own refusal (`resumeSession`), not this one, so it counts as
+ * dead and the refusal that names it is the one said.
+ */
+export function sessionLiveness(ctx: CrewContext, record: CrewRecord): Liveness {
+  const rows = agentRows(ctx);
+  if (rows === null) {
+    const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
+    return claude === null ? "dead" : "unknown";
+  }
+  return isLiveRow(rowOf(rows, record)) ? "live" : "dead";
+}
+
+/**
+ * Why a command refuses to resume when agent view could not be read: it could be either, and a
+ * copy is worse than a second try. One home for the sentence (`crew answer`, `crew resume`, the
+ * watch's `resumeOne`).
+ */
+export const UNREADABLE_VIEW_WHY =
+  "agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again";
+
 /**
  * The arguments that bring a crew session back: `claude --bg --resume <session id>` with what
  * `crew start` gave it — **the record's own files** (`--strict-mcp-config --mcp-config <mcp.json>`
  * and `--settings <settings.json>`) and the model, effort, permission mode and autocompact it was
- * launched with — and then the text, when there is one. Without the files a resumed session is a
- * plain session: no `CREW_ENV` (so no longer a crew session), every plugin and connector back,
- * every MCP server loaded, the lean start undone (`crew start`). The files are read from the
- * store, never rebuilt; the four flags are the record's own fields, which a restart carries too
- * (`respawnFlags`, read from the 2.1.309 binary). **`--mcp-config` comes before `--settings`**:
- * it takes any number of files, so a prompt after it would be read as one more config file (proved
- * live on 2.1.309, `launchArgs`), and `--settings` takes one value and ends the flag list.
+ * launched with (`sessionFlags`, the same home the launch reads them from) — and then the text,
+ * when there is one. Without the files a resumed session is a plain session: no `CREW_ENV` (so no
+ * longer a crew session), every plugin and connector back, every MCP server loaded, the lean start
+ * undone (`crew start`). The files are read from the store, never rebuilt. **`--mcp-config` comes
+ * before `--settings`**: it takes any number of files, so a prompt after it would be read as one
+ * more config file (proved live on 2.1.309, `launchArgs`), and `--settings` takes one value and
+ * ends the flag list.
  */
 export function resumeArgs(
   launch: { effort: string; model: string; permissionMode: string; sessionId: string },
@@ -224,14 +256,7 @@ export function resumeArgs(
     "--bg",
     "--resume",
     launch.sessionId,
-    "--model",
-    launch.model,
-    "--effort",
-    launch.effort,
-    "--permission-mode",
-    launch.permissionMode,
-    "--autocompact",
-    CREW_AUTOCOMPACT,
+    ...sessionFlags(launch.model, launch.effort, launch.permissionMode),
   ];
   if (files.mcpFile !== null) args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
   args.push("--settings", files.settingsFile);

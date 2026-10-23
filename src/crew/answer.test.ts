@@ -236,6 +236,21 @@ describe("crew answer", () => {
     expect(record?.state).toBe("working");
   });
 
+  test("D35: a stopped crew session whose agent view cannot be read is not resumed: it could be running", async () => {
+    const world = await askedWorld("stopped");
+    const code = await runCrew(
+      ["answer", NAME, "the port is 3210"],
+      world.ctx({}, { FAKE_AGENTS_JSON: "not json" }),
+    );
+    expect(code).toBe(1);
+    expect(world.err).toEqual([
+      `crew answer: ${NAME}: agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again`,
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBeNull();
+  });
+
   test("D35: a stopped crew session whose settings file is gone is not resumed: it would be no crew session", async () => {
     const world = await askedWorld("stopped");
     const { settings } = filesOf(world);
@@ -327,7 +342,6 @@ describe("crew answer", () => {
   test("D36: a name one live crew session and only removed ones share means the live one", async () => {
     const world = await askedWorld("stopped");
     // A removed crew session the lead stopped and removed under the same name, earlier.
-    const { createCrew } = await import("./store");
     const shortId = "bbbb2222";
     await createCrew(
       world.paths.stateDir,

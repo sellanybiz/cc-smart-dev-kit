@@ -26,8 +26,8 @@
 import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { isInside, runGit } from "../hooks/git";
-import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
-import { resumePlace, resumeSession } from "./answer";
+import { agentRows, claudeDeps } from "./agents";
+import { resumePlace, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
 import { REPORT_COMMAND } from "./brief";
 import { agentRow, callClaude, findClaude, parseAgents } from "./claude";
@@ -243,11 +243,15 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
   }
   // A session that still has a process is not resumed: `--bg --resume` would start a copy
   // beside it (`claude --help`, proved live on 2.1.309). `crew resume` is for one that is gone —
-  // after a stop, or after the machine restarted.
-  const rows = agentRows(ctx);
-  if (isLiveRow(rows === null ? null : rowOf(rows, record))) {
+  // after a stop, or after the machine restarted. A view that cannot be read refuses: it could be
+  // either, and a copy is worse than a second try.
+  const liveness = sessionLiveness(ctx, record);
+  if (liveness === "live") {
     ctx.print(`${record.name} is running already (${id}); there is nothing to resume`);
     return 0;
+  }
+  if (liveness === "unknown") {
+    return refuse(failure(`crew resume: ${record.name}: ${UNREADABLE_VIEW_WHY}`), ctx);
   }
   // That ONE session, in its own worktree, with its own settings and MCP files — never `--all`,
   // which would restart every background session on the machine, and never in the main checkout,
@@ -257,7 +261,7 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
     return refuse(
       failure(
         `crew resume: ${resumed.why}`,
-        `Fix: ${COMMAND} crew status "${record.name}" shows it; a phase that cannot come back can be continued from its branch`,
+        `Fix: ${COMMAND} crew status "${record.name}" shows its files; if it cannot come back, merge its branch and start the phase again`,
       ),
       ctx,
     );
@@ -336,10 +340,17 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
     }
     // The watch's own way: a message for one whose session still has a process, a resume in its
     // worktree for one that has none (`resumeOne`). It prints the message line or why it could
-    // not; the state event it records is this command's own line here.
-    const resumed = await resumeOne(record, ctx, ctx.now(), agents, (line) => ctx.print(line));
-    if (resumed) ctx.print(`resumed ${record.name} (${record.shortId})`);
-    else code = 1;
+    // not; a resume the store could not record is its line too, and the exit code says so.
+    const one = await resumeOne(record, ctx, ctx.now(), agents, (line) => ctx.print(line));
+    if (!one.ok || !one.stored) {
+      code = 1;
+      continue;
+    }
+    ctx.print(
+      one.way === "message"
+        ? `${record.name} is running (${record.shortId}): send the message above`
+        : `resumed ${record.name} (${record.shortId})`,
+    );
   }
   return code;
 }

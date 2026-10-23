@@ -3208,10 +3208,11 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   launched from — the main checkout — where its own start check marks it failed (the bug of
   2026-10-23); and never `--all`, which restarts every background session on the machine. A
   session that still has a process is not resumed — `--bg --resume` would start a copy beside it —
-  and the line says it runs already. The crew session is `working` again. It is refused for one
-  that is `removed` or `merged`, has no session yet, or has no worktree or settings file any more
-  (one line each). It does not check the caps: the person or the lead asked for exactly this
-  session.
+  and the line says it runs already. An agent view that cannot be read is a refusal, never read as
+  dead — it could be either, and a copy is worse than a second try. The crew session is `working`
+  again. It is refused for one that is `removed` or `merged`, has no session yet, or has no
+  worktree or settings file any more (one line each). It does not check the caps: the person or
+  the lead asked for exactly this session.
 - **`rm`** ends a finished crew session, and refuses at the first step that would lose something. A
   crew session commits on its branch and never pushes (D24), so **only the lead's branch decides**
   whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `crew rm` and

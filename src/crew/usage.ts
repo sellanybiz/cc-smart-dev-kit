@@ -27,7 +27,8 @@ const CREW = "<name|id>";
 
 /** The sentence every command that takes a crew session ends its help with. */
 const NAMED = `<name|id> is the crew session's name (put a name with spaces in quotes), its id, or its
-session's short id. A name that matches two crew sessions is refused, and both are named.`;
+session's short id. A name that matches two LIVE crew sessions is refused, and both are named; one
+whose other matches are removed means the live one.`;
 
 export const BOARD_COMMANDS: readonly BoardCommand[] = [
   {

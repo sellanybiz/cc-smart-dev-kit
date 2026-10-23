@@ -43,7 +43,7 @@ import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
-import { resumeSession, sendMessageLine } from "./answer";
+import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
 import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
@@ -453,8 +453,17 @@ async function resumePaused(
     if (!routerAnsweredSince(facts, state.routerRequests ?? null)) return null;
   }
   // A resume that failed is no resume: the next pass tries again, and the others wait for it.
-  if (!(await resumeOne(next, ctx, now, agents, say))) return null;
+  if (!(await resumeOne(next, ctx, now, agents, say)).ok) return null;
   return { resumedAt: now, routerRequests: facts.requests };
+}
+
+/** What a resume of a paused crew session came to: whether it happened, whether the store has it, and how. */
+export interface OneResume {
+  ok: boolean;
+  /** False when the store could not write the state: the record stays `paused`. */
+  stored: boolean;
+  /** A message to a session that still has a process, or a resume of one that has none. */
+  way: "message" | "resume";
 }
 
 /**
@@ -464,7 +473,8 @@ async function resumePaused(
  * own settings and MCP files, for one whose session has none. **One home for bringing a paused
  * crew session back**: the watch and `crew resume --paused` (`end.ts`) both use it. The record is
  * `working` again in the same act, so nothing resumes it twice and it holds its place. A resume
- * that fails is one line, and the record stays `paused`.
+ * that fails is one line, and the record stays `paused`; so is an agent view that cannot be read —
+ * it could be either, and a copy is worse than a second try.
  */
 export async function resumeOne(
   record: CrewRecord,
@@ -472,31 +482,45 @@ export async function resumeOne(
   now: number,
   agents: null | AgentRow[],
   say: (line: string) => void,
-): Promise<boolean> {
+): Promise<OneResume> {
   const text = resumeText(record, record.waitingFor, now);
-  const live = isLiveRow(agents === null ? null : rowOf(agents, record));
-  if (live) {
+  if (agents === null) {
+    const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
+    const why =
+      claude === null
+        ? "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
+        : UNREADABLE_VIEW_WHY;
+    say(`${record.name}: not resumed — ${why}`);
+    return { ok: false, stored: false, way: "resume" };
+  }
+  if (isLiveRow(rowOf(agents, record))) {
     say(sendMessageLine(record.name, text));
-    await sayResumed(record, "the wait is over; the message to it wakes it", ctx, now, say);
-    return true;
+    const stored = await sayResumed(
+      record,
+      "the wait is over; the message to it wakes it",
+      ctx,
+      now,
+      say,
+    );
+    return { ok: true, stored, way: "message" };
   }
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
     say(`${record.name}: not resumed — ${resumed.why}`);
-    return false;
+    return { ok: false, stored: false, way: "resume" };
   }
-  await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
-  return true;
+  const stored = await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
+  return { ok: true, stored, way: "resume" };
 }
 
-/** Records a resumed crew session `working` with its wait cleared; one line when the store cannot. */
+/** Records a resumed crew session `working` with its wait cleared; false (and one line) when the store cannot. */
 async function sayResumed(
   record: CrewRecord,
   text: string,
   ctx: CrewContext,
   now: number,
   say: (line: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await updateCrew(
       ctx.paths.stateDir,
@@ -506,8 +530,10 @@ async function sayResumed(
       now,
       text,
     );
+    return true;
   } catch (error) {
     say(`${record.name}: resumed, but the store could not record it: ${reasonOf(error)}`);
+    return false;
   }
 }
 

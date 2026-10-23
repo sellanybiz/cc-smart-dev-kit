@@ -5,12 +5,13 @@
  * and the machine's facts given (`src/testing/board-world.ts`). No real Claude session runs.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type BoardWorld, boardWorld, MINUTE, NOW, QUIET_MACHINE } from "../testing/board-world";
 import { OTHER_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
+import { repoKey } from "../workflow/reviews";
 import { parseResumeArgs, runCrew } from "./command";
 import {
   crewMcpFile,
@@ -831,13 +832,25 @@ describe("crew resume", () => {
     ]);
   });
 
+  test("an agent view that cannot be read refuses the resume rather than risking a copy", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    expect(
+      await runCrew(["resume", record.id], world.ctx({}, { FAKE_AGENTS_JSON: "not json" })),
+    ).toBe(1);
+    expect(world.err).toEqual([
+      "crew resume: C my-app B1 help: agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again",
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+  });
+
   test("a resume that claude refuses says so and changes nothing", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped" });
     expect(await runCrew(["resume", record.id], world.ctx({}, { FAKE_BG: "fail" }))).toBe(1);
     expect(world.err).toEqual([
       "crew resume: claude --bg --resume a1b2c3d4-0000-1111-2222-333333333333 failed (exit 4): something broke",
-      `Fix: ${COMMAND} crew status "C my-app B1 help" shows it; a phase that cannot come back can be continued from its branch`,
+      `Fix: ${COMMAND} crew status "C my-app B1 help" shows its files; if it cannot come back, merge its branch and start the phase again`,
     ]);
     expect(await readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
       state: "stopped",
@@ -964,7 +977,7 @@ describe("D42: crew resume --paused", () => {
     );
     expect(world.out).toEqual([
       'SendMessage {"to":"C my-app B1 help","message":"The wait is over: worker answers again. Go on with phase B1, then hand it back as usual."}',
-      "resumed C my-app B1 help (a1b2c3d4)",
+      "C my-app B1 help is running (a1b2c3d4): send the message above",
     ]);
     // `claude --bg --resume` on a running session would start a copy beside it.
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
@@ -991,6 +1004,27 @@ describe("D42: crew resume --paused", () => {
       "paused",
       "paused",
     ]);
+  });
+
+  test("a resume the store could not record is named, and the exit code says so", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    // The store's record folder gone read-only: the session comes back, its record cannot be written.
+    const recordsDir = join(world.paths.stateDir, "crew", repoKey(world.repo), "crew");
+    chmodSync(recordsDir, 0o500);
+    let code: number;
+    try {
+      code = await runCrew(["resume", "--paused"], world.ctx());
+    } finally {
+      chmodSync(recordsDir, 0o700);
+    }
+    expect(code).toBe(1);
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith(
+      "C my-app B1 help: resumed, but the store could not record it:",
+    );
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 
   test("a paused crew session with no worktree is named, the others still go, and the exit code says so", async () => {
