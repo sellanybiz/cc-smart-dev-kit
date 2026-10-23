@@ -35005,9 +35005,11 @@ function sessionStateOf(session, waiting, now) {
   return now - session.lastWrite <= SESSION_WORKING_MS ? "working" : "idle";
 }
 var GUARD_ASKS_DEFAULT = 50;
-function repoOf(deps) {
+async function repoOf(deps) {
   try {
-    const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
+    const checkout = await locateCheckoutAsync(deps.action.cwd, {
+      env: deps.action.portal.env
+    });
     if (checkout === null)
       return { kind: "none" };
     return { kind: "repo", repo: checkout.mainCheckout ?? checkout.root };
@@ -35100,7 +35102,7 @@ async function workAnswer(deps) {
     tag: lead.tag,
     updatedAt: lead.updatedAt
   }));
-  const found = repoOf(deps);
+  const found = await repoOf(deps);
   let folderNote = null;
   let sessions = [];
   let waitsError = null;

@@ -37156,28 +37156,25 @@ async function runGh(ghPath, args, env) {
     return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
   }
 }
+function runGhSync(ghPath, args, env) {
+  try {
+    const run = Bun.spawnSync([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS
+    });
+    return { ok: run.exitCode === 0, out: run.stdout.toString(), err: run.stderr.toString() };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
 function realRunner(env) {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
     git: (cwd, args) => runGit(cwd, args, env, RUN_TIMEOUT_MS),
-    gh: ghPath === null ? null : (args) => {
-      try {
-        const run = Bun.spawnSync([ghPath, ...args], {
-          env,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-          timeout: RUN_TIMEOUT_MS
-        });
-        return {
-          ok: run.exitCode === 0,
-          out: run.stdout.toString(),
-          err: run.stderr.toString()
-        };
-      } catch (error) {
-        return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-      }
-    }
+    gh: ghPath === null ? null : (args) => runGhSync(ghPath, args, env)
   };
 }
 function realRunnerAsync(env) {

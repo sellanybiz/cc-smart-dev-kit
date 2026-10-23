@@ -38,7 +38,7 @@ import {
 import { currentBreakers, parseLimitState } from "../../gateway/limit-state";
 import { oneLine } from "../../gateway/plain-text";
 import { askLogFile } from "../../hooks/ask-log";
-import { locateCheckout, locateCheckoutAsync } from "../../project/resolve";
+import { locateCheckoutAsync } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
 import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, type OpenWait } from "../../sessions/flow";
 import type { SavedSession } from "../../sessions/saved-sessions";
@@ -113,11 +113,13 @@ export const GUARD_ASKS_DEFAULT = 50;
  * three cases are told apart: a folder that is no git project is the portal's normal start
  * (`portal.md`), a quiet line on the Work page; one that cannot be read is a failure.
  */
-function repoOf(
+async function repoOf(
   deps: PageDataDeps,
-): { kind: "error"; why: string } | { kind: "none" } | { kind: "repo"; repo: string } {
+): Promise<{ kind: "error"; why: string } | { kind: "none" } | { kind: "repo"; repo: string }> {
   try {
-    const checkout = locateCheckout(deps.action.cwd, { env: deps.action.portal.env });
+    const checkout = await locateCheckoutAsync(deps.action.cwd, {
+      env: deps.action.portal.env,
+    });
     if (checkout === null) return { kind: "none" };
     return { kind: "repo", repo: checkout.mainCheckout ?? checkout.root };
   } catch (error) {
@@ -248,7 +250,7 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   );
   // The other sessions are the project of the folder the portal runs in, when it has one: a
   // session record is kept under its project's folder, and there is no list of every project.
-  const found = repoOf(deps);
+  const found = await repoOf(deps);
   let folderNote: null | string = null;
   let sessions: SessionSummary[] = [];
   let waitsError: null | string = null;

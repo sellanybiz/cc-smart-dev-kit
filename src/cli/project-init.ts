@@ -81,15 +81,11 @@ export interface ProjectInitRunner {
 
 const RUN_TIMEOUT_MS = 10_000;
 
-/** One `gh` command, awaited: what `realRunner`'s own spawn does without blocking. */
-async function runGh(
-  ghPath: string,
-  args: string[],
-  env: Env,
-): Promise<{ ok: boolean; out: string; err: string }> {
+/** One `gh` command, awaited: what `runGhSync` does without blocking the caller. */
+async function runGh(ghPath: string, args: string[], env: Env): Promise<RunnerAnswer> {
   try {
     const child = Bun.spawn([ghPath, ...args], {
-      env: env as Record<string, string>,
+      env,
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -106,32 +102,28 @@ async function runGh(
   }
 }
 
+/** One `gh` command, where it stands (`runGh` is its awaited twin). */
+function runGhSync(ghPath: string, args: string[], env: Env): RunnerAnswer {
+  try {
+    const run = Bun.spawnSync([ghPath, ...args], {
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: RUN_TIMEOUT_MS,
+    });
+    return { ok: run.exitCode === 0, out: run.stdout.toString(), err: run.stderr.toString() };
+  } catch (error) {
+    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
+  }
+}
+
 /** The real runner: git in the repo, `gh` only when it is on PATH. */
 export function realRunner(env: Env): ProjectInitRunner {
   const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
   return {
     git: (cwd, args) => runGit(cwd, args, env, RUN_TIMEOUT_MS),
-    gh:
-      ghPath === null
-        ? null
-        : (args) => {
-            try {
-              const run = Bun.spawnSync([ghPath, ...args], {
-                env,
-                stdin: "ignore",
-                stdout: "pipe",
-                stderr: "pipe",
-                timeout: RUN_TIMEOUT_MS,
-              });
-              return {
-                ok: run.exitCode === 0,
-                out: run.stdout.toString(),
-                err: run.stderr.toString(),
-              };
-            } catch (error) {
-              return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-            }
-          },
+    gh: ghPath === null ? null : (args) => runGhSync(ghPath, args, env),
   };
 }
 
