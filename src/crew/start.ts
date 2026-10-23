@@ -1076,6 +1076,8 @@ function liveOnPhase(planned: Plan, records: readonly CrewRecord[]): null | Crew
         one.leadSessionId === planned.lead.sessionId &&
         one.phase === planned.phase &&
         one.state !== "removed" &&
+        // A failed launch that never got a session and left no worktree is nothing to remove.
+        holdsName(one) &&
         one.id !== planned.continues,
     ) ?? null
   );

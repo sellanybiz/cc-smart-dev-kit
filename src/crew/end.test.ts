@@ -947,6 +947,30 @@ describe("D42: crew resume --paused", () => {
     expect(world.claudeCalls()).toEqual([]);
   });
 
+  test("a paused crew session whose process lives is woken with a message, never copied", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    const live = JSON.stringify([
+      {
+        cwd: places(world.repo).worktree,
+        id: "a1b2c3d4",
+        pid: 4242,
+        sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+        state: "working",
+      },
+    ]);
+    expect(await runCrew(["resume", "--paused"], world.ctx({}, { FAKE_AGENTS_JSON: live }))).toBe(
+      0,
+    );
+    expect(world.out).toEqual([
+      'SendMessage {"to":"C my-app B1 help","message":"The wait is over: worker answers again. Go on with phase B1, then hand it back as usual."}',
+      "resumed C my-app B1 help (a1b2c3d4)",
+    ]);
+    // `claude --bg --resume` on a running session would start a copy beside it.
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
+  });
+
   test("a resume that claude refuses is named, the others still go, and the exit code says so", async () => {
     const world = await boardWorld();
     await world.addCrew({ ...pausedChange(20) });

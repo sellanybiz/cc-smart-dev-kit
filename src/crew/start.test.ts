@@ -121,6 +121,45 @@ async function otherCrew(
 }
 
 describe("D25: crew start returns at once", () => {
+  test("a failed launch that started nothing is nothing to warn about", async () => {
+    const world = await ledWorld();
+    await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/B6b-lost",
+        effort: "high",
+        files: [],
+        id: "B6b-lost-aaaaaa",
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app master-plan",
+        leadSessionId: LEAD_SESSION,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: "C my-app B6b lost",
+        permissionMode: "auto",
+        phase: "B6b",
+        plan: "master-plan",
+        pr: null,
+        questions: [],
+        repo: world.repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: "lost",
+        state: "failed",
+        waitsFor: [],
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-lost"),
+      },
+      T0,
+    );
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith("started C my-app B6b portal-live");
+  });
+
   test("a phase that already has a live crew session gets one line naming it, to remove it first", async () => {
     const world = await ledWorld();
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
