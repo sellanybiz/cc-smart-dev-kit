@@ -274,10 +274,14 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
 
 ## Settings and secrets
 
-- `gateway on` / `off`, and `gateway setup`'s removal of 0.4.3's retired model keys
-  (`retireOldModelKeys`), change Claude Code's settings only through `src/setup/`
-  (`applyManagedJson`, owned keys, only a key that still holds the value cc-smart-dev-kit wrote). A gateway key someone else set stops `on` with
-  ForeignKeyError, its value masked; it is never overwritten.
+- `gateway on` / `off`, `gateway project …` (a project's own `ANTHROPIC_BASE_URL`, in its
+  `settings.local.json` or its team `.claude/settings.json`), and `gateway setup`'s removal of
+  0.4.3's retired model keys (`retireOldModelKeys`), change Claude Code's settings only through
+  `src/setup/` (`applyManagedJson`, owned keys, only a key that still holds the value
+  cc-smart-dev-kit wrote; the personal file's `.git/info/exclude` line through
+  `applyManagedLine`). A gateway key someone else set stops `on` with ForeignKeyError, its value
+  masked; it is never overwritten. A project's state has one reader, `projectGatewayState`
+  (`src/gateway/project-state.ts`), never a second copy.
 - **Never write** `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_SUBAGENT_MODEL` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`
   (`FORBIDDEN_ENV_KEYS`, and its test).

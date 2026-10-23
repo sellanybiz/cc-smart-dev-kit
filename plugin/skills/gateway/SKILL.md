@@ -220,6 +220,55 @@ up).
   setup's restart. `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then
   `cc-smart-dev-kit gateway setup` again (it asks before the restart).
 
+## One project, its own state ("use the gateway here", "keep this repo on Claude")
+
+`gateway on` is every session's default on the machine. One project can choose its own answer
+without touching the others:
+
+- `cc-smart-dev-kit gateway project status [--folder <dir>]`: what a session started in this
+  project gets, and which file says so (its personal file, its team file, the machine's). It
+  also warns when the router has no profile the URL names, or when a project file cannot be
+  read.
+- `cc-smart-dev-kit gateway project on`: this project's sessions go through the router. Add
+  `--profile <name>` when the project has a profile of its own (§ Profiles; its first chain
+  makes it).
+- `cc-smart-dev-kit gateway project off`: Anthropic's own address, on the person's own Claude
+  login. Turning the gateway off never logs them out.
+- `cc-smart-dev-kit gateway project default`: no key of the project's own; the machine's
+  settings decide.
+- `--team` writes the project's `.claude/settings.json` instead of the personal file, and takes
+  `off` or `default` only: a team file never points teammates at one person's router. Commit it
+  for them, and note that a session started in a subfolder does not read it.
+- `cc-smart-dev-kit gateway projects`: every project the portal's Projects page lists, with its
+  state.
+
+The personal file is `.claude/settings.local.json` at the main checkout's root, which Claude Code
+reads for the checkout, its subfolders and its worktrees; a managed `.git/info/exclude` line keeps
+it out of git, and `restore` takes back both. A changed value reaches a running session within
+about a second; a removed key only after it restarts, so `default` keeps the old value until then.
+The command refuses, in one line with the fix: another gateway's URL already in the file, a
+personal file git already tracks (for on), a login key or `apiKeyHelper` anywhere in the project's
+chain (with on or off), `--team` with on, and a profile the config does not have. **For the
+project this session itself runs in, the person runs it** (§ A change to your own model path).
+
+## Profiles: a project's own chains
+
+A profile is a named set of chains and switches over the machine's, reached by the project's URL
+`…/p/<name>`. `gateway project on --profile <name>` points a project at one.
+
+- `cc-smart-dev-kit gateway profile <name> slot <slot> <target>,<target>…`: the profile's own chain
+  for a slot, checked against `gateway models` exactly as `gateway slot` checks the machine's.
+  The first chain makes the profile. A slot the profile does not name keeps the machine's chain.
+  A judge target must already have passed the machine's judge test (`gateway slot judge`), since
+  the proof is machine-wide and an untested target is ignored.
+- `gateway profile <name> slot <slot> off` (`claude` says the same): plain Claude for that slot in
+  this profile. `clear` forgets the entry, so the machine's chain applies there again.
+- `gateway profile <name> fallback <slot> on|off`: may the profile's next target answer when the
+  one before it fails or rests?
+- `gateway profile <name> remove`: deletes the profile; a project whose URL still names it answers
+  as plain Claude.
+- The change is live: the router reads the config again within about a second.
+
 ## Turn it off
 
 `cc-smart-dev-kit gateway off` removes exactly the keys `on` set. Running sessions need a
@@ -253,7 +302,9 @@ router, the person runs it (§ A change to your own model path).
 When this session's own requests go through the router (`ANTHROPIC_BASE_URL` points at it),
 **never run a change to that path through your own shell tool**: `gateway setup` with a
 restart, `systemctl --user restart cc-smart-dev-kit-router`, `gateway on` or `off`, or any edit of the
-base URL. The session cuts its own connection mid-change, and nobody is left to finish it or
+base URL. The same holds for `gateway project on`, `off` or `default` in the project this session
+itself runs in: it changes the path this session's requests take, and a session that is off moves
+itself onto the router mid-turn. The session cuts its own connection mid-change, and nobody is left to finish it or
 roll it back. Give the person the exact command to run in a terminal (in Claude Code, a line
 that starts with `!` runs in the session's shell without the model). A change built for this
 keeps its downtime short: it stops the old router without waiting for it, and starts the new

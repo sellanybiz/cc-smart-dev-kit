@@ -151,6 +151,92 @@ http://127.0.0.1:20100/p/my-project
 - **A project reaches its profile by its URL**: `ANTHROPIC_BASE_URL` with `/p/<name>` on the
   end, in that project's own settings file (or passed to one session with `--settings`). It is
   the only place a profile's name comes from; no request header names a project.
+- **Its chains and switches are the command line's**: `gateway profile <name> slot <slot>
+  <targets>` sets the profile's own chain for a slot (`off`, or `claude`, turns it off there;
+  `clear` forgets it, so the machine's chain applies again), `gateway profile <name> fallback
+  <slot> on|off` sets its fallback switch, and `gateway profile <name> remove` deletes it. Every
+  target is checked against its backend's live model list, exactly as `gateway slot` checks the
+  machine's, and every change is checked as a whole config before it is saved. The first chain
+  makes the profile: a name `gateway.json` does not have starts empty. A profile's **judge**
+  chain may only hold targets the machine's judge test already proved (`judgeTested`, D44),
+  because the proof is machine-wide and the router ignores untested targets: set the judge with
+  `gateway slot judge` (or `gateway slot worker`, whose proof also lets a target judge while
+  Claude cannot) first. A profile's **worker** targets judge while Claude cannot only once the
+  machine proved the same target. The router reads the
+  config again within about a second, so a session using the profile uses the change from its
+  next request. A project gets the profile with `gateway project on --profile <name>` (§ Per
+  project). A profile's fallback or breaker switch set on a slot it only inherits (it names no
+  chain of its own there) goes when the machine takes that slot's last chain away —
+  `gateway slot <slot> claude` or `clear` — because the config refuses a switch on a slot with no
+  chain at all; the machine's command says which profile lost it.
+
+## Per project: on, off, or the machine's default (D29)
+
+The machine-wide `gateway on` points every session at the router. One project can choose its
+own answer; `gateway project status` says which one applies and which file says so.
+
+| State | What the project's file holds | What a session started in the project gets |
+|---|---|---|
+| **on** | `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`, or `…/p/<profile>` with a profile | the router, with the profile's chains when the URL names one |
+| **off** | `ANTHROPIC_BASE_URL` = `https://api.anthropic.com` | Anthropic, on the person's own claude.ai login: turning the gateway off never logs them out (P1) |
+| **default** | no key | whatever the machine's own settings file says; the shell may still set one, and a launch's `--settings` file wins for that session (P3) |
+
+```sh
+cc-smart-dev-kit gateway project status [--folder <dir>]
+cc-smart-dev-kit gateway project on|off|default [--team] [--profile <name>] [--folder <dir>]
+cc-smart-dev-kit gateway projects [--folder <dir>]
+```
+
+- **Where the value lives.** By default the **personal** file,
+  `<main checkout>/.claude/settings.local.json`, with a managed `/.claude/settings.local.json`
+  line in `.git/info/exclude` so it is never committed: `restore` takes back both the key and
+  the line. `--team` writes the **team** file, `<folder>/.claude/settings.json`, and takes `off`
+  and `default` only — a team file never points teammates at one person's local router. A
+  `--team` run in a subfolder is refused there: a session started in that subfolder would not
+  read the file.
+- **Which file wins (P3).** A `--settings` file (not visible here), then `settings.local.json`,
+  then the starting folder's `.claude/settings.json`, then the user's own settings file, then
+  the shell. The personal file is read at the **main checkout's root** for the checkout, every
+  subfolder and every worktree (P6), which is why it is the default home of a project's own
+  choice: one write reaches every session of the project.
+- **The team file's limit (P6).** `.claude/settings.json` is read from the folder the session
+  starts in. A team `off` or `default` at the project's top folder does not reach a session
+  started in a subfolder — the machine's value applies there — and a linked worktree reads it
+  only when it carries the committed file. `gateway project status` says so where it applies, and
+  `doctor` names each project's state.
+- **One reader, two answers.** `projectGatewayState(folder)` (`src/gateway/project-state.ts`)
+  answers the project's own **choice** (its personal file, then its team file) and what a
+  session **effectively** gets (that choice, then the machine's settings file).
+  `gateway project status` and `gateway projects` call it, and GP4 adds the doctor lines and the
+  portal's project card on the same function, so no two of them can disagree. A settings file
+  that cannot be read, or whose `ANTHROPIC_BASE_URL` is not an address, stops the chain as
+  **unknown**: Claude Code's own answer past such a file is not known, and a state nobody read
+  is not a state to claim. `gateway project status` exits 1 when it cannot tell (an unreadable
+  file or config) and 0 otherwise.
+- **Running sessions (P7).** A changed value reaches a session already running in the project
+  within about a second. A removed key never does: `default` says the session keeps the value it
+  had until it restarts.
+- **`restore` takes a project's key and its excluded line back, but its stage 1 does not yet
+  wait for them.** Stage 1 (`docs/gateway.md` § `cc-smart-dev-kit restore`) waits only for the
+  machine's own settings file, so a project still pointed at the router would see the router
+  stop under its running sessions. Until GP4a makes stage 1 count every owned file, run
+  `gateway project default` in each such project and restart its sessions before `restore`.
+- **Refusals, one line each with the fix:** a project file that already holds another gateway's
+  URL (not this machine's router, not Anthropic's) is never overwritten; `on` and `off` are
+  refused while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper` is set at a level
+  of the project's chain — its personal file, the team file of the folder, the main checkout's
+  team file (the personal file reaches its sessions too) and the machine's settings — because
+  the gateway must never replace the person's own login. (A *worktree's own* committed team file
+  is not part of that check yet.) A personal file **git tracks** is refused for `on`: a router
+  address there would be committed with it, and the line in `.git/info/exclude` cannot untrack a
+  file. Also refused: `--team` with `on`; a profile name `isProfileName` refuses, or one
+  `gateway.json` does not have; and a folder outside git, which has no personal file to write.
+- **`gateway projects [--folder <dir>]`** lists every repository the portal's Projects page
+  shows — the same `projectsList` reader, asked about the folder given — each with its own state
+  and the file it comes from, and marks the one the command runs in.
+- **Windows is unproved for this row** (R6's P11 is owed): the reader and the commands use the
+  main checkout's root on every platform. On Windows, check `gateway project status` in a
+  project once before relying on it.
 
 ## Anthropic's server tools
 
@@ -1154,8 +1240,9 @@ cannot send those cross-site without a CORS preflight, which the router never an
 
 | What | Where |
 |---|---|
-| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `safety-checks.ts`, `history.ts`, `history-read.ts`, `prices.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts`, `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
-| Config: backend keys, slots, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused — off Windows, where the bits decide: on Windows a mode says nothing and the profile's ACL protects the file, so no config is refused there (`isOwnerOnly`). Read again when it changes, so `gateway slot` is live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
+| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `safety-checks.ts`, `history.ts`, `history-read.ts`, `prices.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts` with `commands-project.ts` (a project's state), `commands-profile.ts` (a profile's chains), `commands-chains.ts` and `commands-out.ts` (the words and checks the slot, profile and project commands share), `project-state.ts` (the one project-state reader), `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
+| Config: backend keys, slots, profiles, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused — off Windows, where the bits decide: on Windows a mode says nothing and the profile's ACL protects the file, so no config is refused there (`isOwnerOnly`). Read again when it changes, so `gateway slot` and `gateway profile` are live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
+| A project's own gateway state | `<main checkout>/.claude/settings.local.json` (the personal file, excluded from git by a managed line in `.git/info/exclude`), or `<folder>/.claude/settings.json` (the team file) with `--team`. Written as an owned key through `src/setup/`, so `restore` takes it back (§ Per project) |
 | A setup that did not finish | `~/.claude/cc-smart-dev-kit/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
 | The router that runs | `~/.local/share/cc-smart-dev-kit/router.js`, a copy of the plugin's `dist/router.js` |
 | The service | Linux: the systemd user unit `~/.config/systemd/user/cc-smart-dev-kit-router.service`. Windows: the per-user Scheduled Task `cc-smart-dev-kit-router`, from its definition `~/.local/share/cc-smart-dev-kit/router-task.xml` (`docs/windows-gateway.md`) |

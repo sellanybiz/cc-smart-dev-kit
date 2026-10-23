@@ -12,6 +12,15 @@ An optional local router between Claude Code and the model providers
   answers with the profile's chains and switches over the machine's (`profiles` in
   `gateway.json`, `profileView`). A name no profile holds answers as plain Claude, never an
   error. The prefix is only there when a project needs it; `docs/gateway.md` § Profiles.
+- **A project chooses on, off or default for itself** (D29, GP2): `gateway project …` writes
+  `env.ANTHROPIC_BASE_URL` as an owned key through `src/setup/` — the personal
+  `<main checkout>/.claude/settings.local.json`, with a managed `.git/info/exclude` line, or
+  with `--team` and for off/default only its `.claude/settings.json` — and `gateway profile …`
+  gives a profile its chains. One reader, `projectGatewayState` (`src/gateway/project-state.ts`),
+  answers a folder's own choice and what a session there effectively gets, for the commands
+  (GP4 adds the doctor lines and the portal's card on the same reader); a file it cannot read is
+  `unknown`, never a guess.
+  `docs/gateway.md` § Per project, and the rules in `.claude/rules/gateway.md`.
 - **No prompt text is ever changed.** An affordable backend gets two named, tested format
   translations and nothing else. A slot's Claude target that is not the model asked for gets one,
   `requestForClaudeFallback`: only the fields that Claude model refuses (Claude Code built

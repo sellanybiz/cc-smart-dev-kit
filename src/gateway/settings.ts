@@ -18,6 +18,7 @@ import {
   ownedRecords,
   ownership,
 } from "../setup/managed-json";
+import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
 
 /**
@@ -37,8 +38,16 @@ import { realTarget } from "../setup/write";
 export function gatewayEnv(port: number): Record<string, string> {
   return {
     ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+    ANTHROPIC_BASE_URL: routerBaseUrl(port),
   };
+}
+
+/**
+ * The router's root URL on `port`: what `gateway on` writes and what a project's state names
+ * (`project-state.ts`). One home, so the two can never disagree about the address.
+ */
+export function routerBaseUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
 }
 
 /**
@@ -90,12 +99,18 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The settings file as an object; `{}` when there is none. Throws on a file that is not one. */
+/**
+ * The settings file as an object; `{}` when there is none. Throws on a file that is not one.
+ * Read as `applyManagedJson` reads one: an empty file is `{}`, and a byte order mark an editor
+ * put first is skipped — so the reader and the writer agree about the same file.
+ */
 function readSettings(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
+  const text = readFileSync(path, "utf8");
+  if (text.trim() === "") return {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = parseUserJson(text);
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -292,18 +307,82 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
   return { result, foreign };
 }
 
-/** What Claude Code's settings say about the gateway: names only, never a value. */
-export function settingsReport(settingsPath: string): {
+/**
+ * A settings file's gateway facts as they are written, for a reader that must compare the URL
+ * itself — the project's effective-state reader (`project-state.ts`), which tells this
+ * machine's router from another gateway's address. Never for output: `settingsReport` masks.
+ * Throws when the file cannot be read (the caller reports it; the readers here never do).
+ * `baseUrlProblem`: the key is there and is not a text with something in it, so no URL can be
+ * read from it — `settingsReport` still says "none", as before; the project reader reports it.
+ */
+export function readGatewaySettings(settingsPath: string): {
   baseUrl: null | string;
+  baseUrlProblem: null | string;
   loginOverrides: string[];
   subagentOverrides: string[];
 } {
   const settings = readSettings(settingsPath);
   const env = isJsonObject(settings.env) ? settings.env : {};
-  const baseUrl =
-    typeof env.ANTHROPIC_BASE_URL === "string" ? shownValue(env.ANTHROPIC_BASE_URL) : null;
+  const held = env.ANTHROPIC_BASE_URL;
+  const usable = typeof held === "string" && held.trim() !== "";
+  const baseUrlProblem =
+    Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable
+      ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it`
+      : null;
   const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
   if (Object.hasOwn(settings, "apiKeyHelper")) loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  return { baseUrl, loginOverrides, subagentOverrides };
+  return { baseUrl: usable ? held : null, baseUrlProblem, loginOverrides, subagentOverrides };
+}
+
+/** What Claude Code's settings say about the gateway, as output may show them: names only, never a value. */
+export function settingsReport(settingsPath: string): {
+  baseUrl: null | string;
+  loginOverrides: string[];
+  subagentOverrides: string[];
+} {
+  const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
+  return {
+    baseUrl: baseUrl === null ? null : shownValue(baseUrl),
+    loginOverrides,
+    subagentOverrides,
+  };
+}
+
+/** The one key a project's state is: `env.ANTHROPIC_BASE_URL` of one of its settings files. */
+export const BASE_URL_PATH: KeyPath = ["env", "ANTHROPIC_BASE_URL"];
+
+/**
+ * Sets `env.ANTHROPIC_BASE_URL` in a project's settings file, as an owned key (D29, GP2):
+ * `applyManagedJson` backs the file up, records the key in `owned.json` so `restore` takes it
+ * back, and refuses a key someone else set. The caller checks the chain's login overrides and
+ * a foreign URL first (`planProjectChange`), so a refusal here names only the managed rule.
+ */
+export function setGatewayBaseUrl(options: {
+  file: string;
+  stateDir: string;
+  value: string;
+}): ManagedJsonResult {
+  return applyManagedJson({
+    file: options.file,
+    stateDir: options.stateDir,
+    set: [[BASE_URL_PATH, options.value]],
+  });
+}
+
+/**
+ * Removes `env.ANTHROPIC_BASE_URL` from a project's settings file, only while cc-smart-dev-kit
+ * owns it and it still holds the value it wrote: a value the person set or changed stays. An
+ * `env` cc-smart-dev-kit created goes with its last key; one the person had stays.
+ */
+export function clearGatewayBaseUrl(options: {
+  file: string;
+  stateDir: string;
+}): ManagedJsonResult {
+  return applyManagedJson({
+    file: options.file,
+    stateDir: options.stateDir,
+    remove: [BASE_URL_PATH],
+    createdObject: createdObjects(options.stateDir, options.file),
+  });
 }

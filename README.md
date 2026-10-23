@@ -771,7 +771,31 @@ How it works: [docs/gateway.md](docs/gateway.md).
 | `cc-smart-dev-kit gateway breaker <slot> on\|off` | When every target of a slot is limited or down, may the router hold the request for a while and then ask Claude Code to retry (up to 240 s, `timeouts.breakerHoldMs`; 0 holds none)? Off: the last answer goes back at once. On by default for every slot but the judge, which never holds, so it has no switch. |
 | `cc-smart-dev-kit gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys cc-smart-dev-kit owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. |
 | `cc-smart-dev-kit gateway off` | Removes exactly the keys `on` set. Restart the sessions afterwards. |
+| `cc-smart-dev-kit gateway project status [--folder <dir>]` | This project's gateway state and where it comes from: its own personal file, its team file, or the machine's settings — plus what a file it cannot read would mean (nothing is guessed). Says that a `--settings` launch is not visible here. |
+| `cc-smart-dev-kit gateway project on\|off\|default [--team] [--profile <name>] [--folder <dir>]` | This project's own state: `on` (this machine's router, or the profile's URL with `--profile`), `off` (Anthropic's own address: your own login, never a logout), or `default` (no key: the machine's settings decide). The personal file `.claude/settings.local.json` by default, kept out of git and taken back by `restore`; `--team` writes `.claude/settings.json` and takes `off` or `default` only. A changed value reaches a running session; a removed key waits for a restart. Refused, with the fix: another gateway's URL in the file, a personal file git already tracks, a login key or `apiKeyHelper` at any level of the chain (with `on` or `off`), `--team` with `on`, a profile the config does not have. |
+| `cc-smart-dev-kit gateway projects [--folder <dir>]` | Every project the portal's Projects page lists — the same list — with its own state and the file it comes from. |
+| `cc-smart-dev-kit gateway profile <name> slot <slot> <targets>\|off\|clear` | A profile's own chain for a slot, checked against the live model list exactly as `gateway slot` checks the machine's; `off` (`claude`) is plain Claude there, `clear` forgets it so the machine's chain applies again. The first chain makes the profile. |
+| `cc-smart-dev-kit gateway profile <name> fallback <slot> on\|off` | The profile's fallback switch: may its next target answer when the one before it fails or rests? |
+| `cc-smart-dev-kit gateway profile <name> remove` | Deletes the profile. A project whose URL still names it answers as plain Claude. |
 | `cc-smart-dev-kit gateway serve` | Runs the router in the terminal. |
+
+**A project's own state.** `gateway on` is every session's default; `gateway project` gives one
+project its own answer. The value is the project's `ANTHROPIC_BASE_URL`, in its **personal**
+file — `.claude/settings.local.json` at the main checkout's root, which Claude Code reads for
+the checkout, every subfolder and every worktree — with a managed `.git/info/exclude` line so it
+is never committed, and `restore` takes back both. `--team` writes the project's
+`.claude/settings.json` instead, for `off` and `default` only: a team file never points
+teammates at one person's local router, and a session started in a subfolder does not read it.
+A changed value reaches a session already running in the project within about a second; a
+removed key does not, so `default` keeps the old value until that session restarts. The
+refusals are one line each, with the fix — another gateway's URL in the file is never
+overwritten, a personal file git already tracks is refused for `on` (a router address there
+would be committed with it), and `on` or `off` stops while `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper` is set anywhere in the project's chain, because the
+gateway sends your own Claude login. `gateway projects` shows every project with its state. A project that needs other models
+gets a **profile** (`gateway profile <name> slot …` — the first chain makes it) and points at
+it: `gateway project on --profile <name>`.
+[docs/gateway.md](docs/gateway.md) § Per project.
 
 **The request history.** The router logs one row per routed request — the time, the Claude
 Code session id, the model, slot, profile, target and status, the latency, the tokens the
