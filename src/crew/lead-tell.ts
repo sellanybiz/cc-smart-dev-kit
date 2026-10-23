@@ -47,14 +47,11 @@ function findLead(
   const [only] = matches;
   if (only !== undefined && matches.length === 1) return { record: only };
   if (only === undefined) {
-    const here =
-      records.length === 0
-        ? "no lead is recorded in this repository yet"
-        : `the leads here are ${records.map((one) => one.name).join(", ")}`;
+    // The sender is a lead already, so the store names at least it: the fix is the receiver ref.
     return {
       lines: [
         `crew lead tell: no lead of this repository is "${ref}"`,
-        `Fix: ${COMMAND} crew lead records this session as a lead; ${here}`,
+        `Fix: name one of the leads here: ${records.map((one) => one.name).join(", ")}`,
       ],
     };
   }

@@ -433,14 +433,21 @@ const eventFields = z.object({
   at: text,
   /** What happened (`CREW_EVENT_TYPES`). */
   type: word<CrewEventType>(),
-  /** The crew session it is about: its id, and its name, so a line prints with no lookup. */
+  /**
+   * The session the event is about, or that wrote it: a crew session's id — for a `lead-tell`
+   * or a `merge`, the session that wrote the line (`CREW_EVENT_TYPES` says which).
+   */
   crew: z.string().regex(FILE_ID, "a plain file name"),
+  /** The name its line prints: a crew session's, a sending lead's, or the merging session's. */
   name: text,
   /** The lead's session id, so a lead reads only its own crew sessions' lines; null when none. */
   lead: text.nullable(),
   /** The crew session's state after it. */
   state: word<CrewState>(),
-  /** One short line: the step, the report's status, why it failed; null when there is none. */
+  /**
+   * One short line: the step, the report's status, why it failed. A `clash` or `merge` carries
+   * its whole line, and a `lead-tell` the note's first line without the tag; null when none.
+   */
   text: z.string().nullable(),
   /** The commit the step or the report happened at, when the crew session named one. */
   sha: sha.nullable().optional(),
@@ -448,7 +455,7 @@ const eventFields = z.object({
   note: z.string().nullable().optional(),
   /** The memory the crew session's process held, in MB, when the event happened. */
   memoryMb: z.number().min(0).nullable().optional(),
-  /** A `tell` event only: the kind of the note and the names of the crew sessions told. */
+  /** A `tell` or `lead-tell` event: the kind of the note and the names told (crew sessions, or leads). */
   tell: z
     .looseObject({ kind: text, to: z.array(text) })
     .nullable()

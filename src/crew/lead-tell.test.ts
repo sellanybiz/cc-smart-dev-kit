@@ -143,7 +143,7 @@ describe("crew lead tell", () => {
     expect(world.out).toEqual([]);
     expect(world.err).toEqual([
       'crew lead tell: no lead of this repository is "LEAD my-app ghost"',
-      "Fix: cc-smart-dev-kit crew lead records this session as a lead; the leads here are LEAD my-app master-plan, LEAD my-app other-plan",
+      "Fix: name one of the leads here: LEAD my-app master-plan, LEAD my-app other-plan",
     ]);
     expect(notes(world)).toEqual([]);
   });
@@ -276,7 +276,7 @@ describe("crew lead tell", () => {
     );
     expect(world.err).toEqual([
       `crew lead tell: no lead of this repository is "${PEER_NAME}"`,
-      `Fix: cc-smart-dev-kit crew lead records this session as a lead; the leads here are ${SELF_NAME}`,
+      `Fix: name one of the leads here: ${SELF_NAME}`,
     ]);
   });
 });

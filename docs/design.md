@@ -2972,9 +2972,11 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
    **A file clash is said, and never blocks** (D55): once the record exists, the phase's `--files`
    are compared with those of every running or queued crew session of **another lead** in this
-   repository (`fileClashSessions`). The tracked files (`git ls-files`) decide, and for a pattern
-   that names no tracked file yet, two fixed prefixes that hold each other count as shared — a
-   guess the person can ignore. Each clash is one line after the `started`/`queued` line, naming
+   repository (`fileClashSessions`). The tracked files (`git ls-files`) decide; for a pattern
+   that names no tracked file yet, a glob is asked whether it would name the other side's path,
+   a path the other side names as a folder takes the glob's own fixed prefix, and two globs or
+   two paths count as shared when one fixed prefix holds the other — a guess the person can
+   ignore. Each clash is one line after the `started`/`queued` line, naming
    the other lead, its crew session and the files they share, and one `clash` event on that crew
    session, so the other lead's watch says the same line. Two leads may mean to share a file, so
    nothing is refused, delayed or queued.

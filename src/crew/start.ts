@@ -77,7 +77,7 @@ import {
   refusedUntrusted,
 } from "./claude";
 import type { CrewContext, Env } from "./context";
-import { matchesFilePattern } from "./diff";
+import { filePattern, matchesFilePattern } from "./diff";
 import { lastLine, modelText } from "./display";
 import { CREW_REF, crewName } from "./names";
 import {
@@ -790,43 +790,84 @@ function fixedPrefix(pattern: string): string {
   return wildcard === -1 ? pattern : pattern.slice(0, wildcard);
 }
 
-/** True when one fixed prefix holds the other: the patterns are meant to name the same place. */
+/** True when the pattern has a wildcard: a glob, not a path. */
+function isGlobPattern(pattern: string): boolean {
+  return /[*?[\]{}]/.test(pattern);
+}
+
+/**
+ * True when one fixed prefix holds the other: two patterns under one folder may name the same
+ * file that does not exist yet. Two patterns that start with a wildcard name no fixed place at
+ * all, so neither is ever under the other.
+ */
 function prefixesMeet(one: string, two: string): boolean {
+  if (one === "" || two === "") return false;
   return one === two || one.startsWith(two) || two.startsWith(one);
+}
+
+/** One `--files` pattern expanded: its path and glob, and the tracked files it names. */
+interface Expanded {
+  glob: Bun.Glob;
+  matches: string[];
+  pattern: string;
+}
+
+/** True when the glob's fixed prefix lies inside the folder the literal pattern names. */
+function prefixInFolder(folder: string, prefix: string): boolean {
+  if (prefix === "") return false;
+  const under = folder.endsWith("/") ? folder : `${folder}/`;
+  return prefix === folder || prefix.startsWith(under);
+}
+
+/**
+ * Two patterns that name no shared tracked file: may they name the same file that does not exist
+ * yet? A glob against a path is exact — the glob says whether it would name that path, and a bare
+ * folder names everything under it — and two globs or two paths are judged by their fixed
+ * prefixes, which is only a guess.
+ */
+function patternsMeet(one: Expanded, two: Expanded): boolean {
+  const oneGlob = isGlobPattern(one.pattern);
+  const twoGlob = isGlobPattern(two.pattern);
+  if (oneGlob && !twoGlob) {
+    return one.glob.match(two.pattern) || prefixInFolder(two.pattern, fixedPrefix(one.pattern));
+  }
+  if (!oneGlob && twoGlob) {
+    return two.glob.match(one.pattern) || prefixInFolder(one.pattern, fixedPrefix(two.pattern));
+  }
+  return prefixesMeet(fixedPrefix(one.pattern), fixedPrefix(two.pattern));
 }
 
 /**
  * What two `--files` lists share, or null when they share nothing: the tracked files both
- * name — and, for a pattern that names no tracked file yet, two fixed prefixes that hold each
- * other, because two patterns under one folder are meant to reach the same new files. It is
- * only a warning: two leads may mean to share a file.
+ * name — and, for a pattern that names no tracked file yet, a glob asked about the other side's
+ * path, or two fixed prefixes that hold each other, because two patterns under one folder are
+ * meant to reach the same new files. It is only a warning: two leads may mean to share a file.
  */
 export function filesOverlap(
   ours: readonly string[],
   theirs: readonly string[],
   tracked: readonly string[],
 ): FileOverlap | null {
-  const expand = (patterns: readonly string[]): string[][] =>
+  const expand = (patterns: readonly string[]): Expanded[] =>
     patterns.map((pattern) => {
-      const glob = new Bun.Glob(pattern);
-      return tracked.filter((path) => matchesFilePattern(path, pattern, glob));
+      const one = filePattern(pattern);
+      return {
+        ...one,
+        matches: tracked.filter((path) => matchesFilePattern(path, one.pattern, one.glob)),
+      };
     });
   const mine = expand(ours);
   const other = expand(theirs);
-  const mineFiles = new Set(mine.flat());
-  const shared = [...new Set(other.flat())].filter((path) => mineFiles.has(path)).sort();
+  const mineFiles = new Set(mine.flatMap((one) => one.matches));
+  const shared = [...new Set(other.flatMap((one) => one.matches))]
+    .filter((path) => mineFiles.has(path))
+    .sort();
   if (shared.length > 0) return { files: shared, patterns: null };
-  for (let a = 0; a < ours.length; a += 1) {
-    // Two patterns that both name tracked files are judged by those files alone; the prefix
-    // rule stands in the moment either names nothing yet.
-    const named = (mine[a]?.length ?? 0) > 0;
-    for (let b = 0; b < theirs.length; b += 1) {
-      if (named && (other[b]?.length ?? 0) > 0) continue;
-      const one = ours[a] as string;
-      const two = theirs[b] as string;
-      if (prefixesMeet(fixedPrefix(one), fixedPrefix(two))) {
-        return { files: [], patterns: [one, two] };
-      }
+  for (const one of mine) {
+    for (const two of other) {
+      // Two patterns that both name tracked files are judged by those files alone.
+      if (one.matches.length > 0 && two.matches.length > 0) continue;
+      if (patternsMeet(one, two)) return { files: [], patterns: [one.pattern, two.pattern] };
     }
   }
   return null;
@@ -842,7 +883,7 @@ function trackedFiles(repo: string, env: Env): string[] {
 function clashLine(other: CrewRecord, shared: FileOverlap): string {
   const what =
     shared.files.length === 0
-      ? `${shared.patterns?.[0] ?? ""} and ${shared.patterns?.[1] ?? ""} (no file matches them yet)`
+      ? `${shared.patterns?.[0] ?? ""} and ${shared.patterns?.[1] ?? ""} (no file matches both yet)`
       : shared.files.length <= CLASH_FILES_SHOWN
         ? shared.files.join(", ")
         : `${shared.files.slice(0, CLASH_FILES_SHOWN).join(", ")} and ${shared.files.length - CLASH_FILES_SHOWN} more`;
@@ -861,11 +902,13 @@ export function fileClashSessions(
   records: readonly CrewRecord[],
 ): Array<{ other: CrewRecord; shared: FileOverlap }> {
   if (files.length === 0) return [];
-  const tracked = trackedFiles(repo, env);
+  // git is asked only once some other lead's crew session is holding files at all.
+  let tracked: string[] | null = null;
   const clashes: Array<{ other: CrewRecord; shared: FileOverlap }> = [];
   for (const other of records) {
     if (other.repo !== repo || other.leadSessionId === leadSessionId) continue;
     if (!CLASH_STATES.includes(other.state) || other.files.length === 0) continue;
+    tracked ??= trackedFiles(repo, env);
     const shared = filesOverlap(files, other.files, tracked);
     if (shared !== null) clashes.push({ other, shared });
   }

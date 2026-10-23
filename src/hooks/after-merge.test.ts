@@ -389,7 +389,7 @@ describe("the hook", () => {
       stdout: JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
-          additionalContext: `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main")}`,
+          additionalContext: `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main", {}, [])}`,
         },
       }),
     });
@@ -482,14 +482,18 @@ describe("the hook", () => {
     expect(tellSessionsNote(pr, "main")).toBe(
       [
         "That merged #7 into main.",
-        "Tell the other leads of this repo and the person's own sessions, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
+        "Tell the other leads of this repo and the person's own sessions, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session, not a subagent, and not a crew session (a session named `C …`), with exactly this text:",
         "\"main now has #7 (Fix 'login'). At your next stop, once your current work is committed: git fetch origin main, then git merge origin/main, and fix any conflict. Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. No reply needed.\"",
-        "No other lead is recorded in this repo: every other session there is one of the person's own. Never send it to a crew session (a session named `C …`): a crew session follows its own lead's branch, and merging main into it would be wrong.",
+        "The other leads here are the sessions named `LEAD …` in that list. Never send it to a crew session: it follows its own lead's branch, and merging main into it would be wrong.",
         "Merged several pull requests this turn? Send each session one message, naming every merged number.",
       ].join("\n"),
     );
+    // The store was read and holds no other lead: the note says so. A lead it read: named.
+    expect(tellSessionsNote(pr, "main", {}, [])).toContain(
+      "No other lead is recorded in this repo. Never send it to a crew session: it follows its own lead's branch, and merging main into it would be wrong.",
+    );
     expect(tellSessionsNote(pr, "main", {}, ["LEAD my-app alpha", "LEAD my-app beta"])).toContain(
-      "The other leads here: LEAD my-app alpha, LEAD my-app beta. Every other session in this repo is one of the person's own.",
+      "The other leads here: LEAD my-app alpha, LEAD my-app beta.",
     );
     expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
       [
@@ -590,7 +594,7 @@ describe("the hook", () => {
       env,
     );
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toBe(
-      `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main")}`,
+      `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main", {}, [])}`,
     );
     expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe(
       "pr view --repo example-org/app --json number,title,baseRefName,headRefName,state,url,mergedAt\n",
@@ -701,9 +705,14 @@ describe("the hook", () => {
     expect(note).toContain("The other leads here: LEAD my-app docs-plan.");
     // The lead that merged did it itself: it is not told to message itself.
     expect(note).not.toContain("LEAD my-app master-plan");
+    // The filter itself excludes crew sessions, so following it cannot wake one.
     expect(note).toContain(
-      "Never send it to a crew session (a session named `C …`): a crew session follows its own lead's branch, and merging main into it would be wrong.",
+      "not a subagent, and not a crew session (a session named `C …`), with exactly this text:",
     );
+    expect(note).toContain(
+      "Never send it to a crew session: it follows its own lead's branch, and merging main into it would be wrong.",
+    );
+    expect(note).not.toContain("Every other session");
     expect(note).not.toContain("Tell the other sessions");
   });
 

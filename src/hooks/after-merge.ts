@@ -1514,7 +1514,7 @@ export function tellSessionsNote(
   pr: PullRequestView,
   base: string,
   bases: Record<string, string> = {},
-  otherLeads: readonly string[] = [],
+  otherLeads: readonly string[] | null = null,
 ): string {
   const caution = otherBaseCaution(bases, base);
   const message =
@@ -1523,16 +1523,19 @@ export function tellSessionsNote(
     `Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. ` +
     `${caution === null ? "" : `${caution} `}No reply needed.`;
   // D55: the other leads of this repo hear it too, and a crew session never does: it works on
-  // its own lead's branch, cut from that lead's work, and the base has no place in it.
+  // its own lead's branch, cut from that lead's work, and the base has no place in it. `null`:
+  // the store was not read, so nothing is claimed about which leads there are.
   const leads =
-    otherLeads.length === 0
-      ? "No other lead is recorded in this repo: every other session there is one of the person's own."
-      : `The other leads here: ${otherLeads.join(", ")}. Every other session in this repo is one of the person's own.`;
+    otherLeads === null
+      ? "The other leads here are the sessions named `LEAD …` in that list."
+      : otherLeads.length === 0
+        ? "No other lead is recorded in this repo."
+        : `The other leads here: ${otherLeads.join(", ")}.`;
   return [
     `That merged #${pr.number} into ${base}.`,
-    "Tell the other leads of this repo and the person's own sessions, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
+    "Tell the other leads of this repo and the person's own sessions, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session, not a subagent, and not a crew session (a session named `C …`), with exactly this text:",
     `"${message}"`,
-    `${leads} Never send it to a crew session (a session named \`C …\`): a crew session follows its own lead's branch, and merging ${base} into it would be wrong.`,
+    `${leads} Never send it to a crew session: it follows its own lead's branch, and merging ${base} into it would be wrong.`,
     "Merged several pull requests this turn? Send each session one message, naming every merged number.",
   ].join("\n");
 }
@@ -1546,9 +1549,11 @@ export function mergedLine(pr: PullRequestView, base: string, who: string): stri
 function leadsOf(
   stateDir: string,
   repo: string,
-  sessionId: string,
+  sessionId: string | null,
 ): { merger: LeadRecord | null; others: LeadRecord[] } {
   const leads = listLeads(stateDir, repo).records;
+  // No session id: which lead merged is unknown, so every lead is another one to tell.
+  if (sessionId === null) return { merger: null, others: leads };
   return {
     merger: leads.find((one) => one.sessionId === sessionId) ?? null,
     others: leads.filter((one) => one.sessionId !== sessionId),
@@ -1559,7 +1564,8 @@ function leadsOf(
  * Records one `merge` event per other lead (D55), so that lead's own watch says the line
  * without waiting for the message the merging session sends. `found` is the store's leads as
  * the caller read them, so the store is read once. News, never a guard: an event that cannot be
- * written costs nothing — the note still says to send the message.
+ * written costs nothing — the note still says to send the message — and the events stop when
+ * the hook's own time is spent, so the note it answers with is never lost to them.
  */
 async function recordMerged(
   context: HookContext,
@@ -1568,10 +1574,12 @@ async function recordMerged(
   base: string,
   sessionId: string,
   found: { merger: LeadRecord | null; others: LeadRecord[] },
+  timeFor: (limitMs: number) => number,
 ): Promise<void> {
   const who = found.merger?.name ?? "a session";
   const line = mergedLine(pr, base, who);
   for (const one of found.others) {
+    if (timeFor(1) <= 0) return;
     try {
       await appendCrewEvent(
         context.paths.stateDir,
@@ -1690,30 +1698,29 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
   if (outcome.announce !== null && record !== null) {
     const pr = outcome.announce;
     // The other leads of this repo (D55): the note names them, and each one's watch also gets
-    // the merge from the store, so the line arrives without waiting for a message.
+    // the merge from the store, so the line arrives without waiting for a message. A store that
+    // cannot be read leaves the note without lead names — never claiming there are none.
     const mergedBy = isSessionId(input.session_id) ? input.session_id : null;
-    let found: { merger: LeadRecord | null; others: LeadRecord[] } = {
-      merger: null,
-      others: [],
-    };
-    if (mergedBy !== null) {
-      try {
-        found = leadsOf(context.paths.stateDir, repo, mergedBy);
-      } catch {
-        // A store that cannot be read leaves the note without lead names.
-      }
+    let found: { merger: LeadRecord | null; others: LeadRecord[] } | null = null;
+    try {
+      found = leadsOf(context.paths.stateDir, repo, mergedBy);
+    } catch {
+      // A store that cannot be read leaves the note without lead names.
     }
     notes.push(
       tellSessionsNote(
         pr,
         base,
         project.config?.worktrees?.bases ?? {},
-        found.others.map((one) => one.name),
+        found?.others.map((one) => one.name) ?? null,
       ),
     );
-    if (mergedBy !== null) await recordMerged(context, repo, pr, base, mergedBy, found);
+    // The marker first: a merge event written twice is worse than a note the next merge
+    // command says again, and a marker that cannot be written leaves no event behind.
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, "");
+    if (mergedBy !== null && found !== null)
+      await recordMerged(context, repo, pr, base, mergedBy, found, timeFor);
   }
   // A merge into the base (announced once per pull request): finished worktrees clean
   // themselves, in a detached process (D48, `src/worktrees/auto-start.ts`).

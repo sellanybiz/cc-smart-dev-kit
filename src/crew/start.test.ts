@@ -1103,10 +1103,11 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
       0,
     );
     expect(world.out[1]).toBe(
-      "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: src/crew/new.ts and src/crew/** (no file matches them yet) — not blocked; two leads may mean to share a file",
+      "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: src/crew/new.ts and src/crew/** (no file matches both yet) — not blocked; two leads may mean to share a file",
     );
-    // The rule on its own: the tracked files decide when they can, the fixed prefixes when
-    // nothing exists yet, and different folders never clash.
+    // The rule on its own: the tracked files decide when they can; a glob against a path that
+    // does not exist yet is exact (the glob says whether it names it); two globs or two paths
+    // are judged by their fixed prefixes; different folders never clash.
     expect(filesOverlap(["src/crew/**"], ["src/crew/new.ts"], ["README.md"])).toEqual({
       files: [],
       patterns: ["src/crew/**", "src/crew/new.ts"],
@@ -1116,11 +1117,31 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
       patterns: ["src/crew/new.ts", "src/crew/*.ts"],
     });
     expect(filesOverlap(["src/crew/*.ts"], ["src/other/new.ts"], [])).toBeNull();
-    // The tracked file `src/crew/start.ts` matches the glob, so the glob matched a file: the
-    // prefix rule still finds the file that does not exist yet under it.
+    // `*` does not cross `/`, so `src/crew/*.ts` can never name the file in `deep/`: the glob
+    // is asked, and it says no.
     expect(
       filesOverlap(["src/crew/*.ts"], ["src/crew/deep/new.ts"], ["src/crew/start.ts"]),
-    ).toEqual({ files: [], patterns: ["src/crew/*.ts", "src/crew/deep/new.ts"] });
+    ).toBeNull();
+    // A pattern that starts with a wildcard names no fixed place: `*.md` is never under a
+    // folder, while `**/*.ts` may reach anywhere.
+    expect(filesOverlap(["*.md"], ["src/brand-new.ts"], ["README.md"])).toBeNull();
+    expect(filesOverlap(["*.md"], ["*.ts"], ["README.md"])).toBeNull();
+    expect(filesOverlap(["**/*.ts"], ["src/brand-new.ts"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["**/*.ts", "src/brand-new.ts"],
+    });
+    // A `./` prefix is the same path as git spells it.
+    expect(filesOverlap(["./README.md"], ["README.md"], ["README.md"])).toEqual({
+      files: ["README.md"],
+      patterns: null,
+    });
+    // A bare folder names everything under it, so a glob whose own fixed prefix is inside that
+    // folder can only name files the folder holds.
+    expect(filesOverlap(["src/crew/*.ts"], ["src/crew"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["src/crew/*.ts", "src/crew"],
+    });
+    expect(filesOverlap(["src/crew/*.ts"], ["src/crew/deep"], ["README.md"])).toBeNull();
     // Two globs that both match real files are decided by the files they match.
     expect(
       filesOverlap(["src/crew/*.ts"], ["src/crew/**"], ["src/crew/start.ts", "src/crew/diff.ts"]),
