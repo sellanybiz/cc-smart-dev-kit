@@ -163,7 +163,7 @@ describe("the live stream's sources", () => {
     expect(Object.keys(after.breakers)).toEqual(["cc-smart-dev-kit-worker"]);
   });
 
-  test("the guard log: each new ask once, and a cut-back log starts again", async () => {
+  test("the guard log: the first poll is a baseline, then each new ask once, and a cut-back log starts again", async () => {
     const world1 = world({ routerUp: false });
     mkdirSync(join(world1.paths.stateDir), { recursive: true });
     const ask = (at: number) => ({
@@ -175,17 +175,19 @@ describe("the live stream's sources", () => {
     });
     writeFileSync(askLogFile(world1.paths.stateDir), `${JSON.stringify(ask(1))}\n`);
     await world1.sources.pollOnce();
-    expect(world1.of("guard-ask")).toEqual([ask(1)]);
+    // The asks before the portal started are history, not news: the first poll only records
+    // the log's place.
+    expect(world1.of("guard-ask")).toEqual([]);
     writeFileSync(
       askLogFile(world1.paths.stateDir),
       `${JSON.stringify(ask(1))}\n${JSON.stringify(ask(2))}\n`,
     );
     await world1.sources.pollOnce();
-    expect(world1.of("guard-ask")).toEqual([ask(1), ask(2)]);
+    expect(world1.of("guard-ask")).toEqual([ask(2)]);
     // The frame keeps the newer half after the size limit: a smaller file is read from its start.
     writeFileSync(askLogFile(world1.paths.stateDir), `${JSON.stringify(ask(3))}\n`);
     await world1.sources.pollOnce();
-    expect(world1.of("guard-ask")).toEqual([ask(1), ask(2), ask(3)]);
+    expect(world1.of("guard-ask")).toEqual([ask(2), ask(3)]);
   });
 
   test("the heavy-job queue: a lease that appears, then goes, is one event each time", async () => {
@@ -220,12 +222,12 @@ describe("the live stream's sources", () => {
     expect(world1.of("jobs")).toHaveLength(before + 3);
   });
 
-  test("the crew log: a created event, then only the step added after it", async () => {
+  test("the crew log: the first poll is a baseline, then only the step added after it", async () => {
     const world1 = world({ routerUp: false });
     await createCrew(world1.paths.stateDir, queued(), Date.now());
     await world1.sources.pollOnce();
-    const first = world1.of("crew") as { type: string }[];
-    expect(first.map((one) => one.type)).toEqual(["created"]);
+    // The whole history before the portal started is not sent as live events.
+    expect(world1.of("crew")).toEqual([]);
     await appendCrewEvent(
       world1.paths.stateDir,
       REPO,
@@ -241,8 +243,8 @@ describe("the live stream's sources", () => {
     );
     await world1.sources.pollOnce();
     const all = world1.of("crew") as { text: null | string; type: string }[];
-    expect(all.map((one) => one.type)).toEqual(["created", "step"]);
-    expect(all[1]?.text).toBe("step 1");
+    expect(all.map((one) => one.type)).toEqual(["step"]);
+    expect(all[0]?.text).toBe("step 1");
     expect(crewStoreDir(world1.paths.stateDir, REPO)).toContain("crew");
   });
 

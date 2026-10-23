@@ -3925,7 +3925,7 @@ describe("the JSON API", () => {
       );
       const work = JSON.parse((await world.call("/api/work")).body) as {
         crew: { id: string; question: { options: string[]; recommended: number } | null }[];
-        lead: null;
+        leads: unknown[];
         sessions: unknown[];
       };
       expect(work.crew).toHaveLength(1);
@@ -5208,15 +5208,16 @@ describe("the new actions (D52)", () => {
     }
   });
 
-  test("a crew command runs the CLI's own code: an unknown crew session is its refusal", async () => {
+  test("an unknown crew session is refused before the CLI runs", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port, projectFiles: {} });
     try {
       const csrf = await world.csrfOf();
-      const stopped = await world.post("crew.stop", { crew: "nobody" }, csrf);
+      const stopped = await world.post("crew.stop", { confirm: true, crew: "nobody" }, csrf);
       expect(stopped.status).toBe(400);
+      // The record is found on the machine (`listAllCrew`), not in the portal's own folder.
       expect(JSON.parse(stopped.body).lines.join(" ")).toContain(
-        'no crew session of this repository is "nobody"',
+        'No crew session on this machine has the id "nobody"',
       );
     } finally {
       world.portal.stop();

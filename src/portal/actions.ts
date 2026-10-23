@@ -6,7 +6,11 @@
  *     OmniRoute update go through `runGateway` / `runOmniroute` — the same functions, the
  *     same checks, the same lock, and the same lines, with `print` collecting them;
  *   - `update`, `doctor`, the heavy-job queue and the companions call the modules the CLI
- *     calls, not a copy of them.
+ *     calls, not a copy of them;
+ *   - `crew stop|resume|rm` and `worktrees --clean` run the CLI's own command in a child
+ *     process (`cli-child.ts`): the functions behind them spawn git and `claude` synchronously
+ *     (`Bun.spawnSync`), and running those in the server froze every page and the live stream.
+ *     The child is the same command the terminal runs, in the crew record's own repository.
  *
  * So a page can never do something the command line would refuse. The one thing the portal
  * adds is the person's own yes: a terminal question cannot be asked from a browser, so the
@@ -33,9 +37,8 @@ import { runUpdate } from "../cli/update";
 import { runCrewAnswer } from "../crew/answer";
 import { realRunProgram } from "../crew/claude";
 import type { CrewContext } from "../crew/context";
-import { runCrewResume, runCrewStop } from "../crew/end";
-import { runCrewRm } from "../crew/remove";
 import { realProcessFacts } from "../crew/session";
+import { type CrewRecord, listAllCrew } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
 import { chainProblem, type GatewayContext, runGateway } from "../gateway/commands";
 import {
@@ -66,7 +69,6 @@ import {
   readLastCheck,
   updateFiles,
 } from "../update/state";
-import { runWorktrees } from "../worktrees/command";
 import {
   addProjectRoot,
   forgetProjectsList,
@@ -74,6 +76,7 @@ import {
   projectRootById,
 } from "./api/projects";
 import type { LivePublish } from "./api/types";
+import { runCliChild } from "./cli-child";
 import type { PortalContext } from "./context";
 import {
   type ProjectDefaultsReader,
@@ -1270,26 +1273,69 @@ function crewRef(body: Record<string, unknown>): string {
 }
 
 /**
- * `worktrees.clean`: the command line's own `worktrees --clean`, in the main checkout, with
- * its lines collected. The page asks first (`confirm`): every finished worktree goes, and a
- * worktree that is not finished is kept with its reason.
+ * The crew record a page names, from **the machine's** store: the portal usually runs from the
+ * home folder, which is no git project, so a crew action resolves its record here and acts in
+ * the record's own repository (D52). The page sends the id it read (`CrewSummary.id`, the
+ * `CrewActions` body), and an id is unique on the machine.
+ */
+function crewById(action: ActionContext, ref: string): { record: CrewRecord } | { why: string } {
+  let records: CrewRecord[];
+  try {
+    records = listAllCrew(action.portal.paths.stateDir).records;
+  } catch (error) {
+    return { why: `the crew store could not be read: ${messageOf(error)}` };
+  }
+  const record = records.find((one) => one.id === ref);
+  return record === undefined
+    ? { why: `No crew session on this machine has the id "${ref}": the Work page lists them.` }
+    : { record };
+}
+
+/** The refusal of an action that ends or removes something, without the page's own yes. */
+function notConfirmed(what: string): ActionResult {
+  return {
+    lines: [`Nothing was ${what}: the page's confirmation did not come with the request.`],
+    ok: false,
+  };
+}
+
+/**
+ * One crew command that changes a session — `crew stop|resume|rm <id>` — run by the CLI itself
+ * in a child (`cli-child.ts`), in the record's own repository. A synchronous crew call inside
+ * the server froze every page and the live stream for up to 30 s per call (`Bun.spawnSync` in
+ * `realRunProgram` and `runGit`); the child keeps the server free, and it is the same command,
+ * with the same checks and words, that the terminal runs.
+ */
+async function crewCliAction(
+  action: ActionContext,
+  name: string,
+  command: "resume" | "rm" | "stop",
+  record: CrewRecord,
+): Promise<ActionResult> {
+  const run = await runCliChild(action.portal, ["crew", command, record.id], {
+    cwd: record.repo,
+    onLine: (line) => action.publish?.("action", { action: name, line }),
+  });
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut) lines.push(`crew ${command} did not answer in time`);
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
+/**
+ * `worktrees.clean`: the command line's own `worktrees --clean`, in a child in the portal's
+ * own folder, with its lines collected. The page asks first (`confirm`): every finished
+ * worktree goes, and a worktree that is not finished is kept with its reason.
  */
 async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
-  const sinks = collector((line) =>
-    action.publish?.("action", { action: "worktrees.clean", line }),
-  );
-  try {
-    const code = await runWorktrees(
-      action.portal.paths,
-      { clean: true, noFetch: false, remove: null },
-      action.portal.env,
-      action.cwd,
-      sinks,
-    );
-    return { lines: sinks.lines, ok: code === 0 };
-  } catch (error) {
-    return { lines: [messageOf(error)], ok: false };
-  }
+  const run = await runCliChild(action.portal, ["worktrees", "--clean"], {
+    cwd: action.cwd,
+    onLine: (line) => action.publish?.("action", { action: "worktrees.clean", line }),
+  });
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut) lines.push("worktrees --clean did not answer in time");
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
 }
 
 // ── The door ────────────────────────────────────────────────────────────────────
@@ -1412,33 +1458,40 @@ export async function runAction(
           ok: false,
         };
       }
-      return crewAction(action, "crew.answer", (ctx) =>
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      // The CLI's own function, run in the record's repository: the portal's own folder is
+      // usually the home folder, where this repository has no crew store.
+      return crewAction({ ...action, cwd: found.record.repo }, "crew.answer", (ctx) =>
         runCrewAnswer({ asPerson: true, crew, text: answer }, ctx),
       );
     }
     case "crew.stop": {
       const crew = crewRef(body);
       if (crew === "") return { lines: ["Pick the crew session to stop."], ok: false };
-      return crewAction(action, "crew.stop", (ctx) => runCrewStop(crew, ctx));
+      if (body.confirm !== true) return notConfirmed("stopped");
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      return crewCliAction(action, "crew.stop", "stop", found.record);
     }
     case "crew.resume": {
       const crew = crewRef(body);
       if (crew === "") return { lines: ["Pick the crew session to resume."], ok: false };
-      return crewAction(action, "crew.resume", (ctx) => runCrewResume(crew, ctx));
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      return crewCliAction(action, "crew.resume", "resume", found.record);
     }
     case "crew.rm": {
       const crew = crewRef(body);
       if (crew === "") return { lines: ["Pick the crew session to remove."], ok: false };
-      return crewAction(action, "crew.rm", (ctx) => runCrewRm(crew, ctx));
+      if (body.confirm !== true) return notConfirmed("removed");
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      return crewCliAction(action, "crew.rm", "rm", found.record);
     }
     case "worktrees.clean":
       // The page asks first (`data-confirm`): this removes folders that hold no work.
-      if (body.confirm !== true) {
-        return {
-          lines: ["Nothing was removed: the page's confirmation did not come with the request."],
-          ok: false,
-        };
-      }
+      if (body.confirm !== true) return notConfirmed("removed");
       return cleanWorktrees(action);
     default:
       return { lines: [`"${name}" is not an action.`], ok: false };

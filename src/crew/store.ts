@@ -657,6 +657,25 @@ export function listAllCrew(stateDir: string): Listed<CrewRecord> {
 }
 
 /**
+ * Every lead on this machine, of every repository, oldest first: the Work page reads this, so
+ * it shows every lead whose crew the machine's store holds, whatever folder the portal runs in.
+ */
+export function listAllLeads(stateDir: string): Listed<LeadRecord> {
+  const root = crewRootDir(stateDir);
+  const all: Listed<LeadRecord> = { broken: [], records: [] };
+  if (!existsSync(root)) return all;
+  for (const key of readdirSync(root).sort()) {
+    const one = listRecords(leadRecordSchema, join(root, key, "leads"));
+    all.broken.push(...one.broken);
+    all.records.push(...one.records);
+  }
+  all.records.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.sessionId.localeCompare(b.sessionId),
+  );
+  return all;
+}
+
+/**
  * Records a new crew session, and its `created` event. Refuses an id already recorded for the
  * repository (the first record stays), and a record the schema refuses (nothing is written).
  */

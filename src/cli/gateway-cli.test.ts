@@ -2790,6 +2790,11 @@ describe("secrets", () => {
     record(await m.run(["gateway", "fallback", "judge", "off"]));
     record(await m.run(["gateway", "slot", "judge", "claude-sonnet-5-5"]));
     record(await m.run(["gateway", "slot", "opus", "off"]));
+    // Every word a slot takes, the portal's own switches included (`slot.mode`).
+    record(await m.run(["gateway", "slot", "opus", "custom"]));
+    record(await m.run(["gateway", "slot", "judge", "claude"]));
+    record(await m.run(["gateway", "slot", "judge", "custom"]));
+    record(await m.run(["gateway", "slot", "opus", "clear"]));
     record(await m.run(["usage"]));
     record(await m.run(["gateway", "history"]));
     record(await m.run(["gateway", "slot", "worker", "omniroute:nope"]));

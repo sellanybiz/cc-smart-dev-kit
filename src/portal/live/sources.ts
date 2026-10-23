@@ -25,7 +25,7 @@
 
 import { readFileSync } from "node:fs";
 import type { CliPaths } from "../../cli/paths";
-import { listAllCrew, readCrewEvents } from "../../crew/store";
+import { eventsEndOffset, listAllCrew, readCrewEvents } from "../../crew/store";
 import { type HealthFetch, routerHealth } from "../../gateway/health";
 import { parseLimitState } from "../../gateway/limit-state";
 import { askLogFile, type GuardAsk } from "../../hooks/ask-log";
@@ -105,7 +105,8 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
   let stateText: null | string = null;
   let updateText: null | string = null;
   let jobsText: null | string = null;
-  let guardOffset = 0;
+  /** The ask log's place: null until the first poll seeds it at the log's current end. */
+  let guardOffset: null | number = null;
   const offsets = new Map<string, number>();
   let repos: { at: number; list: string[] } | null = null;
 
@@ -169,10 +170,24 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
     return list;
   }
 
+  /**
+   * The byte a repository's crew log is read from: its end the first time this poller sees the
+   * repository, so a portal start says what happens next and never publishes the whole history.
+   * `pollRouter` seeds its own baseline the same way.
+   */
+  function crewOffset(repo: string): number {
+    const known = offsets.get(repo);
+    if (known !== undefined) return known;
+    // No log yet reads as 0, which is the same as its end: the first event is news.
+    const end = eventsEndOffset(deps.paths.stateDir, repo);
+    offsets.set(repo, end);
+    return end;
+  }
+
   function pollCrew(): void {
     for (const repo of crewRepos()) {
       try {
-        const read = readCrewEvents(deps.paths.stateDir, repo, offsets.get(repo) ?? 0);
+        const read = readCrewEvents(deps.paths.stateDir, repo, crewOffset(repo));
         offsets.set(repo, read.offset);
         for (const event of read.events) deps.publish("crew", event);
       } catch {
@@ -187,6 +202,12 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
     try {
       bytes = readFileSync(file);
     } catch {
+      return;
+    }
+    // The first read only records the place: a portal start publishes the asks from now on,
+    // never the whole log.
+    if (guardOffset === null) {
+      guardOffset = bytes.length;
       return;
     }
     // A cut-back log (the frame keeps its newer half) starts again: the offset would be past

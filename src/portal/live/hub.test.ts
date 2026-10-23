@@ -5,7 +5,7 @@
  * Each security-relevant rule is one test, and each was watched failing with the rule broken.
  */
 import { describe, expect, test } from "bun:test";
-import { BUFFER_MAX, LiveHub, MAX_STREAMS } from "./hub";
+import { BUFFER_MAX, LiveHub, MAX_STREAMS, STREAM_QUEUE_MAX_BYTES } from "./hub";
 
 /** One event as a test reads it back from the stream. */
 interface ReadEvent {
@@ -203,5 +203,42 @@ describe("the live stream's hub", () => {
       await reader.cancel();
       hub.stop();
     }
+  });
+
+  test("a ping is never kept for a reconnect: only real events are", async () => {
+    // Pings every 5 ms, and enough of them that they alone would fill a small buffer.
+    const hub = new LiveHub({ now: () => 42, pingMs: 5 });
+    const first = open(hub);
+    const helloText = await readUntil(first, "event: hello");
+    const hello = eventsOf(helloText)[0];
+    if (hello === undefined) throw new Error("no hello");
+    // The stream stays open, so its timer really pings, and the pings would be kept if they
+    // were events.
+    await Bun.sleep(40);
+    hub.publish("recent", { at: 7 });
+    const again = open(hub, hello.id);
+    try {
+      const text = await readUntil(again, "event: hello");
+      // What it missed: the real event, never the pings that came with it.
+      expect(eventsOf(text).map((one) => one.event)).toEqual(["recent", "hello"]);
+      expect(text).not.toContain("event: ping");
+    } finally {
+      await again.cancel();
+      await first.cancel();
+      hub.stop();
+    }
+  });
+
+  test("a stream that stops reading is closed once its queue passes the bound", async () => {
+    // A bound small enough for a test: the queue is bytes, so three events pass it.
+    expect(STREAM_QUEUE_MAX_BYTES).toBeGreaterThan(BUFFER_MAX);
+    const hub = new LiveHub({ maxQueueBytes: 128, now: () => 42, pingMs: 60_000 });
+    const reader = open(hub);
+    expect(hub.streamsOpen).toBe(1);
+    // Nobody reads this stream: its chunks pile up until the queue is past the bound.
+    for (let index = 0; index < 6; index += 1) hub.publish("recent", { pad: "x".repeat(80) });
+    expect(hub.streamsOpen).toBe(0);
+    await reader.cancel();
+    hub.stop();
   });
 });

@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { groupTitle } from "../../cli/check";
+import type { CliPaths } from "../../cli/paths";
 import { openQuestionIndex } from "../../crew/answer";
 import { findCrew, stateSince } from "../../crew/board";
 import { diffAgainstBase, outsideBrief } from "../../crew/diff";
@@ -18,8 +19,9 @@ import {
   type CrewEvent,
   type CrewRecord,
   crewBriefFile,
-  listCrew,
-  listLeads,
+  type LeadRecord,
+  listAllCrew,
+  listAllLeads,
   readCrewEvents,
   readReport,
 } from "../../crew/store";
@@ -167,6 +169,7 @@ function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: nu
             question: open.question,
             recommended: open.recommended,
           },
+    repo: record.repo,
     shortId: record.shortId,
     slug: record.slug,
     state: record.state,
@@ -178,66 +181,117 @@ function crewSummary(record: CrewRecord, events: readonly CrewEvent[], nowMs: nu
   };
 }
 
-/** `/api/work`: the lead, its crew nested, and the other sessions of this project. */
-export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
-  const found = repoOf(deps);
-  if ("note" in found) {
-    return { crew: [], lead: null, note: found.note, repo: null, sessions: [], waitsError: null };
+/** Why a thrown thing happened, in one line. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** One repository's crew events, read once per answer: a store that cannot be read is no events. */
+function eventsByRepo(paths: CliPaths, records: readonly CrewRecord[]): Map<string, CrewEvent[]> {
+  const byRepo = new Map<string, CrewEvent[]>();
+  for (const repo of new Set(records.map((record) => record.repo))) {
+    try {
+      byRepo.set(repo, readCrewEvents(paths.stateDir, repo).events);
+    } catch {
+      // One repository's log cannot be read: its crew sessions still show, without events.
+      byRepo.set(repo, []);
+    }
   }
-  const { repo } = found;
-  const events = readCrewEvents(deps.action.portal.paths.stateDir, repo).events;
-  const records = listCrew(deps.action.portal.paths.stateDir, repo).records;
-  const crew = records.map((record) => crewSummary(record, events, deps.action.portal.now()));
-  const leads = listLeads(deps.action.portal.paths.stateDir, repo).records;
-  const newestLead = [...leads].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  const lead: LeadSummary | null =
-    newestLead === undefined
-      ? null
-      : {
-          crew: crew.filter((one) => one.leadSessionId === newestLead.sessionId),
-          createdAt: newestLead.createdAt,
-          cwd: newestLead.cwd,
-          name: newestLead.name,
-          pausedAgents: newestLead.pausedAgents ?? [],
-          plan: newestLead.plan,
-          sessionId: newestLead.sessionId,
-          tag: newestLead.tag,
-          updatedAt: newestLead.updatedAt,
-        };
-  // The crew sessions' own sessions, by their full ids: a saved session that is one of them
-  // is not "another session" on the Work page.
-  const crewIds = new Set<string>(
-    records.flatMap((record) => (record.sessionId === null ? [] : [record.sessionId])),
-  );
-  const leadIds = new Set(leads.map((one) => one.sessionId));
+  return byRepo;
+}
+
+/**
+ * `/api/work`: every lead on the machine, its crew nested, and the other sessions of the
+ * folder the portal runs in.
+ *
+ * **The crew data is the machine's** (`listAllCrew`, `listAllLeads`): the portal usually runs
+ * from the home folder, which is no git project, and reading that folder's store showed no
+ * crew session at all. A crew record names its repository, so every summary and every lead
+ * carries its own (`repo`), and a page — or an action — never has to guess which one it is.
+ */
+export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
+  const paths = deps.action.portal.paths;
   const now = deps.action.portal.now();
-  const others = savedSessions(
-    join(deps.action.portal.paths.claudeConfigDir, "projects"),
-    repo,
-    now - WORK_SESSIONS_MS,
-  ).filter((session) => !crewIds.has(session.id) && !leadIds.has(session.id));
-  // The open permission prompts, read once (the flow report's own cache), only when a session
-  // could be waiting on one.
-  const waits = others.some((session) => !session.endedCleanly)
-    ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS)
-    : { open: [] };
-  const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
-  const sessions: SessionSummary[] = others.map((session) => ({
-    branch: session.branch,
-    folder: session.folder,
-    id: session.id,
-    lastWrite: session.lastWrite,
-    model: session.model,
-    name: session.name,
-    state: sessionStateOf(session, waiting, now),
-  }));
+  let note: null | string = null;
+  let records: CrewRecord[] = [];
+  let leadRecords: LeadRecord[] = [];
+  try {
+    records = [...listAllCrew(paths.stateDir).records].sort(
+      (a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+    );
+  } catch (error) {
+    note = `the crew store could not be read: ${reasonOf(error)}`;
+  }
+  try {
+    leadRecords = [...listAllLeads(paths.stateDir).records].sort(
+      (a, b) => b.createdAt.localeCompare(a.createdAt) || b.sessionId.localeCompare(a.sessionId),
+    );
+  } catch (error) {
+    note = note ?? `the crew store could not be read: ${reasonOf(error)}`;
+  }
+  const events = eventsByRepo(paths, records);
+  const crew = records.map((record) => crewSummary(record, events.get(record.repo) ?? [], now));
+  const leads = leadRecords.map(
+    (lead): LeadSummary => ({
+      crew: crew.filter((one) => one.leadSessionId === lead.sessionId),
+      createdAt: lead.createdAt,
+      cwd: lead.cwd,
+      name: lead.name,
+      pausedAgents: lead.pausedAgents ?? [],
+      plan: lead.plan,
+      repo: lead.repo,
+      sessionId: lead.sessionId,
+      tag: lead.tag,
+      updatedAt: lead.updatedAt,
+    }),
+  );
+  // The other sessions are the project of the folder the portal runs in, when it has one: a
+  // session record is kept under its project's folder, and there is no list of every project.
+  const found = repoOf(deps);
+  let sessions: SessionSummary[] = [];
+  let waitsError: null | string = null;
+  if ("repo" in found) {
+    const { repo } = found;
+    // The crew sessions' and leads' own sessions, by their full ids: a saved session that is
+    // one of them is not "another session" on the Work page.
+    const crewSessionIds = new Set<string>(
+      records.flatMap((record) => (record.sessionId === null ? [] : [record.sessionId])),
+    );
+    const leadIds = new Set<string>(leadRecords.map((one) => one.sessionId));
+    const others = savedSessions(
+      join(paths.claudeConfigDir, "projects"),
+      repo,
+      now - WORK_SESSIONS_MS,
+    ).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
+    // The open permission prompts, read once (the flow report's own cache), only when a session
+    // could be waiting on one.
+    const waits = others.some((session) => !session.endedCleanly)
+      ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS)
+      : { open: [] };
+    const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
+    sessions = others.map((session) => ({
+      branch: session.branch,
+      folder: session.folder,
+      id: session.id,
+      lastWrite: session.lastWrite,
+      model: session.model,
+      name: session.name,
+      state: sessionStateOf(session, waiting, now),
+    }));
+    waitsError = "error" in waits ? waits.error : null;
+  } else {
+    // The crew data still shows; only the other sessions need a project.
+    note =
+      note ??
+      "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are";
+  }
   return {
     crew,
-    lead,
-    note: null,
-    repo,
+    leads,
+    note,
+    repo: "repo" in found ? found.repo : null,
     sessions,
-    waitsError: "error" in waits ? waits.error : null,
+    waitsError,
   };
 }
 
@@ -262,24 +316,28 @@ export function mergeVerdictOf(verdict: CheckVerdict): CrewAnswer["mergeCheck"] 
   }
 }
 
-/** `/api/crew/<id>`: one crew session's page, or why it cannot be named. */
+/**
+ * `/api/crew/<id>`: one crew session's page, or why it cannot be named.
+ *
+ * **The record is found on the machine** (`listAllCrew`), and everything the page shows is
+ * read from **its own repository** (`record.repo`), never from the portal's folder: the portal
+ * usually runs from the home folder, where this repository has no store at all.
+ */
 export async function crewAnswerFor(
   deps: PageDataDeps,
   ref: string,
 ): Promise<CrewAnswer | { error: string }> {
-  const found = repoOf(deps);
-  if ("note" in found) return { error: found.note };
-  const { repo } = found;
   const paths = deps.action.portal.paths;
   let records: CrewRecord[];
   try {
-    records = listCrew(paths.stateDir, repo).records;
+    records = listAllCrew(paths.stateDir).records;
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { error: reasonOf(error) };
   }
   const named = findCrew(records, ref, "status");
   if ("refusal" in named) return { error: named.refusal.lines.join(" ") };
   const record = named.record;
+  const repo = record.repo;
   const allEvents = readCrewEvents(paths.stateDir, repo).events;
   const events = allEvents
     .filter((event) => event.crew === record.id)
@@ -396,7 +454,8 @@ async function mergeCheckOf(
   base: null | string,
 ): Promise<CrewAnswer["mergeCheck"]> {
   try {
-    const checkout = await locateCheckoutAsync(deps.action.cwd, {
+    // The checkout of the record's own repository, never the portal's folder.
+    const checkout = await locateCheckoutAsync(repo, {
       env: deps.action.portal.env,
     });
     if (checkout === null) {
@@ -453,16 +512,14 @@ export function permissionWaitOf(wait: OpenWait, records: readonly CrewRecord[])
 export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
   const paths = deps.action.portal.paths;
   const now = deps.action.portal.now();
-  const found = repoOf(deps);
-  // Every crew session of this repository, read once: the questions, and the session of each
-  // permission prompt, are matched against the same records.
+  // Every crew session on the machine, read once: the questions, and the session of each
+  // permission prompt, are matched against the same records. The portal usually runs from a
+  // folder that is no git project, so this folder's store would say nothing.
   let records: CrewRecord[] = [];
-  if ("repo" in found) {
-    try {
-      records = listCrew(paths.stateDir, found.repo).records;
-    } catch {
-      // A store that cannot be read is doctor's to report; the rest of "Needs you" still shows.
-    }
+  try {
+    records = listAllCrew(paths.stateDir).records;
+  } catch {
+    // A store that cannot be read is doctor's to report; the rest of "Needs you" still shows.
   }
   const crew: CrewNeed[] = [];
   for (const record of records) {

@@ -805,10 +805,17 @@ holds it: `hub.ts` the streams and their format, `sources.ts` what changes. The 
 - **at most `MAX_STREAMS` (8) at once**, and answers the next connection 429: a page left open
   in every tab must not hold the server's memory without end;
 - **a ping every `PING_MS` (15 s)** on every stream, so a closed window or a sleeping laptop is
-  noticed and a page can say "reconnecting" rather than show stale values;
-- **`Last-Event-ID`**: every event carries `<boot>:<sequence>`, the last `BUFFER_MAX` (512) are
-  kept, and a reconnect replays what it missed. An id from another run of the portal, or older
-  than the buffer, gets one `reset` event, and the page fetches its answers again;
+  noticed and a page can say "reconnecting" rather than show stale values. A ping, a `hello`
+  and a `reset` take a sequence number (no two frames share an id) but **no place in the
+  buffer**: pings alone would otherwise fill it in about 16 minutes, and a reconnect would get
+  `reset` instead of what it missed;
+- **`Last-Event-ID`**: every real event carries `<boot>:<sequence>`, the last `BUFFER_MAX` (512)
+  events are kept, and a reconnect replays what it missed. An id from another run of the
+  portal, or older than the oldest event still kept, gets one `reset` event, and the page
+  fetches its answers again;
+- **a stream that stops reading is closed**: its queue is measured in bytes, and past
+  `STREAM_QUEUE_MAX_BYTES` (1 MiB, well above a full replay) the stream ends, so a stopped tab
+  cannot grow the server's memory; the page reconnects and resumes from its last id;
 - **`closing`** when the portal stops for a new version: every stream is told, then closed, and
   the page reloads onto the new portal.
 
@@ -816,8 +823,11 @@ The sources are polled on one timer (`LIVE_POLL_MS`, 2 s): the router's `recent`
 health answer (metadata only), the crew store's `events.jsonl` by byte offset per repository,
 `gateway-state.json` (limits, fallbacks, an open breaker, `seenClaude`), `guard-asks.jsonl` by
 byte offset, the last update-check record, and the heavy-job queue (its lease and ticket
-folders' fingerprint, with the queue read only when it changes). The doctor pass and an
-action's lines are not polled: the server publishes them when it has them.
+folders' fingerprint, with the queue read only when it changes). **The first poll after a
+start only records where each file ends** — the router's list, each crew log and the guard log
+— so a portal start says what happens from then on, never the whole history as a burst of live
+events. The doctor pass and an action's lines are not polled: the server publishes them when it
+has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
 `health`, `machine`, `settings`, `projects`, `projects/<id>`, `work`, `crew/<id>`, `flow`, `needs`,
@@ -922,9 +932,24 @@ take up to 300 s, and the synchronous version froze every page, every action and
 that long — the owner's "lag" bug. The runner's type (`src/update/apply.ts`'s `CommandRunner`)
 accepts a promise, so `update.install` awaits the same `applyUpdate` the command line runs; each
 step's last line and the action's result go out on the stream (`action` events), so a page shows
-the install as it happens. The new actions for D52 — `crew.answer`, `crew.stop`, `crew.resume`,
-`crew.rm`, `worktrees.clean` — call the CLI's own functions (`src/crew/`, `runWorktrees` with
-its own sinks), not a copy; `worktrees.clean` needs the page's confirmation.
+the install as it happens.
+
+**The D52 crew actions are the CLI's own code, and the four that block run it in a child.**
+`crew stop`, `crew resume` and `crew rm` reach `git` and `claude` through synchronous spawns
+(`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call, and a `crew rm` makes
+several — and `worktrees --clean` fetches, scans and removes the same way. Run in the server,
+one click froze every page, every other action and the stream for that long. So those four
+actions run the CLI's own command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew
+stop|resume|rm <id>` or `dist/cli.js worktrees --clean`, with the plugin's two bun flags, the
+portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no `CC_SMART_DEV_KIT_CREW` (the person's click is
+not a crew session, D52), a 3-minute timeout, and the record's own repository as the folder.
+Every line goes out on the stream as it is printed. The record is found on **the machine**
+(`listAllCrew`): the portal usually runs from the home folder, which is no git project, so its
+own folder's store would find nothing. `crew.answer` is the CLI's own function inside the
+server (it answers the store and resumes a dead session with `claude --bg --resume`), run with
+the record's repository as its folder; its resume path is the one synchronous spawn left in an
+action, and it is owed a child too. `crew.stop`, `crew.rm` and `worktrees.clean` refuse a POST
+without the page's confirmation (`confirm: true`), and no action ever forces anything.
 
 **A read never blocks the server either.** The flow report (`readFlow`, `src/sessions/flow.ts`)
 reads every saved transcript with synchronous file reads: about 200 ms on a warm cache and 10 s on
@@ -958,12 +983,17 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   nowhere, so the page says so. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
   read must never block the server.
-- **Work**: another session's model is its tail's last reply (`describeSession`, skipping
-  Claude Code's `<synthetic>` stand-in), and its state is `ended` (the end marker), `waiting`
-  (an open permission prompt, from the flow report's waits), `working` (written in the last
-  `SESSION_WORKING_MS`), or `idle`. A crew session's summary adds the files its brief owns, what
-  it waits for, its newest line and its memory readings, and its "since" is its own newest
-  state event (`stateSince` takes one session's events, newest first).
+- **Work**: **the crew sessions and leads are the machine's** (`listAllCrew`, `listAllLeads`),
+  grouped by repository and lead, because the portal usually runs from the home folder, which is
+  no git project; every summary and lead carries its own `repo`, and a crew page is read from
+  the record's own repository (`/api/crew/<id>`). Another session's model is its tail's last
+  reply (`describeSession`, skipping Claude Code's `<synthetic>` stand-in), and its state is
+  `ended` (the end marker), `waiting` (an open permission prompt, from the flow report's waits),
+  `working` (written in the last `SESSION_WORKING_MS`), or `idle`; the "other sessions" list is
+  the project of the folder the portal runs in (or none outside a git project). A crew
+  session's summary adds the files its brief owns, what it waits for, its newest line and its
+  memory readings, and its "since" is its own newest state event (`stateSince` takes one
+  session's events, newest first).
 - **Flow**: the report's window hour by hour (`FlowReport.hours`, summed from the flow cache's
   own hourly buckets); the page draws an hour per bar for 24 hours and six for 7 days.
 - **Settings**: the crew caps (`crew.perLead`, `crew.perLeadOpus`, `crew.max`,
