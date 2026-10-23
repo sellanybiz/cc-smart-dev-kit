@@ -459,6 +459,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **CC4 merged** (`3f4acc4`): the self-watch gauge reads the window from Claude Code's own status-line report per model id, then one table (the current families and `[1m]` → 1M, Haiku 4.5 → 200k), then a backend's listed window mapped from the bare name the transcript records; the 1M note to Opus crew sessions stops being needed once 1.1.0 is installed.
 
+- 2026-10-23 (overnight): **CC5 merged** (`541244e`, bundles `9b1aff0`): `crew lead tell` between leads of one repo, a file-clash line at `crew start`, and `after-merge` tells the other leads (never a crew session) with an event each lead's watch prints. Conflicts with CC7 were additive (both sides' lines kept). CC5's open items moved into **CR1** (started): `findLead` duplicates `findCrew` (one home), a `clash` event showing as another crew session's `last:` line, and the proof that each lead's monitor reads only its own crew when two leads share a repo.
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
