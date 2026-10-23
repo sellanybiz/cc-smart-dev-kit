@@ -17962,6 +17962,7 @@ async function gatewayChecks(options) {
         text: `gateway config: ${messageOf(error)}`,
         fix: `correct ${short(paths.gatewayConfigFile)}, or run: ${SETUP}`
       });
+      checks.push(...await projectChecks(options));
       return checks;
     }
   }
@@ -18093,6 +18094,13 @@ function modelKeyWarnings(file, home) {
   }
   return checks;
 }
+function fileProblemWords(file, home) {
+  const problem = file.problem ?? "";
+  const rest = problem.startsWith(file.path) ? problem.slice(file.path.length) : problem;
+  const reason = rest.replace(/^\s*:?\s*/, "");
+  const where = tildify(file.path, home);
+  return reason === "" ? where : `${where}: ${reason}`;
+}
 async function projectChecks(options) {
   if (options.projects === undefined)
     return [];
@@ -18113,13 +18121,14 @@ async function projectChecks(options) {
   for (const project of list.projects) {
     const view = projectStateOf({ paths }, project.root);
     const where = `${tildify(view.folder, paths.home)}${project.current ? " (here)" : ""}`;
-    const state = view.choice.source === "none" ? decisionWords(view.choice) : `${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`;
-    const text = `${where}: ${state}`;
+    const state = view.choice.source === "none" || view.choice.state === "unknown" ? decisionWords(view.choice) : `${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`;
+    const broken = view.files.find((one) => one.problem !== null);
+    const text = `${where}: ${state}${broken === undefined ? "" : ` (${fileProblemWords(broken, paths.home)})`}`;
     if (view.choice.state === "unknown") {
       checks.push({
         ok: false,
         text,
-        fix: "fix the settings file by hand, or move it aside; nothing in this project is guessed past it"
+        fix: "fix that settings file by hand, or move it aside; nothing in this project is guessed past it"
       });
     } else if (view.choice.state === "other") {
       checks.push({ ok: true, warn: true, text });

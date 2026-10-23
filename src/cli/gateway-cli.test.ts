@@ -2130,7 +2130,7 @@ describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", 
     mkdirSync(join(root, ".claude"), { recursive: true });
     writeFileSync(join(root, ".claude", "settings.local.json"), "{not json\n");
     const lines = await checksFor(m, [root]);
-    expect(lines[1].check).toBe(
+    expect(lines[1]?.check).toBe(
       "✗ ~/Code/broken (here): unknown: a settings file in the way cannot be read (~/Code/broken/.claude/settings.local.json: is not valid JSON. Fix it by hand, then run again.) Fix: fix that settings file by hand, or move it aside; nothing in this project is guessed past it",
     );
   });
