@@ -463,6 +463,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23 (overnight): **B6d merged** (`860bf53`; bundles and export `e820bf9`): Overview, Health, Machine, Settings, Work and Flow draw every fact the machine gives, with their actions. **B6e** (the whole portal's verification and design verdict, Opus) started, given the open portal items: the sideways scroll at 1024 px, the header wrap at 1280 with `?mock=`, phone tables, the synchronous `systemctl`/`readFlow` calls on the server's loop, and the key-never-on-a-page test for `/api/*`. Full check after CC5: 5660 pass, 0 fail.
 
+- 2026-10-23 (overnight): **CC3 merged** (`ade8af5`, bundles and export `1062d98`): a crew session starts lean — the kit, the project's own instructions, Tavily (and the browser for `ui`); every other plugin and MCP server off for it (`--strict-mcp-config --mcp-config`, `enabledPlugins` in its settings), `crew.keep` to keep more. Measured before: 63,742 tokens at an Opus crew session's first request, of which other plugins' skill lines and claude-mem's start blocks were most. Its open items: the resume path must carry the lean flags and the crew settings (sent to **CR1**), `crew.keep` cannot keep a project's own MCP server (documented), and the after-number needs a live start on the installed version (morning list). A subagent is fixing the `src/update` test race CC3 and B6f both hit (the test read the starter's marker before its content landed).
+
 ### For the owner in the morning
 
 1. Read **Decided overnight** below.
@@ -471,7 +473,8 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 4. After 1.1.0 is installed: remove `crew.max` 12 / `crew.maxOpus` 4 from this machine's own workflow file (now the machine-wide ceiling); turn the status line on (`cc-smart-dev-kit setup --statusline`) so the opus usage guard holds.
 5. Any crew session still waiting on a permission prompt (`claude attach <name>`).
 6. CC4's live proof, after 1.1.0 is installed: reply once in an interactive session, then `cat ~/.claude/cc-smart-dev-kit/context-window.json` — it must hold the session's model with `"size": 1000000` for claude-opus-5-5.
-7. Claude Code 2.1.309 is installed on this machine; the tested version is 2.1.308 (`.claude-code-version`). The `claude-code-upgrade` skill moves the plugin to it — its own session, after 1.1.0.
+7. CC3's after-number, after 1.1.0 is installed: start one crew session and read its first request's tokens (`src/crew/transcript.ts`'s reader); it proves `claude --bg` takes `--strict-mcp-config --mcp-config <file> --settings <file>` too (only `-p` was proved).
+8. Claude Code 2.1.309 is installed on this machine; the tested version is 2.1.308 (`.claude-code-version`). The `claude-code-upgrade` skill moves the plugin to it — its own session, after 1.1.0.
 
 ### Decided overnight (for the owner's review)
 
