@@ -1276,7 +1276,8 @@ export async function claudeCodeFacts(ctx: PortalContext): Promise<ClaudeCodeFac
   try {
     const child = Bun.spawn([claude, "--version"], {
       ...commandContext(ctx.env, ctx.paths.home),
-      stderr: "pipe",
+      // Only the version line is read: a warning on stderr is not kept in a pipe nobody drains.
+      stderr: "ignore",
       stdin: "ignore",
       stdout: "pipe",
       timeout: CLAUDE_VERSION_TIMEOUT_MS,
