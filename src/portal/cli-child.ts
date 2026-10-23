@@ -26,9 +26,9 @@ import type { PortalContext } from "./context";
 
 /**
  * How long one CLI child may take. `crew rm` runs several calls with 30 s limits each (git, a
- * stop, a scan); `worktrees --clean` fetches, scans and removes. A cold flow read on a big
- * machine took 10 s. Well inside a page's patience, and far longer than any single call it
- * makes.
+ * stop, a scan); `worktrees --clean` fetches, scans and removes. Well inside a page's patience,
+ * and far longer than any single call it makes. The readers pass their own (`flow-read.ts`'s
+ * 2 minutes, `worktrees-read.ts`'s own): this is the actions' default.
  */
 export const CLI_CHILD_TIMEOUT_MS = 180_000;
 

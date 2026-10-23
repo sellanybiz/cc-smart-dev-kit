@@ -67,7 +67,7 @@ import {
   parseTarget,
 } from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
-import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
+import { detectSystem, warpAppCommand, warpAppFrom, warpCheckFrom } from "../machine/warp";
 import { type McpServerState, mcpServerStatus } from "../mcp/status";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
@@ -890,6 +890,10 @@ export function browserCardData(ctx: PortalContext): BrowserCardData {
 /**
  * What the Machine page's Warp card shows. Warp is optional, and installing or removing it
  * needs `sudo`: the card shows the two commands to copy, and the page never runs them.
+ * **Awaits the context's read runner** for the package manager's version: `dpkg-query`, `rpm`
+ * or `brew list` ran synchronously here on every Machine load (twice: once for the card's own
+ * line), which blocked every page and the stream — the same debt as `journalctl` and
+ * `systemctl` above.
  */
 export interface WarpRow {
   /** Doctor's own line for it: what is installed, and which command to run. */
@@ -898,12 +902,15 @@ export interface WarpRow {
   installed: boolean;
 }
 
-export function warpRow(ctx: PortalContext): WarpRow {
+export async function warpRow(ctx: PortalContext): Promise<WarpRow> {
   const system = detectSystem(ctx.machine);
-  return {
-    detail: warpCheck(ctx.machine, ctx.paths).text,
-    installed: detectWarpApp(ctx.machine, system).installed,
-  };
+  const command = warpAppCommand(system);
+  const app = warpAppFrom(
+    system,
+    ctx.machine,
+    command === null ? null : await ctx.runRead(command),
+  );
+  return { detail: warpCheckFrom(app, ctx.paths).text, installed: app.installed };
 }
 
 // ── The project: the Settings page, and the card on Machine ─────────────────────

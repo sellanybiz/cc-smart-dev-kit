@@ -429,16 +429,25 @@ the environment, the spawn, the failure's words and the timeout verdict live onc
 `cli-child.ts`, and so does the short cache both readers keep (`shortCache`): a child still on its
 way is shared whatever its age, an answer is fresh for 5 s **from its arrival** (a cold read that
 took longer than that would otherwise be stale as it landed, and every poll would start another
-child), a failure is not kept, and `worktrees.clean` and the crew actions drop the kept answers.
-**The router's journal and its port holder are reads too.** `journalctl --user` (20–65 ms on a
-Health or Overview load) and `systemctl --user is-active` (about 6 ms) are awaited through
-`runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`, never `Bun.spawnSync`, in the
-portal process (`src/entries/portal.ts`) with the actions' runner's 300 s timeout. `routerLog`
-and `portHolder` (`src/portal/facts.ts`) await it, and `portHolderCheck` (`src/gateway/doctor.ts`)
-awaits its runner too, so doctor's synchronous runner and the portal's asynchronous one run the
-same commands and say the same words. Still on the loop, and owed to a later phase: the Machine
-page's doctor pass, whose gateway checks ask the service through doctor's synchronous `Runner`
-(`service.state`, `service.running`) besides that check, and `doctor.run`.
+child), a failure is not kept, and `worktrees.clean` and the crew actions drop the worktrees
+answers. Two trade-offs of those rules: a child that hangs is shared until its timeout (the
+alternative — a second full read of every transcript — costs more than the wait), and the flow
+reader's kept answers start their clock from the arrival, so a read that lands after 5 s serves
+the next request too.
+**The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
+(20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
+manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are
+awaited through `runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`, never
+`Bun.spawnSync`, in the portal process (`src/entries/portal.ts`) with the actions' runner's 300 s
+timeout. `routerLog`, `portHolder` and `warpRow` (`src/portal/facts.ts`) await it;
+`portHolderCheck` (`src/gateway/doctor.ts`) awaits its runner too, and `warpAppCommand` /
+`warpAppFrom` / `warpCheckFrom` (`src/machine/warp.ts`) split the Warp read from its verdict, so
+doctor's synchronous runner and the portal's asynchronous one run the same commands and say the
+same words. Still on the loop, and owed to a later phase: the Machine page's doctor pass, whose
+gateway checks ask the service through doctor's synchronous `Runner` (`service.state`,
+`service.running`) besides that check; `doctor.run`; the project read's git (`resolveProject`, and
+`projectInitDefaults`' `gh`); and the browser card's legacy process list (`ps`, when 0.3.0's
+leftovers are on the machine).
 
 ### The pages' facts and actions (B6d)
 

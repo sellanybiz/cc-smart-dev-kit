@@ -45,6 +45,8 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify({
 }) + "\\n");
 if (process.env.CHILD_MODE === "fail") { console.error("a first line\\nthe last line says why"); process.exit(3); }
 if (process.env.CHILD_MODE === "silent-fail") process.exit(4);
+if (process.env.CHILD_MODE === "kill") process.kill(process.pid, "SIGKILL");
+if (process.env.CHILD_MODE === "sleep") await Bun.sleep(5_000);
 console.log("first line");
 console.log("second line");
 `,
@@ -185,6 +187,24 @@ describe("the CLI child", () => {
     expect(action.error ?? "").toStartWith("the command did not start: ");
     expect(action.exitCode).toBe(null);
     expect(w.plugin.runs()).toEqual([]);
+  });
+
+  test("a child a signal ended says that, not a timeout; one past its time is timed out", async () => {
+    // A person's `kill`, or an OOM kill: the line names the signal and does not blame slowness.
+    const killed = world({ CHILD_MODE: "kill" });
+    expect(await runCliChild(killed.ctx, ["crew", "rm", "abc"], { cwd: null })).toEqual({
+      error: "the command was ended by a signal (SIGKILL) before it finished",
+      exitCode: null,
+      lines: [],
+      timedOut: false,
+    });
+    // Past its own limit Bun ends it with SIGTERM, and that is the timeout.
+    const slow = world({ CHILD_MODE: "sleep" });
+    const started = performance.now();
+    expect(
+      await runCliChild(slow.ctx, ["crew", "rm", "abc"], { cwd: null, timeoutMs: 1_000 }),
+    ).toEqual({ error: null, exitCode: null, lines: [], timedOut: true });
+    expect(performance.now() - started).toBeLessThan(4_500);
   });
 });
 

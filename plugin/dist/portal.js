@@ -17680,23 +17680,32 @@ function detectSystem(machine) {
     reason: `cc-smart-dev-kit installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`
   };
 }
-function detectWarpApp(machine, system) {
+function warpAppCommand(system) {
+  switch (system.kind) {
+    case "apt":
+      return ["dpkg-query", "--status", PACKAGE];
+    case "dnf":
+      return ["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE];
+    case "brew":
+      return ["brew", "list", "--cask", "--versions", "warp"];
+    case "none":
+      return null;
+  }
+}
+function warpAppFrom(system, machine, answer) {
+  const asked = answer ?? { exitCode: 1, output: "" };
   switch (system.kind) {
     case "apt": {
-      const result = machine.run(["dpkg-query", "--status", PACKAGE]);
-      const field = (name) => new RegExp(`^${name}: (.*)$`, "m").exec(result.output)?.[1]?.trim() ?? null;
-      return result.exitCode === 0 && field("Status")?.endsWith(" installed") === true ? { installed: true, version: field("Version") } : { installed: false, version: null };
+      const field = (name) => new RegExp(`^${name}: (.*)$`, "m").exec(asked.output)?.[1]?.trim() ?? null;
+      return asked.exitCode === 0 && field("Status")?.endsWith(" installed") === true ? { installed: true, version: field("Version") } : { installed: false, version: null };
     }
-    case "dnf": {
-      const result = machine.run(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE]);
-      return result.exitCode === 0 ? { installed: true, version: result.output.trim() || null } : { installed: false, version: null };
-    }
+    case "dnf":
+      return asked.exitCode === 0 ? { installed: true, version: asked.output.trim() || null } : { installed: false, version: null };
     case "brew": {
-      const result = machine.run(["brew", "list", "--cask", "--versions", "warp"]);
-      if (result.exitCode === 0 && result.output.trim() !== "") {
+      if (asked.exitCode === 0 && asked.output.trim() !== "") {
         return {
           installed: true,
-          version: result.output.trim().split(/\s+/)[1] ?? null,
+          version: asked.output.trim().split(/\s+/)[1] ?? null,
           viaBrew: true
         };
       }
@@ -17709,8 +17718,14 @@ function detectWarpApp(machine, system) {
       return machine.which(PACKAGE) !== null ? { installed: true, version: null } : { installed: false, version: null };
   }
 }
+function detectWarpApp(machine, system) {
+  const command = warpAppCommand(system);
+  return warpAppFrom(system, machine, command === null ? null : machine.run(command));
+}
 function warpCheck(machine, paths) {
-  const app = detectWarpApp(machine, detectSystem(machine));
+  return warpCheckFrom(detectWarpApp(machine, detectSystem(machine)), paths);
+}
+function warpCheckFrom(app, paths) {
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
   const version = app.version === null ? "" : ` ${app.version}`;
   if (!app.installed && !plugin) {
@@ -34265,12 +34280,11 @@ function browserCardData(ctx) {
   const state = result.state;
   return { guide: browserGuide(state), notes: result.ok ? result.notes : [], state };
 }
-function warpRow(ctx) {
+async function warpRow(ctx) {
   const system = detectSystem(ctx.machine);
-  return {
-    detail: warpCheck(ctx.machine, ctx.paths).text,
-    installed: detectWarpApp(ctx.machine, system).installed
-  };
+  const command = warpAppCommand(system);
+  const app = warpAppFrom(system, ctx.machine, command === null ? null : await ctx.runRead(command));
+  return { detail: warpCheckFrom(app, ctx.paths).text, installed: app.installed };
 }
 function readProject(ctx, cwd) {
   try {
@@ -34787,7 +34801,7 @@ async function machineData(deps) {
       newest: updates.newest,
       summary: updates.summary
     },
-    warp: warpRow(deps.action.portal)
+    warp: await warpRow(deps.action.portal)
   };
 }
 async function overviewData(deps, config) {

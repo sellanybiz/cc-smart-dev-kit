@@ -259,6 +259,40 @@ describe("createOmnirouteKey", () => {
     });
   });
 
+  test("a no-answer when the key is made: one line too, with the session masked", async () => {
+    const omni = fakeOmniRoute();
+    const made = await createOmnirouteKey({
+      baseUrl: omni.baseUrl,
+      password: "the-dashboard-password",
+      fetch: (url, init) => {
+        if (String(url).endsWith("/api/keys")) {
+          throw new Error("creating the key failed\ncookie auth_token=session-abc\nsecond line");
+        }
+        return fetch(url, init as RequestInit);
+      },
+    });
+    expect(made.kind).toBe("no-answer");
+    if (made.kind === "no-answer") {
+      expect(made.detail).toBe("creating the key failed cookie auth_token=**** second line");
+      expect(made.detail).not.toContain("session-abc");
+    }
+  });
+
+  test("a no-answer longer than 300 characters is cut to one line of 300", async () => {
+    const made = await createOmnirouteKey({
+      baseUrl: "http://127.0.0.1:20128",
+      fetch: async () => {
+        throw new Error("a long reason from outside ".repeat(40).trim());
+      },
+      password: "the-dashboard-password",
+    });
+    expect(made.kind).toBe("no-answer");
+    if (made.kind === "no-answer") {
+      expect(made.detail).toHaveLength(300);
+      expect(made.detail.startsWith("a long reason from outside a long reason")).toBe(true);
+    }
+  });
+
   test("a login that sets no cookie, and a create that answers no key: each fails clearly", async () => {
     const noCookie = fakeOmniRoute({ noCookie: true });
     expect(

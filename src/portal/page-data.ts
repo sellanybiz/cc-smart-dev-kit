@@ -138,7 +138,7 @@ export async function machineData(deps: PageDataDeps): Promise<MachineData> {
       newest: updates.newest,
       summary: updates.summary,
     },
-    warp: warpRow(deps.action.portal),
+    warp: await warpRow(deps.action.portal),
   };
 }
 

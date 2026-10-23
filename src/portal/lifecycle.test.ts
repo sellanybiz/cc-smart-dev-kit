@@ -343,8 +343,9 @@ describe("the start decision", () => {
 
   test("the state folder follows CLAUDE_CONFIG_DIR, never a second folder under HOME", async () => {
     // A session may carry its own config folder. The portal started from it writes its log, its
-    // held-port marker and its lock under that folder's state (`cliPaths().stateDir`), and never
-    // computes a second one from HOME.
+    // held-port marker and the record of the copy it refreshed (under the lock, which lives
+    // there too) in that folder's state (`cliPaths().stateDir`), and never computes a second
+    // one from HOME.
     const home = tempDir("portal-home");
     const config = tempDir("portal-config");
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: config, HOME: home });
@@ -371,6 +372,9 @@ describe("the start decision", () => {
       "port 20150 is held by another program",
     );
     expect(existsSync(join(stateFolder, "portal-held.json"))).toBe(true);
+    // The copy was refreshed under the state lock before the probe, and its record is there too.
+    expect(Object.keys(readChanged(stateFolder))).toEqual([paths.portalCopy]);
+    expect(existsSync(join(stateFolder, "changed.json"))).toBe(true);
     // Not under HOME: the config folder is this session's, and the portal follows it.
     expect(existsSync(join(home, ".claude"))).toBe(false);
   });
