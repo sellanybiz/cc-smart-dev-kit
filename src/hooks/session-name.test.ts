@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { cliPaths } from "../cli/paths";
+import { writeLead } from "../crew/store";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { isSessionId, namesDir, namingNote, recordSessionName } from "./session-name";
 import { sessionNameHook } from "./specs";
@@ -35,11 +37,12 @@ describe("the hook", () => {
     cwd,
     source: "startup",
   });
-  const prompt = (cwd: string) => ({
+  const prompt = (cwd: string, change: Record<string, unknown> = {}) => ({
     hook_event_name: "UserPromptSubmit",
     session_id: SESSION,
     cwd,
     prompt: "hi",
+    ...change,
   });
 
   test("at the start: the note with the command", async () => {
@@ -55,6 +58,17 @@ describe("the hook", () => {
     expect(namingNote(SESSION, "Fix login")).toBe(
       `This session is named "Fix login" after its main task. Keep it; rename it only if the name no longer describes the main task: cc-smart-dev-kit session-name ${SESSION} "<the task, in a few words>"`,
     );
+  });
+
+  test("a title the session already carries is recorded, not set: a rename from there stays", async () => {
+    const { repo, env } = setup();
+    recordSessionName(SESSION, "Fix login", env);
+    expect(
+      await runHook(sessionNameHook, prompt(repo, { session_title: "Fix login" }), env),
+    ).toEqual({});
+    expect(
+      await runHook(sessionNameHook, prompt(repo, { session_title: "mine now" }), env),
+    ).toEqual({});
   });
 
   test("at a prompt: the title once after the session named itself, then nothing", async () => {
@@ -74,5 +88,24 @@ describe("the hook", () => {
     const { repo, env } = setup(false);
     expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
     expect(await runHook(sessionNameHook, start(makeRepo("plain")), env)).toEqual({});
+  });
+
+  test("a recorded lead: silence, because the lead's name is lead-notes' (LD1)", async () => {
+    const { repo, env } = setup();
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: repo,
+        name: "LEAD app plan",
+        plan: "plan",
+        repo,
+        sessionId: SESSION,
+        tag: "app",
+      },
+      Date.now(),
+    );
+    recordSessionName(SESSION, "Fix login", env);
+    expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
+    expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual({});
   });
 });
