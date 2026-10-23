@@ -343,6 +343,33 @@ describe("the message guard: crew sessions talk in contract notes (D47)", () => 
     );
   });
 
+  test("1.1.2: an old-shape and a new-shape crew name are both another crew session", async () => {
+    // A record written by 1.1.1 keeps `C <tag> <phase> <slug>`, its hand-off number included;
+    // one started after 1.1.2 is `C <tag> <plan> <phase> <slug>`. The guard reads the store,
+    // never the name's parts, so both are refused the same way.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const peers = [
+      { id: "B2-api-4d5e6f", name: "C app B2 api", phase: "B2" },
+      { id: "B2-api-4d5e70", name: "C app B2 api 2", phase: "B2" },
+      { id: "B3-docs-7a8b9c", name: "C app master-plan B3 docs", phase: "B3" },
+    ];
+    const crew = await crewStore(hookEnv(), repo, [SELF, ...peers]);
+    for (const peer of peers) {
+      expect([peer.name, await crew.send(peer.name, "done!")]).toEqual([
+        peer.name,
+        deny(
+          [
+            `"${peer.name}" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
+            `Fix: cc-smart-dev-kit crew tell "${peer.name}" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
+            'It writes the first line the note must carry ("[B1] CONTRACT: …"), and records the note for your lead.',
+            "That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done.",
+          ].join("\n"),
+        ),
+      ]);
+    }
+  });
+
   test("a message with the sender's own tag goes through, of either kind", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {});

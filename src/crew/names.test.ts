@@ -39,19 +39,55 @@ describe("D26: the names", () => {
     expect(leadName("my-app", "master-plan")).toBe("LEAD my-app master-plan");
   });
 
-  test("D26: a crew session is C <tag> <phase> <slug>; a hand-off's next crew session adds 2, 3", () => {
-    expect(crewName("my-app", "W1a", "launcher")).toBe("C my-app W1a launcher");
-    expect(crewName("my-app", "W1a", "launcher", 1)).toBe("C my-app W1a launcher");
-    expect(crewName("my-app", "W1a", "launcher", 2)).toBe("C my-app W1a launcher 2");
-    expect(crewName("my-app", "W1a", "launcher", 3)).toBe("C my-app W1a launcher 3");
+  test("D26: a crew session is C <tag> <plan> <phase> <slug>; a hand-off's next adds 2, 3", () => {
+    expect(crewName("my-app", "master-plan", "W1a", "launcher")).toBe(
+      "C my-app master-plan W1a launcher",
+    );
+    expect(crewName("my-app", "master-plan", "W1a", "launcher", 1)).toBe(
+      "C my-app master-plan W1a launcher",
+    );
+    expect(crewName("my-app", "master-plan", "W1a", "launcher", 2)).toBe(
+      "C my-app master-plan W1a launcher 2",
+    );
+    expect(crewName("my-app", "master-plan", "W1a", "launcher", 3)).toBe(
+      "C my-app master-plan W1a launcher 3",
+    );
+  });
+
+  test("D26: a long plan is cut, the phase stays whole, the hand-off number stays", () => {
+    // The plan "the-master-plan-for-the-whole-release" is cut at MAX_CREW_PLAN (16), and the
+    // cut leaves "the-master-plan-" with its separator dropped. The head is then
+    // "C my-app the-master-plan B6b " (29 characters), which leaves 29 for the slug and 2 for
+    // the hand-off number: the slug is cut, the number and the phase are not.
+    const name = crewName(
+      "my-app",
+      "the-master-plan-for-the-whole-release",
+      "B6b",
+      "portal-live-and-the-review-that-follows",
+      2,
+    );
+    expect(name).toBe("C my-app the-master-plan B6b portal-live-and-the-review-th 2");
+    expect(name.length).toBe(60);
+    expect(name.endsWith(" 2")).toBe(true);
+    expect(name).toContain(" B6b ");
+    // Two crew sessions of one phase never share a name, however the slug is cut.
+    expect(
+      crewName(
+        "my-app",
+        "the-master-plan-for-the-whole-release",
+        "B6b",
+        "portal-live-and-the-review-that-follows",
+        3,
+      ),
+    ).not.toBe(name);
   });
 
   test("D26: ASCII only, no brackets or quotes, never a trailing ]", () => {
-    expect(crewName("my-app", "K", 'fix "the" [login] page]')).toBe(
-      "C my-app K fix-the-login-page",
+    expect(crewName("my-app", "plan", "K", 'fix "the" [login] page]')).toBe(
+      "C my-app plan K fix-the-login-page",
     );
     expect(leadName("Ünïcödé app", "plan [v2]")).toBe("LEAD Unicode-app plan-v2");
-    expect(crewName("my-app", "K", "it's done']")).toBe("C my-app K it-s-done");
+    expect(crewName("my-app", "plan", "K", "it's done']")).toBe("C my-app plan K it-s-done");
   });
 
   test("D26: the tag is the main checkout's folder name, or workflow.crew.tag", () => {
@@ -68,25 +104,27 @@ describe("D26: the names", () => {
     );
   });
 
-  test("D26: truncation at 24 and at 60 keeps role and phase", () => {
+  test("D26: truncation at 24 and at 60 keeps the role, and the tag and plan after it", () => {
     const crew = crewName(
       "a-very-long-folder-name-here",
+      "master-plan",
       "D17b",
       "the-review-that-counts-for-its-fix-commits-after-it",
     );
-    expect(crew).toBe("C a-very-long D17b the-review-that-counts-for-its-fix-commit");
+    expect(crew).toBe("C a-very-long master-plan D17b the-review-that-counts-for-it");
     expect(crew.length).toBe(60);
     expect(cleanSessionName(crew)).toBe(crew);
-    expect(crew.slice(0, NAME_VIEW)).toBe("C a-very-long D17b the-r");
+    expect(crew.slice(0, NAME_VIEW)).toBe("C a-very-long master-pla");
     expect(roleOf(crew.slice(0, NAME_VIEW))).toBe("crew");
 
     const next = crewName(
       "a-very-long-folder-name-here",
+      "master-plan",
       "D17b",
       "the-review-that-counts-for-its-fix-commits-after-it",
       2,
     );
-    expect(next).toBe("C a-very-long D17b the-review-that-counts-for-its-fix-comm 2");
+    expect(next).toBe("C a-very-long master-plan D17b the-review-that-counts-for 2");
     expect(cleanSessionName(next)).toBe(next);
 
     const lead = leadName(
@@ -101,9 +139,9 @@ describe("D26: the names", () => {
   });
 
   test("D26: a cut never leaves a separator at the end", () => {
-    // 60 - "C my-app K ".length = 49: the 49th character of the slug is a "-".
-    const name = crewName("my-app", "K", `${"a".repeat(48)}-tail`);
-    expect(name).toBe(`C my-app K ${"a".repeat(48)}`);
+    // 60 - "C my-app plan K ".length = 44: the slug's 44th character is the "-" after 43 a's.
+    const name = crewName("my-app", "plan", "K", `${"a".repeat(43)}-tail`);
+    expect(name).toBe(`C my-app plan K ${"a".repeat(43)}`);
   });
 
   test("D26: a phase is short and clean, or the name is refused", () => {
@@ -113,14 +151,17 @@ describe("D26: the names", () => {
     for (const bad of ["", "W 1a", "D17a-D17b", "-K", "K]", "Kü", "a--b"]) {
       expect(isPhase(bad)).toBe(false);
     }
-    expect(() => crewName("my-app", "W 1a", "launcher")).toThrow(
+    expect(() => crewName("my-app", "plan", "W 1a", "launcher")).toThrow(
       'the phase "W 1a" cannot be part of a name: a phase is 1-8 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
     );
   });
 
   test("D26: an empty part, or a hand-off number that is not 2 or more, is refused", () => {
-    expect(() => crewName("my-app", "K", "!!!")).toThrow(
+    expect(() => crewName("my-app", "plan", "K", "!!!")).toThrow(
       'the slug "!!!" has no letter or digit a name can keep',
+    );
+    expect(() => crewName("my-app", "[]", "K", "x")).toThrow(
+      'the plan "[]" has no letter or digit a name can keep',
     );
     expect(() => leadName("my-app", "[]")).toThrow(
       'the plan "[]" has no letter or digit a name can keep',
@@ -129,7 +170,7 @@ describe("D26: the names", () => {
       'the tag "日本" has no letter or digit a name can keep',
     );
     for (const bad of [0, -1, 1.5, Number.NaN]) {
-      expect(() => crewName("my-app", "K", "x", bad)).toThrow(
+      expect(() => crewName("my-app", "plan", "K", "x", bad)).toThrow(
         `a hand-off number is a whole number of 2 or more, not ${bad}`,
       );
     }
@@ -159,8 +200,19 @@ describe("D26: the names", () => {
 describe("D26: roleOf", () => {
   test("D26: a lead and a crew session, a hand-off's next crew session too", () => {
     expect(roleOf("LEAD my-app master-plan")).toBe("lead");
+    expect(roleOf("C my-app master-plan W1a launcher")).toBe("crew");
+    expect(roleOf("C my-app master-plan W1a launcher 2")).toBe("crew");
+  });
+
+  test("1.1.2: a crew name written before the plan became part of it is still crew", () => {
+    // Crew records written by 1.1.1 and earlier keep `C <tag> <phase> <slug>`: records are
+    // never renamed, so every reader must read both shapes.
     expect(roleOf("C my-app W1a launcher")).toBe("crew");
     expect(roleOf("C my-app W1a launcher 2")).toBe("crew");
+    expect(roleOf("C my-app W1a")).toBe("crew");
+    // A name cut short by a narrow list, in either shape, still starts as one of ours.
+    expect(roleOf("C my-app master-plan")).toBe("crew");
+    expect(roleOf("C my-app master-plan W1a")).toBe("crew");
   });
 
   test("D26: a person's own name has no role", () => {
