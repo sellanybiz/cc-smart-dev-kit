@@ -289,7 +289,7 @@ describe("F2a-1: the kit command behind a computed program: asked", () => {
     for (const command of [
       `KIT=${KIT}; $KIT crew report --status done`,
       `KIT=/home/user/.local/bin/${KIT}; $KIT workflow review-done`,
-      `${"${KIT:-/home/user/.local/bin/" + KIT}} workflow review-done`,
+      `\${KIT:-/home/user/.local/bin/${KIT}} workflow review-done`,
       `$(echo /home/user/.local/bin/${KIT}) workflow review-done`,
       `K=/home/user/.local/bin/${KIT}.cmd && "$K" crew report --status done`,
       `bash -c "$(which ${KIT}) crew report --status done"`,
