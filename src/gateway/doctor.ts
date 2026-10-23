@@ -121,7 +121,9 @@ export async function gatewayChecks(options: {
     // A project's own state is still there, and still decides for its sessions once the
     // gateway runs: name it whether or not the machine's gateway is installed (GP4a). A
     // `gateway.json` that is kept is read for the backend names its warning needs.
-    checks.push(...(await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config)));
+    checks.push(
+      ...(await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config)),
+    );
     return checks;
   }
 
