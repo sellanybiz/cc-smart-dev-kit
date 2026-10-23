@@ -13898,14 +13898,13 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) 
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
     return null;
-  let lead;
   try {
-    lead = readLead(paths.stateDir, checkout.mainCheckout ?? checkout.root, sessionId);
+    const repo = checkout.mainCheckout ?? checkout.root;
+    if (readLead(paths.stateDir, repo, sessionId) === null)
+      return null;
   } catch {
     return null;
   }
-  if (lead === null)
-    return null;
   const opus = judged.kind === "workflow" ? judged.call.results.some((one) => one.verdict.real?.tier === OPUS_TIER) : judged.verdict.real?.tier === OPUS_TIER;
   let place;
   try {

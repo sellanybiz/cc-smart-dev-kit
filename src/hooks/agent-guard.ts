@@ -1724,13 +1724,13 @@ async function queuedLaunch(
   if (!building) return null;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId)) return null;
-  let lead: ReturnType<typeof readLead>;
   try {
-    lead = readLead(paths.stateDir, checkout.mainCheckout ?? checkout.root, sessionId);
+    const repo = checkout.mainCheckout ?? checkout.root;
+    if (readLead(paths.stateDir, repo, sessionId) === null) return null;
   } catch {
+    // A store the guard cannot read is no lead to hold: the launch goes on.
     return null;
   }
-  if (lead === null) return null;
   const opus =
     judged.kind === "workflow"
       ? judged.call.results.some((one) => one.verdict.real?.tier === OPUS_TIER)
