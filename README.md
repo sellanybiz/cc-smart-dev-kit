@@ -2458,8 +2458,8 @@ valid JSON is named, never rewritten.
 **The project's own settings change through a pull request.** `.claude/cc-smart-dev-kit.json`
 is committed and shared, and the merge guard reads the review gate from the file committed on
 the base: a change counts once it is merged, never from a checkout's own copy. So
-`cc-smart-dev-kit workflow propose` (and the portal's Workflow card) never writes the main
-checkout. It cuts a branch and a worktree from `origin/<worktrees.base>` (in
+`cc-smart-dev-kit workflow propose` (and the portal's Workflow card, built on it) never writes
+the main checkout. It cuts a branch and a worktree from `origin/<worktrees.base>` (in
 `.claude/worktrees/`, so a merged one is cleaned like any finished worktree), writes the one
 setting there with the same writer `set --project` uses — so the value is validated and
 `requires` is raised in the same commit — commits it, pushes the branch and opens the pull

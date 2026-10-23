@@ -165,17 +165,22 @@ and the plugin never writes the project's main checkout. `cc-smart-dev-kit workf
    policy) — one the base already holds, or an `--unset` of one it does not set, ends with one
    line and no branch. It checks `gh` too (`ghLoginState`: installed, and `gh repo view` answers
    for this repository), so no branch is made for a pull request that could not open;
-3. cuts a branch and a worktree from `origin/<base>`, named
-   `worktree-workflow-<setting>-<YYYYMMDD>` under the repository's `.claude/worktrees/`
-   (Claude Code's own layout, so the auto-clean removes it after the merge; the same day's
-   second change takes `-2`), and refuses when the base's own commit has no project file —
-   a change counts only once merged;
-4. writes the one value with `writeProjectSetting`, the writer `set --project` uses, inside
-   the worktree, and refuses unless the worktree's own `git status` shows the change: the
-   main checkout's file is never touched;
-5. commits (the person's identity, `workflow: <setting> <from> → <to>`), pushes, and opens
-   the pull request with `gh pr create` into the base, with a body saying it counts once
+3. cuts a branch and a worktree from `origin/<base>` in Claude Code's own layout: the folder
+   `.claude/worktrees/workflow-<setting>-<YYYYMMDD>` on the branch `worktree-<folder name>`,
+   so the auto-clean removes it after the merge (the same day's second change takes `-2`); it
+   refuses when the base's own commit has no project file — a change counts only once merged;
+4. checks that the new worktree holds its **own** `.claude/cc-smart-dev-kit.json` before writing
+   — the guard that keeps the writer's fallback (`loadProjectConfig` reads the main checkout's
+   file when a worktree has none) from ever writing the person's checkout — then writes the one
+   value with `writeProjectSetting`, the writer `set --project` uses, and refuses unless the
+   worktree's own `git status` shows the change;
+5. commits (the person's identity, `workflow: <setting> <from> → <to>`, where `from` is the
+   project's own value or `(unset)`: the person's defaults are never published), pushes, and
+   opens the pull request with `gh pr create` into the base, with a body saying it counts once
    merged. `--json` prints `{ url, branch, worktree, setting, from, to }`.
+
+A setting the project's file cannot hold — the status-line and update-hold switches, which are
+the person's, per machine — is refused before the fetch, with the command that does change it.
 
 A step that fails after the branch exists takes the worktree, the branch, and the pushed
 branch back, and the line says what is left if any of that fails. Two exceptions, both to

@@ -19351,6 +19351,10 @@ var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
 function isSwitchKey(key) {
   return SWITCH_KEYS.includes(key);
 }
+var PROJECT_SWITCH_NAMES = ["sessionNames", "jobRoute"];
+function isProjectKey(key) {
+  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
+}
 function switchOf(key) {
   return key.slice("switches.".length);
 }
@@ -33359,11 +33363,6 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
   });
 }
 
-// src/portal/api/projects.ts
-import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync63 } from "fs";
-import { basename as basename10, dirname as dirname23, join as join66, relative as relative6 } from "path";
-
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync22 } from "fs";
 import { dirname as dirname22 } from "path";
@@ -33534,6 +33533,16 @@ function writeUpdateHold(paths, value) {
 }
 
 // src/workflow/propose.ts
+var FETCH_TIMEOUT_MS = 60000;
+var WORKTREE_TIMEOUT_MS = 60000;
+var COMMIT_TIMEOUT_MS = 120000;
+var PUSH_TIMEOUT_MS = 120000;
+var QUICK_GIT_TIMEOUT_MS = 1e4;
+var GH_CREATE_TIMEOUT_MS = 60000;
+var PROPOSE_WORST_CASE_MS = GH_TIMEOUT_MS2 + FETCH_TIMEOUT_MS + 2 * FETCH_TIMEOUT_MS + 2 * WORKTREE_TIMEOUT_MS + COMMIT_TIMEOUT_MS + PUSH_TIMEOUT_MS + GH_CREATE_TIMEOUT_MS + WORKTREE_TIMEOUT_MS + PUSH_TIMEOUT_MS + 8 * QUICK_GIT_TIMEOUT_MS + 30000;
+function proposeTimeoutLine(setting) {
+  return `workflow propose did not answer in time, so it may have left a worktree and a branch behind (the folder .claude/worktrees/workflow-${setting.replace(/[^A-Za-z0-9]+/g, "-")}-\u2026) or opened the pull request: look at the project's pull requests and at \`git worktree list\` before running it again.`;
+}
 async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_MS2) {
   if (ghMissing(env))
     return "missing";
@@ -33544,6 +33553,11 @@ async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_M
   });
   return answer === null ? "out" : "in";
 }
+
+// src/portal/api/projects.ts
+import { createHash as createHash9 } from "crypto";
+import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync63 } from "fs";
+import { basename as basename10, dirname as dirname23, join as join66, relative as relative6 } from "path";
 
 // src/portal/facts.ts
 import { createHash as createHash8 } from "crypto";
@@ -35844,26 +35858,43 @@ async function projectWorkflowAnswerFor(deps, id) {
     return { error: `no project has the id "${id}"; the list on /api/projects names them` };
   }
   const gh = await ghLoginOf(world, project.root);
-  const read = configAt(project.root);
-  if (!read.ok)
-    return { base: null, gh, note: read.why, settings: [] };
-  let resolved;
+  const own = configAt(project.root);
+  if (!own.ok)
+    return { base: null, gh, note: own.why, settings: [] };
+  const { base } = own;
+  if (base === null) {
+    return {
+      base,
+      gh,
+      note: `${project.root} names no worktrees.base, so a change has no branch to go into: run \`${COMMAND} project init\` there.`,
+      settings: []
+    };
+  }
   try {
-    resolved = deps.workflow.resolveWorkflow(world.paths, read.config);
+    const checkout = await locateCheckoutAsync(project.root, { env: world.env });
+    if (checkout === null) {
+      return { base, gh, note: `${project.root} is not in a git checkout.`, settings: [] };
+    }
+    const read = await resolveGateAsync(world.paths, checkout, base, { env: world.env });
+    if (!read.ok)
+      return { base, gh, note: read.why, settings: [] };
+    return {
+      base,
+      gh,
+      note: null,
+      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => ({
+        key,
+        ...resolvedValueOf(read.gate.resolved, key)
+      }))
+    };
   } catch (error) {
     return {
-      base: read.base,
+      base,
       gh,
       note: error instanceof Error ? error.message : String(error),
       settings: []
     };
   }
-  return {
-    base: read.base,
-    gh,
-    note: null,
-    settings: WORKFLOW_KEYS.map((key) => ({ key, ...resolvedValueOf(resolved, key) }))
-  };
 }
 async function projectsAnswerFor(deps) {
   const current = projectCardData(deps.action.portal, deps.action.cwd, deps.projectDefaults, deps.workflow);
@@ -36444,22 +36475,39 @@ async function projectWorkflowPropose(action, body) {
   if (!unset && value.startsWith("-")) {
     return { lines: [`"${value}" is not a value: it starts with "-".`], ok: false };
   }
-  const run = await runCliChild(action.portal, ["workflow", "propose", setting, ...unset ? ["--unset"] : [value]], {
+  const run = await runCliChild(action.portal, ["workflow", "propose", setting, ...unset ? ["--unset"] : [value], "--json"], {
     cwd: target.cwd,
-    onLine: (line) => action.publish?.("action", { action: "project.workflow.propose", line })
+    onLine: (line) => action.publish?.("action", { action: "project.workflow.propose", line }),
+    timeoutMs: PROPOSE_WORST_CASE_MS
   });
   const lines = [...run.lines];
   if (run.error !== null)
     lines.push(run.error);
-  if (run.timedOut) {
-    lines.push("workflow propose did not answer in time, so it may have opened the pull request: look on GitHub before running it again");
-  }
-  const url = [...run.lines].reverse().map((line) => /https:\/\/\S+\/pull\/\d+/.exec(line)).find((found) => found !== null)?.[0];
+  if (run.timedOut)
+    lines.push(proposeTimeoutLine(setting));
+  const ok = run.error === null && !run.timedOut && run.exitCode === 0;
+  const opened = ok ? proposedLine(run.lines) : null;
+  if (opened === null)
+    return { lines, ok };
   return {
-    ...url === undefined ? {} : { url },
-    lines,
-    ok: run.error === null && !run.timedOut && run.exitCode === 0
+    lines: [`Opened ${opened.url}`, `Branch ${opened.branch}, in ${opened.worktree}.`],
+    ok,
+    url: opened.url
   };
+}
+function proposedLine(lines) {
+  for (const line of [...lines].reverse()) {
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isObject2(parsed) && typeof parsed.url === "string" && typeof parsed.branch === "string" && typeof parsed.worktree === "string") {
+      return { branch: parsed.branch, url: parsed.url, worktree: parsed.worktree };
+    }
+  }
+  return null;
 }
 function parseProjectForm(value) {
   if (!isObject2(value))

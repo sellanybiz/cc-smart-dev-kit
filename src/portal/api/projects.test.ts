@@ -23,10 +23,15 @@ import { type CliPaths, cliPaths } from "../../cli/paths";
 import { createCrew, type NewCrew } from "../../crew/store";
 import { projectFolderName } from "../../sessions/saved-sessions";
 import { type FakeWorkflow, fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
-import { commitConfig, makeRepo, writePersonalWorkflow } from "../../testing/hooks";
+import {
+  commitConfig,
+  makeRepo,
+  writeClaudeFile,
+  writePersonalWorkflow,
+} from "../../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import type { GhRunner } from "../../workflow/merge-check";
-import { WORKFLOW_KEYS } from "../../workflow/schema";
+import { isProjectKey, WORKFLOW_KEYS } from "../../workflow/schema";
 import { ACTION_NAMES, type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PageDataDeps } from "../page-data";
 import { workflowAdapter } from "../workflow-adapter";
@@ -967,7 +972,7 @@ async function workflowAnswer(
 }
 
 /** Every key the answer must carry, one per row `workflow set --project` takes. */
-const KEY_COUNT = WORKFLOW_KEYS.length;
+const PROJECT_KEYS = WORKFLOW_KEYS.filter(isProjectKey);
 
 describe("a project's workflow settings (D57)", () => {
   test("every setting with its value and source, the base, and gh logged in", async () => {
@@ -986,9 +991,11 @@ describe("a project's workflow settings (D57)", () => {
     expect(answer.base).toBe("main");
     expect(answer.gh).toBe("in");
     expect(answer.note).toBeNull();
-    // Every key, in the schema's own order: the list is the schema's, never a copy here.
-    expect(answer.settings.map((one) => one.key)).toEqual([...WORKFLOW_KEYS]);
-    expect(answer.settings).toHaveLength(KEY_COUNT);
+    // Every key the project's file can hold, in the schema's own order — the schema's list,
+    // never a copy here — and neither of the person's own switches.
+    expect(answer.settings.map((one) => one.key)).toEqual([...PROJECT_KEYS]);
+    expect(answer.settings.map((one) => one.key)).not.toContain("switches.statusLine");
+    expect(answer.settings.map((one) => one.key)).not.toContain("switches.updateHold");
     const of = (key: string) => answer.settings.find((one) => one.key === key);
     expect(of("autoCommit")).toEqual({ key: "autoCommit", source: "project", value: true });
     expect(of("openPr")).toEqual({ key: "openPr", source: "project", value: "draft" });
@@ -1003,6 +1010,7 @@ describe("a project's workflow settings (D57)", () => {
       source: "default",
       value: false,
     });
+    expect(of("switches.statusLine")).toBeUndefined();
   });
 
   test("the person's own file is the source of a value the project does not set", async () => {
@@ -1023,6 +1031,48 @@ describe("a project's workflow settings (D57)", () => {
       source: "personal",
       value: "ready",
     });
+  });
+
+  test("the answer is the base's file, not a change this checkout has not committed", async () => {
+    const w = testWorld();
+    const repo = committedRepo("uncommitted-app", {
+      requires: ">=0.1",
+      worktrees: { base: "main" },
+    });
+    await addProjectRoot(w.paths, repo);
+    // A value edited in the working copy and never committed: the base does not have it, and a
+    // proposal would change the base — so the card must not show it as the project's policy.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=0.1",
+      workflow: { autoCommit: true },
+      worktrees: { base: "main" },
+    });
+    forgetGhLogin();
+    forgetProjectsList();
+
+    const answer = await workflowAnswer(w, repo);
+    if ("error" in answer) throw new Error(answer.error);
+    expect(answer.note).toBeNull();
+    expect(answer.settings.find((one) => one.key === "autoCommit")).toEqual({
+      key: "autoCommit",
+      source: "default",
+      value: false,
+    });
+  });
+
+  test("a project file that cannot be read is a note, and no settings", async () => {
+    const w = testWorld();
+    const repo = makeRepo("broken-app");
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    writeFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
+    await addProjectRoot(w.paths, repo);
+    forgetGhLogin();
+    forgetProjectsList();
+
+    const answer = await workflowAnswer(w, repo);
+    if ("error" in answer) throw new Error(answer.error);
+    expect(answer.settings).toEqual([]);
+    expect(answer.note).toContain("not valid JSON");
   });
 
   test("no project file: a note, and no base or settings — never a default it has not got", async () => {
@@ -1066,6 +1116,14 @@ describe("a project's workflow settings (D57)", () => {
     if (known === null) throw new Error("the workflow route answered nothing");
     expect(known.status).toBe(200);
     expect((known.body as { base: null | string }).base).toBe("main");
+  });
+
+  test("a path that names no project under the workflow route is refused, not guessed", async () => {
+    const w = testWorld();
+    for (const path of ["/api/projects/a/b/workflow", "/api/projects//workflow"]) {
+      const answer = await answerApi(w.deps, new URL(`http://127.0.0.1:1${path}`));
+      expect(answer).toEqual({ body: { error: "name a project" }, status: 400 });
+    }
   });
 
   test("gh is asked once a minute, and again after it", async () => {

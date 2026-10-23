@@ -16,9 +16,11 @@ import { createCrew, type NewCrew } from "../crew/store";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { makeRepo } from "../testing/hooks";
 import { cleanGitEnv, tempDir } from "../testing/temp";
+import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
 import { type ActionContext, crewTimeoutLine, portalOmnirouteContext, runAction } from "./actions";
 import { addProjectRoot, forgetProjectsList } from "./api/projects";
 import { testPortalContext } from "./api/test-context";
+import { CLI_CHILD_TIMEOUT_MS } from "./cli-child";
 
 /** The lead every record in this test answers to. */
 const LEAD = "11111111-1111-4111-8111-111111111111";
@@ -73,10 +75,18 @@ function fakePlugin(): { done: string; folder: string; log: string } {
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: process.argv.slice(2), claudeCode: process.env.CLAUDECODE ?? null, config: process.env.CLAUDE_CONFIG_DIR, crew: process.env.CC_SMART_DEV_KIT_CREW ?? null, cwd: process.cwd() }) + "\\n");
 if (process.env.FAKE_CLI_SLEEP === "1") await Bun.sleep(400);
 writeFileSync(${JSON.stringify(done)}, "done\\n");
-console.log("crew " + process.argv.slice(2).join(" ") + ": done");
-// workflow propose prints the pull request's URL alone on its last line, as the real one does.
+// workflow propose --json prints one JSON line and nothing else, as the real one does.
 if (process.argv[2] === "workflow" && process.argv[3] === "propose") {
-  console.log("https://github.com/example-org/app/pull/42");
+  console.log(JSON.stringify({
+    branch: "worktree-workflow-autoCommit-20261023",
+    from: false,
+    setting: process.argv[4],
+    to: true,
+    url: "https://github.com/example-org/app/pull/42",
+    worktree: process.cwd() + "/.claude/worktrees/worktree-workflow-autoCommit-20261023",
+  }));
+} else {
+  console.log("crew " + process.argv.slice(2).join(" ") + ": done");
 }
 process.exit(process.env.FAKE_CLI_EXIT === undefined ? 0 : Number(process.env.FAKE_CLI_EXIT));
 `,
@@ -274,13 +284,16 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
     );
     expect(proposed.ok).toBe(true);
     expect(proposed.url).toBe("https://github.com/example-org/app/pull/42");
-    expect(proposed.lines).toContain("https://github.com/example-org/app/pull/42");
+    expect(proposed.lines).toEqual([
+      "Opened https://github.com/example-org/app/pull/42",
+      `Branch worktree-workflow-autoCommit-20261023, in ${w.repoA}/.claude/worktrees/worktree-workflow-autoCommit-20261023.`,
+    ]);
     // The command, in the project's folder, and the person's own click: the portal's
     // environment names a crew session and carries `CLAUDECODE=1`, and the child is given
     // neither (D52, D9) — so a review-gate setting is the person's to change from the card.
     expect(runsOf(w.log)).toEqual([
       {
-        args: ["workflow", "propose", "autoCommit", "true"],
+        args: ["workflow", "propose", "autoCommit", "true", "--json"],
         claudeCode: null,
         config: w.paths.claudeConfigDir,
         crew: null,
@@ -312,8 +325,34 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
     );
     expect(removed.ok).toBe(true);
     expect(runsOf(w.log)).toMatchObject([
-      { args: ["workflow", "propose", "autoCommit", "--unset"], cwd: w.repoA },
+      { args: ["workflow", "propose", "autoCommit", "--unset", "--json"], cwd: w.repoA },
     ]);
+  });
+
+  test("a run that fails never gives a URL, even when its output holds one", async () => {
+    // The fake CLI prints its JSON line and then exits 1: whatever it printed, a refusal has
+    // no pull request, and the card must not link one.
+    const w = world({ exit: 1 });
+    await addProjectRoot(w.paths, w.repoA);
+    forgetProjectsList();
+    const failed = await runAction(
+      "project.workflow.propose",
+      { confirm: true, project: idOf(w.repoA), setting: "autoCommit", value: "true" },
+      w.action,
+    );
+    expect(failed.ok).toBe(false);
+    expect(failed.url).toBeUndefined();
+    expect(failed.lines).toHaveLength(1);
+    expect(failed.lines[0]).toContain("pull/42");
+  });
+
+  test("a child ended at its limit says where to look, in words", () => {
+    expect(proposeTimeoutLine("crew.perLead")).toBe(
+      "workflow propose did not answer in time, so it may have left a worktree and a branch behind (the folder .claude/worktrees/workflow-crew-perLead-…) or opened the pull request: look at the project's pull requests and at `git worktree list` before running it again.",
+    );
+    // Longer than the 180 s a crew action gets: the command's own limits add up to more, and
+    // they must fire first, so its take-back runs.
+    expect(PROPOSE_WORST_CASE_MS).toBeGreaterThan(CLI_CHILD_TIMEOUT_MS);
   });
 
   test("a setting the command does not have, or no value, is refused before the child", async () => {

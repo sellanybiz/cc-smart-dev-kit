@@ -1,8 +1,9 @@
 /**
  * The CLI's own command, in a child process, for an action that changes something.
  *
- * The crew commands and `worktrees --clean` run git, `claude` and the worktree scan with
- * **synchronous** spawns (`Bun.spawnSync`). Run inside the portal's server, one of them froze
+ * The crew commands, `worktrees --clean` and `workflow propose` run git, `claude` and the
+ * worktree scan with **synchronous** spawns (`Bun.spawnSync`), and a propose pushes a branch and
+ * opens a pull request. Run inside the portal's server, one of them froze
  * every page, every other action and the live stream for up to 30 s per call — and `crew rm`
  * makes several. So the action never calls those functions in the server: it runs the same
  * command the CLI runs (`dist/cli.js`) in a child, spawned with `Bun.spawn` (never

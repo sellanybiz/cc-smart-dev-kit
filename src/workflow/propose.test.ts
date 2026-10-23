@@ -20,11 +20,19 @@ import {
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, cliPaths } from "../cli/paths";
-import { makeClone, writeClaudeFile } from "../testing/hooks";
+import {
+  hookEnv,
+  makeClone,
+  makeRepo,
+  writeClaudeFile,
+  writePersonalWorkflow,
+} from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, type WorkflowContext } from "./commands";
 import { ghLoginState, proposeWorkflow } from "./propose";
+import { isProjectKey, WORKFLOW_KEYS } from "./schema";
+import { writeProjectSetting } from "./write";
 
 // The flow starts git and gh children: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
@@ -65,9 +73,21 @@ interface World {
  * race the flow's name check cannot see: `branch` makes the branch the add is about to make,
  * `folder` makes the folder it is about to use. Everything else is the real git.
  */
-function racingGit(real: string, bin: string, race: "branch" | "folder"): string {
+function racingGit(real: string, bin: string, race: "branch" | "folder" | "old-branch"): string {
   const mark = join(bin, "raced");
   // `worktree add -b <branch> <path> <start>`: $4 is the branch, $5 the folder.
+  if (race === "old-branch") {
+    // Git before 2.35 says it with a capital, and the add is refused without making anything.
+    return `#!/bin/sh
+if [ "$1" = "worktree" ] && [ "$2" = "add" ] && [ ! -e "${mark}" ]; then
+  touch "${mark}"
+  "${real}" branch "$4" origin/main >/dev/null 2>&1
+  echo "fatal: A branch named '$4' already exists." >&2
+  exit 128
+fi
+exec "${real}" "$@"
+`;
+  }
   const act =
     race === "branch"
       ? `"${real}" branch "$4" origin/main >/dev/null 2>&1`
@@ -90,8 +110,8 @@ exec "${real}" "$@"
 function world(
   options: {
     file?: "committed" | "local";
-    gh?: "create-fails" | "create-hangs" | "in" | "missing" | "out";
-    race?: "branch" | "folder";
+    gh?: "create-fails" | "create-hangs" | "create-no-url" | "in" | "missing" | "out";
+    race?: "branch" | "folder" | "old-branch";
   } = {},
 ): World {
   const { origin, repo } = makeClone("app");
@@ -185,6 +205,8 @@ function prAnswer(mode: string | undefined): string {
   }
   // `exec`: the sleep is the process the timeout ends, so no child holds the pipes open.
   if (mode === "create-hangs") return "exec sleep 5";
+  // gh answers, but with no pull request URL in it.
+  if (mode === "create-no-url") return "echo created; exit 0";
   return 'echo "https://github.com/example-org/app/pull/42"; exit 0';
 }
 
@@ -214,7 +236,7 @@ describe("workflow propose: one setting through a pull request", () => {
     expect(run.errors).toEqual([]);
     expect(run.lines).toEqual([
       `+ autoCommit = true in .claude/cc-smart-dev-kit.json`,
-      `+ ${branch} (.claude/worktrees/${branch}), cut from origin/main and pushed`,
+      `+ ${branch} (.claude/worktrees/${branch.replace(/^worktree-/, "")}), cut from origin/main and pushed`,
       "+ pull request into main: https://github.com/example-org/app/pull/42",
     ]);
     // The branch holds the change; the person's own checkout does not (D57).
@@ -227,12 +249,12 @@ describe("workflow propose: one setting through a pull request", () => {
     expect(git(w.origin, "branch", "--list", branch)).toContain(branch);
     expect(w.ghLog()).toEqual([
       "repo view --json nameWithOwner --jq .nameWithOwner",
-      `pr create --base main --head ${branch} --title workflow: autoCommit false → true --body Updated by \`${COMMAND} workflow propose\`: the project's workflow setting autoCommit, from false to true.
+      `pr create --base main --head ${branch} --title workflow: autoCommit (unset) → true --body Updated by \`${COMMAND} workflow propose\`: the project's workflow setting autoCommit, from (unset) to true.
 It counts once this pull request is merged into main: the merge guard reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
     ]);
     // The commit is the person's, with a message naming the setting and both values.
     expect(git(w.repo, "log", "-1", "--format=%s", branch).trim()).toBe(
-      "workflow: autoCommit false → true",
+      "workflow: autoCommit (unset) → true",
     );
     // Nothing was left in the main checkout, and no worktree of the change is still registered.
     expect(git(w.repo, "status", "--porcelain").trim()).not.toContain("cc-smart-dev-kit.json");
@@ -254,6 +276,9 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(run.status).toBe(0);
     expect(run.lines[0]).toBe("+ autoCommit = (unset) in .claude/cc-smart-dev-kit.json");
     expect(fileOn(w.repo, branch).workflow).toBeUndefined();
+    expect(git(w.repo, "log", "-1", "--format=%s", branch).trim()).toBe(
+      "workflow: autoCommit true → (unset)",
+    );
   });
 
   test("--json answers the pull request in one line", async () => {
@@ -264,11 +289,11 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(run.lines).toHaveLength(1);
     expect(JSON.parse(run.lines[0] ?? "")).toEqual({
       branch,
-      from: "off",
+      from: null,
       setting: "openPr",
       to: "draft",
       url: "https://github.com/example-org/app/pull/42",
-      worktree: join(w.repo, ".claude/worktrees", branch),
+      worktree: join(w.repo, ".claude/worktrees", "workflow-openPr-20261023"),
     });
   });
 
@@ -301,14 +326,56 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(w.ghLog()).toEqual([]);
   });
 
-  test("a switch that lives in the person's own file: the writer refuses, and nothing is left", async () => {
+  test("a switch that lives in the person's own file is refused first: no fetch, no gh, no branch", async () => {
     const w = world();
-    const run = await w.run(["propose", "switches.statusLine", "true"]);
-    expect(run.status).toBe(1);
-    expect(run.errors).toEqual([
-      "switches.statusLine is your own setting, not the project's: run it without --project (the status line is per person, per machine); the worktree and the branch were removed again; nothing was left behind",
-    ]);
+    for (const argv of [
+      ["propose", "switches.statusLine", "true"],
+      ["propose", "switches.updateHold", "--unset"],
+    ]) {
+      const run = await w.run(argv);
+      const key = argv[1];
+      expect(run.status).toBe(1);
+      expect(run.errors).toEqual([
+        `${key} is your own setting, not the project's, so there is nothing to propose: it is per person, per machine — change it with \`${COMMAND} workflow set ${key} <value>\`.`,
+      ]);
+    }
+    expect(w.ghLog()).toEqual([]);
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
+  });
+
+  test("isProjectKey is what the writer accepts: a key the project's file cannot hold is exactly one it refuses", () => {
+    // One home for the rule (`schema.ts`), held equal to `write.ts` for every switch: the two
+    // can never drift apart, or `propose` would refuse what `set --project` takes, or the
+    // reverse.
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    for (const key of WORKFLOW_KEYS.filter((one) => one.startsWith("switches."))) {
+      let refused = false;
+      try {
+        writeProjectSetting(repo, key, true, env);
+      } catch (error) {
+        refused =
+          error instanceof Error && /is your own setting, not the project's/.test(error.message);
+      }
+      expect(refused).toBe(!isProjectKey(key));
+    }
+    expect(WORKFLOW_KEYS.filter((one) => !isProjectKey(one))).toEqual([
+      "switches.statusLine",
+      "switches.updateHold",
+    ]);
+  });
+
+  test("the person's own defaults never reach the pull request: a from is the project's value, or unset", async () => {
+    const w = world();
+    writePersonalWorkflow(w.env, { autoCommit: true });
+    const run = await w.run(["propose", "autoCommit", "false"]);
+    expect(run.status).toBe(0);
+    expect(
+      git(w.repo, "log", "-1", "--format=%s", "worktree-workflow-autoCommit-20261023").trim(),
+    ).toBe("workflow: autoCommit (unset) → false");
+    expect(w.ghLog()[1]).toContain("from (unset) to false");
+    expect(w.ghLog()[1]).not.toContain("from true");
   });
 
   test("a value only this checkout sets is not 'already set': the change goes to the base", async () => {
@@ -377,7 +444,7 @@ It counts once this pull request is merged into main: the merge guard reads the 
     const run = await w.run(["propose", "autoCommit", "true"]);
     expect(run.status).toBe(0);
     expect(run.lines[1]).toBe(
-      "+ worktree-workflow-autoCommit-20261023-2 (.claude/worktrees/worktree-workflow-autoCommit-20261023-2), cut from origin/main and pushed",
+      "+ worktree-workflow-autoCommit-20261023-2 (.claude/worktrees/workflow-autoCommit-20261023-2), cut from origin/main and pushed",
     );
   });
 
@@ -419,9 +486,7 @@ It counts once this pull request is merged into main: the merge guard reads the 
       "the worktree and the branch were removed again; nothing was left behind",
     );
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
-    expect(
-      existsSync(join(w.repo, ".claude/worktrees/worktree-workflow-autoCommit-20261023")),
-    ).toBe(false);
+    expect(existsSync(join(w.repo, ".claude/worktrees/workflow-autoCommit-20261023"))).toBe(false);
   });
 
   test("a base that cannot be fetched: refused with the fix, and nothing made", async () => {
@@ -484,7 +549,7 @@ describe("workflow propose: names, folders and a gh that does not answer", () =>
     const run = await w.run(["propose", "autoCommit", "true"]);
     expect(run.status).toBe(0);
     expect(run.lines[1]).toBe(
-      "+ worktree-workflow-autoCommit-20261023-2 (.claude/worktrees/worktree-workflow-autoCommit-20261023-2), cut from origin/main and pushed",
+      "+ worktree-workflow-autoCommit-20261023-2 (.claude/worktrees/workflow-autoCommit-20261023-2), cut from origin/main and pushed",
     );
   });
 
@@ -511,9 +576,35 @@ describe("workflow propose: names, folders and a gh that does not answer", () =>
     // Git made this run's branch before it found the folder; it is taken back.
     expect(branchesIn(w.repo, other)).toEqual([]);
     // The folder is the other run's, and is never removed.
-    expect(readFileSync(join(w.repo, ".claude/worktrees", other, "file"), "utf8")).toBe(
-      "another run's file\n",
+    expect(
+      readFileSync(join(w.repo, ".claude/worktrees/workflow-autoCommit-20261023", "file"), "utf8"),
+    ).toBe("another run's file\n");
+  });
+
+  test("older git's capitalised 'A branch named': the other run's branch is still left alone", async () => {
+    const w = world({ race: "old-branch" });
+    const other = "worktree-workflow-autoCommit-20261023";
+    const run = await w.run(["propose", "autoCommit", "true"]);
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(run.lines[1]).toContain(`${other}-2`);
+    // The branch the other run made is untouched: it still points where it did.
+    expect(git(w.repo, "rev-parse", "--verify", other).trim()).toBe(
+      git(w.repo, "rev-parse", "origin/main").trim(),
     );
+  });
+
+  test("a gh that opens nothing it can name: refused, and the pushed branch is taken back too", async () => {
+    const w = world({ gh: "create-no-url" });
+    const branch = "worktree-workflow-autoCommit-20261023";
+    const run = await w.run(["propose", "autoCommit", "true"]);
+    expect(run.status).toBe(1);
+    expect(run.errors[0]).toContain(
+      "gh pr create failed: gh printed no pull request URL (created)",
+    );
+    expect(run.errors[0]).toContain("nothing was left behind");
+    expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
+    expect(git(w.origin, "branch", "--list", branch).trim()).toBe("");
   });
 
   test("--folder is found from the folder the command runs in, and the person's checkout stays as it was", async () => {

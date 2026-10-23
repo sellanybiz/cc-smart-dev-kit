@@ -54,13 +54,8 @@ import {
   spawnGh,
 } from "../../workflow/merge-check";
 import { type GhLoginState, ghLoginState } from "../../workflow/propose";
-import {
-  type GateRead,
-  type ResolvedWorkflow,
-  resolvedValueOf,
-  resolveGateAsync,
-} from "../../workflow/resolve";
-import { WORKFLOW_KEYS } from "../../workflow/schema";
+import { type GateRead, resolvedValueOf, resolveGateAsync } from "../../workflow/resolve";
+import { isProjectKey, WORKFLOW_KEYS } from "../../workflow/schema";
 import { projectCardData, projectFiles } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import type {
@@ -722,7 +717,7 @@ export const PROJECT_GH_LOGIN_CACHE_MS = 60_000;
 /** The gh login answers kept, by project root. */
 const keptGhLogins = new Map<string, { at: number; state: GhLoginState }>();
 
-/** Forgets the kept gh login answers: a test's own fake gh, and a login or logout since a read. */
+/** Forgets the kept gh login answers: a test moves its fake gh between reads. */
 export function forgetGhLogin(): void {
   keptGhLogins.clear();
 }
@@ -759,12 +754,22 @@ function configAt(
 }
 
 /**
- * `GET /api/projects/<id>/workflow` (D57): every workflow setting of this project with its
- * value and where that value came from, plus the base a change's pull request would go into
- * and whether `gh` can open one now. The values are `resolveWorkflow` + `resolvedValueOf` —
- * the same resolver `workflow show` prints from — so the card and the command can never
- * disagree. A project's file that cannot be read is a `note` and no settings: a page is never
- * shown a `default` for a value the project really sets.
+ * `GET /api/projects/<id>/workflow` (D57): every workflow setting a project's own file can hold
+ * (`isProjectKey`), with its value and where that value came from, plus the base a change's pull
+ * request would go into and whether `gh` can open one now.
+ *
+ * **The values are the base's, not the checkout's.** A proposal changes the file committed on
+ * `origin/<worktrees.base>` — the file the merge guard reads, and the one `workflow propose`
+ * compares against — so the answer is `resolveGateAsync` (the gate's own non-blocking reader:
+ * `readCommittedConfigAsync` + `resolveWorkflow`) over that file, then `resolvedValueOf` (the
+ * map `workflow show` prints through). An uncommitted edit in the person's checkout, or another
+ * branch's file, is never shown as the project's policy. The ref is as fresh as the last fetch
+ * (nothing is fetched for a read): after a merge on GitHub the card shows the old value until
+ * the checkout fetches, as the gate itself does.
+ *
+ * A project with no file, no base, or no committed file on it, or a file or a personal
+ * `workflow.json` that cannot be read, is a `note` and no settings: a page is never shown a
+ * `default` for a value the project really sets.
  */
 export async function projectWorkflowAnswerFor(
   deps: PageDataDeps,
@@ -777,26 +782,45 @@ export async function projectWorkflowAnswerFor(
     return { error: `no project has the id "${id}"; the list on /api/projects names them` };
   }
   const gh = await ghLoginOf(world, project.root);
-  const read = configAt(project.root);
-  if (!read.ok) return { base: null, gh, note: read.why, settings: [] };
-  let resolved: ResolvedWorkflow;
-  try {
-    resolved = deps.workflow.resolveWorkflow(world.paths, read.config);
-  } catch (error) {
-    // A broken file of the person's own: a note, as the Settings page shows it, never defaults.
+  // The working copy names the base (as `workflow show`'s gate lines read it) and says whether
+  // the project is set up at all; what the settings are comes from the committed file below.
+  const own = configAt(project.root);
+  if (!own.ok) return { base: null, gh, note: own.why, settings: [] };
+  const { base } = own;
+  if (base === null) {
     return {
-      base: read.base,
+      base,
+      gh,
+      note: `${project.root} names no worktrees.base, so a change has no branch to go into: run \`${COMMAND} project init\` there.`,
+      settings: [],
+    };
+  }
+  try {
+    const checkout = await locateCheckoutAsync(project.root, { env: world.env });
+    if (checkout === null) {
+      return { base, gh, note: `${project.root} is not in a git checkout.`, settings: [] };
+    }
+    const read = await resolveGateAsync(world.paths, checkout, base, { env: world.env });
+    if (!read.ok) return { base, gh, note: read.why, settings: [] };
+    return {
+      base,
+      gh,
+      note: null,
+      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => ({
+        key,
+        ...resolvedValueOf(read.gate.resolved, key),
+      })),
+    };
+  } catch (error) {
+    // A broken workflow.json of the person's own, or git that cannot run: a note, as the
+    // Settings page shows one — never defaults.
+    return {
+      base,
       gh,
       note: error instanceof Error ? error.message : String(error),
       settings: [],
     };
   }
-  return {
-    base: read.base,
-    gh,
-    note: null,
-    settings: WORKFLOW_KEYS.map((key) => ({ key, ...resolvedValueOf(resolved, key) })),
-  };
 }
 
 /** `/api/projects`: the current card, every row, and why the list may be short (B8). */

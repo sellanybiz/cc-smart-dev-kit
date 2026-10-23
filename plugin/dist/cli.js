@@ -21707,6 +21707,10 @@ var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
 function isSwitchKey(key) {
   return SWITCH_KEYS.includes(key);
 }
+var PROJECT_SWITCH_NAMES = ["sessionNames", "jobRoute"];
+function isProjectKey(key) {
+  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
+}
 function switchOf(key) {
   return key.slice("switches.".length);
 }
@@ -42407,9 +42411,11 @@ var WORKTREE_TIMEOUT_MS = 60000;
 var COMMIT_TIMEOUT_MS = 120000;
 var PUSH_TIMEOUT_MS = 120000;
 var QUICK_GIT_TIMEOUT_MS = 1e4;
+var GH_CREATE_TIMEOUT_MS = 60000;
+var PROPOSE_WORST_CASE_MS = GH_TIMEOUT_MS3 + FETCH_TIMEOUT_MS + 2 * FETCH_TIMEOUT_MS + 2 * WORKTREE_TIMEOUT_MS + COMMIT_TIMEOUT_MS + PUSH_TIMEOUT_MS + GH_CREATE_TIMEOUT_MS + WORKTREE_TIMEOUT_MS + PUSH_TIMEOUT_MS + 8 * QUICK_GIT_TIMEOUT_MS + 30000;
 var NAME_TRIES = 50;
-var NAME_TAKEN = /already exists/;
-var BRANCH_TAKEN = /a branch named/;
+var NAME_TAKEN = /already exists/i;
+var BRANCH_TAKEN = /a branch named/i;
 async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_MS3) {
   if (ghMissing(env))
     return "missing";
@@ -42437,49 +42443,74 @@ function dayStamp(now) {
 function settingSlug(key) {
   return key.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
-function nameFree(repo, name, env) {
-  const branch = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`], env, QUICK_GIT_TIMEOUT_MS);
-  if (branch.ok)
-    return false;
-  if (existsSync65(join72(repo, ".claude", "worktrees", name)))
-    return false;
-  const remote = runGit(repo, ["ls-remote", "--exit-code", "--heads", "origin", name], env, FETCH_TIMEOUT_MS);
-  return !remote.ok;
+function placeOf(repo, name) {
+  return {
+    branch: `worktree-${name}`,
+    name,
+    worktree: join72(repo, ".claude", "worktrees", name)
+  };
 }
-function freeName(repo, wanted, env) {
-  if (nameFree(repo, wanted, env))
-    return wanted;
-  for (let count = 2;count <= NAME_TRIES; count += 1) {
-    const name = `${wanted}-${count}`;
-    if (nameFree(repo, name, env))
-      return name;
+function remoteBranches(repo, prefix, env) {
+  const listed = runGit(repo, ["ls-remote", "--heads", "origin", `${prefix}*`], env, FETCH_TIMEOUT_MS);
+  if (!listed.ok)
+    return new Set;
+  const names = new Set;
+  for (const line of listed.out.split(`
+`)) {
+    const ref = line.trim().split(/\s+/)[1];
+    if (ref?.startsWith("refs/heads/"))
+      names.add(ref.slice("refs/heads/".length));
   }
-  return wanted;
+  return names;
+}
+function placeFree(repo, place, env, taken) {
+  if (taken.has(place.branch))
+    return false;
+  const local = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${place.branch}`], env, QUICK_GIT_TIMEOUT_MS);
+  if (local.ok)
+    return false;
+  return !existsSync65(place.worktree);
+}
+function freePlace(repo, wanted, env) {
+  const taken = remoteBranches(repo, `worktree-${wanted}`, env);
+  const first = placeOf(repo, wanted);
+  if (placeFree(repo, first, env, taken))
+    return first;
+  for (let count = 2;count <= NAME_TRIES; count += 1) {
+    const place = placeOf(repo, `${wanted}-${count}`);
+    if (placeFree(repo, place, env, taken))
+      return place;
+  }
+  return first;
 }
 function removeOwnWorktree(repo, worktree, env) {
   const listed = runGit(repo, ["worktree", "list", "--porcelain"], env, QUICK_GIT_TIMEOUT_MS);
-  if (!listed.ok || !listed.out.includes(`worktree ${worktree}
-`))
+  if (!listed.ok)
+    return `the worktree ${worktree} (git could not list the worktrees)`;
+  if (!parseWorktreeList(listed.out).some((one) => samePath3(one.path, worktree)))
     return null;
   const removed = runGit(repo, ["worktree", "remove", "--force", worktree], env, WORKTREE_TIMEOUT_MS);
   return removed.ok ? null : `the worktree ${worktree} (${lastLine3(removed.err)})`;
 }
-function takeBack2(repo, worktree, branch, pushed, env) {
+function takeBack2(repo, place, pushed, env, onlyAt) {
   const left = [];
-  const worktreeProblem = removeOwnWorktree(repo, worktree, env);
+  const worktreeProblem = removeOwnWorktree(repo, place.worktree, env);
   if (worktreeProblem !== null)
     left.push(worktreeProblem);
-  const exists = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env, QUICK_GIT_TIMEOUT_MS);
-  if (exists.ok) {
-    const deleted = runGit(repo, ["branch", "-D", branch], env, QUICK_GIT_TIMEOUT_MS);
+  const tip = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${place.branch}`], env, QUICK_GIT_TIMEOUT_MS);
+  if (tip.ok && (onlyAt === undefined || tip.out === onlyAt)) {
+    const deleted = runGit(repo, ["branch", "-D", place.branch], env, QUICK_GIT_TIMEOUT_MS);
     if (!deleted.ok)
-      left.push(`the branch ${branch} (${lastLine3(deleted.err)})`);
+      left.push(`the branch ${place.branch} (${lastLine3(deleted.err)})`);
   }
   if (pushed) {
-    const gone = runGit(repo, ["push", "origin", "--delete", branch], env, PUSH_TIMEOUT_MS);
+    const gone = runGit(repo, ["push", "origin", "--delete", place.branch], env, PUSH_TIMEOUT_MS);
     if (!gone.ok)
-      left.push(`the branch ${branch} on origin (${lastLine3(gone.err)})`);
+      left.push(`the branch ${place.branch} on origin (${lastLine3(gone.err)})`);
   }
+  return left;
+}
+function tailOf(left) {
   return left.length === 0 ? "; the worktree and the branch were removed again; nothing was left behind" : `; what is left: ${left.join("; ")}`;
 }
 function saidValue2(key, value) {
@@ -42495,7 +42526,6 @@ function bodyOf(key, from, to, base) {
   ].join(`
 `);
 }
-var GH_CREATE_TIMEOUT_MS = 60000;
 function urlIn(text) {
   const found = /https:\/\/\S+\/pull\/\d+/.exec(text);
   return found === null ? null : found[0];
@@ -42535,6 +42565,9 @@ async function proposeWorkflow(context, key, value, options) {
   if (crewIdOf(context.env) !== null) {
     return fail(`${COMMAND} workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never pushes (D24). ${CREW_QUESTION_STEP}`);
   }
+  if (!isProjectKey(key)) {
+    return fail(`${key} is your own setting, not the project's, so there is nothing to propose: it is per person, per machine \u2014 change it with \`${COMMAND} workflow set ${key} <value>\`.`);
+  }
   let checkout;
   try {
     checkout = locateCheckout(context.folder, { env: context.env });
@@ -42558,7 +42591,7 @@ async function proposeWorkflow(context, key, value, options) {
   if (base === undefined) {
     return fail(`${repo} names no worktrees.base, so a change has no branch to go into: run \`${COMMAND} project init\` there.`);
   }
-  const fetched = runGit(repo, ["fetch", "origin", base], context.env, FETCH_TIMEOUT_MS);
+  const fetched = runGit(repo, ["fetch", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`], context.env, FETCH_TIMEOUT_MS);
   if (!fetched.ok) {
     return fail(`git fetch origin ${base} failed: ${lastLine3(fetched.err)}. Check the network and that origin has ${base}, then try again.`);
   }
@@ -42578,12 +42611,13 @@ async function proposeWorkflow(context, key, value, options) {
     return fail(reasonOf5(error));
   }
   const current = resolvedValueOf(resolved, key);
+  const from = current.source === "project" ? current.value : undefined;
   if (value === undefined) {
-    if (current.source !== "project") {
+    if (from === undefined) {
       context.print(`= ${key} was not set in ${CONFIG_PATH}; no branch or pull request was made.`);
       return 0;
     }
-  } else if (current.source === "project" && Bun.deepEquals(current.value, value, true)) {
+  } else if (from !== undefined && Bun.deepEquals(from, value, true)) {
     context.print(`= ${key} = ${saidValue2(key, value)} in ${CONFIG_PATH} (already set); no branch or pull request was made.`);
     return 0;
   }
@@ -42594,45 +42628,49 @@ async function proposeWorkflow(context, key, value, options) {
   if (login === "out") {
     return fail("gh cannot read this repository on GitHub (it is not logged in, there is no network, or origin is not a GitHub repository): run `gh auth status` to see which, then try again.");
   }
-  const wanted = `worktree-workflow-${settingSlug(key)}-${dayStamp(now())}`;
-  let branch = freeName(repo, wanted, context.env);
-  let worktree = join72(repo, ".claude", "worktrees", branch);
-  const add = () => runGit(repo, ["worktree", "add", "-b", branch, worktree, `origin/${base}`], context.env, WORKTREE_TIMEOUT_MS, { LC_ALL: "C" });
-  const refused = (err) => BRANCH_TAKEN.test(err) ? "" : takeBack2(repo, worktree, branch, false, context.env);
+  const wanted = `workflow-${settingSlug(key)}-${dayStamp(now())}`;
+  const baseSha = runGit(repo, ["rev-parse", "--verify", "--quiet", `origin/${base}^{commit}`], context.env, QUICK_GIT_TIMEOUT_MS).out;
+  let place = freePlace(repo, wanted, context.env);
+  const add = () => runGit(repo, ["worktree", "add", "-b", place.branch, place.worktree, `origin/${base}`], context.env, WORKTREE_TIMEOUT_MS, { LC_ALL: "C" });
+  const refused = (err) => BRANCH_TAKEN.test(err) ? [] : takeBack2(repo, place, false, context.env, baseSha);
   let added = add();
   if (!added.ok && NAME_TAKEN.test(added.err)) {
-    refused(added.err);
-    branch = freeName(repo, wanted, context.env);
-    worktree = join72(repo, ".claude", "worktrees", branch);
+    const left = refused(added.err);
+    if (left.length > 0) {
+      context.print(`! the first attempt left behind: ${left.join("; ")}`);
+    }
+    place = freePlace(repo, wanted, context.env);
     added = add();
   }
   if (!added.ok) {
-    return fail(`git worktree add failed: ${lastLine3(added.err)}${refused(added.err)}`);
+    const left = refused(added.err);
+    return fail(`git worktree add failed: ${lastLine3(added.err)}${left.length === 0 ? ". Nothing was committed or pushed." : `; what is left: ${left.join("; ")}`}`);
   }
+  const { branch, worktree } = place;
   if (!existsSync65(join72(worktree, CONFIG_PATH))) {
-    return fail(`the new worktree has no ${CONFIG_PATH}${takeBack2(repo, worktree, branch, false, context.env)}`);
+    return fail(`the new worktree has no ${CONFIG_PATH}${tailOf(takeBack2(repo, place, false, context.env))}`);
   }
   try {
     writeProjectSetting(worktree, key, value, context.env);
   } catch (error) {
-    return fail(`${reasonOf5(error)}${takeBack2(repo, worktree, branch, false, context.env)}`);
+    return fail(`${reasonOf5(error)}${tailOf(takeBack2(repo, place, false, context.env))}`);
   }
   const status = runGit(worktree, ["status", "--porcelain"], context.env, QUICK_GIT_TIMEOUT_MS);
   if (!status.ok || !status.out.includes(CONFIG_PATH)) {
-    return fail(`the change did not land in the new worktree's own ${CONFIG_PATH}${takeBack2(repo, worktree, branch, false, context.env)}`);
+    return fail(`the change did not land in the new worktree's own ${CONFIG_PATH}${tailOf(takeBack2(repo, place, false, context.env))}`);
   }
-  const title = titleOf(key, current.value, value);
+  const title = titleOf(key, from, value);
   const staged = runGit(worktree, ["add", "--", CONFIG_PATH], context.env, QUICK_GIT_TIMEOUT_MS);
   if (!staged.ok) {
-    return fail(`git add failed: ${lastLine3(staged.err)}${takeBack2(repo, worktree, branch, false, context.env)}`);
+    return fail(`git add failed: ${lastLine3(staged.err)}${tailOf(takeBack2(repo, place, false, context.env))}`);
   }
   const commit = runGit(worktree, ["commit", "-m", title, "--", CONFIG_PATH], context.env, COMMIT_TIMEOUT_MS);
   if (!commit.ok) {
-    return fail(`git commit failed: ${lastLine3(commit.err)}. Check your git name and email (\`git config user.name\`), then try again${takeBack2(repo, worktree, branch, false, context.env)}`);
+    return fail(`git commit failed: ${lastLine3(commit.err)}. The project's own commit hooks run in the new worktree; check them and your git name and email (\`git config user.name\`), then try again${tailOf(takeBack2(repo, place, false, context.env))}`);
   }
   const pushed = runGit(worktree, ["push", "-u", "origin", branch], context.env, PUSH_TIMEOUT_MS);
   if (!pushed.ok) {
-    return fail(`git push -u origin ${branch} failed: ${lastLine3(pushed.err)}. Check that you may push to this repository, then try again${takeBack2(repo, worktree, branch, false, context.env)}`);
+    return fail(`git push -u origin ${branch} failed: ${lastLine3(pushed.err)}. Check that you may push to this repository, and the project's own push hooks, then try again${tailOf(takeBack2(repo, place, false, context.env))}`);
   }
   const created = await createPullRequest(worktree, context.env, [
     "pr",
@@ -42644,18 +42682,18 @@ async function proposeWorkflow(context, key, value, options) {
     "--title",
     title,
     "--body",
-    bodyOf(key, current.value, value, base)
+    bodyOf(key, from, value, base)
   ], context.createTimeoutMs ?? GH_CREATE_TIMEOUT_MS);
   if (!created.ok) {
     if (created.timedOut) {
       return fail(`gh pr create did not answer in time, so the pull request may be open: look at ${repo}'s pull requests on GitHub before running this again. The branch ${branch} is pushed, from ${worktree}.`);
     }
-    return fail(`gh pr create failed: ${created.why}. Check that gh is logged in (\`gh auth login\`) and that your account may open a pull request on this repository, then try again${takeBack2(repo, worktree, branch, true, context.env)}`);
+    return fail(`gh pr create failed: ${created.why}. Check that gh is logged in (\`gh auth login\`) and that your account may open a pull request on this repository, then try again${tailOf(takeBack2(repo, place, true, context.env))}`);
   }
   if (options.json) {
     context.print(JSON.stringify({
       branch,
-      from: current.value,
+      from: from ?? null,
       setting: key,
       to: value ?? null,
       url: created.url,

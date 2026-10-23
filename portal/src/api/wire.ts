@@ -540,7 +540,7 @@ export interface ProjectWorkflowAnswer {
   gh: GhLoginState;
   /** Why the settings could not be read; null when they were. */
   note: null | string;
-  /** Every setting, in `WORKFLOW_KEYS`' order. Empty when `note` says why. */
+  /** Every setting the project's file can hold, in the schema's order. Empty when `note` says why. */
   settings: ProjectWorkflowSetting[];
 }
 

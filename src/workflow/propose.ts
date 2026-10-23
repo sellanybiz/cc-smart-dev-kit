@@ -7,34 +7,40 @@
  * in the project's main checkout. It is a small pull request:
  *
  *   1. the project and its `worktrees.base`;
- *   2. `gh` (installed, and logged in), `git fetch origin <base>`, and the base's own copy of
- *      the project's file — every step that can fail cheaply runs before a branch exists;
- *   3. the value **as the base commits it** (`resolveWorkflow` over the file at `origin/<base>`,
- *      the same resolver `workflow show` reads) — a value the base already has, or an `--unset`
- *      of one it does not set, stops here with one line and no branch. This checkout's
- *      working copy is never the comparison: an uncommitted edit here is not a policy;
- *   4. a branch and a worktree cut from `origin/<base>`, named `worktree-workflow-<setting>-
- *      <YYYYMMDD>` (a second change the same day takes `-2`), under the repository's
- *      `.claude/worktrees/` — Claude Code's own layout, so the plugin's auto-clean removes it
- *      after the merge;
- *   5. the one value, written by **the same writer `workflow set --project` uses**
+ *   2. `git fetch origin <base>` and the base's own copy of the project's file — a file that is
+ *      not committed there has nothing to propose into;
+ *   3. the value **as the base commits it** (`resolveWorkflow` over that file, the same resolver
+ *      `workflow show` reads; only a value the project's own file sets counts) — one the base
+ *      already has, or an `--unset` of one it does not set, stops here with one line and no
+ *      branch. This checkout's working copy is never the comparison: an uncommitted edit here is
+ *      not a policy, and the person's own defaults are never put in a pull request;
+ *   4. `gh` (installed, and able to read this repository) — no pull request, no branch;
+ *   5. a branch and a worktree cut from `origin/<base>`, in Claude Code's own layout: the folder
+ *      `.claude/worktrees/workflow-<setting>-<YYYYMMDD>` (a second change the same day takes
+ *      `-2`) on the branch `worktree-<folder name>`, so the plugin's auto-clean removes it after
+ *      the merge;
+ *   6. the one value, written by **the same writer `workflow set --project` uses**
  *      (`writeProjectSetting`: it validates the value, raises `requires`, and refuses a
  *      setting that is not the project's) — never a second writer. The worktree is a checkout
- *      of the base, so the write lands in the branch's own file and the main checkout's file is
- *      never touched; a write that does not show up in the worktree's own `git status` is
- *      refused before anything is committed;
- *   6. the commit (the person's git identity, a message naming the setting and both values),
+ *      of the base, so the write lands in the branch's own file; that it exists there is checked
+ *      before the write (the writer would otherwise fall back to the main checkout's file), and
+ *      the worktree's own `git status` must show the change before anything is committed;
+ *   7. the commit (the person's git identity, a message naming the setting and both values),
  *      the push, and `gh pr create` into the base with a short body saying what changed and
  *      that it counts once merged;
- *   7. the pull request's URL, or with `--json` `{ url, branch, worktree, setting, from, to }`.
+ *   8. the pull request's URL, or with `--json` `{ url, branch, worktree, setting, from, to }`.
  *
  * **Nothing is left half-made.** A step that fails after the branch exists removes the
  * worktree, the branch and — when the push already went out — the branch on origin, and the one
- * line says what is left if any of that fails.
+ * line says what is left if any of that fails. Two exceptions, both to avoid destroying what may
+ * be someone else's: a `gh pr create` that does not answer in time leaves the pushed branch (the
+ * pull request may exist), and a name another proposal took between the check and the add is
+ * skipped for the next free one, never reused.
  *
  * **A crew session never runs it** (D24): the command pushes a branch and opens a pull request,
- * in children no hook sees, and a crew session does neither — it commits on its own branch and
- * its lead does the rest.
+ * in children no hook sees, and a crew session does neither. Like `CLAUDECODE`'s, the check is a
+ * courtesy a command can drop (`env -u`); the guards deny the session's own `git push` and
+ * `gh pr create` lines either way.
  *
  * **Inside Claude Code a review-gate key (`REVIEW_GATE_KEYS`) is refused** before this module
  * runs (`commands.ts`, as `workflow set` refuses it there). Outside Claude Code — the portal,
@@ -45,7 +51,8 @@ import { join, relative } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
-import { runGit } from "../hooks/git";
+import { parseWorktreeList, runGit } from "../hooks/git";
+import { samePath } from "../path-compare";
 import {
   type Checkout,
   CONFIG_PATH,
@@ -55,12 +62,12 @@ import {
 } from "../project/resolve";
 import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
-import { showValue, type WorkflowKey } from "./schema";
+import { isProjectKey, showValue, type WorkflowKey } from "./schema";
 import { writeProjectSetting } from "./write";
 
 type Env = Record<string, string | undefined>;
 
-/** How long `git fetch` may take: a network call to the remote. */
+/** How long `git fetch` and `ls-remote` may take: a network call to the remote. */
 const FETCH_TIMEOUT_MS = 60_000;
 
 /** How long a checkout of a big tree may take (`crew start` waits as long for the same call). */
@@ -70,22 +77,55 @@ const WORKTREE_TIMEOUT_MS = 60_000;
 const COMMIT_TIMEOUT_MS = 120_000;
 const PUSH_TIMEOUT_MS = 120_000;
 
-/** A read-only or local git call: milliseconds, never a hang. */
+/** A local git call that reads or writes a ref: milliseconds, never a hang. */
 const QUICK_GIT_TIMEOUT_MS = 10_000;
+
+/** How long `gh pr create` may take: a write, so longer than a read — see `createPullRequest`. */
+const GH_CREATE_TIMEOUT_MS = 60_000;
+
+/**
+ * The longest a run can take, from its own step limits: the `gh` read, the fetch, two `ls-remote`
+ * and two `worktree add` (a name taken once), the commit, the push, `gh pr create`, and then the
+ * take-back (a worktree removal, the remote branch's deletion, a few local ref calls), plus the
+ * process's own start. A caller that runs the command in a child gives it **at least this**, so
+ * the command's own limits always fire — and its take-back always runs — before the child is
+ * ended from outside (the portal's action, `src/portal/actions.ts`).
+ */
+export const PROPOSE_WORST_CASE_MS =
+  GH_TIMEOUT_MS +
+  FETCH_TIMEOUT_MS +
+  2 * FETCH_TIMEOUT_MS +
+  2 * WORKTREE_TIMEOUT_MS +
+  COMMIT_TIMEOUT_MS +
+  PUSH_TIMEOUT_MS +
+  GH_CREATE_TIMEOUT_MS +
+  WORKTREE_TIMEOUT_MS +
+  PUSH_TIMEOUT_MS +
+  8 * QUICK_GIT_TIMEOUT_MS +
+  30_000;
+
+/**
+ * The line a caller shows when it ended the child at `PROPOSE_WORST_CASE_MS` anyway: the run may
+ * have stopped anywhere, so the line says where to look.
+ */
+export function proposeTimeoutLine(setting: string): string {
+  return `workflow propose did not answer in time, so it may have left a worktree and a branch behind (the folder .claude/worktrees/workflow-${setting.replace(/[^A-Za-z0-9]+/g, "-")}-…) or opened the pull request: look at the project's pull requests and at \`git worktree list\` before running it again.`;
+}
 
 /** How many names a taken branch may push the new one to before the command gives up. */
 const NAME_TRIES = 50;
 
 /** Git's words (in English, `LC_ALL=C`) when `worktree add` finds its name taken: a branch or a folder. */
-const NAME_TAKEN = /already exists/;
+const NAME_TAKEN = /already exists/i;
 
 /**
  * …and when it is the **branch** name that is taken (`fatal: a branch named 'x' already
- * exists`): git made nothing, and that branch is another run's. A taken **folder** (`fatal:
- * '<path>' already exists`) is another run's too, but git makes the new branch before it looks
- * at the folder and leaves it — that one is this attempt's. Both proved by hand on git 2.53.
+ * exists`; git before 2.35 capitalized it, hence the `i`): git made nothing, and that branch is
+ * another run's. A taken **folder** (`fatal: '<path>' already exists`) is another run's too, but
+ * git makes the new branch before it looks at the folder and leaves it — that one is this
+ * attempt's. Both proved by hand on git 2.53.
  */
-const BRANCH_TAKEN = /a branch named/;
+const BRANCH_TAKEN = /a branch named/i;
 
 /** What a `gh` on this machine can do right now. */
 export type GhLoginState = "in" | "missing" | "out";
@@ -121,7 +161,7 @@ export interface ProposeContext {
   folder: string;
   print: (line: string) => void;
   error: (line: string) => void;
-  /** The clock the branch name's day comes from (UTC); a test moves it. */
+  /** The clock the folder name's day comes from (UTC); a test moves it. */
   now?: () => number;
   /** How long `gh pr create` may take; `GH_CREATE_TIMEOUT_MS` unless a test shortens it. */
   createTimeoutMs?: number;
@@ -141,7 +181,7 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The day a branch name carries, in UTC so every machine names the same day the same way. */
+/** The day a name carries, in UTC so every machine names the same day the same way. */
 function dayStamp(now: number): string {
   const date = new Date(now);
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
@@ -149,52 +189,86 @@ function dayStamp(now: number): string {
   return `${date.getUTCFullYear()}${month}${day}`;
 }
 
-/** A setting as a branch name's part: `crew.perLead` is `crew-perLead`. */
+/** A setting as a name's part: `crew.perLead` is `crew-perLead`. */
 function settingSlug(key: WorkflowKey): string {
   return key.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 /**
- * True when nothing of this repository holds `name`: no local branch, no worktree folder, and no
- * branch on origin (a teammate's proposal of the same setting the same day, which only the push
- * would otherwise find). `ls-remote --exit-code` exits 0 for a match, 2 for none; a call that
- * cannot answer (no network) counts as free — the push says it, with its own line.
+ * Where one proposal lives, in Claude Code's own layout: the folder `.claude/worktrees/<name>`
+ * on the branch `worktree-<name>`.
  */
-function nameFree(repo: string, name: string, env: Env): boolean {
-  const branch = runGit(
+interface Place {
+  branch: string;
+  name: string;
+  worktree: string;
+}
+
+function placeOf(repo: string, name: string): Place {
+  return {
+    branch: `worktree-${name}`,
+    name,
+    worktree: join(repo, ".claude", "worktrees", name),
+  };
+}
+
+/**
+ * The branches of `origin` whose name starts with `prefix`, in **one** network call: a
+ * teammate's proposal of the same setting the same day would otherwise be found only by the
+ * push. A call that cannot answer (no network) counts as none — the push says it, with its own
+ * line — and the run keeps its one bound on the network (`FETCH_TIMEOUT_MS`).
+ */
+function remoteBranches(repo: string, prefix: string, env: Env): Set<string> {
+  const listed = runGit(
     repo,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`],
-    env,
-    QUICK_GIT_TIMEOUT_MS,
-  );
-  if (branch.ok) return false;
-  if (existsSync(join(repo, ".claude", "worktrees", name))) return false;
-  const remote = runGit(
-    repo,
-    ["ls-remote", "--exit-code", "--heads", "origin", name],
+    ["ls-remote", "--heads", "origin", `${prefix}*`],
     env,
     FETCH_TIMEOUT_MS,
   );
-  return !remote.ok;
+  if (!listed.ok) return new Set();
+  const names = new Set<string>();
+  for (const line of listed.out.split("\n")) {
+    const ref = line.trim().split(/\s+/)[1];
+    if (ref?.startsWith("refs/heads/")) names.add(ref.slice("refs/heads/".length));
+  }
+  return names;
 }
 
-/** The first free name from `wanted` on: the same day's second change is `-2`, then `-3`. */
-function freeName(repo: string, wanted: string, env: Env): string {
-  if (nameFree(repo, wanted, env)) return wanted;
+/** True when nothing of this repository holds the place: no local branch, no worktree folder
+ * (both cheap), and no branch of `taken` on origin. */
+function placeFree(repo: string, place: Place, env: Env, taken: ReadonlySet<string>): boolean {
+  if (taken.has(place.branch)) return false;
+  const local = runGit(
+    repo,
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${place.branch}`],
+    env,
+    QUICK_GIT_TIMEOUT_MS,
+  );
+  if (local.ok) return false;
+  return !existsSync(place.worktree);
+}
+
+/** The first free place from `wanted` on: the same day's second change is `-2`, then `-3`. */
+function freePlace(repo: string, wanted: string, env: Env): Place {
+  const taken = remoteBranches(repo, `worktree-${wanted}`, env);
+  const first = placeOf(repo, wanted);
+  if (placeFree(repo, first, env, taken)) return first;
   for (let count = 2; count <= NAME_TRIES; count += 1) {
-    const name = `${wanted}-${count}`;
-    if (nameFree(repo, name, env)) return name;
+    const place = placeOf(repo, `${wanted}-${count}`);
+    if (placeFree(repo, place, env, taken)) return place;
   }
-  return wanted;
+  return first;
 }
 
 /**
  * Removes a worktree **only when git lists it**: a folder that merely holds the name (another
- * run's, or a person's) is never removed. Answers the failure's own words, or null.
+ * run's, or a person's) is never removed. Paths are compared as places (`samePath`), because git
+ * prints `C:/…` where `join` gives `C:\…`. Answers the failure's own words, or null.
  */
 function removeOwnWorktree(repo: string, worktree: string, env: Env): null | string {
   const listed = runGit(repo, ["worktree", "list", "--porcelain"], env, QUICK_GIT_TIMEOUT_MS);
-  if (!listed.ok || !listed.out.includes(`worktree ${worktree}\n`)) return null;
+  if (!listed.ok) return `the worktree ${worktree} (git could not list the worktrees)`;
+  if (!parseWorktreeList(listed.out).some((one) => samePath(one.path, worktree))) return null;
   const removed = runGit(
     repo,
     ["worktree", "remove", "--force", worktree],
@@ -206,39 +280,50 @@ function removeOwnWorktree(repo: string, worktree: string, env: Env): null | str
 
 /**
  * Removes what a failed step made: the worktree, the branch, and — when the push already went
- * out — the branch on origin. Only called after the worktree was made (so both are this run's).
- * Answers the tail of the failure's line: nothing left, or what is.
+ * out — the branch on origin. Answers what could not be removed, each in words; empty when
+ * nothing is left. `onlyAt` limits the local branch to one still at that commit: a branch a refused
+ * `worktree add` may have left must be the untouched cut from the base, never one that has since
+ * been committed on.
  */
 function takeBack(
   repo: string,
-  worktree: string,
-  branch: string,
+  place: Place,
   pushed: boolean,
   env: Env,
-): string {
+  onlyAt?: string,
+): string[] {
   const left: string[] = [];
-  const worktreeProblem = removeOwnWorktree(repo, worktree, env);
+  const worktreeProblem = removeOwnWorktree(repo, place.worktree, env);
   if (worktreeProblem !== null) left.push(worktreeProblem);
-  const exists = runGit(
+  const tip = runGit(
     repo,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${place.branch}`],
     env,
     QUICK_GIT_TIMEOUT_MS,
   );
-  if (exists.ok) {
-    const deleted = runGit(repo, ["branch", "-D", branch], env, QUICK_GIT_TIMEOUT_MS);
-    if (!deleted.ok) left.push(`the branch ${branch} (${lastLine(deleted.err)})`);
+  if (tip.ok && (onlyAt === undefined || tip.out === onlyAt)) {
+    const deleted = runGit(repo, ["branch", "-D", place.branch], env, QUICK_GIT_TIMEOUT_MS);
+    if (!deleted.ok) left.push(`the branch ${place.branch} (${lastLine(deleted.err)})`);
   }
   if (pushed) {
-    const gone = runGit(repo, ["push", "origin", "--delete", branch], env, PUSH_TIMEOUT_MS);
-    if (!gone.ok) left.push(`the branch ${branch} on origin (${lastLine(gone.err)})`);
+    const gone = runGit(repo, ["push", "origin", "--delete", place.branch], env, PUSH_TIMEOUT_MS);
+    if (!gone.ok) left.push(`the branch ${place.branch} on origin (${lastLine(gone.err)})`);
   }
+  return left;
+}
+
+/** The end of a failure's line: what was taken back, or what is left. */
+function tailOf(left: string[]): string {
   return left.length === 0
     ? "; the worktree and the branch were removed again; nothing was left behind"
     : `; what is left: ${left.join("; ")}`;
 }
 
-/** A value as a line says it: an unset one is `(unset)`. */
+/**
+ * A value as a line says it: an unset one is `(unset)`. Only ever a value the **project's own
+ * file** holds (`from`), or the one proposed — never the person's own default, which no pull
+ * request should publish.
+ */
 function saidValue(key: WorkflowKey, value: unknown): string {
   return value === undefined ? "(unset)" : showValue(key, value);
 }
@@ -255,9 +340,6 @@ function bodyOf(key: WorkflowKey, from: unknown, to: unknown, base: string): str
     `It counts once this pull request is merged into ${base}: the merge guard reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
   ].join("\n");
 }
-
-/** How long `gh pr create` may take: a write, so longer than a read — see `createPullRequest`. */
-const GH_CREATE_TIMEOUT_MS = 60_000;
 
 /** What `gh pr create` answered: the pull request's URL, why it was refused, or that it timed out. */
 type Created = { ok: true; url: string } | { ok: false; timedOut: boolean; why: string };
@@ -331,6 +413,14 @@ export async function proposeWorkflow(
     );
   }
 
+  // A setting the project's own file cannot hold has nothing to propose: the writer would refuse
+  // it only after a fetch, a `gh` call, a branch and a worktree.
+  if (!isProjectKey(key)) {
+    return fail(
+      `${key} is your own setting, not the project's, so there is nothing to propose: it is per person, per machine — change it with \`${COMMAND} workflow set ${key} <value>\`.`,
+    );
+  }
+
   // 1. The project and the base its change goes into.
   let checkout: Checkout | null;
   try {
@@ -358,9 +448,15 @@ export async function proposeWorkflow(
     );
   }
 
-  // 2. The base as it is now, and its own copy of the project's file: the value this changes
-  //    is the one committed there, and a file that is not committed has nothing to propose into.
-  const fetched = runGit(repo, ["fetch", "origin", base], context.env, FETCH_TIMEOUT_MS);
+  // 2. The base as it is now, and its own copy of the project's file: the value this changes is
+  //    the one committed there, and a file that is not committed has nothing to propose into.
+  //    The refspec is explicit, so a single-branch clone updates `origin/<base>` too.
+  const fetched = runGit(
+    repo,
+    ["fetch", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`],
+    context.env,
+    FETCH_TIMEOUT_MS,
+  );
   if (!fetched.ok) {
     return fail(
       `git fetch origin ${base} failed: ${lastLine(fetched.err)}. Check the network and that origin has ${base}, then try again.`,
@@ -380,7 +476,8 @@ export async function proposeWorkflow(
 
   // 3. The value **as the base commits it**, never this checkout's working copy: an uncommitted
   //    edit here must not read as "already set", and a change that counts is one to the base.
-  //    A value that is already there needs no pull request, and no gh to say so.
+  //    A value that is already there needs no pull request, and no gh to say so. Only a value
+  //    the project's own file holds is ever a `from`: the person's defaults stay private.
   let resolved: ResolvedWorkflow;
   try {
     resolved = resolveWorkflow(context.paths, committed.config);
@@ -388,12 +485,13 @@ export async function proposeWorkflow(
     return fail(reasonOf(error));
   }
   const current = resolvedValueOf(resolved, key);
+  const from = current.source === "project" ? current.value : undefined;
   if (value === undefined) {
-    if (current.source !== "project") {
+    if (from === undefined) {
       context.print(`= ${key} was not set in ${CONFIG_PATH}; no branch or pull request was made.`);
       return 0;
     }
-  } else if (current.source === "project" && Bun.deepEquals(current.value, value, true)) {
+  } else if (from !== undefined && Bun.deepEquals(from, value, true)) {
     context.print(
       `= ${key} = ${saidValue(key, value)} in ${CONFIG_PATH} (already set); no branch or pull request was made.`,
     );
@@ -414,14 +512,19 @@ export async function proposeWorkflow(
   }
 
   // 5. The branch and the worktree, cut from origin/<base>.
-  const wanted = `worktree-workflow-${settingSlug(key)}-${dayStamp(now())}`;
-  let branch = freeName(repo, wanted, context.env);
-  let worktree = join(repo, ".claude", "worktrees", branch);
+  const wanted = `workflow-${settingSlug(key)}-${dayStamp(now())}`;
+  const baseSha = runGit(
+    repo,
+    ["rev-parse", "--verify", "--quiet", `origin/${base}^{commit}`],
+    context.env,
+    QUICK_GIT_TIMEOUT_MS,
+  ).out;
+  let place = freePlace(repo, wanted, context.env);
   // In English, so a name another run took is read by git's own words, whatever the locale.
   const add = (): ReturnType<typeof runGit> =>
     runGit(
       repo,
-      ["worktree", "add", "-b", branch, worktree, `origin/${base}`],
+      ["worktree", "add", "-b", place.branch, place.worktree, `origin/${base}`],
       context.env,
       WORKTREE_TIMEOUT_MS,
       { LC_ALL: "C" },
@@ -429,26 +532,32 @@ export async function proposeWorkflow(
   // What a refused add leaves that is this run's. A taken **branch name** made nothing, and that
   // branch is another run's: never touched. A taken **folder** is the other run's too, but git
   // makes the new branch before it looks at the folder and leaves it — that branch is this
-  // attempt's, and `takeBack` removes only it and a worktree git itself lists.
-  const refused = (err: string): string =>
-    BRANCH_TAKEN.test(err) ? "" : takeBack(repo, worktree, branch, false, context.env);
+  // attempt's, and goes only while it is still the untouched cut from the base.
+  const refused = (err: string): string[] =>
+    BRANCH_TAKEN.test(err) ? [] : takeBack(repo, place, false, context.env, baseSha);
   let added = add();
   if (!added.ok && NAME_TAKEN.test(added.err)) {
     // A name another proposal took between the check and the add: one more free name, once.
-    refused(added.err);
-    branch = freeName(repo, wanted, context.env);
-    worktree = join(repo, ".claude", "worktrees", branch);
+    const left = refused(added.err);
+    if (left.length > 0) {
+      context.print(`! the first attempt left behind: ${left.join("; ")}`);
+    }
+    place = freePlace(repo, wanted, context.env);
     added = add();
   }
   if (!added.ok) {
-    return fail(`git worktree add failed: ${lastLine(added.err)}${refused(added.err)}`);
+    const left = refused(added.err);
+    return fail(
+      `git worktree add failed: ${lastLine(added.err)}${left.length === 0 ? ". Nothing was committed or pushed." : `; what is left: ${left.join("; ")}`}`,
+    );
   }
+  const { branch, worktree } = place;
   // The worktree is a checkout of the base, so it holds the base's own file. The check is the
   // guard against the writer falling back to the main checkout's working copy: that file is
   // never written by a proposal.
   if (!existsSync(join(worktree, CONFIG_PATH))) {
     return fail(
-      `the new worktree has no ${CONFIG_PATH}${takeBack(repo, worktree, branch, false, context.env)}`,
+      `the new worktree has no ${CONFIG_PATH}${tailOf(takeBack(repo, place, false, context.env))}`,
     );
   }
 
@@ -456,21 +565,21 @@ export async function proposeWorkflow(
   try {
     writeProjectSetting(worktree, key, value, context.env);
   } catch (error) {
-    return fail(`${reasonOf(error)}${takeBack(repo, worktree, branch, false, context.env)}`);
+    return fail(`${reasonOf(error)}${tailOf(takeBack(repo, place, false, context.env))}`);
   }
   const status = runGit(worktree, ["status", "--porcelain"], context.env, QUICK_GIT_TIMEOUT_MS);
   if (!status.ok || !status.out.includes(CONFIG_PATH)) {
     return fail(
-      `the change did not land in the new worktree's own ${CONFIG_PATH}${takeBack(repo, worktree, branch, false, context.env)}`,
+      `the change did not land in the new worktree's own ${CONFIG_PATH}${tailOf(takeBack(repo, place, false, context.env))}`,
     );
   }
 
   // 7. The commit (the person's identity), the push, and the pull request.
-  const title = titleOf(key, current.value, value);
+  const title = titleOf(key, from, value);
   const staged = runGit(worktree, ["add", "--", CONFIG_PATH], context.env, QUICK_GIT_TIMEOUT_MS);
   if (!staged.ok) {
     return fail(
-      `git add failed: ${lastLine(staged.err)}${takeBack(repo, worktree, branch, false, context.env)}`,
+      `git add failed: ${lastLine(staged.err)}${tailOf(takeBack(repo, place, false, context.env))}`,
     );
   }
   const commit = runGit(
@@ -481,13 +590,13 @@ export async function proposeWorkflow(
   );
   if (!commit.ok) {
     return fail(
-      `git commit failed: ${lastLine(commit.err)}. Check your git name and email (\`git config user.name\`), then try again${takeBack(repo, worktree, branch, false, context.env)}`,
+      `git commit failed: ${lastLine(commit.err)}. The project's own commit hooks run in the new worktree; check them and your git name and email (\`git config user.name\`), then try again${tailOf(takeBack(repo, place, false, context.env))}`,
     );
   }
   const pushed = runGit(worktree, ["push", "-u", "origin", branch], context.env, PUSH_TIMEOUT_MS);
   if (!pushed.ok) {
     return fail(
-      `git push -u origin ${branch} failed: ${lastLine(pushed.err)}. Check that you may push to this repository, then try again${takeBack(repo, worktree, branch, false, context.env)}`,
+      `git push -u origin ${branch} failed: ${lastLine(pushed.err)}. Check that you may push to this repository, and the project's own push hooks, then try again${tailOf(takeBack(repo, place, false, context.env))}`,
     );
   }
   const created = await createPullRequest(
@@ -503,7 +612,7 @@ export async function proposeWorkflow(
       "--title",
       title,
       "--body",
-      bodyOf(key, current.value, value, base),
+      bodyOf(key, from, value, base),
     ],
     context.createTimeoutMs ?? GH_CREATE_TIMEOUT_MS,
   );
@@ -515,7 +624,7 @@ export async function proposeWorkflow(
       );
     }
     return fail(
-      `gh pr create failed: ${created.why}. Check that gh is logged in (\`gh auth login\`) and that your account may open a pull request on this repository, then try again${takeBack(repo, worktree, branch, true, context.env)}`,
+      `gh pr create failed: ${created.why}. Check that gh is logged in (\`gh auth login\`) and that your account may open a pull request on this repository, then try again${tailOf(takeBack(repo, place, true, context.env))}`,
     );
   }
 
@@ -523,7 +632,7 @@ export async function proposeWorkflow(
     context.print(
       JSON.stringify({
         branch,
-        from: current.value,
+        from: from ?? null,
         setting: key,
         to: value ?? null,
         url: created.url,

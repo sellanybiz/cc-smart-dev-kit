@@ -81,6 +81,7 @@ import {
   readLastCheck,
   updateFiles,
 } from "../update/state";
+import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
 import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
 import {
   addProjectRoot,
@@ -152,8 +153,8 @@ export interface ActionResult {
   /** `slot.test` only: one result per target, for the chain's own marks. */
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];
   /**
-   * `project.workflow.propose` only: the pull request it opened, for the card's own link.
-   * Taken from the CLI's last line, which prints the URL alone — the command's own contract.
+   * `project.workflow.propose` only: the pull request it opened, for the card's own link. Read
+   * from the command's `--json` line, and only from a run that exited 0.
    */
   url?: string;
 }
@@ -919,30 +920,55 @@ async function projectWorkflowPropose(
   if (!unset && value.startsWith("-")) {
     return { lines: [`"${value}" is not a value: it starts with "-".`], ok: false };
   }
+  // `--json`: on success the command prints one line `{ url, branch, worktree, … }` — a contract
+  // that does not move with its human words — and on any refusal it prints none, so a URL can
+  // never come out of a failure. The child gets the command's own worst case and more
+  // (`PROPOSE_WORST_CASE_MS`): its limits fire, and its take-back runs, before it is ended.
   const run = await runCliChild(
     action.portal,
-    ["workflow", "propose", setting, ...(unset ? ["--unset"] : [value])],
+    ["workflow", "propose", setting, ...(unset ? ["--unset"] : [value]), "--json"],
     {
       cwd: target.cwd,
       onLine: (line) => action.publish?.("action", { action: "project.workflow.propose", line }),
+      timeoutMs: PROPOSE_WORST_CASE_MS,
     },
   );
   const lines = [...run.lines];
   if (run.error !== null) lines.push(run.error);
-  if (run.timedOut) {
-    lines.push(
-      "workflow propose did not answer in time, so it may have opened the pull request: look on GitHub before running it again",
-    );
-  }
-  const url = [...run.lines]
-    .reverse()
-    .map((line) => /https:\/\/\S+\/pull\/\d+/.exec(line))
-    .find((found) => found !== null)?.[0];
+  if (run.timedOut) lines.push(proposeTimeoutLine(setting));
+  const ok = run.error === null && !run.timedOut && run.exitCode === 0;
+  const opened = ok ? proposedLine(run.lines) : null;
+  if (opened === null) return { lines, ok };
   return {
-    ...(url === undefined ? {} : { url }),
-    lines,
-    ok: run.error === null && !run.timedOut && run.exitCode === 0,
+    lines: [`Opened ${opened.url}`, `Branch ${opened.branch}, in ${opened.worktree}.`],
+    ok,
+    url: opened.url,
   };
+}
+
+/**
+ * The pull request a successful `workflow propose --json` printed: its one JSON line, read as
+ * the command's contract (`url`, `branch`, `worktree`). Null for any other output — "already
+ * set" and "was not set" are plain lines, and a refusal prints no JSON.
+ */
+function proposedLine(lines: string[]): { branch: string; url: string; worktree: string } | null {
+  for (const line of [...lines].reverse()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      isObject(parsed) &&
+      typeof parsed.url === "string" &&
+      typeof parsed.branch === "string" &&
+      typeof parsed.worktree === "string"
+    ) {
+      return { branch: parsed.branch, url: parsed.url, worktree: parsed.worktree };
+    }
+  }
+  return null;
 }
 
 // ── The project's two files ─────────────────────────────────────────────────────
