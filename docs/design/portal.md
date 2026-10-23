@@ -187,7 +187,11 @@ session can write, and a rule added after the page was drawn would otherwise be 
 **The claude-mem card (PM1)** sets claude-mem's route and model, its key and its fallback, each
 asked first in the page's own dialog and refused by the server without `confirm: true`. The
 writers are the person's own, owned and recorded as theirs, so setup leaves them and `restore`
-takes them out: § claude-mem from the portal.
+takes them out: § claude-mem from the portal. The answer also carries, per choice, whether a value
+set by hand refuses it, and the keys that do (`refusedByHand`, `handKeys`), so the card can say
+why a change is refused; **`claudemem.takeover` (MS1)** is the action beside it that records those
+values as cc-smart-dev-kit's own, after the page's own confirmation, and changes nothing in
+claude-mem's file until the person picks another.
 
 **The gateway's key (PK1).** The owner asked to set the gateway's own OmniRoute key
 from the portal, and to make one from OmniRoute's dashboard password, as `gateway setup` does.
