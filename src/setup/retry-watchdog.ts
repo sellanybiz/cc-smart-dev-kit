@@ -12,10 +12,13 @@
  * (`RETRY_WATCHDOG_ON_NOTE`), not in a question:
  *   - every Claude session on the machine waits instead of failing;
  *   - a `claude -p` script can wait until a model answers;
- *   - there is no time limit: this module writes no `…_MAX_WAIT_MS` and no
- *     `…_MAX_USAGE_LIMIT_WAIT_MS` (the owner chose "keep waiting", D42).
+ *   - a usage limit that resets more than 24 hours away ends the wait
+ *     (`…_MAX_USAGE_LIMIT_WAIT_MS`): a weekly limit can reset days away, and Claude Code's
+ *     own automatic continue refuses a wait past 24 h for that reason;
+ *   - a 5-hour limit, and a model that is down or overloaded, are still waited out with no
+ *     limit (no `…_MAX_WAIT_MS`: the owner chose "keep waiting", D42).
  *
- * The two keys go under `env` in the user's `settings.json` as owned keys, through
+ * The three keys go under `env` in the user's `settings.json` as owned keys, through
  * `applyManagedJson` (`src/cli/setup.ts`): a value the person set themselves is never taken
  * (`ForeignKeyError`), and `restore` removes ours.
  */
@@ -35,12 +38,23 @@ export const RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMI
 /** Five minutes: the shortest gap between checks of whether a limit was lifted early. */
 export const RETRY_WATCHDOG_RECHECK_MS = 300_000;
 
+/** The variable that ends a wait when a usage limit's reset is further away than the cap, in ms. */
+export const RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV =
+  "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
+/** 24 hours (D56): a limit that resets further away ends the wait instead of holding a script for days. */
+export const RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86_400_000;
+
 /** The owned keys, in settings.json, with the values setup writes (settings `env` values are strings). */
 export const RETRY_WATCHDOG_KEY: KeyPath = ["env", RETRY_WATCHDOG_ENV];
 export const RETRY_WATCHDOG_RECHECK_KEY: KeyPath = ["env", RETRY_WATCHDOG_RECHECK_ENV];
+export const RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY: KeyPath = [
+  "env",
+  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV,
+];
 export const RETRY_WATCHDOG_SETTINGS: ReadonlyArray<readonly [KeyPath, string]> = [
   [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
   [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
+  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)],
 ];
 
 /** The flags of `setup`: on (and forget an earlier "no"), and off again (remembered as a "no"). */
@@ -63,12 +77,11 @@ export function retryWatchdogDeclined(stateDir: string): boolean {
  */
 export const RETRY_WATCHDOG_ON_NOTE =
   `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` +
-  'instead of failing ("Retrying in …"; Esc cancels), with no time limit; a `claude -p` script ' +
-  `can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
+  'instead of failing ("Retrying in …"; Esc cancels); a limit that resets more than 24 hours ' +
+  `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
 
 /** What setup says when a "no" on file holds it off, and how to change that. */
-export const RETRY_WATCHDOG_DECLINED_NOTE =
-  `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
+export const RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
 
 /**
  * Where it stands in the settings' `env`:
@@ -98,10 +111,21 @@ export function retryWatchdogState(paths: RetryWatchdogPaths): RetryWatchdogStat
   return turnsOn(current.value) ? "yours" : "disabled";
 }
 
-/** True when either key is in the settings' `env` at all (the person has made a choice: leave it alone). */
-export function retryWatchdogKeysPresent(settingsFile: string): boolean {
-  const data = readJsonObject(settingsFile).data;
-  return RETRY_WATCHDOG_SETTINGS.some(([path]) => getKey(data, path).found);
+/**
+ * True when no watchdog key in the settings is the person's own: none is there, or every one
+ * is there with the value an earlier setup wrote and still in `owned.json`. Setup may then
+ * turn the watchdog on, and add a key an older version did not write (D56's cap). A key of
+ * the person's own, also one they removed after setup wrote it, is theirs: leave it alone.
+ */
+export function retryWatchdogKeysOurs(paths: RetryWatchdogPaths): boolean {
+  const data = readJsonObject(paths.settingsFile).data;
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  return RETRY_WATCHDOG_SETTINGS.every(([path]) => {
+    const current = getKey(data, path);
+    const whose = ownership(records, path, current);
+    // A key that is not in the file: ours to add only while setup never wrote it.
+    return current.found ? whose === "ours" : whose === "none";
+  });
 }
 
 /** What `doctor` says for each state; none of them is a failure. */

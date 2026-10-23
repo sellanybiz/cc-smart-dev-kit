@@ -251,8 +251,9 @@ describe("every question comes first", () => {
 describe("UX-11: --yes asks nothing it may skip", () => {
   const WATCHDOG = "CLAUDE_CODE_RETRY_WATCHDOG";
   const RECHECK = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+  const CAP = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
   const ON_NOTE =
-    '  · retry watchdog: on, so every Claude session on this machine waits and retries at a limit instead of failing ("Retrying in …"; Esc cancels), with no time limit; a `claude -p` script can wait until a model answers; to turn it off: cc-smart-dev-kit setup --no-retry-watchdog';
+    '  · retry watchdog: on, so every Claude session on this machine waits and retries at a limit instead of failing ("Retrying in …"; Esc cancels); a limit that resets more than 24 hours away ends the wait; a `claude -p` script can wait until a model answers; to turn it off: cc-smart-dev-kit setup --no-retry-watchdog';
 
   test("on a terminal, --yes offers neither the status line nor a watchdog question, and turns the watchdog on", async () => {
     const w = world({ statuslineAnswered: false, retryWatchdogDeclined: false });
@@ -262,6 +263,7 @@ describe("UX-11: --yes asks nothing it may skip", () => {
     expect(readJson(w.paths.settingsFile).env).toMatchObject({
       [WATCHDOG]: "1",
       [RECHECK]: "300000",
+      [CAP]: "86400000",
     });
     // Not a "no": a later plain setup on a terminal still asks the status-line question, and
     // finds the watchdog already on.

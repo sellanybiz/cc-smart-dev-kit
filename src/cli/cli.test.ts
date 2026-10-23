@@ -411,19 +411,21 @@ const MCP_REGISTERED = [
   "  + MCP server sequential-thinking registered for your user",
 ];
 /**
- * D56: setup turns Claude Code's retry watchdog on by default, as any other owned key: two
+ * D56: setup turns Claude Code's retry watchdog on by default, as any other owned key: three
  * `~` lines and one `·` line that says what it means.
  */
 const WATCHDOG_LINES = [
   '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_RETRY_WATCHDOG: (none) -> "1"',
   '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS: (none) -> "300000"',
+  '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: (none) -> "86400000"',
 ];
 const WATCHDOG_ON_NOTE =
-  '  · retry watchdog: on, so every Claude session on this machine waits and retries at a limit instead of failing ("Retrying in …"; Esc cancels), with no time limit; a `claude -p` script can wait until a model answers; to turn it off: cc-smart-dev-kit setup --no-retry-watchdog';
-/** The same two keys as they land in `settings.json`'s `env`. */
+  '  · retry watchdog: on, so every Claude session on this machine waits and retries at a limit instead of failing ("Retrying in …"; Esc cancels); a limit that resets more than 24 hours away ends the wait; a `claude -p` script can wait until a model answers; to turn it off: cc-smart-dev-kit setup --no-retry-watchdog';
+/** The same three keys as they land in `settings.json`'s `env`. */
 const WATCHDOG_ENV = {
   CLAUDE_CODE_RETRY_WATCHDOG: "1",
   CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS: "300000",
+  CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: "86400000",
 };
 /** setup's warning for the Tavily server on a machine with no key, in the MCP section. */
 const TAVILY_SKIPPED =
@@ -543,7 +545,7 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  5 changes, 1 note",
+          "✓ Claude Code settings  6 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           ...WATCHDOG_LINES,
           // D23: work state off gives sessions Claude Code's own task tools.
@@ -557,7 +559,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 13 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [`! Done: 14 changes, with 2 warnings to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -652,7 +654,7 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "· The command           1 to change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "· Claude Code settings  5 to change, 1 note",
+          "· Claude Code settings  6 to change, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           ...WATCHDOG_LINES,
           // D23: work state off gives sessions Claude Code's own task tools.
@@ -667,7 +669,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 13 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 14 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -821,7 +823,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  5 changes, 1 note",
+          "✓ Claude Code settings  6 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           ...WATCHDOG_LINES,
           // D23: work state off gives sessions Claude Code's own task tools.
@@ -835,7 +837,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 11 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [`! Done: 12 changes, with 2 warnings to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -858,11 +860,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
     expect(dry.stdout).toBe(
       setupStdout(
         SETUP_DRY_HEADING,
-        [
-          "· Instructions          4 to change",
-          ...expected,
-          ...MCP_TAVILY_ONLY,
-        ],
+        ["· Instructions          4 to change", ...expected, ...MCP_TAVILY_ONLY],
         ["· A real run makes 4 changes.", "Dry run: nothing was written or run."],
       ),
     );
@@ -1893,7 +1891,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  4 changes, 1 note",
+          "✓ Claude Code settings  5 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           ...WATCHDOG_LINES,
           NOTIFY_HOOK_ADDED,
@@ -1906,7 +1904,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 12 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 13 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -1992,7 +1990,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  4 changes, 1 note",
+          "✓ Claude Code settings  5 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           ...WATCHDOG_LINES,
           NOTIFY_HOOK_ADDED,
@@ -2955,7 +2953,7 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
     try {
       const { home, configDir, stateDir, settingsFile } = setup();
       const paths = cliPaths({ CLAUDE_CONFIG_DIR: configDir, HOME: home });
-      // This test is about the status line: the retry watchdog question was answered "no" before.
+      // This test is about the status line: the retry watchdog was declined before, so it stays off.
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
       writeFileSync(retryWatchdogDeclinedFile(stateDir), "no\n");
       const asked: string[] = [];
@@ -3287,18 +3285,19 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
 describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
   const WATCHDOG = "CLAUDE_CODE_RETRY_WATCHDOG";
   const RECHECK = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+  const CAP = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
   /** The key setup writes beside them whenever claude-mem is installed (D23). */
   const TODO = { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" };
   const ON_LINE = `  ~ ~/.claude/settings.json: env.${WATCHDOG}: (none) -> "1"`;
   const RECHECK_LINE = `  ~ ~/.claude/settings.json: env.${RECHECK}: (none) -> "300000"`;
+  const CAP_LINE = `  ~ ~/.claude/settings.json: env.${CAP}: (none) -> "86400000"`;
+  const ALL_ON = { ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000", [CAP]: "86400000" };
   const ON_NOTE =
-    '  · retry watchdog: on, so every Claude session on this machine waits and retries at a limit instead of failing ("Retrying in …"; Esc cancels), with no time limit; a `claude -p` script can wait until a model answers; to turn it off: cc-smart-dev-kit setup --no-retry-watchdog\n';
+    '  · retry watchdog: on, so every Claude session on this machine waits and retries at a limit instead of failing ("Retrying in …"; Esc cancels); a limit that resets more than 24 hours away ends the wait; a `claude -p` script can wait until a model answers; to turn it off: cc-smart-dev-kit setup --no-retry-watchdog\n';
   const DECLINED_NOTE =
     "  · retry watchdog: off because you said no; cc-smart-dev-kit setup --retry-watchdog turns it on\n";
   const DOCTOR_OFF =
     "· retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog\n";
-  const DOCTOR_OURS =
-    "· retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog\n";
 
   /** The "no" a person gave before, as setup stores it. */
   function decline(stateDir: string): void {
@@ -3323,22 +3322,19 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     writeFileSync(settingsFile, JSON.stringify({ ...readJson(settingsFile), env }));
   }
 
-  test("a plain run turns it on: exactly the two keys, no time limit, one · line says what it means", () => {
+  test("a plain run turns it on: exactly the three keys, with the 24-hour cap, and one · line says what it means", () => {
     const { settingsFile, stateDir, run } = setup();
     const real = run(["setup"]);
     expect(real.exitCode).toBe(0);
-    expect(real.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+    expect(real.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n${CAP_LINE}\n`);
     expect(real.stdout).toContain(ON_NOTE);
-    // Exactly the watchdog keys: no `..._MAX_WAIT_MS`, no `..._MAX_USAGE_LIMIT_WAIT_MS`.
-    expect(readJson(settingsFile).env).toEqual({
-      ...TODO,
-      [WATCHDOG]: "1",
-      [RECHECK]: "300000",
-    });
+    // Exactly the watchdog keys: no `..._MAX_WAIT_MS`, which the 5-hour limit and a down
+    // model still wait out with no limit.
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
     expect(Object.keys(readJson(settingsFile).env).sort()).toEqual(
-      ["CLAUDE_CODE_ENABLE_TODO_TOOLS", WATCHDOG, RECHECK].sort(),
+      ["CLAUDE_CODE_ENABLE_TODO_TOOLS", WATCHDOG, RECHECK, CAP].sort(),
     );
-    // restore removes both, and the `env` setup made goes with them.
+    // restore removes all three, and the `env` setup made goes with them.
     expect(readJson(settingsFile)).toHaveProperty("env");
     restore(stateDir);
     expect(readJson(settingsFile)).not.toHaveProperty("env");
@@ -3358,37 +3354,37 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(dry.stdout).toContain(DECLINED_NOTE);
     expect(readJson(settingsFile).env).toEqual(TODO);
     expect(existsSync(retryWatchdogDeclinedFile(stateDir))).toBe(true);
-    // --retry-watchdog writes both keys and removes the "no", so the state agrees.
+    // --retry-watchdog writes all three keys and removes the "no", so the state agrees.
     const on = run(["setup", "--retry-watchdog"]);
     expect(on.exitCode).toBe(0);
-    expect(on.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+    expect(on.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n${CAP_LINE}\n`);
     expect(on.stdout).toContain(ON_NOTE);
     expect(on.stdout).not.toContain(DECLINED_NOTE);
-    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
     expect(existsSync(retryWatchdogDeclinedFile(stateDir))).toBe(false);
   });
 
-  test("with no terminal, and with --yes: a dry run names the two changes and writes nothing", () => {
+  test("with no terminal, and with --yes: a dry run names the three changes and writes nothing", () => {
     const { settingsFile, stateDir, run } = setup();
     const before = readFileSync(settingsFile, "utf8");
     const dry = run(["setup", "--dry-run"]);
     expect(dry.exitCode).toBe(0);
-    expect(dry.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+    expect(dry.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n${CAP_LINE}\n`);
     expect(dry.stdout).toContain(ON_NOTE);
     expect(dry.stdout).toContain("Dry run: nothing was written or run.");
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     // --yes changes nothing here: there is no question to skip any more.
     const dryYes = run(["setup", "--dry-run", "--yes"]);
-    expect(dryYes.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+    expect(dryYes.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n${CAP_LINE}\n`);
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
     const real = run(["setup", "--yes"]);
     expect(real.exitCode).toBe(0);
     expect(real.stdout).toContain(ON_NOTE);
-    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
     expect(existsSync(retryWatchdogDeclinedFile(stateDir))).toBe(false);
   });
 
-  test("a dry run on a terminal asks nothing, writes nothing, and names the two changes", async () => {
+  test("a dry run on a terminal asks nothing, writes nothing, and names the three changes", async () => {
     const lines: string[] = [];
     const log = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
       lines.push(args.join(" "));
@@ -3404,7 +3400,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
       };
       expect(await runSetup(paths, setupOptions(home, say, { dryRun: true }))).toBe(0);
       expect(asked).toEqual([]);
-      expect(lines.join("\n")).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+      expect(lines.join("\n")).toContain(`${ON_LINE}\n${RECHECK_LINE}\n${CAP_LINE}\n`);
       expect(lines.join("\n")).toContain(ON_NOTE);
       expect(readFileSync(settingsFile, "utf8")).toBe(before);
       expect(existsSync(retryWatchdogDeclinedFile(stateDir))).toBe(false);
@@ -3413,23 +3409,52 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     }
   });
 
-  test("--retry-watchdog: a dry run names both changes, a real run writes them, a second run changes nothing", () => {
+  test("--retry-watchdog: a dry run names all three changes, a real run writes them, a second run changes nothing", () => {
     const { settingsFile, run } = setup();
     const before = readFileSync(settingsFile, "utf8");
     const dry = run(["setup", "--dry-run", "--retry-watchdog"]);
     expect(dry.exitCode).toBe(0);
-    expect(dry.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
+    expect(dry.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n${CAP_LINE}\n`);
     expect(dry.stdout).toContain(ON_NOTE);
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
 
     const real = run(["setup", "--retry-watchdog"]);
     expect(real.stderr).toBe("");
     expect(real.exitCode).toBe(0);
-    expect(real.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n`);
-    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+    expect(real.stdout).toContain(`${ON_LINE}\n${RECHECK_LINE}\n${CAP_LINE}\n`);
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
     // Again: nothing to change.
     expect(run(["setup", "--retry-watchdog"]).stdout).toBe(NOTHING_TO_CHANGE);
     expect(run(["setup"]).stdout).toBe(NOTHING_TO_CHANGE);
+  });
+
+  test("an older setup's two keys: the next run adds the cap, one change line and no · line", () => {
+    const { stateDir, settingsFile, run } = setup();
+    expect(run(["setup"]).exitCode).toBe(0);
+    // What a version before this one left: the two keys, and owned.json saying setup wrote them.
+    const settings = readJson(settingsFile);
+    delete settings.env[CAP];
+    writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+    const ownedFile = join(stateDir, "owned.json");
+    const owned = readJson(ownedFile);
+    for (const file of Object.keys(owned)) {
+      owned[file] = owned[file].filter(
+        (record: { path: string[] }) => record.path.join(".") !== `env.${CAP}`,
+      );
+    }
+    writeFileSync(ownedFile, JSON.stringify(owned));
+
+    const after = run(["setup"]);
+    expect(after.exitCode).toBe(0);
+    expect(after.stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        ["✓ Claude Code settings  1 change", CAP_LINE, ...MCP_TAVILY_ONLY],
+        [`! Done: 1 change, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
+    );
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
   });
 
   test("on a terminal, a plain setup asks nothing about the watchdog and turns it on", async () => {
@@ -3446,7 +3471,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
       // The status line's question is the only one: no watchdog question exists any more.
       expect(asked).toHaveLength(1);
       expect(asked[0]).toStartWith("Show cc-smart-dev-kit's status line");
-      expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+      expect(readJson(settingsFile).env).toEqual(ALL_ON);
     });
   });
 
@@ -3462,7 +3487,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
       expect(await runSetup(paths, setupOptions(home, say, { retryWatchdog: true }))).toBe(1);
       expect(asked).toHaveLength(1);
       expect(asked[0]).toStartWith("Show cc-smart-dev-kit's status line");
-      expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+      expect(readJson(settingsFile).env).toEqual(ALL_ON);
     });
   });
 
@@ -3487,7 +3512,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain(`env.${WATCHDOG} is "0", set by someone else`);
     expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "0" });
-    // The same value, set by hand: left alone and named, and the other key is ours.
+    // The same value, set by hand: left alone and named, and the other keys are ours.
     setEnv(settingsFile, { [WATCHDOG]: "1" });
     const same = run(["setup", "--retry-watchdog"]);
     expect(same.exitCode).toBe(0);
@@ -3495,8 +3520,9 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
       `  · ~/.claude/settings.json: env.${WATCHDOG}: already set by someone else; left alone\n`,
     );
     expect(same.stdout).toContain(RECHECK_LINE);
-    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
-    // restore takes out only the one that is ours.
+    expect(same.stdout).toContain(CAP_LINE);
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
+    // restore takes out only the keys that are ours.
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
     expect(readJson(settingsFile).env).toEqual({ [WATCHDOG]: "1" });
   });
@@ -3508,14 +3534,16 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
       const real = run(["setup"]);
       expect(real.exitCode).toBe(0);
       expect(real.stdout).not.toContain("retry watchdog");
+      // No cap beside their watchdog: their watchdog, their limits.
+      expect(real.stdout).not.toContain(CAP);
       expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: value });
     }
   });
 
-  test("restore removes both keys; a value the person changed since stays", () => {
+  test("restore removes all three keys; a value the person changed since stays", () => {
     const { settingsFile, run } = setup();
     expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(0);
-    setEnv(settingsFile, { [WATCHDOG]: "1", [RECHECK]: "60000" });
+    setEnv(settingsFile, { [WATCHDOG]: "1", [RECHECK]: "60000", [CAP]: "86400000" });
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
     expect(readJson(settingsFile).env).toEqual({ [RECHECK]: "60000" });
     expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(1);
@@ -3528,6 +3556,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(off.exitCode).toBe(0);
     expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${WATCHDOG}: "1" -> (none)\n`);
     expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${RECHECK}: "300000" -> (none)\n`);
+    expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${CAP}: "86400000" -> (none)\n`);
     expect(readJson(settingsFile).env).toEqual(TODO);
     expect(readFileSync(retryWatchdogDeclinedFile(stateDir), "utf8")).toBe("no\n");
     // The "no" holds for a plain setup, which says so in one · line.
@@ -3544,7 +3573,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1" });
   });
 
-  test("restore removes both keys; a later setup turns it on again unless a no is on file", () => {
+  test("restore removes all three keys; a later setup turns it on again unless a no is on file", () => {
     const { settingsFile, stateDir, run } = setup();
     expect(run(["setup"]).exitCode).toBe(0);
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
@@ -3552,7 +3581,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(readJson(settingsFile)).not.toHaveProperty("env");
     // No "no": the next plain setup turns it on again.
     expect(run(["setup"]).exitCode).toBe(0);
-    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1", [RECHECK]: "300000" });
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
     // With a "no" on file, the same restore-then-setup leaves it off.
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
     decline(stateDir);
