@@ -3,8 +3,9 @@
  * (`src/crew/store.ts` › `readNotesState`). A lead hears its crew through `crew watch`, but a
  * monitor line can land while the lead is busy, and a compaction takes the lead's context with it.
  * So each turn the lead starts (UserPromptSubmit, which also fires on a hand-back turn, and
- * SessionStart: a start, a resume after a restart, a clear, a compaction) this hook reads the crew store's
- * events log from a per-lead cursor and adds the newest line it has not said yet — the same line
+ * SessionStart: a start, a resume after a restart, a clear, a compaction) this hook reads the
+ * crew store's events log from a per-lead cursor and adds the newest line it has not said yet —
+ * the same line
  * the watch prints (`eventLine`, one home), plus how many more there were.
  *
  * - **Only a registered lead** (`readLead` by the input's `session_id`) hears anything: any other
