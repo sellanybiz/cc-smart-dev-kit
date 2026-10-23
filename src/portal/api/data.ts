@@ -169,7 +169,7 @@ export async function healthAnswer(deps: PageDataDeps): Promise<HealthAnswer> {
     ...(await healthData(deps, deps.found.config)),
     configured: true,
     error: null,
-    portHolder: portHolder(deps.action.portal, deps.found.config.port),
+    portHolder: await portHolder(deps.action.portal, deps.found.config.port),
   };
 }
 

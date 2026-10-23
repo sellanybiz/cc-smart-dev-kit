@@ -88,6 +88,23 @@ export type OmnirouteKeyResult =
 export const PROBE_TIMEOUT_MS = 2_000;
 
 /**
+ * The most characters of a fetch error's own words in a detail. The callers put the detail
+ * inside one sentence (`OmniRoute does not answer at … (…)`), so it is one line and the reason
+ * only: a fetch error can carry a path and a cause on their own lines.
+ */
+const DETAIL_CHARS = 300;
+
+/**
+ * A fetch error's own words as one safe line (`maskedLine`): the `secrets` and anything like a
+ * key masked, every line break and control character a space, at most `DETAIL_CHARS` long. The
+ * one home for the no-answer details of this module — the probe, the login, the key's creation
+ * and its removal — so none of them reaches a sentence, a page or a log with a second line.
+ */
+function reasonOf(error: unknown, secrets: readonly string[] = []): string {
+  return maskedLine(messageOf(error), secrets, DETAIL_CHARS);
+}
+
+/**
  * Is an OmniRoute answering at this address? ONE keyless request (`GET /v1/models`): any HTTP
  * answer means a server is there and reads the request, and no answer at all means OmniRoute is
  * not running (or lives somewhere else). No key is sent, so nothing secret leaves the machine.
@@ -110,7 +127,7 @@ export async function probeOmniroute(
     await response.body?.cancel();
     return { kind: "answers" };
   } catch (error) {
-    return { detail: messageOf(error), kind: "silent" };
+    return { detail: reasonOf(error), kind: "silent" };
   }
 }
 
@@ -174,7 +191,7 @@ export async function createOmnirouteKey(options: {
       doFetch,
     );
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password]), kind: "no-answer" };
   }
   if (login.status === 401) {
     await login.body?.cancel();
@@ -208,7 +225,7 @@ export async function createOmnirouteKey(options: {
       doFetch,
     );
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password, session]), kind: "no-answer" };
   }
   if (!created.ok) {
     const said = await errorOf(created, [options.password, session]);
@@ -222,7 +239,7 @@ export async function createOmnirouteKey(options: {
     body = (await created.json()) as { id?: unknown; key?: unknown } | null;
   } catch (error) {
     return {
-      detail: `the answer to creating the key was not JSON (${messageOf(error)})`,
+      detail: `the answer to creating the key was not JSON (${reasonOf(error, [options.password, session])})`,
       kind: "failed",
     };
   }
@@ -256,7 +273,7 @@ export async function createOmnirouteKey(options: {
       if (removed.ok) return { detail: "", ok: true };
       return { detail: `OmniRoute answered HTTP ${removed.status}`, ok: false };
     } catch (error) {
-      return { detail: messageOf(error), ok: false };
+      return { detail: reasonOf(error, [options.password, session]), ok: false };
     }
   };
   return { discard, id, key: key.trim(), kind: "created", name };

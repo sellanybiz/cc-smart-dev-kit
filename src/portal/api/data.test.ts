@@ -12,12 +12,13 @@ import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import { createCrew, type NewCrew, updateCrew } from "../../crew/store";
+import { renderSocket, SOCKET_NAME } from "../../gateway/service";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PortalContext } from "../context";
-import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder } from "../facts";
+import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder, warpRow } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import { gatewayKeyState, overviewAnswer, settingsAnswer } from "./data";
 import { testPortalContext } from "./test-context";
@@ -142,13 +143,13 @@ describe("the MCP servers", () => {
 });
 
 describe("what holds the router's port", () => {
-  test("no service on this machine: nothing to show", () => {
-    expect(portHolder(world({}, { platform: "darwin" }).ctx, 20_999)).toBe(null);
+  test("no service on this machine: nothing to show", async () => {
+    expect(await portHolder(world({}, { platform: "darwin" }).ctx, 20_999)).toBe(null);
   });
 
-  test("systemd with no socket unit: doctor's own failure, with its fix", () => {
+  test("systemd with no socket unit: doctor's own failure, with its fix", async () => {
     const { ctx } = world({ systemctl: "exit 0" });
-    const holder = portHolder(ctx, 20_999);
+    const holder = await portHolder(ctx, 20_999);
     expect(holder?.kind).toBe("systemd");
     expect(holder?.name).toBe("cc-smart-dev-kit-router.socket");
     expect(holder?.state).toBe("other");
@@ -156,6 +157,73 @@ describe("what holds the router's port", () => {
     expect(holder?.check.text).toBe(
       "no socket unit at ~/.config/systemd/user/cc-smart-dev-kit-router.socket: a router restart makes new requests fail while the old router drains",
     );
+  });
+
+  test("the socket's systemctl is awaited off the loop: the blocking runner is never asked", async () => {
+    // A socket unit of the port's own: the check reaches `systemctl --user is-active`, and that
+    // read must go through `runRead` (`Bun.spawn`), never through the synchronous runner.
+    const port = 20_999;
+    const { ctx, paths } = world(
+      {},
+      {
+        runRead: async (cmd) => {
+          expect(cmd).toEqual(["systemctl", "--user", "is-active", SOCKET_NAME]);
+          return { exitCode: 0, output: "active\n" };
+        },
+        runner: () => {
+          throw new Error("the socket was read through the blocking runner");
+        },
+        which: (name) => (name === "systemctl" ? "/usr/bin/systemctl" : null),
+      },
+    );
+    mkdirSync(dirname(paths.routerSocketFile), { recursive: true });
+    writeFileSync(paths.routerSocketFile, renderSocket(port));
+    const holder = await portHolder(ctx, port);
+    expect(holder?.state).toBe("open");
+    expect(holder?.check).toEqual({
+      ok: true,
+      text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}`,
+    });
+  });
+});
+
+describe("the Warp card's version read", () => {
+  test("the package manager is asked off the loop, and doctor's line is the card's line", async () => {
+    // An Ubuntu machine with dpkg: the card's version comes from `dpkg-query`, awaited through
+    // `runRead`; `Machine.run` (Bun.spawnSync) throws if it is ever reached.
+    const which = (name: string) =>
+      name === "apt-get" || name === "dpkg-query" ? `/usr/bin/${name}` : null;
+    const machine: PortalContext["machine"] = {
+      arch: "x64",
+      confirm: null,
+      exists: () => false,
+      fetchText: async () => "",
+      macApp: "/Applications/Warp.app",
+      osRelease: () => 'NAME="Ubuntu"\nID=ubuntu\n',
+      platform: "linux",
+      run: () => {
+        throw new Error("the Warp version was read through the blocking machine runner");
+      },
+      runOnTerminal: () => 1,
+      spawnDetached: () => undefined,
+      which,
+    };
+    const { ctx } = world(
+      {},
+      {
+        machine,
+        runRead: async (cmd) => {
+          expect(cmd).toEqual(["dpkg-query", "--status", "warp-terminal"]);
+          return { exitCode: 0, output: "Status: install ok installed\nVersion: 0.1.0\n" };
+        },
+        which,
+      },
+    );
+    expect(await warpRow(ctx)).toEqual({
+      detail:
+        "Warp 0.1.0 is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)",
+      installed: true,
+    });
   });
 });
 

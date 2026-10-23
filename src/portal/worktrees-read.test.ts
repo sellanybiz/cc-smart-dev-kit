@@ -145,6 +145,15 @@ process.exit(2);
     expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["run", "run"]);
   });
 
+  test("a folder that is not there any more: the reason in words, never a crash", async () => {
+    // A worktree a crew session worked in and removed: `Bun.spawn` refuses to start in a `cwd`
+    // that does not exist, and the page gets a line instead of a broken request.
+    const w = world();
+    const read = await readWorktreesOffLoop(w.ctx, join(w.home, "no-such-worktree"));
+    expect("error" in read ? read.error : "").toStartWith("the worktrees scan did not run: ");
+    expect("error" in read ? read.error : "").toContain("ENOENT");
+  });
+
   test("a child's answer that is not this portal's shape is refused, not drawn as blanks", async () => {
     // Every case a newer CLI could print: not JSON, a missing base, a worktree with no path.
     const answers = [

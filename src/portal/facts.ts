@@ -67,7 +67,7 @@ import {
   parseTarget,
 } from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
-import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
+import { detectSystem, warpAppCommand, warpAppFrom, warpCheckFrom } from "../machine/warp";
 import { type McpServerState, mcpServerStatus } from "../mcp/status";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
@@ -363,13 +363,15 @@ function clockOf(ms: number, nowMs: number): string {
 /**
  * The router's recent log lines, newest last. `journalctl --user` only: the router runs as a
  * user unit. A machine without journald, or with no unit yet, gets no lines and a note.
+ * **Awaits the context's read runner** (`Bun.spawn`): a synchronous `journalctl` here froze
+ * every page and the live stream for 20–65 ms on each Health or Overview load (B6e).
  */
-export function routerLog(
+export async function routerLog(
   ctx: PortalContext,
   count: number,
-): { lines: LogLine[]; note: null | string } {
+): Promise<{ lines: LogLine[]; note: null | string }> {
   if (!ctx.systemd) return { lines: [], note: "no systemd here, so there is no journal to read" };
-  const result = ctx.runner([
+  const result = await ctx.runRead([
     "journalctl",
     "--user",
     "-u",
@@ -888,6 +890,10 @@ export function browserCardData(ctx: PortalContext): BrowserCardData {
 /**
  * What the Machine page's Warp card shows. Warp is optional, and installing or removing it
  * needs `sudo`: the card shows the two commands to copy, and the page never runs them.
+ * **Awaits the context's read runner** for the package manager's version: `dpkg-query`, `rpm`
+ * or `brew list` ran synchronously here on every Machine load (twice: once for the card's own
+ * line), which blocked every page and the stream — the same debt as `journalctl` and
+ * `systemctl` above.
  */
 export interface WarpRow {
   /** Doctor's own line for it: what is installed, and which command to run. */
@@ -896,12 +902,15 @@ export interface WarpRow {
   installed: boolean;
 }
 
-export function warpRow(ctx: PortalContext): WarpRow {
+export async function warpRow(ctx: PortalContext): Promise<WarpRow> {
   const system = detectSystem(ctx.machine);
-  return {
-    detail: warpCheck(ctx.machine, ctx.paths).text,
-    installed: detectWarpApp(ctx.machine, system).installed,
-  };
+  const command = warpAppCommand(system);
+  const app = warpAppFrom(
+    system,
+    ctx.machine,
+    command === null ? null : await ctx.runRead(command),
+  );
+  return { detail: warpCheckFrom(app, ctx.paths).text, installed: app.installed };
 }
 
 // ── The project: the Settings page, and the card on Machine ─────────────────────
@@ -1339,12 +1348,17 @@ export interface PortHolder {
   state: SocketState;
 }
 
-/** The port holder for the config's port; null where this machine runs no service for it. */
-export function portHolder(ctx: PortalContext, port: number): null | PortHolder {
+/**
+ * The port holder for the config's port; null where this machine runs no service for it.
+ * **Awaits the context's read runner** (`Bun.spawn`): `portHolderCheck` asks `systemctl` (or the
+ * Windows task), and a synchronous spawn here froze every page and the live stream while it ran
+ * (B6e).
+ */
+export async function portHolder(ctx: PortalContext, port: number): Promise<null | PortHolder> {
   const kind = routerServiceKind(ctx.machine.platform, ctx.which);
   if (kind === "none") return null;
-  const { check, state } = portHolderCheck(
-    { paths: ctx.paths, runner: ctx.runner, service: kind },
+  const { check, state } = await portHolderCheck(
+    { paths: ctx.paths, runner: ctx.runRead, service: kind },
     port,
   );
   return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };

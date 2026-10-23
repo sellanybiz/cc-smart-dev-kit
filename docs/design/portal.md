@@ -105,6 +105,10 @@ not a network read.
 - **Never in `claude -p`** (`CLAUDE_CODE_SESSION_ATTENDED=0`), and never on a `clear` or a
   `compact` of a session that is already going: only `startup`, `resume` and an input that
   does not say.
+- **Its state is `<stateDir>`** (`cliPaths().stateDir`: `<CLAUDE_CONFIG_DIR>/cc-smart-dev-kit`,
+  or `~/.claude/cc-smart-dev-kit` without that variable): the log, the held-port marker and the
+  lock. The portal never computes a second folder from `HOME`; the copy and the export, which
+  outlive a version, are the one thing under `~/.local/share/`.
 - **The decisions, by the health answer on the one fixed port** (`GET /healthz`: the
   portal's name, pid and version):
   - nothing answers → the copy is refreshed from the installed version through
@@ -210,7 +214,11 @@ secret then stays in this process's memory, and never reaches an argument list, 
 environment, a pipe or a child's log; the function is the CLI's own, so nothing is copied. A
 key saved without OmniRoute accepting it answers `tone: "warn"` with setup's warning words
 first, and the page draws it in the warning colour and keeps it until the next try (as a
-failure stays), so it cannot be missed. The planted-secret test (`server.test.ts`
+failure stays), so it cannot be missed. A no-answer from OmniRoute — the keyless probe, the
+login, the key's creation or its removal — is one line in the sentence that shows it
+(`reasonOf`, `src/gateway/omniroute-key.ts`: masked, at most 300 characters, every line break a
+space), never several lines of a fetch error inside `gateway setup`'s or the card's sentence.
+The planted-secret test (`server.test.ts`
 › "PK1: …") runs both actions with a planted key and password and finds neither in an answer,
 the live stream, a console line, a page or a file under the home.
 
@@ -436,21 +444,42 @@ everywhere: `doctor.run` (its launcher and `claude --version` checks spawn synch
 reads every saved transcript with synchronous file reads: about 200 ms on a warm cache and 10 s on
 a cold one, measured on a machine with gigabytes of transcripts. Work and Needs ask it for the
 open permission prompts, and Flow for its window, so the portal never calls it in the server: it
-runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read.ts`,
-`Bun.spawn`, the plugin's two bun flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, a
-2-minute timeout). Requests for the same window at once share one child, and an answer is
-reused for 5 s; a failure is not kept. When the child fails, Flow answers 500 with its reason,
-Needs says the permission prompts could not be read (`permissionsError`), and Work says no
-session can show a wait (`waitsError`) — never an empty list that looks like "nothing waits".
-**The worktrees read runs the same way** (`src/portal/worktrees-read.ts`): the scan behind
-`/api/worktrees` reads every worktree's git status, the running sessions, the programs and the
-Docker containers synchronously, so the portal runs the CLI's own `worktrees --json` in a child
-— the one builder (`worktreesAnswerOf`, `src/worktrees/command.ts`) whose answer the page shows
-— shared by requests at once and reused for 5 s; a failure is not kept, and the page shows the
-child's reason in its `note`.
-Still on the loop, and owed to a later phase: the Health page's `systemctl --user is-active`
-(about 6 ms) and the Health and Overview `journalctl -n 200` (20–65 ms), through the doctor
-check's synchronous `Runner`.
+runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read.ts` through
+`runCliChildText`, the portal's one spawn in `src/portal/cli-child.ts`: the plugin's two bun
+flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, a 2-minute timeout). Requests for the
+same window at once share one child, and an answer is reused for 5 s; a failure is not kept. When
+the child fails, Flow answers 500 with its reason, Needs says the permission prompts could not be
+read (`permissionsError`), and Work says no session can show a wait (`waitsError`) — never an
+empty list that looks like "nothing waits".
+**The worktrees read runs the same way** (`src/portal/worktrees-read.ts`, through the same
+`runCliChildText`): the scan behind `/api/worktrees` reads every worktree's git status, the
+running sessions, the programs and the Docker containers synchronously, so the portal runs the
+CLI's own `worktrees --json` in a child — the one builder (`worktreesAnswerOf`,
+`src/worktrees/command.ts`) whose answer the page shows — shared by requests at once and reused
+for 5 s; a failure is not kept, and the page shows the child's reason in its `note`. The argv,
+the environment, the spawn, the failure's words and the timeout verdict live once, in
+`cli-child.ts`, and so does the short cache both readers keep (`shortCache`): a child still on its
+way is shared whatever its age, an answer is fresh for 5 s **from its arrival** (a cold read that
+took longer than that would otherwise be stale as it landed, and every poll would start another
+child), a failure is not kept, and `worktrees.clean` and the crew actions drop the worktrees
+answers. Two trade-offs of those rules: a child that hangs is shared until its timeout (the
+alternative — a second full read of every transcript — costs more than the wait), and the flow
+reader's kept answers start their clock from the arrival, so a read that lands after 5 s serves
+the next request too.
+**The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
+(20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
+manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are
+awaited through `runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`, never
+`Bun.spawnSync`, in the portal process (`src/entries/portal.ts`) with the actions' runner's 300 s
+timeout. `routerLog`, `portHolder` and `warpRow` (`src/portal/facts.ts`) await it;
+`portHolderCheck` (`src/gateway/doctor.ts`) awaits its runner too, and `warpAppCommand` /
+`warpAppFrom` / `warpCheckFrom` (`src/machine/warp.ts`) split the Warp read from its verdict, so
+doctor's synchronous runner and the portal's asynchronous one run the same commands and say the
+same words. Still on the loop, and owed to a later phase: the Machine page's doctor pass, whose
+gateway checks ask the service through doctor's synchronous `Runner` (`service.state`,
+`service.running`) besides that check; `doctor.run`; the project read's git (`resolveProject`, and
+`projectInitDefaults`' `gh`); and the browser card's legacy process list (`ps`, when 0.3.0's
+leftovers are on the machine).
 
 ### The pages' facts and actions (B6d)
 

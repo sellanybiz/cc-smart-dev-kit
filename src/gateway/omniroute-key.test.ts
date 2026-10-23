@@ -227,6 +227,72 @@ describe("createOmnirouteKey", () => {
     if (made.kind === "no-answer") expect(made.detail.length).toBeGreaterThan(0);
   });
 
+  test("a no-answer error of several lines is shown as one line, the reason only", async () => {
+    // A fetch error's words come from outside: Bun's own message can carry a path and a cause
+    // on their own lines, and the callers put the detail inside one sentence.
+    const multiLine = new Error(
+      "Unable to connect to 127.0.0.1:20128\n\npath: http://127.0.0.1:20128/api/auth/login\r\ncause: ECONNREFUSED",
+    );
+    const made = await createOmnirouteKey({
+      baseUrl: "http://127.0.0.1:20128",
+      fetch: async () => {
+        throw multiLine;
+      },
+      password: "the-dashboard-password",
+    });
+    expect(made).toEqual({
+      detail:
+        "Unable to connect to 127.0.0.1:20128 path: http://127.0.0.1:20128/api/auth/login cause: ECONNREFUSED",
+      kind: "no-answer",
+    });
+    // The keyless probe's own silent detail is the same kind of text, shown in one line too.
+    expect(
+      await probeOmniroute("http://127.0.0.1:20128", {
+        fetch: async () => {
+          throw multiLine;
+        },
+      }),
+    ).toEqual({
+      detail:
+        "Unable to connect to 127.0.0.1:20128 path: http://127.0.0.1:20128/api/auth/login cause: ECONNREFUSED",
+      kind: "silent",
+    });
+  });
+
+  test("a no-answer when the key is made: one line too, with the session masked", async () => {
+    const omni = fakeOmniRoute();
+    const made = await createOmnirouteKey({
+      baseUrl: omni.baseUrl,
+      password: "the-dashboard-password",
+      fetch: (url, init) => {
+        if (String(url).endsWith("/api/keys")) {
+          throw new Error("creating the key failed\ncookie auth_token=session-abc\nsecond line");
+        }
+        return fetch(url, init as RequestInit);
+      },
+    });
+    expect(made.kind).toBe("no-answer");
+    if (made.kind === "no-answer") {
+      expect(made.detail).toBe("creating the key failed cookie auth_token=**** second line");
+      expect(made.detail).not.toContain("session-abc");
+    }
+  });
+
+  test("a no-answer longer than 300 characters is cut to one line of 300", async () => {
+    const made = await createOmnirouteKey({
+      baseUrl: "http://127.0.0.1:20128",
+      fetch: async () => {
+        throw new Error("a long reason from outside ".repeat(40).trim());
+      },
+      password: "the-dashboard-password",
+    });
+    expect(made.kind).toBe("no-answer");
+    if (made.kind === "no-answer") {
+      expect(made.detail).toHaveLength(300);
+      expect(made.detail.startsWith("a long reason from outside a long reason")).toBe(true);
+    }
+  });
+
   test("a login that sets no cookie, and a create that answers no key: each fails clearly", async () => {
     const noCookie = fakeOmniRoute({ noCookie: true });
     expect(

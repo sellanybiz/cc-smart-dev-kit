@@ -42,7 +42,7 @@ import {
   PORTAL_USAGE,
   parsePortalChildArgs,
 } from "../portal/command";
-import type { PortalContext } from "../portal/context";
+import type { PortalContext, ReadRunner } from "../portal/context";
 import { probePortal, realPortalProbe } from "../portal/health";
 import { ensurePortal, portalLog, portalStarterArgv } from "../portal/lifecycle";
 import { resolvePluginFolder } from "../portal/plugin-folder";
@@ -65,6 +65,34 @@ const runner: Runner = (cmd) => {
       exitCode: result.exitCode ?? 1,
       output: `${result.stdout.toString()}${result.stderr.toString()}`,
     };
+  } catch (error) {
+    return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
+  }
+};
+
+/**
+ * The pages' reads, off the server's loop: `journalctl` for the router's log, `systemctl` for
+ * its socket. `Bun.spawn`, never `spawnSync`: a synchronous one froze every page, every other
+ * action and the live stream while it ran. The same command, the same timeout and the same
+ * words as `runner`, which the actions' changing commands keep.
+ */
+const runRead: ReadRunner = async (cmd) => {
+  try {
+    const child = Bun.spawn(cmd, {
+      stderr: "pipe",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RUN_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    const [output, errors, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    // A signal ended it when `exited` is 128 + the signal (Bun's timeout kill is SIGTERM, 143):
+    // the sync runner says 1 for a child with no exit code, and so does this.
+    return { exitCode: child.signalCode === null ? exitCode : 1, output: `${output}${errors}` };
   } catch (error) {
     return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
@@ -174,6 +202,7 @@ async function runServer(
     paths,
     pluginFolder: () => resolvePluginFolder(paths.installedPluginsFile, fallback),
     probe: realProbe(),
+    runRead,
     runner,
     systemd: process.platform === "linux" && which("systemctl") !== null,
     which,

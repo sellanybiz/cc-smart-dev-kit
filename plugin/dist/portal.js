@@ -1,6 +1,6 @@
 // @bun
 // src/entries/portal.ts
-import { join as join71 } from "path";
+import { join as join69 } from "path";
 
 // src/browser/doctor.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
@@ -13502,7 +13502,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname24, join as join70 } from "path";
+import { dirname as dirname24, join as join68 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync48, readFileSync as readFileSync57 } from "fs";
@@ -14143,6 +14143,10 @@ function omnirouteKeyName(host = hostname3()) {
   return clean === "" ? KEY_NAME_PREFIX : `${KEY_NAME_PREFIX}-${clean}`;
 }
 var PROBE_TIMEOUT_MS2 = 2000;
+var DETAIL_CHARS2 = 300;
+function reasonOf(error, secrets = []) {
+  return maskedLine(messageOf(error), secrets, DETAIL_CHARS2);
+}
 async function probeOmniroute(baseUrl, options = {}) {
   const url = `${baseUrl.replace(/\/+$/, "")}${MODELS_PATH}`;
   const doFetch = options.fetch ?? ((target, init) => fetch(target, init));
@@ -14154,7 +14158,7 @@ async function probeOmniroute(baseUrl, options = {}) {
     await response.body?.cancel();
     return { kind: "answers" };
   } catch (error) {
-    return { detail: messageOf(error), kind: "silent" };
+    return { detail: reasonOf(error), kind: "silent" };
   }
 }
 function sessionCookieFrom(setCookie) {
@@ -14194,7 +14198,7 @@ async function createOmnirouteKey(options) {
       signal: AbortSignal.timeout(timeoutMs)
     }, doFetch);
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password]), kind: "no-answer" };
   }
   if (login.status === 401) {
     await login.body?.cancel();
@@ -14223,7 +14227,7 @@ async function createOmnirouteKey(options) {
       signal: AbortSignal.timeout(timeoutMs)
     }, doFetch);
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password, session]), kind: "no-answer" };
   }
   if (!created.ok) {
     const said = await errorOf(created, [options.password, session]);
@@ -14237,7 +14241,7 @@ async function createOmnirouteKey(options) {
     body = await created.json();
   } catch (error) {
     return {
-      detail: `the answer to creating the key was not JSON (${messageOf(error)})`,
+      detail: `the answer to creating the key was not JSON (${reasonOf(error, [options.password, session])})`,
       kind: "failed"
     };
   }
@@ -14262,7 +14266,7 @@ async function createOmnirouteKey(options) {
         return { detail: "", ok: true };
       return { detail: `OmniRoute answered HTTP ${removed.status}`, ok: false };
     } catch (error) {
-      return { detail: messageOf(error), ok: false };
+      return { detail: reasonOf(error, [options.password, session]), ok: false };
     }
   };
   return { discard, id, key: key.trim(), kind: "created", name };
@@ -14640,12 +14644,17 @@ function parseTaskFacts(output) {
     state
   };
 }
-function taskFacts(runner) {
-  const result = runner([POWERSHELL, ...PS_FLAGS, taskQuery()]);
+function taskQueryCommand() {
+  return [POWERSHELL, ...PS_FLAGS, taskQuery()];
+}
+function taskFactsFrom(result) {
   if (result.exitCode !== 0) {
     throw new Error(`could not ask Windows about ${TASK_LABEL} (exit ${result.exitCode}): ${oneLine(result.output, 300)}`);
   }
   return parseTaskFacts(result.output);
+}
+function taskFacts(runner) {
+  return taskFactsFrom(runner(taskQueryCommand()));
 }
 function taskRunning(runner) {
   return taskFacts(runner).state === "Running";
@@ -16794,7 +16803,7 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
-  const holder = portHolderCheck(options, config.port);
+  const holder = await portHolderCheck(options, config.port);
   checks.push(holder.check);
   const health = await routerHealth(config.port, options.fetch);
   checks.push("error" in health ? { ok: false, ...notAnswering(options, service, config.port, health.error, holder.state) } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
@@ -16911,10 +16920,10 @@ function notAnswering(options, service, port, error, holder) {
       return { text: `the router does not answer on 127.0.0.1:${port} (${error})`, fix };
   }
 }
-function portHolderCheck(options, port) {
-  return options.service === "scheduled-task" ? taskDefinitionCheck(options) : socketCheck(options, port);
+async function portHolderCheck(options, port) {
+  return options.service === "scheduled-task" ? await taskDefinitionCheck(options) : await socketCheck(options, port);
 }
-function taskDefinitionCheck(options) {
+async function taskDefinitionCheck(options) {
   const { paths } = options;
   const where = tildify(paths.routerTaskFile, paths.home);
   if (!existsSync21(paths.routerTaskFile)) {
@@ -16923,7 +16932,7 @@ function taskDefinitionCheck(options) {
       state: "other"
     };
   }
-  const facts = taskFacts(options.runner);
+  const facts = taskFactsFrom(await options.runner(taskQueryCommand()));
   if (!facts.registered) {
     return {
       check: {
@@ -16949,7 +16958,7 @@ function taskDefinitionCheck(options) {
     state: facts.state === "Running" ? "open" : "other"
   };
 }
-function socketCheck(options, port) {
+async function socketCheck(options, port) {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
   if (!existsSync21(paths.routerSocketFile)) {
@@ -16975,7 +16984,7 @@ function socketCheck(options, port) {
   if (options.service !== "systemd") {
     return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
   }
-  const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  const active = await options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
   const word = active.output.trim().split(`
 `)[0] || "unknown";
   if (active.exitCode === 0) {
@@ -16984,7 +16993,7 @@ function socketCheck(options, port) {
       state: "open"
     };
   }
-  const result = options.runner([
+  const result = await options.runner([
     "systemctl",
     "--user",
     "show",
@@ -17671,23 +17680,32 @@ function detectSystem(machine) {
     reason: `cc-smart-dev-kit installs Warp with apt (Debian, Ubuntu), dnf (Fedora) or Homebrew (macOS). Download it: ${WARP_DOWNLOAD_URL}`
   };
 }
-function detectWarpApp(machine, system) {
+function warpAppCommand(system) {
+  switch (system.kind) {
+    case "apt":
+      return ["dpkg-query", "--status", PACKAGE];
+    case "dnf":
+      return ["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE];
+    case "brew":
+      return ["brew", "list", "--cask", "--versions", "warp"];
+    case "none":
+      return null;
+  }
+}
+function warpAppFrom(system, machine, answer) {
+  const asked = answer ?? { exitCode: 1, output: "" };
   switch (system.kind) {
     case "apt": {
-      const result = machine.run(["dpkg-query", "--status", PACKAGE]);
-      const field = (name) => new RegExp(`^${name}: (.*)$`, "m").exec(result.output)?.[1]?.trim() ?? null;
-      return result.exitCode === 0 && field("Status")?.endsWith(" installed") === true ? { installed: true, version: field("Version") } : { installed: false, version: null };
+      const field = (name) => new RegExp(`^${name}: (.*)$`, "m").exec(asked.output)?.[1]?.trim() ?? null;
+      return asked.exitCode === 0 && field("Status")?.endsWith(" installed") === true ? { installed: true, version: field("Version") } : { installed: false, version: null };
     }
-    case "dnf": {
-      const result = machine.run(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", PACKAGE]);
-      return result.exitCode === 0 ? { installed: true, version: result.output.trim() || null } : { installed: false, version: null };
-    }
+    case "dnf":
+      return asked.exitCode === 0 ? { installed: true, version: asked.output.trim() || null } : { installed: false, version: null };
     case "brew": {
-      const result = machine.run(["brew", "list", "--cask", "--versions", "warp"]);
-      if (result.exitCode === 0 && result.output.trim() !== "") {
+      if (asked.exitCode === 0 && asked.output.trim() !== "") {
         return {
           installed: true,
-          version: result.output.trim().split(/\s+/)[1] ?? null,
+          version: asked.output.trim().split(/\s+/)[1] ?? null,
           viaBrew: true
         };
       }
@@ -17700,8 +17718,14 @@ function detectWarpApp(machine, system) {
       return machine.which(PACKAGE) !== null ? { installed: true, version: null } : { installed: false, version: null };
   }
 }
+function detectWarpApp(machine, system) {
+  const command = warpAppCommand(system);
+  return warpAppFrom(system, machine, command === null ? null : machine.run(command));
+}
 function warpCheck(machine, paths) {
-  const app = detectWarpApp(machine, detectSystem(machine));
+  return warpCheckFrom(detectWarpApp(machine, detectSystem(machine)), paths);
+}
+function warpCheckFrom(app, paths) {
   const plugin = findUserInstall(paths.installedPluginsFile, WARP_PLUGIN_ID) !== null;
   const version = app.version === null ? "" : ` ${app.version}`;
   if (!app.installed && !plugin) {
@@ -21708,7 +21732,7 @@ function iso(atMs) {
 function notThere(error) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
-function reasonOf(error) {
+function reasonOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function checked(schema, value, file) {
@@ -21725,13 +21749,13 @@ function readRecord(schema, file) {
   } catch (error) {
     if (notThere(error))
       return null;
-    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf(error)}`);
+    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf2(error)}`);
   }
   let value;
   try {
     value = JSON.parse(raw);
   } catch (error) {
-    throw new CrewStoreError(`Invalid ${file}: not valid JSON (${reasonOf(error)})`);
+    throw new CrewStoreError(`Invalid ${file}: not valid JSON (${reasonOf2(error)})`);
   }
   return checked(schema, value, file);
 }
@@ -21749,7 +21773,7 @@ function listRecords(schema, folder) {
       if (record2 !== null)
         found.push({ file, record: record2 });
     } catch (error) {
-      listed.broken.push({ file, why: reasonOf(error) });
+      listed.broken.push({ file, why: reasonOf2(error) });
     }
   }
   found.sort((a, b) => a.record.createdAt.localeCompare(b.record.createdAt) || a.file.localeCompare(b.file));
@@ -21884,7 +21908,7 @@ function readCrewEvents(stateDir, repo, offset = 0) {
   } catch (error) {
     if (notThere(error))
       return { events: [], offset: 0, skipped: 0 };
-    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf(error)}`);
+    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf2(error)}`);
   }
   try {
     const size = fstatSync(fd).size;
@@ -26318,7 +26342,7 @@ function roleCard(record, briefFile) {
 function storeProblem(why) {
   return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
 }
-function reasonOf2(error) {
+function reasonOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function recordOf2(id, repo, paths) {
@@ -26326,7 +26350,7 @@ function recordOf2(id, repo, paths) {
   try {
     record = readCrew(paths.stateDir, repo, id);
   } catch (error) {
-    return { ok: false, result: storeProblem(reasonOf2(error)) };
+    return { ok: false, result: storeProblem(reasonOf3(error)) };
   }
   if (record === null) {
     return {
@@ -26362,7 +26386,7 @@ async function startCard(input, id, repo, paths, options) {
     try {
       await updateCrewIfState(paths.stateDir, repo, id, RUNNING_STATES, { state: "failed" }, nowMs, wrongFolderReason(record, cwd));
     } catch (error) {
-      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf2(error)}`;
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf3(error)}`;
     }
     const answer = addContext("SessionStart", wrongFolderCard(record, cwd));
     return stderr === undefined ? answer : { ...answer, stderr };
@@ -26372,7 +26396,7 @@ async function startCard(input, id, repo, paths, options) {
     try {
       await updateCrewIfState(paths.stateDir, repo, id, ["starting"], { startedAt: record.startedAt ?? new Date(nowMs).toISOString(), state: "working" }, nowMs, "started in its worktree");
     } catch (error) {
-      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf2(error)}`;
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf3(error)}`;
     }
   }
   const brief = crewBriefFile(paths.stateDir, repo, id);
@@ -26392,7 +26416,7 @@ async function stopAnswer(input, id, repo, paths) {
     try {
       await updateCrew(paths.stateDir, repo, id, { lastLine: maskedLine(said, [], LAST_LINE_MAX, { mark: "\u2026" }) }, Date.now());
     } catch (error) {
-      return storeProblem(reasonOf2(error));
+      return storeProblem(reasonOf3(error));
     }
   }
   const cursor = readStopState(paths.stateDir, repo, id);
@@ -26400,7 +26424,7 @@ async function stopAnswer(input, id, repo, paths) {
   try {
     events = readCrewEvents(paths.stateDir, repo, cursor?.offset ?? 0);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   const newest = events.events.filter((event) => event.crew === id && (event.type === "step" || event.type === "report")).at(-1);
   const fresh = newest?.type === "step" ? "step" : newest?.type === "report" ? "report" : null;
@@ -26408,7 +26432,7 @@ async function stopAnswer(input, id, repo, paths) {
   try {
     writeStopState(paths.stateDir, repo, id, { last, offset: events.offset });
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
@@ -26437,7 +26461,7 @@ async function personPromptAnswer(input, id, repo, paths, options) {
       type: "person"
     }, nowMs);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   return addContext("UserPromptSubmit", personWroteLine());
 }
@@ -26477,7 +26501,7 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
   try {
     await updateCrew(paths.stateDir, repo, id, { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor }, nowMs, text);
   } catch (why) {
-    return storeProblem(reasonOf2(why));
+    return storeProblem(reasonOf3(why));
   }
   return SILENT;
 }
@@ -32351,7 +32375,7 @@ function jobsFingerprint(home) {
 // src/portal/actions.ts
 import { createHash as createHash10 } from "crypto";
 import { existsSync as existsSync54, statSync as statSync18 } from "fs";
-import { isAbsolute as isAbsolute8, join as join68 } from "path";
+import { isAbsolute as isAbsolute8, join as join66 } from "path";
 
 // src/browser/setup.ts
 import { existsSync as existsSync49, mkdirSync as mkdirSync20, readdirSync as readdirSync17, readFileSync as readFileSync58 } from "fs";
@@ -33577,7 +33601,7 @@ async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_M
 // src/portal/api/projects.ts
 import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync53, mkdirSync as mkdirSync23, readFileSync as readFileSync63 } from "fs";
-import { basename as basename10, dirname as dirname23, join as join66, relative as relative6 } from "path";
+import { basename as basename10, dirname as dirname23, join as join65, relative as relative6 } from "path";
 
 // src/portal/facts.ts
 import { createHash as createHash8 } from "crypto";
@@ -34021,10 +34045,10 @@ function leadingTimeOff(message) {
 function clockOf(ms, nowMs) {
   return formatClock(Math.floor(ms / 1000), nowMs);
 }
-function routerLog(ctx, count) {
+async function routerLog(ctx, count) {
   if (!ctx.systemd)
     return { lines: [], note: "no systemd here, so there is no journal to read" };
-  const result = ctx.runner([
+  const result = await ctx.runRead([
     "journalctl",
     "--user",
     "-u",
@@ -34300,12 +34324,11 @@ function browserCardData(ctx) {
   const state = result.state;
   return { guide: browserGuide(state), notes: result.ok ? result.notes : [], state };
 }
-function warpRow(ctx) {
+async function warpRow(ctx) {
   const system = detectSystem(ctx.machine);
-  return {
-    detail: warpCheck(ctx.machine, ctx.paths).text,
-    installed: detectWarpApp(ctx.machine, system).installed
-  };
+  const command = warpAppCommand(system);
+  const app = warpAppFrom(system, ctx.machine, command === null ? null : await ctx.runRead(command));
+  return { detail: warpCheckFrom(app, ctx.paths).text, installed: app.installed };
 }
 function readProject(ctx, cwd) {
   try {
@@ -34509,11 +34532,11 @@ function mcpRows(ctx) {
     state: server.state
   }));
 }
-function portHolder(ctx, port) {
+async function portHolder(ctx, port) {
   const kind = routerServiceKind(ctx.machine.platform, ctx.which);
   if (kind === "none")
     return null;
-  const { check, state } = portHolderCheck({ paths: ctx.paths, runner: ctx.runner, service: kind }, port);
+  const { check, state } = await portHolderCheck({ paths: ctx.paths, runner: ctx.runRead, service: kind }, port);
   return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };
 }
 function planWindow(ctx) {
@@ -34528,7 +34551,7 @@ function planWindow(ctx) {
 
 // src/portal/api/work.ts
 import { readFileSync as readFileSync62 } from "fs";
-import { join as join65 } from "path";
+import { join as join64 } from "path";
 
 // src/sessions/flow.ts
 var FLOW_DAYS_KEPT = 8;
@@ -34537,79 +34560,195 @@ var CHUNK_BYTES = 4 * 1024 * 1024;
 var LAUNCH_TOOLS = new Set(["Agent", "Task"]);
 var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
-// src/portal/flow-read.ts
+// src/portal/cli-child.ts
 import { join as join63 } from "path";
+var CLI_CHILD_TIMEOUT_MS = 180000;
+function cliChildArgv(folder, args) {
+  return [
+    process.execPath,
+    "--no-env-file",
+    bunConfigArg(folder),
+    join63(folder, "dist", "cli.js"),
+    ...args
+  ];
+}
+function cliChildEnv(ctx) {
+  const env = {
+    ...commandContext(ctx.env, ctx.paths.home).env,
+    CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir,
+    HOME: ctx.paths.home
+  };
+  delete env.CC_SMART_DEV_KIT_CREW;
+  delete env.CLAUDECODE;
+  return env;
+}
+function spawnCliChild(ctx, args, options) {
+  const folder = ctx.pluginFolder();
+  if ("error" in folder)
+    return { error: folder.error, kind: "folder" };
+  try {
+    const child = Bun.spawn(cliChildArgv(folder.folder, args), {
+      cwd: options.cwd ?? commandContext(ctx.env, ctx.paths.home).cwd,
+      env: cliChildEnv(ctx),
+      stderr: "pipe",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS,
+      windowsHide: true
+    });
+    return { child, kind: "started", startedAt: Date.now() };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      kind: "spawn"
+    };
+  }
+}
+function endCliChild(start, timeoutMs, code) {
+  const signal = start.child.signalCode ?? null;
+  if (signal === null)
+    return { error: null, exitCode: code, timedOut: false };
+  if (Date.now() - start.startedAt >= timeoutMs - 5000) {
+    return { error: null, exitCode: null, timedOut: true };
+  }
+  return {
+    error: `the command was ended by a signal (${String(signal)}) before it finished`,
+    exitCode: null,
+    timedOut: false
+  };
+}
+async function readLines(stream, push) {
+  if (stream === undefined || typeof stream === "number")
+    return;
+  const reader = stream.getReader();
+  const decoder = new TextDecoder;
+  let rest = "";
+  for (;; ) {
+    const { done, value } = await reader.read();
+    if (done)
+      break;
+    rest += decoder.decode(value, { stream: true });
+    const parts = rest.split(`
+`);
+    rest = parts.pop() ?? "";
+    for (const line of parts)
+      push(line);
+  }
+  rest += decoder.decode();
+  if (rest !== "")
+    push(rest);
+}
+async function runCliChild(ctx, args, options) {
+  const start = spawnCliChild(ctx, args, options);
+  if (start.kind !== "started") {
+    return {
+      error: start.kind === "spawn" ? `the command did not start: ${start.error}` : start.error,
+      exitCode: null,
+      lines: [],
+      timedOut: false
+    };
+  }
+  const lines = [];
+  const push = (line) => {
+    const trimmed = line.replace(/\r$/, "");
+    if (trimmed.trim() === "")
+      return;
+    lines.push(trimmed);
+    options.onLine?.(trimmed);
+  };
+  try {
+    await Promise.all([readLines(start.child.stdout, push), readLines(start.child.stderr, push)]);
+    const code = await start.child.exited;
+    return { ...endCliChild(start, options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS, code), lines };
+  } catch (error) {
+    return {
+      error: `the command did not start: ${error instanceof Error ? error.message : String(error)}`,
+      exitCode: null,
+      lines,
+      timedOut: false
+    };
+  }
+}
+async function runCliChildText(ctx, args, options) {
+  const start = spawnCliChild(ctx, args, options);
+  if (start.kind === "folder")
+    return { error: start.error };
+  if (start.kind === "spawn")
+    return { error: `${options.subject} did not run: ${start.error}` };
+  try {
+    const [output, errors, exitCode] = await Promise.all([
+      new Response(start.child.stdout).text(),
+      new Response(start.child.stderr).text(),
+      start.child.exited
+    ]);
+    if (exitCode === 0)
+      return { output };
+    const why = errors.trim().split(`
+`).at(-1)?.trim() ?? "";
+    return {
+      error: `${options.subject} did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`
+    };
+  } catch (error) {
+    return {
+      error: `${options.subject} did not run: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+function shortCache(freshMs) {
+  const kept = new WeakMap;
+  return {
+    forget: (ctx) => {
+      kept.delete(ctx);
+    },
+    read: (ctx, key, start) => {
+      let byKey = kept.get(ctx);
+      if (byKey === undefined) {
+        byKey = new Map;
+        kept.set(ctx, byKey);
+      }
+      const last = byKey.get(key);
+      if (last !== undefined && (last.at === null || ctx.now() - last.at < freshMs)) {
+        return last.read;
+      }
+      const entry = { at: null, read: start() };
+      byKey.set(key, entry);
+      const dropIfStill = () => {
+        if (byKey.get(key) === entry)
+          byKey.delete(key);
+      };
+      entry.read.then((answer) => {
+        if ("error" in answer)
+          dropIfStill();
+        else
+          entry.at = ctx.now();
+      }, dropIfStill);
+      return entry.read;
+    }
+  };
+}
+
+// src/portal/flow-read.ts
 var FLOW_CHILD_TIMEOUT_MS = 120000;
 var FLOW_FRESH_MS = 5000;
 var HOUR_MS = 3600000;
-var kept = new WeakMap;
+var reports = shortCache(FLOW_FRESH_MS);
 function readFlowOffLoop(ctx, windowMs) {
   const hours = windowMs / HOUR_MS;
-  let byWindow = kept.get(ctx);
-  if (byWindow === undefined) {
-    byWindow = new Map;
-    kept.set(ctx, byWindow);
-  }
-  const now = ctx.now();
-  const last = byWindow.get(hours);
-  if (last !== undefined && now - last.at < FLOW_FRESH_MS)
-    return last.read;
-  const read = runReport(ctx, hours);
-  const entry = { at: now, read };
-  byWindow.set(hours, entry);
-  read.then((answer) => {
-    if ("error" in answer && byWindow.get(hours) === entry)
-      byWindow.delete(hours);
-  });
-  return read;
+  return reports.read(ctx, hours, () => runReport(ctx, hours));
 }
 async function openWaitsOffLoop(ctx, windowMs) {
   const read = await readFlowOffLoop(ctx, windowMs);
   return "error" in read ? read : { open: read.report.open };
 }
 async function runReport(ctx, hours) {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder)
-    return { error: folder.error };
-  const context = commandContext(ctx.env, ctx.paths.home);
-  try {
-    const child = Bun.spawn([
-      process.execPath,
-      "--no-env-file",
-      bunConfigArg(folder.folder),
-      join63(folder.folder, "dist", "cli.js"),
-      "report",
-      "--hours",
-      String(hours),
-      "--json"
-    ], {
-      cwd: context.cwd,
-      env: { ...context.env, CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir, HOME: ctx.paths.home },
-      stderr: "pipe",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: FLOW_CHILD_TIMEOUT_MS,
-      windowsHide: true
-    });
-    const [output, errors, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    if (exitCode !== 0) {
-      const why = errors.trim().split(`
-`).at(-1)?.trim() ?? "";
-      return {
-        error: `the flow report did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`
-      };
-    }
-    const report = reportOf(output);
-    return report === null ? { error: "the flow report's answer was not one this portal reads" } : { report };
-  } catch (error) {
-    return {
-      error: `the flow report did not run: ${error instanceof Error ? error.message : String(error)}`
-    };
-  }
+  const run = await runCliChildText(ctx, ["report", "--hours", String(hours), "--json"], {
+    subject: "the flow report",
+    timeoutMs: FLOW_CHILD_TIMEOUT_MS
+  });
+  if ("error" in run)
+    return run;
+  const report = reportOf(run.output);
+  return report === null ? { error: "the flow report's answer was not one this portal reads" } : { report };
 }
 function isObject4(value) {
   return typeof value === "object" && value !== null;
@@ -34707,7 +34846,7 @@ async function machineData(deps) {
       newest: updates.newest,
       summary: updates.summary
     },
-    warp: warpRow(deps.action.portal)
+    warp: await warpRow(deps.action.portal)
   };
 }
 async function overviewData(deps, config) {
@@ -34716,6 +34855,7 @@ async function overviewData(deps, config) {
   const limits = limitFacts(ctx);
   const omniroute = config.backends.omniroute;
   const dashboard = omniroute === undefined ? null : backendAddress(omniroute.baseUrl);
+  const log = await routerLog(ctx, 200);
   return {
     backends: await backendRows(ctx, config),
     dashboardUrl: dashboard === null ? null : `${dashboard}/`,
@@ -34725,7 +34865,7 @@ async function overviewData(deps, config) {
     router,
     slots: slotRows(config, router),
     switches: switchFacts(ctx, config),
-    warnings: routerLog(ctx, 200).lines.filter((line) => line.level !== "INFO")
+    warnings: log.lines.filter((line) => line.level !== "INFO")
   };
 }
 async function slotsData(deps, config) {
@@ -34767,7 +34907,7 @@ async function healthData(deps, config) {
     backends: await backendRows(ctx, config),
     fallbacks: limits.fallbacks,
     limits: limits.limits,
-    log: routerLog(ctx, 200),
+    log: await routerLog(ctx, 200),
     router
   };
 }
@@ -34776,78 +34916,25 @@ function settingsPageData(deps) {
 }
 
 // src/portal/worktrees-read.ts
-import { join as join64 } from "path";
 var WORKTREES_CHILD_TIMEOUT_MS = 120000;
 var WORKTREES_FRESH_MS = 5000;
+var scans = shortCache(WORKTREES_FRESH_MS);
 function forgetWorktrees(ctx) {
-  kept2.delete(ctx);
+  scans.forget(ctx);
 }
-var kept2 = new WeakMap;
 function readWorktreesOffLoop(ctx, cwd) {
-  let byFolder = kept2.get(ctx);
-  if (byFolder === undefined) {
-    byFolder = new Map;
-    kept2.set(ctx, byFolder);
-  }
-  const last = byFolder.get(cwd);
-  if (last !== undefined) {
-    if (last.at === null || ctx.now() - last.at < WORKTREES_FRESH_MS)
-      return last.read;
-  }
-  const read = runWorktrees(ctx, cwd);
-  const entry = { at: null, read };
-  byFolder.set(cwd, entry);
-  read.then((answer) => {
-    if ("error" in answer) {
-      if (byFolder.get(cwd) === entry)
-        byFolder.delete(cwd);
-      return;
-    }
-    entry.at = ctx.now();
-  });
-  return read;
+  return scans.read(ctx, cwd, () => runWorktrees(ctx, cwd));
 }
 async function runWorktrees(ctx, cwd) {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder)
-    return { error: folder.error };
-  const context = commandContext(ctx.env, ctx.paths.home);
-  try {
-    const child = Bun.spawn([
-      process.execPath,
-      "--no-env-file",
-      bunConfigArg(folder.folder),
-      join64(folder.folder, "dist", "cli.js"),
-      "worktrees",
-      "--json"
-    ], {
-      cwd,
-      env: { ...context.env, CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir, HOME: ctx.paths.home },
-      stderr: "pipe",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: WORKTREES_CHILD_TIMEOUT_MS,
-      windowsHide: true
-    });
-    const [output, errors, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    if (exitCode !== 0) {
-      const why = errors.trim().split(`
-`).at(-1)?.trim() ?? "";
-      return {
-        error: `the worktrees scan did not run (exit ${exitCode})${why === "" ? "" : `: ${why}`}`
-      };
-    }
-    const answer = worktreesOf(output);
-    return answer === null ? { error: "the worktrees scan's answer was not one this portal reads" } : { answer };
-  } catch (error) {
-    return {
-      error: `the worktrees scan did not run: ${error instanceof Error ? error.message : String(error)}`
-    };
-  }
+  const run = await runCliChildText(ctx, ["worktrees", "--json"], {
+    cwd,
+    subject: "the worktrees scan",
+    timeoutMs: WORKTREES_CHILD_TIMEOUT_MS
+  });
+  if ("error" in run)
+    return run;
+  const answer = worktreesOf(run.output);
+  return answer === null ? { error: "the worktrees scan's answer was not one this portal reads" } : { answer };
 }
 function isObject5(value) {
   return typeof value === "object" && value !== null;
@@ -34960,7 +35047,7 @@ function crewSummary(record, events, nowMs) {
     worktree: record.worktree
   };
 }
-function reasonOf4(error) {
+function reasonOf5(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function eventsByRepo(paths, records) {
@@ -34983,12 +35070,12 @@ async function workAnswer(deps) {
   try {
     records = [...listAllCrew(paths.stateDir).records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   } catch (error) {
-    note = `the crew store could not be read: ${reasonOf4(error)}`;
+    note = `the crew store could not be read: ${reasonOf5(error)}`;
   }
   try {
     leadRecords = [...listAllLeads(paths.stateDir).records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.sessionId.localeCompare(a.sessionId));
   } catch (error) {
-    note = note ?? `the crew store could not be read: ${reasonOf4(error)}`;
+    note = note ?? `the crew store could not be read: ${reasonOf5(error)}`;
   }
   const events = eventsByRepo(paths, records);
   const crew = records.map((record) => crewSummary(record, events.get(record.repo) ?? [], now));
@@ -35012,7 +35099,7 @@ async function workAnswer(deps) {
     const { repo } = found;
     const crewSessionIds = new Set(records.flatMap((record) => record.sessionId === null ? [] : [record.sessionId]));
     const leadIds = new Set(leadRecords.map((one) => one.sessionId));
-    const others = savedSessions(join65(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
+    const others = savedSessions(join64(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
     const waits = others.some((session) => !session.endedCleanly) ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS) : { open: [] };
     const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
     sessions = others.map((session) => ({
@@ -35065,7 +35152,7 @@ async function crewAnswerFor(deps, ref) {
   try {
     records = listAllCrew(paths.stateDir).records;
   } catch (error) {
-    return { error: reasonOf4(error) };
+    return { error: reasonOf5(error) };
   }
   const named = findCrew(records, ref, "status");
   if ("refusal" in named) {
@@ -35861,7 +35948,7 @@ async function ghLoginOf(world, root) {
 }
 function configAt(root) {
   try {
-    const config = loadCcSmartDevKitConfig(join66(root, CONFIG_PATH));
+    const config = loadCcSmartDevKitConfig(join65(root, CONFIG_PATH));
     return config === null ? {
       ok: false,
       why: `${root} has no ${CONFIG_PATH} yet: set it up with \`${COMMAND} project init\` there.`
@@ -35922,93 +36009,6 @@ async function projectsAnswerFor(deps) {
   return { current, note: list.note, projects: list.projects };
 }
 
-// src/portal/cli-child.ts
-import { join as join67 } from "path";
-var CLI_CHILD_TIMEOUT_MS = 180000;
-async function readLines(stream, push) {
-  if (stream === undefined || typeof stream === "number")
-    return;
-  const reader = stream.getReader();
-  const decoder = new TextDecoder;
-  let rest = "";
-  for (;; ) {
-    const { done, value } = await reader.read();
-    if (done)
-      break;
-    rest += decoder.decode(value, { stream: true });
-    const parts = rest.split(`
-`);
-    rest = parts.pop() ?? "";
-    for (const line of parts)
-      push(line);
-  }
-  rest += decoder.decode();
-  if (rest !== "")
-    push(rest);
-}
-async function runCliChild(ctx, args, options) {
-  const folder = ctx.pluginFolder();
-  if ("error" in folder) {
-    return { error: folder.error, exitCode: null, lines: [], timedOut: false };
-  }
-  const context = commandContext(ctx.env, ctx.paths.home);
-  const env = {
-    ...context.env,
-    CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir,
-    HOME: ctx.paths.home
-  };
-  delete env.CC_SMART_DEV_KIT_CREW;
-  delete env.CLAUDECODE;
-  const lines = [];
-  const push = (line) => {
-    const trimmed = line.replace(/\r$/, "");
-    if (trimmed.trim() === "")
-      return;
-    lines.push(trimmed);
-    options.onLine?.(trimmed);
-  };
-  try {
-    const startedAt = Date.now();
-    const child = Bun.spawn([
-      process.execPath,
-      "--no-env-file",
-      bunConfigArg(folder.folder),
-      join67(folder.folder, "dist", "cli.js"),
-      ...args
-    ], {
-      cwd: options.cwd ?? context.cwd,
-      env,
-      stderr: "pipe",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS,
-      windowsHide: true
-    });
-    await Promise.all([readLines(child.stdout, push), readLines(child.stderr, push)]);
-    const code = await child.exited;
-    const signal = child.signalCode ?? null;
-    if (signal === null)
-      return { error: null, exitCode: code, lines, timedOut: false };
-    const limit = options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS;
-    if (Date.now() - startedAt >= limit - 5000) {
-      return { error: null, exitCode: null, lines, timedOut: true };
-    }
-    return {
-      error: `the command was ended by a signal (${String(signal)}) before it finished`,
-      exitCode: null,
-      lines,
-      timedOut: false
-    };
-  } catch (error) {
-    return {
-      error: `the command did not start: ${error instanceof Error ? error.message : String(error)}`,
-      exitCode: null,
-      lines,
-      timedOut: false
-    };
-  }
-}
-
 // src/portal/context.ts
 function healthFetch(ctx) {
   return (url, init) => ctx.fetch(url, init);
@@ -36055,7 +36055,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join68(folder.folder, "dist", "router.js"),
+      bundle: join66(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -37209,7 +37209,7 @@ async function healthAnswer2(deps) {
     ...await healthData(deps, deps.found.config),
     configured: true,
     error: null,
-    portHolder: portHolder(deps.action.portal, deps.found.config.port)
+    portHolder: await portHolder(deps.action.portal, deps.found.config.port)
   };
 }
 function gatewayKeyState(found, fileThere) {
@@ -38972,7 +38972,7 @@ function createLiveSources(deps) {
 
 // src/portal/static.ts
 import { existsSync as existsSync55, readFileSync as readFileSync65, statSync as statSync19 } from "fs";
-import { extname, join as join69, resolve as resolve11, sep as sep5 } from "path";
+import { extname, join as join67, resolve as resolve11, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -39001,7 +39001,7 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve11(join69(folder, decoded));
+  const file = resolve11(join67(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
@@ -39023,7 +39023,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync65(join69(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync65(join67(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -39038,7 +39038,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve11(folder);
-  if (!existsSync55(join69(absolute, "index.html")))
+  if (!existsSync55(join67(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -39981,7 +39981,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join70(dirname24(import.meta.path), "portal-ui");
+  return join68(dirname24(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -40260,6 +40260,25 @@ var runner = (cmd) => {
     return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
 };
+var runRead = async (cmd) => {
+  try {
+    const child = Bun.spawn(cmd, {
+      stderr: "pipe",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RUN_TIMEOUT_MS3,
+      windowsHide: true
+    });
+    const [output, errors, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    return { exitCode: child.signalCode === null ? exitCode : 1, output: `${output}${errors}` };
+  } catch (error) {
+    return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
+  }
+};
 function startEnv(env) {
   const kept = {};
   for (const [key, value] of Object.entries(env)) {
@@ -40285,7 +40304,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join71(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join69(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -40327,6 +40346,7 @@ async function runServer(paths, options) {
     paths,
     pluginFolder: () => resolvePluginFolder(paths.installedPluginsFile, fallback),
     probe: realProbe(),
+    runRead,
     runner,
     systemd: process.platform === "linux" && which("systemctl") !== null,
     which
@@ -40340,16 +40360,16 @@ async function runServer(paths, options) {
       browser: realBrowserDoctorDeps(machine, ctx.paths.home),
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join71(folder, "dist", "router.js"),
+        bundle: join69(folder, "dist", "router.js"),
         machine,
         runner,
         service: ctx.systemd ? "systemd" : "none"
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join71(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join69(folder, "dist")) },
       mcp: realMcpDoctorDeps(),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join71(folder, "hooks", "hooks.json") }
+      project: { cwd: process.cwd(), pluginHooksFile: join69(folder, "hooks", "hooks.json") }
     };
   };
   const portal = await startPortal(ctx, {

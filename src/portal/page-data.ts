@@ -138,7 +138,7 @@ export async function machineData(deps: PageDataDeps): Promise<MachineData> {
       newest: updates.newest,
       summary: updates.summary,
     },
-    warp: warpRow(deps.action.portal),
+    warp: await warpRow(deps.action.portal),
   };
 }
 
@@ -152,6 +152,7 @@ export async function overviewData(
   const limits = limitFacts(ctx);
   const omniroute = config.backends.omniroute;
   const dashboard = omniroute === undefined ? null : backendAddress(omniroute.baseUrl);
+  const log = await routerLog(ctx, 200);
   return {
     backends: await backendRows(ctx, config),
     dashboardUrl: dashboard === null ? null : `${dashboard}/`,
@@ -161,7 +162,7 @@ export async function overviewData(
     router,
     slots: slotRows(config, router),
     switches: switchFacts(ctx, config),
-    warnings: routerLog(ctx, 200).lines.filter((line) => line.level !== "INFO"),
+    warnings: log.lines.filter((line) => line.level !== "INFO"),
   };
 }
 
@@ -211,7 +212,7 @@ export async function healthData(deps: PageDataDeps, config: GatewayConfig): Pro
     backends: await backendRows(ctx, config),
     fallbacks: limits.fallbacks,
     limits: limits.limits,
-    log: routerLog(ctx, 200),
+    log: await routerLog(ctx, 200),
     router,
   };
 }
