@@ -70,8 +70,8 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 
 ## Every slot the same way; no model chosen for anyone (owner, 2026-10-17)
 
-Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `-fable`,
-`-judge` (auto mode's safety checks). One rule set for all of them:
+Five slots — scout (Haiku's), worker (Sonnet's), opus, fable, and judge (auto mode's
+safety checks), their ids in § Names. One rule set for all of them:
 
 - **A request reaches a slot by its model's FAMILY** (`familySlotFor`), read from the id
   Claude Code sends: never by an exact id, so a newer version needs no change. Or by the
@@ -269,16 +269,15 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   refuses it — nothing written, the key in the file kept, the message naming the key that
   backend wants. Anything else (unreachable, a 5xx) is not a silent save either: only with
   `--save-unchecked`, with a warning line (`!`). A key that really changes is backed up first
-  (`backupFile`, the state folder's `backups/`). Live, 2026-10-17: a pasted provider key
-  overwrote the router's working key, OmniRoute answered 401 to everything, and every affordable
-  subagent fell back to Claude.
+  (`backupFile`, the state folder's `backups/`). Why: a pasted provider key saved unchecked
+  once broke every affordable slot at once.
 - **OmniRoute's dashboard password makes a key, and is never stored** (`createOmnirouteKey`,
   `src/gateway/omniroute-key.ts`, `--omniroute-password[-stdin]`): `POST /api/auth/login` with
   **no `Origin` header** (OmniRoute skips its CSRF check without one; with one it must be its own
   origin or the CSRF token), then `POST /api/keys` with the `auth_token` cookie, named
   `cc-smart-dev-kit-router-<hostname>`, `noLog: true`. The key it answers with goes through the
-  same test-and-save as one given by hand. The facts are the installed OmniRoute 3.8.51's own
-  source (read 2026-10-17) — the module's header says which files.
+  same test-and-save as one given by hand. The facts are OmniRoute's own source, read once;
+  the module's header names the files.
 - **`gateway check`** is read-only and answers with an exit code (0 works, 1 no key yet and
   OmniRoute answers, 3 could not be judged, 4 the key is refused). It asks the BACKEND only,
   never the router's port: a machine's sessions may be using the router, and a test's default
@@ -330,7 +329,8 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   So `restore` stops it only once no gateway env key that still holds cc-smart-dev-kit's value is
   left (its stage 2; a key the person changed since is theirs, and does not hold it back),
   and asks first; `--now` does it at once, after saying every session fails until it
-  restarts.
+  restarts. `restore`'s own two stages are `setup-and-managed-files.md` § `--dry-run` and
+  `restore`; `stopRouter` below is the one stop.
 - **Never `disable --now` or a blocking `stop`.** systemd then waits for the router's
   drain (up to `TimeoutStopSec`, 120 s) while its port is already closed. `stopRouter`
   asks `is-active`, runs `disable` of both units, then one `stop --no-block` of the
