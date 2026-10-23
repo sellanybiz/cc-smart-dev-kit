@@ -5,7 +5,7 @@
  * That file is loaded into every Claude Code session on every machine that has the plugin,
  * so its size is paid on every turn, by everyone. The budget is a line count, because a
  * line is one rule a reader keeps in mind. Over the limit, trim it — or move a part into a
- * skill, which loads only when it is used (`plugin/skills/`, `docs/design.md` §
+ * skill, which loads only when it is used (`plugin/skills/`, `docs/design/instructions.md` §
  * Instructions, skills and agents).
  *
  * The warning line sits just above the file's size after its last trim (1.1.0: 190 lines

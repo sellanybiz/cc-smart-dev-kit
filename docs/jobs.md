@@ -140,7 +140,7 @@ besides running — a raw `claude --bg` (an ask, showing the `crew start` line; 
 (denied: the news arrives by itself). `ownHooks` cannot switch it off (`alwaysOn`): a session
 must not be able to switch off the limits on its own launches by editing a file it owns. A
 project file that still lists `"job-route"` keeps parsing and silences nothing; `doctor` says
-the name can go. The whole rule is `docs/design.md` § The Bash judge and the job route.
+the name can go. The whole rule is `docs/design/hooks.md` § The Bash judge and the job route.
 
 **In a lead, the hook also moves waits to the background.** In a session recorded as a lead
 (`crew lead`), a CI watch (`gh pr checks --watch`, `gh run watch`), a routed heavy job and the

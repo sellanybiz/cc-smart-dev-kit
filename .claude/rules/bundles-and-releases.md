@@ -31,7 +31,7 @@ Claude Code copies only `plugin/` into
   which a plugin's settings file does not expand, `docs/claude-code-contract.md`), and
   `bunfig.toml` (**empty, and it stays empty**: every bun the plugin starts in a person's
   folder gets `--config=` pointing at it, so a project's own `bunfig.toml` — its `preload` —
-  never runs inside the plugin; `docs/design.md` § The two flags on every bun run inside a
+  never runs inside the plugin; `docs/design/parts.md` § The two flags on every bun run inside a
   person's folder).
 - **The router bundle never changes by accident.** Code that `src/entries/router.ts`
   imports (`src/gateway/`, its paths in `src/gateway/paths.ts`) changes

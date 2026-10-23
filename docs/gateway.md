@@ -265,7 +265,7 @@ was (`config.ts`, tested in `config.test.ts`).
   does not know the field ignores it. `currentBreakers` counts a record for 15 minutes after
   `lastAt`, the way a limit without a reset time counts, so a record a stopped router left
   behind goes stale.
-- **In a worker's record** (`src/crew/store.ts`, § Lead and the crew in `docs/design.md`) a
+- **In a worker's record** (`src/crew/store.ts`, § Lead and the crew in `docs/design/crew.md`) a
   `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` or `{kind:
   "claude-limit", model, resetsAt}`, and a lead's record may carry `pausedAgents`, the ids of its
   own subagents waiting to be woken. Both are optional.
@@ -658,7 +658,7 @@ reset), the slots whose first target, a Claude model, is at that limit while a n
 target answers (§ Model slots), the slots whose every target is limited or down while
 their breaker holds requests (§ The breaker switch and its hold), and the Claude model ids
 Claude Code itself sent through it (`seenClaude`, with the last time each was seen; the
-portal's "Claude login" list, § The portal in `docs/design.md`). Never a key, a
+portal's "Claude login" list, § The portal in `docs/design/portal.md`). Never a key, a
 header value or a word of a request. **`seenClaude` is written only when an id is new**: the
 router reads the file again first and changes only that field, so a change another program
 made to the rest (the CLI's `dropFallbackRecord`, say) is never written over. `limit-state.ts`
@@ -1041,7 +1041,7 @@ The router builds a **new** request for an affordable backend:
   `HTTP_PROXY` (measured). So cc-smart-dev-kit needs Bun ≥ 1.4.3 (`MIN_BUN`,
   `src/build-info/bun.ts`): the router does not start on an older Bun, `gateway setup`
   does not install it there, and `doctor` skips the gateway checks there
-  (`src/gateway/proxy.test.ts`; `docs/design.md` § The Bun it needs).
+  (`src/gateway/proxy.test.ts`; `docs/design/parts.md` § The Bun it needs).
 - **Prompt text exactly as sent.** Only three named translations, each tested:
   - `toolSearchForBackend`: with tool search on (the default behind a custom base URL since
     2.1.304; `ENABLE_TOOL_SEARCH=true` forces it), Claude Code marks most tools

@@ -11,7 +11,7 @@ paths:
 The Playwright MCP server drives **the person's own Google Chrome**, through the **Playwright
 extension**, in ONE Chrome profile of its own named `claude-code`. There is no browser of ours and
 no shared profile: `browser mcp` starts `@playwright/mcp` with `--extension` and lets Playwright
-connect to the Chrome that is already there. How it works, and why: `docs/design.md` § The browser.
+connect to the Chrome that is already there. How it works, and why: `docs/design/browser.md` § The browser.
 The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The browser.
 
 ## The rules that break something when they move
