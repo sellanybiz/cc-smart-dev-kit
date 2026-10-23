@@ -632,7 +632,10 @@ describe("PM1: the quota fallback", () => {
       target: "omniroute:glm/flash",
     });
     // The Claude route names no backend: the address and the model are the fallback's.
-    expect(readClaudeMemFacts(w.paths).current?.route).toMatchObject({ address: null, target: null });
+    expect(readClaudeMemFacts(w.paths).current?.route).toMatchObject({
+      address: null,
+      target: null,
+    });
     // On a backend route, a backend fallback is refused: claude-mem has one compat backend.
     await chooseRoute(w.paths, { backend: "omniroute", kind: "backend", model: "m" }, w.check());
     expect(

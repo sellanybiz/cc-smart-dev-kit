@@ -779,6 +779,11 @@ checkout's. Its button carries the hash of that change, and `automode.apply` pla
 under setup's lock and writes nothing when the hash differs: the portal runs in a folder a
 session can write, and a rule added after the page was drawn would otherwise be trusted unread.
 
+**The claude-mem card (PM1)** sets claude-mem's route and model, its key and its fallback, each
+asked first in the page's own dialog and refused by the server without `confirm: true`. The
+writers are the person's own, owned and recorded as theirs, so setup leaves them and `restore`
+takes them out: § claude-mem from the portal.
+
 **It stays up until it is stopped** (D10): no idle clock, so it is there whenever the person
 opens it. `cc-smart-dev-kit portal stop` ends it, and a plugin update replaces it at the next
 session start. The trade-off is D9's: the page is open to every program and account on this
@@ -4008,6 +4013,49 @@ set or changed stays. A removal alone sends no check to the backend.
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
   (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 13.36.0 or newer, so no
   warning is needed below it.
+
+## claude-mem from the portal (PM1)
+
+The owner asked (2026-10-23) to set claude-mem's route and model, its key and its quota
+fallback from the portal. **The person choosing is not the plugin choosing**: the rule of
+2026-10-17 (no model of the plugin's own) still holds for setup, and a value the person picks
+on the Machine page is theirs. `src/machine/claude-mem-choices.ts` holds the reader and the
+three writers; the actions `claudemem.route`, `claudemem.key` and `claudemem.fallback`
+(`src/portal/actions.ts`) call them, and `/api/machine` carries the reader's answer
+(`ClaudeMemFacts`, never the key).
+
+- **Owned, and marked as the person's.** Each write is one `applyManagedJson` call under
+  setup's lock (backup, atomic write, the key named `secret`, so the file stays mode 600 and
+  `owned.json` keeps only its hash). So `restore` takes it out like any of setup's keys.
+  Beside that, `<stateDir>/claude-mem-choices.json` (`CHOICES_FILE`) keeps a copy of each
+  written key's record: `isPersonsChoice` is true while the file still holds that value **and**
+  setup's own record still matches, so a `restore` (which drops the record) ends the choice. A
+  choice of claude-mem's own seeded default (Claude, when the file already says `claude`)
+  writes nothing and owns nothing: it is recorded with `owned: false` and counts while nobody
+  owns the key and it still holds that default.
+- **Setup leaves it.** `planProvider` stops at a person's choice in any of the five provider
+  keys (one note line), and the retired fallback keys are taken out only while they are not a
+  person's choice: a fallback the person chose holds the same Claude value 0.4.3 wrote.
+- **Never a model typed free.** A route or fallback target passes `targetProblem`, the slot
+  picker's own check (`chainProblem` against the backend's live model list), and then one tiny
+  chat with the key it will use (`checkAffordableTarget`); nothing is written when either
+  fails. The page's lists are `/api/slots`' own `models`.
+- **A value set by hand is never overwritten.** The reader names each value's source
+  (`default`, `setup`, `portal`, `hand`); a write over a `hand` value is refused in words before
+  anything is written (`ForeignKeyError` stays the guard for a race).
+- **The key.** A route to a backend keeps a key the person set (here or by hand) and otherwise
+  uses the gateway's own key for that backend, as setup does. A pasted key is one line, no
+  spaces, at most 512 characters, and is checked with the chat before it is saved.
+- **The fallback, as claude-mem 13.40.0 reads it** (its `worker-service.cjs`: the settings
+  defaults and `validateSettings`; its CHANGELOG): the provider takes `claude`, `gemini`,
+  `openrouter`, `openai-compatible` or `off`; an empty one means Claude since 13.37.0 and none
+  before it (`CLAUDE_FALLBACK_SINCE`); a fallback equal to the route's provider never takes
+  over; the model applies to a Claude fallback only; and an `openai-compatible` fallback uses
+  the same `CLAUDE_MEM_OPENAI_COMPAT_*` keys as the route. So a backend fallback needs the
+  Claude route, and the writer refuses the rest in words.
+- **No restart.** claude-mem's `loadFromFile` reads the settings file at each use.
+- **No address shown with its credentials.** `shownClaudeMemValue` shows a base URL through
+  `backendAddress` (no user name, password, query or fragment), in setup's lines too.
 
 ## Warp
 

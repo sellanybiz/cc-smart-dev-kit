@@ -1572,7 +1572,7 @@ The pages, each following the design the owner approved (2026-10-16):
 | **Slots** | One card per slot. **Who answers**: Claude or Custom, both named (`gateway slot <slot> claude\|custom`); Custom stays unavailable, with its reason, until a chain is saved (the judge: until every backend target passed the force-push test). **The chain**: the one in use, or the one saved while Claude answers ("Saved, not in use"); drag a target or use its arrows, add one from the backends' live model list, or type one, which the server checks with the command line's own rule before it joins (`✗ "omnirout:glm-5.3": backend "omnirout" is not in the config`). Edits stay a draft until **Save**, which asks first and runs `gateway slot <slot> <targets>` (in Claude mode it says that saving puts the chain in use). A save over a chain that changed since the page read it (another tab, the command line) is refused, and the card offers **Load it** or **Keep mine**. **Test each target** marks each one (one tiny chat to an affordable model, the force-push test for a judge). **Fallback** and **Breaker** save at once, after a confirmation (`gateway fallback`, `gateway breaker`; the judge has no breaker). Each target shows its last day from the request history. |
 | **Health** | The router's counters, what holds its port across restarts (the socket unit, or the Windows task) in `doctor`'s own words with its fix, each backend and whether it answers, the targets resting, latency and errors over time, and its journal. When the router does not answer: why, the commands that show its state and its log, and **Restart the router** (`gateway setup --yes`), asked first. |
 | **Guard log** | What each guard asked you or refused, newest first and paged by the server: pick a range, a guard or a session; the asks per guard over the range are charted, and the two menus offer what the range holds. |
-| **Machine** | The kit's version; Claude Code's (`claude --version`) and whether `doctor --live` proved it; the Bun the portal runs on against the one the kit needs; `doctor` with each failure's fix and **Run doctor**; the heavy-job queue with its CPU and I/O weights; Updates (installed, newest, last check, **Check now**, a held major); the companion plugins (**Turn it on** for one turned off); the MCP servers setup registers; the **Browser card** (**Set up the browser**, the steps, and a masked field that saves the extension's token: the stored value is never on the page); OmniRoute (**Update** and **Roll back**, each saying what the restart costs); the project's auto-mode trust rules with **Write them**; Warp; and the worktrees with **Clean finished now**. |
+| **Machine** | The kit's version; Claude Code's (`claude --version`) and whether `doctor --live` proved it; the Bun the portal runs on against the one the kit needs; `doctor` with each failure's fix and **Run doctor**; the heavy-job queue with its CPU and I/O weights; Updates (installed, newest, last check, **Check now**, a held major); the companion plugins (**Turn it on** for one turned off); the MCP servers setup registers; the **Browser card** (**Set up the browser**, the steps, and a masked field that saves the extension's token: the stored value is never on the page); OmniRoute (**Update** and **Roll back**, each saying what the restart costs); the [claude-mem card](#claude-mem-from-the-portal) (where its summaries go, its key, its fallback, and who set each); the project's auto-mode trust rules with **Write them**; Warp; and the worktrees with **Clean finished now**. |
 | **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch and the worktree), the alerts (which events, the sound, the usage-limit percentage), the switches (the status line, the session names, the heavy-job queue, the update hold), and the **crew caps** (crew sessions per lead, of those on Opus, the machine's ceiling, and the share of the 5-hour window past which a new Opus crew session waits). Each row says where its value comes from — `yours`, `this project` or `default` — and a row the project sets is read-only here. Its **Projects** tab lists every project you work in, with each one's page (below). |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
 
@@ -1895,8 +1895,9 @@ The rules:
 - **Your choice stands.** claude-mem writes its own defaults into the file on its first
   run; setup changes a key only while it holds that default (`""`, or `claude` for the
   provider), or the value setup wrote there itself. One key set to anything else
-  (also a key setup set and you changed since), or a key pool of your own in
-  `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS`, and setup changes none of them and says so.
+  (also a key setup set and you changed since), a key pool of your own in
+  `CLAUDE_MEM_OPENAI_COMPAT_API_KEYS`, or a choice you made in the
+  [portal](#claude-mem-from-the-portal), and setup changes none of them and says so.
 - **Checked first, the way claude-mem calls it.** Before it writes, setup sends the
   backend one chat request (`POST <base URL>/chat/completions` with the model and the key,
   `max_tokens: 1`), and writes only when it answers. A 401 or 403 is a refused key; a 404
@@ -1912,6 +1913,41 @@ The rules:
   again once the scout starts with one, or `restore`).
 - `restore` removes the keys that still hold what setup wrote, so claude-mem goes back
   to its own defaults; a key you changed since stays.
+
+### claude-mem from the portal
+
+The [portal](#the-portal)'s Machine page has a claude-mem card. It shows where claude-mem's
+summaries go, the key that opens that backend, and its quota fallback, each with who set it:
+claude-mem's own default, setup (from the scout slot), you in the portal, or you by hand in
+the file. **What claude-mem summarises from every session leaves this machine for the model
+you choose here**, and the card says so.
+
+- **Route and model**: Claude on your own login, or a model from the gateway's live list
+  (the same list, and the same check, as the Slots page: a model its backend does not list is
+  refused). It sets the five keys setup sets (above).
+- **Key**: the gateway's own key for that backend (what setup uses), or another key you paste
+  into a masked field. The key is never shown again, printed or logged; the file stays at mode
+  600.
+- **Fallback** (`CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` and `…_MODEL`): what takes claude-mem's
+  work while its route's provider is limited. Off (claude-mem waits), Claude (claude-mem's own
+  Claude model, or one from the list), or a backend model. claude-mem has one OpenAI-compatible
+  setting, so a backend fallback needs the Claude route, and a Claude fallback needs a backend
+  route: a fallback that is the route's own provider never takes over, and the card says so.
+  Since claude-mem 13.37.0 an empty fallback means Claude; before it, none.
+
+The rules:
+
+- **Each change asks first**, then runs the kit's own code: a route, key or fallback that
+  sends work to a backend is checked with one tiny chat first, and nothing is written when it
+  does not answer. claude-mem reads its file each time it uses it, so no restart is needed.
+- **Your choice, kept.** Each write goes through setup's lock with a backup, is owned like
+  setup's keys (so `restore` takes it out), and is recorded as yours
+  (`~/.claude/cc-smart-dev-kit/claude-mem-choices.json`): a later `setup` leaves the provider
+  keys, and a fallback you chose, as they are.
+- **A value you set by hand stays yours.** The card says so, and a change to it is refused
+  in words: change it in the file, or remove it there to set it here.
+- claude-mem not installed, older than 13.29.0, or with a file it cannot read: the card says
+  why, with the command that fixes it.
 
 ## Warp
 
