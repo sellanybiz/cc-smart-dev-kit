@@ -110,7 +110,7 @@ prints a section per part, one verdict line, and the next steps to run, in order
   --instructions       bring them back (restore forgets the choice)
   --statusline         also set Claude Code's status line to "${COMMAND} statusline"
                        (asked when run in a terminal)
-  ${RETRY_WATCHDOG_FLAG}     turn the retry watchdog on without asking (it is on by default):
+  ${RETRY_WATCHDOG_FLAG}     turn the retry watchdog on now, also after an earlier "no":
                        every Claude Code session waits at a limit instead of failing
                        (${RETRY_WATCHDOG_ENV} in your settings); a usage limit that
                        resets more than 24 hours away ends the wait

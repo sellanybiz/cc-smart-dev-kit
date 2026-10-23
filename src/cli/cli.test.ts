@@ -3305,6 +3305,24 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     writeFileSync(retryWatchdogDeclinedFile(stateDir), "no\n", { mode: 0o600 });
   }
 
+  /**
+   * What a setup before D56's cap left: the two keys, and `owned.json` saying setup wrote them.
+   * The cap goes from both the settings and the record.
+   */
+  function asBeforeTheCap(stateDir: string, settingsFile: string): void {
+    const settings = readJson(settingsFile);
+    delete settings.env[CAP];
+    writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+    const ownedFile = join(stateDir, "owned.json");
+    const owned = readJson(ownedFile);
+    for (const file of Object.keys(owned)) {
+      owned[file] = owned[file].filter(
+        (record: { path: string[] }) => record.path.join(".") !== `env.${CAP}`,
+      );
+    }
+    writeFileSync(ownedFile, JSON.stringify(owned));
+  }
+
   /** Terminal tests run setup in this process: silence its output, run `body`, put the output back. */
   async function quietly(body: () => Promise<void>): Promise<void> {
     const quiet = spyOn(console, "log").mockImplementation(() => undefined);
@@ -3431,18 +3449,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
   test("an older setup's two keys: the next run adds the cap, one change line and no · line", () => {
     const { stateDir, settingsFile, run } = setup();
     expect(run(["setup"]).exitCode).toBe(0);
-    // What a version before this one left: the two keys, and owned.json saying setup wrote them.
-    const settings = readJson(settingsFile);
-    delete settings.env[CAP];
-    writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
-    const ownedFile = join(stateDir, "owned.json");
-    const owned = readJson(ownedFile);
-    for (const file of Object.keys(owned)) {
-      owned[file] = owned[file].filter(
-        (record: { path: string[] }) => record.path.join(".") !== `env.${CAP}`,
-      );
-    }
-    writeFileSync(ownedFile, JSON.stringify(owned));
+    asBeforeTheCap(stateDir, settingsFile);
 
     const after = run(["setup"]);
     expect(after.exitCode).toBe(0);
@@ -3455,6 +3462,41 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
       ),
     );
     expect(readJson(settingsFile).env).toEqual(ALL_ON);
+  });
+
+  test("a stale no beside our keys: a plain run completes the cap, forgets the no, and does not say off", () => {
+    const { stateDir, settingsFile, run } = setup();
+    // `--retry-watchdog` in 1.0.x–1.1.0 wrote the two keys but never removed an earlier "no".
+    expect(run(["setup", "--retry-watchdog"]).exitCode).toBe(0);
+    asBeforeTheCap(stateDir, settingsFile);
+    decline(stateDir);
+
+    const after = run(["setup"]);
+    expect(after.exitCode).toBe(0);
+    expect(after.stdout).toContain(CAP_LINE);
+    expect(after.stdout).not.toContain(DECLINED_NOTE);
+    expect(existsSync(retryWatchdogDeclinedFile(stateDir))).toBe(false);
+    expect(readJson(settingsFile).env).toEqual(ALL_ON);
+    // The keys and the "no" now agree: a later dry run has nothing to say about the watchdog.
+    expect(run(["setup", "--dry-run"]).stdout).not.toContain("retry watchdog");
+  });
+
+  test("a key the person deleted after setup wrote it is not put back", () => {
+    const { settingsFile, run } = setup();
+    expect(run(["setup"]).exitCode).toBe(0);
+    const settings = readJson(settingsFile);
+    delete settings.env[WATCHDOG];
+    writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+
+    const after = run(["setup"]);
+    expect(after.exitCode).toBe(0);
+    expect(after.stdout).not.toContain("retry watchdog");
+    // The two keys setup still owns stay; the one they removed is theirs.
+    expect(readJson(settingsFile).env).toEqual({
+      ...TODO,
+      [RECHECK]: "300000",
+      [CAP]: "86400000",
+    });
   });
 
   test("on a terminal, a plain setup asks nothing about the watchdog and turns it on", async () => {
@@ -3538,6 +3580,20 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
       expect(real.stdout).not.toContain(CAP);
       expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: value });
     }
+  });
+
+  test("a no on file beside the person's own key: no false off line", () => {
+    const { settingsFile, stateDir, run } = setup();
+    decline(stateDir);
+    setEnv(settingsFile, { [WATCHDOG]: "1" });
+
+    const real = run(["setup"]);
+    expect(real.exitCode).toBe(0);
+    expect(real.stdout).not.toContain(DECLINED_NOTE);
+    expect(real.stdout).not.toContain("retry watchdog");
+    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1" });
+    // The "no" stays theirs: nothing of ours was turned on, so nothing forgot it.
+    expect(existsSync(retryWatchdogDeclinedFile(stateDir))).toBe(true);
   });
 
   test("restore removes all three keys; a value the person changed since stays", () => {

@@ -21,7 +21,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   `worktrees.guardMainFolder` on, the session-start lines about a main checkout that is on
   another branch, behind its base, or in the middle of a merge now ask the session to give you
   the command, instead of telling it to switch or merge there itself. The fast-forward is
-  `git merge --ff-only`, so no merge commit lands in the main checkout.
+  `git merge --ff-only`, so no merge commit lands in the main checkout. The "behind" count is
+  now the base branch's own, and a merge in progress is named first.
 
 **What to run:** `cc-smart-dev-kit setup` (it turns the watchdog on), then restart your Claude
 Code sessions. Stop any crew session started by 1.1.0 and start it again: it ran without the kit.

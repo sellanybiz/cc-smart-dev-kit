@@ -91,6 +91,7 @@ import {
   retryWatchdogDeclined,
   retryWatchdogDeclinedFile,
   retryWatchdogKeysOurs,
+  retryWatchdogState,
 } from "../setup/retry-watchdog";
 import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
@@ -208,9 +209,9 @@ interface Managed {
   /** Set the status line (`--statusline`, or a "yes" to the question). */
   statusline: boolean;
   /**
-   * The retry watchdog's keys: `on` (`--retry-watchdog`, or the D56 default) writes them,
-   * `off` (`--no-retry-watchdog`) takes ours out, `null` leaves them as they are (a "no" on
-   * file, or a key of the person's own).
+   * The retry watchdog's keys: `on` (`--retry-watchdog`, or the D56 default) writes them and
+   * forgets an earlier "no", `off` (`--no-retry-watchdog`) takes ours out and remembers the
+   * "no", `null` leaves everything as it is (a "no" on file, or a key of the person's own).
    */
   retryWatchdog: "off" | "on" | null;
   /**
@@ -406,14 +407,20 @@ function applySetup(
   // D56: the watchdog is on by default. When this run turns it on, one `·` line says what
   // every session on the machine now does, and how to turn it off. A run that only adds the
   // cap to the two keys an older setup wrote is that one change line, with no note. A "no"
-  // on file gets its own line instead: setup leaves the keys alone.
+  // on file gets its own line instead, and only while the watchdog is really off: an older
+  // `--retry-watchdog` could leave a "no" beside our own keys, and a key of the person's own
+  // decides without that line.
   const watchdogTurnedOn = settings.changes.some(
     (change) => formatKeyPath(change.path) === formatKeyPath(RETRY_WATCHDOG_KEY),
   );
   if (managed.retryWatchdog === "on" && watchdogTurnedOn) {
     add("settings", "info", RETRY_WATCHDOG_ON_NOTE);
   }
-  if (managed.retryWatchdog === null && retryWatchdogDeclined(paths.stateDir)) {
+  if (
+    managed.retryWatchdog === null &&
+    retryWatchdogDeclined(paths.stateDir) &&
+    retryWatchdogState(paths) === "off"
+  ) {
     add("settings", "info", RETRY_WATCHDOG_DECLINED_NOTE);
   }
   if (todoTools?.kind === "kept") {
@@ -717,16 +724,27 @@ function askStatusline(paths: CliPaths, machine: Machine, managed: Managed, yes:
 
 /**
  * D56: Claude Code's retry watchdog is on by default. Nothing asked, on a terminal or not,
- * with `--yes` or not: it is turned on unless a flag already decided, the person said no
- * before (`retryWatchdogDeclinedFile`), or a key of their own is in the settings' `env`
- * (their value stays, as ForeignKeyError rules). A key an older setup wrote is ours: the run
- * completes it with D56's cap.
+ * with `--yes` or not: it is turned on unless a flag already decided, a key of their own is in
+ * the settings' `env` (their value stays, as ForeignKeyError rules), or the person said no
+ * before (`retryWatchdogDeclinedFile`) and nothing of ours is there. A key an older setup
+ * wrote is ours: the run completes it with D56's cap. A "no" beside our own keys is stale (an
+ * older `--retry-watchdog` did not remove it): the run turns the keys on and forgets it.
  */
 function decideRetryWatchdog(paths: CliPaths, managed: Managed): void {
   if (managed.retryWatchdog !== null) return;
-  if (retryWatchdogDeclined(paths.stateDir)) return;
   try {
-    if (retryWatchdogKeysOurs(paths)) managed.retryWatchdog = "on";
+    const state = retryWatchdogState(paths);
+    const keysOurs = retryWatchdogKeysOurs(paths);
+    // Ours is on already: complete the keys, and let the write forget a stale "no".
+    if (state === "ours" && keysOurs) {
+      managed.retryWatchdog = "on";
+      return;
+    }
+    // A key of the person's own decides by itself.
+    if (state !== "off") return;
+    // Off, and a "no" on file: their answer stands while no key of ours is there.
+    if (retryWatchdogDeclined(paths.stateDir)) return;
+    if (keysOurs) managed.retryWatchdog = "on";
   } catch {
     // An unreadable file: setup's own pass reports it.
   }
@@ -1232,8 +1250,9 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         if (watchdogDeclined) {
           atomicWrite(retryWatchdogDeclinedFile(paths.stateDir), "no\n", 0o600);
         }
-        // `--retry-watchdog` forgets an earlier "no", so the state agrees with the keys.
-        if (options.retryWatchdog === true) {
+        // The watchdog is on after this run (`--retry-watchdog`, or ours already on): a "no"
+        // an older run left behind goes, so the state agrees with the keys.
+        if (managed.retryWatchdog === "on") {
           rmSync(retryWatchdogDeclinedFile(paths.stateDir), { force: true });
         }
         return {

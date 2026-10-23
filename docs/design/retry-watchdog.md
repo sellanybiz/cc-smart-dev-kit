@@ -14,21 +14,27 @@ survive a limit in process, so `setup` turns it on.
   decision and the write.
 - **On by default** (D56). Setup writes the keys with no question, on a terminal or not, with
   `--yes` or not. A "no" (`--no-retry-watchdog`, or an answer from before D56) is remembered in
-  `<stateDir>/retry-watchdog-declined`, and setup leaves the keys out. A key of the person's own
-  in the settings' `env` is theirs and stays, with no cap added beside it: their watchdog, their
-  limits. `--retry-watchdog` writes all three and forgets the "no". An older setup's two keys
-  are completed with the cap at the next run. `--dry-run` names each change and writes nothing.
+  `<stateDir>/retry-watchdog-declined`, and setup leaves the keys out while none of ours is
+  there. A key of the person's own in the settings' `env` is theirs and stays, with no cap added
+  beside it: their watchdog, their limits. `--retry-watchdog` writes all three and forgets the
+  "no". A "no" left beside our own keys (an older `--retry-watchdog` did not remove it) is
+  stale: a plain run keeps the keys on, completes an older setup's two keys with the cap, and
+  forgets it. `--dry-run` names each change and writes nothing.
 - **The 24-hour cap** (D56). `…_MAX_USAGE_LIMIT_WAIT_MS` = 86400000 ends a wait whose usage
   limit resets more than 24 hours away, so the request ends instead of holding a `claude -p`
   script for days. The 5-hour limit, and a model that is down or overloaded, are still waited
   out with no limit (no `…_MAX_WAIT_MS`, D42).
 - **Three owned keys** under `env`, through `applyManagedJson` (backup, atomic write, lock,
-  ownership). A value the person set is theirs: a different one stops setup in the read-only pass
-  (`ForeignKeyError`); the same one is named and left alone. `--no-retry-watchdog` removes the
-  ones that are ours and remembers a "no". `restore` removes ours like any owned key, and the
-  `env` object with them when setup made it.
-- **A crew session is unchanged** (`src/crew/start.ts`): its own settings carry the first two
-  keys and no cap (D42), so a crew turn keeps waiting for its phase.
+  ownership). A plain setup leaves a key of the person's own alone, silently. With
+  `--retry-watchdog`, a value they set is theirs too: a different one stops setup in the
+  read-only pass (`ForeignKeyError`); the same one is named and left alone.
+  `--no-retry-watchdog` removes the ones that are ours and remembers a "no". `restore` removes
+  ours like any owned key, and the `env` object with them when setup made it.
+- **A crew session gets the cap from the person's settings** (`src/crew/start.ts`): its own
+  `--settings` file carries the first two keys and no cap (D42), and Claude Code merges `env`
+  per variable, so setup's `…_MAX_USAGE_LIMIT_WAIT_MS` reaches the crew session when setup
+  wrote it. A usage limit that resets more than 24 hours away then ends the turn; the lead's
+  watch pauses the crew session and resumes it after the reset, so the phase still goes on.
 - **`doctor`** has one `·` line (`retryWatchdogState`): on (ours), on (the person's own), off with
   the command that turns it on, or off because the person's own value leaves it off. It is
   information, never a failure.

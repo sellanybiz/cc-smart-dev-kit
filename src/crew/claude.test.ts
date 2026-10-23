@@ -404,6 +404,32 @@ describe("a lean start", () => {
     expect(lean.ok ? lean.lean.off : lean).toEqual(["stripe@claude-plugins-official"]);
   });
 
+  test("a dependency cycle ends: each plugin is read once, and both stay on", () => {
+    const reads: string[] = [];
+    const manifests: Record<string, unknown> = {
+      "/plugins/a": ["b"],
+      "/plugins/b": ["a"],
+    };
+    const lean = leanLaunch({
+      context: MCP_CONTEXT,
+      enabled: [
+        { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit", installPath: null },
+        { enabled: true, id: "a@acme", installPath: "/plugins/a" },
+        { enabled: true, id: "b@acme", installPath: "/plugins/b" },
+        { enabled: true, id: "stripe@claude-plugins-official", installPath: null },
+      ],
+      keep: ["plugin:a@acme"],
+      kind: "build",
+      own: [],
+      readDependencies: (installPath) => {
+        reads.push(installPath);
+        return manifests[installPath];
+      },
+    });
+    expect(lean.ok ? lean.lean.off : lean).toEqual(["stripe@claude-plugins-official"]);
+    expect(reads).toEqual(["/plugins/a", "/plugins/b"]);
+  });
+
   test("a plugin that only a turned-off plugin depends on still goes off", () => {
     const lean = leanLaunch({
       context: MCP_CONTEXT,

@@ -31009,18 +31009,21 @@ function mainFolderNotes(repo, main, base, env, guarded) {
     return [];
   const notes = [];
   const fix = (own, command, when) => guarded ? `ask the person to run \`${command}\` in the main checkout ${when}` : `${own} ${when}`;
-  if (main.branch !== base) {
-    const where = main.branch === null ? "a detached HEAD" : `\`${main.branch}\``;
-    notes.push(`The main checkout is on ${where}, not \`${base}\`: a new worktree starts from its HEAD, so ${fix(`switch it to \`${base}\``, `git switch ${base}`, "first.")}`);
-  }
-  const behind = runGit(repo, ["rev-list", "--count", `HEAD..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
-  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
-  if (count > 0) {
-    notes.push(`The main checkout is ${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}: ${fix(`fast-forward it there (\`git merge --ff-only origin/${base}\`)`, `git merge --ff-only origin/${base}`, "before starting a new worktree.")}`);
-  }
   const operation = operationInProgress(repo, env);
   if (operation !== null) {
     notes.push(guarded ? `The main checkout is in the middle of a ${operation}: ask the person to finish it or abort it before starting a new worktree.` : `The main checkout is in the middle of a ${operation}: finish it or abort it before starting a new worktree.`);
+  }
+  const onBase = main.branch === base;
+  if (!onBase) {
+    const where = main.branch === null ? "a detached HEAD" : `\`${main.branch}\``;
+    notes.push(`The main checkout is on ${where}, not \`${base}\`: a new worktree starts from its HEAD, so ${fix(`switch it to \`${base}\``, `git switch ${base}`, "first.")}`);
+  }
+  const behind = runGit(repo, ["rev-list", "--count", `refs/heads/${base}..refs/remotes/origin/${base}`], env, GUARD_GIT_TIMEOUT_MS);
+  const count = behind.ok && /^\d+$/.test(behind.out) ? Number(behind.out) : 0;
+  if (count > 0) {
+    const commits = `${count} ${count === 1 ? "commit" : "commits"} behind origin/${base}`;
+    const step = fix(`fast-forward it there (\`git merge --ff-only origin/${base}\`)`, `git merge --ff-only origin/${base}`, "before starting a new worktree.");
+    notes.push(onBase ? `The main checkout is ${commits}: ${step}` : `The main checkout's \`${base}\` is ${commits}: after the switch, ${step}`);
   }
   return notes;
 }
@@ -44775,7 +44778,7 @@ prints a section per part, one verdict line, and the next steps to run, in order
   --instructions       bring them back (restore forgets the choice)
   --statusline         also set Claude Code's status line to "${COMMAND} statusline"
                        (asked when run in a terminal)
-  ${RETRY_WATCHDOG_FLAG}     turn the retry watchdog on without asking (it is on by default):
+  ${RETRY_WATCHDOG_FLAG}     turn the retry watchdog on now, also after an earlier "no":
                        every Claude Code session waits at a limit instead of failing
                        (${RETRY_WATCHDOG_ENV} in your settings); a usage limit that
                        resets more than 24 hours away ends the wait
@@ -46257,7 +46260,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   if (managed.retryWatchdog === "on" && watchdogTurnedOn) {
     add("settings", "info", RETRY_WATCHDOG_ON_NOTE);
   }
-  if (managed.retryWatchdog === null && retryWatchdogDeclined(paths.stateDir)) {
+  if (managed.retryWatchdog === null && retryWatchdogDeclined(paths.stateDir) && retryWatchdogState(paths) === "off") {
     add("settings", "info", RETRY_WATCHDOG_DECLINED_NOTE);
   }
   if (todoTools?.kind === "kept") {
@@ -46433,10 +46436,18 @@ function askStatusline(paths, machine, managed, yes) {
 function decideRetryWatchdog(paths, managed) {
   if (managed.retryWatchdog !== null)
     return;
-  if (retryWatchdogDeclined(paths.stateDir))
-    return;
   try {
-    if (retryWatchdogKeysOurs(paths))
+    const state = retryWatchdogState(paths);
+    const keysOurs = retryWatchdogKeysOurs(paths);
+    if (state === "ours" && keysOurs) {
+      managed.retryWatchdog = "on";
+      return;
+    }
+    if (state !== "off")
+      return;
+    if (retryWatchdogDeclined(paths.stateDir))
+      return;
+    if (keysOurs)
       managed.retryWatchdog = "on";
   } catch {}
 }
@@ -46751,7 +46762,7 @@ async function runSetup(paths, options) {
       atomicWrite(retryWatchdogDeclinedFile(paths.stateDir), `no
 `, 384);
     }
-    if (options.retryWatchdog === true) {
+    if (managed.retryWatchdog === "on") {
       rmSync19(retryWatchdogDeclinedFile(paths.stateDir), { force: true });
     }
     return {

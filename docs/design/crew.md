@@ -248,9 +248,14 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    --recommend <n>`, the crew session goes on with what it does not block, and `--status blocked` only
    when nothing is left — and `settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":"<id>",
    "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`:
-   the two watchdog keys are CC1's (`src/setup/retry-watchdog.ts`), and there is **no wait
-   limit** on purpose (D42: keep waiting), so no `…_MAX_WAIT_MS` and no
-   `…_MAX_USAGE_LIMIT_WAIT_MS`. A crew session is unattended, which is what the watchdog is for.
+   the two watchdog keys are CC1's (`src/setup/retry-watchdog.ts`), and the file writes **no
+   wait limit** (D42: keep waiting), so no `…_MAX_WAIT_MS` and no `…_MAX_USAGE_LIMIT_WAIT_MS`.
+   Claude Code merges `env` one variable at a time across settings sources, so a crew session
+   also gets what the person's own settings set and this file does not: the gateway's base URL,
+   and — where `setup` wrote it (D56) — the 24-hour usage-limit cap. With the cap, a limit that
+   resets more than 24 hours away ends the crew session's turn, and § Waiting out a limit's
+   pause and resume take over: the phase goes on after the reset. A crew session is unattended,
+   which is what the watchdog is for.
    **The same file makes the session lean**: `enabledPlugins` turns off every plugin the machine
    enabled except this one, what `workflow.crew.keep` names, and every plugin those depend on,
    `disableClaudeAiConnectors: true`
@@ -265,7 +270,9 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    session). So the off list never holds a plugin this one depends on (`DEPENDENCIES`, from
    `plugin.json`: claude-mem, frontend-design) or one a kept plugin depends on, at any depth, read
    from each kept plugin's installed `.claude-plugin/plugin.json` (`neededByKept` in
-   `src/crew/claude.ts`; a manifest it cannot read names none).
+   `src/crew/claude.ts`; a manifest it cannot read names none). A dependency declared only in a
+   marketplace entry (`marketplace.json`, with no `dependencies` in the plugin's own manifest)
+   is not read: a kept plugin that does that may still not load in a crew session.
 5. **The launch**, for a crew session that starts: `git worktree add -b crew/<phase>-<slug>
    .claude/worktrees/crew-<phase>-<slug> <base commit>` in the main checkout (fast; anything slow,
    a dependency install, is the crew session's own first step), the `.worktreeinclude` files copied
