@@ -29377,6 +29377,45 @@ function questionStep() {
 function tellStep() {
   return `${COMMAND} crew tell <name\u2026> --kind contract|question "<text>"`;
 }
+var NOT_PERSON_PREFIXES = [
+  "<cross-session-message",
+  "<task-notification",
+  "Stop hook feedback:"
+];
+var RESUME_START = "The wait is over: ";
+var RESUME_PHASE = ". Go on with phase ";
+var RESUME_END = ", then hand it back as usual.";
+var ANSWER_RESUME_MS = 60000;
+function isPersonPrompt(record, prompt2, nowMs) {
+  if (NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix)))
+    return false;
+  if (prompt2.startsWith(reportStep()))
+    return false;
+  if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
+    return false;
+  }
+  if (isWaitOverResume(record, prompt2))
+    return false;
+  return !isAnswerResume(record, prompt2, nowMs);
+}
+function isAnswerResume(record, prompt2, nowMs) {
+  return record.questions.some((asked) => {
+    if (asked.answer !== prompt2 || asked.answeredAt === null)
+      return false;
+    const at = Date.parse(asked.answeredAt);
+    return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
+  });
+}
+function isWaitOverResume(record, prompt2) {
+  return prompt2.startsWith(RESUME_START) && prompt2.endsWith(RESUME_END) && prompt2.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`);
+}
+function personLine(prompt2) {
+  const line = prompt2.split(/\r?\n/).find((one) => one.trim() !== "") ?? "";
+  return maskedLine(line, [], LAST_LINE_MAX, { mark: "\u2026" });
+}
+function personWroteLine() {
+  return "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.";
+}
 function roleCard(record, briefFile) {
   const files = record.files.length === 0 ? "The brief names no files this phase owns." : `The files this phase owns: ${record.files.map((file) => `\`${file}\``).join(", ")}. Say in your report why you changed any other file.`;
   return [
@@ -29487,6 +29526,34 @@ async function stopAnswer(input, id, repo, paths) {
   }
   return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
+async function personPromptAnswer(input, id, repo, paths, options) {
+  const prompt2 = stringField(input.prompt);
+  if (prompt2 === null)
+    return SILENT;
+  const found = recordOf2(id, repo, paths);
+  if (!found.ok)
+    return found.result;
+  const record = found.record;
+  const nowMs = options.nowMs ?? Date.now();
+  if (!isPersonPrompt(record, prompt2, nowMs))
+    return SILENT;
+  const line = personLine(prompt2);
+  if (line === "")
+    return SILENT;
+  try {
+    await appendCrewEvent(paths.stateDir, repo, {
+      crew: record.id,
+      lead: record.leadSessionId,
+      name: record.name,
+      state: record.state,
+      text: line,
+      type: "person"
+    }, nowMs);
+  } catch (error) {
+    return storeProblem(reasonOf2(error));
+  }
+  return addContext("UserPromptSubmit", personWroteLine());
+}
 async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
   const id = crewIdOf(env);
   if (id === null)
@@ -29499,6 +29566,8 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
     return SILENT;
   if (event === "SessionStart")
     return await startCard(input, id, repo, paths, options);
+  if (event === "UserPromptSubmit")
+    return await personPromptAnswer(input, id, repo, paths, options);
   if (event === "Stop")
     return await stopAnswer(input, id, repo, paths);
   if (event === "StopFailure")
@@ -33128,6 +33197,8 @@ function eventLine(event, record, waits, reviewed) {
     }
     case "question":
       return `${name}: question \xB7 ${clip(event.text ?? "")} \xB7 answer it: crew answer "${name}" "<text>"`;
+    case "person":
+      return `${name}: the person wrote \xB7 ${clip(event.text ?? "")} \xB7 read its next report against the brief before the merge`;
     case "tell": {
       const told = event.tell?.to ?? [];
       const kind = event.tell?.kind ?? "note";
@@ -35261,7 +35332,7 @@ var sessionNameHook = {
 };
 var crewRoleHook = {
   name: "crew-role",
-  events: ["SessionStart", "PreToolUse", "Stop", "StopFailure"],
+  events: ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "StopFailure"],
   onConfigProblem: (_message, input, event, checkout, context) => crewRoleAnswer(input, event, context.env, context.paths, checkout.mainCheckout ?? checkout.root),
   outsideGit: (input, event, _why, context) => crewRoleAnswer(input, event, context.env, context.paths, null),
   onCrash: (why, input, event, context) => {
