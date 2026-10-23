@@ -29727,6 +29727,7 @@ function tellStep() {
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
+  "<agent-message",
   "Stop hook feedback:"
 ];
 var RESUME_START = "The wait is over: ";
@@ -39224,7 +39225,8 @@ async function runCrewRm(ref, ctx) {
   }
   if (record.shortId !== null) {
     const rm = claudeFailure(ctx, repo, ["rm", record.shortId]);
-    if (rm !== null) {
+    const goneAlready = rm !== null && sessionUnknown(ctx, record);
+    if (rm !== null && !goneAlready) {
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
       ctx.error(`  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${record.shortId} by hand, then crew rm again`);
@@ -39242,7 +39244,7 @@ async function runCrewRm(ref, ctx) {
       }
       return 1;
     }
-    ctx.print(`removed session ${record.shortId}`);
+    ctx.print(goneAlready ? `session ${record.shortId} was gone already` : `removed session ${record.shortId}`);
   }
   const stored = await markState(record, "removed", "removed", ctx);
   ctx.print(`removed ${record.name}`);

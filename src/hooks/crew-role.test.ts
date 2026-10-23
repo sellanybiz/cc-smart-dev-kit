@@ -899,6 +899,20 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     expect(personEvents(world.stateDir, world.repo)).toEqual([]);
   });
 
+  test("a subagent's hand-back (agent-message): silent, nothing recorded", async () => {
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      promptInput(
+        world.repo,
+        '<agent-message from="a08e30616784a1c03">\n[Subagent hand-back] The review found two Low findings.\n</agent-message>',
+      ),
+      world.env,
+    );
+    expect(result).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
   test("a monitor's line (task-notification): silent, nothing recorded", async () => {
     const world = await crewWorld();
     const result = await runHook(

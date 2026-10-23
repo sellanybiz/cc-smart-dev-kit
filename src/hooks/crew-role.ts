@@ -111,6 +111,8 @@ export function tellStep(): string {
  *   `crew tell`.
  * - `<task-notification>`: a monitor's line (the `crew-self` monitor), and any background task's
  *   event.
+ * - `<agent-message from=…>`: a subagent's hand-back the crew session itself launched (its
+ *   reviewer, a builder), delivered as a turn of its own (seen live on 2.1.309).
  * - `Stop hook feedback:`: a Stop hook's block continued the turn with its reason (the kit's own
  *   is `reportStep()`), and the same check catches the bare reason, should a transport drop the
  *   label.
@@ -118,6 +120,7 @@ export function tellStep(): string {
 export const NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
+  "<agent-message",
   "Stop hook feedback:",
 ] as const;
 

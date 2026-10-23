@@ -26069,6 +26069,7 @@ function tellStep() {
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
+  "<agent-message",
   "Stop hook feedback:"
 ];
 var RESUME_START = "The wait is over: ";

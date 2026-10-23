@@ -14,6 +14,13 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   rename itself after its task, and its lead, `crew answer` and the message guard, which find it
   by that name, lost it. A crew session is no longer asked to name itself, a name recorded for it
   is never set, and `cc-smart-dev-kit session-name` refuses inside one.
+- **A subagent's report is not your words either.** When a crew session's own reviewer or
+  builder hands back, that report arrives as a turn of its own, and it too was taken for something
+  you typed. It is now recognised as the agent's.
+- **`crew rm` finishes when the session is already gone.** A crew session whose Claude Code job
+  was removed by hand could never leave the board: `crew rm` asked for `claude rm`, which answered
+  that there is no such job. When agent view no longer lists the session, `crew rm` now says it was
+  gone already and removes the record.
 
 ## 1.1.1
 
