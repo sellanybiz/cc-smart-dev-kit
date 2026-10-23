@@ -168,7 +168,7 @@ export function GuardsView() {
   let chartResource: Resource<ChartHistory> = { status: "loading" };
   if (history !== null) chartResource = { status: "ready", data: history };
   else if (page.status === "error") {
-    chartResource = { status: "error", message: page.message, gateway: false };
+    chartResource = { status: "error", message: page.message, gateway: false, missing: false };
   }
   const totals = useMemo(() => {
     const byGuard = new Map<string, number>();

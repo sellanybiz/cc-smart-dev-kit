@@ -35,9 +35,9 @@ const WORKTREE_COLUMNS = column.columns([
   column.accessor("path", {
     header: "Worktree",
     cell: ({ row }) => (
-      <span className="flex flex-col">
-        <span className="font-medium">{row.original.path.split("/").at(-1)}</span>
-        <span className="font-mono text-xs text-muted-foreground">
+      <span className="flex max-w-64 flex-col whitespace-normal">
+        <span className="font-medium break-all">{row.original.path.split("/").at(-1)}</span>
+        <span className="font-mono text-xs break-all text-muted-foreground">
           {row.original.branch ?? "no branch"}
         </span>
       </span>

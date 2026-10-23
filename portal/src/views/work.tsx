@@ -93,7 +93,7 @@ function CrewRow({
   const [shown, ...rest] = record.files;
   return (
     <TableRow>
-      <TableCell className="min-w-60 align-top whitespace-normal">
+      <TableCell className="min-w-52 align-top whitespace-normal">
         <div className="flex flex-col gap-1">
           <AppLink
             href={`/work/crew?id=${encodeURIComponent(record.id)}`}
@@ -157,7 +157,7 @@ function CrewRow({
           </span>
         </div>
       </TableCell>
-      <TableCell className="min-w-64 align-top whitespace-normal">
+      <TableCell className="min-w-56 align-top whitespace-normal wrap-anywhere">
         {step === undefined && record.lastLine === null ? (
           <span className="text-muted-foreground">Not started</span>
         ) : (
@@ -274,7 +274,15 @@ const SESSION_TONE: Record<OtherSession["state"], Tone> = {
   ended: "info",
 };
 
-function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: number }) {
+function OtherSessions({
+  sessions,
+  now,
+  note,
+}: {
+  sessions: OtherSession[];
+  now: number;
+  note: null | string;
+}) {
   return (
     <Card className="gap-0 overflow-hidden py-0">
       <CardHeader className="border-b py-4">
@@ -283,6 +291,7 @@ function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: numbe
           Claude sessions of this project from the last two days that no lead started. A session
           that still runs is answered in its own terminal; resuming one opens a copy.
         </CardDescription>
+        {note === null ? null : <p className="text-warn text-sm">{note}</p>}
       </CardHeader>
       {sessions.length === 0 ? (
         <div className="p-6">
@@ -309,13 +318,15 @@ function OtherSessions({ sessions, now }: { sessions: OtherSession[]; now: numbe
             <TableBody>
               {sessions.map((session) => (
                 <TableRow key={session.sessionId}>
-                  <TableCell>
+                  <TableCell className="min-w-48 whitespace-normal">
                     {session.name ?? <span className="text-muted-foreground">No name</span>}
-                    <span className="block font-mono text-xs text-muted-foreground">
+                    <span className="block font-mono text-xs wrap-anywhere text-muted-foreground">
                       {session.sessionId}
                     </span>
                   </TableCell>
-                  <TableCell>{session.project}</TableCell>
+                  <TableCell className="max-w-56 whitespace-normal wrap-anywhere">
+                    {session.project}
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{session.branch ?? "—"}</TableCell>
                   <TableCell className="font-mono text-xs">
                     {session.model ?? <span className="text-muted-foreground">—</span>}
@@ -412,7 +423,7 @@ function WorkPage({ data }: { data: WorkData }) {
             <LeadCard key={entry.lead.sessionId} entry={entry} now={now} memory={data.memory} />
           ))
         )}
-        <OtherSessions sessions={data.others} now={now} />
+        <OtherSessions sessions={data.others} now={now} note={data.waitsNote} />
       </PagePad>
     </>
   );

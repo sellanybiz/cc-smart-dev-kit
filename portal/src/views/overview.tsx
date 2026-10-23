@@ -238,7 +238,7 @@ function PlanCard({
       }
       detail={
         limit !== undefined
-          ? `${limit.model} ran out of its ${limit.claim} window`
+          ? `${limit.model} ran out of ${limit.claim}`
           : "From the status line; the 7-day windows are written nowhere"
       }
     />
@@ -270,6 +270,7 @@ function JobsTile({ jobs }: { jobs: OverviewData["jobs"] }) {
 function NeedsPanel() {
   const needs = useResource((client) => client.needs(), "", NEEDS_REFRESH);
   const items = needs.status === "ready" ? needs.data.items : [];
+  const note = needs.status === "ready" ? needs.data.note : null;
   return (
     <section
       aria-labelledby="needs-title"
@@ -287,15 +288,18 @@ function NeedsPanel() {
           compact
           items={[...items].sort((a, b) => Date.parse(b.since) - Date.parse(a.since)).slice(0, 3)}
           empty={
-            <p className="py-6 text-sm text-muted-foreground">
-              <span className="text-ok" aria-hidden="true">
-                ✓{" "}
-              </span>
-              Nothing needs you.
-            </p>
+            note === null ? (
+              <p className="py-6 text-sm text-muted-foreground">
+                <span className="text-ok" aria-hidden="true">
+                  ✓{" "}
+                </span>
+                Nothing needs you.
+              </p>
+            ) : null
           }
         />
       )}
+      {note !== null && <p className="text-sm text-warn">{note}</p>}
       <AppLink
         href="/needs"
         className="mt-auto pt-2 text-sm font-medium underline-offset-4 hover:underline focus-visible:underline"

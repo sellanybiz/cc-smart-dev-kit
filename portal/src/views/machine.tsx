@@ -292,9 +292,22 @@ function OmnirouteCard({ data }: { data: MachineData }) {
             )}
           </dd>
           <dt className="text-muted-foreground">Service</dt>
-          <dd className="font-mono text-xs">{omniroute.unit ?? "none"}</dd>
+          {omniroute.unit === null ? (
+            <dd>none</dd>
+          ) : (
+            <dd className="font-mono text-xs">{omniroute.unit}</dd>
+          )}
           <dt className="text-muted-foreground">Backend</dt>
-          <dd className="font-mono text-xs wrap-anywhere">{omniroute.backend ?? "not set up"}</dd>
+          {/* The backend is matched to an installed OmniRoute: with none, it is not known. */}
+          {omniroute.backend !== null ? (
+            <dd className="font-mono text-xs wrap-anywhere">{omniroute.backend}</dd>
+          ) : (
+            <dd>
+              {omniroute.install === null
+                ? "not known: OmniRoute is not installed here"
+                : "no gateway backend points at it"}
+            </dd>
+          )}
           {omniroute.previous !== null && (
             <>
               <dt className="text-muted-foreground">Before</dt>

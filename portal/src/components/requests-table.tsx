@@ -53,7 +53,9 @@ const COLUMNS = column.columns([
     header: "Target",
     cell: ({ row }) => (
       <span className="flex flex-col">
-        <span className="font-mono text-xs">{targetModel(row.original.target)}</span>
+        <span className="max-w-64 font-mono text-xs break-all whitespace-normal">
+          {targetModel(row.original.target)}
+        </span>
         <span className="text-xs text-muted-foreground">{targetBackend(row.original.target)}</span>
       </span>
     ),

@@ -286,7 +286,7 @@ describe("a crew session on Work", () => {
       900,
     );
     const deps = depsOf(ctx);
-    const answer = workAnswer({ ...deps, action: { ...deps.action, cwd: repo } });
+    const answer = await workAnswer({ ...deps, action: { ...deps.action, cwd: repo } });
     const summary = answer.crew.find((one) => one.id === crew.id);
     expect(summary?.files).toEqual(["src/portal/api/**"]);
     expect(summary?.waitsFor).toEqual(["B8"]);

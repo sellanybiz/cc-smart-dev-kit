@@ -19,6 +19,8 @@ export function NavMain() {
   const current = navItemFor(useAppPath());
   const needs = useResource((client) => client.needs(), "", NEEDS_REFRESH);
   const needsCount = needs.status === "ready" ? needs.data.items.length : 0;
+  // The permission prompts could not be read: the count may be short, and says so.
+  const needsUnsure = needs.status === "ready" && needs.data.note !== null;
   return (
     <>
       {NAV_GROUPS.map((group) => (
@@ -28,7 +30,12 @@ export function NavMain() {
             <SidebarMenu>
               {group.items.map((item) => {
                 const active = current?.href === item.href;
-                const badge = item.href === "/needs" && needsCount > 0 ? needsCount : null;
+                const badge =
+                  item.href !== "/needs" || (needsCount === 0 && !needsUnsure)
+                    ? null
+                    : needsUnsure
+                      ? `${needsCount}+`
+                      : String(needsCount);
                 return (
                   <SidebarMenuItem key={item.href}>
                     <SidebarMenuButton asChild isActive={active} tooltip={item.title}>
@@ -37,7 +44,11 @@ export function NavMain() {
                         {...(active ? { "aria-current": "page" } : {})}
                         {...(badge === null
                           ? {}
-                          : { "aria-label": `${item.title}: ${badge} waiting` })}
+                          : {
+                              "aria-label": needsUnsure
+                                ? `${item.title}: ${needsCount} waiting, and the permission prompts could not be read`
+                                : `${item.title}: ${badge} waiting`,
+                            })}
                       >
                         <item.icon aria-hidden="true" />
                         <span>{item.title}</span>

@@ -257,7 +257,11 @@ function HealthPage({ data }: { data: HealthData }) {
             <CardDescription>Targets the router skips for now, and slots it holds.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4 text-sm">
-            {router.cooling.length === 0 && breakers.length === 0 ? (
+            {!router.up ? (
+              <EmptyState title="Not known while the router is down">
+                The router keeps what rests in its own memory; start it to see.
+              </EmptyState>
+            ) : router.cooling.length === 0 && breakers.length === 0 ? (
               <EmptyState title="Nothing rests">Every target can answer.</EmptyState>
             ) : (
               <>
@@ -270,8 +274,8 @@ function HealthPage({ data }: { data: HealthData }) {
                 {breakers.map(([slot, breaker]) => (
                   <div key={slot} className="flex flex-col gap-1">
                     <StatusMark tone="bad">
-                      The {slotName(slot)} breaker is open: {breaker.heldNow} waiting,{" "}
-                      {breaker.held} held
+                      The {slotName(slot)} breaker is open: {count(breaker.heldNow)} waiting,{" "}
+                      {count(breaker.held)} held
                     </StatusMark>
                     <ul className="pl-[1.125rem] text-muted-foreground">
                       {breaker.targets.map((target) => (

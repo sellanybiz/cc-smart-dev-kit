@@ -318,6 +318,11 @@ export interface WorkAnswer {
   /** The repository (its main checkout); null outside a git project. */
   repo: null | string;
   sessions: SessionSummary[];
+  /**
+   * Why the open permission prompts could not be read (the flow report did not run); null when
+   * they were. A session's state then never says `waiting`.
+   */
+  waitsError: null | string;
 }
 
 /** One event of a crew session's log, for the page's step timeline. */
@@ -504,6 +509,8 @@ export interface NeedsAnswer {
   crew: CrewNeed[];
   doctor: { at: null | number; failures: DoctorFailure[] };
   permissions: PermissionWait[];
+  /** Why the permission prompts could not be read (the flow report did not run); null when they were. */
+  permissionsError: null | string;
   /** A held major update (D33); null when there is none. */
   update: null | { at: string; from: null | string; notes: string[]; version: string };
 }

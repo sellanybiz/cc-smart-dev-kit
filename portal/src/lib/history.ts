@@ -3,7 +3,13 @@
  * how a filter is written into the page's address and read back.
  */
 
-import type { HistoryBy, HistoryFilter, HistoryPoint, HistoryRange } from "@/api/types";
+import type {
+  HistoryBy,
+  HistoryFilter,
+  HistoryKeys,
+  HistoryPoint,
+  HistoryRange,
+} from "@/api/types";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -112,4 +118,11 @@ export function hasFilter(filter: HistoryFilter): boolean {
 /** Every token a point counts. */
 export function tokensOf(point: HistoryPoint): number {
   return point.inputTokens + point.outputTokens + point.cacheReadTokens + point.cacheWriteTokens;
+}
+
+/** The name a person reads for a session: its own name, else its project and short id. */
+export function sessionLabel(session: HistoryKeys["sessions"][number]): string {
+  if (session.name !== null) return session.name;
+  const short = session.id.slice(0, 8);
+  return session.project === null ? short : `${session.project} ${short}`;
 }

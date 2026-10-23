@@ -3,6 +3,7 @@
 import { ArrowLeftIcon, GitBranchIcon } from "lucide-react";
 import { useMemo } from "react";
 import { useResource } from "@/api/hooks";
+import { PortalRequestError } from "@/api/http";
 import { CREW_REFRESH } from "@/api/refresh";
 import type { CrewDetail, CrewEvent, DiffFile, MergeCheck } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
@@ -336,18 +337,24 @@ function CrewPage({ data }: { data: CrewDetail }) {
         <StatCard
           label="Changed"
           value={
-            <span className="tabular-nums">
-              <span className="text-ok">+{count(added)}</span>{" "}
-              <span className="text-bad">−{count(removed)}</span>
-            </span>
+            diffError !== null ? (
+              "—"
+            ) : (
+              <span className="tabular-nums">
+                <span className="text-ok">+{count(added)}</span>{" "}
+                <span className="text-bad">−{count(removed)}</span>
+              </span>
+            )
           }
           headline={
             diffError !== null ? "The diff could not be read" : `${files} files against ${base}`
           }
           detail={
-            report !== null && report.outsideBrief.length > 0
-              ? `${report.outsideBrief.length} outside its brief`
-              : "All inside its brief"
+            report === null
+              ? "Its report names any file outside its brief"
+              : report.outsideBrief.length > 0
+                ? `${report.outsideBrief.length} outside its brief`
+                : "All inside its brief"
           }
         />
         <StatCard
@@ -396,7 +403,11 @@ function CrewPage({ data }: { data: CrewDetail }) {
             <CardDescription>What the lead asked of it.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Markdown>{data.brief}</Markdown>
+            {data.brief === "" ? (
+              <p className="text-sm text-muted-foreground">No brief file is kept for it.</p>
+            ) : (
+              <Markdown>{data.brief}</Markdown>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -565,14 +576,30 @@ export function CrewView() {
   const crew = useResource(
     (client) =>
       id === null
-        ? Promise.reject(new Error("No crew session is named in the address: open one from Work."))
+        ? Promise.reject(
+            new PortalRequestError(
+              "No crew session is named in the address: open one from Work.",
+              404,
+            ),
+          )
         : client.crew(id),
     `${ready}|${id ?? ""}`,
     CREW_REFRESH,
   );
   if (!ready) return <LoadingState label="the crew session" />;
   return (
-    <ResourceView resource={crew} label="the crew session">
+    <ResourceView
+      resource={crew}
+      label="the crew session"
+      missing={{
+        href: "/work",
+        label: "Open Work",
+        text:
+          id === null
+            ? "No crew session is named in the address: open one from Work."
+            : `No crew session of this project is named "${id}". It may have been removed after its merge.`,
+      }}
+    >
       {(data) => <CrewPage data={data} />}
     </ResourceView>
   );

@@ -13,9 +13,11 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -37,13 +39,16 @@ import { askLogFile } from "../hooks/ask-log";
 import { currentFileHolder } from "../jobs/store";
 import type { Machine } from "../machine/machine";
 import { parseCcSmartDevKitConfig } from "../project/config";
+import { projectFolderName } from "../sessions/saved-sessions";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
+import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { isOlder } from "../update/check";
 import { updateFiles, writeHeldMajor } from "../update/state";
 import { autoCleanFiles } from "../worktrees/auto-state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
-import { NO_SESSION_RECORDS } from "./api/projects";
+import { NO_SESSION_RECORDS, projectId } from "./api/projects";
+import { API_READS } from "./api/routes";
 import { PORTAL_CSS, PORTAL_JS, THEME_JS } from "./assets";
 import type { PortalContext } from "./context";
 import { omnirouteRow } from "./facts";
@@ -100,6 +105,32 @@ function fakeBackend(
 /** The repo's `plugin/` folder: what a doctor source needs, and nothing of a real machine. */
 function worldPluginFolder(): string {
   return join(import.meta.dir, "..", "..", "plugin");
+}
+
+/**
+ * A plugin folder whose CLI is this branch's source: every entry of the repo's `plugin/` linked
+ * in, except `dist/cli.js`, which imports `src/entries/cli.ts`. The flow report runs the CLI in a
+ * child (`flow-read.ts`), and a test proves the source, not a committed bundle the lead rebuilds
+ * after a merge.
+ */
+function sourceCliPluginFolder(): string {
+  const repoPlugin = worldPluginFolder();
+  const folder = tempDir("plugin");
+  for (const name of readdirSync(repoPlugin)) {
+    if (name !== "dist") symlinkSync(join(repoPlugin, name), join(folder, name));
+  }
+  mkdirSync(join(folder, "dist"));
+  for (const name of readdirSync(join(repoPlugin, "dist"))) {
+    if (name !== "cli.js") symlinkSync(join(repoPlugin, "dist", name), join(folder, "dist", name));
+  }
+  // The live-router guard first, as every CLI subprocess of a test runs (`subprocessGuard`).
+  const guard = join(import.meta.dir, "..", "testing", "port-guard-preload.ts");
+  const source = join(import.meta.dir, "..", "entries", "cli.ts");
+  writeFileSync(
+    join(folder, "dist", "cli.js"),
+    `import ${JSON.stringify(guard)};\nimport ${JSON.stringify(source)};\n`,
+  );
+  return folder;
 }
 
 /** A Machine that answers nothing and changes nothing: enough for a doctor source. */
@@ -675,12 +706,18 @@ describe("every answer", () => {
 
   test("a key is never sent to a page", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
+    const plugin = sourceCliPluginFolder();
     // With an OmniRoute installed, so its own card and its own facts are drawn too — and a
     // password in the backend's address (PB-7): the Overview's dashboard link took it raw.
     const world = await open({
       backendPort: backend.port,
       backendUserinfo: "planted-user:PLANTED_PASSWORD",
       omniroute: "3.8.51",
+      // A project of its own, so the crew page and the project page have one to answer for.
+      projectFiles: {},
+      // The flow report's child runs this branch's CLI, under the port guard.
+      env: subprocessGuard().env,
+      pluginFolder: () => ({ folder: plugin }),
     });
     try {
       const first = await world.call("/");
@@ -690,6 +727,28 @@ describe("every answer", () => {
         // The masked form may appear; the whole key never does, nor the address's password.
         expect(page.body).not.toContain("PLANTED");
         expect(page.body).not.toContain("planted-user");
+      }
+      // Every JSON read route, from the route table itself, and the two with a name in the
+      // path: a page draws from these, so they hold no key and no password either.
+      await createCrew(world.paths.stateDir, crewFixture(world.cwd), Date.now());
+      // A session record in the project's folder: what lists it as a project.
+      const records = join(world.paths.projectsDir, projectFolderName(world.cwd));
+      mkdirSync(records, { recursive: true });
+      writeFileSync(
+        join(records, "s1.jsonl"),
+        `${JSON.stringify({ cwd: world.cwd, type: "user" })}\n`,
+      );
+      const reads = [
+        ...Object.keys(API_READS),
+        "/api/crew/crew-K-contracts",
+        `/api/projects/${projectId(world.cwd)}`,
+      ];
+      for (const path of reads) {
+        const answer = await world.call(path);
+        expect({ path, status: answer.status }).toEqual({ path, status: 200 });
+        expect(answer.body).not.toContain(KEY);
+        expect(answer.body).not.toContain("PLANTED");
+        expect(answer.body).not.toContain("planted-user");
       }
       // PB-7: the dashboard link is still there, at the address without its credential.
       expect((await world.call("/")).body).toContain(
@@ -4453,7 +4512,12 @@ describe("the JSON API", () => {
 
   test("flow: the report for the range, and the kept window said when the range is longer", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port });
+    const plugin = sourceCliPluginFolder();
+    const world = await open({
+      backendPort: backend.port,
+      env: subprocessGuard().env,
+      pluginFolder: () => ({ folder: plugin }),
+    });
     try {
       const oneDay = JSON.parse((await world.call("/api/flow?range=1d")).body) as {
         note: null | string;

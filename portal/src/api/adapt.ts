@@ -373,6 +373,10 @@ export function workOf(answer: WorkAnswer): WorkData {
   return {
     leads: groups,
     memory,
+    waitsNote:
+      answer.waitsError === null
+        ? null
+        : `No session can show that it waits on a prompt: ${answer.waitsError}`,
     others: answer.sessions.map((session) => ({
       branch: session.branch,
       lastAt: new Date(session.lastWrite).toISOString(),
@@ -560,7 +564,13 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
     });
   }
   items.sort((a, b) => Date.parse(b.since) - Date.parse(a.since));
-  return { items };
+  return {
+    items,
+    note:
+      answer.permissionsError === null
+        ? null
+        : `Permission prompts could not be read: ${answer.permissionsError}`,
+  };
 }
 
 /**
