@@ -18,7 +18,8 @@ An optional local router between Claude Code and the model providers
   with `--team` and for off/default only its `.claude/settings.json` — and `gateway profile …`
   gives a profile its chains. One reader, `projectGatewayState` (`src/gateway/project-state.ts`),
   answers a folder's own choice and what a session there effectively gets, for the commands
-  (GP4 adds the doctor lines and the portal's card on the same reader); a file it cannot read is
+  (GP4a adds `doctor`'s one-line-per-project report and `gateway off`'s "still on" lines on the
+  same reader, and the portal's project card follows on it); a file it cannot read is
   `unknown`, never a guess.
   `docs/gateway.md` § Per project, and the rules in `.claude/rules/gateway.md`.
 - **No prompt text is ever changed.** An affordable backend gets two named, tested format
@@ -139,7 +140,10 @@ An optional local router between Claude Code and the model providers
   the session keeps the router's address until it restarts (both proved 2026-10-23;
   `claude-code-contract.md` § The gateway). So `restore` takes the gateway out in
   two stages: first the env keys (the router keeps running), then, after the sessions
-  restarted, the router (asked first). Stage 1 also puts back the launcher, and when it had
+  restarted, the router (asked first). **Stage 1 counts the keys in every settings file
+  cc-smart-dev-kit wrote** (`changed.json`'s entries that hold owned JSON keys), a project's own
+  `ANTHROPIC_BASE_URL` included (GP4a): a project set to `on` keeps its sessions on the router
+  too, so the stop waits for them the same way. Stage 1 also puts back the launcher, and when it had
   created it the file is gone: the line it ends with then names the second run in full
   (`stageOneDone`: `<the bun running it, absolute> --no-env-file --config=<the installed
   version's empty config> <this plugin's dist/cli.js> restore`, with the bundle its entry

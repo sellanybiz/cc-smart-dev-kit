@@ -216,11 +216,29 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
 - **Running sessions (P7).** A changed value reaches a session already running in the project
   within about a second. A removed key never does: `default` says the session keeps the value it
   had until it restarts.
-- **`restore` takes a project's key and its excluded line back, but its stage 1 does not yet
-  wait for them.** Stage 1 (`docs/gateway.md` § `cc-smart-dev-kit restore`) waits only for the
-  machine's own settings file, so a project still pointed at the router would see the router
-  stop under its running sessions. Until GP4a makes stage 1 count every owned file, run
-  `gateway project default` in each such project and restart its sessions before `restore`.
+- **`restore` counts a project's key, and waits for its sessions (GP4a).** A project's own
+  `ANTHROPIC_BASE_URL` keeps that project's sessions on the router exactly as the machine's key
+  does, so stage 1 asks **every settings file cc-smart-dev-kit wrote** (each entry in the state
+  folder's `changed.json` that holds owned JSON keys), not only the user's `settings.json`: while
+  any of them still holds a gateway key of ours, stage 1 restores everything but the router and
+  says to restart the sessions; only once none is left does stage 2 stop and remove it
+  (`docs/gateway.md` § `cc-smart-dev-kit restore`). `restore` takes the project's key and its
+  excluded line back like any other managed change.
+- **`gateway off` names the projects it does not turn off (GP4a).** `off` removes the machine's
+  keys; a project whose own file says `on` still sends its sessions to the router. So the command
+  reads the portal's project list and prints one `!` line per such project — its state, the file
+  it comes from, and `Fix: cc-smart-dev-kit gateway project off --folder <dir>` — with a warning
+  verdict. A caller with no project list (the portal's own collector) prints none.
+- **`doctor` names every project too (GP4a).** One `·` line per project of the portal's list,
+  with its state and the file it comes from, in `gateway projects`' own words; `!` for another
+  gateway's address, ✗ for a file it cannot read. It also warns, one `!` line per key, about
+  **Claude Code's own model keys** in a project's files: a `model` or
+  `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` whose value names a slot or a `<backend>:<model>` target
+  bypasses the slots (the router answers that name directly, and a slot with no chain answers it
+  with an error instead of plain Claude), and `CLAUDE_CODE_SUBAGENT_MODEL[_FORCE]` makes an agent
+  launched without a `model` run on what it names, so a review could leave Claude
+  (`FORBIDDEN_ENV_KEYS`; the kit never writes these keys, so the fix is the person's hand). The
+  lines show whether or not the gateway is installed.
 - **Refusals, one line each with the fix:** a project file that already holds another gateway's
   URL (not this machine's router, not Anthropic's) is never overwritten; `on` and `off` are
   refused while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper` is set at a level
@@ -1484,8 +1502,15 @@ values were kept counts as cc-smart-dev-kit's, whatever the file holds). A key c
 the person changed since is theirs: it counts neither as a reason to keep the router up,
 nor as a key to remove.
 
-1. **Stage 1** (such a key is in `settings.json`): everything is
-   restored but the router's copy and units, the env keys included; the router keeps
+**Every settings file cc-smart-dev-kit wrote counts, not only the user's** (GP4a): a project's
+own `ANTHROPIC_BASE_URL` (its personal `settings.local.json` or team `.claude/settings.json`)
+keeps that project's sessions on the router just as the machine's key does. So the stage asks
+each file in the state folder's `changed.json` that holds owned JSON keys — `settings.json`,
+each project file — and stage 1 waits while any of them still holds one.
+
+1. **Stage 1** (such a key is in one of those files): everything is
+   restored but the router's copy and units, the env keys included — the projects' keys too,
+   whose files it takes back like any other managed change; the router keeps
    running. It says: restart every running Claude session, then run `restore` again.
    A key the person changed stays in the file, and its ownership is given up with it.
 2. **Stage 2** (no such key left): it asks the service's state (`systemctl --user

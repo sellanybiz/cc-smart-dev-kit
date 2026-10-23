@@ -13,6 +13,7 @@ import {
   PLUGIN_UPDATE_COMMAND,
   VERSION,
 } from "../build-info";
+import type { KnownProjects } from "../gateway/commands-project";
 import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { RouterServiceKind, Runner } from "../gateway/service";
@@ -1074,6 +1075,12 @@ export interface DoctorGateway {
   /** Asks the system about Warp (its package manager); a test passes fakes. */
   machine: Machine;
   /**
+   * The projects `gateway projects` lists — the portal's own `projectsList`, wired by the
+   * entry (`src/entries/cli.ts`, `src/entries/portal.ts`) so the doctor's per-project lines
+   * read the same list as the command and the Projects page.
+   */
+  projects?: (folder: string) => Promise<KnownProjects>;
+  /**
    * Asks the npm registry whether a newer OmniRoute is out. The real `fetch` by default; a
    * test passes a fake, so it never reaches the network.
    */
@@ -1252,7 +1259,7 @@ function doctorGroups(
       group: "gateway",
       run: async () => [
         ...(runtime.ok
-          ? await gatewayChecks({ paths, ...gateway })
+          ? await gatewayChecks({ paths, folder: local.cwd, ...gateway })
           : [
               {
                 ok: true,

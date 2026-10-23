@@ -10,6 +10,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
 import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "./commands";
+import { type KnownProjects, projectSourceWords, projectStateOf } from "./commands-project";
 import {
   emptyConfig,
   fallbackOn,
@@ -23,6 +24,7 @@ import {
 import { type HealthFetch, routerHealth } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
+import { decisionWords, type SettingsFileState } from "./project-state";
 import {
   type RouterService,
   type RouterServiceKind,
@@ -33,7 +35,14 @@ import {
 } from "./service";
 import { TASK_LABEL, taskFactsFrom, taskQueryCommand, taskRunsCopy } from "./service-windows";
 import { shownValue } from "./settings";
-import { FAMILY_SLOTS, isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
+import {
+  FAMILY_SLOTS,
+  isModelSlot,
+  isSlotKey,
+  JUDGE_SLOT,
+  parseTarget,
+  withoutContextSuffix,
+} from "./targets";
 
 /** One gateway line of doctor's report: a check like any other (`check.ts`). */
 export type DoctorCheck = Check;
@@ -57,6 +66,13 @@ export async function gatewayChecks(options: {
   service: RouterServiceKind;
   /** Asks the router's health page; a test passes a fake. The real `fetch` by default. */
   fetch?: HealthFetch;
+  /** The folder `doctor` runs in: the project its per-project lines mark `(here)`. */
+  folder?: string;
+  /**
+   * The projects `gateway projects` lists — the portal's own `projectsList`, wired by the
+   * caller. Left out, no per-project lines are printed (a test, or a caller with no list).
+   */
+  projects?: (folder: string) => Promise<KnownProjects>;
 }): Promise<DoctorCheck[]> {
   const { paths } = options;
   const short = (path: string) => tildify(path, paths.home);
@@ -101,6 +117,9 @@ export async function gatewayChecks(options: {
             text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`,
           },
     );
+    // A project's own state is still there, and still decides for its sessions once the
+    // gateway runs: name it whether or not the machine's gateway is installed (GP4a).
+    checks.push(...(await projectChecks(options)));
     return checks;
   }
 
@@ -153,6 +172,9 @@ export async function gatewayChecks(options: {
         text: `gateway config: ${messageOf(error)}`,
         fix: `correct ${short(paths.gatewayConfigFile)}, or run: ${SETUP}`,
       });
+      // The projects are still read: their own state does not need the config (only the
+      // router's port does, and a project's answer says when it cannot be told).
+      checks.push(...(await projectChecks(options)));
       return checks;
     }
   }
@@ -274,6 +296,127 @@ export async function gatewayChecks(options: {
       text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it`,
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`,
     });
+  }
+  // The projects, last: each one's own state (the same reader `gateway project status` uses),
+  // and a warning for a Claude Code model key that would bypass the slots (GP4a).
+  checks.push(...(await projectChecks(options)));
+  return checks;
+}
+
+/**
+ * Claude Code's own model keys in a project's files that reach past the gateway's slots: one
+ * `!` line each. A slot key here makes Claude Code send that name instead of a Claude model
+ * (a slot with no chain answers it with an error instead of plain Claude); a `<backend>:<model>`
+ * goes to that backend alone, with no fallback. `CLAUDE_CODE_SUBAGENT_MODEL[_FORCE]` moves an
+ * agent launched without a `model` off Claude (the gateway's own "never" list). The kit never
+ * writes any of these keys, so the fix is the person's hand.
+ */
+function modelKeyWarnings(file: SettingsFileState, home: string): DoctorCheck[] {
+  if (file.problem !== null) return [];
+  const checks: DoctorCheck[] = [];
+  const where = tildify(file.path, home);
+  for (const fact of file.modelKeys) {
+    const name = withoutContextSuffix(fact.value.trim());
+    const slot = isSlotKey(name);
+    const parsed = parseTarget(name);
+    const backend = "target" in parsed && parsed.target.kind === "backend";
+    if (!slot && !backend) continue;
+    const shown = shownValue(fact.value);
+    const quoted = shown === fact.value ? JSON.stringify(shown) : shown;
+    const why = slot
+      ? "Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude"
+      : "the request goes to that backend alone, with no fallback";
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key, and ${COMMAND} never writes it. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+    });
+  }
+  for (const key of file.subagentOverrides) {
+    const why =
+      key === "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"
+        ? "It overrides the model of every Agent call, so a review cannot stay on Claude."
+        : "An agent launched without a model runs on whatever it names, so a review could leave Claude.";
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `${where} sets env.${key}: it is Claude Code's own key, and ${COMMAND} never writes it. ${why} Remove it by hand.`,
+      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+    });
+  }
+  return checks;
+}
+
+/**
+ * A settings file the reader could not use, in words: its path as a person reads it, then its
+ * own error. The error often starts with the path itself (`readSettings` builds it that way):
+ * that copy goes, so the file is named once.
+ */
+function fileProblemWords(file: SettingsFileState, home: string): string {
+  const problem = file.problem ?? "";
+  const rest = problem.startsWith(file.path) ? problem.slice(file.path.length) : problem;
+  const reason = rest.replace(/^\s*:?\s*/, "");
+  const where = tildify(file.path, home);
+  return reason === "" ? where : `${where}: ${reason}`;
+}
+
+/**
+ * One line per known project, from the portal's own list: its state and the file that decides
+ * it, in `gateway projects`' words. A project whose file cannot be read is a ✗ (Claude Code's
+ * own answer past it is not known), with the file and its error named; another gateway's
+ * address is a `!`. A caller with no project list prints nothing.
+ */
+async function projectChecks(options: {
+  paths: CliPaths;
+  folder?: string;
+  projects?: (folder: string) => Promise<KnownProjects>;
+}): Promise<DoctorCheck[]> {
+  if (options.projects === undefined) return [];
+  const { paths } = options;
+  let list: KnownProjects;
+  try {
+    list = await options.projects(options.folder ?? process.cwd());
+  } catch (error) {
+    return [
+      {
+        ok: true,
+        info: true,
+        text: `the project list could not be read (${messageOf(error)}), so the gateway's per-project lines are missing`,
+      },
+    ];
+  }
+  const checks: DoctorCheck[] = [];
+  for (const project of list.projects) {
+    const view = projectStateOf({ paths }, project.root);
+    const where = `${tildify(view.folder, paths.home)}${project.current ? " (here)" : ""}`;
+    // The file that decides is named — except for `unknown`, whose own words name no file:
+    // the parenthetical below carries it, with the reader's error.
+    const state =
+      view.choice.source === "none" || view.choice.state === "unknown"
+        ? decisionWords(view.choice)
+        : `${decisionWords(view.choice)}  · from ${projectSourceWords(view.choice, paths.home, view)}`;
+    // A file in the way is named with its own error: `decisionWords` alone would not say which.
+    const broken = view.files.find((one) => one.problem !== null);
+    const text = `${where}: ${state}${
+      broken === undefined ? "" : ` (${fileProblemWords(broken, paths.home)})`
+    }`;
+    if (view.choice.state === "unknown") {
+      checks.push({
+        ok: false,
+        text,
+        fix: "fix that settings file by hand, or move it aside; nothing in this project is guessed past it",
+      });
+    } else if (view.choice.state === "other") {
+      checks.push({ ok: true, warn: true, text });
+    } else {
+      checks.push({ ok: true, info: true, text });
+    }
+    // Only the project's own files: the machine's settings are `gateway status`' business.
+    for (const file of view.files) {
+      if (file.kind === "machine") continue;
+      checks.push(...modelKeyWarnings(file, paths.home));
+    }
   }
   return checks;
 }

@@ -230,11 +230,12 @@ function forgetClaudeMemChoice(stateDir: string, short: (path: string) => string
 /**
  * Restore also undoes the router service when `gateway setup` installed it. Running Claude
  * sessions read `ANTHROPIC_BASE_URL` at start, so while cc-smart-dev-kit's gateway env keys are in
- * the settings they still send every request to the router; stopping it would make each of
- * them fail. (A key cc-smart-dev-kit set and the person changed since is theirs, and does not count
- * here: `ownedGatewayEnvKeys` keeps only the keys that still hold cc-smart-dev-kit's value.) So,
- * with the router installed:
- *   - stage 1, while cc-smart-dev-kit's gateway env keys are there: everything is restored but the
+ * any of the settings files it wrote — the user's `settings.json`, a project's own
+ * `settings.local.json` or team `.claude/settings.json` (GP4a) — they still send every request
+ * to the router; stopping it would make each of them fail. (A key cc-smart-dev-kit set and the
+ * person changed since is theirs, and does not count here: `ownedGatewayEnvKeys` keeps only the
+ * keys that still hold cc-smart-dev-kit's value.) So, with the router installed:
+ *   - stage 1, while such a key is in any of those files: everything is restored but the
  *     router's copy and units, and the router keeps running. It says to restart the
  *     sessions and run `restore` again.
  *   - stage 2, with no such key left: it disables and stops the unit and its socket (asking first when it
@@ -271,8 +272,17 @@ export async function runRestore(paths: CliPaths, options: RestoreOptions): Prom
   });
   // A key the person changed since is theirs: `ownedGatewayEnvKeys` leaves it out, so it
   // does not keep the router up for sessions that no longer point at it.
+  //
+  // **Every settings file the kit wrote, not only the user's** (GP4a): a project's own
+  // `ANTHROPIC_BASE_URL` (its `settings.local.json` or team `.claude/settings.json`, GP2) keeps
+  // that project's sessions on the router just as the machine's key does, so stage 1 must wait
+  // for them too — stopping the router in the same pass would cut their answers off.
   const sessionsUseRouter =
-    routerTracked && ownedGatewayEnvKeys(paths.settingsFile, paths.stateDir).length > 0;
+    routerTracked &&
+    Object.entries(changed).some(
+      ([file, entry]) =>
+        entry.kinds.includes("json-keys") && ownedGatewayEnvKeys(file, paths.stateDir).length > 0,
+    );
 
   if (sessionsUseRouter && !options.now) {
     // Stage 1: nothing stops, so nothing is asked.

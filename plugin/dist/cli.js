@@ -8638,6 +8638,9 @@ function isModelSlot(slot) {
   return Object.hasOwn(MODEL_SLOTS, slot);
 }
 var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+function familyEnv(family) {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
 var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
@@ -14615,7 +14618,23 @@ function readGatewaySettings(settingsPath) {
   if (Object.hasOwn(settings, "apiKeyHelper"))
     loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  return { baseUrl: usable ? held : null, baseUrlProblem, loginOverrides, subagentOverrides };
+  const modelKeys = [];
+  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+    modelKeys.push({ key: "model", value: settings.model });
+  }
+  for (const family of CLAUDE_FAMILIES) {
+    const key = familyEnv(family);
+    const value = env[key];
+    if (typeof value === "string" && value.trim() !== "")
+      modelKeys.push({ key: `env.${key}`, value });
+  }
+  return {
+    baseUrl: usable ? held : null,
+    baseUrlProblem,
+    loginOverrides,
+    modelKeys,
+    subagentOverrides
+  };
 }
 function settingsReport(settingsPath) {
   const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
@@ -14687,19 +14706,38 @@ function urlMeaning(url, routerUrl) {
   return { profile: null, state: "other" };
 }
 function settingsFileState(path, kind) {
-  if (!existsSync14(path))
-    return { kind, loginOverrides: [], path, problem: null, url: null };
+  if (!existsSync14(path)) {
+    return {
+      kind,
+      loginOverrides: [],
+      modelKeys: [],
+      path,
+      problem: null,
+      subagentOverrides: [],
+      url: null
+    };
+  }
   try {
     const facts = readGatewaySettings(path);
     return {
       kind,
       loginOverrides: facts.loginOverrides,
+      modelKeys: facts.modelKeys,
       path,
       problem: facts.baseUrlProblem,
+      subagentOverrides: facts.subagentOverrides,
       url: facts.baseUrl
     };
   } catch (error) {
-    return { kind, loginOverrides: [], path, problem: messageOf(error), url: null };
+    return {
+      kind,
+      loginOverrides: [],
+      modelKeys: [],
+      path,
+      problem: messageOf(error),
+      subagentOverrides: [],
+      url: null
+    };
   }
 }
 function readGatewayConfig(path) {
@@ -14827,7 +14865,7 @@ function projectOptions(args) {
   }
   return { folder: resolve3(folder), profile, state, team };
 }
-function stateOf(ctx, folder) {
+function projectStateOf(ctx, folder) {
   return projectGatewayState(folder, {
     configPath: ctx.paths.gatewayConfigFile,
     settingsFile: ctx.paths.settingsFile
@@ -14918,7 +14956,7 @@ function planProjectChange(view, options) {
 async function applyProjectChange(ctx, folder, options) {
   const { paths } = ctx;
   return await withLock(paths.stateDir, async () => {
-    const view = stateOf(ctx, folder);
+    const view = projectStateOf(ctx, folder);
     const plan = planProjectChange(view, {
       config: readGatewayConfig(paths.gatewayConfigFile).config,
       configPath: paths.gatewayConfigFile,
@@ -14934,7 +14972,7 @@ async function applyProjectChange(ctx, folder, options) {
       stateDir: paths.stateDir
     });
     const result = plan.value === null ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir }) : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
-    return { exclude, plan, result, saved: stateOf(ctx, folder) };
+    return { exclude, plan, result, saved: projectStateOf(ctx, folder) };
   }, { waitMs: 1e4 });
 }
 function portOf(view) {
@@ -14988,7 +15026,7 @@ function projectSourceWords(decision, home, view) {
 function projectStatus(ctx, folder) {
   const out = gatewayOut(ctx);
   const { paths } = ctx;
-  const view = stateOf(ctx, folder);
+  const view = projectStateOf(ctx, folder);
   const { effective } = view;
   out.heading(`Gateway in this project (${tildify(view.folder, paths.home)}):`);
   out.line(markOf(effective), decisionWords(effective), { indent: 2 });
@@ -15087,7 +15125,7 @@ async function commandProject(ctx, args, usage) {
     throw new Error(`the gateway config cannot be read (${problem})`);
   }
   if (options.state === "on") {
-    const port = portOf(stateOf(ctx, options.folder));
+    const port = portOf(projectStateOf(ctx, options.folder));
     const health = await routerHealth(port, ctx.probe.fetch);
     if ("error" in health) {
       throw new Error(`the router does not answer on 127.0.0.1:${port} (${health.error}); every Claude request in this project would fail. Run ${COMMAND} gateway setup first.`);
@@ -15149,7 +15187,7 @@ async function commandProjects(ctx, args, usage) {
   }
   out.heading("Projects (the same list as the portal's Projects page):");
   for (const project of list.projects) {
-    const view = stateOf(ctx, project.root);
+    const view = projectStateOf(ctx, project.root);
     ctx.print(`  ${project.name}  ${tildify(project.root, ctx.paths.home)}${project.current ? "  (here)" : ""}`);
     out.line(markOf(view.choice), `${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, ctx.paths.home, view)}`, { indent: 4 });
   }
@@ -17749,6 +17787,18 @@ async function commandOn(ctx) {
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
 }
+async function projectsStillOn(ctx) {
+  if (ctx.projects === undefined)
+    return [];
+  let list;
+  try {
+    list = await ctx.projects(process.cwd());
+  } catch (error) {
+    gatewayOut(ctx).line("info", `the projects list could not be read (${messageOf(error)}), so projects of yours were not checked`);
+    return [];
+  }
+  return list.projects.map((project) => ({ project, view: projectStateOf(ctx, project.root) })).filter((one) => one.view.choice.state === "on");
+}
 async function commandOff(ctx) {
   const { paths } = ctx;
   const { result, foreign } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
@@ -17764,8 +17814,14 @@ async function commandOff(ctx) {
       fix: "remove it by hand to turn the gateway off"
     });
   }
+  const staying = await projectsStillOn(ctx);
+  for (const { project, view } of staying) {
+    out.line("warn", `${tildify(project.root, paths.home)} stays on: ${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`, { fix: `${COMMAND} gateway project off --folder ${project.root}` });
+  }
   if (routing.length > 0) {
     out.verdict("warn", `The gateway is not all off: ${plural(routing.length, "key stays", "keys stay")} that ${COMMAND} did not set.`);
+  } else if (staying.length > 0) {
+    out.verdict("warn", `The gateway is off on this machine; ${plural(staying.length, "project still points", "projects still point")} at the router (above).`);
   } else if (result.changes.length === 0) {
     out.verdict("ok", `Nothing to remove: ${COMMAND} set no gateway key in ${tildify(paths.settingsFile, paths.home)}.`);
   } else {
@@ -17865,6 +17921,7 @@ async function gatewayChecks(options) {
       info: true,
       text: `gateway: not set up (optional). To use it: ${COMMAND} gateway setup`
     });
+    checks.push(...await projectChecks(options));
     return checks;
   }
   if (options.service === "none") {
@@ -17999,6 +18056,81 @@ async function gatewayChecks(options) {
       text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it`,
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`
     });
+  }
+  checks.push(...await projectChecks(options));
+  return checks;
+}
+function modelKeyWarnings(file, home) {
+  if (file.problem !== null)
+    return [];
+  const checks = [];
+  const where = tildify(file.path, home);
+  for (const fact of file.modelKeys) {
+    const name = withoutContextSuffix(fact.value.trim());
+    const slot = isSlotKey(name);
+    const parsed = parseTarget(name);
+    const backend = "target" in parsed && parsed.target.kind === "backend";
+    if (!slot && !backend)
+      continue;
+    const shown = shownValue(fact.value);
+    const quoted = shown === fact.value ? JSON.stringify(shown) : shown;
+    const why = slot ? "Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude" : "the request goes to that backend alone, with no fallback";
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key, and ${COMMAND} never writes it. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`
+    });
+  }
+  for (const key of file.subagentOverrides) {
+    const why = key === "CLAUDE_CODE_SUBAGENT_MODEL_FORCE" ? "It overrides the model of every Agent call, so a review cannot stay on Claude." : "An agent launched without a model runs on whatever it names, so a review could leave Claude.";
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `${where} sets env.${key}: it is Claude Code's own key, and ${COMMAND} never writes it. ${why} Remove it by hand.`,
+      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`
+    });
+  }
+  return checks;
+}
+async function projectChecks(options) {
+  if (options.projects === undefined)
+    return [];
+  const { paths } = options;
+  let list;
+  try {
+    list = await options.projects(options.folder ?? process.cwd());
+  } catch (error) {
+    return [
+      {
+        ok: true,
+        info: true,
+        text: `the project list could not be read (${messageOf(error)}), so the gateway's per-project lines are missing`
+      }
+    ];
+  }
+  const checks = [];
+  for (const project of list.projects) {
+    const view = projectStateOf({ paths }, project.root);
+    const where = `${tildify(view.folder, paths.home)}${project.current ? " (here)" : ""}`;
+    const state = view.choice.source === "none" ? decisionWords(view.choice) : `${decisionWords(view.choice)}  \xB7 from ${projectSourceWords(view.choice, paths.home, view)}`;
+    const text = `${where}: ${state}`;
+    if (view.choice.state === "unknown") {
+      checks.push({
+        ok: false,
+        text,
+        fix: "fix the settings file by hand, or move it aside; nothing in this project is guessed past it"
+      });
+    } else if (view.choice.state === "other") {
+      checks.push({ ok: true, warn: true, text });
+    } else {
+      checks.push({ ok: true, info: true, text });
+    }
+    for (const file of view.files) {
+      if (file.kind === "machine")
+        continue;
+      checks.push(...modelKeyWarnings(file, paths.home));
+    }
   }
   return checks;
 }
@@ -27615,9 +27747,6 @@ function premiumTier(family) {
 }
 function tierOfReading(family) {
   return family === null ? "opus" : premiumTier(family);
-}
-function familyEnv(family) {
-  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
 function familyFirstTarget(gateway, family) {
   if (!gateway.gatewayOn || gateway.config === null || family === null)
@@ -38733,7 +38862,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
   }
   return lines;
 }
-function projectChecks(cwd, env, paths, pluginHooksFile) {
+function projectChecks2(cwd, env, paths, pluginHooksFile) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
   }
@@ -39610,13 +39739,13 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
       group: "project",
       run: () => present([
         checkProjectImports(paths, local.cwd),
-        ...project === null ? [] : projectChecks(project.cwd, env, paths, project.pluginHooksFile)
+        ...project === null ? [] : projectChecks2(project.cwd, env, paths, project.pluginHooksFile)
       ])
     },
     {
       group: "gateway",
       run: async () => [
-        ...runtime.ok ? await gatewayChecks({ paths, ...gateway }) : [
+        ...runtime.ok ? await gatewayChecks({ paths, folder: local.cwd, ...gateway }) : [
           {
             ok: true,
             info: true,
@@ -47545,7 +47674,7 @@ async function runRestore(paths, options) {
     runner: options.runner,
     service: options.service
   });
-  const sessionsUseRouter = routerTracked && ownedGatewayEnvKeys(paths.settingsFile, paths.stateDir).length > 0;
+  const sessionsUseRouter = routerTracked && Object.entries(changed).some(([file, entry]) => entry.kinds.includes("json-keys") && ownedGatewayEnvKeys(file, paths.stateDir).length > 0);
   if (sessionsUseRouter && !options.now) {
     return withLock(paths.stateDir, () => {
       const results = restore(paths.stateDir, { except: routerFiles });
@@ -49858,6 +49987,17 @@ var service = routerServiceKind(process.platform, (command) => Bun.which(command
 var account = windowsAccount(process.env);
 var prompts = terminalPrompts(currentTerminal(process.env));
 var ask = prompts === null ? null : (question) => prompts.confirm(question, false);
+function projectsReader(paths) {
+  return async (folder) => {
+    const list = await projectsList({
+      cwd: folder,
+      env: process.env,
+      now: () => Date.now(),
+      paths
+    });
+    return { note: list.note, projects: list.projects };
+  };
+}
 function gatewayContext2(paths) {
   return {
     ...gatewayContext({
@@ -49870,15 +50010,7 @@ function gatewayContext2(paths) {
       service,
       terminal: process.stdin
     }),
-    projects: async (folder) => {
-      const list = await projectsList({
-        cwd: folder,
-        env: process.env,
-        now: () => Date.now(),
-        paths
-      });
-      return { note: list.note, projects: list.projects };
-    }
+    projects: projectsReader(paths)
   };
 }
 function omnirouteContext(paths) {
@@ -50061,7 +50193,8 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
           bundle: routerBundle(),
           runner,
           service,
-          machine: realMachine(process.env, null)
+          machine: realMachine(process.env, null),
+          projects: projectsReader(paths)
         },
         local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
         mcp: realMcpDoctorDeps(),

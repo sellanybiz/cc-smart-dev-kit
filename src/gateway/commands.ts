@@ -34,9 +34,12 @@ import { commandProfile, PROFILE_HELP, withoutOrphanProfileSwitches } from "./co
 import {
   commandProject,
   commandProjects,
+  type KnownProject,
   type KnownProjects,
   PROJECT_HELP,
   PROJECTS_HELP,
+  projectSourceWords,
+  projectStateOf,
 } from "./commands-project";
 import {
   breakerOn,
@@ -77,6 +80,7 @@ import {
 import { JUDGE_TEST_ACTION, testJudgeTarget } from "./judge-test";
 import { formatLimitState, parseLimitState } from "./limit-state";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
+import { decisionWords, type ProjectGatewayState } from "./project-state";
 import { startRouter } from "./router";
 import {
   checkRouterPort,
@@ -2436,6 +2440,40 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
   return 0;
 }
 
+/**
+ * A project whose own files keep it on the router: the line `gateway off` prints, with the
+ * command that turns it off. The state is the project's own choice (`projectStateOf`, the one
+ * reader `gateway project status` and the doctor use), never its effective value: a project
+ * with no key follows this machine, and this machine is now off.
+ */
+interface StayingProject {
+  project: KnownProject;
+  view: ProjectGatewayState;
+}
+
+/**
+ * The projects whose own value still points at the router after the machine's gateway keys are
+ * gone. Empty when the caller wired no project list (the portal's collector, a test); a list
+ * that cannot be read is said once as information — the machine's keys are already off, and
+ * no project line is guessed.
+ */
+async function projectsStillOn(ctx: GatewayContext): Promise<StayingProject[]> {
+  if (ctx.projects === undefined) return [];
+  let list: KnownProjects;
+  try {
+    list = await ctx.projects(process.cwd());
+  } catch (error) {
+    gatewayOut(ctx).line(
+      "info",
+      `the projects list could not be read (${messageOf(error)}), so projects of yours were not checked`,
+    );
+    return [];
+  }
+  return list.projects
+    .map((project) => ({ project, view: projectStateOf(ctx, project.root) }))
+    .filter((one) => one.view.choice.state === "on");
+}
+
 async function commandOff(ctx: GatewayContext): Promise<number> {
   const { paths } = ctx;
   const { result, foreign } = await withLock(
@@ -2456,10 +2494,25 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
       fix: "remove it by hand to turn the gateway off",
     });
   }
+  // This machine's value is gone, but a project's own `on` still sends its sessions to the
+  // router: name each one, and the command that turns it off too (GP4a).
+  const staying = await projectsStillOn(ctx);
+  for (const { project, view } of staying) {
+    out.line(
+      "warn",
+      `${tildify(project.root, paths.home)} stays on: ${decisionWords(view.choice)}  · from ${projectSourceWords(view.choice, paths.home, view)}`,
+      { fix: `${COMMAND} gateway project off --folder ${project.root}` },
+    );
+  }
   if (routing.length > 0) {
     out.verdict(
       "warn",
       `The gateway is not all off: ${plural(routing.length, "key stays", "keys stay")} that ${COMMAND} did not set.`,
+    );
+  } else if (staying.length > 0) {
+    out.verdict(
+      "warn",
+      `The gateway is off on this machine; ${plural(staying.length, "project still points", "projects still point")} at the router (above).`,
     );
   } else if (result.changes.length === 0) {
     out.verdict(

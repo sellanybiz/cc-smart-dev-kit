@@ -341,6 +341,15 @@ export const CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"] as const;
 export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
 
 /**
+ * Claude Code's own override for a family: `ANTHROPIC_DEFAULT_OPUS_MODEL`, … (all four exist
+ * in Claude Code 2.1.301). One home, here beside the families: the launch policy resolves a
+ * model through it, and the gateway's settings reader reports a project file that sets one.
+ */
+export function familyEnv(family: ClaudeFamily): string {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
+
+/**
  * The slot that answers for Sonnet: the worker. Its tested targets also judge auto mode's
  * checks while Claude cannot (owner D44, `workerJudgeTargets` in `config.ts`).
  */

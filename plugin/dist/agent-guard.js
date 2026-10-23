@@ -11135,6 +11135,9 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-opus": "opus"
 };
 var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+function familyEnv(family) {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
 var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
@@ -11481,7 +11484,23 @@ function readGatewaySettings(settingsPath) {
   if (Object.hasOwn(settings, "apiKeyHelper"))
     loginOverrides.push("apiKeyHelper");
   const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
-  return { baseUrl: usable ? held : null, baseUrlProblem, loginOverrides, subagentOverrides };
+  const modelKeys = [];
+  if (typeof settings.model === "string" && settings.model.trim() !== "") {
+    modelKeys.push({ key: "model", value: settings.model });
+  }
+  for (const family of CLAUDE_FAMILIES) {
+    const key = familyEnv(family);
+    const value = env[key];
+    if (typeof value === "string" && value.trim() !== "")
+      modelKeys.push({ key: `env.${key}`, value });
+  }
+  return {
+    baseUrl: usable ? held : null,
+    baseUrlProblem,
+    loginOverrides,
+    modelKeys,
+    subagentOverrides
+  };
 }
 function settingsReport(settingsPath) {
   const { baseUrl, loginOverrides, subagentOverrides } = readGatewaySettings(settingsPath);
@@ -11534,9 +11553,6 @@ function premiumTier(family) {
 }
 function tierOfReading(family) {
   return family === null ? "opus" : premiumTier(family);
-}
-function familyEnv(family) {
-  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
 function familyFirstTarget(gateway, family) {
   if (!gateway.gatewayOn || gateway.config === null || family === null)

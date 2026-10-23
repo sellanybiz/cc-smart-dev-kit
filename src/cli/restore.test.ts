@@ -7,11 +7,13 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { HealthProbe } from "../gateway/health";
+import { setGatewayBaseUrl } from "../gateway/settings";
 import { CHOICES_FILE, TODO_TOOLS_KEY } from "../machine/claude-mem";
 import { mcpRecordsFile, recordMcpServer } from "../mcp/records";
 import { applyManagedJson } from "../setup/managed-json";
+import { writeManagedFile } from "../setup/write";
 import { capturePrinted, printed } from "../testing/fake-machine";
-import { tempDir } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
 import { type RestoreOptions, runRestore } from "./restore";
 
@@ -138,5 +140,49 @@ describe("restore: claude-mem's choices from the portal (PM1)", () => {
     expect(printed.join("\n")).toContain(
       "- ~/.claude/cc-smart-dev-kit/claude-mem-choices.json: removed (your claude-mem choices from the portal; the next setup follows the scout slot again)",
     );
+  });
+});
+
+describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
+  /** A git project under a temp folder with one commit: the personal file's home. */
+  function project(label: string): string {
+    const root = join(tempDir(label), "app");
+    mkdirSync(root, { recursive: true });
+    git(root, "init", "-q", "-b", "main");
+    writeFileSync(join(root, "README.md"), "app\n");
+    git(root, "add", "README.md");
+    git(root, "commit", "-qm", "init");
+    return root;
+  }
+
+  test("stage 1 counts the kit's gateway keys in every file it wrote, not only the user's settings", async () => {
+    const { options, paths } = machine();
+    // The router was installed: its copy is one of the kit's managed files, so a restore
+    // would stop and remove it.
+    writeManagedFile(paths.routerCopy, "// the router\n", {
+      stateDir: paths.stateDir,
+      kind: "whole-file",
+    });
+    // A project points at the router in its own personal file. The user's settings hold no
+    // gateway key: before GP4a that was the only file the stage asked, so a restore went
+    // straight to stage 2 and stopped the router under this project's running sessions.
+    const root = project("gp4a-restore");
+    const personal = join(root, ".claude", "settings.local.json");
+    setGatewayBaseUrl({
+      file: personal,
+      stateDir: paths.stateDir,
+      value: "http://127.0.0.1:20999",
+    });
+
+    expect(await runRestore(paths, options(true))).toBe(0);
+    // Stage 1: the key is taken back (the personal file, which the kit created, goes with its
+    // last key), and the router stays for the sessions that still use it.
+    expect(existsSync(personal)).toBe(false);
+    expect(existsSync(paths.routerCopy)).toBe(true);
+    expect(printed.join("\n")).toContain("Restart every running Claude session");
+    // Stage 2, after those sessions restarted: no such key is left in any file, so the
+    // router goes.
+    expect(await runRestore(paths, options(true))).toBe(0);
+    expect(existsSync(paths.routerCopy)).toBe(false);
   });
 });
