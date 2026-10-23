@@ -5,6 +5,11 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 1.1.2
 
+- **A crew session's name says whose it is.** With several leads in one project, every crew
+  session's name started with the same tag, so you could not tell which lead it belonged to. A
+  crew session is now named `C <tag> <plan> <phase> <slug>` — for example `C sab tool-doors PR2
+  listing-access` — lined up with its lead, `LEAD <tag> <plan>`. Crew sessions started before keep
+  their names.
 - **Starting a crew session no longer looks like you typed to it.** `crew start` gives every crew
   session a first line (who it is, its lead, and its brief), and the kit read that line as your
   own words: your lead was told "the person wrote" for every crew session it started, the portal
