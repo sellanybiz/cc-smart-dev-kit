@@ -438,10 +438,12 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   nowhere, so the page says so. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
   read must never block the server. **The request rate comes from the history database**, not
-  the router's own list (`requestsSince`, one query): that list is capped at 200 entries and
-  holds Claude Code's health pings, so a rate read off it could never pass 40.0 a minute and
-  is not a model-call rate at all. The router's own counter is still shown, labelled for what
-  it holds (pings included).
+  the router's own list (`requestsSince`): that list is capped at 200 entries and holds Claude
+  Code's health pings, so a rate read off it could never pass 40.0 a minute and is not a
+  model-call rate at all. Its own read refreshes with each routed request (`/api/history/rate`,
+  `HISTORY_REFRESH`), which the whole Overview answer cannot: that one asks every backend for
+  its model list. The router's own counter is still shown, labelled for what it holds (pings
+  included).
 - **Usage and the cost**: the charts and the tables read `historySeries` and
   `recentRequests`, and a bucket's `unpriced` count is what lets a page say a sum is short:
   **a cost that holds rows with no price says so**, and one made only of such rows reads "no

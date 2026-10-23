@@ -66,7 +66,7 @@ describe("a window's safety checks", () => {
       localDay(NOON, "UTC"),
       localDay(NOON - DAY, "UTC"),
     ]);
-    expect(window).toMatchObject({ anthropic: 12, checks: 14, fallback: 2 });
+    expect(window.checks).toBe(14);
   });
 
   it("a window longer than the days kept reads only the days that are there", () => {
@@ -81,10 +81,8 @@ describe("a window's safety checks", () => {
 
   it("no file counted yet: nothing, and no day reached", () => {
     expect(safetyCheckWindow(null, { nowMs: NOON, timeZone: "UTC", windowMs: DAY })).toEqual({
-      anthropic: 0,
       checks: 0,
       days: [],
-      fallback: 0,
     });
   });
 });

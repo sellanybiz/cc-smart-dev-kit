@@ -7943,7 +7943,7 @@ function backendCost(price, tokens) {
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function perToken(value) {
+function priceNumber(value) {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0)
     return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -7962,7 +7962,7 @@ function listedPrice(entry) {
   const pricing = entry.pricing;
   if (!isJsonObject(pricing))
     return null;
-  const field = (name) => perToken(pricing[name]);
+  const field = (name) => priceNumber(pricing[name]);
   const prompt2 = field("prompt");
   const completion = field("completion");
   if (prompt2 !== null || completion !== null) {
@@ -16084,7 +16084,7 @@ async function commandHistory(ctx, args) {
     return 0;
   }
   out.heading(`History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}`);
-  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives.");
+  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives. A request with no price is counted in the last column and adds nothing to cost.");
   const header = [
     options.by,
     "requests",
@@ -16094,6 +16094,7 @@ async function commandHistory(ctx, args) {
     "cache read",
     "cache write",
     "cost",
+    "no price",
     "peak p95"
   ];
   const rows = answer.series.map((series) => {
@@ -16104,7 +16105,8 @@ async function commandHistory(ctx, args) {
       errors: 0,
       input: 0,
       output: 0,
-      requests: 0
+      requests: 0,
+      unpriced: 0
     };
     let peakP95 = 0;
     for (const point of series.points) {
@@ -16115,6 +16117,7 @@ async function commandHistory(ctx, args) {
       total.cacheRead += point.cacheReadTokens;
       total.cacheWrite += point.cacheWriteTokens;
       total.cost += point.costUsd;
+      total.unpriced += point.unpriced;
       peakP95 = Math.max(peakP95, point.p95Ms);
     }
     const count = (value) => value.toLocaleString("en-US");
@@ -16127,6 +16130,7 @@ async function commandHistory(ctx, args) {
       count(total.cacheRead),
       count(total.cacheWrite),
       formatUsd(total.cost),
+      count(total.unpriced),
       `${count(peakP95)} ms`
     ];
   });
@@ -34544,12 +34548,9 @@ function windowDays(nowMs, windowMs, timeZone) {
 }
 function safetyCheckWindow(state, options) {
   const days = state === null ? [] : recentCheckDays(state, options.nowMs, windowDays(options.nowMs, options.windowMs, options.timeZone), options.timeZone);
-  const total = (side) => days.reduce((sum, [, day]) => sum + day[side].checks, 0);
   return {
-    anthropic: total("anthropic"),
     checks: days.reduce((sum, [, day]) => sum + day.checks, 0),
-    days,
-    fallback: total("fallback")
+    days
   };
 }
 
@@ -34738,10 +34739,14 @@ function overviewRequests(deps, router, now) {
   const file = deps.action.portal.paths.historyDbFile;
   if (!historyDbExists(file))
     return { perMinute: null, sinceRouterStart: null };
-  return {
-    perMinute: requestsSince(file, { from: now - OVERVIEW_RATE_WINDOW_MS }) / (OVERVIEW_RATE_WINDOW_MS / 60000),
-    sinceRouterStart: router.up ? requestsSince(file, { from: now - router.uptimeSec * 1000 }) : null
-  };
+  try {
+    return {
+      perMinute: requestsSince(file, { from: now - OVERVIEW_RATE_WINDOW_MS }) / (OVERVIEW_RATE_WINDOW_MS / 60000),
+      sinceRouterStart: router.up ? requestsSince(file, { from: now - router.uptimeSec * 1000 }) : null
+    };
+  } catch {
+    return { perMinute: null, sinceRouterStart: null };
+  }
 }
 async function overviewData(deps, config) {
   const ctx = deps.action.portal;
@@ -37072,7 +37077,7 @@ async function overviewAnswer(deps) {
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
-      requests: overviewRequests(deps, NO_ROUTER, deps.action.portal.now()),
+      requests: { perMinute: null, sinceRouterStart: null },
       router: NO_ROUTER,
       slots: [],
       switches: NO_SWITCHES,
@@ -37086,6 +37091,10 @@ async function overviewAnswer(deps) {
     fiveHour: planWindow(deps.action.portal),
     jobs: await jobsAtAGlance(deps)
   };
+}
+async function rateAnswer(deps) {
+  const router = "config" in deps.found ? await routerFacts(deps.action.portal, deps.found.config.port) : NO_ROUTER;
+  return overviewRequests(deps, router, deps.action.portal.now());
 }
 async function slotsAnswer(deps) {
   if ("error" in deps.found) {
@@ -37225,6 +37234,7 @@ var API_READS = {
   "/api/update": (deps) => ok(updateAnswer(deps)),
   "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
   "/api/facts": async (deps) => ok(await deps.facts()),
+  "/api/history/rate": async (deps) => ok(await rateAnswer(deps)),
   "/api/history/keys": (deps, query) => {
     const range = rangeOf(query.get("range"));
     if (range === null)

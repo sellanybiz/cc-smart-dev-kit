@@ -21,6 +21,7 @@ import {
   planWindow,
   portHolder,
   type RouterFacts,
+  routerFacts,
   type SwitchFacts,
   switchFacts,
 } from "../facts";
@@ -34,6 +35,7 @@ import {
   slotsData,
   updateFacts,
 } from "../page-data";
+import type { OverviewRequests } from "../views";
 import { projectsAnswerFor } from "./projects";
 import type {
   ApiError,
@@ -115,9 +117,9 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
-      // The history may still hold rows from before the config went: the rate is real, while
-      // the count since a router started is not (there is no router to name).
-      requests: overviewRequests(deps, NO_ROUTER, deps.action.portal.now()),
+      // The page that would show these says the gateway is not set up, so no number is read:
+      // counting the history to fill a field nobody draws would be work for nothing.
+      requests: { perMinute: null, sinceRouterStart: null },
       router: NO_ROUTER,
       slots: [],
       switches: NO_SWITCHES,
@@ -131,6 +133,20 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
     fiveHour: planWindow(deps.action.portal),
     jobs: await jobsAtAGlance(deps),
   };
+}
+
+/**
+ * `/api/history/rate`: the Overview's two request numbers, on their own, so that card can read
+ * again with each routed request. The whole Overview answer cannot: it asks every backend for
+ * its model list, and a `recent` event fires for every ping Claude Code sends as well
+ * (`portal/src/api/refresh.ts`).
+ */
+export async function rateAnswer(deps: PageDataDeps): Promise<OverviewRequests> {
+  const router =
+    "config" in deps.found
+      ? await routerFacts(deps.action.portal, deps.found.config.port)
+      : NO_ROUTER;
+  return overviewRequests(deps, router, deps.action.portal.now());
 }
 
 /** `/api/slots`: the Slots page, and each slot's switch. */

@@ -59,11 +59,14 @@ export function usd(value: number): string {
  * nothing but unpriced requests is "no price", never "$0". The CLI's `usage` says it the same
  * way (`src/cli/usage.ts` › `costText`).
  */
-export function costWords(value: number, unpriced: number): string {
+export function costWords(value: number, unpriced: number, total: number): string {
   if (unpriced === 0) return usd(value);
-  if (value === 0) return "no price";
-  const requests = `${count(unpriced)} request${unpriced === 1 ? "" : "s"}`;
-  return `${usd(value)} + ${requests} with no price`;
+  const rows = `${count(unpriced)} request${unpriced === 1 ? "" : "s"}`;
+  // A sum of *nothing but* unpriced rows has no price at all, never "$0". A sum whose priced
+  // rows came to nothing — a free model's own list price is $0, and the list may say so — is a
+  // real $0, and says what it leaves out instead.
+  if (value === 0 && unpriced === total) return "no price";
+  return `${usd(value)} + ${rows} with no price`;
 }
 
 export function percent(share: number): string {

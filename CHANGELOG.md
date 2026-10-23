@@ -58,7 +58,10 @@ that is not one.
   per-token prices and multiplied by a million, and never read `cached`, the cache-read price.
   Both real shapes are now read, each in its own unit: OpenRouter's per-token `prompt`,
   `completion`, `input_cache_read` and `input_cache_write`, and OmniRoute's per-million
-  `input`, `output`, `cached` and `cache_creation`.
+  `input`, `output`, `cached` and `cache_creation`. **A row already logged keeps the cost it
+  was written with**, so an affordable-backend row written before this fix stays at the price
+  that was wrong at the time — `cc-smart-dev-kit gateway history` shows those totals until the
+  retention drops them (90 days by default).
 - **Claude Sonnet 5.5's cache read was half its list price.** The table held $0.10 a million
   where Anthropic charges $0.20 — a tenth of its $2 input rate, as Sonnet 5's own row has. A
   test now holds every row's cache read to its family's published share (Opus 5.5's a

@@ -40,16 +40,12 @@ export function windowDays(nowMs: number, windowMs: number, timeZone?: string): 
   return Math.max(1, Math.round((last - first) / DAY_MS) + 1);
 }
 
-/** One window's safety checks: the local days it covers that the file still holds, and their sums. */
+/** One window's safety checks: the local days it covers that the file still holds, and their sum. */
 export interface CheckWindow {
-  /** How many Anthropic answered. */
-  anthropic: number;
   /** Every check of those days, whoever answered it. */
   checks: number;
   /** The days the window covers that the file holds, newest first. */
   days: [string, CheckDay][];
-  /** How many a target of the judge slot answered (the file's own name for that, `fallback`). */
-  fallback: number;
 }
 
 /**
@@ -69,12 +65,8 @@ export function safetyCheckWindow(
           windowDays(options.nowMs, options.windowMs, options.timeZone),
           options.timeZone,
         );
-  const total = (side: "anthropic" | "fallback"): number =>
-    days.reduce((sum, [, day]) => sum + day[side].checks, 0);
   return {
-    anthropic: total("anthropic"),
     checks: days.reduce((sum, [, day]) => sum + day.checks, 0),
     days,
-    fallback: total("fallback"),
   };
 }

@@ -6867,7 +6867,7 @@ function backendCost(price, tokens) {
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function perToken(value) {
+function priceNumber(value) {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0)
     return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -6886,7 +6886,7 @@ function listedPrice(entry) {
   const pricing = entry.pricing;
   if (!isJsonObject(pricing))
     return null;
-  const field = (name) => perToken(pricing[name]);
+  const field = (name) => priceNumber(pricing[name]);
   const prompt = field("prompt");
   const completion = field("completion");
   if (prompt !== null || completion !== null) {

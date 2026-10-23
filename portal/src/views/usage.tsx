@@ -127,7 +127,7 @@ const SESSION_COLUMNS = sessionColumn.columns([
     header: "Est. USD",
     cell: ({ row }) => (
       <span className="block text-right font-medium tabular-nums">
-        {costWords(row.original.cost, row.original.unpriced)}
+        {costWords(row.original.cost, row.original.unpriced, row.original.requests)}
       </span>
     ),
   }),
@@ -173,7 +173,7 @@ function Breakdown({
                       key: row.key,
                       label: seriesLabel(row.key, by.value, names),
                       value: row.cost,
-                      shown: costWords(row.cost, row.unpriced),
+                      shown: costWords(row.cost, row.unpriced, row.requests),
                       note: `${compact(row.input + row.cacheRead + row.cacheWrite + row.output)} tokens`,
                     }))}
                   />
@@ -207,6 +207,11 @@ function sessionRows(history: History | null, keys: HistoryKeys | null): Session
 function checksWords(safety: History["safetyChecks"]): string {
   if (safety.checks === null) {
     return "Auto mode's safety checks are counted apart from this history, by local day, and none is recorded yet. The gateway must be set up, and a session must have run with auto mode on.";
+  }
+  // The file holds days, but none the range covers (a short range, and an older file): the
+  // count is a real zero, and "0 over the 0 days" would be a sentence nobody wrote.
+  if (safety.days === 0) {
+    return "Auto mode's safety checks are counted apart from this history, by local day, and none falls in the days this range covers.";
   }
   const days = safety.days === 1 ? "1 day" : `${count(safety.days)} days`;
   return `Auto mode's safety checks are counted apart from this history, by local day: ${count(safety.checks)} over the ${days} the router counted. Their tokens are in none of the numbers above.`;
@@ -244,7 +249,7 @@ export function UsageView() {
       <SectionCards columns={4}>
         <StatCard
           label="Estimated cost"
-          value={value(costWords(all.cost, all.unpriced))}
+          value={value(costWords(all.cost, all.unpriced, all.requests))}
           badge={<TonePill tone="info">estimated</TonePill>}
           headline={`In ${words}`}
           detail="From list prices: never a bill"
@@ -318,7 +323,7 @@ export function UsageView() {
               <CardDescription>
                 {topSession === undefined
                   ? `No session sent a request in ${words}.`
-                  : `${names.get(topSession.key) ?? topSession.key.slice(0, 8)} cost the most: ${costWords(topSession.cost, topSession.unpriced)}${topSession.cost === 0 ? "" : " (estimated)"}.`}
+                  : `${names.get(topSession.key) ?? topSession.key.slice(0, 8)} cost the most: ${costWords(topSession.cost, topSession.unpriced, topSession.requests)}${topSession.cost === 0 ? "" : " (estimated)"}.`}
               </CardDescription>
             </CardHeader>
             <CardContent>

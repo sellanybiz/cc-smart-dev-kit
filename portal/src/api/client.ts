@@ -30,6 +30,7 @@ import type {
   MachineData,
   NeedsData,
   OverviewData,
+  OverviewRequests,
   PortalFacts,
   ProjectData,
   ProjectList,
@@ -54,6 +55,8 @@ export interface PortalClient {
   overview(): Promise<OverviewData>;
   history(query: HistoryQuery): Promise<History>;
   historyKeys(): Promise<HistoryKeys>;
+  /** The Overview's request numbers, read again with each routed request. */
+  historyRate(): Promise<OverviewRequests>;
   requests(query: RequestQuery): Promise<RequestPage>;
   work(): Promise<WorkData>;
   flow(window: FlowWindow): Promise<FlowReport>;
@@ -136,6 +139,7 @@ export function mockClient(scenario: MockScenario): PortalClient {
     overview: () => answer(() => data.overview, true),
     history: (query) => answer(() => data.history(query), true),
     historyKeys: () => answer(() => data.keys, true),
+    historyRate: () => answer(() => data.historyRate, true),
     requests: (query) => answer(() => data.requests(query), true),
     work: () => answer(() => data.work),
     flow: (window) => answer(() => data.flow[window]),
@@ -227,6 +231,8 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     history: (query) => get<Wire.HistoryAnswer>(`/api/history?${historyQuery(query)}`),
     historyKeys: async () =>
       adapt.historyKeysOf(await get<Wire.HistoryKeysAnswer>("/api/history/keys?range=90d")),
+    // The shape is the server's own (`src/portal/views.ts` › `OverviewRequests`): no adapting.
+    historyRate: () => get<Wire.OverviewRequests>("/api/history/rate"),
     requests: (query) => get<Wire.RequestsAnswer>(`/api/requests?${historyQuery(query)}`),
     work: async () => adapt.workOf(await get<Wire.WorkAnswer>("/api/work")),
     flow: async (window) =>

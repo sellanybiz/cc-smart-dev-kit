@@ -9263,7 +9263,7 @@ function backendCost(price, tokens) {
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function perToken(value) {
+function priceNumber(value) {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0)
     return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -9282,7 +9282,7 @@ function listedPrice(entry) {
   const pricing = entry.pricing;
   if (!isJsonObject(pricing))
     return null;
-  const field = (name) => perToken(pricing[name]);
+  const field = (name) => priceNumber(pricing[name]);
   const prompt2 = field("prompt");
   const completion = field("completion");
   if (prompt2 !== null || completion !== null) {
@@ -15310,7 +15310,7 @@ async function commandHistory(ctx, args) {
     return 0;
   }
   out.heading(`History, last ${options.range} (${bucketWords(answer.bucketMs)} buckets), by ${options.by}`);
-  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives.");
+  out.say("Cost is estimated: Claude at its list price, a backend at the price its own list gives. A request with no price is counted in the last column and adds nothing to cost.");
   const header = [
     options.by,
     "requests",
@@ -15320,6 +15320,7 @@ async function commandHistory(ctx, args) {
     "cache read",
     "cache write",
     "cost",
+    "no price",
     "peak p95"
   ];
   const rows = answer.series.map((series) => {
@@ -15330,7 +15331,8 @@ async function commandHistory(ctx, args) {
       errors: 0,
       input: 0,
       output: 0,
-      requests: 0
+      requests: 0,
+      unpriced: 0
     };
     let peakP95 = 0;
     for (const point of series.points) {
@@ -15341,6 +15343,7 @@ async function commandHistory(ctx, args) {
       total.cacheRead += point.cacheReadTokens;
       total.cacheWrite += point.cacheWriteTokens;
       total.cost += point.costUsd;
+      total.unpriced += point.unpriced;
       peakP95 = Math.max(peakP95, point.p95Ms);
     }
     const count = (value) => value.toLocaleString("en-US");
@@ -15353,6 +15356,7 @@ async function commandHistory(ctx, args) {
       count(total.cacheRead),
       count(total.cacheWrite),
       formatUsd(total.cost),
+      count(total.unpriced),
       `${count(peakP95)} ms`
     ];
   });

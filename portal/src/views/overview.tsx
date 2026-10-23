@@ -130,7 +130,7 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
         title="Estimated cost"
         description={
           history.status === "ready"
-            ? `${costWords(totals.cost, totals.unpriced)} in ${words}, from list prices: never a bill`
+            ? `${costWords(totals.cost, totals.unpriced, totals.requests)} in ${words}, from list prices: never a bill`
             : "From list prices: never a bill"
         }
         history={history}
@@ -346,7 +346,12 @@ function OverviewPage({ data }: { data: OverviewData }) {
   // The page's clock, read when it draws: a new request draws it again.
   const now = Date.now();
   const state = useHistoryState("target");
-  const { health, requests } = data;
+  const { health } = data;
+  // The two request numbers read on their own, so the card moves with each routed request.
+  // The whole Overview answer cannot refresh at that cadence (it asks every backend for its
+  // model list); until the first read lands, the answer's own numbers stand.
+  const rate = useResource((client) => client.historyRate(), "", HISTORY_REFRESH);
+  const requests = rate.status === "ready" ? rate.data : data.requests;
   const breakers = Object.entries(health.breakers);
   const restingCount = Object.keys(health.cooling).length;
   const limit = data.limits[0];

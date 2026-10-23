@@ -246,8 +246,12 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A per-token price from a list, as a number; null when it is absent or not a number. */
-function perToken(value: unknown): number | null {
+/**
+ * One price field of a list entry, as a number; null when it is absent, or not a number, or
+ * negative. **The shape decides its unit**: OpenRouter's fields are USD per token, OmniRoute's
+ * USD per million, and this reads either without knowing which.
+ */
+function priceNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number(value);
@@ -282,7 +286,7 @@ export function listedPrice(entry: unknown): ModelPrice | null {
   if (!isJsonObject(entry)) return null;
   const pricing = entry.pricing;
   if (!isJsonObject(pricing)) return null;
-  const field = (name: string): number | null => perToken(pricing[name]);
+  const field = (name: string): number | null => priceNumber(pricing[name]);
 
   const prompt = field("prompt");
   const completion = field("completion");

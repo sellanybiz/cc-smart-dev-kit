@@ -15,6 +15,7 @@ import {
   machineAnswer,
   overviewAnswer,
   projectsAnswer,
+  rateAnswer,
   settingsAnswer,
   slotsAnswer,
   updateAnswer,
@@ -111,6 +112,9 @@ export const API_READS: Readonly<
   "/api/update": (deps) => ok(updateAnswer(deps)),
   "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
   "/api/facts": async (deps) => ok(await deps.facts()),
+  // The Overview's rate, on its own: the card reads again with each routed request, and the
+  // whole Overview answer is too heavy to ask at that cadence (`src/portal/api/data.ts`).
+  "/api/history/rate": async (deps) => ok(await rateAnswer(deps)),
   "/api/history/keys": (deps, query) => {
     const range = rangeOf(query.get("range"));
     if (range === null) return badRange();

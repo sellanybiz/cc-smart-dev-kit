@@ -864,13 +864,13 @@ export interface HistorySeries {
   points: HistoryPoint[];
 }
 
-/** `GET /api/history?range=…&by=…&…`: one series per key, every bucket of the window. */
 /** `src/portal/api/types.ts` › `SafetyChecks`: auto mode's checks, counted apart (F6). */
 export interface SafetyChecks {
   checks: null | number;
   days: number;
 }
 
+/** `GET /api/history?range=…&by=…&…`: one series per key, every bucket of the window. */
 export interface HistoryAnswer {
   available: boolean;
   by: HistoryBy;

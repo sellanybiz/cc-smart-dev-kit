@@ -35,6 +35,7 @@ import type {
   NeedsData,
   OpenBreaker,
   OverviewData,
+  OverviewRequests,
   PortalFacts,
   ProjectData,
   ProjectList,
@@ -634,6 +635,8 @@ export interface MockData {
   facts: PortalFacts;
   overview: OverviewData;
   history: (query: HistoryQuery) => History;
+  /** The Overview's rate alone, as `/api/history/rate` answers it. */
+  historyRate: OverviewRequests;
   requests: (query: RequestQuery) => RequestPage;
   keys: HistoryKeys;
   needs: NeedsData;
@@ -658,6 +661,12 @@ export function mockData(empty: boolean): MockData {
   const now = Date.now();
   const work = workData(now, empty);
   const jobs = jobsData(now, empty);
+  // The model requests the history holds: fewer than the router's own count, which also counts
+  // Claude Code's pings to it. One home in the mock: the Overview answer carries it, and
+  // `/api/history/rate` returns it on its own.
+  const historyRate = empty
+    ? { perMinute: null, sinceRouterStart: null }
+    : { perMinute: 21.6, sinceRouterStart: 892 };
   const recent = empty ? [] : recentRequests(now, 200);
   const breakers: Record<string, OpenBreaker> = empty
     ? {}
@@ -819,16 +828,13 @@ export function mockData(empty: boolean): MockData {
       ),
     worktrees: worktreesData(now, empty),
     update: updateData(now),
+    historyRate,
     overview: {
       health,
       fallbacks: fallbackRows,
       limits,
       fiveHour: empty ? null : { percent: 61, resetsAt: now + 127 * MINUTE },
-      // The model requests the history holds: fewer than the router's own count, which also
-      // counts Claude Code's pings to it.
-      requests: empty
-        ? { perMinute: null, sinceRouterStart: null }
-        : { perMinute: 21.6, sinceRouterStart: 892 },
+      requests: historyRate,
       switches: slots.switches,
       crewRunning: empty ? 0 : 3,
       jobs: {
