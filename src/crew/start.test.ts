@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { recordUsageWindow } from "../cli/usage-window";
+import { MCP_VERSIONS, TAVILY_MCP_URL } from "../mcp/versions";
 import {
   crewWorld,
   LEAD_SESSION,
@@ -14,9 +15,10 @@ import {
   SHORT_ID,
   writeSessionRecord,
 } from "../testing/crew-world";
+import { defaultResolved } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
-import { filesOverlap } from "./start";
+import { filesOverlap, startQueued } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -133,7 +135,11 @@ describe("D25: crew start returns at once", () => {
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
     const briefFile = crewBriefFile(world.paths.stateDir, world.repo, ID);
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(world.claudeCalls()).toEqual([
+      // The plugins this machine runs, read before anything is recorded: a lean launch knows
+      // what to turn off. A fake with no answer is no list, and nothing is turned off.
+      ["plugin", "list", "--json"],
       [
         "--bg",
         "-w",
@@ -148,6 +154,9 @@ describe("D25: crew start returns at once", () => {
         "auto",
         "--autocompact",
         "auto",
+        "--strict-mcp-config",
+        "--mcp-config",
+        mcpFile,
         "--settings",
         settingsFile,
         `You are the crew session C my-app B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:crew. Read ${briefFile} first: it is your task, and it says how you report.`,
@@ -202,13 +211,16 @@ describe("D25: crew start returns at once", () => {
     // The worktree is the launcher's own, on its branch, at the lead's HEAD.
     expect(git(worktree, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("crew/B6b-portal-live");
     expect(git(worktree, "rev-parse", "HEAD").trim()).toBe(head);
-    // The settings file names the crew session to its own session, and turns Claude Code's retry
-    // watchdog on with no wait limit (D42): exactly these three keys, and nothing else; both
-    // files are the kit's, 0600.
+    // The settings file names the crew session to its own session, turns Claude Code's retry
+    // watchdog on with no wait limit (D42), and drops the claude.ai connectors; with no plugin
+    // list read, it turns no plugin off. The `--mcp-config` file passes no server, because this
+    // world has no Tavily key. All three files are the kit's, 0600.
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  }\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
     );
     expect(statSync(settingsFile).mode & 0o777).toBe(0o600);
+    expect(readFileSync(mcpFile, "utf8")).toBe(`{\n  "mcpServers": {}\n}\n`);
+    expect(statSync(mcpFile).mode & 0o777).toBe(0o600);
     const brief = readFileSync(briefFile, "utf8");
     expect(brief).toStartWith("# B6b\n\nBuild the live stream.\n\n---\n\n## Your frame");
     expect(brief).toContain(
@@ -231,7 +243,7 @@ describe("D25: crew start returns at once", () => {
     ];
     expect(await runCrew(args, world.ctx())).toBe(0);
     expect(world.out[0]).toContain("· opus xhigh ·");
-    expect(world.claudeCalls()[0]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "xhigh"]);
+    expect(world.claudeCalls()[1]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "xhigh"]);
   });
 
   test("the brief from stdin", async () => {
@@ -289,7 +301,8 @@ describe("D25: crew start returns at once", () => {
       "Fix: name a branch or a commit with --base",
     ]);
     expect(listCrew(world.paths.stateDir, world.repo).records).toEqual([]);
-    expect(world.claudeCalls()).toEqual([]);
+    // The plugin list is read before the base is checked; nothing else runs.
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
   });
 
   test("the .worktreeinclude files are copied into the new worktree", async () => {
@@ -301,6 +314,217 @@ describe("D25: crew start returns at once", () => {
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
     expect(readFileSync(join(worktree, ".env.local"), "utf8")).toBe("KEY=1\n");
+  });
+});
+
+describe("a lean start: the plugins and servers the phase uses, and no others", () => {
+  /** What `claude plugin list --json` prints here: this machine's plugins, one already off. */
+  const PLUGINS = JSON.stringify([
+    { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit", scope: "user", version: "1.0.1" },
+    { enabled: true, id: "claude-mem@thedotmack", scope: "user", version: "13.40.0" },
+    { enabled: true, id: "stripe@claude-plugins-official", scope: "user", version: "0.11.17" },
+    { enabled: false, id: "frontend-design@claude-plugins-official", scope: "user", version: "1" },
+  ]);
+
+  test("the other plugins go off, Tavily is kept and passed, and the launch names both files", async () => {
+    const world = await ledWorld();
+    const code = await runCrew(
+      startArgs(world.brief),
+      world.ctx({}, { FAKE_PLUGINS: PLUGINS, TAVILY_API_KEY: "tvly-test-key" }),
+    );
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    expect(readFileSync(settingsFile, "utf8")).toBe(
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "claude-mem@thedotmack": false,\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
+    );
+    // The registration is the kit's own, with Claude Code's placeholder, never a key.
+    expect(readFileSync(mcpFile, "utf8")).toBe(
+      `{\n  "mcpServers": {\n    "tavily-websearch": {\n      "headers": {\n        "Authorization": "Bearer \${TAVILY_API_KEY}"\n      },\n      "timeout": 300000,\n      "type": "http",\n      "url": "${TAVILY_MCP_URL}"\n    }\n  }\n}\n`,
+    );
+    const launched = world.claudeCalls()[1] ?? [];
+    expect(launched.slice(0, 2)).toEqual(["--bg", "-w"]);
+    expect(launched.slice(-5, -1)).toEqual(["--mcp-config", mcpFile, "--settings", settingsFile]);
+    expect(launched).toContain("--strict-mcp-config");
+  });
+
+  test("a ui session keeps the browser too; a build session does not", async () => {
+    const world = await ledWorld();
+    const args = (kind: string) => [
+      "start",
+      "W1a",
+      "--slug",
+      "portal-look",
+      "--kind",
+      kind,
+      "--brief",
+      world.brief,
+    ];
+    expect(
+      await runCrew(args("ui"), world.ctx({}, { FAKE_PLUGINS: PLUGINS, TAVILY_API_KEY: "tvly-k" })),
+    ).toBe(0);
+    const record = onlyCrew(world.paths.stateDir, world.repo);
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, record.id);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    const servers = Object.keys(
+      (JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers,
+    );
+    expect(servers).toEqual(["playwright", "tavily-websearch"]);
+  });
+
+  test("workflow.crew.keep keeps a plugin on and adds a server every kind lacks", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ keep: ["plugin:acme-tools@acme", "server:sequential-thinking"] });
+    const plugins = JSON.stringify([
+      { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
+      { enabled: true, id: "acme-tools@acme" },
+      { enabled: true, id: "claude-mem@thedotmack" },
+    ]);
+    expect(
+      await runCrew(
+        startArgs(world.brief),
+        world.ctx({}, { FAKE_PLUGINS: plugins, TAVILY_API_KEY: "tvly-test-key" }),
+      ),
+    ).toBe(0);
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    expect(readFileSync(settingsFile, "utf8")).toContain(
+      `"enabledPlugins": {\n    "claude-mem@thedotmack": false\n  }`,
+    );
+    const mcp = JSON.parse(readFileSync(mcpFile, "utf8")) as {
+      mcpServers: Record<string, { args?: string[]; command?: string }>;
+    };
+    expect(Object.keys(mcp.mcpServers)).toEqual(["sequential-thinking", "tavily-websearch"]);
+    expect(mcp.mcpServers["sequential-thinking"]).toEqual({
+      args: [
+        "-y",
+        `@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}`,
+      ],
+      command: "bunx",
+    });
+  });
+
+  test("a kept plugin this machine does not run is refused, and nothing is recorded", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ keep: ["plugin:acme-tools@acme"] });
+    const code = await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_PLUGINS: PLUGINS }));
+    expect(code).toBe(1);
+    expect(world.out).toEqual([]);
+    expect(world.err).toEqual([
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme", which is not enabled in this Claude Code',
+      "Fix: set workflow.crew.keep in .claude/cc-smart-dev-kit.json",
+    ]);
+    expect(listCrew(world.paths.stateDir, world.repo).records).toEqual([]);
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
+  });
+
+  test("a keep entry in the person's own defaults names their file in the fix line", async () => {
+    const world = await ledWorld();
+    const file = world.paths.workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ crew: { keep: ["plugin:acme-tools@acme"] } })}\n`);
+    expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_PLUGINS: PLUGINS }))).toBe(1);
+    expect(world.err).toEqual([
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme", which is not enabled in this Claude Code',
+      "Fix: set workflow.crew.keep in ~/.config/cc-smart-dev-kit/workflow.json",
+    ]);
+  });
+
+  test("a settings file that cannot be written fails before any worktree is made", async () => {
+    const world = await ledWorld();
+    // A folder where `mcp.json` goes: `settings.json` is written, the second write fails.
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    mkdirSync(join(dirname(settingsFile), "mcp.json"), { recursive: true });
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(1);
+    expect(world.out[0]).toContain(
+      "failed C my-app B6b portal-live: its settings could not be written",
+    );
+    // Written before anything is made, so nothing is left to take back or to free the name.
+    expect(existsSync(join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"))).toBe(
+      false,
+    );
+    expect(world.claudeCalls().map((call) => call[0])).toEqual(["plugin"]);
+  });
+});
+
+describe("a lean start: a queued crew session is lean when it starts", () => {
+  /** What the machine runs at the time the queued crew session starts. */
+  const PLUGINS = JSON.stringify([
+    { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
+    { enabled: true, id: "claude-mem@thedotmack" },
+  ]);
+
+  /** A queued crew session of B6b, as `crew start` records one when no place is free. */
+  async function queuedHere(world: Awaited<ReturnType<typeof ledWorld>>): Promise<CrewRecord> {
+    return await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/B6b-portal-live",
+        continues: null,
+        effort: "high",
+        files: [],
+        id: ID,
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app master-plan",
+        leadSessionId: LEAD_SESSION,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: "C my-app B6b portal-live",
+        permissionMode: "auto",
+        phase: "B6b",
+        plan: "master-plan",
+        pr: null,
+        questions: [],
+        repo: world.repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: "portal-live",
+        state: "queued",
+        waitsFor: [],
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"),
+      },
+      T0,
+    );
+  }
+
+  test("the plugins it turns off are read when it starts, and both files are written", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    await startQueued(
+      record,
+      world.ctx({}, { FAKE_PLUGINS: PLUGINS, TAVILY_API_KEY: "tvly-test-key" }),
+      defaultResolved(),
+    );
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    expect(readFileSync(settingsFile, "utf8")).toContain(
+      `"enabledPlugins": {\n    "claude-mem@thedotmack": false\n  }`,
+    );
+    expect(
+      Object.keys((JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers),
+    ).toEqual(["tavily-websearch"]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
+  });
+
+  test("a keep entry this machine does not run fails it, and it makes no worktree", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    const resolved = defaultResolved();
+    resolved.crew.keep = { source: "project", value: ["plugin:acme-tools@acme"] };
+    await startQueued(record, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), resolved);
+    const [after] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(after?.state).toBe("failed");
+    const events = readCrewEvents(world.paths.stateDir, world.repo).events;
+    expect(events[events.length - 1]?.text).toContain(
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme"',
+    );
+    expect(existsSync(record.worktree)).toBe(false);
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
   });
 });
 
@@ -469,7 +693,7 @@ describe("the refusals before anything is recorded", () => {
     argv[argv.indexOf("build")] = "ui";
     expect(await runCrew(argv, world.ctx())).toBe(0);
     expect(world.out[0]).toContain("· opus high ·");
-    expect(world.claudeCalls()[0]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "high"]);
+    expect(world.claudeCalls()[1]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "high"]);
   });
 
   test.each([
@@ -515,7 +739,8 @@ describe("D25: the queue — still one line, at once", () => {
     const record = onlyCrew(world.paths.stateDir, world.repo);
     expect(record).toMatchObject({ base: null, baseRef: "main", state: "queued" });
     expect(existsSync(record.worktree)).toBe(false);
-    expect(world.claudeCalls()).toEqual([]);
+    // The plugin list is read before the queue decision (a lean launch needs it); nothing is launched.
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
     // Its brief is written now: the watch starts it later from the record and these files.
     expect(existsSync(crewBriefFile(world.paths.stateDir, world.repo, ID))).toBe(true);
   });
@@ -886,7 +1111,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     expect(world.out).toEqual([
       "failed C my-app B6b portal-live: claude --bg printed no line backgrounded · <id> · <name>: a session may have started; see claude agents",
     ]);
-    expect(world.claudeCalls()).toHaveLength(1);
+    expect(world.claudeCalls()).toHaveLength(2);
     expect(existsSync(onlyCrew(world.paths.stateDir, world.repo).worktree)).toBe(true);
   });
 
@@ -922,7 +1147,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
       const world = await ledWorld();
       expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_AGENTS: mode }))).toBe(1);
       expect(world.out).toEqual([`failed C my-app B6b portal-live: ${reason}`]);
-      expect(world.claudeCalls().map((call) => call[0])).toEqual(["--bg", "agents"]);
+      expect(world.claudeCalls().map((call) => call[0])).toEqual(["plugin", "--bg", "agents"]);
     }
   });
 });

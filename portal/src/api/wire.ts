@@ -401,6 +401,7 @@ export type WorkflowKey =
   | "alerts.sound"
   | "alerts.usagePercent"
   | "crew.enabled"
+  | "crew.keep"
   | "crew.idleStopMinutes"
   | "crew.max"
   | "crew.maxOpus"
