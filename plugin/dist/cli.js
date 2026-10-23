@@ -13411,6 +13411,10 @@ function omnirouteKeyName(host = hostname3()) {
   return clean === "" ? KEY_NAME_PREFIX : `${KEY_NAME_PREFIX}-${clean}`;
 }
 var PROBE_TIMEOUT_MS2 = 2000;
+var DETAIL_CHARS2 = 300;
+function reasonOf(error, secrets = []) {
+  return maskedLine(messageOf(error), secrets, DETAIL_CHARS2);
+}
 async function probeOmniroute(baseUrl, options = {}) {
   const url = `${baseUrl.replace(/\/+$/, "")}${MODELS_PATH}`;
   const doFetch = options.fetch ?? ((target, init) => fetch(target, init));
@@ -13422,7 +13426,7 @@ async function probeOmniroute(baseUrl, options = {}) {
     await response.body?.cancel();
     return { kind: "answers" };
   } catch (error) {
-    return { detail: messageOf(error), kind: "silent" };
+    return { detail: reasonOf(error), kind: "silent" };
   }
 }
 function sessionCookieFrom(setCookie) {
@@ -13462,7 +13466,7 @@ async function createOmnirouteKey(options) {
       signal: AbortSignal.timeout(timeoutMs)
     }, doFetch);
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password]), kind: "no-answer" };
   }
   if (login.status === 401) {
     await login.body?.cancel();
@@ -13491,7 +13495,7 @@ async function createOmnirouteKey(options) {
       signal: AbortSignal.timeout(timeoutMs)
     }, doFetch);
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password, session]), kind: "no-answer" };
   }
   if (!created.ok) {
     const said = await errorOf(created, [options.password, session]);
@@ -13505,7 +13509,7 @@ async function createOmnirouteKey(options) {
     body = await created.json();
   } catch (error) {
     return {
-      detail: `the answer to creating the key was not JSON (${messageOf(error)})`,
+      detail: `the answer to creating the key was not JSON (${reasonOf(error, [options.password, session])})`,
       kind: "failed"
     };
   }
@@ -13530,7 +13534,7 @@ async function createOmnirouteKey(options) {
         return { detail: "", ok: true };
       return { detail: `OmniRoute answered HTTP ${removed.status}`, ok: false };
     } catch (error) {
-      return { detail: messageOf(error), ok: false };
+      return { detail: reasonOf(error, [options.password, session]), ok: false };
     }
   };
   return { discard, id, key: key.trim(), kind: "created", name };
@@ -24411,7 +24415,7 @@ function iso(atMs) {
 function notThere(error) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
-function reasonOf(error) {
+function reasonOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function checked(schema, value, file) {
@@ -24428,13 +24432,13 @@ function readRecord(schema, file) {
   } catch (error) {
     if (notThere(error))
       return null;
-    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf(error)}`);
+    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf2(error)}`);
   }
   let value;
   try {
     value = JSON.parse(raw);
   } catch (error) {
-    throw new CrewStoreError(`Invalid ${file}: not valid JSON (${reasonOf(error)})`);
+    throw new CrewStoreError(`Invalid ${file}: not valid JSON (${reasonOf2(error)})`);
   }
   return checked(schema, value, file);
 }
@@ -24452,7 +24456,7 @@ function listRecords(schema, folder) {
       if (record2 !== null)
         found.push({ file, record: record2 });
     } catch (error) {
-      listed.broken.push({ file, why: reasonOf(error) });
+      listed.broken.push({ file, why: reasonOf2(error) });
     }
   }
   found.sort((a, b) => a.record.createdAt.localeCompare(b.record.createdAt) || a.file.localeCompare(b.file));
@@ -24640,7 +24644,7 @@ function readCrewEvents(stateDir, repo, offset = 0) {
   } catch (error) {
     if (notThere(error))
       return { events: [], offset: 0, skipped: 0 };
-    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf(error)}`);
+    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf2(error)}`);
   }
   try {
     const size = fstatSync(fd).size;
@@ -29961,7 +29965,7 @@ function roleCard(record, briefFile) {
 function storeProblem(why) {
   return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
 }
-function reasonOf2(error) {
+function reasonOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function recordOf2(id, repo, paths) {
@@ -29969,7 +29973,7 @@ function recordOf2(id, repo, paths) {
   try {
     record = readCrew(paths.stateDir, repo, id);
   } catch (error) {
-    return { ok: false, result: storeProblem(reasonOf2(error)) };
+    return { ok: false, result: storeProblem(reasonOf3(error)) };
   }
   if (record === null) {
     return {
@@ -30005,7 +30009,7 @@ async function startCard(input, id, repo, paths, options) {
     try {
       await updateCrewIfState(paths.stateDir, repo, id, RUNNING_STATES, { state: "failed" }, nowMs, wrongFolderReason(record, cwd));
     } catch (error) {
-      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf2(error)}`;
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf3(error)}`;
     }
     const answer = addContext("SessionStart", wrongFolderCard(record, cwd));
     return stderr === undefined ? answer : { ...answer, stderr };
@@ -30015,7 +30019,7 @@ async function startCard(input, id, repo, paths, options) {
     try {
       await updateCrewIfState(paths.stateDir, repo, id, ["starting"], { startedAt: record.startedAt ?? new Date(nowMs).toISOString(), state: "working" }, nowMs, "started in its worktree");
     } catch (error) {
-      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf2(error)}`;
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf3(error)}`;
     }
   }
   const brief = crewBriefFile(paths.stateDir, repo, id);
@@ -30035,7 +30039,7 @@ async function stopAnswer(input, id, repo, paths) {
     try {
       await updateCrew(paths.stateDir, repo, id, { lastLine: maskedLine(said, [], LAST_LINE_MAX, { mark: "\u2026" }) }, Date.now());
     } catch (error) {
-      return storeProblem(reasonOf2(error));
+      return storeProblem(reasonOf3(error));
     }
   }
   const cursor = readStopState(paths.stateDir, repo, id);
@@ -30043,7 +30047,7 @@ async function stopAnswer(input, id, repo, paths) {
   try {
     events = readCrewEvents(paths.stateDir, repo, cursor?.offset ?? 0);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   const newest = events.events.filter((event) => event.crew === id && (event.type === "step" || event.type === "report")).at(-1);
   const fresh = newest?.type === "step" ? "step" : newest?.type === "report" ? "report" : null;
@@ -30051,7 +30055,7 @@ async function stopAnswer(input, id, repo, paths) {
   try {
     writeStopState(paths.stateDir, repo, id, { last, offset: events.offset });
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
@@ -30079,7 +30083,7 @@ async function personPromptAnswer(input, id, repo, paths, options) {
       type: "person"
     }, nowMs);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   return addContext("UserPromptSubmit", personWroteLine());
 }
@@ -30119,7 +30123,7 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
   try {
     await updateCrew(paths.stateDir, repo, id, { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor }, nowMs, text);
   } catch (why) {
-    return storeProblem(reasonOf2(why));
+    return storeProblem(reasonOf3(why));
   }
   return SILENT;
 }
@@ -32911,7 +32915,7 @@ function bypassReason(commandLine, settingsFiles) {
 }
 
 // src/crew/caller.ts
-function reasonOf3(error) {
+function reasonOf4(error) {
   return error instanceof Error ? error.message : String(error);
 }
 var NEVER_DOES = CREW_NEVER_DOES;
@@ -32930,7 +32934,7 @@ function readCaller(command, ctx, options = { session: "required" }) {
     checkout = locateCheckout(ctx.cwd, { env: ctx.env });
     config = checkout === null ? null : loadProjectConfig(checkout).config;
   } catch (error) {
-    return refuse(reasonOf3(error));
+    return refuse(reasonOf4(error));
   }
   if (checkout === null) {
     return refuse("this folder is not in a git project", "run it in the project's folder");
@@ -32939,7 +32943,7 @@ function readCaller(command, ctx, options = { session: "required" }) {
   try {
     resolved = resolveWorkflow(ctx.paths, config);
   } catch (error) {
-    return refuse(reasonOf3(error));
+    return refuse(reasonOf4(error));
   }
   if (!resolved.crew.enabled.value) {
     return refuse("crew sessions are off in this project: turn them on with workflow.crew.enabled", `${COMMAND} workflow set crew.enabled true --project (this project), or the same without --project (every project of yours)`);
@@ -32948,7 +32952,7 @@ function readCaller(command, ctx, options = { session: "required" }) {
   try {
     session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
   } catch (error) {
-    return refuse(reasonOf3(error));
+    return refuse(reasonOf4(error));
   }
   if (options.asPerson === true && session !== null) {
     return refuse("--as-person is the portal's: a Claude Code session runs this command", "run it without --as-person");
@@ -32989,7 +32993,7 @@ function readCrewSelf(ctx, command = "crew", options = { byWorktree: false }) {
   try {
     checkout = locateCheckout(ctx.cwd, { env: ctx.env });
   } catch (error) {
-    return refuse(reasonOf3(error));
+    return refuse(reasonOf4(error));
   }
   if (checkout === null) {
     return refuse("this folder is not in a git project, so the crew session's repository is unknown");
@@ -33004,7 +33008,7 @@ function readCrewSelf(ctx, command = "crew", options = { byWorktree: false }) {
       record = here.length === 1 ? here[0] ?? null : null;
     }
   } catch (error) {
-    return refuse(reasonOf3(error));
+    return refuse(reasonOf4(error));
   }
   if (record === null) {
     return refuse(named === null ? "this session is not a crew session, and only a crew records its own steps and reports" : `no crew session "${named}" is recorded for ${repo}`);
@@ -33013,7 +33017,7 @@ function readCrewSelf(ctx, command = "crew", options = { byWorktree: false }) {
   try {
     resolved = resolveWorkflow(ctx.paths, loadProjectConfig(checkout).config);
   } catch (error) {
-    return refuse(reasonOf3(error));
+    return refuse(reasonOf4(error));
   }
   return { ok: true, self: { record, repo, resolved } };
 }
@@ -33055,7 +33059,7 @@ async function runCrewAnswer(args, ctx) {
   try {
     records = listCrew(ctx.paths.stateDir, repo).records;
   } catch (error) {
-    ctx.error(`crew answer: the store could not be read: ${reasonOf3(error)}`);
+    ctx.error(`crew answer: the store could not be read: ${reasonOf4(error)}`);
     return 1;
   }
   const found = findCrew(records, args.crew, "answer");
@@ -33098,7 +33102,7 @@ async function runCrewAnswer(args, ctx) {
   try {
     await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working");
   } catch (error) {
-    ctx.error(`crew answer: the store could not record the answer: ${reasonOf3(error)}`);
+    ctx.error(`crew answer: the store could not record the answer: ${reasonOf4(error)}`);
     return 1;
   }
   if (way === "resume") {
@@ -33379,7 +33383,7 @@ async function readBrief(args, ctx) {
     try {
       text = readFileSync64(resolve8(ctx.cwd, args.brief), "utf8");
     } catch (error) {
-      throw refusal(`the brief ${args.brief} cannot be read (${reasonOf3(error)})`);
+      throw refusal(`the brief ${args.brief} cannot be read (${reasonOf4(error)})`);
     }
   }
   if (text.trim() === "")
@@ -33421,7 +33425,7 @@ async function plan(args, ctx) {
   try {
     lead = readLead(ctx.paths.stateDir, caller.repo, session.session.sessionId);
   } catch (error) {
-    throw refusal(reasonOf3(error));
+    throw refusal(reasonOf4(error));
   }
   if (lead === null) {
     throw refusal(`this session is no lead in ${tildify(caller.repo, ctx.paths.home)}`, `run ${COMMAND} crew lead --plan <slug> in it first`);
@@ -33452,7 +33456,7 @@ async function plan(args, ctx) {
   try {
     name = crewName(lead.tag, args.phase, args.slug);
   } catch (error) {
-    throw refusal(reasonOf3(error), undefined, 2);
+    throw refusal(reasonOf4(error), undefined, 2);
   }
   const worktree = join62(caller.repo, ".claude", "worktrees", worktreeName(args.phase, args.slug));
   return {
@@ -33503,7 +33507,7 @@ async function planContinuation(args, ctx, caller, lead, claude) {
   try {
     name = crewName(lead.tag, old.phase, old.slug, number);
   } catch (error) {
-    throw refusal(reasonOf3(error), undefined, 2);
+    throw refusal(reasonOf4(error), undefined, 2);
   }
   const branch = crewBranch(old.phase, old.slug, number);
   if (gitOut(caller.repo, ["check-ref-format", "--branch", branch], ctx.env) === null) {
@@ -33544,7 +33548,7 @@ function continuationBrief(ctx, repo, old) {
   try {
     report = readReport(crewReportFile(ctx.paths.stateDir, repo, old.id));
   } catch (error) {
-    throw refusal(`the report of ${old.name} cannot be read: ${reasonOf3(error)}`);
+    throw refusal(`the report of ${old.name} cannot be read: ${reasonOf4(error)}`);
   }
   return [given, report === null ? "" : reportBlock(report)].filter((part) => part !== "").join(`
 
@@ -33604,7 +33608,7 @@ async function failed(record, reason, ctx, change = {}) {
   try {
     await updateCrew(ctx.paths.stateDir, record.repo, record.id, { ...change, state: "failed" }, ctx.now(), reason);
   } catch (error) {
-    ctx.error(`crew start: the store could not record the failure: ${reasonOf3(error)}`);
+    ctx.error(`crew start: the store could not record the failure: ${reasonOf4(error)}`);
   }
   ctx.print(`failed ${record.name}: ${reason}`);
   return 1;
@@ -33632,7 +33636,7 @@ async function launch(spec, record, ctx) {
     writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
     writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
   } catch (error) {
-    return await failed(record, `its settings could not be written: ${reasonOf3(error)}`, ctx);
+    return await failed(record, `its settings could not be written: ${reasonOf4(error)}`, ctx);
   }
   const added = runGit(spec.repo, ["worktree", "add", "-b", spec.branch, worktree, spec.baseSha], ctx.env, WORKTREE_ADD_TIMEOUT_MS);
   if (!added.ok)
@@ -33640,7 +33644,7 @@ async function launch(spec, record, ctx) {
   try {
     copyWorktreeInclude(spec.repo, worktree, ctx.env);
   } catch (error) {
-    ctx.error(`crew start: the .worktreeinclude files were not copied: ${reasonOf3(error)}`);
+    ctx.error(`crew start: the .worktreeinclude files were not copied: ${reasonOf4(error)}`);
   }
   const deps = claudeDeps(ctx);
   const briefFile = crewBriefFile(ctx.paths.stateDir, spec.repo, record.id);
@@ -33692,7 +33696,7 @@ ${run.stderr}`;
     await updateCrew(ctx.paths.stateDir, spec.repo, record.id, { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString() }, ctx.now());
   } catch (error) {
     recorded = false;
-    ctx.error(`crew start: the store could not record the start: ${reasonOf3(error)}`);
+    ctx.error(`crew start: the store could not record the start: ${reasonOf4(error)}`);
   }
   ctx.print(`started ${record.name} (${shortId}) \xB7 ${spec.resolved} ${spec.effort} \xB7 ${spec.branch} @ ${spec.baseSha.slice(0, 7)}`);
   return recorded ? 0 : 1;
@@ -33830,7 +33834,7 @@ async function sayClashes(record, ctx) {
         type: "clash"
       }, ctx.now());
     } catch (error) {
-      ctx.error(`crew start: the file clash could not be recorded: ${reasonOf3(error)}`);
+      ctx.error(`crew start: the file clash could not be recorded: ${reasonOf4(error)}`);
     }
   }
   return lines;
@@ -33917,7 +33921,7 @@ async function startPlanned(planned, ctx) {
         ctx.error(line);
       return error.code;
     }
-    ctx.error(`crew start: ${reasonOf3(error)}`);
+    ctx.error(`crew start: ${reasonOf4(error)}`);
     return 1;
   }
   const { already, record, why } = decided;
@@ -33931,7 +33935,7 @@ async function startPlanned(planned, ctx) {
       worktree: planned.worktree
     }));
   } catch (error) {
-    return await failed(record, `its brief could not be written: ${reasonOf3(error)}`, ctx);
+    return await failed(record, `its brief could not be written: ${reasonOf4(error)}`, ctx);
   }
   if (why !== null) {
     ctx.print(`queued ${record.name}: ${why}`);
@@ -34018,7 +34022,7 @@ async function startQueued(record, ctx, resolved) {
   try {
     lean = leanOf(isCrewKind(record.kind) ? record.kind : null, resolved.crew.keep, ctx, claude, record.repo);
   } catch (error) {
-    await failed(record, error instanceof Refusal ? error.lines.join("; ") : reasonOf3(error), quiet);
+    await failed(record, error instanceof Refusal ? error.lines.join("; ") : reasonOf4(error), quiet);
     return;
   }
   await launch({
@@ -34566,7 +34570,7 @@ async function sayResumed(record, text, ctx, now, say) {
     await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state: "working", waitingFor: undefined }, now, text);
     return true;
   } catch (error) {
-    say(`${record.name}: resumed, but the store could not record it: ${reasonOf3(error)}`);
+    say(`${record.name}: resumed, but the store could not record it: ${reasonOf4(error)}`);
     return false;
   }
 }
@@ -34709,7 +34713,7 @@ async function runCrewWatch(args, ctx) {
     try {
       pass = await watchPass(state, ctx, scope);
     } catch (error) {
-      ctx.error(`crew watch: ${reasonOf3(error)}`);
+      ctx.error(`crew watch: ${reasonOf4(error)}`);
       return 1;
     }
     state = pass.state;
@@ -38865,7 +38869,7 @@ import { existsSync as existsSync58 } from "fs";
 var CLAUDE_END_TIMEOUT_MS = 30000;
 var GIT_TIMEOUT_MS5 = 30000;
 var CLAUDE_LOCK_PREFIX = "claude session ";
-function reasonOf4(error) {
+function reasonOf5(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function refuse2(refusal, ctx) {
@@ -38926,7 +38930,7 @@ async function markState(record, state, text, ctx) {
     await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state }, ctx.now(), text);
     return true;
   } catch (error) {
-    ctx.error(`crew: the store could not record ${record.name} as ${state}: ${reasonOf4(error)}`);
+    ctx.error(`crew: the store could not record ${record.name} as ${state}: ${reasonOf5(error)}`);
     return false;
   }
 }
@@ -39014,13 +39018,13 @@ async function runCrewResumePaused(named, ctx) {
   try {
     sessionId = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf)?.sessionId ?? null;
   } catch (error) {
-    return refuse2(failure2(`crew resume: ${reasonOf4(error)}`), ctx);
+    return refuse2(failure2(`crew resume: ${reasonOf5(error)}`), ctx);
   }
   let leads;
   try {
     leads = listLeads(ctx.paths.stateDir, repo).records;
   } catch (error) {
-    return refuse2(failure2(`crew resume: the store could not be read: ${reasonOf4(error)}`), ctx);
+    return refuse2(failure2(`crew resume: the store could not be read: ${reasonOf5(error)}`), ctx);
   }
   const leadSessionId = leadOf(named, sessionId, leads.map((one) => one.sessionId));
   if (leadSessionId === null) {
@@ -39053,7 +39057,7 @@ function leadRef(record, ctx) {
   try {
     lead = readLead(ctx.paths.stateDir, record.repo, record.leadSessionId);
   } catch (error) {
-    return { why: reasonOf4(error) };
+    return { why: reasonOf5(error) };
   }
   if (lead !== null && existsSync58(lead.cwd)) {
     const sha = runGit(lead.cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], ctx.env, GIT_TIMEOUT_MS5);
@@ -39101,7 +39105,7 @@ async function runCrewLead(args, ctx) {
   try {
     before = readLead(ctx.paths.stateDir, repo, session.sessionId);
   } catch (error) {
-    return refuse(reasonOf3(error), "remove that record, then run this again", 1);
+    return refuse(reasonOf4(error), "remove that record, then run this again", 1);
   }
   const branch = runGit(checkout.root, ["symbolic-ref", "--quiet", "--short", "HEAD"], ctx.env, GIT_TIMEOUT_MS6);
   const plan = args.plan ?? before?.plan ?? (branch.ok ? branch.out : null);
@@ -39114,12 +39118,12 @@ async function runCrewLead(args, ctx) {
     tag = args.tag ?? crewTag(repo, resolved.crew.tag.value);
     name = leadName(tag, plan);
   } catch (error) {
-    return refuse(reasonOf3(error), "pass --plan <slug> and --tag <tag>", 2);
+    return refuse(reasonOf4(error), "pass --plan <slug> and --tag <tag>", 2);
   }
   try {
     await writeLead(ctx.paths.stateDir, { cwd: checkout.root, name, plan, repo, sessionId: session.sessionId, tag }, ctx.now());
   } catch (error) {
-    ctx.error(`crew lead: ${reasonOf3(error)}`);
+    ctx.error(`crew lead: ${reasonOf4(error)}`);
     return 1;
   }
   if (readWatchState(ctx.paths.stateDir, repo, session.sessionId) === null) {
@@ -39179,7 +39183,7 @@ async function recordLeadNotes(receivers, record, message, sinks) {
       await record(one);
       recorded.push(one);
     } catch (error) {
-      missed.push({ name: one.name, why: reasonOf3(error) });
+      missed.push({ name: one.name, why: reasonOf4(error) });
     }
   }
   for (const one of missed) {
@@ -39214,7 +39218,7 @@ async function runLeadTell(args, ctx) {
   try {
     sender = readLead(ctx.paths.stateDir, repo, found.session.sessionId);
   } catch (error) {
-    ctx.error(`crew lead tell: the store could not be read: ${reasonOf3(error)}`);
+    ctx.error(`crew lead tell: the store could not be read: ${reasonOf4(error)}`);
     return 1;
   }
   if (sender === null) {
@@ -39230,7 +39234,7 @@ async function runLeadTell(args, ctx) {
   try {
     leads = listLeads(ctx.paths.stateDir, repo);
   } catch (error) {
-    ctx.error(`crew lead tell: the store could not be read: ${reasonOf3(error)}`);
+    ctx.error(`crew lead tell: the store could not be read: ${reasonOf4(error)}`);
     return 1;
   }
   const receivers = [];
@@ -39309,7 +39313,7 @@ async function runCrewRm(ref, ctx) {
   try {
     listed = listWorktrees(repo, ctx.env).find((one) => samePath3(one.path, record.worktree));
   } catch (error) {
-    return refuse2(failure2(`crew rm: ${reasonOf4(error)}`), ctx);
+    return refuse2(failure2(`crew rm: ${reasonOf5(error)}`), ctx);
   }
   const shown = relative5(repo, record.worktree);
   const locked = listed?.locked === true;
@@ -39357,7 +39361,7 @@ async function runCrewRm(ref, ctx) {
         idleLimit: 0
       }).find((one) => one.state !== "main" && samePath3(one.listed.path, record.worktree));
     } catch (error) {
-      return refuseKept(failure2(`crew rm: ${reasonOf4(error)}`));
+      return refuseKept(failure2(`crew rm: ${reasonOf5(error)}`));
     }
     if (judged === undefined || judged.state === "main") {
       return refuseKept(failure2(`crew rm: ${shown} is listed by git but could not be judged`));
@@ -39408,7 +39412,7 @@ async function runCrewRm(ref, ctx) {
           crew: record.id
         }, ctx.now());
       } catch (error) {
-        ctx.error(`crew rm: the store could not record it: ${reasonOf4(error)}`);
+        ctx.error(`crew rm: the store could not record it: ${reasonOf5(error)}`);
       }
       return 1;
     }
@@ -39470,7 +39474,7 @@ async function runCrewStep(step, note, ctx) {
       crew: record.id
     }, ctx.now());
   } catch (error) {
-    ctx.error(`crew step: the store could not record the step: ${reasonOf3(error)}`);
+    ctx.error(`crew step: the store could not record the step: ${reasonOf4(error)}`);
     return 1;
   }
   ctx.print(`step ${step} \xB7 ${sha === null ? "no commit yet" : sha.slice(0, 7)}`);
@@ -39616,7 +39620,7 @@ async function askQuestion(args, record, repo, ctx) {
   try {
     await addCrewQuestion(ctx.paths.stateDir, repo, record.id, { options: args.options, question: args.question, recommended: args.recommend }, ctx.now());
   } catch (error) {
-    ctx.error(`crew report: the store could not record the question: ${reasonOf3(error)}`);
+    ctx.error(`crew report: the store could not record the question: ${reasonOf4(error)}`);
     return 1;
   }
   ctx.print(`question recorded \xB7 ${args.question}`);
@@ -39670,7 +39674,7 @@ async function runCrewReport(args, ctx) {
     ctx.print(`report ${report.status} \xB7 ${written.file}`);
     return 0;
   } catch (error) {
-    ctx.error(`crew report: the store could not record the report: ${reasonOf3(error)}`);
+    ctx.error(`crew report: the store could not record the report: ${reasonOf4(error)}`);
     return 1;
   }
 }
@@ -39938,7 +39942,7 @@ async function runCrewSelfWatch(ctx, once = false) {
         try {
           writeSelfWatchState(ctx.paths.stateDir, repo, record.id, { at: now, kind: advice.kind });
         } catch (error) {
-          ctx.error(`crew self-watch: the store could not record the line: ${reasonOf3(error)}`);
+          ctx.error(`crew self-watch: the store could not record the line: ${reasonOf4(error)}`);
         }
         ctx.print(advice.line);
       }
@@ -39980,7 +39984,7 @@ async function runCrewTell(args, ctx) {
   try {
     records = listCrew(ctx.paths.stateDir, repo).records;
   } catch (error) {
-    ctx.error(`crew tell: the store could not be read: ${reasonOf3(error)}`);
+    ctx.error(`crew tell: the store could not be read: ${reasonOf4(error)}`);
     return 1;
   }
   const receivers = [];
@@ -40016,7 +40020,7 @@ async function runCrewTell(args, ctx) {
       type: "tell"
     }, ctx.now());
   } catch (error) {
-    ctx.error(`crew tell: the store could not record the note: ${reasonOf3(error)}`);
+    ctx.error(`crew tell: the store could not record the note: ${reasonOf4(error)}`);
     return 1;
   }
   const message = tellMessage(self.phase, args.kind, args.text);

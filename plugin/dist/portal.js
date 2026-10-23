@@ -14143,6 +14143,10 @@ function omnirouteKeyName(host = hostname3()) {
   return clean === "" ? KEY_NAME_PREFIX : `${KEY_NAME_PREFIX}-${clean}`;
 }
 var PROBE_TIMEOUT_MS2 = 2000;
+var DETAIL_CHARS2 = 300;
+function reasonOf(error, secrets = []) {
+  return maskedLine(messageOf(error), secrets, DETAIL_CHARS2);
+}
 async function probeOmniroute(baseUrl, options = {}) {
   const url = `${baseUrl.replace(/\/+$/, "")}${MODELS_PATH}`;
   const doFetch = options.fetch ?? ((target, init) => fetch(target, init));
@@ -14154,7 +14158,7 @@ async function probeOmniroute(baseUrl, options = {}) {
     await response.body?.cancel();
     return { kind: "answers" };
   } catch (error) {
-    return { detail: messageOf(error), kind: "silent" };
+    return { detail: reasonOf(error), kind: "silent" };
   }
 }
 function sessionCookieFrom(setCookie) {
@@ -14194,7 +14198,7 @@ async function createOmnirouteKey(options) {
       signal: AbortSignal.timeout(timeoutMs)
     }, doFetch);
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password]), kind: "no-answer" };
   }
   if (login.status === 401) {
     await login.body?.cancel();
@@ -14223,7 +14227,7 @@ async function createOmnirouteKey(options) {
       signal: AbortSignal.timeout(timeoutMs)
     }, doFetch);
   } catch (error) {
-    return { detail: messageOf(error), kind: "no-answer" };
+    return { detail: reasonOf(error, [options.password, session]), kind: "no-answer" };
   }
   if (!created.ok) {
     const said = await errorOf(created, [options.password, session]);
@@ -14237,7 +14241,7 @@ async function createOmnirouteKey(options) {
     body = await created.json();
   } catch (error) {
     return {
-      detail: `the answer to creating the key was not JSON (${messageOf(error)})`,
+      detail: `the answer to creating the key was not JSON (${reasonOf(error, [options.password, session])})`,
       kind: "failed"
     };
   }
@@ -14262,7 +14266,7 @@ async function createOmnirouteKey(options) {
         return { detail: "", ok: true };
       return { detail: `OmniRoute answered HTTP ${removed.status}`, ok: false };
     } catch (error) {
-      return { detail: messageOf(error), ok: false };
+      return { detail: reasonOf(error, [options.password, session]), ok: false };
     }
   };
   return { discard, id, key: key.trim(), kind: "created", name };
@@ -21708,7 +21712,7 @@ function iso(atMs) {
 function notThere(error) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
-function reasonOf(error) {
+function reasonOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function checked(schema, value, file) {
@@ -21725,13 +21729,13 @@ function readRecord(schema, file) {
   } catch (error) {
     if (notThere(error))
       return null;
-    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf(error)}`);
+    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf2(error)}`);
   }
   let value;
   try {
     value = JSON.parse(raw);
   } catch (error) {
-    throw new CrewStoreError(`Invalid ${file}: not valid JSON (${reasonOf(error)})`);
+    throw new CrewStoreError(`Invalid ${file}: not valid JSON (${reasonOf2(error)})`);
   }
   return checked(schema, value, file);
 }
@@ -21749,7 +21753,7 @@ function listRecords(schema, folder) {
       if (record2 !== null)
         found.push({ file, record: record2 });
     } catch (error) {
-      listed.broken.push({ file, why: reasonOf(error) });
+      listed.broken.push({ file, why: reasonOf2(error) });
     }
   }
   found.sort((a, b) => a.record.createdAt.localeCompare(b.record.createdAt) || a.file.localeCompare(b.file));
@@ -21884,7 +21888,7 @@ function readCrewEvents(stateDir, repo, offset = 0) {
   } catch (error) {
     if (notThere(error))
       return { events: [], offset: 0, skipped: 0 };
-    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf(error)}`);
+    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf2(error)}`);
   }
   try {
     const size = fstatSync(fd).size;
@@ -26304,7 +26308,7 @@ function roleCard(record, briefFile) {
 function storeProblem(why) {
   return { stderr: `cc-smart-dev-kit crew-role: ${why}` };
 }
-function reasonOf2(error) {
+function reasonOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function recordOf2(id, repo, paths) {
@@ -26312,7 +26316,7 @@ function recordOf2(id, repo, paths) {
   try {
     record = readCrew(paths.stateDir, repo, id);
   } catch (error) {
-    return { ok: false, result: storeProblem(reasonOf2(error)) };
+    return { ok: false, result: storeProblem(reasonOf3(error)) };
   }
   if (record === null) {
     return {
@@ -26348,7 +26352,7 @@ async function startCard(input, id, repo, paths, options) {
     try {
       await updateCrewIfState(paths.stateDir, repo, id, RUNNING_STATES, { state: "failed" }, nowMs, wrongFolderReason(record, cwd));
     } catch (error) {
-      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf2(error)}`;
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the failure: ${reasonOf3(error)}`;
     }
     const answer = addContext("SessionStart", wrongFolderCard(record, cwd));
     return stderr === undefined ? answer : { ...answer, stderr };
@@ -26358,7 +26362,7 @@ async function startCard(input, id, repo, paths, options) {
     try {
       await updateCrewIfState(paths.stateDir, repo, id, ["starting"], { startedAt: record.startedAt ?? new Date(nowMs).toISOString(), state: "working" }, nowMs, "started in its worktree");
     } catch (error) {
-      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf2(error)}`;
+      stderr = `cc-smart-dev-kit crew-role: the store could not record the start: ${reasonOf3(error)}`;
     }
   }
   const brief = crewBriefFile(paths.stateDir, repo, id);
@@ -26378,7 +26382,7 @@ async function stopAnswer(input, id, repo, paths) {
     try {
       await updateCrew(paths.stateDir, repo, id, { lastLine: maskedLine(said, [], LAST_LINE_MAX, { mark: "\u2026" }) }, Date.now());
     } catch (error) {
-      return storeProblem(reasonOf2(error));
+      return storeProblem(reasonOf3(error));
     }
   }
   const cursor = readStopState(paths.stateDir, repo, id);
@@ -26386,7 +26390,7 @@ async function stopAnswer(input, id, repo, paths) {
   try {
     events = readCrewEvents(paths.stateDir, repo, cursor?.offset ?? 0);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   const newest = events.events.filter((event) => event.crew === id && (event.type === "step" || event.type === "report")).at(-1);
   const fresh = newest?.type === "step" ? "step" : newest?.type === "report" ? "report" : null;
@@ -26394,7 +26398,7 @@ async function stopAnswer(input, id, repo, paths) {
   try {
     writeStopState(paths.stateDir, repo, id, { last, offset: events.offset });
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   return last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
 }
@@ -26422,7 +26426,7 @@ async function personPromptAnswer(input, id, repo, paths, options) {
       type: "person"
     }, nowMs);
   } catch (error) {
-    return storeProblem(reasonOf2(error));
+    return storeProblem(reasonOf3(error));
   }
   return addContext("UserPromptSubmit", personWroteLine());
 }
@@ -26462,7 +26466,7 @@ async function stopFailureAnswer(input, id, repo, paths, options) {
   try {
     await updateCrew(paths.stateDir, repo, id, { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor }, nowMs, text);
   } catch (why) {
-    return storeProblem(reasonOf2(why));
+    return storeProblem(reasonOf3(why));
   }
   return SILENT;
 }
@@ -34998,7 +35002,7 @@ function crewSummary(record, events, nowMs) {
     worktree: record.worktree
   };
 }
-function reasonOf4(error) {
+function reasonOf5(error) {
   return error instanceof Error ? error.message : String(error);
 }
 function eventsByRepo(paths, records) {
@@ -35021,12 +35025,12 @@ async function workAnswer(deps) {
   try {
     records = [...listAllCrew(paths.stateDir).records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   } catch (error) {
-    note = `the crew store could not be read: ${reasonOf4(error)}`;
+    note = `the crew store could not be read: ${reasonOf5(error)}`;
   }
   try {
     leadRecords = [...listAllLeads(paths.stateDir).records].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.sessionId.localeCompare(a.sessionId));
   } catch (error) {
-    note = note ?? `the crew store could not be read: ${reasonOf4(error)}`;
+    note = note ?? `the crew store could not be read: ${reasonOf5(error)}`;
   }
   const events = eventsByRepo(paths, records);
   const crew = records.map((record) => crewSummary(record, events.get(record.repo) ?? [], now));
@@ -35103,7 +35107,7 @@ async function crewAnswerFor(deps, ref) {
   try {
     records = listAllCrew(paths.stateDir).records;
   } catch (error) {
-    return { error: reasonOf4(error) };
+    return { error: reasonOf5(error) };
   }
   const named = findCrew(records, ref, "status");
   if ("refusal" in named) {

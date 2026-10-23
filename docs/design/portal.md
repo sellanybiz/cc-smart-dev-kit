@@ -105,6 +105,10 @@ not a network read.
 - **Never in `claude -p`** (`CLAUDE_CODE_SESSION_ATTENDED=0`), and never on a `clear` or a
   `compact` of a session that is already going: only `startup`, `resume` and an input that
   does not say.
+- **Its state is `<stateDir>`** (`cliPaths().stateDir`: `<CLAUDE_CONFIG_DIR>/cc-smart-dev-kit`,
+  or `~/.claude/cc-smart-dev-kit` without that variable): the log, the held-port marker and the
+  lock. The portal never computes a second folder from `HOME`; the copy and the export, which
+  outlive a version, are the one thing under `~/.local/share/`.
 - **The decisions, by the health answer on the one fixed port** (`GET /healthz`: the
   portal's name, pid and version):
   - nothing answers → the copy is refreshed from the installed version through
@@ -210,7 +214,11 @@ secret then stays in this process's memory, and never reaches an argument list, 
 environment, a pipe or a child's log; the function is the CLI's own, so nothing is copied. A
 key saved without OmniRoute accepting it answers `tone: "warn"` with setup's warning words
 first, and the page draws it in the warning colour and keeps it until the next try (as a
-failure stays), so it cannot be missed. The planted-secret test (`server.test.ts`
+failure stays), so it cannot be missed. A no-answer from OmniRoute — the keyless probe, the
+login, the key's creation or its removal — is one line in the sentence that shows it
+(`reasonOf`, `src/gateway/omniroute-key.ts`: masked, at most 300 characters, every line break a
+space), never several lines of a fetch error inside `gateway setup`'s or the card's sentence.
+The planted-secret test (`server.test.ts`
 › "PK1: …") runs both actions with a planted key and password and finds neither in an answer,
 the live stream, a console line, a page or a file under the home.
 
