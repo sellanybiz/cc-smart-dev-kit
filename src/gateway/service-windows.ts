@@ -51,6 +51,7 @@ import {
   type Runner,
   type ServiceDefinition,
   type ServiceInput,
+  type ServiceState,
   STOP_WAIT_MS,
   type StopResult,
 } from "./service";
@@ -164,7 +165,12 @@ export function taskFacts(runner: Runner): TaskFacts {
 
 /** True when the task runs now. */
 export function taskRunning(runner: Runner): boolean {
-  return taskFacts(runner).state === "Running";
+  return taskRunningFrom(taskFacts(runner));
+}
+
+/** The same answer from facts already read: the one word Task Scheduler uses for a live task. */
+function taskRunningFrom(facts: TaskFacts): boolean {
+  return facts.state === "Running";
 }
 
 /** Throws with PowerShell's own words when a command that must work failed. */
@@ -473,6 +479,10 @@ export function scheduledTaskService(options: {
     },
     state(runner): string {
       return taskFacts(runner).state;
+    },
+    async stateAsync(runner): Promise<ServiceState> {
+      const facts = taskFactsFrom(await runner(taskQueryCommand()));
+      return { running: taskRunningFrom(facts), state: facts.state };
     },
     started: `registered and (re)started ${TASK_LABEL}`,
     warnings: TASK_WARNINGS,

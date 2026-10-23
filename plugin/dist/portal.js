@@ -14374,9 +14374,14 @@ function unitActive(runner, unitName = UNIT_NAME) {
   return runner(["systemctl", "--user", "is-active", "--quiet", unitName]).exitCode === 0;
 }
 function unitState(runner, unitName = UNIT_NAME) {
-  const result = runner(["systemctl", "--user", "is-active", unitName]);
-  return result.output.trim().split(`
-`)[0]?.trim() || "unknown";
+  return unitStateFrom(runner(["systemctl", "--user", "is-active", unitName])).state;
+}
+function unitStateFrom(answer) {
+  return {
+    running: answer.exitCode === 0,
+    state: answer.output.trim().split(`
+`)[0]?.trim() || "unknown"
+  };
 }
 var DRAIN_NOTE = "waiting for the old router to finish its answers (up to 120 s)";
 function restartPendingFile(stateDir) {
@@ -14564,6 +14569,9 @@ ${refused.output.trim()}`);
     state(runner) {
       return unitState(runner, unitName);
     },
+    async stateAsync(runner) {
+      return unitStateFrom(await runner(["systemctl", "--user", "is-active", unitName]));
+    },
     warnings: INSTALL_WARNINGS
   };
 }
@@ -14657,7 +14665,10 @@ function taskFacts(runner) {
   return taskFactsFrom(runner(taskQueryCommand()));
 }
 function taskRunning(runner) {
-  return taskFacts(runner).state === "Running";
+  return taskRunningFrom(taskFacts(runner));
+}
+function taskRunningFrom(facts) {
+  return facts.state === "Running";
 }
 function runTask(runner, script, what) {
   const result = runner([POWERSHELL, ...PS_FLAGS, script]);
@@ -14870,6 +14881,10 @@ function scheduledTaskService(options) {
     },
     state(runner) {
       return taskFacts(runner).state;
+    },
+    async stateAsync(runner) {
+      const facts = taskFactsFrom(await runner(taskQueryCommand()));
+      return { running: taskRunningFrom(facts), state: facts.state };
     },
     started: `registered and (re)started ${TASK_LABEL}`,
     warnings: TASK_WARNINGS
@@ -16734,6 +16749,7 @@ function isCostly(model) {
 var SETUP = `${COMMAND} gateway setup`;
 async function gatewayChecks(options) {
   const { paths } = options;
+  const read = options.read ?? options.runner;
   const short = (path) => tildify(path, paths.home);
   const checks = [];
   const service = routerService({
@@ -16769,8 +16785,8 @@ async function gatewayChecks(options) {
       fix: `run the router in a terminal of its own (${COMMAND} gateway serve), or turn the gateway off: ${COMMAND} gateway off`
     });
   } else {
-    const state = service.state(options.runner);
-    checks.push(service.running(options.runner) ? { ok: true, text: `the router service (${service.name}) is active` } : { ok: false, text: `the router service (${service.name}) is ${state}`, fix: SETUP });
+    const state = await service.stateAsync(read);
+    checks.push(state.running ? { ok: true, text: `the router service (${service.name}) is active` } : { ok: false, text: `the router service (${service.name}) is ${state.state}`, fix: SETUP });
   }
   if (!existsSync21(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
@@ -16803,7 +16819,7 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
-  const holder = await portHolderCheck(options, config.port);
+  const holder = await portHolderCheck({ paths: options.paths, runner: read, service: options.service }, config.port);
   checks.push(holder.check);
   const health = await routerHealth(config.port, options.fetch);
   checks.push("error" in health ? { ok: false, ...notAnswering(options, service, config.port, health.error, holder.state) } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
@@ -40187,6 +40203,7 @@ async function runServer(paths, options) {
       gateway: {
         bundle: join68(folder, "dist", "router.js"),
         machine,
+        read: runRead,
         runner,
         service: ctx.systemd ? "systemd" : "none"
       },

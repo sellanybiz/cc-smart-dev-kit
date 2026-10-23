@@ -222,6 +222,10 @@ async function runServer(
       gateway: {
         bundle: join(folder, "dist", "router.js"),
         machine,
+        // The pass's own reads — the service's state, what holds the port — run off the loop:
+        // one Machine page load must never freeze every page and the stream on `systemctl`
+        // (B6e's rule, `.claude/rules/portal.md`).
+        read: runRead,
         runner,
         service: ctx.systemd ? "systemd" : "none",
       },

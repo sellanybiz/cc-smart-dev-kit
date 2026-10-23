@@ -53,12 +53,20 @@ export async function gatewayChecks(options: {
   /** The plugin's own `dist/router.js`: the copy must match it. */
   bundle: string;
   runner: Runner;
+  /**
+   * How this pass's own **reads** run: the router's service state and what holds its port.
+   * Default: `runner`. The portal passes its asynchronous runner (`ReadRunner`, `Bun.spawn`),
+   * because a page load must never freeze on `systemctl` (`.claude/rules/portal.md`); the
+   * command line leaves it out and answers where it stands.
+   */
+  read?: CommandRunner;
   /** The service this machine can run the router under (`routerServiceKind`). */
   service: RouterServiceKind;
   /** Asks the router's health page; a test passes a fake. The real `fetch` by default. */
   fetch?: HealthFetch;
 }): Promise<DoctorCheck[]> {
   const { paths } = options;
+  const read = options.read ?? options.runner;
   const short = (path: string) => tildify(path, paths.home);
   const checks: DoctorCheck[] = [];
   const service = routerService({
@@ -111,11 +119,11 @@ export async function gatewayChecks(options: {
       fix: `run the router in a terminal of its own (${COMMAND} gateway serve), or turn the gateway off: ${COMMAND} gateway off`,
     });
   } else {
-    const state = service.state(options.runner);
+    const state = await service.stateAsync(read);
     checks.push(
-      service.running(options.runner)
+      state.running
         ? { ok: true, text: `the router service (${service.name}) is active` }
-        : { ok: false, text: `the router service (${service.name}) is ${state}`, fix: SETUP },
+        : { ok: false, text: `the router service (${service.name}) is ${state.state}`, fix: SETUP },
     );
   }
 
@@ -157,7 +165,10 @@ export async function gatewayChecks(options: {
     }
   }
 
-  const holder = await portHolderCheck(options, config.port);
+  const holder = await portHolderCheck(
+    { paths: options.paths, runner: read, service: options.service },
+    config.port,
+  );
   checks.push(holder.check);
 
   const health = await routerHealth(config.port, options.fetch);

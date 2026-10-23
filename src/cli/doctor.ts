@@ -16,6 +16,7 @@ import {
 import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { RouterServiceKind, Runner } from "../gateway/service";
+import type { CommandRunner } from "../update/apply";
 import { hasDesktop } from "../hooks/desktop-alert";
 import {
   readStartBlocks,
@@ -1069,6 +1070,13 @@ function checkDesktopExtras(platform: NodeJS.Platform, env: Env, machine: Machin
 export interface DoctorGateway {
   bundle: string;
   runner: Runner;
+  /**
+   * How the gateway checks' own reads run (the router service's state, what holds its port).
+   * Default: `runner`. The portal passes its asynchronous runner (`ReadRunner`): the Machine
+   * page shows these checks, and a page load must never freeze on `systemctl`
+   * (`.claude/rules/portal.md`).
+   */
+  read?: CommandRunner;
   /** The service this machine can run the router under (`routerServiceKind`). */
   service: RouterServiceKind;
   /** Asks the system about Warp (its package manager); a test passes fakes. */

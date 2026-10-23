@@ -230,6 +230,13 @@ async function open(options: {
   journalGate?: Promise<void>;
   /** Runs when the journal read starts: the test's sign that it is really in flight. */
   onJournalRead?: () => void;
+  /**
+   * Held open until the test releases it: the doctor pass's service read waits on it, so a
+   * test can prove another request answers while `systemctl` is still out.
+   */
+  systemctlGate?: Promise<void>;
+  /** Runs when the doctor pass's service read starts: the test's sign that it is in flight. */
+  onSystemctlRead?: () => void;
   /** The open breakers the router's health page reports: where `heldNow` comes from. */
   routerBreakers?: Record<
     string,
@@ -370,6 +377,10 @@ async function open(options: {
         options.onJournalRead?.();
         await options.journalGate;
       }
+      if (cmd[0] === "systemctl" && options.systemctlGate !== undefined) {
+        options.onSystemctlRead?.();
+        await options.systemctlGate;
+      }
       return fakeRunner(cmd);
     },
     runner: (cmd) => {
@@ -377,6 +388,11 @@ async function open(options: {
       // hold the whole server while it ran — the bug this seam exists to prevent.
       if (cmd[0] === "journalctl" && options.journalGate !== undefined) {
         throw new Error("the journal was read through the blocking runner");
+      }
+      // The same for the doctor pass's own reads: a `systemctl` on this path froze every page
+      // and the stream (B6e's rule, `.claude/rules/portal.md`).
+      if (cmd[0] === "systemctl" && options.systemctlGate !== undefined) {
+        throw new Error("the service was read through the blocking runner");
       }
       return fakeRunner(cmd);
     },
@@ -416,7 +432,13 @@ async function open(options: {
         bun: { path: process.execPath, version: Bun.version },
         gateway: {
           bundle: join(pluginFolder, "dist", "router.js"),
+          // The router's health page, answered by the world's own probe: a test's doctor pass
+          // never reaches a port of this machine.
+          fetch: ctx.probe.fetch,
           machine,
+          // The pass's own reads go through the portal's read runner, as the entry does: a
+          // `systemctl` on the blocking runner is what the test's `runner` refuses.
+          read: ctx.runRead,
           runner: ctx.runner,
           service: options.systemd === true ? "systemd" : "none",
         },
@@ -1125,6 +1147,54 @@ describe("every answer", () => {
       expect(body.log.note).toBe(null);
       // The journal's line, as the answer holds it (`ERROR <the router's words>`).
       expect(body.log.lines.map((line) => line.text)).toEqual(["ERROR the router said no"]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the doctor pass's service read is off the loop: a page answers while systemctl is still out", async () => {
+    // The pass asked the service through the command line's synchronous runner
+    // (`service.state` and `service.running`, `Bun.spawnSync`): one Machine page load held every
+    // page, every action and the live stream while `systemctl` ran. It reads through the pass's
+    // own read runner now (`runRead`, `Bun.spawn`), so this second request answers while the
+    // first one's service read has not come back.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    let release: () => void = () => undefined;
+    const systemctlGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let readingStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      readingStarted = resolve;
+    });
+    const world = await open({
+      backendPort: backend.port,
+      onSystemctlRead: () => readingStarted(),
+      systemctlGate,
+      systemd: true,
+    });
+    // A gateway this machine has installed: its socket unit's file is one of the four the
+    // checks look for, so the pass asks the service instead of returning "not set up".
+    mkdirSync(dirname(world.paths.routerSocketFile), { recursive: true });
+    writeFileSync(world.paths.routerSocketFile, "# the socket unit\n");
+    try {
+      const machine = world.call("/api/machine");
+      await readStarted;
+      // The service read is in flight. A second request on the same server answers anyway.
+      const door = await world.call("/healthz");
+      expect(door.status).toBe(200);
+      const settings = await world.call("/api/settings");
+      expect(settings.status).toBe(200);
+      release();
+      const answer = await machine;
+      expect(answer.status).toBe(200);
+      const body = JSON.parse(answer.body) as {
+        doctor: null | { checks: { text: string }[] };
+      };
+      expect(body.doctor?.checks.map((check) => check.text)).toContain(
+        "the router service (cc-smart-dev-kit-router.service) is active",
+      );
     } finally {
       world.portal.stop();
       backend.stop();
