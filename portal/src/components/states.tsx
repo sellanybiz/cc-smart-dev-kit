@@ -138,18 +138,28 @@ export function ResourceView<T>({
   resource,
   label,
   children,
-  back = { href: "/", label: "Open Overview" },
+  missing = { href: "/", label: "Open Overview" },
 }: {
   resource: Resource<T> & { reload: () => void };
   label: string;
   children: (data: T) => ReactNode;
-  /** Where a page whose subject is not there sends the person. */
-  back?: { href: string; label: string };
+  /**
+   * A page whose subject is not there: what it says (the server's words when it gives none),
+   * and where it sends the person.
+   */
+  missing?: { text?: string; href: string; label: string };
 }) {
   if (resource.status === "loading") return <LoadingState label={label} />;
   if (resource.status === "error") {
     if (resource.gateway) return <GatewayNotSetUp />;
-    if (resource.missing) return <MissingState message={resource.message} back={back} />;
+    if (resource.missing) {
+      return (
+        <MissingState
+          message={missing.text ?? resource.message}
+          back={{ href: missing.href, label: missing.label }}
+        />
+      );
+    }
     return <ErrorState message={resource.message} onRetry={resource.reload} />;
   }
   return <>{children(resource.data)}</>;

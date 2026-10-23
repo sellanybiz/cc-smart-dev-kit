@@ -97,8 +97,13 @@ function JobRows({
             </span>
           </TableCell>
           <TableCell className="text-right tabular-nums">{gb(job.gb)}</TableCell>
-          <TableCell className="font-mono text-xs">{job.command}</TableCell>
-          <TableCell className="max-w-64 truncate font-mono text-xs" title={job.folder}>
+          <TableCell className="min-w-40 font-mono text-xs whitespace-normal wrap-anywhere">
+            {job.command}
+          </TableCell>
+          <TableCell
+            className="max-w-64 font-mono text-xs whitespace-normal wrap-anywhere"
+            title={job.folder}
+          >
             {job.folder.split("/").slice(-2).join("/")}
           </TableCell>
           <TableCell className="whitespace-normal">{job.user}</TableCell>

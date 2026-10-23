@@ -330,7 +330,7 @@ const BRANCH_COLUMNS = column.columns([
   column.accessor("base", {
     header: "Into",
     cell: ({ row }) => (
-      <span className="wrap-any whitespace-normal">
+      <span className="whitespace-nowrap">
         <NarrowLabel>into</NarrowLabel>
         <span className="font-mono text-xs">{row.original.base ?? "—"}</span>
       </span>
@@ -553,7 +553,14 @@ export function ProjectView() {
     <ResourceView
       resource={project}
       label="the project"
-      back={{ href: "/settings", label: "Open Settings" }}
+      missing={{
+        href: "/settings",
+        label: "Open Settings",
+        text:
+          id === null
+            ? "No project is named in the address: open one from Settings."
+            : "No project on this machine has that id. Open it again from Settings.",
+      }}
     >
       {(data) => <ProjectPage data={data} setupAsked={setupAsked} refresh={project.refresh} />}
     </ResourceView>

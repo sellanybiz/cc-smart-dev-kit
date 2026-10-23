@@ -585,7 +585,11 @@ export function CrewView() {
     <ResourceView
       resource={crew}
       label="the crew session"
-      back={{ href: "/work", label: "Open Work" }}
+      missing={{
+        href: "/work",
+        label: "Open Work",
+        text: `No crew session of this project is named "${id ?? ""}". It may have been removed after its merge.`,
+      }}
     >
       {(data) => <CrewPage data={data} />}
     </ResourceView>

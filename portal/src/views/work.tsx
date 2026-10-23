@@ -93,7 +93,7 @@ function CrewRow({
   const [shown, ...rest] = record.files;
   return (
     <TableRow>
-      <TableCell className="min-w-60 align-top whitespace-normal">
+      <TableCell className="min-w-52 align-top whitespace-normal">
         <div className="flex flex-col gap-1">
           <AppLink
             href={`/work/crew?id=${encodeURIComponent(record.id)}`}
@@ -157,7 +157,7 @@ function CrewRow({
           </span>
         </div>
       </TableCell>
-      <TableCell className="min-w-64 align-top whitespace-normal">
+      <TableCell className="min-w-56 align-top whitespace-normal wrap-anywhere">
         {step === undefined && record.lastLine === null ? (
           <span className="text-muted-foreground">Not started</span>
         ) : (
@@ -318,13 +318,15 @@ function OtherSessions({
             <TableBody>
               {sessions.map((session) => (
                 <TableRow key={session.sessionId}>
-                  <TableCell>
+                  <TableCell className="min-w-48 whitespace-normal">
                     {session.name ?? <span className="text-muted-foreground">No name</span>}
-                    <span className="block font-mono text-xs text-muted-foreground">
+                    <span className="block font-mono text-xs wrap-anywhere text-muted-foreground">
                       {session.sessionId}
                     </span>
                   </TableCell>
-                  <TableCell>{session.project}</TableCell>
+                  <TableCell className="max-w-56 whitespace-normal wrap-anywhere">
+                    {session.project}
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{session.branch ?? "—"}</TableCell>
                   <TableCell className="font-mono text-xs">
                     {session.model ?? <span className="text-muted-foreground">—</span>}
