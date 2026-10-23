@@ -3846,6 +3846,7 @@ describe("the JSON API", () => {
         "browser",
         "bun",
         "claudeCode",
+        "claudeMem",
         "companions",
         "doctor",
         "jobs",
@@ -3855,6 +3856,18 @@ describe("the JSON API", () => {
         "updates",
         "warp",
       ]);
+      // claude-mem's card (PM1) without a gateway or claude-mem: what is missing, and the fix.
+      expect(machine.claudeMem).toEqual({
+        backends: null,
+        blocked: {
+          fix: "claude plugin install claude-mem@thedotmack",
+          text: "claude-mem is not installed, so there is nothing to set.",
+        },
+        current: null,
+        file: "~/.claude-mem/settings.json",
+        minVersion: "13.29.0",
+        version: null,
+      });
       const settings = JSON.parse((await world.call("/api/settings")).body) as {
         error: null | string;
         rows: unknown[];
