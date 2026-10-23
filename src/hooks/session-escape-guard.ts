@@ -49,7 +49,8 @@
  * (`cc-smart-dev-kit.json`, `~/.config/cc-smart-dev-kit`, …), and passes otherwise.
  *
  * A program the line **computes** (`$KIT`, `$(which cc-smart-dev-kit)`) cannot be named: when
- * the line also names the kit command, the guard asks rather than stay silent. `Start-Process`
+ * the line also names the kit command, the guard asks rather than stay silent. A path that
+ * only holds the kit's name (`…/cc-smart-dev-kit/src/x.test.ts`) names no command. `Start-Process`
  * is read by its `-FilePath`/`-ArgumentList`, and `-UseNewEnvironment` is a fresh environment.
  *
  * Not read: a script file's content (`env -u CLAUDECODE sh run.sh`), a port named at run time
@@ -512,9 +513,15 @@ function innerKitPrefix(program: string, operands: readonly string[]): string[] 
 /** The question when the line names the kit command but its program is worked out at run time. */
 const COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
 
-/** The kit command as a word of a line's text (`K=${COMMAND}; $(which $K) …` names it too). */
+/**
+ * The kit command as a token of a line's text (`K=${COMMAND}; $(which $K) …` names it too),
+ * never as part of a path: `/repo/${COMMAND}/src/x.test.ts` is an argument to another program,
+ * and the computed program beside it runs that program, not the kit (the false alarm of 1.1.0,
+ * in a crew session working in this repository, whose name every path holds). A token that
+ * ends a word still counts when a substitution closes it (`$(which ${COMMAND})`).
+ */
 const KIT_WORD = new RegExp(
-  `(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`,
+  `(^|[^\\w.\\-/\\\\])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^\\w.\\-/\\\\])`,
   "i",
 );
 
@@ -586,6 +593,13 @@ function readLine(
   const { dialect, joinLines } = reading;
   let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
   let where = folder;
+  /** The line's text names the kit command as a token, never as part of a path (`KIT_WORD`). */
+  const textNamesKit = KIT_WORD.test(ctx.text);
+  /**
+   * A command before this one in the line runs the kit: a computed program after it can be
+   * that command's output (`$(/…/cc-smart-dev-kit) workflow …`), so it asks like a named one.
+   */
+  let ranKit = false;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
@@ -612,8 +626,15 @@ function readLine(
         const inside = prefixDrop(innerKitPrefix(program, operands), program);
         judgeKitCommand(kit, here ?? inside, found);
       }
-      // A computed program cannot be named: if the line names the kit command, ask.
-      if (invocation.computed && KIT_WORD.test(ctx.text)) found.asks.add(COMPUTED_KIT_ASK);
+      // A computed program cannot be named. Ask when the line names the kit command — a
+      // bundle among the program's own words (`$(which bun) …/dist/cli.js`), a word the line
+      // binds to the launcher, or a path the text holds (but a path that merely holds the
+      // name is no command, `KIT_WORD`) — or when an earlier command in the line runs it and
+      // its output could be this program.
+      if (invocation.computed && (kit !== null || textNamesKit || ranKit)) {
+        found.asks.add(COMPUTED_KIT_ASK);
+      }
+      ranKit ||= isKitWord(program);
       if (depth < MAX_NESTING) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {

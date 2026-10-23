@@ -31998,6 +31998,7 @@ function launchArgs(spec) {
     spec.mcpFile,
     "--settings",
     spec.settingsFile,
+    "--",
     spec.prompt
   ];
 }
@@ -33130,7 +33131,7 @@ function resumeArgs(launch, files, text) {
     args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
   args.push("--settings", files.settingsFile);
   if (text !== null)
-    args.push(text);
+    args.push("--", text);
   return args;
 }
 async function resumeSession(ctx, record, text) {
@@ -35980,7 +35981,7 @@ function innerKitPrefix(program, operands) {
   return atStart === -1 ? [] : words.slice(atStart, atKit);
 }
 var COMPUTED_KIT_ASK = `This command runs a program it works out when it runs, and its words name the ${COMMAND} command, so the guard cannot tell whether it runs it. Write the command out in full if you meant it.`;
-var KIT_WORD = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|$)`, "i");
+var KIT_WORD = new RegExp(`(^|[^\\w.\\-/\\\\])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[^\\w.\\-/\\\\])`, "i");
 var SETTINGS_TAIL = "These files hold the limits the kit's guards enforce, so a session that changes them changes its own limits. Allow it only if you asked for this change.";
 function settingsQuestion(what, file, action) {
   return `${action} ${what}: ${file}. ${SETTINGS_TAIL}`;
@@ -36018,6 +36019,8 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
   const { dialect, joinLines } = reading;
   let dropped = start ?? (dialect === "powershell" ? powershellDrop(line) : null);
   let where = folder;
+  const textNamesKit = KIT_WORD.test(ctx.text);
+  let ranKit = false;
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
     const invocation = invocationOf(words);
@@ -36038,8 +36041,10 @@ function readLine(line, reading, start, folder, depth, found, ctx) {
         const inside = prefixDrop(innerKitPrefix(program, operands), program);
         judgeKitCommand(kit, here ?? inside, found);
       }
-      if (invocation.computed && KIT_WORD.test(ctx.text))
+      if (invocation.computed && (kit !== null || textNamesKit || ranKit)) {
         found.asks.add(COMPUTED_KIT_ASK);
+      }
+      ranKit ||= isKitWord(program);
       if (depth < MAX_NESTING) {
         const nested = nestedCommand(program, args, step.pipedFrom);
         if (nested !== undefined) {

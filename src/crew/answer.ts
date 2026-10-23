@@ -243,12 +243,16 @@ export const UNREADABLE_VIEW_WHY =
  * `crew start` gave it — **the record's own files** (`--strict-mcp-config --mcp-config <mcp.json>`
  * and `--settings <settings.json>`) and the model, effort, permission mode and autocompact it was
  * launched with (`sessionFlags`, the same home the launch reads them from) — and then the text,
- * when there is one. Without the files a resumed session is a plain session: no `CREW_ENV` (so no
- * longer a crew session), every plugin and connector back, every MCP server loaded, the lean start
- * undone (`crew start`). The files are read from the store, never rebuilt. **`--mcp-config` comes
- * before `--settings`**: it takes any number of files, so a prompt after it would be read as one
- * more config file (proved live on 2.1.309, `launchArgs`), and `--settings` takes one value and
- * ends the flag list.
+ * when there is one. **The text comes after a bare `--`**: a text that starts with `-` ("-1 is
+ * wrong: use 2") would otherwise be read as a flag, and the resume fails with `unknown option`
+ * (proved live on 2.1.309: without `--` the CLI answered `error: unknown option '-1 is wrong:
+ * use 2'`; with it the fake Anthropic's log held the text as the prompt,
+ * `docs/claude-code-contract.md`). Without the files a resumed session is a plain session: no
+ * `CREW_ENV` (so no longer a crew session), every plugin and connector back, every MCP server
+ * loaded, the lean start undone (`crew start`). The files are read from the store, never rebuilt.
+ * **`--mcp-config` comes before `--settings`**: it takes any number of files, so a prompt after
+ * it would be read as one more config file (proved live on 2.1.309, `launchArgs`), and
+ * `--settings` takes one value and ends the flag list.
  */
 export function resumeArgs(
   launch: { effort: string; model: string; permissionMode: string; sessionId: string },
@@ -263,7 +267,7 @@ export function resumeArgs(
   ];
   if (files.mcpFile !== null) args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
   args.push("--settings", files.settingsFile);
-  if (text !== null) args.push(text);
+  if (text !== null) args.push("--", text);
   return args;
 }
 

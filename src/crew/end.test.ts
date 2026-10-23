@@ -49,7 +49,7 @@ function resumeCall(world: BoardWorld, id: string, shortId: string, text?: strin
     crewMcpFile(world.paths.stateDir, world.repo, id),
     "--settings",
     crewSettingsFile(world.paths.stateDir, world.repo, id),
-    ...(text === undefined ? [] : [text]),
+    ...(text === undefined ? [] : ["--", text]),
   ];
 }
 

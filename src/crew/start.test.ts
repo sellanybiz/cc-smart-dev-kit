@@ -215,6 +215,7 @@ describe("D25: crew start returns at once", () => {
         mcpFile,
         "--settings",
         settingsFile,
+        "--",
         `You are the crew session C my-app B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:crew. Read ${briefFile} first: it is your task, and it says how you report.`,
       ],
       ["agents", "--json", "--all"],
@@ -401,7 +402,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     );
     const launched = world.claudeCalls()[1] ?? [];
     expect(launched.slice(0, 2)).toEqual(["--bg", "-w"]);
-    expect(launched.slice(-5, -1)).toEqual(["--mcp-config", mcpFile, "--settings", settingsFile]);
+    expect(launched.slice(-6, -2)).toEqual(["--mcp-config", mcpFile, "--settings", settingsFile]);
     expect(launched).toContain("--strict-mcp-config");
   });
 
