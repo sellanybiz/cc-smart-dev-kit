@@ -3201,15 +3201,17 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   that agent view does not list counts as stopped (the goal is met); one it refuses for a listed
   session is an error and changes nothing.
 - **`resume`** brings that one session back with `claude --bg --resume <session id>` **in the crew
-  session's own worktree**, with its own `--settings` and `--strict-mcp-config --mcp-config` files
-  (`resumeSession`, `answer.ts`): never `claude respawn`, which does not re-apply `-w` (read from
-  the 2.1.309 binary) and brings a `--bg -w` session back in the folder it was launched from — the
-  main checkout — where its own start check marks it failed (the bug of 2026-10-23); and never
-  `--all`, which restarts every background session on the machine. A session that still has a
-  process is not resumed — `--bg --resume` would start a copy beside it — and the line says it runs
-  already. The crew session is `working` again. It is refused for one that is `removed` or
-  `merged`, has no session yet, or has no worktree or settings file any more (one line each). It
-  does not check the caps: the person or the lead asked for exactly this session.
+  session's own worktree**, with what `crew start` gave it: its own `--settings` and
+  `--strict-mcp-config --mcp-config` files, and the model, effort, permission mode and autocompact
+  the record names (`resumeSession`, `answer.ts`). Never `claude respawn`, which does not re-apply
+  `-w` (read from the 2.1.309 binary) and brings a `--bg -w` session back in the folder it was
+  launched from — the main checkout — where its own start check marks it failed (the bug of
+  2026-10-23); and never `--all`, which restarts every background session on the machine. A
+  session that still has a process is not resumed — `--bg --resume` would start a copy beside it —
+  and the line says it runs already. The crew session is `working` again. It is refused for one
+  that is `removed` or `merged`, has no session yet, or has no worktree or settings file any more
+  (one line each). It does not check the caps: the person or the lead asked for exactly this
+  session.
 - **`rm`** ends a finished crew session, and refuses at the first step that would lose something. A
   crew session commits on its branch and never pushes (D24), so **only the lead's branch decides**
   whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `crew rm` and

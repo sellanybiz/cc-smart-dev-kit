@@ -29,12 +29,20 @@ const LISTED = JSON.stringify([
   { id: "a1b2c3d4", sessionId: "a1b2c3d4-0000-1111-2222-333333333333" },
 ]);
 
-/** The `claude --bg --resume` a record's resume runs: its own settings and MCP files, then any text. */
+/** The `claude --bg --resume` a record's resume runs: its launch fields, its own files, then any text. */
 function resumeCall(world: BoardWorld, id: string, shortId: string, text?: string): string[] {
   return [
     "--bg",
     "--resume",
     `${shortId}-0000-1111-2222-333333333333`,
+    "--model",
+    "sonnet",
+    "--effort",
+    "high",
+    "--permission-mode",
+    "auto",
+    "--autocompact",
+    "auto",
     "--strict-mcp-config",
     "--mcp-config",
     crewMcpFile(world.paths.stateDir, world.repo, id),

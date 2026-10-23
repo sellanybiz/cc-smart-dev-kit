@@ -99,9 +99,10 @@ ${NAMED}`,
        ${COMMAND} crew resume --paused [--lead <session>]
 
 Brings that one crew session's Claude session back, in its own worktree, with its own settings and
-MCP files (claude --bg --resume); it keeps its conversation. Never all sessions. A session that still
-has a process is left alone: a resume would start a copy beside it. Refused for a crew session that is
-removed or merged, has no session yet, or has no worktree or settings file any more.
+MCP files and the model, effort and permission mode it was launched with (claude --bg --resume); it
+keeps its conversation. Never all sessions. A session that still has a process is left alone: a
+resume would start a copy beside it. Refused for a crew session that is removed or merged, has no
+session yet, or has no worktree or settings file any more.
 
 --paused brings every paused crew session of the lead back at once: the way on after /login on
 another account, without waiting for the limit to lift. Each goes back the way the lead's watch
