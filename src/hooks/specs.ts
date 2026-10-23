@@ -470,10 +470,13 @@ export const leadNotesHook: HookSpec = {
  * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`), and PostToolUse
  * for the record. **Machine-wide**: it runs with or without cc-smart-dev-kit.json (like
  * `update-check`), and its answer never depends on the project's file — it judges the model
- * and effort a launch names (§ `agent-guard.ts`). A project that runs its own Agent guard
+ * and effort a launch names (§ `agent-guard.ts`) — save its D59 queue rule, which needs the
+ * project's caps and this repository's store, so `run` is handed the frame's checkout for it. A
+ * project that runs its own Agent guard
  * lists `"agent-guard"` in `ownHooks`, and this one stays silent there. `onConfigProblem` and
- * `outsideGit` judge the same way: a broken or too new cc-smart-dev-kit.json, or a folder that
- * is not in git, does not change which model a launch runs on.
+ * `outsideGit` judge the model and effort alone: a broken or too new cc-smart-dev-kit.json, or a
+ * folder that is not in git, does not change which model a launch runs on, and with no caps to
+ * read a lead's building launch is never held.
  *
  * PostToolUse is the **record**: a launch the guard asked about on PreToolUse, and the person
  * allowed, ran, and is recorded there (`RAN_EVENT` in `agent-guard.ts`). Claude Code runs

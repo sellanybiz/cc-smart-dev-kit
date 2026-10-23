@@ -8,12 +8,13 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { COMMAND } from "../build-info/names";
+import { COMMAND, MARKETPLACE, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import { createCrew, type NewCrew, writeLead } from "../crew/store";
 import type { GatewayConfig } from "../gateway/config";
+import type { MemoryFacts } from "../jobs/memory";
 import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
 import { locateCheckout } from "../project/resolve";
 import { type CrewWorld, crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
@@ -25,6 +26,7 @@ import {
   guardFacts,
   judgeLaunch,
   judgeWorkflow,
+  READ_ONLY_WORKFLOWS,
   readGuardContext,
   readLaunch,
   readWorkflowScript,
@@ -2842,9 +2844,29 @@ describe("D59: a recorded lead never routes a building phase around the crew que
   /** An Agent launch the model and effort rules allow: only D59 can refuse it. */
   const SONNET: Record<string, unknown> = { effort: "high", model: "sonnet" };
 
-  /** The guard's answer for `input`, with the frame's own checkout. */
+  /**
+   * The memory the guard reads here: 8 GB free on Linux, whatever the host has. A guard that
+   * read the host would make these tests depend on the machine it runs on (`testing.md`).
+   */
+  const MEMORY: MemoryFacts = {
+    freemem: () => 0,
+    platform: "linux",
+    read: (path) =>
+      path === "/proc/meminfo" ? "MemTotal: 33554432 kB\nMemAvailable: 8388608 kB\n" : null,
+    totalmem: () => 32 * 1024 ** 3,
+  };
+
+  /** The guard's answer for `input`, with the frame's own checkout and this test's memory. */
   async function answer(input: HookInput, made: Awaited<ReturnType<typeof leadWorld>>) {
-    return await agentGuard(input, made.env, made.world.paths, made.world.repo, NOW, made.checkout);
+    return await agentGuard(
+      input,
+      made.env,
+      made.world.paths,
+      made.world.repo,
+      NOW,
+      made.checkout,
+      MEMORY,
+    );
   }
 
   /** The denial's words, or null when the guard did not deny. */
@@ -2858,8 +2880,29 @@ describe("D59: a recorded lead never routes a building phase around the crew que
     return [
       `A lead never routes a building phase around its crew queue: ${what} can change files, and a \`crew start\` from this lead would queue now — ${why}.`,
       `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
-      "A read-only subagent (a search, a review, an audit, a UI check) is never held.",
+      `Read-only launches are never held: the built-in \`Explore\`, \`Plan\`, \`claude-code-guide\` or \`statusline-setup\`, the kit's own \`${PLUGIN}:<name>\` agents for reviewer, auditor, ui-verifier, and the kit's two read-only Workflows.`,
     ].join("\n");
+  }
+
+  /** A Workflow call by the lead, as Claude Code builds one. */
+  function workflow(fields: Record<string, unknown>): HookInput {
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: LEAD_SESSION,
+      tool_input: fields,
+      tool_name: "Workflow",
+    };
+  }
+
+  /** The kit's two read-only workflow scripts, written where a plugin's `workflows/` folder is. */
+  function kitWorkflows(root: string): void {
+    mkdirSync(join(root, "workflows"), { recursive: true });
+    for (const name of READ_ONLY_WORKFLOWS) {
+      writeFileSync(
+        join(root, "workflows", `${name.split(":")[1]}.js`),
+        `export const meta = { name: '${name.split(":")[1]}', description: 'reads' }\nreturn 1\n`,
+      );
+    }
   }
 
   it("every type that can change files is refused while this lead's perLead is full", async () => {
@@ -2895,14 +2938,64 @@ describe("D59: a recorded lead never routes a building phase around the crew que
   it("refused while the machine's max is full, by any lead's crew sessions", async () => {
     const made = await leadWorld({ max: 1 });
     await stored(made.world, "B1", "working", OTHER_SESSION);
+    const why = "1 of 1 crew sessions running on this machine; it starts when one finishes";
     expect(
       denial(await answer(call(made.world, { ...SONNET, subagent_type: "general-purpose" }), made)),
-    ).toBe(
+    ).toBe(queued("this launch (`general-purpose`)", why));
+    // Every kind of building launch waits on the machine's ceiling, a worker or an opus one.
+    expect(
+      denial(await answer(call(made.world, { ...SONNET, subagent_type: "builder" }), made)),
+    ).toBe(queued("this launch (`builder`)", why));
+    expect(denial(await answer(call(made.world, { subagent_type: "fork" }), made))).toBe(
+      queued("this launch (`fork`)", why),
+    );
+    expect(
+      denial(
+        await answer(
+          call(made.world, { ...SONNET, isolation: "worktree", subagent_type: "Explore" }),
+          made,
+        ),
+      ),
+    ).toBe(queued("this launch (`Explore`)", why));
+  });
+
+  it("a refused launch is recorded nowhere, and an ask under a full queue is refused", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    // An opus-tier launch at `max` would ask the person in a free queue; a held queue refuses it
+    // with the cap instead, and nothing is written for a launch that never runs.
+    const asked = call(made.world, {
+      effort: "max",
+      model: "opus",
+      subagent_type: "general-purpose",
+    });
+    expect(denial(await answer(asked, made))).toBe(
       queued(
         "this launch (`general-purpose`)",
-        "1 of 1 crew sessions running on this machine; it starts when one finishes",
+        "its lead has 1 of 1 crew sessions running; it starts when one of them finishes",
       ),
     );
+    expect(readAgentLaunches(agentLaunchesFile(made.world.paths.stateDir), 0)).toEqual([]);
+    // A call that never ran has no PostToolUse either, so nothing more is written for it.
+    const askedAgain = await answer(asked, made);
+    expect(denial(askedAgain)).toBe(
+      queued(
+        "this launch (`general-purpose`)",
+        "its lead has 1 of 1 crew sessions running; it starts when one of them finishes",
+      ),
+    );
+    expect(readAgentLaunches(agentLaunchesFile(made.world.paths.stateDir), 0)).toEqual([]);
+  });
+
+  it("no session id, or one that is no lead: the launch goes", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    const building = call(made.world, { ...SONNET, subagent_type: "general-purpose" });
+    expect(await answer({ ...building, session_id: undefined }, made)).toEqual({});
+    // A session that is no lead here, and a store whose lead record cannot be read.
+    expect(await answer({ ...building, session_id: OTHER_SESSION }, made)).toEqual({});
+    writeFileSync(join(made.world.repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
+    expect(await answer(building, made)).toEqual({});
   });
 
   it("an opus launch waits when only the opus place is short; a sonnet one goes", async () => {
@@ -2947,44 +3040,57 @@ describe("D59: a recorded lead never routes a building phase around the crew que
     ]) {
       expect(await answer(call(made.world, { ...SONNET, subagent_type: type }), made)).toEqual({});
     }
+    // A bare name or another plugin's is no kit agent: a project's own `reviewer` may build, and
+    // the brief holds "any unknown or custom type".
+    const why = "its lead has 1 of 1 crew sessions running; it starts when one of them finishes";
+    for (const type of ["reviewer", "probe-kit:reviewer", "probe-kit:Explore"]) {
+      expect(denial(await answer(call(made.world, { ...SONNET, subagent_type: type }), made))).toBe(
+        queued(`this launch (\`${type}\`)`, why),
+      );
+    }
   });
 
   it("a Workflow that can build is held; the kit's own read-only ones are not", async () => {
     const made = await leadWorld({ perLead: 1 });
     await stored(made.world, "B1", "working");
-    const workflows = join(made.world.repo, ".claude", "workflows");
-    mkdirSync(workflows, { recursive: true });
-    for (const name of ["audit-run", "review-split"]) {
-      writeFileSync(
-        join(workflows, `${name}.js`),
-        `export const meta = { name: '${name}', description: 'reads' }\nreturn 1\n`,
-      );
+    // The kit's own workflows, where Claude Code loads them: a plugin's `workflows/` folder,
+    // found through the installed-plugins file, and called by the id the skills use.
+    const root = join(made.world.home, "plugins", "cc-smart-dev-kit");
+    kitWorkflows(root);
+    mkdirSync(join(made.world.paths.installedPluginsFile, ".."), { recursive: true });
+    writeFileSync(
+      made.world.paths.installedPluginsFile,
+      JSON.stringify({
+        plugins: { [`${PLUGIN}@${MARKETPLACE}`]: [{ installPath: root, scope: "user" }] },
+        version: 2,
+      }),
+    );
+    const why = "its lead has 1 of 1 crew sessions running; it starts when one of them finishes";
+    for (const name of READ_ONLY_WORKFLOWS) {
+      expect(await answer(workflow({ name }), made)).toEqual({});
     }
-    for (const name of ["audit-run", "review-split"]) {
-      const named: HookInput = {
-        cwd: made.world.repo,
-        hook_event_name: "PreToolUse",
-        session_id: LEAD_SESSION,
-        tool_input: { name },
-        tool_name: "Workflow",
-      };
-      expect(await answer(named, made)).toEqual({});
-    }
-    // An inline script is no read-only workflow of the kit's: it may build.
-    const script =
+    // A named call that also gives a script runs the script: Claude Code's own order, so it is
+    // judged as what it runs, not by the name.
+    const builder =
       'const done = await agent("build it", { agentType: "general-purpose", model: "sonnet", effort: "high" });\nreturn done;';
-    const inline: HookInput = {
-      cwd: made.world.repo,
-      hook_event_name: "PreToolUse",
-      session_id: LEAD_SESSION,
-      tool_input: { script },
-      tool_name: "Workflow",
-    };
-    expect(denial(await answer(inline, made))).toBe(
-      queued(
-        "this Workflow",
-        "its lead has 1 of 1 crew sessions running; it starts when one of them finishes",
-      ),
+    const saved = join(made.world.repo, "saved.js");
+    writeFileSync(saved, builder);
+    expect(
+      denial(await answer(workflow({ name: READ_ONLY_WORKFLOWS[0], script: builder }), made)),
+    ).toBe(queued(`this Workflow (\`${READ_ONLY_WORKFLOWS[0]}\`)`, why));
+    expect(
+      denial(await answer(workflow({ name: READ_ONLY_WORKFLOWS[0], scriptPath: saved }), made)),
+    ).toBe(queued(`this Workflow (\`${READ_ONLY_WORKFLOWS[0]}\`)`, why));
+    // A bare name is never the kit's workflow: it finds a saved file, which may build.
+    const savedFolder = join(made.world.repo, ".claude", "workflows");
+    mkdirSync(savedFolder, { recursive: true });
+    writeFileSync(join(savedFolder, "audit-run.js"), builder);
+    expect(denial(await answer(workflow({ name: "audit-run" }), made))).toBe(
+      queued("this Workflow (`audit-run`)", why),
+    );
+    // An inline script is no read-only workflow of the kit's either.
+    expect(denial(await answer(workflow({ script: builder }), made))).toBe(
+      queued("this Workflow", why),
     );
   });
 

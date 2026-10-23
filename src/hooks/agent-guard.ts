@@ -3,7 +3,10 @@
  * `Workflow` tool, whose script's `agent(...)` launches are read and judged (`WorkflowLaunch`).
  *
  * **Machine-wide.** It runs with or without `.claude/cc-smart-dev-kit.json` (like `update-check`), and
- * its answer never depends on the project's file: it is about the model a launch runs on. A
+ * its answer never depends on the project's file for the model and effort it judges: those are
+ * what the launch runs on. One rule does read the project — D59's queue rule below, which needs
+ * this repository's crew store and the project's caps — and that rule alone is why the frame
+ * hands the run its checkout. A
  * project that runs its own Agent guard lists `"agent-guard"` in `ownHooks` and this one stays
  * silent there. It is wired with `--missing=ask`: a guard fails closed.
  *
@@ -133,14 +136,14 @@
  * and a logged run reads none of it.
  */
 
-import { COMMAND } from "../build-info/names";
+import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { OPUS_TIER, type Place, placeForLeadStart } from "../crew/places";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { readLead } from "../crew/store";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
 import { settingsReport } from "../gateway/settings";
-import { realMemoryFacts } from "../jobs/memory";
+import { type MemoryFacts, realMemoryFacts } from "../jobs/memory";
 import {
   AFFORDABLE_EFFORT,
   ALLOWED_EFFORTS,
@@ -226,46 +229,76 @@ export function agentKey(type: string): string {
 /**
  * The subagent types that only read and report (D59): a lead may launch them whatever the crew
  * queue holds, because they change no file. Every other type — a `fork`, an unknown one, a
- * custom one — can change files, and so can a launch that asks for `isolation: "worktree"`,
- * whatever its type. A type is compared through `agentKey`, so `cc-smart-dev-kit:reviewer` and
- * `probe-kit:reviewer` both read `reviewer`.
+ * custom one, a project's own agent — can change files, and so can a launch that asks for
+ * `isolation: "worktree"`, whatever its type.
+ *
+ * The two lists are separate because the ids are not the same kind. Claude Code's own four are
+ * built in and carry no plugin prefix. The kit's three are plugin agents, and Claude Code
+ * addresses a plugin's agent as `<plugin>:<agent>`: so only `cc-smart-dev-kit:reviewer` reads
+ * as the kit's reviewer, and a project's own `.claude/agents/reviewer.md` (bare) or another
+ * plugin's `probe-kit:reviewer` builds, as the brief's "any unknown or custom type" says.
  *
  * This is **not** `READ_ONLY_AGENTS`: that list is what Claude Fable may advise from (the
  * owner's), and the two answer different questions, so a type may sit in one and not the other.
  */
-export const READ_ONLY_LAUNCHES = [
+export const READ_ONLY_BUILT_INS = [
   "Explore",
   "Plan",
   "claude-code-guide",
   "statusline-setup",
-  "reviewer",
-  "auditor",
-  "ui-verifier",
 ] as const;
 
-/** `READ_ONLY_LAUNCHES` as `agentKey` compares them, read once. */
-const READ_ONLY_LAUNCH_KEYS: ReadonlySet<string> = new Set(READ_ONLY_LAUNCHES.map(agentKey));
+/** The kit's own read-only agent types, as Claude Code addresses a plugin's agents. */
+export const READ_ONLY_KIT_AGENTS = ["reviewer", "auditor", "ui-verifier"] as const;
+
+/** `READ_ONLY_BUILT_INS` as `agentKey` compares them, read once. */
+const READ_ONLY_BUILT_IN_KEYS: ReadonlySet<string> = new Set(READ_ONLY_BUILT_INS.map(agentKey));
+
+/** The kit's three, plugin-qualified, read once. */
+const READ_ONLY_KIT_KEYS: ReadonlySet<string> = new Set(
+  READ_ONLY_KIT_AGENTS.map((one) => `${PLUGIN}:${one}`.toLowerCase()),
+);
 
 /**
  * The kit's own Workflows that only read (`plugin/workflows/`): a lead may run them while its
  * crew queue is full. Every other Workflow — an inline script, a saved one, one named by a
- * path — may build, and a workflow's launches fire no hook of their own.
+ * path, a project's own saved file of the same name — may build, and a workflow's launches fire
+ * no hook of their own. A bare name only ever finds a saved file (`scriptByName`), never the
+ * kit's own workflow: its id is the plugin-qualified `<plugin>:<name>` the skills call.
  */
-export const READ_ONLY_WORKFLOWS = ["audit-run", "review-split"] as const;
+export const READ_ONLY_WORKFLOWS = [`${PLUGIN}:audit-run`, `${PLUGIN}:review-split`] as const;
 
-/** `READ_ONLY_WORKFLOWS` as `agentKey` compares them, read once. */
-const READ_ONLY_WORKFLOW_KEYS: ReadonlySet<string> = new Set(READ_ONLY_WORKFLOWS.map(agentKey));
+/** `READ_ONLY_WORKFLOWS` as Claude Code sends a plugin workflow's name, read once. */
+const READ_ONLY_WORKFLOW_KEYS: ReadonlySet<string> = new Set(
+  READ_ONLY_WORKFLOWS.map((one) => one.toLowerCase()),
+);
 
 /** True when an Agent launch can change files: any type but the read-only ones, or any worktree. */
 export function buildsFiles(launch: Launch): boolean {
   if (launch.isolation?.toLowerCase() === "worktree") return true;
-  return !READ_ONLY_LAUNCH_KEYS.has(agentKey(launch.subagentType ?? ""));
+  const type = (launch.subagentType ?? "").trim().toLowerCase();
+  if (!type.includes(":") && READ_ONLY_BUILT_IN_KEYS.has(agentKey(type))) return false;
+  return !READ_ONLY_KIT_KEYS.has(type);
 }
 
-/** True when a Workflow call is not one of the kit's own read-only ones. */
+/**
+ * True when a Workflow call can change files: every call but one that runs one of the kit's own
+ * read-only workflows. A call gives a script in Claude Code's own order (`callScript`): an
+ * inline `script` runs whatever the call also names, else `scriptPath`, else `name` — and a
+ * `resumeFromRunId` goes on from a script the guard cannot see. So only a call that gives the
+ * kit's qualified name and nothing else is read-only; a named call with a script, a path or a
+ * resume is judged as what it runs.
+ */
 export function buildsWorkflow(fields: Record<string, unknown>): boolean {
+  if (
+    stringField(fields.script) !== null ||
+    stringField(fields.scriptPath) !== null ||
+    stringField(fields.resumeFromRunId) !== null
+  ) {
+    return true;
+  }
   const name = stringField(fields.name);
-  return name === null || !READ_ONLY_WORKFLOW_KEYS.has(agentKey(name));
+  return name === null || !READ_ONLY_WORKFLOW_KEYS.has(name.trim().toLowerCase());
 }
 
 function agentList(from: readonly string[], env: Env, name: string): Set<string> {
@@ -1657,7 +1690,7 @@ function queueRefusal(what: string, why: string): string {
   return [
     `A lead never routes a building phase around its crew queue: ${what} can change files, and a \`crew start\` from this lead would queue now — ${why}.`,
     `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
-    "A read-only subagent (a search, a review, an audit, a UI check) is never held.",
+    `Read-only launches are never held: the built-in ${levelsText(READ_ONLY_BUILT_INS)}, the kit's own \`${PLUGIN}:<name>\` agents for ${READ_ONLY_KIT_AGENTS.join(", ")}, and the kit's two read-only Workflows.`,
   ].join("\n");
 }
 
@@ -1679,12 +1712,13 @@ async function queuedLaunch(
   paths: CliPaths,
   checkout: null | Checkout,
   nowMs: number,
+  memory: MemoryFacts,
 ): Promise<null | string> {
   // A crew session has its own refusals (`crewAgentAnswer`), and it never leads.
   if (inCrew(env)) return null;
   if (checkout === null) return null;
-  // A launch that only reads is never held, and the two checks above and below it are the
-  // cheapest: the store is read only for a launch that can change files in a lead's session.
+  // A launch that only reads is never held, and this check is free: the store is read only for a
+  // launch that can change files in a lead's session.
   const building =
     judged.kind === "workflow" ? buildsWorkflow(toolInput(input)) : buildsFiles(judged.launch);
   if (!building) return null;
@@ -1706,7 +1740,7 @@ async function queuedLaunch(
     place = await placeForLeadStart({
       checkout,
       leadSessionId: sessionId,
-      memory: realMemoryFacts(),
+      memory,
       nowMs,
       opus,
       paths,
@@ -1750,6 +1784,7 @@ export async function agentGuard(
   cwd: string,
   nowMs: number = Date.now(),
   checkout: null | Checkout = null,
+  memory: MemoryFacts = realMemoryFacts(),
 ): Promise<HookResult> {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null) return SILENT;
@@ -1759,7 +1794,7 @@ export async function agentGuard(
   const judgedDeny =
     judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
   if (!ran && !judgedDeny) {
-    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs);
+    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory);
     if (queued !== null) return toolDecision("deny", queued);
   }
   const file = agentLaunchesFile(paths.stateDir);

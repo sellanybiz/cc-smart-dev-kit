@@ -25308,26 +25308,31 @@ function agentKey(type) {
   const base = type.includes(":") ? type.split(":").pop() ?? type : type;
   return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
 }
-var READ_ONLY_LAUNCHES = [
+var READ_ONLY_BUILT_INS = [
   "Explore",
   "Plan",
   "claude-code-guide",
-  "statusline-setup",
-  "reviewer",
-  "auditor",
-  "ui-verifier"
+  "statusline-setup"
 ];
-var READ_ONLY_LAUNCH_KEYS = new Set(READ_ONLY_LAUNCHES.map(agentKey));
-var READ_ONLY_WORKFLOWS = ["audit-run", "review-split"];
-var READ_ONLY_WORKFLOW_KEYS = new Set(READ_ONLY_WORKFLOWS.map(agentKey));
+var READ_ONLY_KIT_AGENTS = ["reviewer", "auditor", "ui-verifier"];
+var READ_ONLY_BUILT_IN_KEYS = new Set(READ_ONLY_BUILT_INS.map(agentKey));
+var READ_ONLY_KIT_KEYS = new Set(READ_ONLY_KIT_AGENTS.map((one) => `${PLUGIN}:${one}`.toLowerCase()));
+var READ_ONLY_WORKFLOWS = [`${PLUGIN}:audit-run`, `${PLUGIN}:review-split`];
+var READ_ONLY_WORKFLOW_KEYS = new Set(READ_ONLY_WORKFLOWS.map((one) => one.toLowerCase()));
 function buildsFiles(launch) {
   if (launch.isolation?.toLowerCase() === "worktree")
     return true;
-  return !READ_ONLY_LAUNCH_KEYS.has(agentKey(launch.subagentType ?? ""));
+  const type = (launch.subagentType ?? "").trim().toLowerCase();
+  if (!type.includes(":") && READ_ONLY_BUILT_IN_KEYS.has(agentKey(type)))
+    return false;
+  return !READ_ONLY_KIT_KEYS.has(type);
 }
 function buildsWorkflow(fields) {
+  if (stringField(fields.script) !== null || stringField(fields.scriptPath) !== null || stringField(fields.resumeFromRunId) !== null) {
+    return true;
+  }
   const name = stringField(fields.name);
-  return name === null || !READ_ONLY_WORKFLOW_KEYS.has(agentKey(name));
+  return name === null || !READ_ONLY_WORKFLOW_KEYS.has(name.trim().toLowerCase());
 }
 function agentList(from, env, name) {
   const listed = (env[name] ?? "").split(",").map((one) => one.trim()).filter((one) => one !== "");
@@ -26185,11 +26190,11 @@ function queueRefusal(what, why) {
   return [
     `A lead never routes a building phase around its crew queue: ${what} can change files, and a \`crew start\` from this lead would queue now \u2014 ${why}.`,
     `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
-    "A read-only subagent (a search, a review, an audit, a UI check) is never held."
+    `Read-only launches are never held: the built-in ${levelsText(READ_ONLY_BUILT_INS)}, the kit's own \`${PLUGIN}:<name>\` agents for ${READ_ONLY_KIT_AGENTS.join(", ")}, and the kit's two read-only Workflows.`
   ].join(`
 `);
 }
-async function queuedLaunch(judged, input, env, paths, checkout, nowMs) {
+async function queuedLaunch(judged, input, env, paths, checkout, nowMs, memory) {
   if (inCrew(env))
     return null;
   if (checkout === null)
@@ -26214,7 +26219,7 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs) {
     place = await placeForLeadStart({
       checkout,
       leadSessionId: sessionId,
-      memory: realMemoryFacts(),
+      memory,
       nowMs,
       opus,
       paths
@@ -26226,14 +26231,14 @@ async function queuedLaunch(judged, input, env, paths, checkout, nowMs) {
     return null;
   return queueRefusal(queueSubject(judged, input), place.why);
 }
-async function agentGuard(input, env, paths, cwd, nowMs = Date.now(), checkout = null) {
+async function agentGuard(input, env, paths, cwd, nowMs = Date.now(), checkout = null, memory = realMemoryFacts()) {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null)
     return SILENT;
   const ran = afterTheCall(input);
   const judgedDeny = judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
   if (!ran && !judgedDeny) {
-    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs);
+    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory);
     if (queued !== null)
       return toolDecision("deny", queued);
   }

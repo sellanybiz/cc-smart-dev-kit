@@ -202,7 +202,7 @@ Routine phases on the worker slot run wide; the opus phases — the kinds that r
 so put those that unblock the most first. A queued crew session says what holds it on `crew list`.
 Your own Opus subagents share the same usage window: at most 3 at once.
 
-**The guard holds a builder subagent while the queue holds a place.** Its line names which
+**The guard holds a builder subagent while a `crew start` from you would queue.** Its line names which
 cap above is full and the `crew start` step, and it is a refusal rather than a question, because
 the step needs no person. Read-only subagents — a search, a review, an audit, a UI check — are
 never held, so nothing stops you asking one a question while the queue is full.
