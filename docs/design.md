@@ -1737,9 +1737,9 @@ that, so the plugin ships no worktree hook at all.
 | `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit is a change (an edit whose result was an error or a refusal changed nothing), a shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), in a crew session (its report gate is `crew-role`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. `notify` asks its decision (`verifyGateWouldBlock`), so the "finished" alert waits for the stop that really ends the turn. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone, says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds at most one short line about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. It removes nothing itself (§ Finished worktrees clean themselves). |
-| `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt. |
+| `session-name` | SessionStart, UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt — unless the session is a recorded lead: its role name is `lead-notes'`, and one title has one owner (§ Lead and the crew › The lead's name). |
 | `crew-role` | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode), Stop, StopFailure | a crew session (`CC_SMART_DEV_KIT_CREW`) | **machine-wide**: the role card at a start, a resume or a compaction; **its own `cwd` checked against the record's worktree** — inside it a `starting` record is written `working`, outside it an open record is written `failed` with where it started, and its card says to stop (the lead's watch ends the session) — each write reads the state again under the store's lock (`updateCrewIfState`); the two tools that ask the person **denied** with the `crew report --question …` step (D36); the person's own prompt recorded as one `person` event with one line of context, and every other delivery recognised and recorded as nothing (D55); at a stop, the last line on the record and one block when the turn ended on a step with no report. No context from Stop. At a StopFailure on a model limit, the record is **paused** with what it waits for (D42, § Lead and the crew › Waiting out a limit). § Lead and the crew › The crew session's and the lead's hooks. |
-| `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions — a note another lead told it, a file clash, a merge into the base — since its last turn, from a per-lead cursor in the store, said once and never twice. § Lead and the crew › The crew session's and the lead's hooks. |
+| `lead-notes` | SessionStart, UserPromptSubmit | a registered lead (the input's `session_id`) | **machine-wide**: one line about what changed among the lead's crew sessions — a note another lead told it, a file clash, a merge into the base — since its last turn, from a per-lead cursor in the store, said once and never twice. At a prompt it also **names the session** `LEAD <tag> <plan>` (`sessionTitle` beside the line in one answer, no setting), never over a name the person gave and never twice (§ Lead and the crew › The lead's name). § Lead and the crew › The crew session's and the lead's hooks. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the eight machine-wide
 ones: `agent-guard` (§ The Agent guard), `job-route` (§ The Bash judge and the job route),
@@ -3046,10 +3046,22 @@ repository, under the state folder:
 that runs it as a lead of this repository. **Which session** is found the way L1a.1 proved it:
 the nearest ancestor process with a Claude Code session record, `<config folder>/sessions/<pid>.json`
 (`callingSession`, `src/crew/session.ts`; parents from `/proc` on Linux, one process listing
-elsewhere). Its name, `LEAD <tag> <plan>`, is written into the lead record as data: the
-session-name hook applies it later, and the command prints the `/rename` line meanwhile. The tag is
+elsewhere). Its name, `LEAD <tag> <plan>`, is written into the lead record as data, and the
+`lead-notes` hook sets it at the lead's next prompt by itself (§ The lead's name below); the
+command never renames the session, and prints one line saying so. The tag is
 `--tag`, else `workflow.crew.tag`, else the main checkout's folder name; the plan is `--plan`,
 else the plan this session already leads, else the branch.
+
+**The lead's name** (LD1) is that record's data, applied by `lead-notes` at the lead's next
+prompt: one `UserPromptSubmit` answer carries `sessionTitle` beside the note (Claude Code's own
+output schema has both fields on that event, `docs/claude-code-contract.md`), so the command
+prints no `/rename` line for the person to type. `titleToSet` (`src/hooks/session-name.ts`) is
+the one rule behind both writers — a session naming itself after its task (`sessionNames`), and
+a lead taking its role name: a title is set only when the session is not already called that and
+the kit did not set it, so a person's own `/rename` stays, and never comes back until the lead
+registers again with another plan. Two names never compete: one title has one owner, so
+`session-name` is silent in a recorded lead. A session id no naming record can be made for (not
+a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
 
 **`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
 **returns at once** (D25) with one line — `started …`, `queued …` or `failed …` — and never waits,
@@ -3632,7 +3644,9 @@ each is silent unless its own session is the one it is about, and neither reads
   `(and N more…)` when there is older news in the same turn. The cursor moves past every event
   read, whether or not a line came of it, so a restart never says the same thing twice. The review
   mark on a report line uses the built-in review agents: this hook reads no project file, and the
-  watch's own line is the one that resolves a project's list.
+  watch's own line is the one that resolves a project's list. At a prompt it also sets the lead's
+  name (`sessionTitle`, beside the note in the same answer), through `titleToSet`, the one rule and
+  record `session-name` keeps (§ The lead and the launch › The lead's name).
 
 ## Sessions and worktrees
 

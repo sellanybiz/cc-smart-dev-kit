@@ -21,8 +21,10 @@ belongs — inline, a subagent or a crew session — is in the core instructions
   Off: this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
   Turning crew sessions on is the person's choice, never yours.
 - **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
-  names the session `LEAD <tag> <plan>` and prints a `/rename` line: give it to the person, who
-  types it once so agent view shows the name. `crew start` refuses until this session is a
+  names the session `LEAD <tag> <plan>`; the session takes that name at its next prompt by
+  itself (no setting, and it never overrides a name the person gave with `/rename`), so there
+  is nothing for the person to type. Only a session id no name record can be made for gets a
+  `/rename` line, which the person types once. `crew start` refuses until this session is a
   lead.
 
 ## 2. Split the plan into phases

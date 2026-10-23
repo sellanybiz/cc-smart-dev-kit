@@ -86,7 +86,7 @@ Commands:
   lead [--plan <slug>] [--tag <tag>]
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
-                 that leads; it prints the /rename line that shows the name.
+                 that leads: the session takes that name at its next prompt.
   lead tell ${LEAD_TELL_ARGS}
                  ${wrapText(LEAD_TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for each other lead, whose watch shows it as

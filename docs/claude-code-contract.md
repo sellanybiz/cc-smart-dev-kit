@@ -403,8 +403,17 @@ into a table above.
   SessionStart answers with `{"systemMessage": "…"}`, whether Claude itself sees the text (our
   line should reach the person and never Claude: an answer that repeats it is a finding).
 - **`sessionTitle` in a UserPromptSubmit answer renames the session**, the name ListAgents
-  shows included. The docs list the field; the hook this one was ported from saw it work
-  on an older Claude Code. (Before the first release with `sessionNames`.)
+  shows included, and **one answer carries it beside `additionalContext`**: the hook output
+  schema has both fields optional on the `UserPromptSubmit` entry, in one object
+  (`{hookEventName, additionalContext, sessionTitle, suppressOriginalPrompt}`), read from the
+  2.1.309 shipped binary. The `SessionStart` entry carries `sessionTitle` too; the kit does not
+  use it there (a title set at a start reached the transcript and /resume but not the name
+  ListAgents shows, seen on an older Claude Code; `src/hooks/session-name.ts`). Two hooks use
+  the prompt route: `session-name` (a session's own task name, `sessionNames`) and `lead-notes`
+  (a lead's `LEAD <tag> <plan>`, no setting, LD1). The docs list the field; the hook this one
+  was ported from saw it work on an older Claude Code. **Owed:** one live look at the renamed
+  row in ListAgents and /resume on the tested version. Unit: `src/hooks/session-name.test.ts`,
+  `src/hooks/lead-notes.test.ts` › "one answer carries the lead's note and its name".
 - **Old version folders are deleted 14 days after an update.** The docs say so
   (code.claude.com/docs/en/plugins/loading). The gateway's router runs from a copy in
   `~/.local/share/cc-smart-dev-kit/` either way, so a deletion cannot stop it. (`doctor --live`
