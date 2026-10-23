@@ -885,6 +885,25 @@ describe("the B6d facts", () => {
         version: "2.1.312",
         why: null,
       },
+      claudeMem: {
+        backends: ["omniroute"],
+        blocked: null,
+        current: {
+          fallback: { idle: null, model: null, provider: "claude", source: "default" },
+          key: { pool: false, source: "portal", state: "gateway" },
+          route: {
+            address: "http://127.0.0.1:20128/v1",
+            kind: "backend",
+            model: "glm/flash",
+            provider: "openai-compatible",
+            source: "portal",
+            target: "omniroute:glm/flash",
+          },
+        },
+        file: "~/.claude-mem/settings.json",
+        minVersion: "13.29.0",
+        version: "13.40.0",
+      },
       companions: [],
       doctor: {
         at: 1_000,
@@ -913,6 +932,7 @@ describe("the B6d facts", () => {
     };
     const data = machineOf(answer, facts);
     expect(data.claudeCode).toEqual(answer.claudeCode);
+    expect(data.claudeMem).toEqual(answer.claudeMem);
     expect(data.bun).toEqual({ minimum: "1.4.3", ok: true, version: "1.4.5" });
     expect(data.autoMode).toBe(null);
     expect(data.mcp).toEqual([{ name: "playwright", runsWhat: null, state: "ours" }]);

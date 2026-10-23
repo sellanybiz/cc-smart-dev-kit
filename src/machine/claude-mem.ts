@@ -5,7 +5,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import { loadConfigFile, messageOf } from "../gateway/config";
 import { backendFetch } from "../gateway/hosts";
 import { maskedLine } from "../gateway/plain-text";
-import { maskKey } from "../gateway/settings";
+import { backendAddress, maskKey } from "../gateway/settings";
 import { familySlotKey, parseTarget } from "../gateway/targets";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
@@ -624,6 +624,10 @@ export function shownClaudeMemValue(path: KeyPath, value: unknown): string {
   if (value === undefined) return "(none)";
   if (isSecretPath(path) && typeof value === "string" && value !== "") {
     return JSON.stringify(maskKey(value));
+  }
+  // An address can carry a user name and password, or a key in its query: never shown.
+  if (path.at(-1) === BASE_URL && typeof value === "string" && value !== "") {
+    return JSON.stringify(backendAddress(value) ?? "(an address that is not a URL)");
   }
   return JSON.stringify(value);
 }

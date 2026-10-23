@@ -174,6 +174,7 @@ export function machineOf(answer: MachineAnswer, facts: PortalFacts): MachineDat
     browser: answer.browser,
     bun: answer.bun,
     claudeCode: answer.claudeCode,
+    claudeMem: answer.claudeMem,
     companions: answer.companions,
     doctor: (answer.doctor?.checks ?? []).map(doctorLine),
     doctorAt: answer.doctor?.at ?? null,

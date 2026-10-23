@@ -12,6 +12,7 @@ import type {
   BackendRow,
   BunFacts,
   ClaudeCodeFacts,
+  ClaudeMemFacts,
   CrewReport,
   CrewReview,
   HistoryAnswer,
@@ -38,6 +39,7 @@ export type {
   BackendRow,
   BunFacts,
   ClaudeCodeFacts,
+  ClaudeMemFacts,
   JobWeightsState,
   McpServerRow,
   ModelRow,
@@ -477,6 +479,8 @@ export interface MachineData {
   autoMode: AutoModeChange;
   /** Claude Code's version (or why it is not known), and the last `doctor --live` proof. */
   claudeCode: ClaudeCodeFacts;
+  /** claude-mem's route, key and fallback, and where each came from (never the key). */
+  claudeMem: ClaudeMemFacts;
   /** The Bun the portal runs on, against the kit's minimum. */
   bun: BunFacts;
   companions: CompanionRow[];
