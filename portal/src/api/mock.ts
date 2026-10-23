@@ -1003,6 +1003,7 @@ export function mockData(empty: boolean): MockData {
         state: "behind",
         unit: "omniroute.service",
       },
+      gatewayKey: empty ? "not-set-up" : "set",
       warp: { detail: "Warp is not installed. It is optional.", installed: false },
       doctor: [
         {

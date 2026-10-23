@@ -131,10 +131,11 @@ export interface ActionResult {
   lines: string[];
   /**
    * How the page shows the lines. `"info"`: a fact, not a failure — the token field's
-   * "nothing was pasted, so the saved token is unchanged" is the one case. Left out, a
-   * refusal is an alarm, as every other one is.
+   * "nothing was pasted, so the saved token is unchanged" is the one case. `"warn"`: done, with a
+   * warning the page must show as one — a gateway key saved without OmniRoute accepting it
+   * (PK1). Left out, a refusal is an alarm, as every other one is.
    */
-  tone?: "info";
+  tone?: "info" | "warn";
   /**
    * `project.preview` only: the plan the Project card's boxes draw — the same pure
    * `planProjectInit` the write runs, so what the page shows is exactly what will be written.
@@ -1384,12 +1385,12 @@ async function gatewayKeyAction(
   const { portal } = action;
   const { lines, print } = collector();
   try {
-    await setOmnirouteKey(
+    const saved = await setOmnirouteKey(
       { apiFetch: healthFetch(portal), paths: portal.paths, print },
       from === "key" ? { key: secret } : { password: secret },
       { again: KEY_AGAIN, giveKey: KEY_GIVE_INSTEAD, saveUnchecked: body.saveUnchecked === true },
     );
-    return { lines, ok: true };
+    return saved.checked ? { lines, ok: true } : { lines, ok: true, tone: "warn" };
   } catch (error) {
     // The refusal first: it is what the page shows, the lines before it are its details.
     return { lines: [...messageOf(error).split("\n"), ...lines], ok: false };

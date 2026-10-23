@@ -21,6 +21,7 @@ import type {
 import { ActionButton, ActionResultLine, useAction } from "@/components/action-button";
 import { ClaudeMemCard } from "@/components/claude-mem-card";
 import { CommandLine } from "@/components/copy-button";
+import { GatewayKeyPart } from "@/components/gateway-key";
 import { HeavyJobsCard } from "@/components/heavy-jobs";
 import { UpdatesCard, WorktreesCard } from "@/components/machine-cards";
 import { SectionCards, StatCard } from "@/components/section-cards";
@@ -264,7 +265,9 @@ function OmnirouteCard({ data }: { data: MachineData }) {
     <Card>
       <CardHeader>
         <CardTitle>OmniRoute</CardTitle>
-        <CardDescription>The program the affordable slots answer from.</CardDescription>
+        <CardDescription>
+          The program the affordable slots answer from, and the gateway's key to it.
+        </CardDescription>
         <CardAction>
           <TonePill
             tone={omniroute.state === "ok" ? "ok" : omniroute.state === "behind" ? "warn" : "info"}
@@ -363,6 +366,7 @@ function OmnirouteCard({ data }: { data: MachineData }) {
             )}
           </div>
         )}
+        <GatewayKeyPart state={data.gatewayKey} />
       </CardContent>
     </Card>
   );

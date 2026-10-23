@@ -161,6 +161,8 @@ describe("gateway.key.save: a key the person pastes", () => {
         w.action,
       );
       expect(result.ok).toBe(true);
+      // Checked: a plain success, no warning.
+      expect(result.tone).toBeUndefined();
       // Tested first: the check is the backend's own model list, with the new key.
       expect(omniroute.requests).toContain("GET /v1/models");
       const saved = JSON.parse(w.configText()) as {
@@ -230,8 +232,9 @@ describe("gateway.key.save: a key the person pastes", () => {
       w.action,
     );
     expect(saved.ok).toBe(true);
-    // The warning is the first line: the one the page shows.
-    expect(saved.lines[0]).toStartWith("! the key was saved WITHOUT its backend accepting it (");
+    // The warning is the first line, the one the page shows, in its warning colour.
+    expect(saved.tone).toBe("warn");
+    expect(saved.lines[0]).toStartWith("the key was saved WITHOUT its backend accepting it (");
     expect(saved.lines.join("\n")).not.toContain(GOOD_KEY);
     expect(
       (JSON.parse(w.configText()) as { backends: { omniroute: { apiKey: string } } }).backends

@@ -1013,7 +1013,7 @@ export type ActionName = (typeof ACTION_NAMES)[number];
 export interface ActionResult {
   ok: boolean;
   lines: string[];
-  tone?: "info";
+  tone?: "info" | "warn";
   preview?: ProjectInitPlan;
   filesHash?: string;
   results?: { detail: string; target: string; verdict: "bad" | "blocked" | "good" }[];

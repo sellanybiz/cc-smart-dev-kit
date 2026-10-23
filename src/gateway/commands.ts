@@ -559,9 +559,12 @@ function keyBackupLine(backups: string, home: string): string {
   return `  the file as it was before the change is in ${tildify(backups, home)}: copy it back to put the key that was there in place`;
 }
 
-/** The warning after a key was saved without its backend accepting it (`--save-unchecked`). */
-function uncheckedKeyLine(detail: string): string {
-  return `  ! the key was saved WITHOUT its backend accepting it (${detail}). Check it when the backend answers: ${COMMAND} gateway check`;
+/**
+ * The warning after a key was saved without its backend accepting it (`--save-unchecked`). The
+ * words alone: setup prints them as a `!` line, the portal in its warning colour.
+ */
+function uncheckedKeyWords(detail: string): string {
+  return `the key was saved WITHOUT its backend accepting it (${detail}). Check it when the backend answers: ${COMMAND} gateway check`;
 }
 
 /** The refusal when a key is set on a machine with no gateway config: a first setup is setup's. */
@@ -577,13 +580,14 @@ export const NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet
  * changed config by itself (`watchConfig`), so nothing is installed or restarted.
  *
  * Throws the refusal in setup's words, with `again` / `giveKey` saying how to try again where the
- * key came from. No line it prints and no refusal names the key or the password.
+ * key came from. No line it prints and no refusal names the key or the password. `checked` is
+ * false when the key was saved without OmniRoute accepting it; that warning is the first line.
  */
 export async function setOmnirouteKey(
   ctx: KeyContext,
   given: { key: string } | { password: string },
   options: { again: string; giveKey: string; saveUnchecked: boolean },
-): Promise<void> {
+): Promise<{ checked: boolean }> {
   const { paths } = ctx;
   const configPath = paths.gatewayConfigFile;
   if (!existsSync(configPath)) throw new Error(NOT_SET_UP_FOR_KEY);
@@ -608,14 +612,15 @@ export async function setOmnirouteKey(
         const backupsBefore = backupCount(backups);
         const said = ensureConfig(configPath, key, { stateDir: paths.stateDir });
         // The warning first: a page shows a result's first line, and this one must be seen.
-        if (unchecked !== "") ctx.print(uncheckedKeyLine(unchecked).trim());
+        if (unchecked !== "") ctx.print(uncheckedKeyWords(unchecked));
         ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
         if (backupCount(backups) > backupsBefore) ctx.print(keyBackupLine(backups, paths.home));
       },
       { waitMs: 10_000 },
     );
+    return { checked: unchecked === "" };
   } catch (error) {
-    await discardMadeKey(made, error);
+    return await discardMadeKey(made, error);
   }
 }
 
@@ -2164,7 +2169,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
           );
         }
         if (keyBackedUp) ctx.print(keyBackupLine(backups, paths.home));
-        if (unchecked !== "") ctx.print(uncheckedKeyLine(unchecked));
+        if (unchecked !== "") ctx.print(`  ! ${uncheckedKeyWords(unchecked)}`);
         // The question was answered above: the warning is not repeated, and nothing asks again.
         await installRouter(
           install({
