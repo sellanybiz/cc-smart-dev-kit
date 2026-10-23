@@ -24,12 +24,14 @@
  *   prompt counts — Claude Code runs this hook for every turn a session gets, and the input says
  *   nothing about where a prompt came from (proved live on 2.1.309, only `prompt`),
  *   so the prompt's own shape decides: a `SendMessage` delivery carries
- *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, and the two
- *   prompts a lead's own transport gives a crew session bare — `crew answer`'s resume of a
- *   stopped session and the watch's `resumeText` of a paused one — are recognised from the
- *   store. A bare prompt none of those explain is recorded as the person's (nothing else in the
- *   kit gives a crew session a prompt); one the hook cannot read at all — no `prompt`, no record
- *   — records nothing. Never a block, never a question: the person's prompt always goes on.
+ *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, and the three
+ *   prompts a lead's own transport gives a crew session bare — `crew start`'s launch line
+ *   (`firstPrompt`, built for the record's own name, lead and brief file), `crew answer`'s
+ *   resume of a stopped session, and the watch's `resumeText` of a paused one — are recognised
+ *   from the store. A bare prompt none of those explain is recorded as the person's (nothing else
+ *   in the kit gives a crew session a prompt); one the hook cannot read at all — no `prompt`, no
+ *   record — records nothing. Never a block, never a question: the person's prompt always goes
+ *   on.
  * - **Stop**: records the session's last line on its record (masked and clipped: a record is read
  *   by a person and by the lead) and **never gives context** — a Stop hook's `additionalContext`
  *   keeps the turn going and starves hand-backs (L1a.1). When the newest `step` or `report` event
@@ -51,7 +53,7 @@
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { REPORT_COMMAND } from "../crew/brief";
+import { firstPrompt, REPORT_COMMAND } from "../crew/brief";
 import { RUNNING_STATES } from "../crew/places";
 import { crewIdOf } from "../crew/session";
 import {
@@ -135,16 +137,27 @@ export const ANSWER_RESUME_MS = 60_000;
 /**
  * True when `prompt` is the person's own words. Every other turn a crew session gets is its
  * lead's: a `SendMessage` delivery or a monitor's line (the wrappers), the kit's own Stop block
- * (a continuation that carries it), `crew answer`'s resume of a stopped crew session (with a
- * question still open, or with the answer the store recorded — the resume runs before the answer
- * is written), and the watch's resume of a paused one (the frame above). A bare prompt none of
- * those explain is the person's: nothing else in the kit gives a crew session a prompt.
+ * (a continuation that carries it), the line `crew start` launched this crew session with
+ * (`firstPrompt`, built for this record — a hand-off's next crew session gets its own),
+ * `crew answer`'s resume of a stopped crew session (with a question still open, or with the
+ * answer the store recorded — the resume runs before the answer is written), and the watch's
+ * resume of a paused one (the frame above). A bare prompt none of those explain is the person's:
+ * nothing else in the kit gives a crew session a prompt.
  */
-export function isPersonPrompt(record: CrewRecord, prompt: string, nowMs: number): boolean {
+export function isPersonPrompt(
+  record: CrewRecord,
+  prompt: string,
+  briefFile: string,
+  nowMs: number,
+): boolean {
   if (NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix))) return false;
   // The kit's own words are never the person's. A Stop block continues the turn with this line,
   // and a transport that turned that continuation into a prompt would otherwise read as theirs.
   if (prompt.startsWith(reportStep())) return false;
+  // `crew start` gives every crew session its launch line as its first prompt. Only this
+  // record's own line is the lead's: one that names another crew session, or another brief
+  // file, is still the person's.
+  if (isLaunchPrompt(record, prompt, briefFile)) return false;
   // `crew answer` resumes a stopped crew session with the answer as its next prompt, and the
   // resume runs before the answer is recorded (`src/crew/answer.ts`): while a question still has
   // no answer, a prompt in a stopped record is that resume. A stopped record with no open
@@ -157,15 +170,31 @@ export function isPersonPrompt(record: CrewRecord, prompt: string, nowMs: number
   return !isAnswerResume(record, prompt, nowMs);
 }
 
+/**
+ * `text` with one trailing line end dropped, and nothing else: a transport that adds or drops
+ * that line end must not turn the lead's own line into the person's, and the person's own
+ * " yes " typed after it must still be theirs.
+ */
+function withoutOneLineEnd(text: string): string {
+  return text.replace(/\r?\n$/, "");
+}
+
+/**
+ * True when `prompt` is the line `crew start` launched this crew session with. The line is read
+ * from `firstPrompt`, which builds it (`src/crew/brief.ts`), never copied here: a change to the
+ * launch line changes this with it. The record's own name, lead and brief file are what tell it
+ * apart from every other crew session's.
+ */
+function isLaunchPrompt(record: CrewRecord, prompt: string, briefFile: string): boolean {
+  const launch = firstPrompt(record.name, record.leadName, briefFile);
+  return withoutOneLineEnd(prompt) === withoutOneLineEnd(launch);
+}
+
 /** True when `prompt` is the answer `crew answer` resumed this crew session with, just recorded. */
 function isAnswerResume(record: CrewRecord, prompt: string, nowMs: number): boolean {
-  // Compared with one trailing line end dropped, and nothing else: a transport that adds or
-  // drops that line end must not turn the lead's answer into the person's word, and the person's
-  // own " yes " typed after it must still be theirs.
-  const bare = (text: string): string => text.replace(/\r?\n$/, "");
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null) return false;
-    if (bare(asked.answer) !== bare(prompt)) return false;
+    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt)) return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
   });
@@ -409,7 +438,8 @@ async function personPromptAnswer(
   if (!found.ok) return found.result;
   const record = found.record;
   const nowMs = options.nowMs ?? Date.now();
-  if (!isPersonPrompt(record, prompt, nowMs)) return SILENT;
+  const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
+  if (!isPersonPrompt(record, prompt, briefFile, nowMs)) return SILENT;
   const line = personLine(prompt);
   // Nothing to say: a prompt of blank lines is the person's, but the lead gets no line for it.
   if (line === "") return SILENT;

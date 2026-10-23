@@ -166,7 +166,7 @@ a lead taking its role name: a title is set only when the session is not already
 the kit did not set it. So the first prompt after `crew lead` replaces whatever name the
 session had, and a person's own `/rename` made after that stays: the kit takes the name back
 only when the lead registers again with another plan. Two names never compete: one title has
-one owner, so `session-name` is silent in a recorded lead. A session id no naming record can be made for (not
+one owner, so `session-name` is silent in a recorded lead, and in a crew session (whose launch name is its address; the command refuses there). A session id no naming record can be made for (not
 a UUID) gets the `/rename` line as the fallback, from `crew lead` itself.
 
 **`crew start <phase> --slug <slug> --kind <kind> --brief <file|-> …`** (`src/crew/start.ts`)
@@ -731,12 +731,14 @@ each is silent unless its own session is the one it is about, and neither reads
   (`docs/claude-code-contract.md`), so the prompt's own shape decides: a `SendMessage` delivery
   (`<cross-session-message …>`), a monitor's line (`<task-notification>`) and a Stop hook's own
   continuation (`Stop hook feedback:`, the kit's block line included) are its lead's, and so are
-  the two prompts a transport gives a crew session **bare** —
-  `crew answer`'s resume of a stopped session (a question still open, or the answer the store
-  recorded) and the watch's `resumeText` of a paused one. A bare prompt none of those explain is
-  recorded as the person's: nothing else in the kit gives a crew session a prompt, and a stopped
-  crew session the person reopens by hand (`claude attach`) has no other way to be heard. One
-  the hook cannot read at all records nothing. It never blocks and never asks.
+  the three prompts a transport gives a crew session **bare** —
+  `crew start`'s launch line (its own name, lead and brief file, from `firstPrompt`; a hand-off's
+  next crew session gets its own), `crew answer`'s resume of a stopped session (a question still
+  open, or the answer the store recorded) and the watch's `resumeText` of a paused one. A bare
+  prompt none of those explain is recorded as the person's: nothing else in the kit gives a crew
+  session a prompt, and a stopped crew session the person reopens by hand (`claude attach`) has
+  no other way to be heard. One the hook cannot read at all records nothing. It never blocks and
+  never asks.
   At **Stop** it records the session's last line on its record (`lastLine`,
   masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew

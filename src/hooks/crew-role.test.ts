@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { firstPrompt } from "../crew/brief";
 import { CREW_ENV } from "../crew/session";
 import {
   answerCrewQuestion,
@@ -84,7 +85,7 @@ async function crewWorld(change: Partial<NewCrew> = {}): Promise<{
   stateDir: string;
 }> {
   const { repo } = makeClone();
-  const env = { ...hookEnv(), [CREW_ENV]: CREW_ID };
+  const env = { ...hookEnv(), [CREW_ENV]: change.id ?? CREW_ID };
   const stateDir = cliPaths(env).stateDir;
   const record = await createCrew(stateDir, newCrew(repo, change), T0);
   return { env, record, repo, stateDir };
@@ -822,9 +823,9 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
   }
 
   /** The `person` events the hook's run left for this crew session. */
-  function personEvents(stateDir: string, repo: string) {
+  function personEvents(stateDir: string, repo: string, id: string = CREW_ID) {
     return readCrewEvents(stateDir, repo).events.filter(
-      (event) => event.crew === CREW_ID && event.type === "person",
+      (event) => event.crew === id && event.type === "person",
     );
   }
 
@@ -1030,6 +1031,84 @@ describe("D55: the person's own prompt is recorded, and a delivery that is not t
     );
     expect(await runHook(crewRoleHook, promptInput(world.repo, text), world.env)).toEqual({});
     expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("the launch line crew start gives this session: silent, nothing recorded", async () => {
+    // The bug of 1.1.1: every crew session's first prompt — the line `crew start` launched it
+    // with — was taken for the person's words, so every start made a false "the person wrote".
+    const world = await crewWorld();
+    const brief = crewBriefFile(world.stateDir, world.repo, CREW_ID);
+    const line = firstPrompt("C app W2 hooks", "LEAD app plan", brief);
+    expect(line).toBe(
+      `You are the crew session C app W2 hooks for the lead LEAD app plan. Work by /cc-smart-dev-kit:crew. Read ${brief} first: it is your task, and it says how you report.`,
+    );
+    expect(await runHook(crewRoleHook, promptInput(world.repo, line), world.env)).toEqual({});
+    // A transport that adds one line end does not turn the lead's launch line into the person's.
+    expect(await runHook(crewRoleHook, promptInput(world.repo, `${line}\n`), world.env)).toEqual(
+      {},
+    );
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("another crew session's launch line is still the person's", async () => {
+    const world = await crewWorld();
+    const brief = crewBriefFile(world.stateDir, world.repo, CREW_ID);
+    const other = firstPrompt("C app W2 other", "LEAD app plan", brief);
+    const result = await runHook(crewRoleHook, promptInput(world.repo, other), world.env);
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+    // A launch line that names another crew session, or another brief file, is not this
+    // record's own: only words a transport gives nobody else are the person's.
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toStartWith(
+      "You are the crew session C app W2 other for the lead LEAD app plan. Work by /cc-smart-dev-kit:crew.",
+    );
+    const otherBrief = firstPrompt(
+      "C app W2 hooks",
+      "LEAD app plan",
+      join(world.repo, "another-brief.md"),
+    );
+    const second = await runHook(crewRoleHook, promptInput(world.repo, otherBrief), world.env);
+    expect(JSON.parse(second.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+    expect(personEvents(world.stateDir, world.repo).length).toBe(2);
+  });
+
+  test("a prompt that quotes the launch line inside other words is the person's", async () => {
+    const world = await crewWorld();
+    const brief = crewBriefFile(world.stateDir, world.repo, CREW_ID);
+    const quoted = `Before you go on: ${firstPrompt("C app W2 hooks", "LEAD app plan", brief)} Then stop after the guard.`;
+    const result = await runHook(crewRoleHook, promptInput(world.repo, quoted), world.env);
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toStartWith(
+      "Before you go on: You are the crew session C app W2 hooks",
+    );
+  });
+
+  test("a hand-off's first prompt, its ` 2` name and its own brief: silent", async () => {
+    // `crew start --continue` launches its next crew session with the same builder, for the new
+    // record: another name and another brief file, so the line is compared to this record's own.
+    const next = "W2-x-4d5e6f";
+    const world = await crewWorld({ id: next, name: "C app W2 hooks 2" });
+    const brief = crewBriefFile(world.stateDir, world.repo, next);
+    const line = firstPrompt("C app W2 hooks 2", "LEAD app plan", brief);
+    expect(line).toContain("You are the crew session C app W2 hooks 2 for the lead LEAD app plan.");
+    expect(await runHook(crewRoleHook, promptInput(world.repo, line), world.env)).toEqual({});
+    expect(personEvents(world.stateDir, world.repo, next)).toEqual([]);
+    // The first crew session's launch line names another record: on this one, it is the person's.
+    const first = firstPrompt(
+      "C app W2 hooks",
+      "LEAD app plan",
+      crewBriefFile(world.stateDir, world.repo, CREW_ID),
+    );
+    const result = await runHook(crewRoleHook, promptInput(world.repo, first), world.env);
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+    expect(personEvents(world.stateDir, world.repo, next).length).toBe(1);
   });
 
   test("an answer from long ago does not silence the person: the same words now are recorded", async () => {

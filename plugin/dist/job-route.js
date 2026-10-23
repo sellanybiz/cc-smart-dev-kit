@@ -10013,6 +10013,8 @@ function sessionName(context) {
   const { project, input, event, env } = context;
   if (project.config?.sessionNames !== true)
     return SILENT;
+  if (crewIdOf(env) !== null)
+    return SILENT;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
     return SILENT;
@@ -13290,6 +13292,9 @@ var CREW_NEVER_RUNS = {
   stop: CREW_NEVER_DOES.resume,
   watch: CREW_NEVER_DOES.watch
 };
+function firstPrompt(crewName, leadName, briefFile) {
+  return `You are the crew session ${crewName} for the lead ${leadName}. Work by /${CREW_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
+}
 
 // src/jobs/config.ts
 import { isAbsolute as isAbsolute3, join as join20 } from "path";
@@ -13621,10 +13626,12 @@ var RESUME_START = "The wait is over: ";
 var RESUME_PHASE = ". Go on with phase ";
 var RESUME_END = ", then hand it back as usual.";
 var ANSWER_RESUME_MS = 60000;
-function isPersonPrompt(record, prompt, nowMs) {
+function isPersonPrompt(record, prompt, briefFile, nowMs) {
   if (NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix)))
     return false;
   if (prompt.startsWith(reportStep()))
+    return false;
+  if (isLaunchPrompt(record, prompt, briefFile))
     return false;
   if (record.state === "stopped" && record.questions.some((asked) => asked.answer === null)) {
     return false;
@@ -13633,12 +13640,18 @@ function isPersonPrompt(record, prompt, nowMs) {
     return false;
   return !isAnswerResume(record, prompt, nowMs);
 }
+function withoutOneLineEnd(text) {
+  return text.replace(/\r?\n$/, "");
+}
+function isLaunchPrompt(record, prompt, briefFile) {
+  const launch = firstPrompt(record.name, record.leadName, briefFile);
+  return withoutOneLineEnd(prompt) === withoutOneLineEnd(launch);
+}
 function isAnswerResume(record, prompt, nowMs) {
-  const bare = (text) => text.replace(/\r?\n$/, "");
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null)
       return false;
-    if (bare(asked.answer) !== bare(prompt))
+    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt))
       return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
@@ -13773,7 +13786,8 @@ async function personPromptAnswer(input, id, repo, paths, options) {
     return found.result;
   const record = found.record;
   const nowMs = options.nowMs ?? Date.now();
-  if (!isPersonPrompt(record, prompt, nowMs))
+  const briefFile = crewBriefFile(paths.stateDir, repo, record.id);
+  if (!isPersonPrompt(record, prompt, briefFile, nowMs))
     return SILENT;
   const line = personLine(prompt);
   if (line === "")

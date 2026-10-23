@@ -3,6 +3,18 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.1.2
+
+- **Starting a crew session no longer looks like you typed to it.** `crew start` gives every crew
+  session a first line (who it is, its lead, and its brief), and the kit read that line as your
+  own words: your lead was told "the person wrote" for every crew session it started, the portal
+  showed it, and the session was told your word wins over its brief. The launcher's own line is
+  now recognised, so only words you type are reported.
+- **A crew session keeps the name its lead gave it.** With `sessionNames` on, a crew session could
+  rename itself after its task, and its lead, `crew answer` and the message guard, which find it
+  by that name, lost it. A crew session is no longer asked to name itself, a name recorded for it
+  is never set, and `cc-smart-dev-kit session-name` refuses inside one.
+
 ## 1.1.1
 
 **A fix for every crew session, and Claude Code's retry watchdog on by default.**

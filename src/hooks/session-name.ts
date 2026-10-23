@@ -24,15 +24,17 @@
  * - a registered lead's name (`LEAD <tag> <plan>`, D26), which `lead-notes` sets with no
  *   setting at the lead's next prompt (`LD1`) — the same `titleToSet`, the same record.
  *
- * So a session that is a recorded lead is left to `lead-notes` here: one title, one owner.
- * A task name never competes with a lead's role name (the name its crew sessions and the
- * message guard address it by).
+ * So a session that is a recorded lead is left to `lead-notes` here, and a crew session is left to
+ * its launch: one title, one owner. A task name never competes with a lead's role name (the name
+ * its crew sessions and the message guard address it by), nor with a crew session's name, which
+ * its own lead, `crew answer` and the message guard use as its address.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cleanSessionName } from "../crew/names";
+import { crewIdOf } from "../crew/session";
 import { readLead } from "../crew/store";
 import { addContext, addContextAndTitle, type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
@@ -113,9 +115,14 @@ function recordedLead(context: HookContext, sessionId: string): boolean {
 
 /**
  * `cc-smart-dev-kit session-name <id> <name…>`: records the name a session chose. Returns the
- * name kept, or throws with what is wrong.
+ * name kept, or throws with what is wrong. A crew session is refused: `crew start --name` gave
+ * it the name its lead, `crew answer` and the message guard address it by, and a task name must
+ * never take that address away.
  */
 export function recordSessionName(sessionId: string, raw: string, env: Env): string {
+  if (crewIdOf(env) !== null) {
+    throw new Error("a crew session keeps the name its lead gave it");
+  }
   if (!isSessionId(sessionId)) throw new Error(`"${sessionId}" is not a session id`);
   const name = cleanSessionName(raw);
   if (name === null) throw new Error("the name is empty");
@@ -135,6 +142,10 @@ export function namingNote(sessionId: string, current: string | null): string {
 export function sessionName(context: HookContext): HookResult {
   const { project, input, event, env } = context;
   if (project.config?.sessionNames !== true) return SILENT;
+  // A crew session's name is its address: `crew start --name` gave it, and its lead,
+  // `crew answer` and the message guard look it up by that name. It is never told to name
+  // itself, and a name recorded for it is never set — one title, one owner, as with a lead below.
+  if (crewIdOf(env) !== null) return SILENT;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId)) return SILENT;
   // One title, one owner: a recorded lead's name is `lead-notes'` (no setting, LD1).
