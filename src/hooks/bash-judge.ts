@@ -67,15 +67,18 @@ import {
   type Dialect,
   invocationOf,
   isAssignmentOnly,
+  isComputedWord,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
   shellSteps,
+  withoutRedirections,
   wordsOf,
 } from "../shell/command";
 import { judgeLaunch, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
 import { type HookInput, type HookResult, stringField, toolDecision } from "./io";
+import { kitArguments } from "./kit-invocation";
 import type { Env } from "./run";
 
 /** One command a line runs: its program, its arguments, and its own words. */
@@ -229,54 +232,86 @@ function claudeLaunch(step: Step): ClaudeLaunch | null {
 }
 
 /**
- * True when a step runs the kit's own command, whatever path the launcher is named by. A
- * program the line works out when it runs (`$BIN crew answer …`) is read from its own words, as
- * the launches are: the kit's command is denied whatever runs it, and a line that names one in a
- * crew session is refused rather than let through.
+ * The words that name what the kit's own command runs, or null when the step runs none of it.
+ *
+ * A named program is read by the argv the command itself gets: `kitArguments`
+ * (`./kit-invocation`, the one recogniser `session-escape-guard` uses too) knows the kit by its
+ * name, by a path to the launcher, and by its bundle behind another program — `bun
+ * …/dist/cli.js workflow …, `find . -exec cc-smart-dev-kit … \;`, `watch -n 5 cc-smart-dev-kit …`
+ * — and never a program that only reads its arguments. Redirections are dropped: the command
+ * never sees them (`withoutRedirections`), so `cc-smart-dev-kit 2>/dev/null workflow propose` is
+ * read as the command it really runs, and a redirect target (`… > -h`) is not read as a flag.
+ *
+ * A program the line works out when it runs (`$BIN crew answer …`, `$(command -v …) crew …`)
+ * cannot be named, and the reader splits a substitution at its spaces, so nothing after it lines
+ * up: its own words are all the judge has (`computedInvocationRisk`'s rule, `after-merge.ts`).
  */
-function runsKit(step: Step): boolean {
-  return step.computed || step.program === COMMAND;
+function kitWordsOf(step: Step): null | string[] {
+  if (!step.computed) return kitArguments(step.program, withoutRedirections(step.args));
+  return withoutRedirections(step.words);
+}
+
+/**
+ * Where the words the kit's command runs say `word`, or -1. A named program's argv is
+ * positional: its first word is the subcommand. A program the line works out when it runs hands
+ * the judge its own words, where the word may sit anywhere (`$(command -v cc-smart-dev-kit) crew
+ * answer …` reaches the judge as the words `$(command`, `-v`, `cc-smart-dev-kit)`, `crew`, …).
+ */
+function kitWordAt(words: readonly string[], step: Step, word: string): number {
+  if (words[0] === word) return 0;
+  return step.computed ? words.indexOf(word) : -1;
+}
+
+/**
+ * True when these words ask for help: `-h` or `--help` before a `--`, the rule the dispatcher
+ * reads them with (`asksForHelp`, `src/cli/help.ts`). The judge keeps its own four lines rather
+ * than import the CLI's help table, which drags every command into a hook bundle.
+ */
+function asksHelp(words: readonly string[]): boolean {
+  for (const word of words) {
+    if (word === "--") return false;
+    if (word === "-h" || word === "--help") return true;
+  }
+  return false;
 }
 
 /**
  * The `crew` subcommand a step runs that a crew session never runs (`CREW_NEVER_RUNS`), or
  * null: `cc-smart-dev-kit crew start|answer|stop|rm|resume|watch|lead|lead tell …`, whatever
- * path the launcher is named by. A crew session's own commands (`step`, `report`, `tell`,
- * `self-watch`, the board reads) are not in the map, so they pass.
+ * path the launcher is named by, and whichever program carries it. A crew session's own commands
+ * (`step`, `report`, `tell`, `self-watch`, the board reads) are not in the map, so they pass.
  */
 function crewNeverRunOf(step: Step): CrewNeverRun | null {
-  if (step.args[0] !== "crew") return null;
-  if (!runsKit(step)) return null;
+  const words = kitWordsOf(step);
+  if (words === null) return null;
+  const at = kitWordAt(words, step, "crew");
+  if (at === -1) return null;
   // `crew answer --help` only prints the help (`runCrew` reads the flag before the command):
   // reading a lead command's help is no act of leading, so a crew session may.
-  if (step.args.includes("--help") || step.args.includes("-h")) return null;
+  if (asksHelp(words.slice(at + 1))) return null;
   const sub =
-    step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : (step.args[1] ?? "");
+    words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : (words[at + 1] ?? "");
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? (sub as CrewNeverRun) : null;
 }
 
 /**
- * True when a step runs the kit's `workflow propose`, whatever path the launcher is named by.
- * A crew session never runs it (D24): the command pushes a branch and opens a pull request in
- * children no hook sees, so the guards that deny the session's own `git push` and `gh pr create`
- * never see them.
- *
- * A named program is read by its arguments. A program the line works out when it runs cannot be
- * named — and the reader splits `$(command -v cc-smart-dev-kit)` at its spaces, so the arguments
- * after it do not line up — so its own words are all the judge has, as for a computed `gh`
- * (`computedInvocationRisk`, `after-merge.ts`): the words `workflow propose`, in order.
+ * True when a step runs the kit's `workflow propose`. A crew session never runs it (D24): the
+ * command pushes a branch and opens a pull request in children no hook sees, so the guards that
+ * deny the session's own `git push` and `gh pr create` never see them.
  *
  * `--help` prints the usage and proposes nothing (the dispatcher answers it before any command
- * runs), so reading it is no act, as for a lead command's help.
+ * runs), so reading it is no act, as for a lead command's help. A subcommand the judge cannot
+ * read — a word the line works out when it runs (`workflow $SUB`), or none at all (`echo propose
+ * | xargs cc-smart-dev-kit workflow`) — may be `propose`: in a crew session it is refused rather
+ * than let through.
  */
 function isWorkflowPropose(step: Step): boolean {
-  if (step.words.includes("--help") || step.words.includes("-h")) return false;
-  if (!step.computed) {
-    return step.program === COMMAND && step.args[0] === "workflow" && step.args[1] === "propose";
-  }
-  const lower = step.words.map((word) => word.toLowerCase());
-  const at = lower.indexOf("workflow");
-  return at >= 0 && lower[at + 1] === "propose";
+  const words = kitWordsOf(step);
+  if (words === null) return false;
+  const at = kitWordAt(words, step, "workflow");
+  if (at === -1 || asksHelp(words.slice(at + 1))) return false;
+  const sub = words[at + 1];
+  return sub === "propose" || sub === undefined || isComputedWord(sub);
 }
 
 /** True for a crew-status read: `crew list`, `crew status`, or `claude agents --json`. */

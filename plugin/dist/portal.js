@@ -26896,6 +26896,58 @@ function packageScripts(folder) {
   return new Set(Object.keys(scripts));
 }
 
+// src/hooks/kit-invocation.ts
+var INERT = new Set([
+  "[",
+  "[[",
+  "awk",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "diff",
+  "echo",
+  "egrep",
+  "fgrep",
+  "file",
+  "git",
+  "grep",
+  "head",
+  "less",
+  "ln",
+  "ls",
+  "man",
+  "mkdir",
+  "more",
+  "mv",
+  "printf",
+  "readlink",
+  "realpath",
+  "rg",
+  "rm",
+  "sed",
+  "stat",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "type",
+  "wc",
+  "which"
+]);
+var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+function isKitWord(word) {
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+
 // src/hooks/bash-judge.ts
 var CLAUDE_VALUED = [
   "--add-dir",
@@ -26980,28 +27032,46 @@ function claudeLaunch(step) {
     prompt: positionalsOf(step.args, CLAUDE_VALUED).join(" ")
   };
 }
-function runsKit(step) {
-  return step.computed || step.program === COMMAND;
+function kitWordsOf(step) {
+  if (!step.computed)
+    return kitArguments(step.program, withoutRedirections(step.args));
+  return withoutRedirections(step.words);
+}
+function kitWordAt(words, step, word) {
+  if (words[0] === word)
+    return 0;
+  return step.computed ? words.indexOf(word) : -1;
+}
+function asksHelp(words) {
+  for (const word of words) {
+    if (word === "--")
+      return false;
+    if (word === "-h" || word === "--help")
+      return true;
+  }
+  return false;
 }
 function crewNeverRunOf(step) {
-  if (step.args[0] !== "crew")
+  const words = kitWordsOf(step);
+  if (words === null)
     return null;
-  if (!runsKit(step))
+  const at = kitWordAt(words, step, "crew");
+  if (at === -1)
     return null;
-  if (step.args.includes("--help") || step.args.includes("-h"))
+  if (asksHelp(words.slice(at + 1)))
     return null;
-  const sub = step.args[1] === "lead" && step.args[2] === "tell" ? "lead tell" : step.args[1] ?? "";
+  const sub = words[at + 1] === "lead" && words[at + 2] === "tell" ? "lead tell" : words[at + 1] ?? "";
   return Object.hasOwn(CREW_NEVER_RUNS, sub) ? sub : null;
 }
 function isWorkflowPropose(step) {
-  if (step.words.includes("--help") || step.words.includes("-h"))
+  const words = kitWordsOf(step);
+  if (words === null)
     return false;
-  if (!step.computed) {
-    return step.program === COMMAND && step.args[0] === "workflow" && step.args[1] === "propose";
-  }
-  const lower = step.words.map((word) => word.toLowerCase());
-  const at = lower.indexOf("workflow");
-  return at >= 0 && lower[at + 1] === "propose";
+  const at = kitWordAt(words, step, "workflow");
+  if (at === -1 || asksHelp(words.slice(at + 1)))
+    return false;
+  const sub = words[at + 1];
+  return sub === "propose" || sub === undefined || isComputedWord(sub);
 }
 function isStatusRead(program, args) {
   if (program === COMMAND && args[0] === "crew") {
@@ -29419,56 +29489,6 @@ var RESETTERS = new Set([
   "sudo",
   "systemd-run"
 ]);
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-function isKitWord(word) {
-  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-function kitArguments(program, args) {
-  if (programName(program) === COMMAND)
-    return [...args];
-  if (INERT.has(program))
-    return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
-}
 var ASSIGNS_CLAUDECODE = new RegExp(`^${CLAUDECODE}=`, "i");
 var ENV_VALUED_LONG = ["--chdir", "--split-string"];
 function prefixDrop(prefix, program) {

@@ -38,10 +38,12 @@
  * skipped for the next free one, never reused.
  *
  * **A crew session never runs it** (D24): the command pushes a branch and opens a pull request,
- * in children no hook sees, and a crew session does neither. The Bash judge denies the command
- * however the line is spelled — a wrapper, an inner shell, a computed program, `env -u`
- * (`src/hooks/bash-judge.ts`) — and the check below is the second belt, for a line that reaches
- * the command another way. The guards deny the session's own `git push` and `gh pr create` too.
+ * in children no hook sees, and a crew session does neither. The Bash judge denies it by the
+ * hook's own environment, under every spelling it reads — the kit by name, by a path to the
+ * launcher, by its bundle behind `bun`, and through a wrapper or a program that runs its
+ * arguments (`find -exec`, `watch`), with redirections dropped (`src/hooks/bash-judge.ts`) — and
+ * the check below is the second belt, for a line that reaches the command another way. The
+ * guards deny the session's own `git push` and `gh pr create` too.
  *
  * **Inside Claude Code a review-gate key (`REVIEW_GATE_KEYS`) is refused** before this module
  * runs (`commands.ts`, as `workflow set` refuses it there). Outside Claude Code — the portal,
@@ -409,7 +411,7 @@ export async function proposeWorkflow(
   // A crew session never pushes and never opens a pull request (D24): its own `git push` and
   // `gh pr create` are denied by the guards, but this command makes both in children no hook
   // sees — so it refuses first, with the step a crew session really has. The Bash judge denies
-  // the command however the line is spelled (`src/hooks/bash-judge.ts`); this is the second
+  // the command under every spelling it reads (`src/hooks/bash-judge.ts`); this is the second
   // belt, for a line that reaches the command another way.
   if (crewIdOf(context.env) !== null) {
     return fail(

@@ -74,8 +74,8 @@ export type CrewNeverRun = keyof typeof CREW_NEVER_RUNS;
  * What a crew session never does with a workflow change (D24): `workflow propose` pushes a
  * branch and opens a pull request, and a crew session does neither. One home for the words the
  * Bash judge denies the command with (`src/hooks/bash-judge.ts`) and the command refuses with
- * (`src/workflow/propose.ts`) — the judge however the line is spelled, the command as the second
- * belt for a line that reaches it another way.
+ * (`src/workflow/propose.ts`) — the judge under every spelling it reads, the command as the
+ * second belt for a line that reaches it another way.
  */
 export const CREW_NEVER_PROPOSES = "proposes a workflow change";
 
