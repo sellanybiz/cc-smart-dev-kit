@@ -289,7 +289,6 @@ export async function startPortal(
   }
 
   const sources: LiveSources = createLiveSources({
-    cwd: options.cwd,
     fetch: ctx.probe.fetch,
     jobs: liveJobs,
     now: ctx.now,

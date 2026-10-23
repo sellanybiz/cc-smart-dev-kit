@@ -3973,10 +3973,12 @@ describe("the JSON API", () => {
       expect(crew.report).toBe(null);
       expect(crew.reviews).toEqual([]);
 
-      // A crew session the store does not know is a typed 404.
+      // A crew session the store does not know is a typed 404, in the machine-wide words.
       const missing = await world.call("/api/crew/nobody");
       expect(missing.status).toBe(404);
-      expect(JSON.parse(missing.body).error).toContain("no crew session");
+      expect(JSON.parse(missing.body).error).toBe(
+        'No crew session on this machine is "nobody": the Work page lists them.',
+      );
     } finally {
       world.portal.stop();
       backend.stop();

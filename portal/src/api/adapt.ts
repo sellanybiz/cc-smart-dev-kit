@@ -368,6 +368,8 @@ export function workOf(answer: WorkAnswer): WorkData {
   return {
     leads: groups,
     memory,
+    // A store or a folder the server could not read: the page says why, never an empty list.
+    note: answer.note,
     waitsNote:
       answer.waitsError === null
         ? null

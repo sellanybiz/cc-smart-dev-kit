@@ -42,8 +42,6 @@ const REPOS_TTL_MS = 30_000;
 
 /** What the poller needs: the portal's own context, the one reader per source, and a sink. */
 export interface LiveSourcesDeps {
-  /** The portal's folder: the project whose crew store is read. */
-  cwd: string;
   fetch: HealthFetch;
   now: () => number;
   paths: CliPaths;

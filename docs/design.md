@@ -951,10 +951,13 @@ Every line goes out on the stream as it is printed. The record is found on **the
 own folder's store would find nothing. `crew.answer` runs in a child too
 (`dist/cli.js crew answer --as-person -- <id> <text>`): a stopped crew session is resumed with
 a synchronous `claude --bg --resume`, so its path blocks as well; `--as-person` says the click
-is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. No
-synchronous spawn is reachable from an action, and no action ever forces anything.
-`crew.stop`, `crew.rm` and `worktrees.clean` refuse a POST without the page's confirmation
-(`confirm: true`).
+is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. **No
+synchronous spawn is reachable from these five actions**, and no action ever forces anything.
+Two others are still owed a child, named here so the rule is never read as already true
+everywhere: `doctor.run` (its launcher and `claude --version` checks spawn synchronously,
+`src/cli/doctor.ts`) and `companion.enable` (its `claude plugin enable` through `Machine.run`)
+— and so is the lock's `ps` on every action that writes. `crew.stop`, `crew.rm` and
+`worktrees.clean` refuse a POST without the page's confirmation (`confirm: true`).
 
 **A read never blocks the server either.** The flow report (`readFlow`, `src/sessions/flow.ts`)
 reads every saved transcript with synchronous file reads: about 200 ms on a warm cache and 10 s on

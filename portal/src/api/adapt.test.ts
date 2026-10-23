@@ -319,6 +319,21 @@ describe("the adapters", () => {
     ]);
   });
 
+  test("Work: the server's note about what could not be read reaches the page", () => {
+    // An empty list must say why: a store that could not be read, or a folder that is no
+    // project (the portal's normal start in the home folder).
+    const data = workOf({
+      crew: [],
+      leads: [],
+      note: "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are",
+      repo: null,
+      sessions: [],
+      waitsError: null,
+    });
+    expect(data.note).toContain("not in a git project");
+    expect(data.leads).toEqual([]);
+  });
+
   test("a crew page: the verdict in full, the diff per file, memory, reviews, the question", () => {
     const answer: CrewAnswer = {
       brief: null,

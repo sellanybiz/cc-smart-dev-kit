@@ -236,6 +236,15 @@ describe("Work from a folder that is no git project", () => {
     expect(answer.events.map((event) => event.type)).toEqual(["created"]);
   });
 
+  test("a crew page for an id no record has says the search was the machine's", async () => {
+    const w = world();
+    await createCrew(w.paths.stateDir, newCrew(w.repoA, "crew-A-1", "lead-a"), NOW);
+    const answer = await crewAnswerFor(w.deps, "crew-ghost");
+    expect(answer).toEqual({
+      error: 'No crew session on this machine is "crew-ghost": the Work page lists them.',
+    });
+  });
+
   test("Needs you lists the open questions of every repository's crew sessions", async () => {
     const w = world();
     await createCrew(w.paths.stateDir, newCrew(w.repoA, "crew-A-1", "lead-a"), NOW);

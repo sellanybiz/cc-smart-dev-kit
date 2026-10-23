@@ -407,19 +407,33 @@ describe("crew answer", () => {
     expect(world.err[0]).toContain("Say the answer");
   });
 
-  test("D52: the person through the portal answers with no Claude Code session, even from a crew session's own env", async () => {
+  test("D52: the person through the portal answers with no Claude Code session", async () => {
     const world = await askedWorld("blocked");
-    // The portal is not a Claude Code session, and the session that started it may have been
-    // a crew session: `asPerson` is the caller, and neither refusal applies.
-    const ctx = world.ctx(
-      { asPerson: true, processes: { commandLineOf: () => null, parentOf: () => null } },
-      { CC_SMART_DEV_KIT_CREW: ID },
-    );
+    // The portal's child is not a Claude Code session (`--as-person`), and it clears the crew
+    // environment of the session that started the portal (`src/portal/cli-child.ts`).
+    const ctx = world.ctx({ processes: { commandLineOf: () => null, parentOf: () => null } });
     const code = await runCrewAnswer({ asPerson: true, crew: NAME, text: "the port is 3210" }, ctx);
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBe("the port is 3210");
+  });
+
+  test("D52: a crew session that gives --as-person itself is still refused", async () => {
+    // The flag says "no session runs this", never "a crew session may answer another": the
+    // crew-session refusal is what stops a crew session answering for the person.
+    const world = await askedWorld("blocked");
+    const ctx = world.ctx(
+      { processes: { commandLineOf: () => null, parentOf: () => null } },
+      {
+        CC_SMART_DEV_KIT_CREW: ID,
+      },
+    );
+    const code = await runCrew(["answer", "--as-person", "--", NAME, "the port is 3210"], ctx);
+    expect(code).toBe(1);
+    expect(world.err[0]).toContain("a crew session never answers");
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.questions[0]?.answer).toBe(null);
   });
 
   test("D52: the portal's own child answers with `--as-person`, with no session above it", async () => {

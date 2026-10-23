@@ -69,7 +69,6 @@ function world(options: { now?: () => number; recent?: () => unknown[]; routerUp
     weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is not delegated" } },
   };
   const sources = createLiveSources({
-    cwd: home,
     fetch: async () =>
       options.routerUp === false
         ? Response.json({ error: "down" }, { status: 503 })

@@ -335,7 +335,16 @@ export async function crewAnswerFor(
     return { error: reasonOf(error) };
   }
   const named = findCrew(records, ref, "status");
-  if ("refusal" in named) return { error: named.refusal.lines.join(" ") };
+  if ("refusal" in named) {
+    // The lookup is the machine's, so a name no record has says so; an ambiguous name keeps the
+    // command's own words (they list each record it means). The first line is `findCrew`'s
+    // "none" sentence (`src/crew/board.ts`), whose "of this repository" would be wrong here.
+    const [first] = named.refusal.lines;
+    if (first?.startsWith("crew status: no crew session of this repository") === true) {
+      return { error: `No crew session on this machine is "${ref}": the Work page lists them.` };
+    }
+    return { error: named.refusal.lines.join(" ") };
+  }
   const record = named.record;
   const repo = record.repo;
   const allEvents = readCrewEvents(paths.stateDir, repo).events;

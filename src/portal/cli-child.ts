@@ -29,7 +29,7 @@ export const CLI_CHILD_TIMEOUT_MS = 180_000;
 
 /** What one CLI child came to: its lines in arrival order, its exit code, or why it did not run. */
 export interface CliChild {
-  /** Why it never started (no plugin folder, a spawn failure); null when it ran. */
+  /** Why it never started, or why it was ended before it finished (a signal); null when it ran. */
   error: null | string;
   /** Its exit code; null when a timeout killed it or it never ran. */
   exitCode: null | number;
@@ -92,6 +92,7 @@ export async function runCliChild(
     options.onLine?.(trimmed);
   };
   try {
+    const startedAt = Date.now();
     const child = Bun.spawn(
       [
         process.execPath,
@@ -112,9 +113,21 @@ export async function runCliChild(
     );
     await Promise.all([readLines(child.stdout, push), readLines(child.stderr, push)]);
     const code = await child.exited;
-    // `exited` gives the code; a signal (the timeout's kill) means it did not finish.
-    const signaled = child.signalCode !== null && child.signalCode !== undefined;
-    return { error: null, exitCode: signaled ? null : code, lines, timedOut: signaled };
+    const signal = child.signalCode ?? null;
+    if (signal === null) return { error: null, exitCode: code, lines, timedOut: false };
+    // Bun kills a child past its `timeout` with a signal; any other signal (an OOM kill, a
+    // person's `kill`) is not a timeout, and the line says so rather than blaming slowness.
+    // The clock is compared with slack: the kill and this check are not the same instant.
+    const limit = options.timeoutMs ?? CLI_CHILD_TIMEOUT_MS;
+    if (Date.now() - startedAt >= limit - 5_000) {
+      return { error: null, exitCode: null, lines, timedOut: true };
+    }
+    return {
+      error: `the command was ended by a signal (${String(signal)}) before it finished`,
+      exitCode: null,
+      lines,
+      timedOut: false,
+    };
   } catch (error) {
     return {
       error: `the command did not start: ${error instanceof Error ? error.message : String(error)}`,
