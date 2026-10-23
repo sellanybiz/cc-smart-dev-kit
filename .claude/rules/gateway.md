@@ -27,7 +27,7 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   `claude-…` model, change `model`, and only the fields that model refuses, through
   `requestForClaudeFallback` (its table names each FAMILY's rules, from Anthropic's
   migration guides). Never `system`, a message or a tool.
-  **The one named exception (the owner's D6, 2026-10-17):** every request to a Claude
+  **The one named exception (the owner's D6):** every request to a Claude
   target loses the thinking blocks whose signature carries the router's own mark, and
   nothing else (`forClaude` → `withoutRouterThinking`; § Answers another target gives for a
   Claude model). Its tests: `gateway.test.ts` › "prompts stay as Claude Code wrote them" ›
@@ -68,7 +68,7 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 - A redirect from an affordable backend becomes a 502.
 - A `claude-…` name is never an alias, and never routed anywhere but Anthropic.
 
-## Every slot the same way; no model chosen for anyone (owner, 2026-10-17)
+## Every slot the same way; no model chosen for anyone (owner)
 
 Five slots — scout (Haiku's), worker (Sonnet's), opus, fable, and judge (auto mode's
 safety checks), their ids in § Names. One rule set for all of them:
@@ -207,7 +207,7 @@ Claude judges auto mode's safety checks first.
 
 ## Answers another target gives for a Claude model
 
-**Thinking stays visible (the owner's D6, 2026-10-17; before it, from 2026-10-15, such
+**Thinking stays visible (the owner's D6; before it, such
 answers lost their thinking).** Every slot is reached by a Claude model's family, so a
 backend's answer lands in that model's conversation, and a Claude model refuses a thinking
 block whose signature it did not issue. So, in `fallback-answer.ts`:
@@ -259,7 +259,7 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   through a proxy from the environment (`src/gateway/proxy.test.ts`). Requests to
   Anthropic keep the environment's proxy settings. It is `{ proxy: false }` alone, which
   needs Bun ≥ `MIN_BUN` (`src/build-info/bun.ts`): never add a workaround for an older
-  Bun (owner, 2026-10-15). A new command that sends a key must not be on the CLI's
+  Bun (owner). A new command that sends a key must not be on the CLI's
   any-Bun list (`src/cli/bun-check.ts`).
 - Text from outside (an upstream's answer, a fetch error) is printed or logged
   only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`;

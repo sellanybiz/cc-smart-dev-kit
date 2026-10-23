@@ -6,7 +6,6 @@ paths:
   - "src/mcp/**"
   - "src/update/apply.ts"
   - "src/setup/auto-mode.ts"
-  - "src/setup/warp.ts"
 ---
 
 # What Setup May Do, And When

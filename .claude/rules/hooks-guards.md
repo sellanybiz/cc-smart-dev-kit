@@ -10,6 +10,7 @@ paths:
   - "src/hooks/bash-judge*"
   - "src/hooks/session-escape-guard*"
   - "src/hooks/crew-role*"
+  - "src/hooks/lead-notes*"
   - "src/hooks/specs.ts"
   - "src/hooks/run.ts"
   - "src/hooks/guards.test.ts"
@@ -257,7 +258,7 @@ a command must never report success when it did not run.
   `ownHooks` says (§ A crew session's own limits).
 - **A hook's `ask` cannot be silenced by the person.** Claude Code asks on every matching
   call: "Yes, don't ask again" leaves no rule a PreToolUse hook's answer respects (proved
-  live 2026-10-19, on the main-folder guard's Serena branch, retired in 0.6.0). So a guard
+  live, on the main-folder guard's Serena branch, since retired). So a guard
   asks only where the person's judgment is the point. When the fix is mechanical and Claude
   can do it itself, the guard denies and says the step, and the person is not interrupted on
   every call.

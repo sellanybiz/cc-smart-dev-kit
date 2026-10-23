@@ -6,7 +6,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 ## 1.1.0
 
 **Most of this release is the portal and the crew.** The portal is now the page the kit runs
-on: it starts with every Claude Code session and stays up, its eight pages draw real facts and
+on: it starts with every Claude Code session and stays up, its pages draw real facts and
 real actions, and each change is made in place, with a confirmation first. A lead's crew gained
 its own caps, leaner starts, and a way for two leads to talk.
 
@@ -25,8 +25,8 @@ its own caps, leaner starts, and a way for two leads to talk.
   what changed, or `✗ Not done:` with **Details** and **Try again**. The page is never
   reloaded to show it.
 - **The crew and worktree actions refuse without a confirmation** (`crew.stop`, `crew.rm`,
-  `worktrees.clean`), and the ones that answer a crew session's question or open a project's
-  files run with the person's own rights, never a crew session's.
+  `worktrees.clean`), and a crew session's question is answered from the page **as the person**,
+  through `crew answer --as-person`, which refuses a command a Claude session runs.
 - **The Settings page writes one value at a time**, through the same functions `workflow set`
   uses, and says where each value comes from. The Project card previews `project init`'s own
   plan and writes the two files with the hash of what it showed.
@@ -186,7 +186,7 @@ not: each interactive session start shows one line until you run `cc-smart-dev-k
 
 1.0.0 is such a version. It refuses the old worktree fields in a project's
 `.claude/cc-smart-dev-kit.json`; its `cc-smart-dev-kit project init`, run in each project,
-fixes them. Read its What's new before you run `cc-smart-dev-kit update`.
+fixes them. Read the 1.0.0 notes above before you run `cc-smart-dev-kit update`.
 
 **Claude Code's own plugin auto-update is now off for this marketplace.** It knows nothing of
 the hold, so it would install a major version by itself. The kit's own background update is
