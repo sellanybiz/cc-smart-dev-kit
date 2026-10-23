@@ -25,7 +25,7 @@
  *
  * The record is kept small like the ask log (`jsonl-log.ts`: `LOG_MAX_BYTES`, the newer half
  * kept). An unreadable transcript, and a record that cannot be written, are one stderr line,
- * exit 0: a subagent must always finish (`.claude/rules/hooks.md` § Fail safe).
+ * exit 0: a subagent must always finish (`.claude/rules/hooks-guards.md` § Fail safe).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

@@ -1,6 +1,6 @@
 /**
  * The frame fails closed for a guard, and records what the guards asked
- * (`.claude/rules/hooks.md` § Fail safe; `src/hooks/run.ts`,
+ * (`.claude/rules/hooks-guards.md` § Fail safe; `src/hooks/run.ts`,
  * `src/hooks/ask-log.ts`, `src/hooks/specs.ts`).
  *
  * A guard's own crash asks the person about the call in the guard's own domain: a bug must

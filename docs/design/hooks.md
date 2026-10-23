@@ -78,7 +78,7 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    the rule of `update.log` (past `LOG_MAX_BYTES` the newer half is kept). A write that fails
    is one line on stderr and never changes the answer.
 
-Each hook's answer when it fails (the same table is in `.claude/rules/hooks.md` § Fail safe):
+Each hook's answer when it fails (the same table is in `.claude/rules/hooks-guards.md` § Fail safe):
 
 | Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, crew-role) | Any other plugin hook | `hook notify` |
 |---|---|---|---|

@@ -122,6 +122,25 @@ describe("check-docs", () => {
     expect(checkDocs(files)).toEqual([]);
   });
 
+  test("a rule's section reference resolves, and a missing one fails", () => {
+    const rules = {
+      path: ".claude/rules/x.md",
+      text: '---\npaths:\n  - "src/**"\n---\n\n# A rule\n\n## Fail safe\n\nText.\n',
+    };
+    const good = world([
+      rules,
+      {
+        path: "src/a.ts",
+        text: "// `.claude/rules/x.md` § Fail safe, and `.claude/rules/x.md` alone",
+      },
+    ]);
+    expect(checkDocs(good)).toEqual([]);
+    const bad = world([rules, { path: "src/a.ts", text: "// `.claude/rules/x.md` § Fail closed" }]);
+    const broken = checkDocs(bad);
+    expect(broken).toHaveLength(1);
+    expect(broken[0]?.why).toContain('has no section "Fail closed"');
+  });
+
   test("a link to a missing heading in the same file fails", () => {
     const files = world([
       { path: "README.md", text: "# kit\n\n## Install\n\nSee [the gateway](#the-gateway).\n" },

@@ -95,7 +95,7 @@ Tests sit beside the code as `*.test.ts`.
 | `bun run lint` | Biome: lint and format check. `bun run format` fixes formatting. |
 | `bun run check:neutral` | Fails when a file names the publisher. |
 | `bun run check:duplicates` | Fails when a sentence of 12+ words repeats across the plugin's instructions, skills, agents, output styles and workflow scripts. |
-| `bun run check:docs` | Fails when a reference to a design page, or to a section of the README, names a heading that does not exist; when a design reference still points at the index; and when a `](#…)` link in a file names no heading in that file. Skips the plans and the research archives: those hold what was true then. |
+| `bun run check:docs` | Fails when a reference to a design page, a rule, or a section of the README names a heading that does not exist; when a design reference points at the index and no page holds that section; and when a `](#…)` link in a file names no heading in that file. Skips the plans, the research archives and the eval fixtures: those describe what was true then, or another project. |
 | `bun run check:core-lines` | Fails when `plugin/instructions/core.md` passes 140 lines, and warns above 130: every session on every machine loads that file. |
 | `bun test` | The tests. |
 | `bun run build` / `build:check` | Rebuild `plugin/dist`, or fail when it is stale. |

@@ -12,7 +12,7 @@
  *
  * Answers hold what the server-rendered pages hold — the same fact readers, the same words —
  * and never a key, an address with a credential, a prompt or an answer
- * (`.claude/rules/portal.md` § A key never reaches a page).
+ * (`.claude/rules/portal.md` § The door is never relaxed).
  */
 
 import type { Check as DoctorCheck } from "../../cli/doctor";

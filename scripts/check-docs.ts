@@ -27,6 +27,7 @@ export const README = "README.md";
 export const SKIPPED_FOLDERS = [
   ".claude/plans/",
   ".claude/research/",
+  "evals/",
   "node_modules/",
   "portal/node_modules/",
   "plugin/dist/",
@@ -38,18 +39,6 @@ export const SKIPPED_FILES = new Set([
   "scripts/check-docs.test.ts",
 ]);
 
-/**
- * A reference that cannot be made true today, with its reason. One entry: a comment in a
- * bundle keeps a section name the design no longer uses, and a comment reaches `plugin/dist`,
- * which only the release rebuilds. Drop the entry once a release has rebuilt the bundle.
- */
-export const ALLOWED: { file: string; section: string; reason: string }[] = [
-  {
-    file: "src/crew/command.ts",
-    section: "lead and crew sessions",
-    reason: "The design's section is Lead and the crew; a bundle comment cannot be rebuilt here.",
-  },
-];
 /** Only text files are read. */
 export const TEXT = /\.(md|ts|tsx|js|mjs|sh|ps1|json|ya?ml|html|css)$/;
 
@@ -114,9 +103,15 @@ export function slugOf(name: string): string {
     .replace(/ /g, "-");
 }
 
-/** The longest heading the text starts with, at a word boundary, or null. */
+/**
+ * The longest heading the text names, or null. The text may be the heading's start ("The
+ * notifier" for "The notifier and its wirings"), or, for a heading whose own name carries the
+ * rest of its sentence, a unique prefix of it ("Fail closed" for "Fail closed when …"): six
+ * letters or more, at a word boundary, and no second heading may start the same way.
+ */
 export function longestHeadingIn(text: string, headings: readonly Heading[]): Heading | null {
-  const t = normalizeHeading(text);
+  // The capture carries the rest of the line: a closing bracket, a full stop, a comment tail.
+  const t = normalizeHeading(text).replace(/[\s).,;:`*/-]+$/, "");
   let best: Heading | null = null;
   let bestLength = 0;
   for (const h of headings) {
@@ -131,20 +126,15 @@ export function longestHeadingIn(text: string, headings: readonly Heading[]): He
       }
     }
   }
-  return best;
-}
-
-/** Is this file's reference to this section one that cannot be fixed today? */
-function allowedRef(filePath: string, section: string): boolean {
-  const t = normalizeHeading(section);
-  return ALLOWED.some((a) => {
-    if (a.file !== filePath) return false;
-    const n = normalizeHeading(a.section);
-    return (
-      t.startsWith(n) &&
-      (t.length === n.length || !/[a-z0-9]/.test(t.slice(n.length, n.length + 1)))
-    );
+  if (best) return best;
+  if (t.length < 6) return null;
+  const reverse = headings.filter((h) => {
+    const n = normalizeHeading(h.name);
+    if (!n.startsWith(t)) return false;
+    const next = n.slice(t.length, t.length + 1);
+    return next === "" || !/[a-z0-9]/.test(next);
   });
+  return reverse.length === 1 ? (reverse[0] ?? null) : null;
 }
 
 /** The page a design path names, or null for the index. */
@@ -235,7 +225,7 @@ export function checkDocs(files: readonly SourceFile[]): BrokenRef[] {
         // every page, so a reader finds it there. `src/` comments keep this form on purpose:
         // a comment reaches `plugin/dist`, and a bundle is rebuilt only by the release.
         const holder = [...pages.values()].some((headings) => longestHeadingIn(section, headings));
-        if (!holder && !allowedRef(file.path, section)) {
+        if (!holder) {
           broken.push({
             file: file.path,
             line: lineAt(text, at),
@@ -256,7 +246,37 @@ export function checkDocs(files: readonly SourceFile[]): BrokenRef[] {
         continue;
       }
       if (!longestHeadingIn(section, headings)) {
-        if (allowedRef(file.path, section)) continue;
+        broken.push({
+          file: file.path,
+          line: lineAt(text, at),
+          text: excerpt(text, at),
+          why: `${path} has no section "${section.trim().slice(0, 60)}"`,
+        });
+      }
+    }
+
+    // A rule's path, with a section after it: the rule must exist and hold the section.
+    const ruleRef = /(?<![-\w])((?:\.claude\/)?rules\/[\w-]+\.md)/g;
+    for (const m of text.matchAll(ruleRef)) {
+      const at = m.index ?? 0;
+      const raw = m[1] ?? "";
+      const path = raw.startsWith(".claude/") ? raw : `.claude/${raw}`;
+      const rule = byPath.get(path);
+      // The section mark must follow the path; a bare rule pointer only has to exist.
+      const ahead = text.slice(at + m[0].length, at + m[0].length + 240);
+      const forward = ahead.match(/^[)`\s]*§§?\s*([^\n]{0,120}(?:\n[^\n]{0,80})?)/);
+      const section = forward?.[1];
+      if (!rule) {
+        broken.push({
+          file: file.path,
+          line: lineAt(text, at),
+          text: excerpt(text, at),
+          why: `${path} does not exist`,
+        });
+        continue;
+      }
+      if (section === undefined) continue;
+      if (!longestHeadingIn(section, headingsOf(rule.text))) {
         broken.push({
           file: file.path,
           line: lineAt(text, at),

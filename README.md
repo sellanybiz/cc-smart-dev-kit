@@ -227,8 +227,9 @@ After that, use `cc-smart-dev-kit setup` to set up again (for example after an u
 
 ## Release notes
 
-What each release changed is in [CHANGELOG.md](CHANGELOG.md), newest first. This version is
-**1.1.0**: the portal, crew caps per lead, and a verification gate.
+What each release changed — the "What's new" an update message points you to — is in
+[CHANGELOG.md](CHANGELOG.md), newest first. This version is **1.1.0**: the portal, crew caps
+per lead, and a verification gate.
 
 ## Older versions
 
@@ -712,6 +713,10 @@ the file. A backup is never executable.
 
 The command follows `HOME` and `CLAUDE_CONFIG_DIR`. With `CLAUDE_CONFIG_DIR` set, its
 state and backups live under that folder. The launcher `~/.local/bin/cc-smart-dev-kit` is one
+file for every config folder, so a `restore` under one config folder can remove a
+launcher another one still uses. A launcher started without `CLAUDE_CONFIG_DIR` looks in
+`~/.claude`.
+
 ## Moving from anymodel
 
 Until 0.3.0 the plugin, its marketplace, its command and its slots were named `anymodel`,
@@ -729,11 +734,6 @@ own model traffic goes through.
 one, with the name it becomes. The three cases — `.claude/anymodel.json`,
 `.claude/anymodel/`, and a hook that still calls the old launcher — are in
 [docs/migrate.md](docs/migrate.md) § Projects that used the old name.
-
-
-- **A hook in `.claude/settings.json`** that still calls `"$HOME/.local/bin/anymodel" hook
-  <name>` — that launcher went with 0.2.x. Change it to
-  `"$HOME/.local/bin/cc-smart-dev-kit" hook <name>` (`cc-smart-dev-kit hook` prints the lines).
 
 ## The AI gateway (optional)
 
