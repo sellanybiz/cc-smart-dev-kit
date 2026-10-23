@@ -2878,9 +2878,9 @@ describe("D59: a recorded lead never routes a building phase around the crew que
   /** The refusal a lead gets for a building launch, in the guard's own words. */
   function queued(what: string, why: string): string {
     return [
-      `A lead never routes a building phase around its crew queue: ${what} can change files, and a \`crew start\` from this lead would queue now — ${why}.`,
+      `A lead never routes a building phase around its crew queue: ${what} may build, and a \`crew start\` from this lead would queue now — ${why}.`,
       `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
-      `Read-only launches are never held: the built-in \`Explore\`, \`Plan\`, \`claude-code-guide\` or \`statusline-setup\`, the kit's own \`${PLUGIN}:<name>\` agents for reviewer, auditor, ui-verifier, and the kit's two read-only Workflows.`,
+      `Read-only launches are never held: the built-in \`Explore\`, \`Plan\`, \`claude-code-guide\` or \`statusline-setup\`, the kit's own \`${PLUGIN}:<name>\` agents for reviewer, auditor, ui-verifier, and the kit's two read-only Workflows called by those ids with nothing else.`,
     ].join("\n");
   }
 

@@ -1688,9 +1688,9 @@ function queueSubject(judged: Judgement, input: HookInput): string {
  */
 function queueRefusal(what: string, why: string): string {
   return [
-    `A lead never routes a building phase around its crew queue: ${what} can change files, and a \`crew start\` from this lead would queue now — ${why}.`,
+    `A lead never routes a building phase around its crew queue: ${what} may build, and a \`crew start\` from this lead would queue now — ${why}.`,
     `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
-    `Read-only launches are never held: the built-in ${levelsText(READ_ONLY_BUILT_INS)}, the kit's own \`${PLUGIN}:<name>\` agents for ${READ_ONLY_KIT_AGENTS.join(", ")}, and the kit's two read-only Workflows.`,
+    `Read-only launches are never held: the built-in ${levelsText(READ_ONLY_BUILT_INS)}, the kit's own \`${PLUGIN}:<name>\` agents for ${READ_ONLY_KIT_AGENTS.join(", ")}, and the kit's two read-only Workflows called by those ids with nothing else.`,
   ].join("\n");
 }
 
