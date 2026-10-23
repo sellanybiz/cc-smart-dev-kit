@@ -223,6 +223,13 @@ async function open(options: {
    * json` answers, OLDEST FIRST as the real one prints them. One minute apart, from 09:00 UTC.
    */
   journal?: { level: "ERROR" | "INFO" | "WARN"; text: string }[];
+  /**
+   * Held open until the test releases it: the journal read waits on it, so a test can prove
+   * another request answers while `journalctl` is still out.
+   */
+  journalGate?: Promise<void>;
+  /** Runs when the journal read starts: the test's sign that it is really in flight. */
+  onJournalRead?: () => void;
   /** The open breakers the router's health page reports: where `heldNow` comes from. */
   routerBreakers?: Record<
     string,
@@ -358,23 +365,20 @@ async function open(options: {
     },
     // A machine with systemd: the fake systemctl answers. Without it, every command is
     // refuted, as it is on a machine that has no such program.
-    runner: (cmd) => {
-      if (options.systemd !== true) return { exitCode: 1, output: `no ${cmd[0]} here` };
-      if (cmd[0] === "systemctl") return { exitCode: 0, output: "" };
-      // The router's journal, as `journalctl -o json` prints it: one JSON object per line, in
-      // the journal's own order (oldest first). `__REALTIME_TIMESTAMP` is microseconds.
-      if (cmd[0] === "journalctl") {
-        const at = Date.UTC(2026, 9, 17, 9, 0, 0);
-        const lines = (options.journal ?? []).map((one, index) =>
-          JSON.stringify({
-            __REALTIME_TIMESTAMP: String((at + index * 60_000) * 1000),
-            MESSAGE: `${one.level} ${one.text}`,
-            PRIORITY: one.level === "ERROR" ? "3" : one.level === "WARN" ? "4" : "6",
-          }),
-        );
-        return { exitCode: 0, output: lines.join("\n") };
+    runRead: async (cmd) => {
+      if (cmd[0] === "journalctl" && options.journalGate !== undefined) {
+        options.onJournalRead?.();
+        await options.journalGate;
       }
-      return { exitCode: 1, output: `no ${cmd[0]} here` };
+      return fakeRunner(cmd);
+    },
+    runner: (cmd) => {
+      // A page's reads are awaited off the loop (`runRead`). A journal read on this path would
+      // hold the whole server while it ran — the bug this seam exists to prevent.
+      if (cmd[0] === "journalctl" && options.journalGate !== undefined) {
+        throw new Error("the journal was read through the blocking runner");
+      }
+      return fakeRunner(cmd);
     },
     // No system folders of the host: a real `/usr/lib/node_modules/omniroute` is not this test.
     systemFolders: [],
@@ -383,6 +387,26 @@ async function open(options: {
     // from the project's checkout).
     which: (name) => (options.gitOnPath === true && name === "git" ? Bun.which("git") : null),
   };
+
+  /** The machine's commands: a fake `systemctl` and `journalctl`, and nothing else. */
+  function fakeRunner(cmd: string[]): { exitCode: number; output: string } {
+    if (options.systemd !== true) return { exitCode: 1, output: `no ${cmd[0]} here` };
+    if (cmd[0] === "systemctl") return { exitCode: 0, output: "" };
+    // The router's journal, as `journalctl -o json` prints it: one JSON object per line, in
+    // the journal's own order (oldest first). `__REALTIME_TIMESTAMP` is microseconds.
+    if (cmd[0] === "journalctl") {
+      const at = Date.UTC(2026, 9, 17, 9, 0, 0);
+      const lines = (options.journal ?? []).map((one, index) =>
+        JSON.stringify({
+          __REALTIME_TIMESTAMP: String((at + index * 60_000) * 1000),
+          MESSAGE: `${one.level} ${one.text}`,
+          PRIORITY: one.level === "ERROR" ? "3" : one.level === "WARN" ? "4" : "6",
+        }),
+      );
+      return { exitCode: 0, output: lines.join("\n") };
+    }
+    return { exitCode: 1, output: `no ${cmd[0]} here` };
+  }
   const portal = await startPortal(ctx, {
     cwd,
     doctor:
@@ -1057,6 +1081,50 @@ describe("every answer", () => {
       const [firstWarn = -1, secondWarn = -1] = warnOrder;
       expect(firstWarn).toBeGreaterThan(secondWarn);
       expect(warnings).not.toContain("the oldest line");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the journal read is off the loop: another page answers while journalctl is still out", async () => {
+    // A synchronous `journalctl` in the server held every page, every action and the live
+    // stream for as long as the command ran (B6e: 20–65 ms a load, and slower on a busy
+    // machine). The read is awaited through `runRead` (`Bun.spawn`), so this second request
+    // answers while the first one's journal read has not come back.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    let release: () => void = () => undefined;
+    const journalGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let readingStarted: () => void = () => undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      readingStarted = resolve;
+    });
+    const world = await open({
+      backendPort: backend.port,
+      journal: [{ level: "ERROR", text: "the router said no" }],
+      journalGate,
+      onJournalRead: () => readingStarted(),
+      systemd: true,
+    });
+    try {
+      const health = world.call("/api/health");
+      await readStarted;
+      // The read is in flight. A second request on the same server answers anyway.
+      const door = await world.call("/healthz");
+      expect(door.status).toBe(200);
+      const settings = await world.call("/api/settings");
+      expect(settings.status).toBe(200);
+      release();
+      const answer = await health;
+      expect(answer.status).toBe(200);
+      const body = JSON.parse(answer.body) as {
+        log: { lines: { text: string }[]; note: null | string };
+      };
+      expect(body.log.note).toBe(null);
+      // The journal's line, as the answer holds it (`ERROR <the router's words>`).
+      expect(body.log.lines.map((line) => line.text)).toEqual(["ERROR the router said no"]);
     } finally {
       world.portal.stop();
       backend.stop();

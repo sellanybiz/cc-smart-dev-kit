@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
+import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
 import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "./commands";
 import {
@@ -30,7 +31,7 @@ import {
   restartPendingFile,
   SOCKET_NAME,
 } from "./service";
-import { TASK_LABEL, taskFacts, taskRunsCopy } from "./service-windows";
+import { TASK_LABEL, taskFactsFrom, taskQueryCommand, taskRunsCopy } from "./service-windows";
 import { shownValue } from "./settings";
 import { FAMILY_SLOTS, isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
 
@@ -156,7 +157,7 @@ export async function gatewayChecks(options: {
     }
   }
 
-  const holder = portHolderCheck(options, config.port);
+  const holder = await portHolderCheck(options, config.port);
   checks.push(holder.check);
 
   const health = await routerHealth(config.port, options.fetch);
@@ -324,14 +325,18 @@ function notAnswering(
  * The definition that keeps the router running: systemd's socket unit (which holds the
  * port across restarts), or the Windows task (which holds the port itself while its
  * router runs).
+ *
+ * **It awaits `runner`**, so a caller off the server's event loop (the portal's pages) passes
+ * its asynchronous runner and never freezes a page on `systemctl`; the command line's own
+ * synchronous runner answers at once, and `await` takes a value as it is.
  */
-export function portHolderCheck(
-  options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
+export async function portHolderCheck(
+  options: { paths: CliPaths; runner: CommandRunner; service: RouterServiceKind },
   port: number,
-): { check: DoctorCheck; state: SocketState } {
+): Promise<{ check: DoctorCheck; state: SocketState }> {
   return options.service === "scheduled-task"
-    ? taskDefinitionCheck(options)
-    : socketCheck(options, port);
+    ? await taskDefinitionCheck(options)
+    : await socketCheck(options, port);
 }
 
 /**
@@ -339,10 +344,10 @@ export function portHolderCheck(
  * router's copy: a task someone re-pointed by hand is the one failure the file alone
  * cannot show.
  */
-function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
+async function taskDefinitionCheck(options: { paths: CliPaths; runner: CommandRunner }): Promise<{
   check: DoctorCheck;
   state: SocketState;
-} {
+}> {
   const { paths } = options;
   const where = tildify(paths.routerTaskFile, paths.home);
   if (!existsSync(paths.routerTaskFile)) {
@@ -351,7 +356,7 @@ function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
       state: "other",
     };
   }
-  const facts = taskFacts(options.runner);
+  const facts = taskFactsFrom(await options.runner(taskQueryCommand()));
   if (!facts.registered) {
     return {
       check: {
@@ -383,10 +388,10 @@ function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
  * an older plugin version), or on another port than the config's, a restart refuses new requests
  * while the old router drains.
  */
-function socketCheck(
-  options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
+async function socketCheck(
+  options: { paths: CliPaths; runner: CommandRunner; service: RouterServiceKind },
   port: number,
-): { check: DoctorCheck; state: SocketState } {
+): Promise<{ check: DoctorCheck; state: SocketState }> {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
   if (!existsSync(paths.routerSocketFile)) {
@@ -412,7 +417,8 @@ function socketCheck(
   if (options.service !== "systemd") {
     return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
   }
-  const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  // The second question is asked only when the first says the socket is not active.
+  const active = await options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
   const word = active.output.trim().split("\n")[0] || "unknown";
   if (active.exitCode === 0) {
     return {
@@ -420,7 +426,7 @@ function socketCheck(
       state: "open",
     };
   }
-  const result = options.runner([
+  const result = await options.runner([
     "systemctl",
     "--user",
     "show",

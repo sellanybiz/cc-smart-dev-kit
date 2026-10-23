@@ -138,15 +138,28 @@ export function parseTaskFacts(output: string): TaskFacts {
   };
 }
 
-/** The task's state, its last result and its action, from Task Scheduler. */
-export function taskFacts(runner: Runner): TaskFacts {
-  const result = runner([POWERSHELL, ...PS_FLAGS, taskQuery()]);
+/** The command that asks Windows for the task's facts: `taskFactsFrom` reads its answer. */
+export function taskQueryCommand(): string[] {
+  return [POWERSHELL, ...PS_FLAGS, taskQuery()];
+}
+
+/**
+ * The task's facts from the answer to `taskQueryCommand()`, or the same words when the question
+ * itself failed. A caller with an asynchronous runner (the portal's pages) awaits the command
+ * and hands the answer here; `taskFacts` is the synchronous one the service's own steps use.
+ */
+export function taskFactsFrom(result: { exitCode: number; output: string }): TaskFacts {
   if (result.exitCode !== 0) {
     throw new Error(
       `could not ask Windows about ${TASK_LABEL} (exit ${result.exitCode}): ${oneLine(result.output, 300)}`,
     );
   }
   return parseTaskFacts(result.output);
+}
+
+/** The task's state, its last result and its action, from Task Scheduler. */
+export function taskFacts(runner: Runner): TaskFacts {
+  return taskFactsFrom(runner(taskQueryCommand()));
 }
 
 /** True when the task runs now. */

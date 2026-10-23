@@ -363,13 +363,15 @@ function clockOf(ms: number, nowMs: number): string {
 /**
  * The router's recent log lines, newest last. `journalctl --user` only: the router runs as a
  * user unit. A machine without journald, or with no unit yet, gets no lines and a note.
+ * **Awaits the context's read runner** (`Bun.spawn`): a synchronous `journalctl` here froze
+ * every page and the live stream for 20–65 ms on each Health or Overview load (B6e).
  */
-export function routerLog(
+export async function routerLog(
   ctx: PortalContext,
   count: number,
-): { lines: LogLine[]; note: null | string } {
+): Promise<{ lines: LogLine[]; note: null | string }> {
   if (!ctx.systemd) return { lines: [], note: "no systemd here, so there is no journal to read" };
-  const result = ctx.runner([
+  const result = await ctx.runRead([
     "journalctl",
     "--user",
     "-u",
@@ -1339,12 +1341,17 @@ export interface PortHolder {
   state: SocketState;
 }
 
-/** The port holder for the config's port; null where this machine runs no service for it. */
-export function portHolder(ctx: PortalContext, port: number): null | PortHolder {
+/**
+ * The port holder for the config's port; null where this machine runs no service for it.
+ * **Awaits the context's read runner** (`Bun.spawn`): `portHolderCheck` asks `systemctl` (or the
+ * Windows task), and a synchronous spawn here froze every page and the live stream while it ran
+ * (B6e).
+ */
+export async function portHolder(ctx: PortalContext, port: number): Promise<null | PortHolder> {
   const kind = routerServiceKind(ctx.machine.platform, ctx.which);
   if (kind === "none") return null;
-  const { check, state } = portHolderCheck(
-    { paths: ctx.paths, runner: ctx.runner, service: kind },
+  const { check, state } = await portHolderCheck(
+    { paths: ctx.paths, runner: ctx.runRead, service: kind },
     port,
   );
   return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };

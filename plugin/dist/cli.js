@@ -13908,12 +13908,17 @@ function parseTaskFacts(output) {
     state
   };
 }
-function taskFacts(runner) {
-  const result = runner([POWERSHELL, ...PS_FLAGS, taskQuery()]);
+function taskQueryCommand() {
+  return [POWERSHELL, ...PS_FLAGS, taskQuery()];
+}
+function taskFactsFrom(result) {
   if (result.exitCode !== 0) {
     throw new Error(`could not ask Windows about ${TASK_LABEL} (exit ${result.exitCode}): ${oneLine(result.output, 300)}`);
   }
   return parseTaskFacts(result.output);
+}
+function taskFacts(runner) {
+  return taskFactsFrom(runner(taskQueryCommand()));
 }
 function taskRunning(runner) {
   return taskFacts(runner).state === "Running";
@@ -16044,7 +16049,7 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
-  const holder = portHolderCheck(options, config.port);
+  const holder = await portHolderCheck(options, config.port);
   checks.push(holder.check);
   const health = await routerHealth(config.port, options.fetch);
   checks.push("error" in health ? { ok: false, ...notAnswering(options, service, config.port, health.error, holder.state) } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
@@ -16161,10 +16166,10 @@ function notAnswering(options, service, port, error, holder) {
       return { text: `the router does not answer on 127.0.0.1:${port} (${error})`, fix };
   }
 }
-function portHolderCheck(options, port) {
-  return options.service === "scheduled-task" ? taskDefinitionCheck(options) : socketCheck(options, port);
+async function portHolderCheck(options, port) {
+  return options.service === "scheduled-task" ? await taskDefinitionCheck(options) : await socketCheck(options, port);
 }
-function taskDefinitionCheck(options) {
+async function taskDefinitionCheck(options) {
   const { paths } = options;
   const where = tildify(paths.routerTaskFile, paths.home);
   if (!existsSync12(paths.routerTaskFile)) {
@@ -16173,7 +16178,7 @@ function taskDefinitionCheck(options) {
       state: "other"
     };
   }
-  const facts = taskFacts(options.runner);
+  const facts = taskFactsFrom(await options.runner(taskQueryCommand()));
   if (!facts.registered) {
     return {
       check: {
@@ -16199,7 +16204,7 @@ function taskDefinitionCheck(options) {
     state: facts.state === "Running" ? "open" : "other"
   };
 }
-function socketCheck(options, port) {
+async function socketCheck(options, port) {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
   if (!existsSync12(paths.routerSocketFile)) {
@@ -16225,7 +16230,7 @@ function socketCheck(options, port) {
   if (options.service !== "systemd") {
     return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
   }
-  const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  const active = await options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
   const word = active.output.trim().split(`
 `)[0] || "unknown";
   if (active.exitCode === 0) {
@@ -16234,7 +16239,7 @@ function socketCheck(options, port) {
       state: "open"
     };
   }
-  const result = options.runner([
+  const result = await options.runner([
     "systemctl",
     "--user",
     "show",

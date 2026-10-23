@@ -16,6 +16,21 @@ import type { PluginFolder } from "./plugin-folder";
 /** The registry and health `fetch`: the real `fetch` in use, a fake in a test. */
 export type PortalFetch = HealthFetch;
 
+/** What a read command answered: its exit code, and its stdout and stderr together. */
+export interface CommandAnswer {
+  exitCode: number;
+  output: string;
+}
+
+/**
+ * Runs a **read** command off the server's event loop (`Bun.spawn`, never `spawnSync`): the
+ * router's journal (`journalctl`), its listener's state (`systemctl is-active`). A page load
+ * asks these, and a synchronous spawn froze every page, every action and the live stream for
+ * as long as the command ran (B6e measured `journalctl -n 200` at 20–65 ms). The actions' own
+ * changing commands keep `runner`.
+ */
+export type ReadRunner = (cmd: string[]) => Promise<CommandAnswer>;
+
 export interface PortalContext {
   /** `Bun.version`, for the header. */
   bunVersion: string;
@@ -40,6 +55,8 @@ export interface PortalContext {
   pluginFolder: () => PluginFolder;
   /** Asks the router's health page: `realProbe()` in use, a fake in a test. */
   probe: HealthProbe;
+  /** Runs what a page or the live stream reads, without blocking the server (`ReadRunner`). */
+  runRead: ReadRunner;
   /** Runs `systemctl` and the plugin's commands. */
   runner: Runner;
   /**

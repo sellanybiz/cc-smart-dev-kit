@@ -14640,12 +14640,17 @@ function parseTaskFacts(output) {
     state
   };
 }
-function taskFacts(runner) {
-  const result = runner([POWERSHELL, ...PS_FLAGS, taskQuery()]);
+function taskQueryCommand() {
+  return [POWERSHELL, ...PS_FLAGS, taskQuery()];
+}
+function taskFactsFrom(result) {
   if (result.exitCode !== 0) {
     throw new Error(`could not ask Windows about ${TASK_LABEL} (exit ${result.exitCode}): ${oneLine(result.output, 300)}`);
   }
   return parseTaskFacts(result.output);
+}
+function taskFacts(runner) {
+  return taskFactsFrom(runner(taskQueryCommand()));
 }
 function taskRunning(runner) {
   return taskFacts(runner).state === "Running";
@@ -16794,7 +16799,7 @@ async function gatewayChecks(options) {
       return checks;
     }
   }
-  const holder = portHolderCheck(options, config.port);
+  const holder = await portHolderCheck(options, config.port);
   checks.push(holder.check);
   const health = await routerHealth(config.port, options.fetch);
   checks.push("error" in health ? { ok: false, ...notAnswering(options, service, config.port, health.error, holder.state) } : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` });
@@ -16911,10 +16916,10 @@ function notAnswering(options, service, port, error, holder) {
       return { text: `the router does not answer on 127.0.0.1:${port} (${error})`, fix };
   }
 }
-function portHolderCheck(options, port) {
-  return options.service === "scheduled-task" ? taskDefinitionCheck(options) : socketCheck(options, port);
+async function portHolderCheck(options, port) {
+  return options.service === "scheduled-task" ? await taskDefinitionCheck(options) : await socketCheck(options, port);
 }
-function taskDefinitionCheck(options) {
+async function taskDefinitionCheck(options) {
   const { paths } = options;
   const where = tildify(paths.routerTaskFile, paths.home);
   if (!existsSync21(paths.routerTaskFile)) {
@@ -16923,7 +16928,7 @@ function taskDefinitionCheck(options) {
       state: "other"
     };
   }
-  const facts = taskFacts(options.runner);
+  const facts = taskFactsFrom(await options.runner(taskQueryCommand()));
   if (!facts.registered) {
     return {
       check: {
@@ -16949,7 +16954,7 @@ function taskDefinitionCheck(options) {
     state: facts.state === "Running" ? "open" : "other"
   };
 }
-function socketCheck(options, port) {
+async function socketCheck(options, port) {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
   if (!existsSync21(paths.routerSocketFile)) {
@@ -16975,7 +16980,7 @@ function socketCheck(options, port) {
   if (options.service !== "systemd") {
     return { check: { ok: true, text: `the socket unit ${where} is up to date` }, state: "other" };
   }
-  const active = options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
+  const active = await options.runner(["systemctl", "--user", "is-active", SOCKET_NAME]);
   const word = active.output.trim().split(`
 `)[0] || "unknown";
   if (active.exitCode === 0) {
@@ -16984,7 +16989,7 @@ function socketCheck(options, port) {
       state: "open"
     };
   }
-  const result = options.runner([
+  const result = await options.runner([
     "systemctl",
     "--user",
     "show",
@@ -33977,10 +33982,10 @@ function leadingTimeOff(message) {
 function clockOf(ms, nowMs) {
   return formatClock(Math.floor(ms / 1000), nowMs);
 }
-function routerLog(ctx, count) {
+async function routerLog(ctx, count) {
   if (!ctx.systemd)
     return { lines: [], note: "no systemd here, so there is no journal to read" };
-  const result = ctx.runner([
+  const result = await ctx.runRead([
     "journalctl",
     "--user",
     "-u",
@@ -34465,11 +34470,11 @@ function mcpRows(ctx) {
     state: server.state
   }));
 }
-function portHolder(ctx, port) {
+async function portHolder(ctx, port) {
   const kind = routerServiceKind(ctx.machine.platform, ctx.which);
   if (kind === "none")
     return null;
-  const { check, state } = portHolderCheck({ paths: ctx.paths, runner: ctx.runner, service: kind }, port);
+  const { check, state } = await portHolderCheck({ paths: ctx.paths, runner: ctx.runRead, service: kind }, port);
   return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };
 }
 function planWindow(ctx) {
@@ -34771,6 +34776,7 @@ async function overviewData(deps, config) {
   const limits = limitFacts(ctx);
   const omniroute = config.backends.omniroute;
   const dashboard = omniroute === undefined ? null : backendAddress(omniroute.baseUrl);
+  const log = await routerLog(ctx, 200);
   return {
     backends: await backendRows(ctx, config),
     dashboardUrl: dashboard === null ? null : `${dashboard}/`,
@@ -34780,7 +34786,7 @@ async function overviewData(deps, config) {
     router,
     slots: slotRows(config, router),
     switches: switchFacts(ctx, config),
-    warnings: routerLog(ctx, 200).lines.filter((line) => line.level !== "INFO")
+    warnings: log.lines.filter((line) => line.level !== "INFO")
   };
 }
 async function slotsData(deps, config) {
@@ -34822,7 +34828,7 @@ async function healthData(deps, config) {
     backends: await backendRows(ctx, config),
     fallbacks: limits.fallbacks,
     limits: limits.limits,
-    log: routerLog(ctx, 200),
+    log: await routerLog(ctx, 200),
     router
   };
 }
@@ -37029,7 +37035,7 @@ async function healthAnswer2(deps) {
     ...await healthData(deps, deps.found.config),
     configured: true,
     error: null,
-    portHolder: portHolder(deps.action.portal, deps.found.config.port)
+    portHolder: await portHolder(deps.action.portal, deps.found.config.port)
   };
 }
 function gatewayKeyState(found, fileThere) {
@@ -40075,6 +40081,25 @@ var runner = (cmd) => {
     return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
   }
 };
+var runRead = async (cmd) => {
+  try {
+    const child = Bun.spawn(cmd, {
+      stderr: "pipe",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: RUN_TIMEOUT_MS3,
+      windowsHide: true
+    });
+    const [output, errors, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    return { exitCode: child.signalCode === null ? exitCode : 1, output: `${output}${errors}` };
+  } catch (error) {
+    return { exitCode: 127, output: error instanceof Error ? error.message : String(error) };
+  }
+};
 function startEnv(env) {
   const kept = {};
   for (const [key, value] of Object.entries(env)) {
@@ -40142,6 +40167,7 @@ async function runServer(paths, options) {
     paths,
     pluginFolder: () => resolvePluginFolder(paths.installedPluginsFile, fallback),
     probe: realProbe(),
+    runRead,
     runner,
     systemd: process.platform === "linux" && which("systemctl") !== null,
     which

@@ -142,13 +142,13 @@ describe("the MCP servers", () => {
 });
 
 describe("what holds the router's port", () => {
-  test("no service on this machine: nothing to show", () => {
-    expect(portHolder(world({}, { platform: "darwin" }).ctx, 20_999)).toBe(null);
+  test("no service on this machine: nothing to show", async () => {
+    expect(await portHolder(world({}, { platform: "darwin" }).ctx, 20_999)).toBe(null);
   });
 
-  test("systemd with no socket unit: doctor's own failure, with its fix", () => {
+  test("systemd with no socket unit: doctor's own failure, with its fix", async () => {
     const { ctx } = world({ systemctl: "exit 0" });
-    const holder = portHolder(ctx, 20_999);
+    const holder = await portHolder(ctx, 20_999);
     expect(holder?.kind).toBe("systemd");
     expect(holder?.name).toBe("cc-smart-dev-kit-router.socket");
     expect(holder?.state).toBe("other");
