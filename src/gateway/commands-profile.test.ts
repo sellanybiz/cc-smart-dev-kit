@@ -16,6 +16,7 @@ import {
   DEFAULT_ANTHROPIC_BASE_URL,
   fallbackOn,
   type GatewayConfig,
+  judgeTestProof,
   loadConfigFile,
   profileView,
   saveConfig,
@@ -29,7 +30,7 @@ const PORT = 20999;
  * `profiles: false` leaves the config without a `profiles` key at all (the High the review
  * found: the first chain must make the profile).
  */
-function machine(options: { config?: boolean; profiles?: boolean } = {}) {
+function machine(options: { config?: boolean; judgeProof?: boolean; profiles?: boolean } = {}) {
   const home = tempDir("gp2-profile");
   const configDir = join(home, ".claude");
   mkdirSync(configDir, { recursive: true });
@@ -42,6 +43,9 @@ function machine(options: { config?: boolean; profiles?: boolean } = {}) {
       backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" } },
       port: PORT,
       ...(options.profiles === false ? {} : { profiles: { team: {} } }),
+      ...(options.judgeProof === true
+        ? { judgeTested: { "omniroute:m1": judgeTestProof("omniroute:m1", "http://omni.test") } }
+        : {}),
       slots: { "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"] },
       timeouts: { firstByteMs: 1000 },
       version: 1,

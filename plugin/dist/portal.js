@@ -13939,6 +13939,14 @@ function planProfileSlotChange(current, name, slotArg, text, modelsByBackend) {
     const problem = chainProblem(current, chain, modelsByBackend);
     if (problem !== null)
       return { error: problem };
+    if (key === JUDGE_SLOT) {
+      const untested = chain.filter((text) => !judgeTargetUsable(current, text));
+      if (untested.length > 0) {
+        return {
+          error: `${untested.join(", ")} has no judge test for this machine yet, so a profile's judge chain would be ignored by the router until it has one. Test it for the machine first: ${COMMAND} gateway slot judge <targets> (or ${COMMAND} gateway slot worker <targets>, whose proof lets it judge while Claude cannot)`
+        };
+      }
+    }
     slots[key] = chain;
   }
   let next = { ...profile, slots };

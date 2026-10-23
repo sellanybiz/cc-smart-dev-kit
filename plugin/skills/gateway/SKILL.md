@@ -259,6 +259,8 @@ A profile is a named set of chains and switches over the machine's, reached by t
 - `cc-smart-dev-kit gateway profile <name> slot <slot> <target>,<target>…`: the profile's own chain
   for a slot, checked against `gateway models` exactly as `gateway slot` checks the machine's.
   The first chain makes the profile. A slot the profile does not name keeps the machine's chain.
+  A judge target must already have passed the machine's judge test (`gateway slot judge`), since
+  the proof is machine-wide and an untested target is ignored.
 - `gateway profile <name> slot <slot> off` (`claude` says the same): plain Claude for that slot in
   this profile. `clear` forgets the entry, so the machine's chain applies there again.
 - `gateway profile <name> fallback <slot> on|off`: may the profile's next target answer when the

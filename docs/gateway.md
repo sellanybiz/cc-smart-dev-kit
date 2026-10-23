@@ -157,7 +157,12 @@ http://127.0.0.1:20100/p/my-project
   <slot> on|off` sets its fallback switch, and `gateway profile <name> remove` deletes it. Every
   target is checked against its backend's live model list, exactly as `gateway slot` checks the
   machine's, and every change is checked as a whole config before it is saved. The first chain
-  makes the profile: a name `gateway.json` does not have starts empty. The router reads the
+  makes the profile: a name `gateway.json` does not have starts empty. A profile's **judge**
+  chain may only hold targets the machine's judge test already proved (`judgeTested`, D44),
+  because the proof is machine-wide and the router ignores untested targets: set the judge with
+  `gateway slot judge` (or `gateway slot worker`, whose proof also lets a target judge while
+  Claude cannot) first. A profile's **worker** targets judge while Claude cannot only once the
+  machine proved the same target. The router reads the
   config again within about a second, so a session using the profile uses the change from its
   next request. A project gets the profile with `gateway project on --profile <name>` (§ Per
   project). A profile's fallback or breaker switch set on a slot it only inherits (it names no
