@@ -170,9 +170,9 @@ function gatewayContext(paths: ReturnType<typeof cliPaths>): GatewayContext {
     }),
     // `gateway projects` lists the portal's own projects (`projectsList`): one reader for the
     // page and the command, so the two can never disagree about which projects exist.
-    projects: async () => {
+    projects: async (folder) => {
       const list = await projectsList({
-        cwd: process.cwd(),
+        cwd: folder,
         env: process.env,
         now: () => Date.now(),
         paths,

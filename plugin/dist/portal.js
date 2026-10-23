@@ -13862,9 +13862,8 @@ function missingProfile(config, name) {
 }
 function targetsToCheck(text) {
   const word = text.trim();
-  if (word === "clear" || word === "off" || word === "claude" || word === "custom")
-    return [];
-  return splitChain(word);
+  const words = [...SLOT_WORDS.claude, ...SLOT_WORDS.clear, ...SLOT_WORDS.custom];
+  return words.includes(word) ? [] : splitChain(word);
 }
 function withoutSwitch(profile, field, slot) {
   const held = profile[field];
@@ -13877,6 +13876,22 @@ function withoutSwitch(profile, field, slot) {
   else
     delete next[field];
   return next;
+}
+function withoutOrphanProfileSwitches(config, slot) {
+  if (slot === JUDGE_SLOT || config.profiles === undefined)
+    return { config, profiles: [] };
+  const profiles = [];
+  let next = config;
+  for (const [name, profile] of Object.entries(config.profiles)) {
+    if (profileSlotChain(config, profile, slot) !== null)
+      continue;
+    const held = Object.hasOwn(profile.fallback ?? {}, slot) || Object.hasOwn(profile.breaker ?? {}, slot);
+    if (!held)
+      continue;
+    next = withProfile(next, name, withoutSwitch(withoutSwitch(profile, "breaker", slot), "fallback", slot));
+    profiles.push(name);
+  }
+  return { config: next, profiles };
 }
 function withProfile(config, name, profile) {
   const profiles = { ...config.profiles ?? {} };
@@ -13894,9 +13909,8 @@ function withProfile(config, name, profile) {
 function planProfileSlotChange(current, name, slotArg, text, modelsByBackend) {
   if (!isProfileName(name))
     return { error: PROFILE_NAME_RULE };
-  const profile = Object.hasOwn(current.profiles ?? {}, name) ? current.profiles?.[name] : undefined;
-  if (profile === undefined)
-    return { error: missingProfile(current, name) };
+  const held = Object.hasOwn(current.profiles ?? {}, name) ? current.profiles?.[name] : undefined;
+  const profile = { ...held ?? {} };
   const key = slotKeyFromArg(slotArg);
   if (key === null)
     return { error: notSlotName(slotArg) };
@@ -13904,7 +13918,7 @@ function planProfileSlotChange(current, name, slotArg, text, modelsByBackend) {
   const was = profile.slots !== undefined && Object.hasOwn(profile.slots, key) ? profile.slots[key] ?? null : null;
   const slots = { ...profile.slots ?? {} };
   if (word === "clear") {
-    if (!Object.hasOwn(slots, key)) {
+    if (held === undefined || !Object.hasOwn(slots, key)) {
       return {
         error: `${name} does not name ${key}: the machine's chain already applies there`
       };
@@ -13919,7 +13933,7 @@ function planProfileSlotChange(current, name, slotArg, text, modelsByBackend) {
       error: `a profile has no saved chain of its own: give the slot its targets, or "off" for plain Claude there (${COMMAND} gateway slot <slot> custom saves and uses the machine's chain)`
     };
   } else {
-    const chain = word.split(",").map((target) => target.trim()).filter((target) => target !== "");
+    const chain = splitChain(word);
     if (chain.length === 0)
       return { error: "give at least one target" };
     const problem = chainProblem(current, chain, modelsByBackend);
@@ -14975,9 +14989,12 @@ function isJsonObject7(value) {
 function readSettings(path) {
   if (!existsSync22(path))
     return {};
+  const text = readFileSync23(path, "utf8");
+  if (text.trim() === "")
+    return {};
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync23(path, "utf8"));
+    parsed = parseUserJson(text);
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -15089,8 +15106,7 @@ function setGatewayBaseUrl(options) {
   return applyManagedJson({
     file: options.file,
     stateDir: options.stateDir,
-    set: [[BASE_URL_PATH, options.value]],
-    ...options.dryRun !== undefined && { dryRun: options.dryRun }
+    set: [[BASE_URL_PATH, options.value]]
   });
 }
 function clearGatewayBaseUrl(options) {
@@ -15098,12 +15114,24 @@ function clearGatewayBaseUrl(options) {
     file: options.file,
     stateDir: options.stateDir,
     remove: [BASE_URL_PATH],
-    createdObject: createdObjects(options.stateDir, options.file),
-    ...options.dryRun !== undefined && { dryRun: options.dryRun }
+    createdObject: createdObjects(options.stateDir, options.file)
   });
 }
 
 // src/gateway/project-state.ts
+function personalTracked(mainCheckout) {
+  try {
+    const result = Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`], {
+      cwd: mainCheckout,
+      env: gitEnv(process.env),
+      stderr: "ignore",
+      stdout: "ignore"
+    });
+    return result.exitCode === 0 ? true : result.exitCode === 1 ? false : null;
+  } catch {
+    return null;
+  }
+}
 var PERSONAL_FILE = "settings.local.json";
 var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
 function personalFileOf(checkout) {
@@ -15182,6 +15210,7 @@ function projectGatewayState(folder, options) {
         commonDir: located.commonDir,
         isWorktree: located.isWorktree,
         mainCheckout: located.mainCheckout,
+        personalTracked: personalTracked(located.mainCheckout),
         root: located.root
       };
     }
@@ -15297,7 +15326,7 @@ function planProjectChange(view, options) {
   }
   if (state === "on" && request.team) {
     return {
-      error: "a team file never points teammates at one person's local router: every teammate's sessions would send their requests to your machine. Set this project's state for yourself (no --team), or put off or default in the team file."
+      error: "a team file never points teammates at one person's local router: on each teammate's machine, 127.0.0.1 is their own computer, so their sessions would fail or reach whatever listens on that port. Set this project's state for yourself (no --team), or put off or default in the team file."
     };
   }
   if (state === "on" && request.profile !== null) {
@@ -15312,6 +15341,11 @@ function planProjectChange(view, options) {
   }
   const kind = request.team ? "team" : "personal";
   const target = view.files.find((one) => one.kind === kind);
+  if (kind === "personal" && state === "on" && view.checkout.personalTracked === true) {
+    return {
+      error: `${target?.path ?? "the personal file"} is committed in this project (git tracks it), so a router address written here would be committed with it. Untrack it first: git rm --cached -- .claude/${PERSONAL_FILE}`
+    };
+  }
   if (target === undefined) {
     return { error: `${view.folder}: there is no ${kind} settings file to write here` };
   }
@@ -15327,7 +15361,14 @@ function planProjectChange(view, options) {
     };
   }
   if (state !== "default") {
-    const override = view.files.find((one) => one.loginOverrides.length > 0);
+    const levels = [...view.files];
+    if (kind === "personal") {
+      const rootTeam = teamFileOf(view.checkout.root);
+      if (!levels.some((one) => one.path === rootTeam)) {
+        levels.push(settingsFileState(rootTeam, "team"));
+      }
+    }
+    const override = levels.find((one) => one.loginOverrides.length > 0);
     if (override !== undefined) {
       return {
         error: `${override.loginOverrides.join(", ")} is set in ${tildify(override.path, options.home)}: a gateway is never pointed at a project, and a project is never turned off, while a key or a helper replaces your own Claude login. Remove it by hand first (${COMMAND} gateway status shows it too).`
@@ -15336,13 +15377,13 @@ function planProjectChange(view, options) {
   }
   const value = valueFor(state, request.profile, view.routerUrl);
   const current = target.url;
-  if (value !== null && current !== null && current !== value && urlMeaning(current, view.routerUrl).state !== "on" && current !== DEFAULT_ANTHROPIC_BASE_URL && !isOwnedValue(options.stateDir, target.path, BASE_URL_PATH, current)) {
+  if (value !== null && current !== null && current !== value && !["on", "off"].includes(urlMeaning(current, view.routerUrl).state) && !isOwnedValue(options.stateDir, target.path, BASE_URL_PATH, current)) {
     return {
       error: `${target.path} holds ${shownValue(current)} in env.ANTHROPIC_BASE_URL, which is neither this machine's router nor Anthropic's. It is not this command's to replace: remove it by hand first, or set the project's state in the other settings file.`
     };
   }
   return {
-    excludeFile: kind === "personal" ? excludeFileOf(view.checkout) : null,
+    excludeFile: kind === "personal" && value !== null ? excludeFileOf(view.checkout) : null,
     file: target.path,
     kind,
     profile: state === "on" ? request.profile : null,
@@ -15363,12 +15404,12 @@ async function applyProjectChange(ctx, folder, options) {
     });
     if ("error" in plan)
       throw new Error(plan.error);
-    const result = plan.value === null ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir }) : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
     const exclude = plan.excludeFile === null ? null : applyManagedLine({
       file: plan.excludeFile,
       line: PERSONAL_EXCLUDE_LINE,
       stateDir: paths.stateDir
     });
+    const result = plan.value === null ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir }) : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
     return { exclude, plan, result, saved: stateOf(ctx, folder) };
   }, { waitMs: 1e4 });
 }
@@ -15412,7 +15453,8 @@ function projectSourceWords(decision, home, view) {
   if (file === undefined)
     return "nothing in this project";
   if (file.kind === "personal") {
-    return `the personal file ${tildify(file.path, home)} (never committed)`;
+    const shared = view.checkout?.personalTracked === true ? "committed with the project" : "never committed";
+    return `the personal file ${tildify(file.path, home)} (${shared})`;
   }
   if (file.kind === "team") {
     return `the team file ${tildify(file.path, home)} (committed with the project)`;
@@ -15463,7 +15505,7 @@ function projectStatus(ctx, folder) {
     out.line("info", `this project sets nothing, so the machine's own settings decide (${decisionWords(effective)})`, { indent: 2 });
   }
   out.verdict(markOf(effective), verdictLine(effective));
-  return 0;
+  return effective.state === "unknown" || view.configProblem !== null ? 1 : 0;
 }
 function verdictLine(decision) {
   if (decision.state === "on") {
@@ -15497,7 +15539,7 @@ function savedStateLines(view, plan) {
   if (plan.value === null) {
     lines.push("A session already running keeps the value it had until it restarts: a removed key never reaches a running session.");
   } else {
-    lines.push("A Claude Code session already running in this project uses it within about a second.");
+    lines.push("A Claude Code session already running in this project uses a changed value within about a second; restart it if the file did not exist when it started.");
   }
   return lines;
 }
@@ -15507,8 +15549,11 @@ async function commandProject(ctx, args, usage) {
     ctx.error(usage);
     return 2;
   }
-  if ("error" in options)
-    throw new Error(options.error);
+  if ("error" in options) {
+    ctx.error(options.error);
+    ctx.error(usage);
+    return 2;
+  }
   if (!isFolder2(options.folder))
     throw new Error(`${options.folder} is not a folder`);
   if (options.state === "status")
@@ -15527,41 +15572,28 @@ async function commandProject(ctx, args, usage) {
   const written = await applyProjectChange(ctx, options.folder, options);
   const out = gatewayOut(ctx);
   const { paths } = ctx;
+  const { effective } = written.saved;
+  for (const skipped of written.result.skipped) {
+    if (skipped.path.length === 2 && skipped.path[0] === "env" && skipped.path[1] === "ANTHROPIC_BASE_URL") {
+      out.line("info", "env.ANTHROPIC_BASE_URL stays: cc-smart-dev-kit did not set it, so it is not this command's to remove");
+    }
+  }
   const addedLine = written.exclude !== null && written.exclude.outcome !== "unchanged" && written.exclude.removed.length === 0;
   if (written.result.changes.length === 0 && !addedLine) {
-    out.verdict("ok", `Nothing to change: ${nothingWords(options, written.saved)}`);
+    out.verdict(markOf(effective), `Nothing to change. ${verdictLine(effective)}`);
     return 0;
   }
   printChanges(out, written.result, paths.home);
   if (addedLine && written.exclude !== null) {
     out.line("created", `the excluded line "${PERSONAL_EXCLUDE_LINE}" in ${tildify(written.plan.excludeFile ?? "", paths.home)} (restore takes it out)`);
   }
-  for (const skipped of written.result.skipped) {
-    if (skipped.path.length === 2 && skipped.path[0] === "env" && skipped.path[1] === "ANTHROPIC_BASE_URL") {
-      out.line("info", "env.ANTHROPIC_BASE_URL stays: cc-smart-dev-kit did not set it, so it is not this command's to remove");
-    }
-  }
   for (const line of savedStateLines(written.saved, written.plan))
     out.say(line, 2);
-  out.verdict("ok", `Done. ${verdictOf(options, written.saved)}`);
+  if (effective.source !== "none" && effective.source !== written.plan.kind) {
+    out.line("warn", `${projectSourceWords(effective, paths.home, written.saved)} decides first: ${decisionWords(effective)}`, { indent: 2 });
+  }
+  out.verdict(markOf(effective), `Done. ${verdictLine(effective)}`);
   return 0;
-}
-function nothingWords(options, view) {
-  if (options.state === "on") {
-    return `this project already uses the gateway (${view.effective.url ?? ""}).`;
-  }
-  if (options.state === "off")
-    return "this project already uses Anthropic's own address.";
-  return "this project already has no address of its own: the machine's settings decide.";
-}
-function verdictOf(options, view) {
-  if (options.state === "on") {
-    return `This project's sessions use the gateway (${view.effective.url ?? ""}).`;
-  }
-  if (options.state === "off") {
-    return "This project's sessions go to Anthropic's own address, on your own Claude login.";
-  }
-  return "This project has no gateway address of its own: the machine's settings decide.";
 }
 async function commandProjects(ctx, args, usage) {
   let folder = process.cwd();
@@ -15584,7 +15616,7 @@ async function commandProjects(ctx, args, usage) {
   if (ctx.projects === undefined) {
     throw new Error("this command needs the portal's project list, and the caller passed none: run it from the command line, where the list is wired");
   }
-  const list = await ctx.projects();
+  const list = await ctx.projects(folder);
   if (list.projects.length === 0) {
     out.say("No project yet: the portal's Projects page shows the same list.");
     if (list.note !== null)
@@ -15609,8 +15641,8 @@ var PROJECT_HELP = `  project <status|on|off|default> [--team] [--profile <name>
                          writes .claude/settings.json and takes off or default only. A changed
                          value reaches a running session; a removed one waits for a restart.
                          Refused: another gateway's URL in the file, a login key or
-                         apiKeyHelper anywhere in the chain (with on), a profile the config
-                         does not have.`;
+                         apiKeyHelper anywhere in the chain (with on or off), a profile the
+                         config does not have.`;
 var PROJECTS_HELP = `  projects [--folder <dir>]
                          Every project the portal's Projects page lists, with its state.`;
 
@@ -17266,7 +17298,8 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
     }
     const fallback = setFallback(current, key);
     const saved = { targets: old, ...fallback === undefined ? {} : { fallback } };
-    return checkedPlan({ key, kind: "claude", next: [], old }, withKept(withoutSwitches(withoutSlot(base, key), key), key, saved));
+    const orphaned = withoutOrphanProfileSwitches(withKept(withoutSwitches(withoutSlot(base, key), key), key, saved), key);
+    return checkedPlan({ key, kind: "claude", next: [], old, profiles: orphaned.profiles }, orphaned.config);
   }
   if (SLOT_WORDS.custom.includes(word)) {
     if (old.length > 0)
@@ -17286,8 +17319,8 @@ function planSlotChange(current, slotArg, targetsText, modelsByBackend) {
   if (SLOT_WORDS.clear.includes(word)) {
     if (old.length === 0 && kept === null)
       return { error: `${key} has no chain to clear` };
-    const cleared = withKept(key === JUDGE_SLOT ? withoutSlot(base, key) : withoutSwitches(withoutSlot(base, key), key), key, null);
-    return checkedPlan({ key, kind: "clear", next: [], old }, cleared);
+    const orphaned = withoutOrphanProfileSwitches(withKept(key === JUDGE_SLOT ? withoutSlot(base, key) : withoutSwitches(withoutSlot(base, key), key), key, null), key);
+    return checkedPlan({ key, kind: "clear", next: [], old, profiles: orphaned.profiles }, orphaned.config);
   }
   const next = chainToCheck(current, slotArg, word);
   if (next.length === 0)
@@ -17589,6 +17622,9 @@ async function commandSlot(ctx, args) {
     return { ...again, config: saved };
   }, { waitMs: 1e4 });
   printSlotChange(out, slotChangeLines(plan));
+  if (plan.profiles !== undefined && plan.profiles.length > 0) {
+    out.line("info", `profile ${plan.profiles.join(", ")}: its fallback and breaker switches for ${plan.key} went with the chain (the profile has none of its own)`);
+  }
   if (plan.key === JUDGE_SLOT && plan.next.length > 0)
     out.line("warn", JUDGE_WARNING);
   if (plan.key === WORKER_SLOT || plan.key === JUDGE_SLOT && plan.next.length === 0) {

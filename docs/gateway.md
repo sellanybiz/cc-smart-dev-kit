@@ -156,10 +156,14 @@ http://127.0.0.1:20100/p/my-project
   `clear` forgets it, so the machine's chain applies again), `gateway profile <name> fallback
   <slot> on|off` sets its fallback switch, and `gateway profile <name> remove` deletes it. Every
   target is checked against its backend's live model list, exactly as `gateway slot` checks the
-  machine's, and every change is checked as a whole config before it is saved. The router reads
-  the config again within about a second, so a session using the profile uses the change from its
+  machine's, and every change is checked as a whole config before it is saved. The first chain
+  makes the profile: a name `gateway.json` does not have starts empty. The router reads the
+  config again within about a second, so a session using the profile uses the change from its
   next request. A project gets the profile with `gateway project on --profile <name>` (§ Per
-  project).
+  project). A profile's fallback or breaker switch set on a slot it only inherits (it names no
+  chain of its own there) goes when the machine takes that slot's last chain away —
+  `gateway slot <slot> claude` or `clear` — because the config refuses a switch on a slot with no
+  chain at all; the machine's command says which profile lost it.
 
 ## Per project: on, off, or the machine's default (D29)
 
@@ -198,22 +202,33 @@ cc-smart-dev-kit gateway projects [--folder <dir>]
 - **One reader, two answers.** `projectGatewayState(folder)` (`src/gateway/project-state.ts`)
   answers the project's own **choice** (its personal file, then its team file) and what a
   session **effectively** gets (that choice, then the machine's settings file).
-  `gateway project status`, `gateway projects`, the doctor lines and the portal's project card
-  all call it, so no two of them can disagree. A settings file that cannot be read, or whose
-  `ANTHROPIC_BASE_URL` is not an address, stops the chain as **unknown**: Claude Code's own
-  answer past such a file is not known, and a state nobody read is not a state to claim.
+  `gateway project status` and `gateway projects` call it, and GP4 adds the doctor lines and the
+  portal's project card on the same function, so no two of them can disagree. A settings file
+  that cannot be read, or whose `ANTHROPIC_BASE_URL` is not an address, stops the chain as
+  **unknown**: Claude Code's own answer past such a file is not known, and a state nobody read
+  is not a state to claim. `gateway project status` exits 1 when it cannot tell (an unreadable
+  file or config) and 0 otherwise.
 - **Running sessions (P7).** A changed value reaches a session already running in the project
   within about a second. A removed key never does: `default` says the session keeps the value it
   had until it restarts.
+- **`restore` takes a project's key and its excluded line back, but its stage 1 does not yet
+  wait for them.** Stage 1 (`docs/gateway.md` § `cc-smart-dev-kit restore`) waits only for the
+  machine's own settings file, so a project still pointed at the router would see the router
+  stop under its running sessions. Until GP4a makes stage 1 count every owned file, run
+  `gateway project default` in each such project and restart its sessions before `restore`.
 - **Refusals, one line each with the fix:** a project file that already holds another gateway's
   URL (not this machine's router, not Anthropic's) is never overwritten; `on` and `off` are
-  refused while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper` is set at any level
-  of the project's chain, because the gateway must never replace the person's own login;
-  `--team` with `on`; a profile name `isProfileName` refuses, or one `gateway.json` does not
-  have; and a folder outside git, which has no personal file to write.
-- **`gateway projects`** lists every repository the portal's Projects page shows — the same
-  `projectsList` reader — each with its own state and the file it comes from, and marks the one
-  the command runs in.
+  refused while `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `apiKeyHelper` is set at a level
+  of the project's chain — its personal file, the team file of the folder, the main checkout's
+  team file (the personal file reaches its sessions too) and the machine's settings — because
+  the gateway must never replace the person's own login. (A *worktree's own* committed team file
+  is not part of that check yet.) A personal file **git tracks** is refused for `on`: a router
+  address there would be committed with it, and the line in `.git/info/exclude` cannot untrack a
+  file. Also refused: `--team` with `on`; a profile name `isProfileName` refuses, or one
+  `gateway.json` does not have; and a folder outside git, which has no personal file to write.
+- **`gateway projects [--folder <dir>]`** lists every repository the portal's Projects page
+  shows — the same `projectsList` reader, asked about the folder given — each with its own state
+  and the file it comes from, and marks the one the command runs in.
 - **Windows is unproved for this row** (R6's P11 is owed): the reader and the commands use the
   main checkout's root on every platform. On Windows, check `gateway project status` in a
   project once before relying on it.

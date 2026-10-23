@@ -2824,6 +2824,33 @@ describe("secrets", () => {
     record(await m.run(["gateway", "profile", "team", "slot", "worker", "omniroute:m1"]));
     record(await m.run(["gateway", "profile", "team", "fallback", "worker", "off"]));
     record(await m.run(["gateway", "profile", "team", "remove"]));
+    // A key planted in a project file's own URL: the status, the list and the refusal mask it.
+    const personal = join(project, ".claude", "settings.local.json");
+    mkdirSync(join(project, ".claude"), { recursive: true });
+    writeFileSync(
+      personal,
+      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: `http://user:${PLANTED_KEY}@127.0.0.1:19999` } }, null, 2)}\n`,
+    );
+    record(await m.run(["gateway", "project", "status", "--folder", project]));
+    record(await m.run(["gateway", "project", "default", "--folder", project]));
+    record(await m.run(["gateway", "project", "on", "--folder", project]));
+    // The portal's own list file names the project, so the built wiring (`projectsList`) lists
+    // it for real: the row is there, and the planted key is not. The list resolves each
+    // folder's checkout with git, which the fake PATH does not carry; the real one is linked in.
+    const realGit = Bun.which("git");
+    if (realGit !== null) {
+      writeFileSync(join(m.env.PATH, "git"), `#!/bin/sh\nexec '${realGit}' "$@"\n`, {
+        mode: 0o755,
+      });
+    }
+    mkdirSync(m.paths.stateDir, { recursive: true });
+    writeFileSync(
+      join(m.paths.stateDir, "portal-projects.json"),
+      `${JSON.stringify({ roots: [project], version: 1 }, null, 2)}\n`,
+    );
+    const listed = record(await m.run(["gateway", "projects", "--folder", project]));
+    expect(listed.stdout).toContain("app  ");
+    expect(listed.stdout).toContain("another address: ");
     record(await m.run(["doctor", "--verbose"]));
     record(await m.run(["gateway", "help"]));
     record(await m.run(["gateway", "setup", "--backend-key-stdin"], PLANTED_KEY));

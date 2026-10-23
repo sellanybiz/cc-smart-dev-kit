@@ -7496,9 +7496,12 @@ function isJsonObject(value) {
 function readSettings(path) {
   if (!existsSync6(path))
     return {};
+  const text = readFileSync6(path, "utf8");
+  if (text.trim() === "")
+    return {};
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync6(path, "utf8"));
+    parsed = parseUserJson(text);
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }

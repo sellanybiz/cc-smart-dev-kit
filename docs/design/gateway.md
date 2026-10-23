@@ -17,8 +17,9 @@ An optional local router between Claude Code and the model providers
   `<main checkout>/.claude/settings.local.json`, with a managed `.git/info/exclude` line, or
   with `--team` and for off/default only its `.claude/settings.json` — and `gateway profile …`
   gives a profile its chains. One reader, `projectGatewayState` (`src/gateway/project-state.ts`),
-  answers a folder's own choice and what a session there effectively gets, for the command, the
-  doctor lines and the portal's card; a file it cannot read is `unknown`, never a guess.
+  answers a folder's own choice and what a session there effectively gets, for the commands
+  (GP4 adds the doctor lines and the portal's card on the same reader); a file it cannot read is
+  `unknown`, never a guess.
   `docs/gateway.md` § Per project, and the rules in `.claude/rules/gateway.md`.
 - **No prompt text is ever changed.** An affordable backend gets two named, tested format
   translations and nothing else. A slot's Claude target that is not the model asked for gets one,

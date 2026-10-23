@@ -30,7 +30,7 @@ import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
 import { chainProblem, chainToCheck, notSlotName, SLOT_WORDS, slotName } from "./commands-chains";
 import { changeLines, gatewayOut, printChanges } from "./commands-out";
-import { commandProfile, PROFILE_HELP } from "./commands-profile";
+import { commandProfile, PROFILE_HELP, withoutOrphanProfileSwitches } from "./commands-profile";
 import {
   commandProject,
   commandProjects,
@@ -213,9 +213,10 @@ export interface GatewayContext {
   platform: NodeJS.Platform;
   /**
    * The projects `gateway projects` lists: the portal's own list (`projectsList`) in use, read
-   * when the command runs; a test passes its own, so none reads Claude Code's session records.
+   * when the command runs, with the project `folder` is in marked `current`; a test passes its
+   * own, so none reads Claude Code's session records.
    */
-  projects?: () => Promise<KnownProjects>;
+  projects?: (folder: string) => Promise<KnownProjects>;
   /** Where a command's own lines go: `console.log` in use, a collector from the portal. */
   print: (line: string) => void;
   /**
@@ -945,6 +946,11 @@ export interface SlotPlan {
   old: string[];
   /** The chain in use after; none when the slot answers as Claude. */
   next: string[];
+  /**
+   * Profiles whose fallback or breaker switch for this slot went with its last chain (they had no
+   * chain of their own for it): the config refuses a switch on a slot with no chain.
+   */
+  profiles?: string[];
 }
 
 /** The planned config, checked as a whole (an alias that still points at the slot, say). */
@@ -1019,9 +1025,13 @@ export function planSlotChange(
     }
     const fallback = setFallback(current, key);
     const saved: KeptChain = { targets: old, ...(fallback === undefined ? {} : { fallback }) };
-    return checkedPlan(
-      { key, kind: "claude", next: [], old },
+    const orphaned = withoutOrphanProfileSwitches(
       withKept(withoutSwitches(withoutSlot(base, key), key), key, saved),
+      key,
+    );
+    return checkedPlan(
+      { key, kind: "claude", next: [], old, profiles: orphaned.profiles },
+      orphaned.config,
     );
   }
 
@@ -1054,12 +1064,18 @@ export function planSlotChange(
     // The judge's fallback switch is not part of its chain: it still says whether the
     // worker's tested targets stand in (D44). Every other slot's switches go with the chain.
     // A proof for a target no chain holds any more goes in `commandSlot` (`withJudgeProofs`).
-    const cleared = withKept(
-      key === JUDGE_SLOT ? withoutSlot(base, key) : withoutSwitches(withoutSlot(base, key), key),
+    const orphaned = withoutOrphanProfileSwitches(
+      withKept(
+        key === JUDGE_SLOT ? withoutSlot(base, key) : withoutSwitches(withoutSlot(base, key), key),
+        key,
+        null,
+      ),
       key,
-      null,
     );
-    return checkedPlan({ key, kind: "clear", next: [], old }, cleared);
+    return checkedPlan(
+      { key, kind: "clear", next: [], old, profiles: orphaned.profiles },
+      orphaned.config,
+    );
   }
 
   const next = chainToCheck(current, slotArg, word);
@@ -1507,6 +1523,12 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
     { waitMs: 10_000 },
   );
   printSlotChange(out, slotChangeLines(plan));
+  if (plan.profiles !== undefined && plan.profiles.length > 0) {
+    out.line(
+      "info",
+      `profile ${plan.profiles.join(", ")}: its fallback and breaker switches for ${plan.key} went with the chain (the profile has none of its own)`,
+    );
+  }
   if (plan.key === JUDGE_SLOT && plan.next.length > 0) out.line("warn", JUDGE_WARNING);
   // Where the judge is Claude first, the stand-ins it names are the ones that just changed.
   if (plan.key === WORKER_SLOT || (plan.key === JUDGE_SLOT && plan.next.length === 0)) {

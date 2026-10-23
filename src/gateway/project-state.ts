@@ -28,6 +28,7 @@
  */
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { gitEnv } from "../project/git-env";
 import { locateCheckout } from "../project/resolve";
 import {
   DEFAULT_ANTHROPIC_BASE_URL,
@@ -78,7 +79,35 @@ export interface ProjectCheckout {
   isWorktree: boolean;
   /** The main checkout's folder, where the personal file lives (P6). */
   mainCheckout: string;
+  /**
+   * True when git tracks the personal file: the excluded line cannot untrack a file, and a
+   * value written there would be committed with it. Null when git could not tell.
+   */
+  personalTracked: boolean | null;
   root: string;
+}
+
+/**
+ * Whether git tracks the personal file of `mainCheckout`: `git ls-files --error-unmatch` answers
+ * 0 for a tracked path, 1 for one it does not know, anything else (no git, not a repo) is null —
+ * the caller then says it could not tell, never that the file is safe. `GIT_*` goes, as in
+ * `locateCheckout`, so a hook's or a session's own `GIT_DIR` cannot redirect it.
+ */
+function personalTracked(mainCheckout: string): boolean | null {
+  try {
+    const result = Bun.spawnSync(
+      ["git", "ls-files", "--error-unmatch", "--", `.claude/${PERSONAL_FILE}`],
+      {
+        cwd: mainCheckout,
+        env: gitEnv(process.env),
+        stderr: "ignore",
+        stdout: "ignore",
+      },
+    );
+    return result.exitCode === 0 ? true : result.exitCode === 1 ? false : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A folder's gateway state: what its project chose, what a session gets, and why. */
@@ -232,6 +261,7 @@ export function projectGatewayState(
         commonDir: located.commonDir,
         isWorktree: located.isWorktree,
         mainCheckout: located.mainCheckout,
+        personalTracked: personalTracked(located.mainCheckout),
         root: located.root,
       };
     }

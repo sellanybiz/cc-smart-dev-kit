@@ -199,7 +199,7 @@ describe("gateway project status", () => {
     const root = repo("gp2-status-broken");
     mkdirSync(join(root, ".claude"), { recursive: true });
     writeFileSync(join(root, ".claude", "settings.local.json"), "{not json");
-    expect(await m.run(["project", "status", "--folder", root])).toBe(0);
+    expect(await m.run(["project", "status", "--folder", root])).toBe(1);
     expect(m.output()).toContain("  ✗ ");
     expect(m.output()).toContain("is not valid JSON");
     expect(m.output()).toContain("Fix: fix the file by hand");
@@ -240,7 +240,7 @@ describe("gateway project on", () => {
       `+ the excluded line "/.claude/settings.local.json" in ${join(root, ".git", "info", "exclude").replace(m.home, "~")} (restore takes it out)`,
     );
     expect(m.output()).toContain(
-      "  A Claude Code session already running in this project uses it within about a second.",
+      "  A Claude Code session already running in this project uses a changed value within about a second; restart it if the file did not exist when it started.",
     );
     expect(m.output()).toContain(
       "  Every session of this project — the main checkout, its subfolders and its worktrees — reads it.",
@@ -251,7 +251,7 @@ describe("gateway project on", () => {
     m.reset();
     expect(await m.run(["project", "on", "--folder", root])).toBe(0);
     expect(m.output()).toContain(
-      `✓ Nothing to change: this project already uses the gateway (${ROUTER}).`,
+      `✓ Nothing to change. This project's sessions use the gateway (${ROUTER}).`,
     );
     expect(excludeLines(root).filter((one) => one === "/.claude/settings.local.json")).toHaveLength(
       1,
@@ -364,12 +364,15 @@ describe("gateway project on", () => {
     expect(existsSync(join(sub, ".claude", "settings.json"))).toBe(false);
   });
 
-  test("--profile without on is refused", async () => {
+  test("--profile without on is a wrong option: exit 2, the usage line, nothing written", async () => {
     const m = machine();
     const root = repo("gp2-off-profile");
-    await expect(m.run(["project", "off", "--profile", "team", "--folder", root])).rejects.toThrow(
+    expect(await m.run(["project", "off", "--profile", "team", "--folder", root])).toBe(2);
+    expect(m.errors.join("\n")).toContain(
       "--profile says which profile the project's URL names, so it goes with on",
     );
+    expect(m.errors.join("\n")).toContain("Usage:");
+    expect(existsSync(join(root, ".claude", "settings.local.json"))).toBe(false);
   });
 });
 
@@ -429,6 +432,157 @@ describe("gateway project off and default", () => {
     expect(m.output()).toContain(
       "· env.ANTHROPIC_BASE_URL stays: cc-smart-dev-kit did not set it, so it is not this command's to remove",
     );
+  });
+});
+
+describe("what the output says follows the file that decides (review: M1, M2)", () => {
+  test("off --team under a personal on: the personal file decides, and the output says so", async () => {
+    const m = machine();
+    const root = repo("gp2-decides-personal");
+    await m.run(["project", "on", "--folder", root]);
+    m.reset();
+
+    expect(await m.run(["project", "off", "--team", "--folder", root])).toBe(0);
+    // The verdict is the state that applies — on — not the state asked for.
+    expect(m.output()).toContain(`✓ Done. This project's sessions use the gateway (${ROUTER}).`);
+    expect(m.output()).toContain(
+      `  ! the personal file ${join(root, ".claude", "settings.local.json").replace(m.home, "~")} (never committed) decides first: on → ${ROUTER}`,
+    );
+    expect(m.output()).not.toContain("go to Anthropic's own address");
+  });
+
+  test("default under a team off: the team file decides now, and the output says so", async () => {
+    const m = machine();
+    const root = repo("gp2-decides-team");
+    await m.run(["project", "off", "--team", "--folder", root]);
+    await m.run(["project", "on", "--folder", root]);
+    m.reset();
+
+    expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(
+      "Done. This project's sessions go to Anthropic's own address, on your own Claude login.",
+    );
+    expect(m.output()).toContain("decides first: off → https://api.anthropic.com");
+    expect(m.output()).not.toContain("the machine's settings decide");
+  });
+
+  test("a key that stays is told before 'nothing to change', and the state that applies is the verdict", async () => {
+    const m = machine();
+    const root = repo("gp2-stays");
+    writeSettings(join(root, ".claude", "settings.json"), {
+      env: { ANTHROPIC_BASE_URL: "https://other.example" },
+    });
+    expect(await m.run(["project", "default", "--team", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(
+      "· env.ANTHROPIC_BASE_URL stays: cc-smart-dev-kit did not set it, so it is not this command's to remove",
+    );
+    expect(m.output()).toContain(
+      "! Nothing to change. This project's sessions send their requests to another address.",
+    );
+    expect(m.output()).not.toContain("no gateway address of its own");
+    expect(urlOf(join(root, ".claude", "settings.json"))).toBe("https://other.example");
+  });
+
+  test("default on a fresh project writes nothing at all: no file, no excluded line", async () => {
+    const m = machine();
+    const root = repo("gp2-default-fresh");
+    expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+    expect(existsSync(join(root, ".claude", "settings.local.json"))).toBe(false);
+    expect(excludeLines(root)).not.toContain("/.claude/settings.local.json");
+    expect(m.output()).not.toContain("excluded line");
+  });
+});
+
+describe("the refusals the review added", () => {
+  test("a personal file git already tracks is never pointed at the router", async () => {
+    const m = machine();
+    const root = repo("gp2-tracked");
+    writeSettings(join(root, ".claude", "settings.local.json"), { permissions: { allow: [] } });
+    git(root, "add", "-f", ".claude/settings.local.json");
+    git(root, "commit", "-qm", "oops: a local file committed");
+
+    await expect(m.run(["project", "on", "--folder", root])).rejects.toThrow(
+      "is committed in this project (git tracks it), so a router address written here would be committed with it. Untrack it first: git rm --cached -- .claude/settings.local.json",
+    );
+    expect(urlOf(join(root, ".claude", "settings.local.json"))).toBeNull();
+    // Status says which it is, in the words of the source line.
+    m.reset();
+    await m.run(["project", "status", "--folder", root]);
+    expect(m.output()).not.toContain("(never committed)");
+  });
+
+  test("a login helper in the checkout root's team file counts when the command runs in a subfolder (P6)", async () => {
+    const m = machine();
+    const root = repo("gp2-root-helper");
+    const sub = join(root, "packages", "web");
+    mkdirSync(sub, { recursive: true });
+    writeSettings(join(root, ".claude", "settings.json"), { apiKeyHelper: "echo key" });
+    await expect(m.run(["project", "on", "--folder", sub])).rejects.toThrow(
+      "apiKeyHelper is set in",
+    );
+  });
+
+  test("a hand-written Anthropic address with a trailing slash is refused by the writer, in its own words, and left alone", async () => {
+    const m = machine();
+    const root = repo("gp2-slash");
+    const personal = join(root, ".claude", "settings.local.json");
+    writeSettings(personal, { env: { ANTHROPIC_BASE_URL: `${DEFAULT_ANTHROPIC_BASE_URL}/` } });
+    await expect(m.run(["project", "on", "--folder", root])).rejects.toThrow(
+      "set by someone else. cc-smart-dev-kit does not overwrite it",
+    );
+    expect(urlOf(personal)).toBe(`${DEFAULT_ANTHROPIC_BASE_URL}/`);
+  });
+
+  test("a status with a file it cannot read exits 1: the failure is not hidden by a 0", async () => {
+    const m = machine();
+    const root = repo("gp2-status-exit");
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(join(root, ".claude", "settings.local.json"), "{not json");
+    expect(await m.run(["project", "status", "--folder", root])).toBe(1);
+  });
+
+  test("--team with status is a wrong option: exit 2", async () => {
+    const m = machine();
+    const root = repo("gp2-status-team");
+    expect(await m.run(["project", "status", "--team", "--folder", root])).toBe(2);
+    expect(m.errors.join("\n")).toContain("status writes nothing");
+  });
+
+  test("an empty personal file reads as no key, and `on` writes into it", async () => {
+    const m = machine();
+    const root = repo("gp2-empty");
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(join(root, ".claude", "settings.local.json"), "");
+    expect(await m.run(["project", "status", "--folder", root])).toBe(0);
+    expect(m.output()).not.toContain("cannot be read");
+    expect(await m.run(["project", "on", "--folder", root])).toBe(0);
+    expect(urlOf(join(root, ".claude", "settings.local.json"))).toBe(ROUTER);
+  });
+
+  test("a personal file with a byte order mark reads like the writer reads it", async () => {
+    const m = machine();
+    const root = repo("gp2-bom");
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "settings.local.json"),
+      `\uFEFF${JSON.stringify({ env: { ANTHROPIC_BASE_URL: ROUTER } })}`,
+    );
+    expect(await m.run(["project", "status", "--folder", root])).toBe(0);
+    expect(m.output()).toContain(`✓ on → ${ROUTER}`);
+  });
+});
+
+describe("gateway projects passes its folder through (review: M8)", () => {
+  test("the folder given is the one the list is asked about", async () => {
+    const m = machine();
+    const root = repo("gp2-projects-folder");
+    const asked: string[] = [];
+    m.ctx.projects = async (folder) => {
+      asked.push(folder);
+      return { note: null, projects: [{ current: true, name: "app", root }] };
+    };
+    expect(await m.run(["projects", "--folder", root])).toBe(0);
+    expect(asked).toEqual([root]);
   });
 });
 

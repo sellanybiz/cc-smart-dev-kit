@@ -18,6 +18,7 @@ import {
   ownedRecords,
   ownership,
 } from "../setup/managed-json";
+import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
 
 /**
@@ -98,12 +99,18 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The settings file as an object; `{}` when there is none. Throws on a file that is not one. */
+/**
+ * The settings file as an object; `{}` when there is none. Throws on a file that is not one.
+ * Read as `applyManagedJson` reads one: an empty file is `{}`, and a byte order mark an editor
+ * put first is skipped — so the reader and the writer agree about the same file.
+ */
 function readSettings(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
+  const text = readFileSync(path, "utf8");
+  if (text.trim() === "") return {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = parseUserJson(text);
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
@@ -355,13 +362,11 @@ export function setGatewayBaseUrl(options: {
   file: string;
   stateDir: string;
   value: string;
-  dryRun?: boolean;
 }): ManagedJsonResult {
   return applyManagedJson({
     file: options.file,
     stateDir: options.stateDir,
     set: [[BASE_URL_PATH, options.value]],
-    ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
 }
 
@@ -373,13 +378,11 @@ export function setGatewayBaseUrl(options: {
 export function clearGatewayBaseUrl(options: {
   file: string;
   stateDir: string;
-  dryRun?: boolean;
 }): ManagedJsonResult {
   return applyManagedJson({
     file: options.file,
     stateDir: options.stateDir,
     remove: [BASE_URL_PATH],
     createdObject: createdObjects(options.stateDir, options.file),
-    ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
 }

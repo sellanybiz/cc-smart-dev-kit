@@ -45,6 +45,7 @@ import {
   type GatewayDecision,
   isFolder,
   PERSONAL_EXCLUDE_LINE,
+  PERSONAL_FILE,
   type ProjectGatewayState,
   profileUrlOf,
   projectGatewayState,
@@ -52,6 +53,7 @@ import {
   type SettingsFileState,
   type SettingsLevel,
   settingsFileState,
+  teamFileOf,
   urlMeaning,
 } from "./project-state";
 import { BASE_URL_PATH, clearGatewayBaseUrl, setGatewayBaseUrl, shownValue } from "./settings";
@@ -168,7 +170,7 @@ export function planProjectChange(
   if (state === "on" && request.team) {
     return {
       error:
-        "a team file never points teammates at one person's local router: every teammate's sessions would send their requests to your machine. Set this project's state for yourself (no --team), or put off or default in the team file.",
+        "a team file never points teammates at one person's local router: on each teammate's machine, 127.0.0.1 is their own computer, so their sessions would fail or reach whatever listens on that port. Set this project's state for yourself (no --team), or put off or default in the team file.",
     };
   }
   if (state === "on" && request.profile !== null) {
@@ -182,6 +184,11 @@ export function planProjectChange(
   }
   const kind: Exclude<SettingsLevel, "machine"> = request.team ? "team" : "personal";
   const target = view.files.find((one) => one.kind === kind);
+  if (kind === "personal" && state === "on" && view.checkout.personalTracked === true) {
+    return {
+      error: `${target?.path ?? "the personal file"} is committed in this project (git tracks it), so a router address written here would be committed with it. Untrack it first: git rm --cached -- .claude/${PERSONAL_FILE}`,
+    };
+  }
   if (target === undefined) {
     return { error: `${view.folder}: there is no ${kind} settings file to write here` };
   }
@@ -206,7 +213,17 @@ export function planProjectChange(
     // The gateway sends the person's own Claude login, and "off" keeps it. A key, a token or a
     // helper anywhere in this project's chain replaces it, so neither state is written for a
     // project without a word: where the requests go would no longer be the login's business.
-    const override = view.files.find((one) => one.loginOverrides.length > 0);
+    // A personal file reaches the checkout root's sessions too, so that folder's team file is
+    // a level of this project's chain even when the command runs in a subfolder (P6). A
+    // worktree's own committed team file is not part of this check yet (`docs/gateway.md`).
+    const levels = [...view.files];
+    if (kind === "personal") {
+      const rootTeam = teamFileOf(view.checkout.root);
+      if (!levels.some((one) => one.path === rootTeam)) {
+        levels.push(settingsFileState(rootTeam, "team"));
+      }
+    }
+    const override = levels.find((one) => one.loginOverrides.length > 0);
     if (override !== undefined) {
       return {
         error: `${override.loginOverrides.join(", ")} is set in ${tildify(override.path, options.home)}: a gateway is never pointed at a project, and a project is never turned off, while a key or a helper replaces your own Claude login. Remove it by hand first (${COMMAND} gateway status shows it too).`,
@@ -214,17 +231,17 @@ export function planProjectChange(
     }
   }
   // A URL this command did not set and that is not Anthropic's is someone else's gateway: it is
-  // never overwritten. A value cc-smart-dev-kit wrote, this machine's router on any profile, and
-  // Anthropic's own address are all fine to replace. `default` sets nothing: a key that is not
-  // ours stays, and the output says so.
+  // refused here, in this command's own words. A value on this router, Anthropic's own address
+  // and one cc-smart-dev-kit owns pass this check; the writer still refuses one it does not own
+  // (`applyManagedJson`), so a hand-written router URL gets that message instead. `default` sets
+  // nothing: a key that is not ours stays, and the output says so.
   const value = valueFor(state, request.profile, view.routerUrl);
   const current = target.url;
   if (
     value !== null &&
     current !== null &&
     current !== value &&
-    urlMeaning(current, view.routerUrl).state !== "on" &&
-    current !== DEFAULT_ANTHROPIC_BASE_URL &&
+    !["on", "off"].includes(urlMeaning(current, view.routerUrl).state) &&
     !isOwnedValue(options.stateDir, target.path, BASE_URL_PATH, current)
   ) {
     return {
@@ -232,7 +249,7 @@ export function planProjectChange(
     };
   }
   return {
-    excludeFile: kind === "personal" ? excludeFileOf(view.checkout) : null,
+    excludeFile: kind === "personal" && value !== null ? excludeFileOf(view.checkout) : null,
     file: target.path,
     kind,
     profile: state === "on" ? request.profile : null,
@@ -272,10 +289,8 @@ async function applyProjectChange(
         stateDir: paths.stateDir,
       });
       if ("error" in plan) throw new Error(plan.error);
-      const result =
-        plan.value === null
-          ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir })
-          : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
+      // The excluded line first: a URL must never land in a file git would commit because the
+      // line after it failed to be written.
       const exclude =
         plan.excludeFile === null
           ? null
@@ -284,6 +299,10 @@ async function applyProjectChange(
               line: PERSONAL_EXCLUDE_LINE,
               stateDir: paths.stateDir,
             });
+      const result =
+        plan.value === null
+          ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir })
+          : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
       return { exclude, plan, result, saved: stateOf(ctx, folder) };
     },
     { waitMs: 10_000 },
@@ -350,7 +369,9 @@ function projectSourceWords(
   const file = view.files.find((one) => one.kind === decision.source);
   if (file === undefined) return "nothing in this project";
   if (file.kind === "personal") {
-    return `the personal file ${tildify(file.path, home)} (never committed)`;
+    const shared =
+      view.checkout?.personalTracked === true ? "committed with the project" : "never committed";
+    return `the personal file ${tildify(file.path, home)} (${shared})`;
   }
   if (file.kind === "team") {
     return `the team file ${tildify(file.path, home)} (committed with the project)`;
@@ -418,7 +439,9 @@ function projectStatus(ctx: GatewayContext, folder: string): number {
     );
   }
   out.verdict(markOf(effective), verdictLine(effective));
-  return 0;
+  // A failed answer is not a success for a script: an unreadable file or config means the
+  // command cannot say what a session gets, so it exits 1 (the words above say which).
+  return effective.state === "unknown" || view.configProblem !== null ? 1 : 0;
 }
 
 /** One verdict line for a state. */
@@ -468,7 +491,7 @@ function savedStateLines(view: ProjectGatewayState, plan: ProjectChangePlan): st
     );
   } else {
     lines.push(
-      "A Claude Code session already running in this project uses it within about a second.",
+      "A Claude Code session already running in this project uses a changed value within about a second; restart it if the file did not exist when it started.",
     );
   }
   return lines;
@@ -485,7 +508,11 @@ export async function commandProject(
     ctx.error(usage);
     return 2;
   }
-  if ("error" in options) throw new Error(options.error);
+  if ("error" in options) {
+    ctx.error(options.error);
+    ctx.error(usage);
+    return 2;
+  }
   if (!isFolder(options.folder)) throw new Error(`${options.folder} is not a folder`);
   if (options.state === "status") return projectStatus(ctx, options.folder);
 
@@ -507,21 +534,9 @@ export async function commandProject(
   const written = await applyProjectChange(ctx, options.folder, options);
   const out = gatewayOut(ctx);
   const { paths } = ctx;
-  const addedLine =
-    written.exclude !== null &&
-    written.exclude.outcome !== "unchanged" &&
-    written.exclude.removed.length === 0;
-  if (written.result.changes.length === 0 && !addedLine) {
-    out.verdict("ok", `Nothing to change: ${nothingWords(options, written.saved)}`);
-    return 0;
-  }
-  printChanges(out, written.result, paths.home);
-  if (addedLine && written.exclude !== null) {
-    out.line(
-      "created",
-      `the excluded line "${PERSONAL_EXCLUDE_LINE}" in ${tildify(written.plan.excludeFile ?? "", paths.home)} (restore takes it out)`,
-    );
-  }
+  // Every word below comes from the state that applies after the write: the file this command
+  // wrote may not be the one that decides (P3: the personal file beats the team file).
+  const { effective } = written.saved;
   for (const skipped of written.result.skipped) {
     if (
       skipped.path.length === 2 &&
@@ -534,29 +549,34 @@ export async function commandProject(
       );
     }
   }
+  const addedLine =
+    written.exclude !== null &&
+    written.exclude.outcome !== "unchanged" &&
+    written.exclude.removed.length === 0;
+  if (written.result.changes.length === 0 && !addedLine) {
+    // Nothing was written; the state that applies still decides the words (a key that stays is
+    // reported just above, and it may be the one a session gets).
+    out.verdict(markOf(effective), `Nothing to change. ${verdictLine(effective)}`);
+    return 0;
+  }
+  printChanges(out, written.result, paths.home);
+  if (addedLine && written.exclude !== null) {
+    out.line(
+      "created",
+      `the excluded line "${PERSONAL_EXCLUDE_LINE}" in ${tildify(written.plan.excludeFile ?? "", paths.home)} (restore takes it out)`,
+    );
+  }
   for (const line of savedStateLines(written.saved, written.plan)) out.say(line, 2);
-  out.verdict("ok", `Done. ${verdictOf(options, written.saved)}`);
+  // The file written is not the one that decides: say which one is, and what it gives.
+  if (effective.source !== "none" && effective.source !== written.plan.kind) {
+    out.line(
+      "warn",
+      `${projectSourceWords(effective, paths.home, written.saved)} decides first: ${decisionWords(effective)}`,
+      { indent: 2 },
+    );
+  }
+  out.verdict(markOf(effective), `Done. ${verdictLine(effective)}`);
   return 0;
-}
-
-/** What a run that changed nothing found, in its own words. */
-function nothingWords(options: ProjectOptions, view: ProjectGatewayState): string {
-  if (options.state === "on") {
-    return `this project already uses the gateway (${view.effective.url ?? ""}).`;
-  }
-  if (options.state === "off") return "this project already uses Anthropic's own address.";
-  return "this project already has no address of its own: the machine's settings decide.";
-}
-
-/** The verdict for a state this run saved. */
-function verdictOf(options: ProjectOptions, view: ProjectGatewayState): string {
-  if (options.state === "on") {
-    return `This project's sessions use the gateway (${view.effective.url ?? ""}).`;
-  }
-  if (options.state === "off") {
-    return "This project's sessions go to Anthropic's own address, on your own Claude login.";
-  }
-  return "This project has no gateway address of its own: the machine's settings decide.";
 }
 
 /** One project in the list `gateway projects` prints: the portal's own row, less its git facts. */
@@ -599,7 +619,7 @@ export async function commandProjects(
       "this command needs the portal's project list, and the caller passed none: run it from the command line, where the list is wired",
     );
   }
-  const list = await ctx.projects();
+  const list = await ctx.projects(folder);
   if (list.projects.length === 0) {
     out.say("No project yet: the portal's Projects page shows the same list.");
     if (list.note !== null) out.line("info", list.note);
@@ -630,8 +650,8 @@ export const PROJECT_HELP = `  project <status|on|off|default> [--team] [--profi
                          writes .claude/settings.json and takes off or default only. A changed
                          value reaches a running session; a removed one waits for a restart.
                          Refused: another gateway's URL in the file, a login key or
-                         apiKeyHelper anywhere in the chain (with on), a profile the config
-                         does not have.`;
+                         apiKeyHelper anywhere in the chain (with on or off), a profile the
+                         config does not have.`;
 
 /** `gateway projects`' lines in `gateway`'s command list. */
 export const PROJECTS_HELP = `  projects [--folder <dir>]

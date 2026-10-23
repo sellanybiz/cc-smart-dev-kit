@@ -307,6 +307,29 @@ describe("what else the reader reports", () => {
     expect(state.effective.state).toBe("unknown");
   });
 
+  test("an empty file is no key, and a byte order mark is skipped, as the writer reads them", () => {
+    const files = machine();
+    const root = repo("gp2-empty-bom");
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(join(root, ".claude", "settings.local.json"), "");
+    writeFileSync(
+      join(root, ".claude", "settings.json"),
+      `\uFEFF${JSON.stringify({ env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL } })}`,
+    );
+    const state = stateOf(root, files);
+    expect(state.files[0]?.problem).toBeNull();
+    expect(state.choice).toMatchObject({ source: "team", state: "off" });
+  });
+
+  test("the personal file's git tracking is read: tracked, not tracked", () => {
+    const files = machine();
+    const root = repo("gp2-tracked-reader");
+    expect(stateOf(root, files).checkout?.personalTracked).toBe(false);
+    writeSettings(join(root, ".claude", "settings.local.json"), {});
+    git(root, "add", "-f", ".claude/settings.local.json");
+    expect(stateOf(root, files).checkout?.personalTracked).toBe(true);
+  });
+
   test("a gateway config that cannot be read is reported, and the default port is used", () => {
     const files = machine();
     const root = repo("gp2-badconfig");

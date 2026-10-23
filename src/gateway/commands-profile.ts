@@ -22,7 +22,7 @@ import { withLock } from "../setup/lock";
 import { formatKeyPath } from "../setup/managed-json";
 import { listModels } from "./backends";
 import type { GatewayContext } from "./commands";
-import { chainProblem, notSlotName, splitChain } from "./commands-chains";
+import { chainProblem, notSlotName, SLOT_WORDS, splitChain } from "./commands-chains";
 import { gatewayOut } from "./commands-out";
 import {
   fallbackOn,
@@ -66,8 +66,8 @@ function missingProfile(config: GatewayConfig, name: string): string {
 /** The targets a profile slot command must check against the live model list. */
 function targetsToCheck(text: string): string[] {
   const word = text.trim();
-  if (word === "clear" || word === "off" || word === "claude" || word === "custom") return [];
-  return splitChain(word);
+  const words = [...SLOT_WORDS.claude, ...SLOT_WORDS.clear, ...SLOT_WORDS.custom];
+  return words.includes(word) ? [] : splitChain(word);
 }
 
 /** A profile with one switch of one slot removed; the field itself goes when it is empty. */
@@ -83,6 +83,37 @@ function withoutSwitch(
   if (kept.length > 0) next[field] = Object.fromEntries(kept);
   else delete next[field];
   return next;
+}
+
+/**
+ * The config without the fallback and breaker entries a profile holds for `slot`, in each
+ * profile that has no chain of its own for it, once the machine has none either. The config
+ * refuses a switch on a slot with no chain at all, so a machine change that took the last chain
+ * away (`gateway slot <slot> claude|clear`) would otherwise be refused for a profile's switch
+ * the person set on the machine's chain. The judge is the one slot a switch outlives its chain
+ * (its fallback says whether the worker's tested targets stand in). `profiles` names each
+ * profile that lost a switch, for the line the command prints.
+ */
+export function withoutOrphanProfileSwitches(
+  config: GatewayConfig,
+  slot: string,
+): { config: GatewayConfig; profiles: string[] } {
+  if (slot === JUDGE_SLOT || config.profiles === undefined) return { config, profiles: [] };
+  const profiles: string[] = [];
+  let next = config;
+  for (const [name, profile] of Object.entries(config.profiles)) {
+    if (profileSlotChain(config, profile, slot) !== null) continue;
+    const held =
+      Object.hasOwn(profile.fallback ?? {}, slot) || Object.hasOwn(profile.breaker ?? {}, slot);
+    if (!held) continue;
+    next = withProfile(
+      next,
+      name,
+      withoutSwitch(withoutSwitch(profile, "breaker", slot), "fallback", slot),
+    );
+    profiles.push(name);
+  }
+  return { config: next, profiles };
 }
 
 /** The config with one profile replaced; `profiles` itself goes when no profile is left. */
@@ -118,10 +149,10 @@ export function planProfileSlotChange(
   modelsByBackend: Record<string, null | string[]>,
 ): ProfileSlotPlan | { error: string } {
   if (!isProfileName(name)) return { error: PROFILE_NAME_RULE };
-  const profile = Object.hasOwn(current.profiles ?? {}, name)
-    ? current.profiles?.[name]
-    : undefined;
-  if (profile === undefined) return { error: missingProfile(current, name) };
+  const held = Object.hasOwn(current.profiles ?? {}, name) ? current.profiles?.[name] : undefined;
+  // The first chain makes the profile: a name the config does not have starts empty here. The
+  // words that only change an existing profile (`clear`, and `fallback`/`remove` below) refuse.
+  const profile: ProfileConfig = { ...(held ?? {}) };
   const key = slotKeyFromArg(slotArg);
   if (key === null) return { error: notSlotName(slotArg) };
   const word = text.trim();
@@ -131,7 +162,7 @@ export function planProfileSlotChange(
       : null;
   const slots = { ...(profile.slots ?? {}) };
   if (word === "clear") {
-    if (!Object.hasOwn(slots, key)) {
+    if (held === undefined || !Object.hasOwn(slots, key)) {
       return {
         error: `${name} does not name ${key}: the machine's chain already applies there`,
       };
@@ -145,10 +176,7 @@ export function planProfileSlotChange(
       error: `a profile has no saved chain of its own: give the slot its targets, or "off" for plain Claude there (${COMMAND} gateway slot <slot> custom saves and uses the machine's chain)`,
     };
   } else {
-    const chain = word
-      .split(",")
-      .map((target) => target.trim())
-      .filter((target) => target !== "");
+    const chain = splitChain(word);
     if (chain.length === 0) return { error: "give at least one target" };
     const problem = chainProblem(current, chain, modelsByBackend);
     if (problem !== null) return { error: problem };
@@ -237,7 +265,6 @@ export function planProfileRemove(
   };
 }
 
-/** One settings file's line in `project status`: what it holds, and where it is. */
 /** The second line under a slot change: what the slot is in this profile now. */
 function slotNowWords(plan: ProfileSlotPlan, current: GatewayConfig): string {
   if (plan.next === "claude") return "Claude (plain Claude in this profile)";

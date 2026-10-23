@@ -24,8 +24,12 @@ import type { HealthFetch } from "./health";
 
 const PORT = 20999;
 
-/** A temp machine whose config holds one profile, and a fake model list for its backend. */
-function machine(options: { config?: boolean } = {}) {
+/**
+ * A temp machine whose config holds one profile, and a fake model list for its backend.
+ * `profiles: false` leaves the config without a `profiles` key at all (the High the review
+ * found: the first chain must make the profile).
+ */
+function machine(options: { config?: boolean; profiles?: boolean } = {}) {
   const home = tempDir("gp2-profile");
   const configDir = join(home, ".claude");
   mkdirSync(configDir, { recursive: true });
@@ -37,7 +41,7 @@ function machine(options: { config?: boolean } = {}) {
       anthropicBaseUrl: DEFAULT_ANTHROPIC_BASE_URL,
       backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://omni.test" } },
       port: PORT,
-      profiles: { team: {} },
+      ...(options.profiles === false ? {} : { profiles: { team: {} } }),
       slots: { "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash"] },
       timeouts: { firstByteMs: 1000 },
       version: 1,
@@ -95,6 +99,32 @@ function machine(options: { config?: boolean } = {}) {
 }
 
 describe("gateway profile <name> slot", () => {
+  test("the first chain makes the profile, on a config that has no profiles at all", async () => {
+    const m = machine({ profiles: false });
+    expect(await m.run(["profile", "team", "slot", "worker", "omniroute:m1"])).toBe(0);
+    expect(m.config().profiles?.team?.slots?.["cc-smart-dev-kit-worker"]).toEqual(["omniroute:m1"]);
+  });
+
+  test("off makes a profile too: plain Claude for that slot in it", async () => {
+    const m = machine({ profiles: false });
+    expect(await m.run(["profile", "fresh", "slot", "worker", "off"])).toBe(0);
+    expect(m.config().profiles?.fresh?.slots?.["cc-smart-dev-kit-worker"]).toBe("claude");
+  });
+
+  test("after remove, the first chain makes the profile again", async () => {
+    const m = machine();
+    await m.run(["profile", "team", "remove"]);
+    expect(await m.run(["profile", "team", "slot", "worker", "omniroute:m1"])).toBe(0);
+    expect(m.config().profiles?.team?.slots?.["cc-smart-dev-kit-worker"]).toEqual(["omniroute:m1"]);
+  });
+
+  test("clear on a profile that does not name the slot is refused, on a missing one too", async () => {
+    const m = machine({ profiles: false });
+    await expect(m.run(["profile", "team", "slot", "worker", "clear"])).rejects.toThrow(
+      "team does not name cc-smart-dev-kit-worker: the machine's chain already applies there",
+    );
+  });
+
   test("sets the profile's own chain, with the machine's chain left alone", async () => {
     const m = machine();
     expect(await m.run(["profile", "team", "slot", "worker", "omniroute:m1"])).toBe(0);
@@ -198,6 +228,38 @@ describe("gateway profile <name> fallback", () => {
     await expect(m.run(["profile", "team", "fallback", "worker", "yes"])).rejects.toThrow(
       'say on or off, not "yes"',
     );
+  });
+});
+
+describe("a profile's switch on the machine's chain does not block the machine's own change (review: M5)", () => {
+  test("slot worker claude drops the profile's fallback switch that had only the machine's chain", async () => {
+    const m = machine();
+    // The profile names no worker chain: its switch is on the machine's.
+    expect(await m.run(["profile", "team", "fallback", "worker", "off"])).toBe(0);
+    expect(m.config().profiles?.team?.fallback?.["cc-smart-dev-kit-worker"]).toBe(false);
+    m.reset();
+
+    expect(await m.run(["slot", "worker", "claude"])).toBe(0);
+    expect(m.config().profiles?.team?.fallback).toBeUndefined();
+    expect(m.config().slots["cc-smart-dev-kit-worker"]).toBeUndefined();
+    expect(m.output()).toContain(
+      "profile team: its fallback and breaker switches for cc-smart-dev-kit-worker went with the chain (the profile has none of its own)",
+    );
+  });
+
+  test("clear does the same, and a profile with a chain of its own keeps its switch", async () => {
+    const m = machine();
+    await m.run(["profile", "team", "fallback", "worker", "off"]);
+    await m.run(["profile", "keeper", "slot", "worker", "omniroute:m1"]);
+    await m.run(["profile", "keeper", "fallback", "worker", "off"]);
+    m.reset();
+
+    expect(await m.run(["slot", "worker", "clear"])).toBe(0);
+    const config = m.config();
+    expect(config.profiles?.team?.fallback).toBeUndefined();
+    expect(config.profiles?.keeper?.fallback?.["cc-smart-dev-kit-worker"]).toBe(false);
+    expect(m.output()).toContain("profile team:");
+    expect(m.output()).not.toContain("profile keeper:");
   });
 });
 
