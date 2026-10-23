@@ -32510,7 +32510,7 @@ function readCaller(command, ctx, options = { session: "required" }) {
     lines: fix === undefined ? [`crew ${command}: ${line}`] : [`crew ${command}: ${line}`, `Fix: ${fix}`],
     ok: false
   });
-  const crew = options.asPerson === true ? null : crewIdOf(ctx.env);
+  const crew = crewIdOf(ctx.env);
   if (crew !== null) {
     return refuse(`this session is the crew session ${crew}, and a crew session never ${NEVER_DOES[command]}`, `hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`);
   }
@@ -38728,6 +38728,27 @@ function findLead(records, ref) {
       };
   }
 }
+async function recordLeadNotes(receivers, record, message, sinks) {
+  const recorded = [];
+  for (const one of receivers) {
+    try {
+      await record(one);
+    } catch (error) {
+      sinks.error(`crew lead tell: the store could not record the note for ${one.name}: ${reasonOf3(error)}`);
+      if (recorded.length > 0) {
+        const names = recorded.map((done) => done.name).join(", ");
+        sinks.error(`The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${one.name} again.`);
+        for (const done of recorded)
+          sinks.print(sendMessageLine(done.name, message));
+      }
+      return 1;
+    }
+    recorded.push(one);
+  }
+  for (const one of recorded)
+    sinks.print(sendMessageLine(one.name, message));
+  return 0;
+}
 async function runLeadTell(args, ctx) {
   const read = readCaller("lead tell", ctx);
   if (!read.ok) {
@@ -38782,26 +38803,18 @@ async function runLeadTell(args, ctx) {
     }
   }
   const to = receivers.map((one) => one.name);
-  for (const one of receivers) {
-    try {
-      await appendCrewEvent(ctx.paths.stateDir, repo, {
-        crew: sender.sessionId,
-        lead: one.sessionId,
-        name: sender.name,
-        state: "working",
-        tell: { kind: args.kind, to },
-        text: firstLineOf(args.text),
-        type: "lead-tell"
-      }, ctx.now());
-    } catch (error) {
-      ctx.error(`crew lead tell: the store could not record the note: ${reasonOf3(error)}`);
-      return 1;
-    }
-  }
   const message = leadTellMessage(sender.name, args.kind, args.text);
-  for (const one of receivers)
-    ctx.print(sendMessageLine(one.name, message));
-  return 0;
+  return await recordLeadNotes(receivers, async (one) => {
+    await appendCrewEvent(ctx.paths.stateDir, repo, {
+      crew: sender.sessionId,
+      lead: one.sessionId,
+      name: sender.name,
+      state: "working",
+      tell: { kind: args.kind, to },
+      text: firstLineOf(args.text),
+      type: "lead-tell"
+    }, ctx.now());
+  }, message, { error: ctx.error, print: ctx.print });
 }
 
 // src/crew/remove.ts
@@ -40144,7 +40157,7 @@ function parseReportArgs(argv) {
   };
 }
 function parseAnswerArgs(argv) {
-  const parsed = parseOptions(argv, []);
+  const parsed = parseOptions(argv, [], ["--as-person"]);
   if ("error" in parsed)
     return parsed;
   const [crew, text, ...extra] = parsed.positionals;
@@ -40154,7 +40167,7 @@ function parseAnswerArgs(argv) {
     return { error: 'Say the answer: crew answer <crew session> "<text>"' };
   if (extra.length > 0)
     return { error: `Unknown argument: ${extra.join(" ")}` };
-  return { text, crew };
+  return { asPerson: parsed.flags.has("--as-person"), text, crew };
 }
 var CREW_TELL = {
   ask: "who you tell",
