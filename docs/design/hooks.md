@@ -826,9 +826,12 @@ with the one shell reader and answers five things:
 
 **What the judge cannot read**, and so does not judge: a script file's own content
 (`sh run.sh`), a command another program runs from a string of its own that the reader does not
-open (`watch -n 5 'cc-smart-dev-kit workflow propose …'`, `ssh host '…'`, `su -c '…'`), and text
-more than three levels inside a shell or `eval` (`MAX_NESTING`). Every guard that reads a shell
-line shares these; the reader (`src/shell/command.ts`) is where one is closed, never a guard.
+open (`watch -n 5 'cc-smart-dev-kit workflow propose …'`, `ssh host '…'`, `su -c '…'`), and a
+shell nested more than three deep (`bash -c "bash -c \"bash -c '…'\""` — the walk stops at
+`MAX_NESTING`). A chain of `eval`s is read at any depth: each step's own arguments carry the
+line. Every guard that reads a shell line shares these limits; the reader
+(`src/shell/command.ts`, and `MAX_NESTING` in each guard's own walk) is where one is closed,
+never a single guard.
 A line the judge reads is judged in the dialect of the tool that runs it — the PowerShell tool
 beside Bash on native Windows reads a launch, a lead command and a poll the same.
 
