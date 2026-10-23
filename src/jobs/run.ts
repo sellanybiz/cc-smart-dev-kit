@@ -14,8 +14,10 @@ import {
   launchArgv,
   oomKiller,
   type SliceControl,
+  type SliceWeights,
   unitName,
 } from "./launch";
+import { sliceChain } from "./memory";
 import type { QueuedJob, Reservation } from "./queue";
 
 export interface JobRequest {
@@ -33,6 +35,10 @@ export interface JobRequest {
   checkout: string;
   /** The systemd slice for a scope launch. */
   slice: string;
+  /** The CPU weight for the slice chain; 0 leaves systemd's default in force. */
+  cpuWeight: number;
+  /** The I/O weight for the slice chain; 0 leaves systemd's default in force. */
+  ioWeight: number;
   /** When `job run` started (ms): makes the unit name unique. */
   startedAt: number;
 }
@@ -101,6 +107,43 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
   }
 }
 
+/**
+ * Puts the CPU and I/O weights on every slice of the job's chain, before the job starts,
+ * the same way and at the same moment as the ceiling. A weight whose controller this
+ * machine's user manager was not given is skipped: systemd would record the property and
+ * write nothing to the cgroup, so the job would carry no priority at all.
+ *
+ * The whole chain carries the weight because systemd shares CPU and disk I/O between
+ * slices that are siblings. The heavy slice alone competes only with what sits beside it
+ * inside the kit's own slice; the outermost slice of the chain is the one that competes
+ * with the desktop and the sessions, and an intermediate one would compete if a unit ever
+ * sat beside it.
+ */
+function setSliceWeights(request: JobRequest, deps: JobDeps): void {
+  if (request.cpuWeight <= 0 && request.ioWeight <= 0) return;
+  const controllers = deps.slice.controllers();
+  const weights: SliceWeights = {
+    ...(request.cpuWeight > 0 && controllers?.includes("cpu") === true
+      ? { cpu: request.cpuWeight }
+      : {}),
+    ...(request.ioWeight > 0 && controllers?.includes("io") === true
+      ? { io: request.ioWeight }
+      : {}),
+  };
+  if (weights.cpu === undefined && weights.io === undefined) return;
+  const named =
+    weights.cpu !== undefined && weights.io !== undefined
+      ? "CPU and I/O weights"
+      : weights.cpu !== undefined
+        ? "CPU weight"
+        : "I/O weight";
+  for (const slice of sliceChain(request.slice)) {
+    if (!deps.slice.setWeights(slice, weights)) {
+      deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
+    }
+  }
+}
+
 /** Runs the job and returns its exit code. The reservation is given back however it ends. */
 export async function runJob(request: JobRequest, deps: JobDeps): Promise<number> {
   const { command, gb, kind, pid, spec } = request;
@@ -139,6 +182,7 @@ export async function runJob(request: JobRequest, deps: JobDeps): Promise<number
           `could not set ${request.slice} MemoryMax=${memoryMax}: the job runs without the slice's ceiling`,
         );
       }
+      setSliceWeights(request, deps);
       const group = deps.slice.controlGroup(request.slice);
       eventsPath = group === null ? null : `/sys/fs/cgroup${group}/memory.events`;
       scopeUnit = unitName(request.slice, kind, pid, request.startedAt);

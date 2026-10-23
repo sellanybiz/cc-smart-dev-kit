@@ -21,10 +21,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { type CliPaths, cliPaths, tildify } from "../cli/paths";
-import { STATUSLINE_KEY, statuslineSetting } from "../cli/setup";
 import { checkCcSmartDevKitConfig } from "../project/config";
+import { raisedRequires, requiresFloor } from "../project/init";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { applyManagedJson, isObject, readJsonObject } from "../setup/managed-json";
+import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { atomicWrite, backupFile, realTarget } from "../setup/write";
 import { heldSince, hold, resume, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
@@ -172,6 +173,13 @@ function writeProjectFile(
   const before = structuredClone(data);
   if (value === undefined) removeLeaf(data, path);
   else setLeaf(data, path, value);
+  // A write that brings a field a newer plugin added raises `requires` (never lowers it), as
+  // `project init` does: a teammate on an older plugin then hears "update", not every guard
+  // asking. Only then: a write the file's old floor already covers leaves `requires` alone.
+  const needed = requiresFloor(data);
+  if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0) {
+    data.requires = raisedRequires(data.requires, needed.floor, needed.version);
+  }
   // The same checks every reader of the file runs (`requires`, the retired engine fields, the
   // strict parse), so this never writes a file the hooks would then refuse.
   checkCcSmartDevKitConfig(data, file);

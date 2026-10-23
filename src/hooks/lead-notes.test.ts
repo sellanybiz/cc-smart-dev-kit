@@ -3,7 +3,7 @@
  * sessions since its last turn, said once.
  */
 import { describe, expect, test } from "bun:test";
-import { statSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import {
@@ -23,6 +23,7 @@ import { hookEnv, makeClone, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { addContext } from "./io";
 import { leadNotesAnswer, notesLine } from "./lead-notes";
+import { namesDir } from "./session-name";
 import { leadNotesHook } from "./specs";
 
 const CREW_ID = "W2-x-1a2b3c";
@@ -64,9 +65,12 @@ function newCrew(repo: string): NewCrew {
 /**
  * A world with the lead registered and its crew session recorded. `cursor` (the default) seeds the
  * notes cursor at the log's start, so the events a test appends are the lead's news; without it the
- * lead's first turn seeds the cursor itself.
+ * lead's first turn seeds the cursor itself. `named` (the default) says the lead already took its
+ * name at an earlier prompt: the record `session-name.ts` keeps is written by hand, so a test about
+ * the news does not read the name too. Without it the next prompt is the lead's first since
+ * `crew lead`, and the LD1 tests watch it name the session.
  */
-async function leadWorld(cursor = true): Promise<{
+async function leadWorld(options: { cursor?: boolean; named?: boolean } = {}): Promise<{
   env: Record<string, string>;
   repo: string;
   stateDir: string;
@@ -87,7 +91,11 @@ async function leadWorld(cursor = true): Promise<{
     T0,
   );
   await createCrew(stateDir, newCrew(repo), T0);
-  if (cursor) writeNotesState(stateDir, repo, LEAD_SESSION, { offset: 0 });
+  if (options.cursor ?? true) writeNotesState(stateDir, repo, LEAD_SESSION, { offset: 0 });
+  if (options.named ?? true) {
+    mkdirSync(namesDir(env), { recursive: true });
+    writeFileSync(join(namesDir(env), LEAD_SESSION), "LEAD app plan");
+  }
   return { env, repo, stateDir };
 }
 
@@ -171,7 +179,7 @@ describe("one note, then none", () => {
   });
 
   test("the first turn seeds the cursor at the log's end: the history is not news", async () => {
-    const world = await leadWorld(false);
+    const world = await leadWorld({ cursor: false });
     await step(world.stateDir, world.repo, "tests-green");
     expect(readNotesState(world.stateDir, world.repo, LEAD_SESSION)).toBeNull();
     expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
@@ -218,6 +226,139 @@ describe("only this lead's news", () => {
   });
 });
 
+describe("the lead's name (LD1)", () => {
+  const NAME = "LEAD app plan";
+
+  /**
+   * The answer this turn must give, written by hand — never built with the hook's own
+   * `addContextAndTitle`: one `UserPromptSubmit` answer holding the lead's note and its name.
+   */
+  function named(text: null | string, title: string): { stdout: string } {
+    return {
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          ...(text === null ? {} : { additionalContext: text }),
+          sessionTitle: title,
+        },
+      }),
+    };
+  }
+
+  test("the first prompt after crew lead sets it, alone", async () => {
+    // No cursor, no name and no events: the turn seeds the cursor, and still names the session.
+    const world = await leadWorld({ cursor: false, named: false });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      named(null, NAME),
+    );
+  });
+
+  test("one answer carries the lead's note and its name", async () => {
+    const world = await leadWorld({ named: false });
+    await step(world.stateDir, world.repo, "tests-green");
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      named(stepLine("tests-green"), NAME),
+    );
+  });
+
+  test("a second prompt with the same title sets nothing", async () => {
+    const world = await leadWorld({ named: false });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      named(null, NAME),
+    );
+    // The next prompt carries the title Claude Code applied.
+    expect(
+      await runHook(leadNotesHook, leadInput(world.repo, { session_title: NAME }), world.env),
+    ).toEqual({});
+    // A prompt that names no title at all is not set again either: the kit's record says it set it.
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a lost record, with the session already called that: nothing is set again", async () => {
+    const world = await leadWorld({ named: false });
+    await runHook(leadNotesHook, leadInput(world.repo), world.env);
+    rmSync(join(namesDir(world.env), LEAD_SESSION));
+    expect(
+      await runHook(leadNotesHook, leadInput(world.repo, { session_title: NAME }), world.env),
+    ).toEqual({});
+    // The name the session already carries is the kit's now: a rename from here is the person's.
+    expect(
+      await runHook(leadNotesHook, leadInput(world.repo, { session_title: "mine now" }), world.env),
+    ).toEqual({});
+  });
+
+  test("the name is remembered where the session-name hook keeps the one it set", async () => {
+    const world = await leadWorld({ named: false });
+    await runHook(leadNotesHook, leadInput(world.repo), world.env);
+    expect(readFileSync(join(namesDir(world.env), LEAD_SESSION), "utf8")).toBe(NAME);
+  });
+
+  test("the person's own /rename stays, and the news still comes", async () => {
+    const world = await leadWorld();
+    await step(world.stateDir, world.repo, "tests-green");
+    expect(
+      await runHook(
+        leadNotesHook,
+        leadInput(world.repo, { session_title: "my own name" }),
+        world.env,
+      ),
+    ).toEqual(addContext("UserPromptSubmit", stepLine("tests-green")));
+  });
+
+  test("a session named after its task first: the lead's name takes over", async () => {
+    const world = await leadWorld({ named: false });
+    // `session-name` set a task name at an earlier prompt: its record, by hand.
+    mkdirSync(namesDir(world.env), { recursive: true });
+    writeFileSync(join(namesDir(world.env), LEAD_SESSION), "Fix login");
+    expect(
+      await runHook(
+        leadNotesHook,
+        leadInput(world.repo, { session_title: "Fix login" }),
+        world.env,
+      ),
+    ).toEqual(named(null, NAME));
+  });
+
+  test("another plan registered later takes its new name", async () => {
+    const world = await leadWorld();
+    await writeLead(
+      world.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD app other",
+        plan: "other",
+        repo: world.repo,
+        sessionId: LEAD_SESSION,
+        tag: "app",
+      },
+      T0,
+    );
+    expect(
+      await runHook(
+        leadNotesHook,
+        leadInput(world.repo, { session_title: "my own name" }),
+        world.env,
+      ),
+    ).toEqual(named(null, "LEAD app other"));
+  });
+
+  test("a SessionStart never sets a title: the prompt is the route that reaches the name", async () => {
+    const world = await leadWorld({ named: false });
+    expect(
+      await runHook(
+        leadNotesHook,
+        {
+          hook_event_name: "SessionStart",
+          session_id: LEAD_SESSION,
+          cwd: world.repo,
+          source: "resume",
+        },
+        world.env,
+      ),
+    ).toEqual({});
+  });
+});
+
 describe("silence, and the fail-safe", () => {
   test("a session that is not a registered lead hears nothing, and no cursor is made", async () => {
     const { repo } = makeClone();
@@ -236,6 +377,7 @@ describe("silence, and the fail-safe", () => {
         "UserPromptSubmit",
         cliPaths(env),
         null,
+        env,
       ),
     ).toEqual({});
   });

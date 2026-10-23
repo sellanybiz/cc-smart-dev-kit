@@ -263,6 +263,23 @@ describe("resolveProject", () => {
     expect(locateCheckout(tempDir("nogit"))).toBeNull();
   });
 
+  test("a file saved with a byte order mark loads, and its ownHooks is read (F5-2)", () => {
+    const repo = makeRepo();
+    // Windows editors (Notepad, an older PowerShell) save UTF-8 with the mark; JSON.parse
+    // refuses it, so every guard would fail closed on a file Claude Code reads without
+    // trouble. The one user-JSON reader skips it.
+    writeCcSmartDevKitJson(
+      repo,
+      `\uFEFF${JSON.stringify({ ownHooks: ["git-guard"], worktrees: { base: "main" } })}`,
+    );
+    const project = resolveProject(repo);
+    expect(project?.config?.ownHooks).toEqual(["git-guard"]);
+    expect(project?.config?.worktrees?.base).toBe("main");
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("no checkout");
+    expect(ownHooksOf(checkout)).toEqual(["git-guard"]);
+  });
+
   test("ownHooksOf reads only ownHooks, from the file loadProjectConfig reads", () => {
     const repo = makeRepo();
     const checkout = () => {

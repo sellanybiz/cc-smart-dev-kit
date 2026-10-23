@@ -40,8 +40,26 @@ export interface CliPaths extends RouterPaths {
    * update), and `restore` removes it like the router's copy.
    */
   portalCopy: string;
+  /**
+   * The portal's Next.js export, beside its copy: `~/.local/share/cc-smart-dev-kit/portal-ui/`.
+   * It is a folder the kit owns whole (`src/setup/managed-folder.ts`), copied from the
+   * installed version's `plugin/portal-ui/` and removed by `restore`.
+   */
+  portalUiFolder: string;
   /** What the portal remembers between pages: `<stateDir>/portal.json`. */
   portalStateFile: string;
+  /**
+   * The folders the person added to the Projects page: `<stateDir>/portal-projects.json`
+   * (`src/portal/api/projects.ts`). A list of main checkout roots, nothing else.
+   */
+  portalProjectsFile: string;
+  /** The running portal's own log: `<stateDir>/portal.log` (start, restart, stop, failures). */
+  portalLogFile: string;
+  /**
+   * The port another program held when the portal last tried to start:
+   * `<stateDir>/portal-held.json`, so that line is said once, not at every session start.
+   */
+  portalHeldFile: string;
   /** What the last OmniRoute update replaced: `<stateDir>/omniroute.json`. */
   omnirouteStateFile: string;
   /** The router's systemd user unit: `~/.config/systemd/user/cc-smart-dev-kit-router.service`. */
@@ -117,7 +135,11 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     routerCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
+    portalUiFolder: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalProjectsFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
+    portalLogFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
+    portalHeldFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
     routerUnitFile: join(
       router.home,

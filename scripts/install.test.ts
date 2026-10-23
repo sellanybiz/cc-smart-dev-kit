@@ -31,7 +31,8 @@ import { tempDir } from "../src/testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../src/testing/timeouts";
 import {
   answer as bun,
-  doctorTokenMissingLine as bunDoctorLine,
+  doctorTokenMissing,
+  doctorReport as fakeDoctorReport,
   tokenFile,
 } from "./install-windows-fakes/bun";
 import { answer as claude } from "./install-windows-fakes/claude";
@@ -277,14 +278,15 @@ case "$*" in
   ;;
 esac
 case "$*" in
-*dist/cli.js\\ doctor*)
-  token="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/../.config/cc-smart-dev-kit/playwright-extension.token"
+*dist/cli.js\\ doctor\\ --json*)
+  # The real report's shape (DoctorReport, src/cli/doctor.ts), with this world's one check: the
+  # browser's token. The same answer as the Windows fake's (install-windows-fakes/bun.ts).
   token="$HOME/.config/cc-smart-dev-kit/playwright-extension.token"
   if [ -f "$token" ]; then
-    printf '✓ the browser token is set (%s)\\n' "$token"
+    printf '{"format":1,"groups":[{"checks":[{"status":"ok","text":"the browser token is set (%s)"}],"id":"browser","status":"ok","title":"Browser"}],"ok":true}\\n' "$token"
     exit 0
   fi
-  printf '✗ the browser token is not set, so the browser cannot connect (no token file at %s): run: cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token\\n' "$token"
+  printf '{"format":1,"groups":[{"checks":[{"status":"fail","fix":"cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token","text":"the browser token is not set, so the browser cannot connect (no token file at %s)"}],"id":"browser","status":"fail","title":"Browser"}],"ok":false}\\n' "$token"
   exit 1
   ;;
 esac
@@ -704,7 +706,6 @@ describe("install.sh: a machine, step by step", () => {
       "· 7/8 the gateway was skipped: README § The AI gateway has its steps",
       "7/8 Add your Tavily key now (the tavily-websearch MCP server)? [y/N] ",
       "· 7/8 the Tavily key was skipped: README § MCP servers says where it goes",
-      `✓ the browser token is set (${w.tokenFile})`,
       "✓ 8/8 doctor: every check passed",
       "Restart every Claude Code session: they load the plugin when they start.",
       "`cc-smart-dev-kit portal` opens the portal in your own terminal (it prints a link with a one-time token).",
@@ -725,9 +726,10 @@ describe("install.sh: a machine, step by step", () => {
     ]);
     expect(w.callsOf("bun")).toContain(`${w.cli} migrate`);
     expect(w.callsOf("bun")).toContain(`${w.cli} setup`);
-    // The token reached `browser token` on stdin; the launcher setup wrote runs doctor.
+    // The token reached `browser token` on stdin; the launcher setup wrote runs doctor, for
+    // its JSON report.
     expect(w.calls()).toContain("stdin-43-chars");
-    expect(w.callsOf("launcher")).toEqual(["doctor"]);
+    expect(w.callsOf("launcher")).toEqual(["doctor --json"]);
     // git was asked before anything was installed (SSH first, then HTTPS).
     expect(w.callsOf("git")).toEqual([`ls-remote git@github.com:${REPO}.git`]);
   });
@@ -736,10 +738,16 @@ describe("install.sh: a machine, step by step", () => {
     const w = world({ answers: ["n", "n", "n"] });
     const { code, out } = w.run();
     expect(code).toBe(3);
-    expect(out).toContain("✗ 8/8 doctor found what is left (its ✗ lines are in the list below)\n");
     expect(out).toContain(
-      `✗ the browser token is not set, so the browser cannot connect (no token file at ${w.tokenFile}): run: cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token\n`,
+      `✗ 8/8 doctor found what is left (the list below; \`${w.launcher} doctor\` shows every check)\n`,
     );
+    // doctor's failure, from its JSON report, with its fix under it.
+    expect(out).toContain(
+      `  ✗ the browser token is not set, so the browser cannot connect (no token file at ${w.tokenFile})\n` +
+        "    Fix: cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token\n",
+    );
+    // The person-facing report is not pasted into the installer's output.
+    expect(out).not.toContain("checking this machine");
     // The list: this run's own skips, each with the line that finishes it, then doctor's ✗.
     expect(out).toContain("What is left:\n");
     expect(out).toContain(
@@ -857,7 +865,7 @@ describe("install.sh: a machine, step by step", () => {
     expect(second).toContain("claude plugin marketplace update cc-smart-dev-kit");
     expect(second).toContain(`bun ${w.cli} migrate`);
     expect(second).toContain(`bun ${w.cli} setup`);
-    expect(second).toContain("launcher doctor");
+    expect(second).toContain("launcher doctor --json");
   });
 
   test("a stale marketplace clone: the refresh runs first, then the update", () => {
@@ -1723,12 +1731,26 @@ describe("the Windows fakes: the same logic the Windows run uses, on Linux", () 
     expect(await bun(["--no-env-file", "--config=x", windowsCli, "setup"], context, io)).toBe(0);
     expect(existsSync(join(w.root, ".local/bin/cc-smart-dev-kit.cmd"))).toBe(true);
     // doctor: the real ✗ line while the browser's token is missing, then the ✓ line.
-    expect(await bun(["--no-env-file", "--config=x", windowsCli, "doctor"], context, io)).toBe(1);
-    expect(said.splice(0)).toEqual([bunDoctorLine(w.root)]);
+    const doctor = ["--no-env-file", "--config=x", windowsCli, "doctor", "--json"];
+    expect(await bun(doctor, context, io)).toBe(1);
+    const failing = said.splice(0);
+    expect(failing).toEqual([fakeDoctorReport(w.root, false)]);
+    expect(JSON.parse(failing[0] ?? "")).toEqual({
+      format: 1,
+      groups: [
+        {
+          checks: [{ status: "fail", ...doctorTokenMissing(w.root) }],
+          id: "browser",
+          status: "fail",
+          title: "Browser",
+        },
+      ],
+      ok: false,
+    });
     mkdirSync(dirname(tokenFile(w.root)), { recursive: true });
     writeFileSync(tokenFile(w.root), "A\n", { mode: 0o600 });
-    expect(await bun(["--no-env-file", "--config=x", windowsCli, "doctor"], context, io)).toBe(0);
-    expect(said.splice(0)).toEqual([`✓ the browser token is set (${tokenFile(w.root)})`]);
+    expect(await bun(doctor, context, io)).toBe(0);
+    expect(said.splice(0)).toEqual([fakeDoctorReport(w.root, true)]);
     // The paths that read stdin (a key, a password, the token) are exercised through the fake's
     // own process — `scripts/install-windows-smoke.ps1` pipes one in, and the shell fakes above
     // prove the same logic on Linux. Here the two questions the installer asks about the CLI

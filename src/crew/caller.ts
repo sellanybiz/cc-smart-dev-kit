@@ -6,7 +6,8 @@
  *   2. the folder is in a git project, whose `.claude/cc-smart-dev-kit.json` reads;
  *   3. crew sessions are on here (D34): `workflow.crew.enabled`, resolved the way `workflow show`
  *      resolves it — the project's file over the person's `workflow.json`, off by default;
- *   4. a Claude Code session runs this command (`callingSession`);
+ *   4. a Claude Code session runs this command (`callingSession`) — and a command that says
+ *      the person acted through the portal (`asPerson`) has none above it;
  *   5. that session is not in bypass mode (`bypassReason`).
  *
  * `crew answer` and `crew watch` run in a lead's session and share the same checks; what a
@@ -52,6 +53,17 @@ const NEVER_DOES = CREW_NEVER_DOES;
 /** How the command reads the session that runs it. */
 export interface CallerOptions {
   /**
+   * True: the person acted through the portal (D52), so **no Claude Code session may run this
+   * command**. The session lookup always runs: the portal's child has no session above it (the
+   * portal starts detached and is reparented away from the session that started it,
+   * `src/hooks/detached.ts`, `src/portal/lifecycle.ts`), and a session the lookup does find
+   * refuses the flag with one line — it is the portal's, and giving it never skips a check.
+   * **The crew-session refusal stays** — the portal's child clears `CC_SMART_DEV_KIT_CREW`
+   * (`src/portal/cli-child.ts`), so the person's click passes it, and a crew session that gives
+   * the flag itself is still refused. The workflow and project checks stay too.
+   */
+  asPerson?: boolean;
+  /**
    * What the command does when no Claude Code session runs it. `required` (the default) refuses
    * it; `optional` goes on with no session — for the commands a plugin's monitor runs, which the
    * host arms as a process of its own, not of the session.
@@ -72,6 +84,8 @@ export function readCaller(
         : [`crew ${command}: ${line}`, `Fix: ${fix}`],
     ok: false,
   });
+  // A crew session never runs this, whoever gave the flags: a crew session's environment says
+  // what it is (`CC_SMART_DEV_KIT_CREW`), and the portal's child clears it (D52).
   const crew = crewIdOf(ctx.env);
   if (crew !== null) {
     return refuse(
@@ -102,11 +116,19 @@ export function readCaller(
       `${COMMAND} workflow set crew.enabled true --project (this project), or the same without --project (every project of yours)`,
     );
   }
+  // The lookup always runs, whatever the flag says: `--as-person` means "no Claude Code session
+  // runs this", so a session it finds refuses the flag instead of being skipped over.
   let session: SessionRecord | null;
   try {
     session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
   } catch (error) {
     return refuse(reasonOf(error));
+  }
+  if (options.asPerson === true && session !== null) {
+    return refuse(
+      "--as-person is the portal's: a Claude Code session runs this command",
+      "run it without --as-person",
+    );
   }
   if (session === null && options.session === "required") {
     return refuse(

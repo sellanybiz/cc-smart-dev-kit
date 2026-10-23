@@ -87,17 +87,18 @@ describe("doctor's Git Bash line", () => {
     expect(check?.text).toBe(
       `Git Bash is at ${PROGRAM_FILES_X86}, which the hooks and the Bash tool run through — but ` +
         `${GIT_BASH_VAR} is set to ${wrongName}, which Claude Code ignores (it must name bash.exe, ` +
-        "sh.exe, bash or sh, and the file must exist). Remove it or point it at bash.exe.",
+        "sh.exe, bash or sh, and the file must exist)",
     );
+    expect(check?.fix).toBe(`remove ${GIT_BASH_VAR}, or point it at bash.exe`);
   });
 
   test("not found: a ✗ that says what to install, never a pass", () => {
     const check = checkGitBash("win32", {}, machine([]));
     expect(check?.ok).toBe(false);
     expect(check?.text).toContain("Git Bash was not found");
-    expect(check?.text).toContain("Install Git for Windows (https://git-scm.com/download/win)");
-    expect(check?.text).toContain("CLAUDE_CODE_GIT_BASH_PATH");
-    expect(check?.text).toContain("then run: cc-smart-dev-kit doctor");
+    expect(check?.fix).toBe(
+      "install Git for Windows (https://git-scm.com/download/win), or set CLAUDE_CODE_GIT_BASH_PATH to bash.exe, then run: cc-smart-dev-kit doctor",
+    );
   });
 
   test("not found, with the variable set: the ✗ names it", () => {

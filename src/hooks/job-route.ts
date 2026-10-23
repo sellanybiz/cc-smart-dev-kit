@@ -12,6 +12,11 @@
  * `cc-smart-dev-kit.json`, so the frame skips the `ownHooks` step for this hook. It runs
  * outside git too, and with a broken or too new `cc-smart-dev-kit.json`.
  *
+ * **A crew session is never asked** (D36): a `claude -p` launch the policy would question is
+ * refused by the launch policy's unattended rule, with the step that reaches the lead (its
+ * words: `CREW_QUESTION_STEP`), and so is a heavy command whose routing cannot be read because
+ * the project's file is broken or too new (`jobRouteConfigAnswer`).
+ *
  * **Both shells.** The hook is wired on Bash and PowerShell, and it reads a line in the
  * dialect of the tool that runs it (`dialectOfTool`): on native Windows the PowerShell tool is
  * one command away, and a judge that read only Bash would let a launch or a poll through
@@ -23,7 +28,10 @@
  * `switches.jobRoute` in `src/workflow/resolve.ts`). A heavy command — one of the project's
  * heavy-job kinds (`classifyRoutableLine`, `src/jobs/`) — is sent through the machine's queue
  * instead of running raw: several sessions running builds, type checks and test runs at once
- * run the machine out of memory.
+ * run the machine out of memory. The classifier reads the project's `package.json` in the
+ * folder the line runs in (the `cwd` the hook was given, and after a `cd`, the folder it moves
+ * to), only to tell a script from the tool of the same name: a `tsc` script that already wraps
+ * the job is not wrapped a second time.
  *
  * Two ways to send it, and the hook uses the first its Claude Code supports:
  *   - **rewrite** (`updatedInput`, proved live on 2.1.301): the call runs
@@ -47,9 +55,12 @@
  * A command already inside `cc-smart-dev-kit job run` stays as it is (the queue would nest), and
  * anything the hook cannot read lets the call through.
  */
+
+import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { readLead } from "../crew/store";
-import { classifyHeavyCommand, classifyRoutableLine } from "../jobs/classify";
+import { classifyHeavyCommand, classifyRoutableLine, type ScriptSource } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
+import { packageScripts } from "../jobs/package-scripts";
 import { LAUNCHER_IN_SHELL, shellQuote } from "../setup/launcher";
 import {
   type Dialect,
@@ -162,10 +173,19 @@ export interface Routed {
   kind: string;
 }
 
-/** The route for a heavy command, or null when there is nothing to route. Pure. */
-export function routeHeavyCommand(command: string, kinds: Kinds, shell: string): null | Routed {
+/**
+ * The route for a heavy command, or null when there is nothing to route. Pure: `source` is the
+ * folder the line runs in and the reader of its `package.json`, so the classifier tells a
+ * project's script from a tool of the same name without reading a file itself.
+ */
+export function routeHeavyCommand(
+  command: string,
+  kinds: Kinds,
+  shell: string,
+  source?: ScriptSource,
+): null | Routed {
   if (runsJobRun(command)) return null;
-  const kind = classifyRoutableLine(command, kinds);
+  const kind = classifyRoutableLine(command, kinds, source);
   return kind === null ? null : { command: jobRunCommand(kind, command, shell), kind };
 }
 
@@ -288,6 +308,8 @@ export function jobRoute(context: HookContext): HookResult {
         command,
         mergeKinds(context.project.config?.jobs?.kinds),
         routedShell(context.env),
+        // The Bash tool's shell starts in the input's `cwd`; the classifier follows a `cd`.
+        { folder: context.cwd, scriptsIn: packageScripts },
       )
     : null;
   // The lead's record is one file read, so only a line it could move to the background asks for
@@ -307,6 +329,11 @@ export function jobRoute(context: HookContext): HookResult {
  * The answer when cc-smart-dev-kit.json is broken or needs a newer plugin. The judge runs
  * anyway (it ignores the file). Otherwise routing cannot be read: a heavy command is asked
  * about rather than run raw, exactly as before. A line outside both is left alone.
+ *
+ * A crew session is never asked (D36): the same answer is a denial, naming the step that puts
+ * the question to its lead. `job-route` is `alwaysOn`, so this answer runs whatever the
+ * project's file or `ownHooks` says; its crew rule lives here rather than in a crew part, so
+ * each call is judged once.
  */
 export function jobRouteConfigAnswer(
   message: string,
@@ -324,10 +351,10 @@ export function jobRouteConfigAnswer(
   ) {
     return SILENT;
   }
-  return toolDecision(
-    "ask",
-    `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`,
-  );
+  const why = `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`;
+  return crewIdOf(context.env) === null
+    ? toolDecision("ask", why)
+    : toolDecision("deny", `${why}\n${CREW_QUESTION_STEP}`);
 }
 
 /** The answer outside git: the judge alone (routing is a project's, and there is none here). */
@@ -356,7 +383,7 @@ export function routeFacts(input: HookInput, context: HookEnvContext): Record<st
   const verdict = judgeBash(reading, { env: context.env, input, paths: context.paths });
   const facts: Record<string, unknown> = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);
-  if (reading.crewStarts > 0) facts.crew_starts = reading.crewStarts;
+  if (reading.crewNeverRuns.length > 0) facts.crew_commands = reading.crewNeverRuns;
   if (reading.statusReads > 0) {
     facts.status_reads = reading.statusReads;
     facts.waits = reading.waits;

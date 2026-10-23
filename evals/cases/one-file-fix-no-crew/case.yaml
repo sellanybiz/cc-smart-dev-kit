@@ -4,7 +4,7 @@ description: >-
   A project with crew sessions on, and a one-line fix in one file: it stays inline. No crew session
   session, no lead skill, no subagent — a crew session's start and review cost far more than the fix.
 tags: [watch, no-trigger, needs-shell]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 12
   allowed_tools: [Read, Glob, Grep, Skill, Bash, Agent, Edit]

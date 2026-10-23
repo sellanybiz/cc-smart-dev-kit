@@ -1,0 +1,18 @@
+# LD1 — a lead names itself, by default
+
+**Goal.** Today `crew lead` registers a lead and prints `/rename LEAD <tag> <plan>` for the person to type (`src/crew/lead.ts:109`). The owner asked (2026-10-23) that a lead rename itself, on by default. Claude Code supports it: a `UserPromptSubmit` hook answer's `sessionTitle` renames the session, the name ListAgents shows (`docs/claude-code-contract.md`, the `sessionTitle` row; `src/hooks/session-name.ts:96` does it today, behind the project's opt-in `sessionNames`).
+
+## How to read
+Open only the functions you need, by line range: `src/hooks/session-name.ts` (the whole header, and how it remembers the name it last set so a person's own `/rename` stays), `src/crew/lead.ts`, `src/hooks/lead-notes.ts` (the machine-wide hook a registered lead already runs on SessionStart and UserPromptSubmit), `src/hooks/specs.ts` (their specs). Give any wider reading to a scout subagent in the background, and keep only its conclusion.
+
+## Build
+1. **A registered lead gets its name at its next prompt, with no setting:** the `LEAD <tag> <plan>` name `crew lead` already computes and records goes out as `sessionTitle` in a `UserPromptSubmit` answer of a hook that already runs for a lead (`lead-notes`, which is machine-wide), next to whatever context that hook gives. Prove first that one answer may carry both `additionalContext` and `sessionTitle` (the contract row's source, or a unit read of Claude Code's own schema the way the contract rows do); if it may not, say what you chose instead.
+2. **It never fights the person:** rename only when the name differs from the one the kit last set for this session (the hook input's `session_title` and the kit's own record, the way `session-name` does — one home for that record: reuse `session-name.ts`'s helpers rather than a copy). A person's own `/rename` stays until the lead registers again with another plan. A session that is not a recorded lead: nothing.
+3. **`crew lead`** stops asking the person to type the line: it says one line that the session takes its name at its next prompt; the `/rename` line stays only as the fallback when the name could not be recorded.
+4. **Docs and skills:** `plugin/skills/lead/SKILL.md` § 1 (no more "give the person the /rename line"), `README.md` (`crew lead`'s row, `lead-notes`' hook row), `docs/design.md` § Lead and the crew, `docs/claude-code-contract.md` if a row's use changes.
+
+## Files
+`src/crew/lead.ts`, `src/hooks/lead-notes.ts`, `src/hooks/session-name.ts` (only to share its record helpers), `src/hooks/specs.ts` (only if a spec's events change), their tests, `plugin/skills/lead/SKILL.md`, `README.md`, `docs/design.md`, `docs/claude-code-contract.md`. Change nothing else.
+
+## Done-check
+Tests: a registered lead's next prompt answers with `sessionTitle: "LEAD <tag> <plan>"` (and its usual context); a second prompt with the same title does not set it again; after the person's own rename (the input's `session_title` differs from what the kit set) nothing is set; a session that is not a lead: nothing; `crew lead` prints the new line, and the `/rename` fallback only when recording failed. Break each once (restore with `cp`, never git). `bun run typecheck`, `lint`, `check:neutral`, `check:duplicates`, `timeout 900 bun test --timeout 60000 src/crew src/hooks`, `bash scripts/windows-hook-smoke.sh`, then the whole `bun test` with `CC_SMART_DEV_KIT_CREW` unset. Never `bun run build`, never `git checkout`/`restore`/`reset --hard`, never a shell command whose text names the kit's own settings or state folders. Don't bump the version, never stage `supabase/`, no names.

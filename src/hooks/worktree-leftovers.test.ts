@@ -116,6 +116,63 @@ describe("worktree-leftovers", () => {
   });
 });
 
+describe("the main checkout's own notes (WA1)", () => {
+  /** A project with no linked worktree: the main checkout is the only one. */
+  function bare(): string {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    return repo;
+  }
+
+  const contextOf = (result: { stdout?: string }): string =>
+    JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.additionalContext ?? "";
+
+  test("on another branch: one line, naming both branches", async () => {
+    const repo = bare();
+    git(repo, "checkout", "-q", "-b", "feature/x");
+    expect(contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()))).toBe(
+      "The main checkout is on `feature/x`, not `main`: a new worktree starts from its HEAD, so switch it to `main` first.",
+    );
+  });
+
+  test("behind origin/<base>: one line, with the count git already has (no fetch)", async () => {
+    const repo = bare();
+    git(repo, "checkout", "-q", "-b", "ahead");
+    writeFileSync(join(repo, "next.txt"), "next\n");
+    git(repo, "add", "next.txt");
+    git(repo, "commit", "-q", "-m", "next");
+    const tip = git(repo, "rev-parse", "HEAD").trim();
+    git(repo, "update-ref", "refs/remotes/origin/main", tip);
+    git(repo, "checkout", "-q", "main");
+    expect(contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()))).toBe(
+      "The main checkout is 1 commit behind origin/main: merge origin/main there before starting a new worktree.",
+    );
+  });
+
+  test("in the middle of a merge: one line", async () => {
+    const repo = bare();
+    writeFileSync(join(repo, ".git", "MERGE_HEAD"), `${git(repo, "rev-parse", "HEAD").trim()}\n`);
+    expect(contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()))).toBe(
+      "The main checkout is in the middle of a merge: finish it or abort it before starting a new worktree.",
+    );
+  });
+
+  test("on the base, up to date, nothing in progress: silent", async () => {
+    expect(await runHook(worktreeLeftoversHook, start(bare()), hookEnv())).toEqual({});
+  });
+
+  test("`claude -p` has nobody to tell: no main-folder line", async () => {
+    const repo = bare();
+    git(repo, "checkout", "-q", "-b", "feature/x");
+    expect(
+      await runHook(worktreeLeftoversHook, start(repo), {
+        ...hookEnv(),
+        CLAUDE_CODE_SESSION_ATTENDED: "0",
+      }),
+    ).toEqual({});
+  });
+});
+
 describe("worktree-leftovers starts the background clean (D48)", () => {
   /** A project with one worktree, so there is something to clean. */
   function withOne(config: Record<string, unknown> = { worktrees: { base: "main" } }) {

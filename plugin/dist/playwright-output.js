@@ -38,7 +38,8 @@ function routerPaths(env = process.env) {
     home,
     gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
     gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json")
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db")
   };
 }
 
@@ -67,7 +68,11 @@ function cliPaths(env = process.env) {
     routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
+    portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
     portalStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.json"),
+    portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
+    portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
+    portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
     omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
@@ -116,7 +121,7 @@ import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.0.1",
+  version: "1.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -227,7 +232,7 @@ function toolDecision(decision, reason) {
 
 // src/hooks/playwright-output.ts
 function outputFilename(fields, outputDir) {
-  const filename = fields["filename"];
+  const filename = fields.filename;
   if (typeof filename !== "string" || filename === "" || isAbsolute(filename))
     return null;
   const name = filename.replace(/^(?:\.[\\/])+/, "");
@@ -265,7 +270,7 @@ function playwrightIsOurs(paths) {
   return live !== null && sameConfig(record.json, live.playwright);
 }
 function rewritableFilename(input) {
-  const filename = toolInput(input)["filename"];
+  const filename = toolInput(input).filename;
   return typeof filename === "string" && filename !== "" && !isAbsolute(filename) ? filename : null;
 }
 function playwrightOutputAnswer(input, outputDir, ours) {

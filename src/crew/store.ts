@@ -108,9 +108,30 @@ export function isKnownState(state: string): state is CrewState {
 /**
  * What one line of the events log says happened: `question` is a crew session asking its lead
  * (D36); `tell` is a crew session telling other crew sessions a contract change or a contract
- * question (D47), kept so the lead sees it.
+ * question (D47), kept so the lead sees it; `person` is the person typing into a crew session
+ * (D55) — their word wins over the brief, and the lead reads the next report against it;
+ * `lead-tell` is one lead telling another lead of the same repository a note (D55); `clash` is a
+ * new crew session whose `--files` another lead's crew session holds too (D55); `merge` is a pull
+ * request merged into the base, for the other leads (D55).
+ *
+ * **`clash` and `person` name a real crew session** (the one whose files another phase wants,
+ * the one the person typed into). A `lead-tell` and a `merge` happen outside any crew session:
+ * their `crew` is the id of the session that wrote the line, and their `state` is `working`,
+ * the state of a session running a command — a lead has no crew state, and nothing reads a
+ * crew state from a `lead-tell`, a `clash` or a `merge`.
  */
-export const CREW_EVENT_TYPES = ["created", "state", "step", "report", "question", "tell"] as const;
+export const CREW_EVENT_TYPES = [
+  "created",
+  "state",
+  "step",
+  "report",
+  "question",
+  "tell",
+  "person",
+  "lead-tell",
+  "clash",
+  "merge",
+] as const;
 export type CrewEventType = (typeof CREW_EVENT_TYPES)[number];
 
 /** How a crew session's hand-back ends. */
@@ -183,6 +204,15 @@ export function crewBriefFile(stateDir: string, repo: string, id: string): strin
 /** The settings file a crew session's launch passes: it names the crew session to its own session. */
 export function crewSettingsFile(stateDir: string, repo: string, id: string): string {
   return join(crewFilesDir(stateDir, repo, id), "settings.json");
+}
+
+/**
+ * The MCP servers a crew session's launch loads (`--strict-mcp-config --mcp-config`): the lean
+ * start's own file, written beside its settings (`crew start`). A record started before the lean
+ * start has none, and its launch loaded every server.
+ */
+export function crewMcpFile(stateDir: string, repo: string, id: string): string {
+  return join(crewFilesDir(stateDir, repo, id), "mcp.json");
 }
 
 /** The repository's events log. */
@@ -295,7 +325,7 @@ const crewFields = z.object({
   /**
    * The model as the launch named it, the gateway slot that answers it (null: Claude), the model
    * that does, and the premium tier the name stands for (`opus`, `fable`; null for none) — the
-   * opus cap counts it (D37).
+   * per-lead and machine opus caps count it (D54).
    */
   model: z.looseObject({
     named: text,
@@ -415,14 +445,21 @@ const eventFields = z.object({
   at: text,
   /** What happened (`CREW_EVENT_TYPES`). */
   type: word<CrewEventType>(),
-  /** The crew session it is about: its id, and its name, so a line prints with no lookup. */
+  /**
+   * The session the event is about, or that wrote it: a crew session's id — for a `lead-tell`
+   * or a `merge`, the session that wrote the line (`CREW_EVENT_TYPES` says which).
+   */
   crew: z.string().regex(FILE_ID, "a plain file name"),
+  /** The name its line prints: a crew session's, a sending lead's, or the merging session's. */
   name: text,
   /** The lead's session id, so a lead reads only its own crew sessions' lines; null when none. */
   lead: text.nullable(),
   /** The crew session's state after it. */
   state: word<CrewState>(),
-  /** One short line: the step, the report's status, why it failed; null when there is none. */
+  /**
+   * One short line: the step, the report's status, why it failed. A `clash` or `merge` carries
+   * its whole line, and a `lead-tell` the note's first line without the tag; null when none.
+   */
   text: z.string().nullable(),
   /** The commit the step or the report happened at, when the crew session named one. */
   sha: sha.nullable().optional(),
@@ -430,7 +467,7 @@ const eventFields = z.object({
   note: z.string().nullable().optional(),
   /** The memory the crew session's process held, in MB, when the event happened. */
   memoryMb: z.number().min(0).nullable().optional(),
-  /** A `tell` event only: the kind of the note and the names of the crew sessions told. */
+  /** A `tell` or `lead-tell` event: the kind of the note and the names told (crew sessions, or leads). */
   tell: z
     .looseObject({ kind: text, to: z.array(text) })
     .nullable()
@@ -606,18 +643,42 @@ export function listCrew(stateDir: string, repo: string): Listed<CrewRecord> {
   return listRecords(crewRecordSchema, join(crewStoreDir(stateDir, repo), "crew"));
 }
 
-/** Every crew session on this machine, of every repository, oldest first: what a machine-wide cap counts. */
-export function listAllCrew(stateDir: string): Listed<CrewRecord> {
+/**
+ * Every record of one store folder (`crew`, `leads`) in every repository of this machine,
+ * oldest first, two records of one time ordered by `tie`: the one walk both machine-wide
+ * readers use, so they can never list a machine's store differently.
+ */
+function listAllRecords<T extends { createdAt: string }>(
+  schema: z.ZodType<T>,
+  stateDir: string,
+  folder: string,
+  tie: (one: T) => string,
+): Listed<T> {
   const root = crewRootDir(stateDir);
-  const all: Listed<CrewRecord> = { broken: [], records: [] };
+  const all: Listed<T> = { broken: [], records: [] };
   if (!existsSync(root)) return all;
   for (const key of readdirSync(root).sort()) {
-    const one = listRecords(crewRecordSchema, join(root, key, "crew"));
+    const one = listRecords(schema, join(root, key, folder));
     all.broken.push(...one.broken);
     all.records.push(...one.records);
   }
-  all.records.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  all.records.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || tie(a).localeCompare(tie(b)),
+  );
   return all;
+}
+
+/** Every crew session on this machine, of every repository, oldest first: what a machine-wide cap counts. */
+export function listAllCrew(stateDir: string): Listed<CrewRecord> {
+  return listAllRecords(crewRecordSchema, stateDir, "crew", (one) => one.id);
+}
+
+/**
+ * Every lead on this machine, of every repository, oldest first: the Work page reads this, so
+ * it shows every lead whose crew the machine's store holds, whatever folder the portal runs in.
+ */
+export function listAllLeads(stateDir: string): Listed<LeadRecord> {
+  return listAllRecords(leadRecordSchema, stateDir, "leads", (one) => one.sessionId);
 }
 
 /**

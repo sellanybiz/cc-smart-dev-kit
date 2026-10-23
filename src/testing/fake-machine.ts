@@ -19,6 +19,7 @@ import { cliPaths } from "../cli/paths";
 import { runSetup, type SetupOptions, statuslineDeclinedFile } from "../cli/setup";
 import type { Machine } from "../machine/machine";
 import { retryWatchdogDeclinedFile } from "../setup/retry-watchdog";
+import { FAKE_CLAUDE_MCP_JS } from "./fake-claude-mcp";
 import { tempDir } from "./temp";
 
 export const UBUNTU = 'NAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n';
@@ -44,6 +45,14 @@ const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instruc
 
 /** Everything the test printed with console.log and console.error (`ERR ` first). */
 export const printed: string[] = [];
+
+/**
+ * The change lines of setup's report (`  + …`, `  ~ …`, `  - …`, `  $ …`, inside a section): a
+ * run that changes nothing prints none.
+ */
+export function changeLines(): string[] {
+  return printed.filter((line) => /^ {2}[+~$-] /.test(line));
+}
 
 /** Captures console output in `printed` for each test of the file that calls it. */
 export function capturePrinted(): void {
@@ -85,6 +94,12 @@ export interface WorldOptions {
   statuslineAnswered?: boolean;
   /** The same for the retry watchdog question (`src/setup/retry-watchdog.ts`). Default: true. */
   retryWatchdogAnswered?: boolean;
+  /**
+   * The fake `claude` keeps what `claude mcp` registers, as Claude Code does
+   * (`fake-claude-mcp.ts`), so a second setup finds the servers the first one added. Default:
+   * false (every `claude` call just succeeds).
+   */
+  mcp?: boolean;
 }
 
 export function world(options: WorldOptions = {}) {
@@ -145,7 +160,9 @@ export function world(options: WorldOptions = {}) {
     rpm: "exit 1",
     dnf: "exit 0",
     brew: '[ "$1" = list ] && exit 1; exit 0',
-    claude: "exit 0",
+    claude: options.mcp
+      ? `[ "$1" = mcp ] && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(bin, "fake-claude-mcp.js"))} "$@"\nexit 0`
+      : "exit 0",
     // --show-keys: Warp's one key. --dearmor --yes --output OUT IN: a copy stands in.
     gpg: [
       `case "$*" in *--show-keys*) printf '${showKeysOutput(WARP_FPR)}' ;;`,
@@ -153,6 +170,7 @@ export function world(options: WorldOptions = {}) {
     ].join("\n"),
     ...options.bins,
   };
+  if (options.mcp) writeFileSync(join(bin, "fake-claude-mcp.js"), FAKE_CLAUDE_MCP_JS);
   for (const [name, body] of Object.entries(bodies)) {
     const file = join(bin, name);
     writeFileSync(file, `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(log)}\n${body}\n`);

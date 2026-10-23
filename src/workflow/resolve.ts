@@ -28,14 +28,15 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
-import { statuslineSetting } from "../cli/setup";
 import type { CcSmartDevKitConfig } from "../project/config";
 import {
   type Checkout,
   type CommittedConfig,
   type CommittedOptions,
   readCommittedConfig,
+  readCommittedConfigAsync,
 } from "../project/resolve";
+import { statuslineSetting } from "../setup/statusline";
 import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {
@@ -77,10 +78,16 @@ export interface ResolvedWorkflow {
   };
   crew: {
     enabled: ResolvedValue<boolean>;
+    /** The plugins and servers a crew session keeps (`plugin:<id>`, `server:<name>`). */
+    keep: ResolvedValue<string[]>;
     idleStopMinutes: ResolvedValue<number>;
     max: ResolvedValue<number>;
-    maxOpus: ResolvedValue<number>;
+    /** Null: no machine-wide opus count is set (D54). */
+    maxOpus: ResolvedValue<null | number>;
     memoryGb: ResolvedValue<number>;
+    perLead: ResolvedValue<number>;
+    perLeadOpus: ResolvedValue<number>;
+    usagePercent: ResolvedValue<number>;
     quietMinutes: ResolvedValue<number>;
     handoffPercent: ResolvedValue<number>;
     softHours: ResolvedValue<number>;
@@ -285,6 +292,39 @@ export function resolveGate(
     // A committed file too new or broken, or no git at all: the gate is unknown, never guessed.
     return { ok: false, why: error instanceof Error ? error.message : String(error) };
   }
+  return gateOfCommitted(paths, branch, committed);
+}
+
+/**
+ * `resolveGate`, without blocking the caller: the same gate from the same committed file,
+ * read with `Bun.spawn` (`readCommittedConfigAsync`). The portal's merge verdicts run inside
+ * the server's own process (`.claude/rules/portal.md`); a hook or a command keeps the
+ * blocking read above.
+ */
+export async function resolveGateAsync(
+  paths: CliPaths,
+  checkout: Checkout,
+  branch: string | null,
+  options: CommittedOptions = {},
+): Promise<GateRead> {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed: CommittedConfig;
+  try {
+    committed = await readCommittedConfigAsync(checkout, branch, options);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  return gateOfCommitted(paths, branch, committed);
+}
+
+/** The gate a committed read gives, or why it cannot judge. One home for both readers. */
+function gateOfCommitted(
+  paths: CliPaths,
+  branch: string | null,
+  committed: CommittedConfig,
+): GateRead {
   if (!committed.found) return { ok: false, why: committed.why };
   const resolved = resolveWorkflow(paths, committed.config);
   return { ok: true, gate: { branch, config: committed.config, resolved } };
@@ -310,10 +350,14 @@ const RESOLVED: {
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
   "crew.enabled": (r) => r.crew.enabled,
+  "crew.keep": (r) => r.crew.keep,
   "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
   "crew.max": (r) => r.crew.max,
   "crew.maxOpus": (r) => r.crew.maxOpus,
   "crew.memoryGb": (r) => r.crew.memoryGb,
+  "crew.perLead": (r) => r.crew.perLead,
+  "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
+  "crew.usagePercent": (r) => r.crew.usagePercent,
   "crew.quietMinutes": (r) => r.crew.quietMinutes,
   "crew.handoffPercent": (r) => r.crew.handoffPercent,
   "crew.softHours": (r) => r.crew.softHours,
@@ -381,6 +425,8 @@ export function resolveWorkflow(
     alerts: alertsFrom(personal, project),
     crew: {
       enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
+      // A list is one value: the project's whole list wins, like `alerts.events`.
+      keep: of("crew.keep", crew.keep ?? [...workflowDefaults.crew.keep]),
       idleStopMinutes: of(
         "crew.idleStopMinutes",
         crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes,
@@ -388,6 +434,12 @@ export function resolveWorkflow(
       max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
+      perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
+      perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
+      usagePercent: of(
+        "crew.usagePercent",
+        crew.usagePercent ?? workflowDefaults.crew.usagePercent,
+      ),
       quietMinutes: of(
         "crew.quietMinutes",
         crew.quietMinutes ?? workflowDefaults.crew.quietMinutes,

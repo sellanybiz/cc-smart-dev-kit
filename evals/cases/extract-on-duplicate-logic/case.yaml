@@ -3,7 +3,7 @@ name: extract-on-duplicate-logic
 description: >-
   The same logic in two files: extract-or-duplicate decides where it lives.
 tags: [watch, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 8
   allowed_tools: [Read, Glob, Grep, Skill]

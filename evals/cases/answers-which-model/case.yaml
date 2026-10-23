@@ -4,7 +4,7 @@ description: >-
   Today's core.md forbids any comment on the session's model, so a plain question goes
   unanswered. Finding: IN-3.
 tags: [gate]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 3
   allowed_tools: [Skill]

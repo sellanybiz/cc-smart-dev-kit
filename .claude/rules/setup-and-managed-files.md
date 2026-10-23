@@ -1,10 +1,8 @@
 ---
 paths:
   - "src/setup/**"
-  - "src/cli/**"
-  - "src/machine/**"
-  - "src/mcp/**"
-  - "src/update/**"
+  - "src/cli/restore.ts"
+  - "src/cli/paths.ts"
   - "src/workflow/write.ts"
 ---
 
@@ -14,6 +12,8 @@ paths:
 `~/.claude/CLAUDE.md` (one block that imports the instructions' copy), the launcher. A
 mistake there breaks someone's Claude Code.
 So every change to a user's file goes through `src/setup/`, and nothing else writes one.
+What setup may do, and when: `setup-commands.md`. How a command prints: `command-output.md`.
+How the parts fit: `docs/design/setup.md` § How `setup` changes user files.
 
 ## The one way to write
 
@@ -25,6 +25,7 @@ So every change to a user's file goes through `src/setup/`, and nothing else wri
 | Markdown | `applyManagedMarkdown` | one block between `<!-- cc-smart-dev-kit:begin -->` and `<!-- cc-smart-dev-kit:end -->` |
 | Exact lines in a text file the person owns (`~/.tmux.conf`) | `applyManagedLine` / `removeManagedLines` (`managed-line.ts`) | the exact lines it added, listed as `lines` in `changed.json` (`file-line`) |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
+| A folder it owns whole (the portal's export) | `writeManagedFolder` (`managed-folder.ts`) | the whole folder, listed in `owned-folders.json` |
 
 Each of them:
 
@@ -102,12 +103,16 @@ Each of them:
 
 ## State, lock and paths
 
-- **The browser's writes inside Chrome's own folder** are the `claude-code` profile's display
-  name in `Local State` (`profile.info_cache.<dir>.name`) AND in the profile's own `Preferences`
-  (`profile.name`), through `applyManagedJson` (`json-keys`), and only while no Chrome runs on
-  that user data folder — Chrome rewrites both files from memory. `restore` puts them back like
+- **The browser's writes inside Chrome's own folder** go through `applyManagedJson` (`json-keys`),
+  and only while no Chrome runs on that user data folder. `restore` puts them back like
   any other key; nothing else of Chrome's is written, and no command deletes a profile or an
-  extension (`.claude/rules/browser.md`).
+  extension. Which two files, and why: `.claude/rules/browser.md`.
+- **A folder owned whole is build output, so it has no backup.** `writeManagedFolder` writes a
+  complete new folder beside the old one, records its path in `owned-folders.json` before the
+  swap, then renames the new one into place and removes the old one. The record is its own
+  file, not a `changed.json` kind, because a running older CLI refuses a kind it does not
+  know (the same rule as the managed hook entries). `restore` removes the folder whole; the
+  next portal start writes it again. Today that is one folder: `~/.local/share/cc-smart-dev-kit/portal-ui/`.
 - **`gateway.json` backs itself up, in the state folder, beside the other backups.** A key that
   really replaces one already there makes `backupFile(stateDir, gatewayConfigFile)` run first —
   the one backup helper, `<stateDir>/backups/<the path, encoded>/`, never a copy beside a file
@@ -204,15 +209,10 @@ Each of them:
     (`ownedGatewayEnvKeys`): it restores everything except the router's files
     (`restore(stateDir, { except })`, which leaves them tracked) and says to restart
     every running session, then run `restore` again. Nothing stops, nothing is asked.
-  - **stage 2**, with no such key left: it disables and stops the unit and its socket
-    first, while their files are still there (`stopRouter`: `is-active`, `disable` of
-    both, one `stop --no-block` of both, then up
-    to 15 s while this router still answers on the config's port; the drain finishes in
-    the background), then restores the files, runs `systemctl --user daemon-reload`, and
-    removes the restart-pending marker. It waits only for the unit's own router: a unit
-    that was not `active` or `deactivating`, or a port that answers but not as this
-    router, gets one note and no wait. This router still answering after 15 s stops it
-    with an error before any file is restored.
+  - **stage 2**, with no such key left: it stops the router before it restores its files
+    (`stopRouter`; how the stop works, and why it waits only for the unit's own router:
+    `gateway.md` § The service), then restores them, runs `systemctl --user daemon-reload`,
+    and removes the restart-pending marker. It waits only for the unit's own router.
     Stopping a running router cuts answers in flight, so it asks first, or needs `--yes`.
   - **`--now`**: both at once, after the warning that every running session fails until
     it restarts; asked, or `--yes`.
@@ -234,73 +234,3 @@ valid across updates.
   `doctor` checks both, and starts the `.cmd` through `cmd.exe` — a `.cmd` is not an
   executable. Its plugin lookup cannot use `for /f` over a path with spaces, so it prints
   the folder to a file in `%TEMP%` and reads it back. `docs/windows-setup.md`.
-
-## What setup may do, and when
-
-- Restarts and permission changes happen only in a manual run (`cc-smart-dev-kit setup`,
-  `gateway setup`, `restore`) that shows the change first. A restart or stop of a running
-  service says what it cuts, and asks: `confirm()` on a terminal; with no terminal, it
-  stops and changes nothing unless `--yes` was given. The SessionStart hook only starts
-  the background self-update (`hooks.md`), which installs a new plugin version with
-  `claude plugin` commands and restarts nothing. Its one write to a user file is the
-  managed `autoUpdate` key, `true` → `false`, only while that `true` is still setup's own
-  (`src/setup/auto-update.ts`, D39).
-- **A running program is never changed behind the person's back**: the tmux line
-  (`src/setup/tmux.ts`) goes into `~/.tmux.conf` only when `tmux` is on PATH, and setup
-  **prints** `tmux set -g allow-passthrough all` for a running server instead of running
-  it — a running server keeps its own value until they apply it (or restart tmux).
-- Setup refuses to start before `claude plugin marketplace add` has run, and says which
-  command to run.
-- **Commands that need root** (installing or removing the Warp app) run only in a manual
-  `setup --warp` / `--remove-warp`, after the exact list was shown and the person said yes
-  on a terminal. `--yes` never skips that question. With no terminal, or a "no", those
-  commands (and Warp's plugin and shortcuts, which go with them) are left out, the rest
-  of setup is done, and setup exits 1. `sudo` asks for the password itself:
-  cc-smart-dev-kit never sees, stores or pipes one, and never runs a downloaded script (no
-  `curl | sh`). Files root needs are made in `<stateDir>/warp/` and put in place with
-  `sudo install` (or `rpm --import` from there); that folder is removed after the run.
-  Warp's signing key is downloaded over HTTPS only (each redirect too) and must hold
-  exactly one key, with the pinned fingerprint (`WARP_KEY_FINGERPRINT`).
-- **Trust rules always need a person at a terminal.** The auto-mode entries are shown as
-  `+` / `-` lines, then asked; `--yes` skips the question only on a terminal. With no
-  terminal they are left out whatever the flags, and setup says so. A project setup
-  cannot read (invalid or too-new `cc-smart-dev-kit.json`, old git, a missing main checkout)
-  leaves only these entries out, with a `!` note.
-- **An offered setting is asked once, and the default is no** (the status line, the retry
-  watchdog: `src/setup/retry-watchdog.ts`). Only on a terminal; a "no" is a file in the state
-  folder (`statusline-declined`, `retry-watchdog-declined`) that stops the question; a flag turns
-  it on without asking (and `--no-retry-watchdog` turns it off and remembers the "no"); with no
-  terminal nothing is asked or changed, and `--dry-run` says so. Its keys are owned keys.
-- **Every question comes first.** All questions are asked before anything runs or is
-  written. A "no" to one drops only what depends on it.
-- **`claude plugin …` steps run only when a person runs `cc-smart-dev-kit setup`**; nothing in
-  the background (hooks, the self-update) ever runs setup. They run only for what is
-  missing (a companion's marketplace or plugin; Warp's plugin, only with `--warp`). It
-  never turns on a plugin the person turned off; it says what to run. Without `claude` on
-  PATH, these steps are skipped and named, the rest is done, and setup exits 1.
-- **The system is reached through `Machine`** (`src/machine/machine.ts`): commands, the
-  terminal question, the platform, `/etc/os-release`, the Warp app's path, file checks
-  and downloads. A test in the same process hands in a fake one, with fake commands on a
-  PATH of its own; a test that runs the CLI as its own process gives the host's facts in
-  `CC_SMART_DEV_KIT_TEST_HOST` and a PATH of fakes, so it never reads the machine it runs on.
-
-## Command output
-
-- `setup` prints one line per change: `+` created, `~` changed, `-` removed, with `~`
-  for the home folder (`tildify`); then information lines (two spaces: what it left
-  alone); then notes (`!`). With no change it prints "Nothing to change. Setup is up to
-  date." first; information may follow. "Done. Each changed file has a backup in
-  ~/.claude/cc-smart-dev-kit/backups/." (the state folder's `backups/`) comes only when a file
-  was written.
-- `doctor` prints one `✓` or `✗` line per check. A `✗` line says what to run. A part
-  the person may leave out (the gateway, never set up; Warp, with or without its plugin)
-  is a `·` line: information, never a failure. A `!` line is a warning (claude-mem older
-  than 13.35.0), never a failure either. The list of checks is in `README.md`
-  § Commands; keep it in step.
-- Exit codes: 0 done, 1 a failed check or an error, 2 a wrong command or option.
-- A check that reaches the network has a timeout and no password prompt in a terminal:
-  `git ls-remote` with `GIT_TERMINAL_PROMPT=0`. It adds ssh `BatchMode` only when the
-  user has no `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` of their own. A git
-  credential helper with a window of its own may still show one; say so, never "never
-  asks for a password".
-- A printed URL never shows credentials: remove them first.

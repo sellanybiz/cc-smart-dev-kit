@@ -1,6 +1,6 @@
 ---
 name: performance-budget
-description: Use when writing or changing frontend, React or Next.js code, data fetching, rendering, lists, forms, animations, caching, or any user-facing surface - and on performance work (slow page, bundle size, re-renders, N+1 queries, Core Web Vitals). Targets, the questions to ask before a change, banned patterns, and a deep React and Next.js playbook read on purpose. Trigger phrases - "slow", "loading", "skeleton", "list of", "fetch", "render", "animation", "mobile", "bundle", "performance".
+description: Use when writing or changing frontend code - React or Next.js components, data fetching, rendering, lists, forms, animations, client caching - and on performance work (a slow page, bundle size, re-renders, N+1 queries, Core Web Vitals). Targets, the questions to ask before a change, banned patterns, and a deep React and Next.js playbook read on purpose. Not for a command-line tool, a script or a config change. Trigger phrases - "slow", "loading", "skeleton", "re-render", "bundle", "performance", "Core Web Vitals".
 ---
 
 # Performance And UX Budget
@@ -16,8 +16,10 @@ Slow code is broken code. A janky screen is a broken screen.
 `references/react-performance-playbook.md` (beside this file) holds more than 40 React and
 Next.js rules with wrong-versus-right examples: waterfalls, bundle size, server work,
 re-renders, rendering, plain JavaScript speed, and the newer caching model. Open it for real
-performance work — a slow page, a bundle audit, an N+1 hunt — not on every edit. Check any
-version-specific claim in it against the project's installed versions first.
+performance work — a slow page, a bundle audit, an N+1 hunt — not on every edit. The file is
+long: read its head first (the notes before any rule, and the Table of Contents), then only
+the sections the work needs. Check any version-specific claim in it against the project's
+installed versions first.
 
 ## Targets
 

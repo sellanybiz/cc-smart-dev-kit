@@ -25,18 +25,67 @@
  * D31); this module says the policy passed, not how the guard answers.
  *
  * Nothing here writes, fetches or reaches the network beyond the read-only `gh` calls.
+ * **Every child is awaited** (`Bun.spawn`: the caller's `gh` runner, `runGitAsync`,
+ * `readCover`): the portal makes this check inside its own process, where a blocking spawn
+ * would freeze every page and the live stream (`.claude/rules/portal.md`).
  */
 import type { CliPaths } from "../cli/paths";
-import { GUARD_GIT_TIMEOUT_MS, runGit } from "../hooks/git";
+import { GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import type { Checkout } from "../project/resolve";
 import { autoMergeRefusal } from "./auto-merge";
-import { type GateRead, type ResolvedWorkflow, resolveGate } from "./resolve";
-import { type Cover, type FixLimits, readCover } from "./review-cover";
+import { type GateRead, type ResolvedWorkflow, resolveGateAsync } from "./resolve";
+import {
+  allowanceOf,
+  type ChangeCount,
+  type Cover,
+  type FixLimits,
+  readCover,
+} from "./review-cover";
 import { COMMIT_SHA, reviewsFile, trustedReviews } from "./reviews";
 
 /** How long one `gh` call may take: a read-only network call, and a guard has 30 s. */
 export const GH_TIMEOUT_MS = 10_000;
+
+/** Where and how one `gh` call runs: the repository's folder, the environment, its time. */
+export interface GhCall {
+  env: Env;
+  folder: string;
+  timeoutMs: number;
+}
+
+/**
+ * One read-only `gh` command's stdout, or null when gh is not there, the call fails, or it
+ * printed nothing. **It never blocks**: `spawnGh` is `Bun.spawn`, because the portal makes
+ * this check inside its own process and a blocking spawn there freezes every page and the
+ * live stream (`.claude/rules/portal.md`). A test hands in its own runner.
+ */
+export type GhRunner = (args: string[], call: GhCall) => Promise<string | null>;
+
+/** The `gh` runner in use: the same command, environment and timeout as `ghStdout` always had. */
+export const spawnGh: GhRunner = async (args, { folder, env, timeoutMs }) => {
+  try {
+    const child = Bun.spawn(["gh", ...args], {
+      cwd: folder,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      // A guard runs with no console of its own on Windows: without this, gh opens one.
+      windowsHide: true,
+    });
+    const [out] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return out.trim() === "" ? null : out;
+  } catch {
+    // No gh on PATH, or a call that timed out.
+    return null;
+  }
+};
 
 /** The fields `gh pr view --json` gives: the number, the base, and the head's branch and commit. */
 export const PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
@@ -111,9 +160,32 @@ export function parseRequiredChecks(json: string): RequiredCheck[] | null {
  */
 export const PASSING_BUCKETS: ReadonlySet<string> = new Set(["pass", "skipping"]);
 
+/**
+ * The review gate's own numbers behind a verdict (D17, D22), for the portal's crew page:
+ * which review covers the head, the change made after it and the change it reviewed, and the
+ * gate's `fixesAfterReview` limits those are judged against. A generated file is listed, not
+ * counted, and a binary file changed after the review is never covered (`review-cover.ts`).
+ * `limits` is null only in a caller that has no gate to read; the check fills it whenever it
+ * read the gate, whether or not a review is required.
+ */
+export interface MergeDetail {
+  /** What the review still covers: the limit or the percent of the reviewed change, whichever is larger. */
+  allowance: null | { files: number; lines: number };
+  /** The change after the review; null when it is the reviewed commit itself, or none was measured. */
+  delta: null | { binary: number; files: number; lines: number };
+  /** The gate's limits (`workflow.fixesAfterReview`); null when no gate was read. */
+  limits: null | { files: number; lines: number; percent: number };
+  /** The reviewed commit the verdict is about; null when no review candidate exists. */
+  review: null | string;
+  /** The reviewed change's own size; null unless both it and the change after it were measured. */
+  reviewed: null | { binary: number; files: number; lines: number };
+}
+
 /** What one merge check decided. */
 export type MergeVerdict =
   | {
+      /** The review gate's numbers: null when the check refused before it read the gate. */
+      detail: MergeDetail | null;
       kind: "allowed";
       /** The short sentence both the guard's `allow` and the command print. */
       reason: string;
@@ -123,7 +195,7 @@ export type MergeVerdict =
    * so this check says nothing. Only the hook uses this; the command prints it as no verdict.
    */
   | { kind: "silent" }
-  | { kind: "refused"; number: number | null; reason: string }
+  | { detail: MergeDetail | null; kind: "refused"; number: number | null; reason: string }
   | { kind: "unread"; number: number | null; what: string }
   | { kind: "late"; number: number | null; what: string };
 
@@ -142,10 +214,15 @@ export interface MergeWorld {
    */
   timeFor: (limitMs: number) => number;
   /**
+   * How gh runs. Left out: `spawnGh` (`Bun.spawn`). A test hands in a fake, and the portal's
+   * own answer passes the runner on so a slow gh never blocks a page.
+   */
+  gh?: GhRunner;
+  /**
    * The policy committed on a branch (`resolveGate`), or why it cannot be read; the hook
    * caches one read per branch per run. Left out: read here, once per call.
    */
-  gateOf?: (branch: string) => GateRead | "late";
+  gateOf?: (branch: string) => GateRead | "late" | Promise<GateRead | "late">;
 }
 
 /** The review gate as the record is judged with: the rules, and where the record is. */
@@ -181,15 +258,16 @@ export function reviewGateOf(
 
 /**
  * The review of `target` under D17: its cover when `reviewBeforePush` is on, null when no
- * review is required. Never throws.
+ * review is required. Never throws. Awaited: the measurement runs git with `Bun.spawn`
+ * (`readCover`), so a portal page is never frozen by it.
  */
-function coverOf(
+async function coverOf(
   world: MergeWorld,
   review: ReviewGate,
   target: { head: string; branch: string | null; base: string },
-): Cover | null {
+): Promise<Cover | null> {
   if (!review.reviewBeforePush) return null;
-  return readCover(
+  return await readCover(
     world.checkout,
     target,
     trustedReviews(review.file, review.agents),
@@ -210,6 +288,36 @@ function reviewRefusal(cover: Cover | null): string | null {
   if (cover === null || cover.covered) return null;
   if (cover.review !== null) return cover.why;
   return `${cover.why} (reviewBeforePush is on: a review agent's return records the commit, so run the reviewer with your fixes already committed)`;
+}
+
+/** One change as a page reads it: its lines and files, and how many binary files it holds. */
+function counted(change: ChangeCount): { binary: number; files: number; lines: number } {
+  return { binary: change.binary.length, files: change.files, lines: change.lines };
+}
+
+/** One of the cover's changes as a page reads it, or null when it was not measured. */
+function countsOf(
+  change: ChangeCount | null | undefined,
+): null | { binary: number; files: number; lines: number } {
+  return change === null || change === undefined ? null : counted(change);
+}
+
+/**
+ * The review gate's numbers behind a verdict: the review the cover is about, the change after
+ * it and the change it reviewed, what that review still covers (`allowanceOf`), and the limits
+ * they were judged against. A review of the head itself has no delta, no reviewed change and no
+ * allowance; a cover that refuses carries the measurement its reason is about, when one was
+ * made. `limits` is always the gate's own: the verdict says what it judged by.
+ */
+function detailOf(cover: Cover | null, limits: FixLimits): MergeDetail {
+  const reviewed = cover?.reviewed;
+  return {
+    allowance: reviewed === null || reviewed === undefined ? null : allowanceOf(reviewed, limits),
+    delta: countsOf(cover?.delta),
+    limits: { files: limits.files, lines: limits.lines, percent: limits.percent },
+    review: cover?.review ?? null,
+    reviewed: countsOf(reviewed),
+  };
 }
 
 /** The first seven characters of a commit: how a person reads it. */
@@ -312,34 +420,28 @@ export function ghMissing(env: Env): boolean {
 /**
  * One read-only `gh` command's stdout, or null when gh is not there, the call fails, or it
  * printed nothing. The exit code is not the test: `gh pr checks` exits 8 while the required
- * checks are still running, and the JSON on its stdout is what matters.
+ * checks are still running, and the JSON on its stdout is what matters. Awaited, through the
+ * caller's runner (`spawnGh` unless a caller passed one).
  */
-function ghStdout(args: string[], folder: string, env: Env, timeoutMs: number): string | null {
-  try {
-    const run = Bun.spawnSync(["gh", ...args], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-    });
-    const out = run.stdout.toString();
-    return out.trim() === "" ? null : out;
-  } catch {
-    // No gh on PATH, or a call that timed out.
-    return null;
-  }
+async function ghStdout(
+  args: string[],
+  folder: string,
+  env: Env,
+  timeoutMs: number,
+  run: GhRunner,
+): Promise<string | null> {
+  return await run(args, { env, folder, timeoutMs });
 }
 
 /** The pull request a merge command names: `gh pr view`'s facts, or null when gh cannot say. */
-export function viewPullRequest(
+export async function viewPullRequest(
   target: { ref: string | null; repo: string | null },
   folder: string,
   env: Env,
   timeoutMs: number = GH_TIMEOUT_MS,
-): PullRequestFacts | null {
-  const out = ghStdout(
+  run: GhRunner = spawnGh,
+): Promise<PullRequestFacts | null> {
+  const out = await ghStdout(
     [
       "pr",
       "view",
@@ -351,19 +453,21 @@ export function viewPullRequest(
     folder,
     env,
     timeoutMs,
+    run,
   );
   return out === null ? null : parsePullRequestFacts(out);
 }
 
 /** The required checks of one pull request, or null when gh cannot say. */
-export function requiredChecks(
+export async function requiredChecks(
   number: number,
   repo: string | null,
   folder: string,
   env: Env,
   timeoutMs: number = GH_TIMEOUT_MS,
-): RequiredCheck[] | null {
-  const out = ghStdout(
+  run: GhRunner = spawnGh,
+): Promise<RequiredCheck[] | null> {
+  const out = await ghStdout(
     [
       "pr",
       "checks",
@@ -376,6 +480,7 @@ export function requiredChecks(
     folder,
     env,
     timeoutMs,
+    run,
   );
   return out === null ? null : parseRequiredChecks(out);
 }
@@ -389,27 +494,29 @@ export function requiredChecks(
  * fails with "unknown flag: --repo" (gh 2.102.0, checked live), so the flag form only ever
  * asked the guard a question it could have answered.
  */
-export function defaultBranchOf(
+export async function defaultBranchOf(
   folder: string,
   env: Env,
   repo: string | null = null,
   timeoutMs: number = GH_TIMEOUT_MS,
-): string | null {
-  const out = ghStdout(
+  run: GhRunner = spawnGh,
+): Promise<string | null> {
+  const out = await ghStdout(
     ["repo", "view", ...(repo === null ? [] : [repo]), "--json", "defaultBranchRef"],
     folder,
     env,
     timeoutMs,
+    run,
   );
   return out === null ? null : parseDefaultBranch(out);
 }
 
-/** The gate committed on `branch`: the caller's cached read, or one made here. */
-function gateFor(world: MergeWorld, branch: string): GateRead | "late" {
-  if (world.gateOf !== undefined) return world.gateOf(branch);
+/** The gate committed on `branch`: the caller's cached read, or one made here (never blocking). */
+async function gateFor(world: MergeWorld, branch: string): Promise<GateRead | "late"> {
+  if (world.gateOf !== undefined) return await world.gateOf(branch);
   const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
   if (left <= 0) return "late";
-  return resolveGate(world.paths, world.checkout, branch, {
+  return await resolveGateAsync(world.paths, world.checkout, branch, {
     env: world.env,
     timeoutMs: left,
   });
@@ -420,31 +527,42 @@ function gateFor(world: MergeWorld, branch: string): GateRead | "late" {
  * caller's cache of the repository's default branch, read once per repository (`--repo` or
  * not): a command that merges several pull requests of one repository asks gh once.
  */
-export function checkPullRequest(
+export async function checkPullRequest(
   world: MergeWorld,
   target: { ref: string | null; repo: string | null },
   defaultBranches: Map<string, string | null> = new Map(),
-): MergeVerdict {
+): Promise<MergeVerdict> {
   const viewLeft = world.timeFor(GH_TIMEOUT_MS);
   if (viewLeft <= 0) {
     return { kind: "late", number: null, what: "the pull request this command names" };
   }
-  const view = viewPullRequest(target, world.folder, world.env, viewLeft);
+  const view = await viewPullRequest(
+    target,
+    world.folder,
+    world.env,
+    viewLeft,
+    world.gh ?? spawnGh,
+  );
   if (view === null) {
     return { kind: "unread", number: null, what: "the pull request this command names" };
   }
   // The policy that judges this pull request: the one committed on its own base.
   let read: GateRead | "late";
   try {
-    read = gateFor(world, view.base);
+    read = await gateFor(world, view.base);
   } catch (error) {
-    return { kind: "refused", number: view.number, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: view.number, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: view.number, what: `the policy committed on ${view.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: view.number, reason: policyUnread(view.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: view.number,
+      reason: policyUnread(view.base, read.why),
+    };
   }
   const { resolved, config: committed } = read.gate;
   // The project runs its own merge guard, as its committed policy says: that one answers.
@@ -456,7 +574,10 @@ export function checkPullRequest(
     if (branchLeft <= 0) {
       return { kind: "late", number: view.number, what: "this repository's default branch" };
     }
-    defaultBranches.set(where, defaultBranchOf(world.folder, world.env, target.repo, branchLeft));
+    defaultBranches.set(
+      where,
+      await defaultBranchOf(world.folder, world.env, target.repo, branchLeft, world.gh ?? spawnGh),
+    );
   }
   const defaultBranch = defaultBranches.get(where) ?? null;
   if (defaultBranch === null) {
@@ -469,7 +590,14 @@ export function checkPullRequest(
     if (checksLeft <= 0) {
       return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };
     }
-    checks = requiredChecks(view.number, target.repo, world.folder, world.env, checksLeft);
+    checks = await requiredChecks(
+      view.number,
+      target.repo,
+      world.folder,
+      world.env,
+      checksLeft,
+      world.gh ?? spawnGh,
+    );
     if (checks === null) {
       return {
         kind: "unread",
@@ -480,26 +608,36 @@ export function checkPullRequest(
   }
   // The review is measured only when everything else passed: a red check never pays for git.
   const before = mergeRefusal({ branchRefusal, checks, reviewRefusal: null });
-  if (before !== null) return { kind: "refused", number: view.number, reason: before };
+  if (before !== null) {
+    return { detail: null, kind: "refused", number: view.number, reason: before };
+  }
   const review = reviewGateOf(world.paths, world.checkout, resolved);
-  const cover = coverOf(world, review, {
+  const cover = await coverOf(world, review, {
     head: view.headOid,
     branch: view.headRef,
     base: view.base,
   });
   const refused = reviewRefusal(cover);
-  if (refused !== null) return { kind: "refused", number: view.number, reason: refused };
+  if (refused !== null) {
+    return {
+      detail: detailOf(cover, review.limits),
+      kind: "refused",
+      number: view.number,
+      reason: refused,
+    };
+  }
   return {
+    detail: detailOf(cover, review.limits),
     kind: "allowed",
     reason: pullRequestAllowed(cover?.covered === true ? cover : null),
   };
 }
 
-/** The commit `rev` names in the checkout, or null when git cannot name one. */
-function commitOf(world: MergeWorld, rev: string): string | null {
+/** The commit `rev` names in the checkout, or null when git cannot name one. Never blocking. */
+async function commitOf(world: MergeWorld, rev: string): Promise<string | null> {
   const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
   if (left <= 0) return null;
-  const run = runGit(
+  const run = await runGitAsync(
     world.checkout.root,
     ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`],
     world.env,
@@ -513,13 +651,24 @@ function commitOf(world: MergeWorld, rev: string): string | null {
  * covers the branch's head under D17. A local merge asks no pull request question — no
  * `autoMerge`, no checks — so those are not read.
  */
-export function checkBranch(
+export async function checkBranch(
   world: MergeWorld,
   target: { branch: string; base: string },
-): MergeVerdict {
-  const head = commitOf(world, target.branch) ?? commitOf(world, `origin/${target.branch}`);
+): Promise<MergeVerdict> {
+  const firstLeft = world.timeFor(GUARD_GIT_TIMEOUT_MS);
+  if (firstLeft <= 0) {
+    return { kind: "late", number: null, what: `branch ${target.branch}` };
+  }
+  const head =
+    (await commitOf(world, target.branch)) ?? (await commitOf(world, `origin/${target.branch}`));
   if (head === null) {
+    // Out of the caller's time, not a branch that is missing: never report the second as the
+    // first (the portal's own deadline turns it into "not read yet").
+    if (world.timeFor(GUARD_GIT_TIMEOUT_MS) <= 0) {
+      return { kind: "late", number: null, what: `branch ${target.branch}` };
+    }
     return {
+      detail: null,
       kind: "refused",
       number: null,
       reason: `branch ${target.branch} is not in this checkout`,
@@ -527,21 +676,28 @@ export function checkBranch(
   }
   let read: GateRead | "late";
   try {
-    read = gateFor(world, target.base);
+    read = await gateFor(world, target.base);
   } catch (error) {
-    return { kind: "refused", number: null, reason: workflowUnread(error) };
+    return { detail: null, kind: "refused", number: null, reason: workflowUnread(error) };
   }
   if (read === "late") {
     return { kind: "late", number: null, what: `the policy committed on ${target.base}` };
   }
   if (!read.ok) {
-    return { kind: "refused", number: null, reason: policyUnread(target.base, read.why) };
+    return {
+      detail: null,
+      kind: "refused",
+      number: null,
+      reason: policyUnread(target.base, read.why),
+    };
   }
   const review = reviewGateOf(world.paths, world.checkout, read.gate.resolved);
-  const cover = coverOf(world, review, { head, branch: target.branch, base: target.base });
+  const cover = await coverOf(world, review, { head, branch: target.branch, base: target.base });
+  const detail = detailOf(cover, review.limits);
   const refused = reviewRefusal(cover);
-  if (refused !== null) return { kind: "refused", number: null, reason: refused };
+  if (refused !== null) return { detail, kind: "refused", number: null, reason: refused };
   return {
+    detail,
     kind: "allowed",
     reason: branchAllowed(target.branch, head, cover?.covered === true ? cover : null),
   };

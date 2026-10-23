@@ -43,6 +43,7 @@ import {
   planProjectInit,
   type SettingsFilePlan,
 } from "../project/init";
+import { isObject } from "../setup/managed-json";
 import { autoMergeAllowed } from "../workflow/auto-merge";
 import {
   personalWorkflowOrDefault,
@@ -111,15 +112,20 @@ export interface WorkflowAdapter {
 /** One runner, one detection: the CLI's own, so the portal reads this machine the way it does. */
 function projectInitDefaults(input: { env: Env; root: string }): ProjectInitDefaults {
   const facts = detectFacts(realRunner(input.env), input.root);
+  // `readExisting` is the CLI's own read of the project's file: a file that is there but
+  // broken is no file, exactly as `project init` treats it — and a file that is broken in a
+  // way the plan refuses (`planProjectInit`) is refused in words when the plan is made.
+  const existing = readExisting(join(input.root, ".claude", "cc-smart-dev-kit.json"));
+  const answers = defaultAnswers(existing, facts, { dryRun: false, yes: false });
+  // **The form does not show `checks`** (`src/portal/actions.ts` › `projectAnswers`): only
+  // the project's own value goes through, never one detected from its `package.json`, or a
+  // Preview and a Write would add a check the person never chose and raise the file's
+  // `requires` to >=1.1. The CLI's `--yes` run still writes the detected default.
+  const { checks, ...rest } = answers;
+  const fromFile =
+    existing !== null && isObject(existing.checks) && typeof existing.checks.fast === "string";
   return {
-    // `readExisting` is the CLI's own read of the project's file: a file that is there but
-    // broken is no file, exactly as `project init` treats it — and a file that is broken in a
-    // way the plan refuses (`planProjectInit`) is refused in words when the plan is made.
-    answers: defaultAnswers(
-      readExisting(join(input.root, ".claude", "cc-smart-dev-kit.json")),
-      facts,
-      { dryRun: false, yes: false },
-    ),
+    answers: fromFile && checks !== undefined ? { ...rest, checks } : rest,
     defaultBranch: facts.defaultBranch,
   };
 }

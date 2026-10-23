@@ -1,12 +1,16 @@
 /**
  * What a POST to the portal really does. Every one of them runs the command line's own code:
  *
- *   - a slot, its fallback switch, the gateway switch, the judge, the opus and fable slots,
- *     the router restart and the
+ *   - a slot, its mode (Claude or Custom), its fallback switch, the gateway switch, the
+ *     judge, the opus and fable slots, the router restart and the
  *     OmniRoute update go through `runGateway` / `runOmniroute` — the same functions, the
  *     same checks, the same lock, and the same lines, with `print` collecting them;
  *   - `update`, `doctor`, the heavy-job queue and the companions call the modules the CLI
- *     calls, not a copy of them.
+ *     calls, not a copy of them;
+ *   - `crew answer|stop|resume|rm` and `worktrees --clean` run the CLI's own command in a child
+ *     process (`cli-child.ts`): the functions behind them spawn git and `claude` synchronously
+ *     (`Bun.spawnSync`), and running those in the server froze every page and the live stream.
+ *     The child is the same command the terminal runs, in the crew record's own repository.
  *
  * So a page can never do something the command line would refuse. The one thing the portal
  * adds is the person's own yes: a terminal question cannot be asked from a browser, so the
@@ -18,8 +22,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import {
   parseBrowserToken,
@@ -27,27 +31,65 @@ import {
   tokenSavedLine,
   writeBrowserToken,
 } from "../browser/token";
+import { COMMAND } from "../build-info";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
-import type { CliPaths } from "../cli/paths";
+import { tildify } from "../cli/paths";
 import { runUpdate } from "../cli/update";
+import { type CrewRecord, listAllCrew } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
-import { type GatewayContext, runGateway } from "../gateway/commands";
-import { fallbackOn, loadConfigFile, messageOf } from "../gateway/config";
+import {
+  chainProblem,
+  type GatewayContext,
+  runGateway,
+  setOmnirouteKey,
+} from "../gateway/commands";
+import {
+  type GatewayConfig,
+  keptChain,
+  loadConfigFile,
+  messageOf,
+  slotMode,
+} from "../gateway/config";
 import { testJudgeTarget } from "../gateway/judge-test";
-import { isModelSlot, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
-import { runJobCommand } from "../jobs/commands";
+import { JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
 import { realMemoryFacts } from "../jobs/memory";
+import { type JobContext, readJobs, statusLines } from "../jobs/status";
+import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
+import {
+  type ChoiceResult,
+  chooseFallback,
+  chooseKey,
+  chooseRoute,
+  type FallbackChoice,
+  followSetup,
+  type KeyChoice,
+} from "../machine/claude-mem-choices";
 import { companions } from "../machine/companions";
 import { type OmnirouteContext, runOmniroute } from "../omniroute/commands";
+import { locateCheckoutAsync } from "../project/resolve";
 import { type AutoModeSource, applyAutoMode, autoModeSource } from "../setup/auto-mode";
 import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
 import { isObject } from "../setup/managed-json";
-import { atomicWrite } from "../setup/write";
 import { CLAUDE_TIMEOUT_MS, commandContext } from "../update/apply";
-import { heldSince, type LastCheck, readLastCheck, updateFiles } from "../update/state";
-import type { PortalContext } from "./context";
+import { checkoutFold } from "../update/retired-repos";
+import {
+  heldSince,
+  type LastCheck,
+  readHeldMajor,
+  readLastCheck,
+  updateFiles,
+} from "../update/state";
+import {
+  addProjectRoot,
+  forgetProjectsList,
+  type ProjectsWorld,
+  projectRootById,
+} from "./api/projects";
+import type { LivePublish } from "./api/types";
+import { runCliChild } from "./cli-child";
+import { healthFetch, type PortalContext } from "./context";
 import {
   type ProjectDefaultsReader,
   projectFilesHash,
@@ -55,9 +97,11 @@ import {
   readProject,
   settingsLineNote,
   shownDetail,
+  slotStamp,
 } from "./facts";
 import { parseSettingValue, settingSpec } from "./settings";
 import type { ProjectInitAnswers, ProjectInitPlan, WorkflowAdapter } from "./workflow-adapter";
+import { forgetWorktrees } from "./worktrees-read";
 
 /**
  * The OmniRoute context every portal action uses: the portal's own network, clock and runner,
@@ -88,10 +132,11 @@ export interface ActionResult {
   lines: string[];
   /**
    * How the page shows the lines. `"info"`: a fact, not a failure — the token field's
-   * "nothing was pasted, so the saved token is unchanged" is the one case. Left out, a
-   * refusal is an alarm, as every other one is.
+   * "nothing was pasted, so the saved token is unchanged" is the one case. `"warn"`: done, with a
+   * warning the page must show as one — a gateway key saved without OmniRoute accepting it
+   * (PK1). Left out, a refusal is an alarm, as every other one is.
    */
-  tone?: "info";
+  tone?: "info" | "warn";
   /**
    * `project.preview` only: the plan the Project card's boxes draw — the same pure
    * `planProjectInit` the write runs, so what the page shows is exactly what will be written.
@@ -111,10 +156,14 @@ export interface ActionResult {
 export interface ActionContext {
   /** The folder the portal was started in: the project its auto-mode rules come from. */
   cwd: string;
-  /** What the portal remembers between pages (`portal.json`). */
-  memory: PortalMemory;
   omniroute: OmnirouteContext;
   portal: PortalContext;
+  /**
+   * The live stream's publisher, when the server has one: a long action's progress and its
+   * result go out to every open page while it runs (B6b). Absent in a test that only calls
+   * the actions.
+   */
+  publish?: LivePublish;
   /**
    * The project's own defaults, remembered for this run: reading them runs git and, when `gh`
    * is there, GitHub itself, so one file's answers are computed once (`server.ts`).
@@ -124,91 +173,19 @@ export interface ActionContext {
   workflow: WorkflowAdapter;
 }
 
-/** The portal's own small state, in the plugin's state folder. */
-export interface PortalMemory {
-  /**
-   * The opus and fable chains, by slot key (`cc-smart-dev-kit-opus`): what the models switch
-   * turns on again. The slot key, never the family name: the switch reads the same key.
-   * Named `fallback` in the file since 0.4.x, when those slots were a fallback: kept, so a
-   * saved file still reads.
-   */
-  fallback: Record<string, string[]>;
-  /** The judge chain when it was last saved: what the judge switch turns on again. */
-  judge: string[];
-  /**
-   * The fallback switch each of those slots had when its chain was remembered, by slot key:
-   * `slot <x> off` drops the switch with the chain, so On puts this back too.
-   */
-  switches: Record<string, boolean>;
-  version: 1;
-}
-
-export function memoryFile(paths: CliPaths): string {
-  return paths.portalStateFile;
-}
-
-export function emptyMemory(): PortalMemory {
-  return { fallback: {}, judge: [], switches: {}, version: 1 };
-}
-
-/** What the file holds, or nothing when it is not there or not readable. */
-export function parseMemory(text: string): PortalMemory {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return emptyMemory();
-  }
-  if (typeof raw !== "object" || raw === null) return emptyMemory();
-  const body = raw as {
-    fallback?: unknown;
-    judge?: unknown;
-    switches?: unknown;
-    version?: unknown;
-  };
-  if (body.version !== 1) return emptyMemory();
-  const judge = Array.isArray(body.judge)
-    ? body.judge.filter((entry): entry is string => typeof entry === "string")
-    : [];
-  const fallback: Record<string, string[]> = {};
-  if (typeof body.fallback === "object" && body.fallback !== null) {
-    for (const [family, targets] of Object.entries(body.fallback as Record<string, unknown>)) {
-      if (Array.isArray(targets)) {
-        fallback[family] = targets.filter((entry): entry is string => typeof entry === "string");
-      }
-    }
-  }
-  const switches: Record<string, boolean> = {};
-  if (typeof body.switches === "object" && body.switches !== null) {
-    for (const [slot, on] of Object.entries(body.switches as Record<string, unknown>)) {
-      if (typeof on === "boolean") switches[slot] = on;
-    }
-  }
-  return { fallback, judge, switches, version: 1 };
-}
-
-/** The file's text, or nothing: a missing or unreadable one is the default. */
-export function readMemory(paths: CliPaths): PortalMemory {
-  try {
-    return parseMemory(readFileSync(memoryFile(paths), "utf8"));
-  } catch {
-    return emptyMemory();
-  }
-}
-
-export function writeMemory(paths: CliPaths, memory: PortalMemory): void {
-  atomicWrite(memoryFile(paths), `${JSON.stringify(memory, null, 2)}\n`, 0o600);
-}
-
 /** Every line a command printed, collected. A failure's line is kept too: the page shows it. */
-function collector(): {
+function collector(onLine?: (line: string) => void): {
   lines: string[];
   print: (line: string) => void;
   error: (line: string) => void;
 } {
   const lines: string[] = [];
   const push = (line: string): void => {
-    for (const one of line.split("\n")) if (one.trim() !== "") lines.push(one);
+    for (const one of line.split("\n")) {
+      if (one.trim() === "") continue;
+      lines.push(one);
+      onLine?.(one);
+    }
   };
   return { error: push, lines, print: push };
 }
@@ -396,7 +373,28 @@ async function setSlotFallback(
   return gateway(action, ["fallback", slot, body.on ? "on" : "off"]);
 }
 
-/** Saves a chain through `gateway slot`, which also remembers it for the switches. */
+/** Sets a slot's breaker switch through `gateway breaker`: the judge has none (it never holds). */
+async function setSlotBreaker(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || typeof body.on !== "boolean") {
+    return { lines: ["Pick a slot, and say on or off."], ok: false };
+  }
+  return gateway(action, ["breaker", slot, body.on ? "on" : "off"]);
+}
+
+/**
+ * Saves a chain through `gateway slot`, which also puts it in use. The config is the one home
+ * of every chain: in use in `slots`, saved in `kept` while the slot answers as Claude. The
+ * portal keeps none of its own.
+ *
+ * `stamp` is the chain as the page read it (`slotStamp`): a page open since before another
+ * tab or the command line changed this slot's chain would otherwise overwrite that change
+ * unseen, so such a save is refused and the page offers the newer chain. Any value that is
+ * not this chain's stamp (a number, a stale string) is refused the same way.
+ */
 async function saveSlot(
   action: ActionContext,
   body: Record<string, unknown>,
@@ -407,72 +405,94 @@ async function saveSlot(
     : [];
   if (slot === "" || targets.length === 0)
     return { lines: ["Pick a slot and give it a target."], ok: false };
-  const result = await gateway(action, ["slot", slot, targets.join(",")]);
-  if (result.ok) rememberChain(action, slot, targets);
-  return result;
+  // The stamp guards a page against its own old copy, not a caller against the portal (D9 has
+  // no sign-in): the server-rendered page sends none, and is checked by `gateway slot` alone.
+  if (body.stamp !== undefined && slotStamp(gatewayConfig(action), slot) !== body.stamp) {
+    return {
+      lines: [
+        "This slot's chain changed since the page read it (another tab, or the command line), so nothing was saved.",
+        "Load the newer chain, then make the change again.",
+      ],
+      ok: false,
+    };
+  }
+  return gateway(action, ["slot", slot, targets.join(",")]);
 }
 
 /**
- * A saved chain the switches can turn on again, with the slot's fallback switch as the config
- * holds it now. Only the three the switches turn off, and always under the **slot key**
- * (`cc-smart-dev-kit-opus`) — the same key `switchModels` reads and the same key the config
- * uses. Storing it under the family (`opus`) instead was the bug: the switch then found
- * nothing and turned nothing on.
+ * What is wrong with one target, the way `gateway slot` checks it (`chainProblem`: it parses,
+ * its backend is in the config, and that backend lists the model), in words; null when it is
+ * fine. A `claude-…` id is taken as it is, as the command line takes it. The slot picker's
+ * check and claude-mem's card use this one check, so neither takes a model typed free.
  */
-function rememberChain(action: ActionContext, slot: string, targets: string[]): void {
-  if (slot === JUDGE_SLOT) action.memory.judge = targets;
-  else if (isModelSlot(slot)) action.memory.fallback[slot] = targets;
-  else return;
-  const fallback = currentFallback(action, slot);
-  if (fallback !== null) action.memory.switches[slot] = fallback;
-  writeMemory(action.portal.paths, action.memory);
-}
-
-/** The fallback switch the config gives a slot right now; null with no config. */
-function currentFallback(action: ActionContext, slot: string): boolean | null {
-  try {
-    return fallbackOn(loadConfigFile(action.portal.paths.gatewayConfigFile), slot);
-  } catch {
-    // No config, or one that cannot be read: there is no switch to remember.
-    return null;
+async function targetProblem(action: ActionContext, text: string): Promise<null | string> {
+  const config = gatewayConfig(action);
+  const parsed = parseTarget(text);
+  const models: Record<string, null | string[]> = {};
+  if ("target" in parsed && parsed.target.kind !== "anthropic") {
+    const backend = config.backends[parsed.target.backend];
+    if (backend !== undefined) {
+      const listed = await listModels(backend.baseUrl, backend.apiKey, 8_000);
+      models[parsed.target.backend] =
+        "error" in listed || listed.status !== 200 ? null : listed.models.map((model) => model.id);
+    }
   }
+  const problem = chainProblem(config, [text], models);
+  if (problem === null) return null;
+  const names = Object.keys(config.backends);
+  const known =
+    "target" in parsed &&
+    parsed.target.kind !== "anthropic" &&
+    !Object.hasOwn(config.backends, parsed.target.backend)
+      ? `. The config names: ${names.length === 0 ? "no backend" : names.join(", ")}.`
+      : "";
+  // A backend's model list never holds its key, but the line is masked all the same.
+  return `${shownDetail(problem, [])}${known}`;
 }
 
 /**
- * After a switch put a remembered chain back: its remembered fallback switch too, through
- * `gateway fallback`, when the config does not already hold it. The lines it printed.
+ * Checks one typed target before the page adds it to a draft (`targetProblem`).
  */
-async function restoreFallback(action: ActionContext, slot: string): Promise<ActionResult> {
-  const wanted = Object.hasOwn(action.memory.switches, slot)
-    ? action.memory.switches[slot]
-    : undefined;
-  if (wanted === undefined || currentFallback(action, slot) === wanted) {
-    return { lines: [], ok: true };
-  }
-  return gateway(action, ["fallback", slot, wanted ? "on" : "off"]);
+async function checkTarget(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "")
+    return { lines: ["Type a target: claude-<id> or <backend>:<model>."], ok: false };
+  const parsed = parseTarget(text);
+  const problem = await targetProblem(action, text);
+  if (problem !== null) return { lines: [problem], ok: false };
+  return {
+    lines: [
+      "target" in parsed && parsed.target.kind === "anthropic"
+        ? `${text}: on your own Claude login.`
+        : `${text}: its backend lists it.`,
+    ],
+    ok: true,
+  };
 }
 
 /**
- * Remembers the chain the config holds right now for a slot, before a switch turns it off.
- * Without this, a chain set from the command line is lost by one Off: the switch has nothing
- * to turn back on. Read in one go, just before the `off` runs — the `off` itself takes setup's
- * lock (`gateway slot`), so this must not take it again: two locks on one folder wait for each
- * other until the wait runs out.
+ * A slot's mode, the same switch for every slot: `gateway slot <slot> claude` (the chain is
+ * saved, not in use) or `gateway slot <slot> custom` (the saved chain in use again; a judge
+ * target without a current test proof is tested first). The command line's own checks and
+ * refusals, in its own words.
  */
-function rememberCurrent(action: ActionContext, slot: string): string[] {
-  const targets = currentChain(action, slot);
-  if (targets.length > 0) rememberChain(action, slot, targets);
-  return targets;
+async function setSlotMode(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const slot = typeof body.slot === "string" ? slotArg(body.slot) : "";
+  if (slot === "" || (body.mode !== "claude" && body.mode !== "custom")) {
+    return { lines: ['Pick a slot, and say "claude" or "custom".'], ok: false };
+  }
+  return gateway(action, ["slot", slot, body.mode]);
 }
 
-/** The chain the config holds for a slot right now; none when there is none, or no config. */
-function currentChain(action: ActionContext, slot: string): string[] {
-  try {
-    return loadConfigFile(action.portal.paths.gatewayConfigFile).slots[slot] ?? [];
-  } catch {
-    // No config, or one that cannot be read: there is nothing there.
-    return [];
-  }
+/** The config as the command line reads it, for a switch that asks what each slot is now. */
+function gatewayConfig(action: ActionContext): GatewayConfig {
+  return loadConfigFile(action.portal.paths.gatewayConfigFile);
 }
 
 // ── Switches ────────────────────────────────────────────────────────────────────
@@ -482,85 +502,74 @@ async function switchGateway(action: ActionContext, on: boolean): Promise<Action
 }
 
 /**
- * The judge. On only with a chain that is saved and fully force-push-tested: the remembered
- * one, which `gateway slot judge` itself re-tests before it saves (there is no way to skip
- * that test). With nothing remembered, the page is told how to make one.
+ * The Overview's judge switch: the judge slot's mode (`setSlotMode`). On uses the saved judge
+ * chain; with none saved, the page is told how to make one.
  */
 async function switchJudge(action: ActionContext, on: boolean): Promise<ActionResult> {
-  if (!on) {
-    rememberCurrent(action, JUDGE_SLOT);
-    return gateway(action, ["slot", "judge", "off"]);
+  const config = gatewayConfig(action);
+  const mode = on ? "custom" : "claude";
+  // Already there: say so, and run nothing (a second click must not be an error).
+  if (slotMode(config, JUDGE_SLOT) === mode) {
+    return {
+      lines: [`The judge is already ${on ? "Custom" : "Claude"}.`],
+      ok: true,
+    };
   }
-  if (action.memory.judge.length === 0) {
+  if (on && keptChain(config, JUDGE_SLOT) === null) {
     return {
       lines: [
-        "No tested judge chain is saved, so the switch cannot turn one on.",
+        "No judge chain is saved, so the switch cannot turn one on.",
         "Go to Slots, pick judge, add a model, run the force-push test, and Save.",
       ],
       ok: false,
     };
   }
-  const set = await gateway(action, ["slot", "judge", action.memory.judge.join(",")]);
-  if (!set.ok) return set;
-  const fallback = await restoreFallback(action, JUDGE_SLOT);
-  return { lines: [...set.lines, ...fallback.lines], ok: fallback.ok };
+  return gateway(action, ["slot", "judge", mode]);
 }
 
 /**
- * The opus and fable slots. Off turns both off (Opus and Fable answer themselves). On puts
- * the remembered chains back (a model slot needs no test: the CLI checks its model list). A
- * family with nothing remembered is named, not invented.
+ * The Overview's one switch for the opus and fable slots, until the Slots page gives each its
+ * own: each slot's mode in turn (`setSlotMode`), one at a time (each takes setup's lock). A
+ * slot already in that mode is left as it is; one with nothing saved is named, not invented.
  */
-async function switchModels(action: ActionContext, on: boolean): Promise<ActionResult> {
-  const slots = Object.keys(MODEL_SLOTS);
-  if (!on) {
-    // One at a time: each takes setup's state lock, and a second call waiting on it would
-    // only make the first wait for the second. The chain each slot holds is remembered first,
-    // so On can put it back.
-    const lines: string[] = [];
-    let ok = true;
-    for (const slot of slots) {
-      // A slot that is already off is skipped: `gateway slot <key> off` refuses it as an error
-      // ("already off"), and the portal only ever asks for what the command line would do.
-      if (rememberCurrent(action, slot).length === 0) continue;
-      const result = await gateway(action, ["slot", slot, "off"]);
-      ok = ok && result.ok;
-      lines.push(...result.lines);
-    }
-    return {
-      lines: lines.length === 0 ? ["The opus and fable slots were already off."] : lines,
-      ok,
-    };
-  }
+async function switchModelSlots(action: ActionContext, on: boolean): Promise<ActionResult> {
+  const config = gatewayConfig(action);
+  const mode = on ? "custom" : "claude";
   const missing: string[] = [];
   const lines: string[] = [];
-  let turnedOn = 0;
+  let changed = 0;
   let ok = true;
-  for (const slot of slots) {
-    const targets = action.memory.fallback[slot] ?? [];
-    if (targets.length === 0) {
+  for (const slot of Object.keys(MODEL_SLOTS)) {
+    if (slotMode(config, slot) === mode) continue;
+    if (on && keptChain(config, slot) === null) {
       missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
       continue;
     }
-    const result = await gateway(action, ["slot", slot, targets.join(",")]);
+    // A refusal is an error thrown by the command; it is this slot's answer, and the next
+    // slot is still switched.
+    let result: ActionResult;
+    try {
+      result = await gateway(action, ["slot", slot, mode]);
+    } catch (error) {
+      result = { lines: [messageOf(error)], ok: false };
+    }
     ok = ok && result.ok;
     lines.push(...result.lines);
-    if (!result.ok) continue;
-    turnedOn += 1;
-    const fallback = await restoreFallback(action, slot);
-    ok = ok && fallback.ok;
-    lines.push(...fallback.lines);
+    if (result.ok) changed += 1;
   }
   if (missing.length > 0) {
     lines.push(
       `No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save.`,
     );
   }
-  if (turnedOn === 0) {
+  if (changed === 0 && on) {
     // Nothing was turned on, so the switch must not read as a success: the page shows these
     // lines in its failure colour, and the switch's own state stays off.
     lines.push("Nothing was turned on, so the switch is still off.");
     return { lines, ok: false };
+  }
+  if (changed === 0 && lines.length === 0) {
+    return { lines: ["The opus and fable slots were already off."], ok: true };
   }
   return { lines, ok };
 }
@@ -588,26 +597,50 @@ async function switchHold(action: ActionContext, on: boolean): Promise<ActionRes
  * A runner that captures a `claude plugin …` step's output instead of printing it on the
  * terminal: the person is looking at the page, not at the terminal that started the portal.
  * It runs in the home folder and without git's repo variables, as the CLI's own does.
+ *
+ * **It spawns asynchronously (B6b).** `Bun.spawnSync` here blocked the whole server — every
+ * page, every action and the live stream — for as long as `claude plugin` took (up to 300 s),
+ * which is the owner's "lag" bug. Each step's last line also goes out on the live stream, so
+ * the page shows the install as it happens.
  */
-function stepRunner(action: ActionContext, lines: string[]) {
+function stepRunner(action: ActionContext, lines: string[], name: string) {
   const context = commandContext(action.portal.env, action.portal.paths.home);
-  return (argv: string[]): { exitCode: number; output: string } => {
+  const publish = (line: string): void => {
+    action.publish?.("action", { action: name, line });
+  };
+  return async (argv: string[]): Promise<{ exitCode: number; output: string }> => {
     try {
-      const result = Bun.spawnSync(argv, {
+      const child = Bun.spawn(argv, {
         ...context,
         stdin: "ignore",
         stderr: "pipe",
         stdout: "pipe",
         timeout: CLAUDE_TIMEOUT_MS,
       });
-      const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
+      const [stdout, stderr, exitCode] = await Promise.all([
+        readStream(child.stdout),
+        readStream(child.stderr),
+        child.exited,
+      ]);
+      const output = `${stdout}${stderr}`.trim();
       const last = output.split("\n").at(-1) ?? "";
-      if (last !== "") lines.push(`  ${last}`);
-      return { exitCode: result.exitCode ?? 1, output };
+      if (last !== "") {
+        lines.push(`  ${last}`);
+        publish(`  ${last}`);
+      }
+      return { exitCode, output };
     } catch (error) {
       return { exitCode: 1, output: error instanceof Error ? error.message : String(error) };
     }
   };
+}
+
+/** A child's piped output as text; an empty string when it was not piped. */
+async function readStream(
+  stream: ReadableStream<Uint8Array> | number | undefined,
+): Promise<string> {
+  if (stream === undefined || typeof stream === "number") return "";
+  return await new Response(stream).text();
 }
 
 async function updateCheck(action: ActionContext): Promise<ActionResult> {
@@ -623,10 +656,10 @@ async function updateCheck(action: ActionContext): Promise<ActionResult> {
 }
 
 async function updateInstall(action: ActionContext): Promise<ActionResult> {
-  const sinks = collector();
+  const sinks = collector((line) => action.publish?.("action", { action: "update.install", line }));
   const code = await runUpdate(action.portal.paths, action.portal.env, [], action.portal.now, {
     ...sinks,
-    run: stepRunner(action, sinks.lines),
+    run: stepRunner(action, sinks.lines, "update.install"),
   });
   return { lines: sinks.lines, ok: code === 0 };
 }
@@ -647,7 +680,12 @@ export async function runDoctorPass(
   const options = source();
   if ("error" in options) {
     // One failed check, in the page's own shape: what happened, and what to do about it.
-    return { checks: [{ ok: false, text: options.error }], lines: [options.error], ok: false };
+    const failed: Check = {
+      ok: false,
+      text: options.error,
+      fix: `run it in a terminal: ${COMMAND} doctor`,
+    };
+    return { checks: [failed], lines: [checkLine(failed)], ok: false };
   }
   const checks = await doctorChecks(action.portal.paths, action.portal.env, options);
   return {
@@ -899,6 +937,41 @@ export function parseProjectForm(
   };
 }
 
+/** The Projects page's own world: the portal's folder, paths, environment and clock. */
+function projectsWorld(action: ActionContext): ProjectsWorld {
+  return {
+    cwd: action.cwd,
+    env: action.portal.env,
+    now: action.portal.now,
+    paths: action.portal.paths,
+  };
+}
+
+/**
+ * The folder a `project.*` action works in. The page may name a project by its id — the one
+ * `/api/projects` listed — and the server looks that id up in its own list: a path from a
+ * request is never used. No id: the folder the portal runs in, as before.
+ */
+async function projectTarget(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<{ cwd: string } | { why: string }> {
+  const named = body.project;
+  // A `project` that is there but is not a string is a request this action cannot read: it
+  // names no project, and it must never fall back to the portal's own folder by accident.
+  if (named !== undefined && typeof named !== "string") {
+    return {
+      why: "The project must be named by its id, as a string; nothing was read or written.",
+    };
+  }
+  const id = named === undefined ? "" : named.trim();
+  if (id === "") return { cwd: action.cwd };
+  const root = await projectRootById(projectsWorld(action), id);
+  return root === null
+    ? { why: `No project of the list has the id "${id}", so nothing was read or written.` }
+    : { cwd: root };
+}
+
 /**
  * The answers a POST would write: the form's own fields over the project's own defaults
  * (`projectInitDefaults`), so the fields the form does not show — the workflow policy, and
@@ -907,6 +980,7 @@ export function parseProjectForm(
 function projectAnswers(
   action: ActionContext,
   body: Record<string, unknown>,
+  cwd: string,
 ):
   | {
       ok: true;
@@ -919,7 +993,7 @@ function projectAnswers(
       root: string;
     }
   | { ok: false; why: string } {
-  const project = readProject(action.portal, action.cwd);
+  const project = readProject(action.portal, cwd);
   if (project.root === null) {
     return { ok: false, why: project.why ?? "there is no project folder here" };
   }
@@ -945,7 +1019,9 @@ async function projectPreview(
   action: ActionContext,
   body: Record<string, unknown>,
 ): Promise<ActionResult> {
-  const built = projectAnswers(action, body);
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const built = projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   try {
     const plan = action.workflow.planProjectInit({
@@ -988,7 +1064,9 @@ async function projectWrite(
   if (body.confirm !== true) {
     return { lines: ["The write was not confirmed, so nothing was written."], ok: false };
   }
-  const built = projectAnswers(action, body);
+  const target = await projectTarget(action, body);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const built = projectAnswers(action, body, target.cwd);
   if (!built.ok) return { lines: [built.why], ok: false };
   if (body.previewHash !== projectFilesHash(built)) {
     return {
@@ -1011,6 +1089,9 @@ async function projectWrite(
     if (writes.length === 0) {
       return { lines: ["Nothing to change: both files already say this."], ok: true };
     }
+    // A row of the list holds the project's two files: the page's next look must read them
+    // again, not the list kept before this write.
+    forgetProjectsList();
     return {
       lines: [
         ...writes.map((write) => `${write.created ? "+" : "~"} ${write.file}`),
@@ -1018,6 +1099,63 @@ async function projectWrite(
       ],
       ok: true,
     };
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+/**
+ * `project.add`: adds a folder to the Projects page's list. The folder must be absolute, must
+ * exist, and must be inside a git checkout; its main checkout root is what goes into the list,
+ * so a worktree path adds the repository it belongs to. Anything else is refused in words and
+ * nothing is written. The list file is the kit's own state (`portalProjectsFile`), written
+ * atomically under the state folder's lock (`addProjectRoot`); the person's files are not
+ * touched, and no git child blocks the server (`locateCheckoutAsync`).
+ */
+async function projectAdd(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const folder = typeof body.folder === "string" ? body.folder.trim() : "";
+  if (folder === "") {
+    return { lines: ["Type the folder to add, with its full path."], ok: false };
+  }
+  if (!isAbsolute(folder)) {
+    return {
+      lines: [`"${folder}" is not an absolute path: give the folder's full path.`],
+      ok: false,
+    };
+  }
+  let isFolder = false;
+  try {
+    isFolder = existsSync(folder) && statSync(folder).isDirectory();
+  } catch {
+    isFolder = false;
+  }
+  if (!isFolder) {
+    return {
+      lines: [`${folder} is not a folder on this machine, so nothing was added.`],
+      ok: false,
+    };
+  }
+  let root: null | string;
+  try {
+    root =
+      checkoutFold(await locateCheckoutAsync(folder, { env: action.portal.env }))?.main ?? null;
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+  if (root === null) {
+    return {
+      lines: [`${folder} is not inside a git checkout, so there is no project to add.`],
+      ok: false,
+    };
+  }
+  try {
+    const result = await addProjectRoot(action.portal.paths, root);
+    return result.added
+      ? { lines: [`Added ${root} to the projects list.`], ok: true }
+      : { lines: [`${root} is already in the projects list.`], ok: true };
   } catch (error) {
     return { lines: [messageOf(error)], ok: false };
   }
@@ -1095,7 +1233,333 @@ function browserTokenAction(action: ActionContext, body: Record<string, unknown>
   }
 }
 
+// ── claude-mem (PM1) ────────────────────────────────────────────────────────────
+
+/**
+ * A claude-mem target from the page, checked the way the slot picker checks one
+ * (`targetProblem`): a `<backend>:<model>` its backend lists, or a `claude-…` id when `claude`
+ * is allowed. Never a model typed free.
+ */
+async function claudeMemTarget(
+  action: ActionContext,
+  text: string,
+): Promise<{ backend: string; model: string } | { claude: string } | { why: string }> {
+  if (!existsSync(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
+    return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
+  }
+  const parsed = parseTarget(text);
+  if ("error" in parsed) return { why: parsed.error };
+  if (parsed.target.kind === "anthropic") return { claude: text };
+  const problem = await targetProblem(action, text);
+  if (problem !== null) return { why: problem };
+  return { backend: parsed.target.backend, model: parsed.target.model };
+}
+
+/** Runs one claude-mem write; a lock another command holds, or a file error, is its answer. */
+async function claudeMemWrite(write: () => Promise<ChoiceResult>): Promise<ActionResult> {
+  try {
+    return await write();
+  } catch (error) {
+    return { lines: [messageOf(error)], ok: false };
+  }
+}
+
+/**
+ * claude-mem's route (`claudemem.route`): `claude`, or a `<backend>:<model>` from the live list.
+ * The page asks first; the writer checks a backend with one tiny chat before it writes.
+ */
+async function claudeMemRoute(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "") return { lines: ['Pick "claude" or a model from the list.'], ok: false };
+  if (body.confirm !== true) return notConfirmed("saved");
+  const paths = action.portal.paths;
+  if (text === CLAUDE_PROVIDER) return claudeMemWrite(() => chooseRoute(paths, { kind: "claude" }));
+  const target = await claudeMemTarget(action, text);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  if ("claude" in target) {
+    return {
+      lines: [
+        `${text} is a Claude model: pick "claude" for the Claude route (claude-mem's own Claude model).`,
+      ],
+      ok: false,
+    };
+  }
+  return claudeMemWrite(() => chooseRoute(paths, { kind: "backend", ...target }));
+}
+
+/**
+ * claude-mem's key (`claudemem.key`): `use: "gateway"` (the gateway's own key for that backend,
+ * as setup uses it) or `use: "other"` with a pasted `key`. The key is never printed back.
+ */
+async function claudeMemKey(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.use !== "gateway" && body.use !== "other") {
+    return { lines: ['Say which key: "gateway" or "other".'], ok: false };
+  }
+  if (body.confirm !== true) return notConfirmed("saved");
+  const paths = action.portal.paths;
+  const choice: KeyChoice =
+    body.use === "gateway"
+      ? { kind: "gateway" }
+      : { key: typeof body.key === "string" ? body.key : "", kind: "other" };
+  return claudeMemWrite(() => chooseKey(paths, choice));
+}
+
+/**
+ * claude-mem's quota fallback (`claudemem.fallback`): `off`, `claude` (its own Claude model), a
+ * `claude-…` model, or a `<backend>:<model>` from the live list.
+ */
+async function claudeMemFallback(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  const text = typeof body.target === "string" ? body.target.trim() : "";
+  if (text === "") {
+    return { lines: ['Pick "off", "claude" or a model from the list.'], ok: false };
+  }
+  if (body.confirm !== true) return notConfirmed("saved");
+  const paths = action.portal.paths;
+  if (text === FALLBACK_OFF) return claudeMemWrite(() => chooseFallback(paths, { kind: "off" }));
+  if (text === CLAUDE_PROVIDER) {
+    return claudeMemWrite(() => chooseFallback(paths, { kind: "claude", model: null }));
+  }
+  const target = await claudeMemTarget(action, text);
+  if ("why" in target) return { lines: [target.why], ok: false };
+  const choice: FallbackChoice =
+    "claude" in target ? { kind: "claude", model: target.claude } : { kind: "backend", ...target };
+  return claudeMemWrite(() => chooseFallback(paths, choice));
+}
+
+/**
+ * `claudemem.follow`: hands claude-mem back to setup (`followSetup`): the person's choices are
+ * forgotten, and setup's own claude-mem step runs, so it follows the scout slot again.
+ */
+async function claudeMemFollow(
+  action: ActionContext,
+  body: Record<string, unknown>,
+): Promise<ActionResult> {
+  if (body.confirm !== true) return notConfirmed("changed");
+  return claudeMemWrite(() => followSetup(action.portal.paths));
+}
+
+// ── The gateway's OmniRoute key (PK1) ──────────────────────────────────────────
+
+/**
+ * How to try again from the portal, in a refusal of setup's key path: per action, since a made
+ * key is deleted again and was never seen, and only the paste field has the tick that saves an
+ * untested key (setup's `--save-unchecked`).
+ */
+const KEY_WORDS = {
+  key: {
+    again: "paste it on the Machine page's OmniRoute card again",
+    againUnchecked:
+      'paste it on the Machine page\'s OmniRoute card again, or tick "Save it even if OmniRoute does not answer now" there',
+  },
+  password: {
+    again: "make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+    againUnchecked:
+      "make a key with your OmniRoute password on the Machine page's OmniRoute card again",
+  },
+} as const;
+const KEY_GIVE_INSTEAD = "paste it on the Machine page's OmniRoute card";
+
+/**
+ * `gateway.key.save` (a key the person pasted) and `gateway.key.make` (a key made with
+ * OmniRoute's dashboard password): `setOmnirouteKey`, setup's own key steps, so a page can never
+ * save a key the command line would refuse. The key is tested first, a 401/403 refuses it and
+ * keeps the key in the file, a check OmniRoute does not answer saves only with `saveUnchecked`
+ * (the page's tick, `--save-unchecked`) and its `!` line, a key that changes is backed up first,
+ * a key made and not saved is deleted again in OmniRoute, and the password is never stored.
+ *
+ * It runs in the portal's process: the secret stays in this process's memory, and never reaches
+ * an argument list, the environment or a child. Every line and refusal names neither the key
+ * (masked, `maskKey`) nor the password, so they are safe to answer and to send on the stream.
+ */
+async function gatewayKeyAction(
+  action: ActionContext,
+  body: Record<string, unknown>,
+  from: "key" | "password",
+): Promise<ActionResult> {
+  const field = from === "key" ? body.key : body.password;
+  // A key is trimmed, as setup trims one on stdin; a password is kept as typed, as setup's
+  // terminal prompt keeps it (a space can be part of one).
+  const text = typeof field === "string" ? field : "";
+  const secret = from === "key" ? text.trim() : text;
+  if (text.trim() === "") {
+    return {
+      lines: [
+        from === "key"
+          ? "Paste the OmniRoute API key first."
+          : "Type OmniRoute's dashboard password first.",
+      ],
+      ok: false,
+    };
+  }
+  if (body.confirm !== true) return notConfirmed("saved");
+  const { portal } = action;
+  const { lines, print } = collector();
+  try {
+    const saved = await setOmnirouteKey(
+      { apiFetch: healthFetch(portal), paths: portal.paths, print },
+      from === "key" ? { key: secret } : { password: secret },
+      {
+        ...KEY_WORDS[from],
+        giveKey: KEY_GIVE_INSTEAD,
+        // Only the paste field has the tick; a made key is saved checked or not at all.
+        saveUnchecked: from === "key" && body.saveUnchecked === true,
+      },
+    );
+    return saved.checked ? { lines, ok: true } : { lines, ok: true, tone: "warn" };
+  } catch (error) {
+    // The refusal first: it is what the page shows, the lines before it are its details. The
+    // config's path as the success lines show it, `~/…`, not the home folder's full path.
+    const config = portal.paths.gatewayConfigFile;
+    const said = messageOf(error).replaceAll(config, tildify(config, portal.paths.home));
+    return { lines: [...said.split("\n"), ...lines], ok: false };
+  }
+}
+
+// ── The crew, and the worktrees (D52) ───────────────────────────────────────────
+
+/** The longest answer a page may send to a crew session: a message, not a document. */
+const CREW_ANSWER_MAX = 2_000;
+
+/** The crew session's name or id, from the page's body; "" when it named none. */
+function crewRef(body: Record<string, unknown>): string {
+  return typeof body.crew === "string" ? body.crew.trim() : "";
+}
+
+/**
+ * The crew record a page names, from **the machine's** store: the portal usually runs from the
+ * home folder, which is no git project, so a crew action resolves its record here and acts in
+ * the record's own repository (D52). The page sends the id it read (`CrewSummary.id`, the
+ * `CrewActions` body), and an id is unique on the machine.
+ */
+function crewById(action: ActionContext, ref: string): { record: CrewRecord } | { why: string } {
+  let records: CrewRecord[];
+  try {
+    records = listAllCrew(action.portal.paths.stateDir).records;
+  } catch (error) {
+    return { why: `the crew store could not be read: ${messageOf(error)}` };
+  }
+  const record = records.find((one) => one.id === ref);
+  return record === undefined
+    ? { why: `No crew session on this machine has the id "${ref}": the Work page lists them.` }
+    : { record };
+}
+
+/** The refusal of an action that ends or removes something, without the page's own yes. */
+function notConfirmed(what: string): ActionResult {
+  return {
+    lines: [`Nothing was ${what}: the page's confirmation did not come with the request.`],
+    ok: false,
+  };
+}
+
+/**
+ * One crew command that acts on a session — `crew answer|stop|resume|rm` — run by the CLI
+ * itself in a child (`cli-child.ts`), in the record's own repository. A crew call inside the
+ * server froze every page and the live stream for up to 30 s per synchronous spawn
+ * (`Bun.spawnSync` in `realRunProgram` and `runGit`), and `crew answer` reaches one too when it
+ * resumes a stopped session. The child keeps the server free, and it is the same command, with
+ * the same checks and words, that the terminal runs.
+ */
+async function crewCliAction(
+  action: ActionContext,
+  name: string,
+  args: string[],
+  record: CrewRecord,
+): Promise<ActionResult> {
+  const run = await runCliChild(action.portal, ["crew", ...args], {
+    cwd: record.repo,
+    onLine: (line) => action.publish?.("action", { action: name, line }),
+  });
+  // `crew rm` removes the crew session's worktree: the Worktrees page's kept answer is stale.
+  forgetWorktrees(action.portal);
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut) lines.push(crewTimeoutLine(args[0] ?? "", record.id));
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
+/**
+ * The line a crew action shows when its child passed `CLI_CHILD_TIMEOUT_MS`: `crew stop`,
+ * `crew resume` and `crew rm` each make several calls, so one cut at the limit may have done
+ * part of its work. The line says so and names the two ways to find out where the crew session
+ * stands: the same command again, or `crew status`.
+ */
+export function crewTimeoutLine(command: string, recordId: string): string {
+  return `crew ${command} did not answer in time, so it may have done part of its work: run it again, or ${COMMAND} crew status ${recordId} to see where it is.`;
+}
+
+/**
+ * `worktrees.clean`: the command line's own `worktrees --clean`, in a child in the portal's
+ * own folder, with its lines collected. The page asks first (`confirm`): every finished
+ * worktree goes, and a worktree that is not finished is kept with its reason.
+ */
+async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
+  const run = await runCliChild(action.portal, ["worktrees", "--clean"], {
+    cwd: action.cwd,
+    onLine: (line) => action.publish?.("action", { action: "worktrees.clean", line }),
+  });
+  // The list the page reads next must be the one after the clean, not the one from before it.
+  forgetWorktrees(action.portal);
+  const lines = [...run.lines];
+  if (run.error !== null) lines.push(run.error);
+  if (run.timedOut) lines.push("worktrees --clean did not answer in time");
+  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
+}
+
 // ── The door ────────────────────────────────────────────────────────────────────
+
+/**
+ * Every action a page may POST to `/api/<name>`: the cases of `runAction`, and `doctor.run`,
+ * which the server runs itself (it keeps the pass). The portal's client sends only these
+ * (`portal/src/api/wire.ts` mirrors the list, and a test runs each one).
+ */
+export const ACTION_NAMES = [
+  "automode.apply",
+  "browser.setup",
+  "browser.token",
+  "claudemem.fallback",
+  "claudemem.follow",
+  "claudemem.key",
+  "claudemem.route",
+  "companion.enable",
+  "crew.answer",
+  "crew.resume",
+  "crew.rm",
+  "crew.stop",
+  "doctor.run",
+  "gateway.key.make",
+  "gateway.key.save",
+  "omniroute.rollback",
+  "omniroute.update",
+  "project.add",
+  "project.preview",
+  "project.write",
+  "router.restart",
+  "slot.breaker",
+  "slot.check",
+  "slot.fallback",
+  "slot.mode",
+  "slot.save",
+  "slot.test",
+  "switch",
+  "update.check",
+  "update.install",
+  "workflow.set",
+  "worktrees.clean",
+] as const;
+
+/** One action's name. */
+export type ActionName = (typeof ACTION_NAMES)[number];
+
 /**
  * Runs one action. `body` is the page's JSON, already parsed; nothing here trusts it — every
  * value is checked, and a value a command would refuse is refused here too.
@@ -1111,10 +1575,16 @@ export async function runAction(
   switch (name) {
     case "slot.test":
       return testTargets(action, body);
+    case "slot.check":
+      return checkTarget(action, body);
     case "slot.save":
       return saveSlot(action, body);
     case "slot.fallback":
       return setSlotFallback(action, body);
+    case "slot.breaker":
+      return setSlotBreaker(action, body);
+    case "slot.mode":
+      return setSlotMode(action, body);
     case "switch": {
       const which = typeof body.name === "string" ? body.name : "";
       const on = body.on === true;
@@ -1124,7 +1594,7 @@ export async function runAction(
         case "judge":
           return switchJudge(action, on);
         case "models":
-          return switchModels(action, on);
+          return switchModelSlots(action, on);
         case "hold":
           return switchHold(action, on);
         default:
@@ -1135,12 +1605,24 @@ export async function runAction(
       return browserSetupAction(action);
     case "browser.token":
       return browserTokenAction(action, body);
+    case "claudemem.route":
+      return claudeMemRoute(action, body);
+    case "claudemem.key":
+      return claudeMemKey(action, body);
+    case "claudemem.follow":
+      return claudeMemFollow(action, body);
+    case "claudemem.fallback":
+      return claudeMemFallback(action, body);
     case "update.check":
       return updateCheck(action);
     case "update.install":
       return updateInstall(action);
     case "companion.enable":
       return companionEnable(action, typeof body.id === "string" ? body.id : "");
+    case "gateway.key.save":
+      return gatewayKeyAction(action, body, "key");
+    case "gateway.key.make":
+      return gatewayKeyAction(action, body, "password");
     case "router.restart":
       return gateway(action, ["setup", "--yes"]);
     case "omniroute.update":
@@ -1157,25 +1639,84 @@ export async function runAction(
       return projectPreview(action, body);
     case "project.write":
       return projectWrite(action, body);
+    case "project.add":
+      return projectAdd(action, body);
+    case "crew.answer": {
+      const crew = crewRef(body);
+      const answer = typeof body.answer === "string" ? body.answer.trim() : "";
+      if (crew === "" || answer === "") {
+        return { lines: ["Pick the crew session and write an answer."], ok: false };
+      }
+      if (answer.length > CREW_ANSWER_MAX) {
+        return {
+          lines: [`An answer is at most ${CREW_ANSWER_MAX} characters.`],
+          ok: false,
+        };
+      }
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      // The CLI's own command, in the record's repository: the portal's own folder is usually
+      // the home folder, where this repository has no crew store. `--as-person` is the click
+      // (D52); the bare `--` keeps an answer that starts with `--` an answer.
+      return crewCliAction(
+        action,
+        "crew.answer",
+        ["answer", "--as-person", "--", found.record.id, answer],
+        found.record,
+      );
+    }
+    case "crew.stop": {
+      const crew = crewRef(body);
+      if (crew === "") return { lines: ["Pick the crew session to stop."], ok: false };
+      if (body.confirm !== true) return notConfirmed("stopped");
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      return crewCliAction(action, "crew.stop", ["stop", found.record.id], found.record);
+    }
+    case "crew.resume": {
+      const crew = crewRef(body);
+      if (crew === "") return { lines: ["Pick the crew session to resume."], ok: false };
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      return crewCliAction(action, "crew.resume", ["resume", found.record.id], found.record);
+    }
+    case "crew.rm": {
+      const crew = crewRef(body);
+      if (crew === "") return { lines: ["Pick the crew session to remove."], ok: false };
+      if (body.confirm !== true) return notConfirmed("removed");
+      const found = crewById(action, crew);
+      if ("why" in found) return { lines: [found.why], ok: false };
+      return crewCliAction(action, "crew.rm", ["rm", found.record.id], found.record);
+    }
+    case "worktrees.clean":
+      // The page asks first (`data-confirm`): this removes folders that hold no work.
+      if (body.confirm !== true) return notConfirmed("removed");
+      return cleanWorktrees(action);
     default:
       return { lines: [`"${name}" is not an action.`], ok: false };
   }
 }
 
-/** The heavy-job queue's own lines, for the Machine page. */
+/** What the heavy-job queue reads through: this machine's memory, the portal's paths. */
+export function jobContext(action: ActionContext): JobContext {
+  return {
+    cwd: action.cwd,
+    execArgv: process.execArgv,
+    memory: realMemoryFacts(),
+    paths: action.portal.paths,
+    print: () => undefined,
+    say: () => undefined,
+  };
+}
+
+/** The heavy-job queue's own lines, for the Machine page (the same reader as `/api/jobs`). */
 export async function jobLines(action: ActionContext): Promise<{ error: string; lines: string[] }> {
-  const lines: string[] = [];
-  const say: string[] = [];
   try {
-    const code = await runJobCommand(["status"], {
-      cwd: action.cwd,
-      execArgv: process.execArgv,
-      memory: realMemoryFacts(),
-      paths: action.portal.paths,
-      print: (line) => lines.push(line),
-      say: (line) => say.push(line),
-    });
-    return { error: code === 0 ? "" : say.join("\n"), lines };
+    const state = await readJobs(jobContext(action));
+    return {
+      error: "",
+      lines: statusLines(state, action.portal.paths.home, action.portal.now()),
+    };
   } catch (error) {
     return { error: messageOf(error), lines: [] };
   }
@@ -1183,12 +1724,14 @@ export async function jobLines(action: ActionContext): Promise<{ error: string; 
 
 /** The self-update's own state, read through the same files `doctor` reads. */
 export function updateState(action: ActionContext): {
+  held: null | { at: string; from: null | string; notes: string[]; version: string };
   heldSince: null | string;
   installed: null | string;
   last: LastCheck | null;
 } {
   const files = updateFiles(action.portal.paths.stateDir);
   return {
+    held: readHeldMajor(files),
     heldSince: heldSince(files),
     installed: findUserInstall(action.portal.paths.installedPluginsFile)?.version ?? null,
     last: readLastCheck(files),

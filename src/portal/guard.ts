@@ -2,9 +2,9 @@
  * The portal's door. Every request passes these before anything is read or changed.
  *
  * The portal is a web page on the person's own machine that can change every Claude session
- * on it. A browser is a hostile place: any page the person visits, and any program on the
- * machine, can send requests to `127.0.0.1`. So the rules are the strict ones, and they are
- * pure functions here, one home, tested on their own:
+ * on it. A browser is a hostile place: any page the person visits can send requests to
+ * `127.0.0.1`. So the rules are the strict ones, and they are pure functions here, one home,
+ * tested on their own:
  *
  *   1. **`Host` exactly ours.** A page at `evil.example` can point its DNS at 127.0.0.1 and
  *      reach the portal (DNS rebinding); the browser then sends `Host: evil.example`. Only
@@ -13,12 +13,17 @@
  *      a page made it. Only our own two origins pass, on any method. **And no other page's
  *      load:** a browser names where a request comes from in `Sec-Fetch-Site`. Anything but a
  *      navigation must be `same-origin` (our own page) or `none` (the person typed it): a page
- *      on another `127.0.0.1` port is the SAME site (a cookie has no port), so its `<img>`
- *      carried our cookie past `SameSite=Strict` and was served.
- *   3. **A session cookie, or the one-time token.** Nothing else is served.
- *   4. **A POST carries our CSRF token.** The cookie alone is never enough: `SameSite=Strict`
- *      stops most cross-site sends, and this stops the rest (and a same-site page that is
- *      not ours). The token comes with the page and is compared in constant time.
+ *      on another `127.0.0.1` port is the SAME site, so its `<img>` was served.
+ *   3. **A POST carries our CSRF token.** `SameSite` cookies are gone with the session (D9),
+ *      so the token that came with a page of ours is the whole rule for a change: it stops
+ *      another site's form and a same-site page that is not ours. It is compared in constant
+ *      time.
+ *
+ * There is **no sign-in** (D9): any page load from a browser on this machine is served, so
+ * any program and any user account on this machine — a Claude session using `curl` included —
+ * can read and change what the portal shows. That is the owner's trade-off, written down in
+ * `.claude/rules/portal.md`; the rules above are what still stops another website and DNS
+ * rebinding, which is what a browser can be tricked into.
  *
  * A `Content-Security-Policy` with no `unsafe-inline` and no address outside this machine is
  * served with every answer: no script of ours may be inline, no font may come from the
@@ -75,46 +80,22 @@ export function secretsMatch(a: null | string, b: null | string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-/**
- * The cookie's value in a `Cookie` header, or null. Only the value is taken; everything
- * after the first `;` is another cookie's.
- */
-export function cookieValue(header: null | string, name: string): null | string {
-  if (header === null) return null;
-  for (const part of header.split(";")) {
-    const at = part.indexOf("=");
-    if (at === -1) continue;
-    if (part.slice(0, at).trim() !== name) continue;
-    return part.slice(at + 1).trim();
-  }
-  return null;
-}
+/** The bytes behind a secret: 32 of them, so guessing is out of the question. */
+export type Random = (bytes: number) => Buffer;
 
-/** The `Set-Cookie` value that hands the session to the browser. */
-export function sessionCookie(name: string, value: string): string {
-  // No `Secure`: this is http on 127.0.0.1, and a `Secure` cookie would never be stored.
-  // `HttpOnly`: a script on the page cannot read it. `SameSite=Strict`: no other site's
-  // request carries it. `Path=/`: the whole portal, and nothing else (there is nothing else
-  // on this origin).
-  return `${name}=${value}; HttpOnly; SameSite=Strict; Path=/`;
-}
-
-/**
- * The cookie this portal's session lives in, for one port: `ccsdk_portal_20150`. The port is
- * in the name because a cookie carries no port: the browser sends every `127.0.0.1` cookie to
- * every port on `127.0.0.1`. Without it, a second portal on another port overwrote the first
- * one's session (and its own), and neither page could hold a session while the other ran.
- */
-export function cookieName(port: number): string {
-  return `${COOKIE_BASE}_${port}`;
-}
-
-/** The base of the session cookie's name (`cookieName` adds the port). */
-export const COOKIE_BASE = "ccsdk_portal";
+/** The header a POST carries the page's CSRF token in. */
 export const CSRF_HEADER = "x-ccsdk-csrf";
 
+/**
+ * The CSRF token made once when the portal starts, and embedded in every page it serves. It
+ * lives in this process's memory only: stopping the portal makes every page's copy dead.
+ */
+export function createCsrf(random: Random): string {
+  return random(32).toString("base64url");
+}
+
 /** Why a request was refused, in one word. */
-export type Refusal = "csrf" | "host" | "origin" | "session" | "site";
+export type Refusal = "csrf" | "host" | "origin" | "site";
 
 /** What a browser says about where a request comes from (`Sec-Fetch-Site`, `Sec-Fetch-Mode`). */
 export interface FetchMetadata {
@@ -126,8 +107,8 @@ export interface FetchMetadata {
  * True when a browser's own word on where a request comes from lets it in: a navigation (the
  * person followed a link, or opened the printed one), or anything from our own page
  * (`same-origin`) or from no page at all (`none`: typed, a bookmark). A request with no
- * `Sec-Fetch-Site` is not from a browser that sends it (every current one does): the other rules
- * judge it, and only a session or the one-time token lets it in.
+ * `Sec-Fetch-Site` is not from a browser that sends it (every current one does): the other
+ * rules judge it.
  */
 export function fetchSiteAllowed(meta: FetchMetadata): boolean {
   if (meta.site === null || meta.mode === "navigate") return true;
@@ -135,15 +116,7 @@ export function fetchSiteAllowed(meta: FetchMetadata): boolean {
 }
 
 /** What the door says about one request. */
-export type Admission =
-  /** Serve it: a live session, and — for a POST — the token that came with a page of ours. */
-  | { kind: "admits" }
-  /**
-   * The first load with the one-time token: hand out the session cookie and serve the page.
-   * Only a GET may do this, and only with a token that was never used.
-   */
-  | { kind: "exchange" }
-  | { kind: "refused"; reason: Refusal };
+export type Admission = { kind: "admits" } | { kind: "refused"; reason: Refusal };
 
 /**
  * The rules that hold for **every** request, before anything is looked at: the `Host` must be
@@ -164,36 +137,29 @@ export function networkAllowed(
 }
 
 /**
- * The whole door for one request, in the order the rules are checked. `tokenValid` is the
- * caller's answer to "is this a GET whose `?t=` is this portal's unused one-time token?".
+ * The whole door for one request, in the order the rules are checked. A page load is admitted
+ * once the network rules pass: there is no session to hold any more (D9).
  *
  * A POST must carry an `Origin` of ours — a browser always sends one for a POST, same-origin
  * or not, so a POST without one did not come from a page of this portal — **and** the CSRF
- * token that came with a page of ours. The cookie alone never changes anything.
+ * token that came with a page of ours. Nothing else changes anything.
  */
 export function admit(options: {
-  cookie: null | string;
   csrf: null | string;
-  expectedCsrf: null | string;
+  expectedCsrf: string;
   fetchMeta: FetchMetadata;
   host: null | string;
   method: string;
   origin: null | string;
   port: number;
-  session: null | string;
-  tokenValid: boolean;
 }): Admission {
   const network = networkAllowed(options.host, options.origin, options.port, options.fetchMeta);
   if (network !== null) return { kind: "refused", reason: network };
-  if (secretsMatch(options.cookie, options.session)) {
-    if (options.method !== "POST") return { kind: "admits" };
-    if (!originAllowed(options.origin, options.port)) {
-      return { kind: "refused", reason: "origin" };
-    }
-    return secretsMatch(options.csrf, options.expectedCsrf)
-      ? { kind: "admits" }
-      : { kind: "refused", reason: "csrf" };
+  if (options.method !== "POST") return { kind: "admits" };
+  if (!originAllowed(options.origin, options.port)) {
+    return { kind: "refused", reason: "origin" };
   }
-  if (options.method === "GET" && options.tokenValid) return { kind: "exchange" };
-  return { kind: "refused", reason: "session" };
+  return secretsMatch(options.csrf, options.expectedCsrf)
+    ? { kind: "admits" }
+    : { kind: "refused", reason: "csrf" };
 }

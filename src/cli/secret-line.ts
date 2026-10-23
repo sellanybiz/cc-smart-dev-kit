@@ -42,6 +42,12 @@ export interface RawTerminal {
   on: (event: "data", listener: (chunk: Buffer) => void) => void;
   off: (event: "data", listener: (chunk: Buffer) => void) => void;
   setRawMode?: (on: boolean) => void;
+  /**
+   * Stops the reading that `on("data")` started. Without it a terminal's stdin keeps the process
+   * alive after the command is done (seen on a real pty, 2026-10-23: `gateway setup` asked its
+   * questions, then never exited).
+   */
+  pause?: () => void;
 }
 
 /**
@@ -58,6 +64,7 @@ export function readSecretLine(terminal: RawTerminal): Promise<null | string> {
       for (const character of chunk.toString("utf8")) {
         if (character === "\r" || character === "\n") {
           terminal.off("data", listener);
+          terminal.pause?.();
           terminal.setRawMode?.(false);
           done(cleanSecretLine(text));
           return;
@@ -65,6 +72,7 @@ export function readSecretLine(terminal: RawTerminal): Promise<null | string> {
         if (character === "\u0003") {
           // Ctrl+C: give the terminal back as it was, and answer nothing.
           terminal.off("data", listener);
+          terminal.pause?.();
           terminal.setRawMode?.(false);
           done(null);
           return;

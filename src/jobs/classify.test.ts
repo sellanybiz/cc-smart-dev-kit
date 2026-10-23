@@ -4,7 +4,13 @@
  * here-doc, a commit message). Every expected kind is written by hand.
  */
 import { describe, expect, test } from "bun:test";
-import { classifyHeavyCommand, toolCallOfArgv, toolName } from "./classify";
+import {
+  classifyHeavyCommand,
+  classifyRoutableLine,
+  type ScriptSource,
+  toolCallOfArgv,
+  toolName,
+} from "./classify";
 import { DEFAULT_KINDS, mergeKinds } from "./kinds";
 
 const kindOf = (command: string) => classifyHeavyCommand(command, DEFAULT_KINDS);
@@ -271,6 +277,136 @@ describe("classifyHeavyCommand: several steps, and a project's own kinds", () =>
     const kinds = mergeKinds({ tsc: { gb: 8, match: [{ tool: "tsc" }] } });
     expect(classifyHeavyCommand("bunx tsgo --noEmit", kinds)).toBeNull();
     expect(classifyHeavyCommand("bunx tsc --noEmit", kinds)).toBe("tsc");
+  });
+});
+
+describe("a package script is a script, not the tool of the same name", () => {
+  /**
+   * A reader over fixed folders, starting in `/repo`: a folder mapped to null (or not
+   * mapped) has no package.json to read. Every read is kept, so a test can check the cache.
+   */
+  function readerOf(folders: Record<string, string[] | null>): {
+    asked: string[];
+    source: ScriptSource;
+  } {
+    const asked: string[] = [];
+    return {
+      asked,
+      source: {
+        folder: "/repo",
+        scriptsIn: (folder) => {
+          asked.push(folder);
+          const scripts = folders[folder];
+          return scripts === undefined || scripts === null ? null : new Set(scripts);
+        },
+      },
+    };
+  }
+
+  test("J1: a name the project defines as a script never matches a tool rule", () => {
+    const { source } = readerOf({ "/repo": ["tsc"], "/repo/app": ["tsc"] });
+    // The three shapes the finding named, and the other package managers' forms.
+    for (const command of [
+      "bun run tsc --noEmit",
+      "bun tsc",
+      "bun tsc --noEmit",
+      "cd app && bun run tsc --noEmit",
+      "pnpm tsc --noEmit",
+      "pnpm run tsc",
+      "yarn tsc --noEmit",
+      "yarn run tsc",
+    ]) {
+      expect([command, classifyHeavyCommand(command, DEFAULT_KINDS, source)]).toEqual([
+        command,
+        null,
+      ]);
+    }
+  });
+
+  test("a name that is no script there is the package manager's tool, as before", () => {
+    const { source } = readerOf({ "/repo": ["typecheck"] });
+    for (const command of [
+      "bun run tsc --noEmit",
+      "bun tsc",
+      "pnpm tsc --noEmit",
+      "yarn run tsc",
+    ]) {
+      expect([command, classifyHeavyCommand(command, DEFAULT_KINDS, source)]).toEqual([
+        command,
+        "tsc",
+      ]);
+    }
+  });
+
+  test("no package.json, or one that cannot be read: the tool, as before", () => {
+    const none = readerOf({ "/repo": null });
+    expect(classifyHeavyCommand("bun run tsc --noEmit", DEFAULT_KINDS, none.source)).toBe("tsc");
+    const broken: ScriptSource = {
+      folder: "/repo",
+      scriptsIn: () => {
+        throw new Error("EACCES: permission denied");
+      },
+    };
+    expect(classifyHeavyCommand("bun run tsc --noEmit", DEFAULT_KINDS, broken)).toBe("tsc");
+    // No reader at all keeps the answer the classifier gave before this rule.
+    expect(classifyHeavyCommand("bun run tsc --noEmit", DEFAULT_KINDS)).toBe("tsc");
+  });
+
+  test("after a cd, the folder the line moves to decides", () => {
+    // The root defines no tsc script; `app` does.
+    const { source, asked } = readerOf({ "/repo": [], "/repo/app": ["tsc"] });
+    expect(classifyHeavyCommand("bun run tsc --noEmit", DEFAULT_KINDS, source)).toBe("tsc");
+    expect(
+      classifyHeavyCommand("cd app && bun run tsc --noEmit", DEFAULT_KINDS, source),
+    ).toBeNull();
+    expect(
+      classifyHeavyCommand("cd app && cd .. && bun run tsc --noEmit", DEFAULT_KINDS, source),
+    ).toBe("tsc");
+    expect(asked).toEqual(["/repo", "/repo/app", "/repo"]);
+    // A folder the line does not name (`$DIR`, `-`) is no folder to read: the tool, as before.
+    expect(classifyHeavyCommand("cd $DIR && bun run tsc", DEFAULT_KINDS, source)).toBe("tsc");
+    expect(classifyHeavyCommand("cd - && bun run tsc", DEFAULT_KINDS, source)).toBe("tsc");
+  });
+
+  test("a nested shell's cd stays inside it, and does not move the line after it", () => {
+    const { source } = readerOf({ "/repo": ["tsc"], "/repo/app": [] });
+    // In the nested shell `app` is the folder, and tsc is no script there: it is the tool.
+    expect(classifyHeavyCommand("bash -c 'cd app && bun run tsc'", DEFAULT_KINDS, source)).toBe(
+      "tsc",
+    );
+    // The line itself stays in the root, where tsc is a script.
+    expect(
+      classifyHeavyCommand("bash -c 'cd app && true'; bun run tsc", DEFAULT_KINDS, source),
+    ).toBeNull();
+  });
+
+  test("a script rule of the same name still matches the script", () => {
+    const kinds = mergeKinds({ typecheck: { gb: 8, match: [{ script: "tsc" }] } });
+    const { source } = readerOf({ "/repo": ["tsc"] });
+    expect(classifyHeavyCommand("bun run tsc --noEmit", kinds, source)).toBe("typecheck");
+    expect(classifyHeavyCommand("bun run tsc --noEmit", DEFAULT_KINDS, source)).toBeNull();
+  });
+
+  test("one read a folder, however many steps ask it", () => {
+    const { source, asked } = readerOf({ "/repo": ["tsc"], "/repo/x": ["tsc"] });
+    expect(
+      classifyHeavyCommand(
+        "bun run tsc && cd x && bun run tsc && bun run tsc",
+        DEFAULT_KINDS,
+        source,
+      ),
+    ).toBeNull();
+    expect(asked).toEqual(["/repo", "/repo/x"]);
+  });
+
+  test("the route: a line whose only heavy command is a script stays raw", () => {
+    const script = readerOf({ "/repo": ["tsc"], "/repo/app": ["tsc"] });
+    expect(classifyRoutableLine("bun run tsc --noEmit", DEFAULT_KINDS, script.source)).toBeNull();
+    expect(classifyRoutableLine("cd app && bun run tsc", DEFAULT_KINDS, script.source)).toBeNull();
+    // A tool behind a runner is still heavy, and a name that is no script is the tool.
+    const tool = readerOf({ "/repo": [] });
+    expect(classifyRoutableLine("bunx tsc --noEmit", DEFAULT_KINDS, tool.source)).toBe("tsc");
+    expect(classifyRoutableLine("bun run tsc --noEmit", DEFAULT_KINDS, tool.source)).toBe("tsc");
   });
 });
 

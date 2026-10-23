@@ -1,8 +1,8 @@
 /**
- * Whether a new crew session starts now or waits in the queue: the phases it waits for, the two caps
- * of running crew sessions on this machine (D37), and the free memory. `crew start` decides it once and
+ * Whether a new crew session starts now or waits in the queue: the phases it waits for, its
+ * lead's caps, the machine's guards, and the free memory. `crew start` decides it once and
  * returns at once either way (D25); a queued crew session is started later by its lead's watch
- * (`crew watch`, a later phase), oldest first.
+ * (`crew watch`), oldest first.
  *
  * - **Its phases** (`--waits-for`): each must be `merged` in the same repository — the newest
  *   record of that phase counts, so a hand-off's next crew session or a second try is the one
@@ -10,20 +10,29 @@
  *   (`mergedBeforeRemoval`, kept by the store): `crew rm` also removes a phase whose work was
  *   never merged — a queued one, or one that failed before it committed — and that removal
  *   releases nothing, because the work a dependent builds on is not there.
- * - **Two caps** (D37). `workflow.crew.max` counts every crew session of every repository on this
- *   machine (the store of each, `listAllCrew`) whose session holds a place: `starting`,
- *   `working`, `blocked`, `paused`, `quiet`. `workflow.crew.maxOpus` counts those of them on
+ * - **Its lead's caps** (D54). The crew sessions of one lead — the session that started them,
+ *   `leadSessionId` — hold a place while their session lives: `starting`, `working`, `blocked`,
+ *   `paused`, `quiet` (`RUNNING_STATES`). `workflow.crew.perLead` bounds all of one lead's,
+ *   in every repository on this machine; `workflow.crew.perLeadOpus` bounds those of them on
  *   the opus tier — the tier their model's name stands for, recorded at launch (`model.tier`):
- *   the opus kinds, or an override onto opus — and holds back only a new opus-tier crew session. The
- *   store alone decides, so a start never waits on a `claude agents` read; `crew watch` keeps
- *   the states true from agent view. A crew session that finds a free place takes it, also while older
- *   ones wait: their own lead's watch starts them.
+ *   the opus kinds, or an override onto opus — and holds back only a new opus-tier crew session.
+ *   So one lead can never take every place and starve the others: the owner runs about a dozen
+ *   leads at once.
+ * - **The machine's guards.** `workflow.crew.max` is a safety ceiling no lead reaches alone;
+ *   `workflow.crew.maxOpus`, when the person sets it, is a machine-wide opus ceiling on top of
+ *   each lead's own (D37's cap, now optional). The 5-hour usage window (D54): past
+ *   `workflow.crew.usagePercent` a new opus-tier crew session waits, unless the gateway's opus
+ *   slot has a chain with its fallback on (`usage-guard.ts`); a window that cannot be read never
+ *   holds.
  * - **The memory** (`workflow.crew.memoryGb`): the memory free now, less what heavy jobs
  *   reserved and have not used yet (the job queue's own reading, `notYetUsedGb`), must be at least
- *   that much. Where free memory cannot be read (macOS), only the cap counts.
+ *   that much. Where free memory cannot be read (macOS), only the caps count.
  *
- * Two starts at once never both take the last place: the decision and the new record are made
- * under one machine-wide lock (`withPlacesLock`), which the watch takes too when it starts one.
+ * The store alone decides, so a start never waits on a `claude agents` read; `crew watch` keeps
+ * the states true from agent view. A crew session that finds a free place takes it, also while
+ * older ones wait: their own lead's watch starts them. Two starts at once never both take the
+ * last place: the decision and the new record are made under one machine-wide lock
+ * (`withPlacesLock`), which the watch takes too when it starts one.
  */
 import { mkdirSync } from "node:fs";
 import { DEFAULT_SLICE, jobsPaths, loadJobsConfig } from "../jobs/config";
@@ -70,6 +79,21 @@ export function runningCrew(records: readonly CrewRecord[]): CrewRecord[] {
   return records.filter((one) => (RUNNING_STATES as readonly string[]).includes(one.state));
 }
 
+/**
+ * The crew sessions of one lead that hold a place now, in every repository on this machine
+ * (D54). A record with no lead field belongs to no lead: it counts toward the machine's ceiling
+ * and never against someone's cap.
+ */
+export function runningForLead(
+  records: readonly CrewRecord[],
+  leadSessionId: string,
+): CrewRecord[] {
+  if (leadSessionId === "") return [];
+  return runningCrew(records).filter(
+    (one) => typeof one.leadSessionId === "string" && one.leadSessionId === leadSessionId,
+  );
+}
+
 /** One phase a crew session waits for, and where it is: its newest crew session's state, or none yet. */
 export interface Wait {
   phase: string;
@@ -113,7 +137,10 @@ export function unmetWaits(
 /** What a new crew session does: start now, or wait in the queue and why (one short clause). */
 export type Place = { start: true } | { start: false; why: string };
 
-/** The tier the opus cap counts (D37): the tier a crew session's model name stands for. */
+/** What a queued crew session with a free place waits for: only its lead's watch. */
+export const PLACE_FREE = "a place is free; its lead's watch starts it";
+
+/** The tier the caps count (D54): the tier a crew session's model name stands for. */
 export const OPUS_TIER = "opus";
 
 /** The running crew sessions on the opus tier (`model.tier`, recorded at launch). */
@@ -127,21 +154,38 @@ export interface PlaceInput {
   running: number;
   /** How many of them run on the opus tier (`onOpusTier`). */
   runningOpus: number;
-  /** `workflow.crew.max`: every crew session on this machine (D37). */
+  /** The running crew sessions of the new one's lead, in every repository (`runningForLead`). */
+  leadRunning: number;
+  /** How many of the lead's run on the opus tier. */
+  leadRunningOpus: number;
+  /** `workflow.crew.perLead`: one lead's crew sessions (D54). */
+  perLead: number;
+  /** `workflow.crew.perLeadOpus`: one lead's opus-tier ones (D54). */
+  perLeadOpus: number;
+  /** `workflow.crew.max`: the machine's safety ceiling (D54). */
   max: number;
-  /** `workflow.crew.maxOpus`: the opus-tier ones among them (D37). */
-  maxOpus: number;
+  /** `workflow.crew.maxOpus`: an optional machine-wide opus ceiling; null when unset. */
+  maxOpus: null | number;
   /** True when the new crew session runs on the opus tier. */
   opus: boolean;
   /** The memory a crew session may use now, in GB; null where it cannot be read. */
   freeGb: null | number;
   /** `workflow.crew.memoryGb`. */
   needGb: number;
+  /** The 5-hour usage window's share used now, in percent; null when it cannot be read (D54). */
+  usagePercent: null | number;
+  /** `workflow.crew.usagePercent`: past this share, a new opus crew session waits (D54). */
+  usageHoldPercent: number;
+  /** True when the gateway's opus slot answers from a chain with its fallback on (D54). */
+  opusFallback: boolean;
   /** Its phases that are not finished yet. */
   unmet: readonly Wait[];
 }
 
-/** The decision: its phases first, then the cap of all crew sessions, the opus cap, the memory. Pure. */
+/**
+ * The decision, pure, in the order the line names it: its phases first, then its lead's caps,
+ * the machine's ceiling and optional opus ceiling, the memory, and the usage window.
+ */
 export function placeFor(input: PlaceInput): Place {
   if (input.unmet.length > 0) {
     const phases = input.unmet
@@ -149,22 +193,45 @@ export function placeFor(input: PlaceInput): Place {
       .join(", ");
     return { start: false, why: `waits for ${phases}; it starts when each is merged` };
   }
+  if (input.leadRunning >= input.perLead) {
+    return {
+      start: false,
+      why: `its lead has ${input.leadRunning} of ${input.perLead} crew sessions running; it starts when one of them finishes`,
+    };
+  }
+  if (input.opus && input.leadRunningOpus >= input.perLeadOpus) {
+    return {
+      start: false,
+      why: `its lead has ${input.leadRunningOpus} of ${input.perLeadOpus} opus crew sessions running; it starts when one of them finishes`,
+    };
+  }
   if (input.running >= input.max) {
     return {
       start: false,
-      why: `${input.running} of ${input.max} running; it starts when one finishes`,
+      why: `${input.running} of ${input.max} crew sessions running on this machine; it starts when one finishes`,
     };
   }
-  if (input.opus && input.runningOpus >= input.maxOpus) {
+  if (input.opus && input.maxOpus !== null && input.runningOpus >= input.maxOpus) {
     return {
       start: false,
-      why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running; it starts when one of them finishes`,
+      why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running on this machine; it starts when one of them finishes`,
     };
   }
   if (input.freeGb !== null && input.freeGb < input.needGb) {
     return {
       start: false,
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`,
+    };
+  }
+  if (
+    input.opus &&
+    !input.opusFallback &&
+    input.usagePercent !== null &&
+    input.usagePercent > input.usageHoldPercent
+  ) {
+    return {
+      start: false,
+      why: `the 5-hour usage window is at ${Math.round(input.usagePercent)}%, past ${input.usageHoldPercent}%; it starts when the window resets, or when the opus slot has a fallback chain`,
     };
   }
   return { start: true };

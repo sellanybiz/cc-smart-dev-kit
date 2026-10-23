@@ -1,6 +1,6 @@
 ---
 name: subagent-decision
-description: Use when about to read more than three files, run multi-step research, search or audit the codebase, verify UI, or split work for agents. Picks the agent for each job - Explore, Plan, general-purpose, the cc-smart-dev-kit reviewer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially an affordable model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
+description: Use when about to read many files, run multi-step research, search or audit the codebase, verify UI, or split work for agents. Picks the agent for each job - Explore, Plan, general-purpose, the cc-smart-dev-kit builder, auditor, reviewer, ui-verifier, rules-maintainer, or yourself - and says how to brief it, especially an affordable model. Trigger phrases - "find where", "search the codebase", "audit", "look into", "split this up", "delegate".
 ---
 
 # Which Agent, And How To Brief It
@@ -10,9 +10,11 @@ Where it differs, the add-on wins (`core.md`, top). A project with its own agent
 there.
 
 A subagent runs in its own context window; only its final report comes back. Every file it
-reads, every search and every dead end stays out of yours. If the task can be written as a
-self-contained brief, delegate it. What stays with you is in the core instructions (§ Lead the
-work), and which model and effort each agent gets too (§ Subagents).
+reads, every search and every dead end stays out of yours. Delegate a job whose reading would
+flood your context and that a self-contained brief can carry; a job a handful of tool calls
+finish is yours. What stays with you is in the core instructions (§ Lead the work). Which model
+and effort each agent gets is in the core instructions' model table and in § Model and effort
+below.
 
 ## Which agent
 
@@ -23,7 +25,9 @@ work), and which model and effort each agent gets too (§ Subagents).
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
 | A whole phase of a plan, where the project has crew sessions on | a crew session, not a subagent — `/cc-smart-dev-kit:lead` |
-| A phase of a plan with crew sessions off, a piece of one; any job that both explores and edits | `general-purpose` |
+| A phase the plan already briefed — its files, the pattern to copy and a done-check written down — with crew sessions off | `cc-smart-dev-kit:builder` |
+| A piece of a phase, or a job whose scope is still open that both explores and edits | `general-purpose` |
+| An area swept for one class of defect, not a diff — "audit the hooks", "find every place where X" | the `audit` skill's run: an `auditor` per track, a second one to refute each finding, one `builder` for the report — `/cc-smart-dev-kit:audit` |
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
 | Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify`: the facts on `sonnet`, the design verdict on `opus` or `fable` |
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
@@ -33,7 +37,8 @@ Review is your own job first: an agent is a second reader, never a substitute fo
 
 ## How to brief
 
-A subagent has none of your conversation. Treat it as a smart colleague who just walked in:
+A subagent has none of your conversation, and an under-briefed agent costs more than doing the
+work yourself. Treat it as a smart colleague who just walked in:
 
 - **The goal and why it matters**, and whether you want research or code.
 - **Exact paths, symbols and test cases.**
@@ -78,33 +83,50 @@ the judgment for it in the brief:
 - **Its limits in words** — an affordable model follows written limits less reliably than Claude.
 - Two failed tries at the same job → hand it to `opus`; never a third affordable try.
 
+## Model and effort
+
+The core instructions' model table says which model fits which job; this is the rest of it.
+
+- **Every launch names both** — an `Agent` call, and each `agent()` in a Workflow. An agent
+  given neither runs on the session's model and effort: on an Opus session, a plain `Explore` is
+  an Opus launch. Never put `model:` or `effort:` in an agent's frontmatter: it binds every
+  caller, and it goes stale without anyone seeing it.
+- **`opus` and `fable` name the tier**, whatever model answers it: with the gateway on, a slot
+  may send a family to another model (`/cc-smart-dev-kit:gateway`).
+- **Effort by the job:** `medium` for searches and reads; `high` for building, UI/UX design
+  included, for reviews and for a UI check; `xhigh` for the hardest judgment — a tangled bug, an
+  architecture choice, a high-stakes review, a hard design — which you may pick yourself; `max`
+  only when the person asks for it. An affordable gateway slot runs at `max`: its reasoning costs
+  cents. The session's own effort is the person's choice.
+- **Opus builds** architecture and UI/UX, at `high` or `xhigh`; every other build runs on
+  `sonnet`.
+- **A fork** runs on the session's own model, at the effort you pass, or else the session's.
+- **Saying it when you launch** (the core instructions): a fork names the session's model; a
+  Workflow names each `agent()`'s; a subagent that starts agents names them in its report.
+
 ## UI/UX work
 
-Design judgment, layout, components, pages and styling run only on `opus` or `fable`, at `high` or above — never on
-an affordable model (the core instructions' model table). Declare it when you launch: `Opus reason: ui`, or
-`Fable reason: ui-design`; `agent-guard` refuses a declared UI launch on anything else. The one exception is
-checking, which is not design: the `ui-verifier` may run on `sonnet` and brings back measured facts and screenshots,
-and you make the design verdict on `opus` or `fable` (`/cc-smart-dev-kit:ui-verify`).
+Design judgment, layout, components, pages and styling run only on `opus` or `fable`, at `high`
+or above — never on an affordable model (the core instructions' model table). The one exception
+is checking, which is not design: the `ui-verifier` may run on `sonnet` and brings back measured
+facts and screenshots, and you make the design verdict on `opus` or `fable`
+(`/cc-smart-dev-kit:ui-verify`).
 
 ## Choosing Fable
 
 `fable` is the premium advisor (the core instructions' model table): the hardest long-horizon
 work, hard architecture, a rewrite or a complex UI/UX design, a strong second-opinion review,
-refining a plan — and a fresh attempt when the person is not satisfied with your answer. The
-guard asks the person about every Fable launch.
+refining a plan — and a fresh attempt when the person is not satisfied with your answer.
 
-- **Read-only agents** (Plan, Reviewer, Explore) take an advisory word:
-  `Fable reason: <hard|rewrite|ui-design|architecture|review|plan|unsatisfied> - <why>`.
-  `unsatisfied` is the fresh attempt: something you answered did not land.
-- **An agent that can change files** — a builder, or a fork — needs the one word `build`, which
-  only the person can mean: `Fable reason: build - <what the person asked>`. `build` on a
-  read-only agent is refused, like every other word on a builder.
-- **A fork of a Fable session** runs on the session's own model, so it is a builder: name the
-  word `build`, and the person approves that one.
+- **Advice runs on a read-only agent** (Plan, a reviewer, Explore, an auditor). It returns a
+  design, a plan, a review or a fix for you or a crew session to build.
+- **Fable builds only when the person asks for that build** — an agent that can change files,
+  and a fork of a Fable session, which runs on Fable too. Any other build goes to `sonnet`, or to
+  `opus` for architecture and UI/UX.
 
-**A fresh attempt's brief** (`unsatisfied`) carries: the task; your answer, or the files you
-changed; what the person disliked, in their words; and what it returns — a design, a plan or a
-fix for you or a crew session to build, never a build of its own.
+**A fresh attempt's brief** carries: the task; your answer, or the files you changed; what the
+person disliked, in their words; and what it returns — a design, a plan or a fix for you or a
+crew session to build, never a build of its own.
 
 ## While agents run
 

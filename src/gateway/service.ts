@@ -372,6 +372,26 @@ const HEALTH_WAIT_MS = 5_000;
  * After the (re)start it waits for the health page; when that never answers, it throws with
  * the service's state, and the restart-pending marker stays.
  */
+/**
+ * The router's port, asked before any write or question: another program there (an older
+ * router, say) refuses the setup, with the words below. A port that answers while our own
+ * listener is up is ours. `installRouter` asks it first; `gateway setup` asks it before its
+ * questions too, so nobody answers them, and no backend is called, for a port it cannot have.
+ * Says whether our listener (the socket, or the task) is up.
+ */
+export async function checkRouterPort(
+  options: Pick<InstallOptions, "port" | "probe" | "runner" | "service">,
+): Promise<{ listenerUp: boolean }> {
+  const port = await probeRouterPort(options.port, options.probe.fetch);
+  const listenerUp = options.service.listenerUp(options.runner);
+  if (port.state === "other" && !listenerUp) {
+    throw new Error(
+      `port ${options.port} is used by another program (an older router? stop it first)`,
+    );
+  }
+  return { listenerUp };
+}
+
 export async function installRouter(options: InstallOptions): Promise<InstallResult> {
   const tooOld = bunTooOld(options.bunVersion, tildify(options.bunPath, options.home));
   if (tooOld !== null) {
@@ -380,13 +400,7 @@ export async function installRouter(options: InstallOptions): Promise<InstallRes
     );
   }
   const { service } = options;
-  const port = await probeRouterPort(options.port, options.probe.fetch);
-  const listenerUp = service.listenerUp(options.runner);
-  if (port.state === "other" && !listenerUp) {
-    throw new Error(
-      `port ${options.port} is used by another program (an older router? stop it first)`,
-    );
-  }
+  const { listenerUp } = await checkRouterPort(options);
   const short = (path: string) => tildify(path, options.home);
   const copyText = readFileSync(options.bundle, "utf8");
   const definitions = service.definitions(options);

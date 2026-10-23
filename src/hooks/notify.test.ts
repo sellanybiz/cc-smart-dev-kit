@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import type { AlertEvent } from "../workflow/schema";
@@ -306,11 +307,56 @@ describe("what is notified, and with which words", () => {
     expect(runs[1]?.[1]).toBe("Claude finished · the ssh alerts");
   });
 
-  test("a stop hook that made Claude continue fires Stop again: one alert", () => {
+  test("a stop hook that made Claude continue fires Stop again: one alert, at the end", () => {
     const { env, home } = machine();
     const { deps, runs } = setup(env);
+    notifyHook(stopInput(home), "Stop", deps);
+    // The first stop is the turn's end: the alert went out.
+    expect(runs.length).toBeGreaterThan(0);
+    const shown = runs.length;
+    // The continued turn's stop carries `stop_hook_active`: no second alert for one turn.
     notifyHook(stopInput(home, { stop_hook_active: true }), "Stop", deps);
+    expect(runs.length).toBe(shown);
+  });
+
+  test("the stop verify-gate will block: the finished alert waits for the stop that ends the turn", () => {
+    const made = machine();
+    const home = made.home;
+    // The fake machine's PATH holds only the fake notifier and sound: this test's project
+    // lookup needs the real git, in a throwaway repo of its own.
+    const env = {
+      ...made.env,
+      PATH: `${dirname(Bun.which("git") ?? "/usr/bin/git")}:${made.env.PATH}`,
+    };
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { checks: { fast: "bun run check" } });
+    // A changed file and no run of the check: verify-gate blocks this stop.
+    const file = transcript(
+      [
+        {
+          message: {
+            content: [
+              {
+                id: "toolu_edit",
+                input: { file_path: "src/a.ts" },
+                name: "Edit",
+                type: "tool_use",
+              },
+            ],
+          },
+          type: "assistant",
+        },
+      ],
+      home,
+    );
+    const first = { ...stopInput(home, { transcript_path: file }), cwd: repo };
+    const { deps, runs } = setup(env);
+    notifyHook(first, "Stop", deps);
+    // The turn goes on with the check: this stop is no "finished".
     expect(runs).toEqual([]);
+    notifyHook({ ...first, stop_hook_active: true }, "Stop", deps);
+    // The check ran (or the reminder was already given): this is the real end.
+    expect(runs.length).toBeGreaterThan(0);
   });
 
   test("a turn another session started: nothing; a human prompt into it, or a helper agent: the alert", () => {

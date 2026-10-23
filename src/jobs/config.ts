@@ -7,7 +7,9 @@
  * {
  *   "reserveGb": 22,
  *   "sharedDirs": ["/srv/heavy-jobs"],
- *   "launch": "auto"
+ *   "launch": "auto",
+ *   "cpuWeight": 20,
+ *   "ioWeight": "off"
  * }
  * ```
  *
@@ -37,10 +39,31 @@ export const DEFAULT_RESERVE_GB = 22;
 /** The systemd slice heavy jobs run in. A dash nests: it sits inside `cc-smart-dev-kit.slice`. */
 export const DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
 
+/**
+ * A heavy job's default CPU weight: systemd's own default is 100, so a job gets a fifth of
+ * a default unit's share while the machine is busy. A weight, never a quota: on an idle
+ * machine a job still gets every core; under load the desktop, the Claude sessions and the
+ * person's own work go first.
+ */
+export const DEFAULT_CPU_WEIGHT = 20;
+
+/**
+ * A heavy job's default disk I/O weight, and the same fifth of systemd's default 100: a
+ * build's writes give way to the desktop's and the sessions' reads while the disk is busy.
+ * A weight again, so an idle disk is still a job's whole disk.
+ */
+export const DEFAULT_IO_WEIGHT = 20;
+
 const absolutePath = z
   .string()
   .min(1)
   .refine((path) => isAbsolute(path), "must be an absolute path");
+
+/**
+ * A cgroup weight: systemd's own range, 1 to 10000. `0` or `"off"` leaves systemd's
+ * default (100) in force.
+ */
+const weightSchema = z.union([z.literal(0), z.literal("off"), z.number().int().min(1).max(10_000)]);
 
 export const jobsMachineConfigSchema = z.strictObject({
   /** Where this user's leases live. Default: `~/.local/share/cc-smart-dev-kit/jobs`. */
@@ -64,6 +87,17 @@ export const jobsMachineConfigSchema = z.strictObject({
     .string()
     .regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice")
     .optional(),
+  /**
+   * The heavy slices' CPU weight on a Linux systemd machine, 1 to 10000 (default 20:
+   * systemd's own default is 100). `0` or `"off"` leaves systemd's default in force.
+   * Machine-wide: the slices are the machine's, so a project's file cannot own this.
+   */
+  cpuWeight: weightSchema.optional(),
+  /**
+   * The heavy slices' disk I/O weight, 1 to 10000 (default 20). `0` or `"off"` leaves
+   * systemd's default in force. Machine-wide, like `cpuWeight`.
+   */
+  ioWeight: weightSchema.optional(),
 });
 
 export type JobsMachineConfig = z.infer<typeof jobsMachineConfigSchema>;
@@ -94,4 +128,20 @@ export function loadJobsConfig(file: string): JobsMachineConfig {
     throw new JobsConfigError(`Invalid ${file}: ${issues.join("; ")}`);
   }
   return parsed.data;
+}
+
+/** A weight from `jobs.json` or the default; `0` means systemd's default is left in force. */
+function weightOf(value: JobsMachineConfig["cpuWeight"], fallback: number): number {
+  if (value === "off") return 0;
+  return value ?? fallback;
+}
+
+/** The CPU weight this machine's launches set on the slice chain; 0: systemd's default. */
+export function cpuWeightOf(config: JobsMachineConfig): number {
+  return weightOf(config.cpuWeight, DEFAULT_CPU_WEIGHT);
+}
+
+/** The I/O weight this machine's launches set on the slice chain; 0: systemd's default. */
+export function ioWeightOf(config: JobsMachineConfig): number {
+  return weightOf(config.ioWeight, DEFAULT_IO_WEIGHT);
 }

@@ -20,10 +20,8 @@
  * sees half a file.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { atomicWrite } from "../setup/write";
-import { LOG_MAX_BYTES } from "../update/state";
+import { join } from "node:path";
+import { appendJsonLine } from "./jsonl-log";
 
 /** The record's file name, in the state folder. */
 export const ASK_LOG_FILE = "guard-asks.jsonl";
@@ -51,28 +49,10 @@ export function askLogFile(stateDir: string): string {
 }
 
 /**
- * Cuts the record back to its newer half, on a whole line, when it grew past the size rule.
- * A file that is not there, or cannot be read, is left alone: the append below tries on.
- */
-function cutBack(file: string): void {
-  let size: number;
-  try {
-    size = statSync(file).size;
-  } catch {
-    return;
-  }
-  if (size <= LOG_MAX_BYTES) return;
-  const text = readFileSync(file, "utf8");
-  const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-  atomicWrite(file, keep.slice(keep.indexOf("\n") + 1), 0o600);
-}
-
-/**
- * Appends one ask, all of it in one write. Throws when the file cannot be written: the frame
- * turns that into one stderr line, and the hook's answer is not changed.
+ * Appends one ask, all of it in one write (`appendJsonLine`: the size rule and the folder
+ * live there). Throws when the file cannot be written: the frame turns that into one stderr
+ * line, and the hook's answer is not changed.
  */
 export function appendAsk(file: string, ask: GuardAsk): void {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  cutBack(file);
-  appendFileSync(file, `${JSON.stringify(ask)}\n`, { mode: 0o600 });
+  appendJsonLine(file, ask);
 }

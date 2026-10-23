@@ -1221,8 +1221,10 @@ describe("a same-name server one scope down wins over the user scope", () => {
     expect(line?.text).toBe(
       `the "playwright" MCP server has a copy that wins over yours (other in ${join("~", "repo", ".mcp.json")}): ` +
         "a project's .mcp.json, or the local scope, takes precedence over the user-scope server, so " +
-        "cc-smart-dev-kit's is not the one starting. Remove it from that file (or merge the base " +
-        "branch when it came from one), then run: cc-smart-dev-kit doctor",
+        "cc-smart-dev-kit's is not the one starting",
+    );
+    expect(line?.fix).toBe(
+      "remove it from that file (or merge the base branch when it came from one), then run: cc-smart-dev-kit doctor",
     );
   });
 });
@@ -1412,7 +1414,8 @@ describe("a retired server: setup takes back only the registration it made", () 
     expect(retiredChecks(fake.paths)).toEqual([
       {
         ok: false,
-        text: 'Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered yet. Run: cc-smart-dev-kit setup',
+        text: 'Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered yet',
+        fix: "cc-smart-dev-kit setup",
       },
     ]);
   });
@@ -1662,7 +1665,8 @@ describe("doctor: what Serena left", () => {
     const owed = [
       {
         ok: false,
-        text: `Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered, Serena's context ${CONTEXT_SHOWN}, the serena-root records in ${RECORDS_SHOWN}/ yet. Run: cc-smart-dev-kit setup`,
+        text: `Serena is retired in 0.6.0, and setup has not taken back the "serena" MCP server it registered, Serena's context ${CONTEXT_SHOWN}, the serena-root records in ${RECORDS_SHOWN}/ yet`,
+        fix: "cc-smart-dev-kit setup",
       },
     ];
     expect(retiredChecks(fake.paths)).toEqual(owed);

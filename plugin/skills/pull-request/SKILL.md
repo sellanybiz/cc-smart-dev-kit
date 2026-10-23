@@ -48,10 +48,12 @@ heading reads as "not considered".
    dashboard or on their own machine. A pull request built on another open one says
    "stacked on #n — merge after it".
 
-## Who made it — a footer on every body
+## Who made it — only when the project asks
 
-After the last heading: a blank line, then a `---` line (a paragraph directly above `---`
-turns into a heading in Markdown), then:
+A body names no Claude session and no account by default: on a public repository everyone
+reads them. When the project's add-on asks for a footer, put it after the last heading — a
+blank line, then a `---` line (a paragraph directly above `---` turns into a heading in
+Markdown), then the lines the add-on names, from these:
 
 ```
 ---
@@ -61,9 +63,8 @@ Claude account: <the account email Claude Code gives you as the user's email>
 ```
 
 Write "unknown" for any of these you do not know — never guess one. `claude --resume` works
-only on the machine that ran the session. A reader can then find the session that wrote the
-pull request, and whose account ran it. It is a footer, not a heading. After it come the
-attribution lines the harness gives you.
+only on the machine that ran the session. It is a footer, not a heading. The attribution
+lines the harness gives you come last, footer or not.
 
 ## The test
 

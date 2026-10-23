@@ -4,7 +4,7 @@ description: >-
   A rename inside one function needs no research, no plan and no subagent. Finding: IN-11,
   IN-12.
 tags: [gate, no-trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 8
   allowed_tools: [Read, Glob, Grep, Skill, Edit, Agent]

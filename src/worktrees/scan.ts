@@ -22,7 +22,7 @@ import {
 import { localFiles } from "../hooks/local-files";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
-import { idleMinutes } from "../hooks/worktree-leftovers";
+import { idleMinutesOrNull } from "../hooks/worktree-leftovers";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
 import {
@@ -97,6 +97,11 @@ function contentsOf(worktree: string, mainCheckout: string, env: Env): WorktreeC
 
 export interface ScannedWorktree {
   listed: ListedWorktree;
+  /**
+   * Minutes since git last wrote to it, measured once by this scan; null when unknown (a folder
+   * that is gone, or one that is not a worktree any more) and for the main checkout.
+   */
+  idleMinutes: null | number;
   /** "main" for the main checkout, "gone" for a worktree whose folder no longer exists. */
   state: "gone" | "main" | Verdict;
 }
@@ -363,6 +368,7 @@ function judgeOne(
   listed: ListedWorktree,
   all: ListedWorktree[],
   look: MachineLook,
+  idle: null | number,
 ): Verdict {
   const ahead = runGit(repo, ["rev-list", "--count", `${look.ref}..${listed.head}`], look.env);
   if (!ahead.ok) {
@@ -383,7 +389,8 @@ function judgeOne(
     containers:
       look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
     gitTooOld: look.replayer.tooOld,
-    idleMinutes: idleMinutes(listed.path, look.now),
+    // The hook's own rule: unknown counts as just now, which keeps it.
+    idleMinutes: idle ?? 0,
     innerWorktree: innerWorktreeOf(listed.path, all),
     locked: listed.locked,
     // A few more git calls (and one `gh` call) per worktree: only worth it for one with
@@ -433,22 +440,26 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
   const look = lookAt(repo, options);
   const all = listWorktrees(repo, env);
   const [main, ...others] = all;
-  const scanned: ScannedWorktree[] = main === undefined ? [] : [{ listed: main, state: "main" }];
+  const scanned: ScannedWorktree[] =
+    main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
 
   for (const listed of others) {
     if (listed.locked) {
       // Before "gone": a locked worktree may sit on a drive that is not connected.
       scanned.push({
+        idleMinutes: idleMinutesOrNull(listed.path, look.now),
         listed,
         state: { finished: false, held: false, why: "locked with `git worktree lock`" },
       });
       continue;
     }
     if (listed.prunable || !existsSync(listed.path)) {
-      scanned.push({ listed, state: "gone" });
+      scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
-    scanned.push({ listed, state: judgeOne(repo, listed, all, look) });
+    // Measured once here, and the same number the verdict is judged with.
+    const idle = idleMinutesOrNull(listed.path, look.now);
+    scanned.push({ idleMinutes: idle, listed, state: judgeOne(repo, listed, all, look, idle) });
   }
   return scanned;
 }
@@ -497,7 +508,8 @@ export function removeWorktree(
       status: "kept",
     };
   }
-  const fresh = judgeOne(repo, current, all, lookAt(repo, options));
+  const look = lookAt(repo, options);
+  const fresh = judgeOne(repo, current, all, look, idleMinutesOrNull(current.path, look.now));
   if (!fresh.finished) {
     return {
       said: [`kept ${listed.path}: ${fresh.why}`],

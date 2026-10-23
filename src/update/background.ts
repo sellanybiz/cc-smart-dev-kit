@@ -117,8 +117,11 @@ export function sessionSourceOf(input: string): null | string {
   }
 }
 
-/** The hook runs because a session starts: a new one, or a resumed one (or the input does not say). */
-function sessionStarts(source: null | string): boolean {
+/**
+ * The hook runs because a session starts: a new one, or a resumed one (or the input does not
+ * say). The portal's own session-start part reads the same rule (`src/portal/session-start.ts`).
+ */
+export function sessionStarts(source: null | string): boolean {
   return source === null || source === "startup" || source === "resume";
 }
 
@@ -335,7 +338,7 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
               `newer: installed ${status.installed ?? "(no version)"}, the marketplace copy ${status.inCopy ?? "(unreadable)"}${status.catalogBehind ? ", and the copy is behind the remote" : ""}`,
             );
             // A new major version is never installed behind the person's back (D33).
-            const result: ApplyResult = applyUpdate(
+            const result: ApplyResult = await applyUpdate(
               deps.paths,
               deps.claude,
               deps.run,

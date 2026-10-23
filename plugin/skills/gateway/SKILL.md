@@ -20,8 +20,14 @@ repository (the installed plugin does not carry the docs).
   Haiku → `cc-smart-dev-kit-scout`, Sonnet → `cc-smart-dev-kit-worker`, Opus →
   `cc-smart-dev-kit-opus`, Fable → `cc-smart-dev-kit-fable`. Auto mode's safety check has its own,
   `cc-smart-dev-kit-judge`.
-- **A slot with no chain is off**: that model is plain Claude, sent to Anthropic unchanged.
-  A fresh setup gives no slot a chain, and the plugin never picks a model for anyone.
+- **Every slot is Claude or Custom, and `slots` in the config alone says which** (D2): a slot
+  with a chain there is Custom, and the chain answers; a slot without one is Claude — that
+  model is plain Claude, sent to Anthropic unchanged. A fresh setup gives no slot a chain, and
+  the plugin never picks a model for anyone.
+- **A switch to Claude never forgets the chain**: `gateway slot <slot> claude` moves it to the
+  config's `kept` field, saved and not in use; `custom` brings it back with its fallback
+  switch; `clear` deletes it. `off` still means `claude`. A router or CLI of 0.5.x reads the
+  same file right (it never looks at `kept`), so a rollback turns nothing back on.
 - **A slot's chain** is a list of targets the person picked: the first answers; the next
   only while the slot's **fallback switch** is on (default: on for scout, worker and judge, off
   for opus and fable). The router never adds a target, Claude included: a chain that is
@@ -37,11 +43,16 @@ repository (the installed plugin does not carry the docs).
 
 ## Set it up
 
-1. A backend first, for example OmniRoute with an Ollama Cloud connection. Setup writes
-   `http://127.0.0.1:20128` as the `omniroute` backend's address; OmniRoute elsewhere: change
-   `backends.omniroute.baseUrl` in `~/.config/cc-smart-dev-kit/gateway.json` after setup. The
-   first key is the `omniroute` backend's. **Two ways to give it**, and neither puts a secret on
-   the command line:
+1. A backend first, for example OmniRoute with an Ollama Cloud connection. **On a terminal,
+   plain `cc-smart-dev-kit gateway setup` asks its questions one at a time** — OmniRoute's
+   address (Enter keeps `http://127.0.0.1:20128` or the saved one), its API key with no echo
+   (Enter keeps the saved one), a chain for each model slot picked by number from the live model
+   list (Enter keeps the slot as it is: "off" for a slot with no chain, so no model is picked for
+   anyone; the judge is not asked), and whether to turn the gateway on now (default no). Every
+   question comes before any change; Ctrl+C at one stops it with exit 130 and nothing changed.
+   Any key flag, `--no-backend-key` or `--yes`, and every run with no terminal (a script, a
+   pipe, this shell tool), asks nothing. The first key is the `omniroute` backend's. **Two ways
+   to give it with a flag**, and neither puts a secret on the command line:
    - let setup make one: `cc-smart-dev-kit gateway setup --omniroute-password` — it asks for
      OmniRoute's own dashboard password with no echo (or takes it on stdin with
      `--omniroute-password-stdin < password-file`), logs in to the local OmniRoute, makes a key
@@ -53,14 +64,15 @@ repository (the installed plugin does not carry the docs).
    Either way the key is **tested before it is saved**: a 401/403 refuses it and keeps the key
    already in the file, saying which key that backend wants. A backend that cannot be asked
    (down, a 5xx) saves nothing either unless you add `--save-unchecked`, which saves it with a
-   WARN line. The file as it was is kept in the state folder's `backups/` whenever a key really
-   changes.
-   No key yet: `cc-smart-dev-kit gateway setup --no-backend-key` (every slot off: every model
+   warning line (`!`). The file as it was is kept in the state folder's `backups/` whenever a key really
+   changes. Once the gateway is set up, the portal's Machine page (the OmniRoute card) does both
+   too — paste a key, or make one with the dashboard password — with the same checks.
+   No key yet: `cc-smart-dev-kit gateway setup --no-backend-key` (every slot Claude: every model
    plain Claude).
    Setup stops, writing nothing, when another program holds the router's port (an older
    router, say): stop that program first.
-2. `cc-smart-dev-kit gateway status`: the router is up, the backend answers. Every slot is off
-   until the person gives it a chain (§ Give a slot a chain).
+2. `cc-smart-dev-kit gateway status`: the router is up, the backend answers. Every slot is
+   Claude until the person gives it a chain (§ Give a slot a chain).
    `cc-smart-dev-kit gateway check` answers the one question a script asks — does the gateway
    have an OmniRoute key the backend accepts? — with an exit code (0 works, 1 no key yet and
    OmniRoute answers, 3 could not be judged, 4 the key is refused); read-only, and it never asks
@@ -77,7 +89,10 @@ repository (the installed plugin does not carry the docs).
    each target against step 1, saves the config, and is **live**: no restart. Any order,
    any target first, the same for every slot.
    - One model for every Sonnet request: `cc-smart-dev-kit gateway slot worker omniroute:<model>`
-   - Plain Claude again: `cc-smart-dev-kit gateway slot worker off`.
+   - Plain Claude again, chain saved: `cc-smart-dev-kit gateway slot worker claude`
+     (`off` says the same).
+   - That saved chain again: `cc-smart-dev-kit gateway slot worker custom`; delete it:
+     `cc-smart-dev-kit gateway slot worker clear`.
 3. **The fallback switch**: `cc-smart-dev-kit gateway fallback <slot> on|off`. On, the next
    target answers when the one before it fails or rests (a 429 or a 5xx from Claude, any
    failure from a backend). Off, only the first answers, and its error goes back; the rest
@@ -118,7 +133,8 @@ Opus request, the main session's included:
   (the Opus id as Claude Code sends it), then `cc-smart-dev-kit gateway fallback opus on`. Opus
   answers first; at its limit (or a short rate limit, or a server error) the next target
   answers, and the router asks Opus again at most every 10 minutes.
-- Off: `cc-smart-dev-kit gateway slot opus off`: Opus answers itself again.
+- Claude again: `cc-smart-dev-kit gateway slot opus claude`: Opus answers itself, and the
+  chain stays saved (`custom` uses it again).
 - Only when the person asks. Say what leaves Claude: the whole Opus conversation goes to
   that provider whenever it answers.
 - The router keeps a backend's thinking, marked as its own with the backend's signature
@@ -167,12 +183,13 @@ never added to it), only when they ask:
   model. A target added by hand, or set before 0.5.0 (when a judge answered only after Claude
   could not), is untested: the router ignores it, and `cc-smart-dev-kit doctor` fails on a judge
   chain's until `slot judge` tests it.
-- Off: `cc-smart-dev-kit gateway slot judge off` (back to Claude first).
+- Claude again: `cc-smart-dev-kit gateway slot judge claude` (back to Claude first; the chain
+  is saved). `custom` uses it again, and tests any target whose proof no longer matches.
 
 **Say the trade-off whenever a judge other than Claude is set or shown**, the worker's stand-ins
 included: it decides worse. It can block good work, and a weak one can let a risky command
 through; the test proves one obvious case only. Every check sends the conversation and the next
-action to that provider. "Auto mode blocks good work": `gateway slot judge off` for your own
+action to that provider. "Auto mode blocks good work": `gateway slot judge claude` for your own
 chain, or `gateway fallback judge off` so Claude alone judges.
 
 **WebSearch** runs on Claude only: a request that carries Anthropic's web search tool goes to
@@ -184,7 +201,8 @@ up).
 
 - `cc-smart-dev-kit gateway status`: router health (requests, fallbacks, resting targets, open
   breakers), each backend, the slots, whether Claude Code points at the gateway. Keys are
-  masked.
+  masked. Its last line is the verdict (`✓` all well, `✗` the config or the router, `!` a
+  backend, `·` not set up or not on), with the next step under it.
 - `cc-smart-dev-kit doctor`: the service, the router copy, the health page, each backend.
 - The log: `journalctl --user -u cc-smart-dev-kit-router -f`. One line per request; never a key.
   A target that answers 4xx / 5xx (Anthropic too) gets a `WARN` line with the start of

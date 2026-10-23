@@ -55,7 +55,9 @@ describe("crew through the CLI", () => {
     const lead = cli(["crew", "lead", "--plan", "master-plan"], world.repo, env);
     expect(lead.err).toBe("");
     expect(lead.code).toBe(0);
-    expect(lead.out.split("\n")[1]).toBe("/rename LEAD my-app master-plan");
+    expect(lead.out).toBe(
+      `lead LEAD my-app master-plan (e22fabc7): the crew this session starts in ${world.repo} report to it; this session takes that name at its next prompt\n`,
+    );
     expect(readLead(world.paths.stateDir, world.repo, sessionId)?.name).toBe(
       "LEAD my-app master-plan",
     );

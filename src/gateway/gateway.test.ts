@@ -235,6 +235,11 @@ function router(
     /** The limit state the router starts from (a restart reads the file). */
     loadedState?: null | string;
     /**
+     * The limit state file, read each time the router reads it (wins over `loadedState`): a
+     * test that changes it between reads, as another program would.
+     */
+    loadState?: () => null | string;
+    /**
      * The slots' breaker switches stay as the config has them. Without this the router runs
      * with every breaker off (a test of the way a chain behaves, not of the hold); a test of
      * the breaker says it.
@@ -269,7 +274,7 @@ function router(
     fetch: upstream.fetch,
     getConfig: options.breaker === true ? source : () => withBreakersOff(source()),
     loadSafetyChecks: () => options.loadedChecks ?? null,
-    loadState: () => options.loadedState ?? null,
+    loadState: options.loadState ?? (() => options.loadedState ?? null),
     log: (line) => logs.push(line),
     now: options.now ?? (() => Date.UTC(2026, 9, 15, 10, 0, 0)),
     port: PORT,
@@ -2821,7 +2826,18 @@ describe("local-only guard", () => {
       fallbacks: 0,
       ok: true,
       port: 20100,
+      recent: [
+        {
+          at: Date.UTC(2026, 9, 15, 10, 0, 0),
+          ms: 0,
+          nextTarget: false,
+          slot: null,
+          status: 200,
+          target: "anthropic",
+        },
+      ],
       requests: 1,
+      seenClaude: { "claude-opus-5-5": Date.UTC(2026, 9, 15, 10, 0, 0) },
       slots: {
         "cc-smart-dev-kit-affordable": ["omniroute:glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
         "cc-smart-dev-kit-mixed": ["claude-sonnet-5-5", "omniroute:glm-5.3-flash"],
@@ -3727,6 +3743,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     expect(JSON.parse(states.at(-1) ?? "")).toEqual({
       fallbacks: {},
       limits: { "claude-opus-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 } },
+      seenClaude: { "claude-opus-5-5": T0 },
       version: 1,
     });
   });
@@ -3863,6 +3880,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
         "claude-opus-5-5": before.limits["claude-opus-5-5"],
         "claude-sonnet-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 },
       },
+      seenClaude: { "claude-sonnet-5-5": T0 },
       version: 1,
     });
     // The opus slot still has its chain and its fallback on: its record is kept, said nowhere.
@@ -3907,6 +3925,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
         },
       },
       limits: { "claude-opus-5-5": { claim: "five_hour", resetsAt: RESET, seenAt: T0 } },
+      seenClaude: { "claude-opus-5-5": T0 },
       version: 1,
     });
   });
@@ -4000,7 +4019,12 @@ describe("model slots (opus, fable) and every slot by its family", () => {
       "cc-smart-dev-kit-opus: claude-opus-5-5 answers again; its fallback is over",
     );
     expect(logs.filter((line) => line.startsWith("WARN cc-smart-dev-kit-opus:"))).toHaveLength(1);
-    expect(JSON.parse(states.at(-1) ?? "")).toEqual({ fallbacks: {}, limits: {}, version: 1 });
+    expect(JSON.parse(states.at(-1) ?? "")).toEqual({
+      fallbacks: {},
+      limits: {},
+      seenClaude: { "claude-opus-5-5": T0 + 660_000 },
+      version: 1,
+    });
   });
 
   it("the safety check under an Opus id never goes to the opus slot", async () => {
@@ -5703,7 +5727,15 @@ describe("the breaker", () => {
         { status: 503, target: "ollama:deepseek-v4.1-flash", until: START + 30_000 },
       ],
     });
-    expect(states.filter((text) => text.includes('"breakers"'))).toHaveLength(1);
+    // Written when it opened, and carried unchanged by any other write of the file (a new
+    // Claude id's, `seenClaude`): no second open, and nothing per request.
+    const breakerWrites = states
+      .map(
+        (text) => (JSON.parse(text) as { breakers?: Record<string, unknown> }).breakers?.[WORKER],
+      )
+      .filter((record) => record !== undefined);
+    expect(breakerWrites.length).toBeGreaterThan(0);
+    expect(new Set(breakerWrites.map((record) => JSON.stringify(record))).size).toBe(1);
 
     // A restart: the new router loads the file, and its first failure keeps the old start.
     clock.advance(120_000);
@@ -5734,7 +5766,12 @@ describe("the breaker", () => {
     });
     expect((await third.handle(sonnet())).status).toBe(200);
     await third.settled();
-    expect(JSON.parse(states.at(-1) ?? "")).toEqual({ fallbacks: {}, limits: {}, version: 1 });
+    expect(JSON.parse(states.at(-1) ?? "")).toEqual({
+      fallbacks: {},
+      limits: {},
+      seenClaude: { "claude-sonnet-5-5": START + 330_000 },
+      version: 1,
+    });
     expect(third.logs.filter((line) => line.includes("answers again after"))).toEqual([
       "cc-smart-dev-kit-worker: answers again after 5m; 0 requests held",
     ]);
@@ -6026,5 +6063,162 @@ describe("the breaker", () => {
     const b = await judge.handle(clientRequest({ body: check }));
     expect(b.status).toBe(400);
     expect(await b.text()).toBe('{"error":"bad check"}');
+  });
+});
+
+describe("slot modes, seenClaude and recent (B0, B6b)", () => {
+  const WORKER = "cc-smart-dev-kit-worker";
+  const ANTHROPIC_URL = "https://anthropic.test/v1/messages?beta=true";
+  const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
+
+  /** The config with the worker switched to Claude: its chain lives in `kept`, not in `slots`. */
+  function claudeWorker(): GatewayConfig {
+    const { [WORKER]: _chain, ...slots } = config().slots;
+    return {
+      ...config(),
+      kept: { [WORKER]: { targets: ["omniroute:glm-5.3-flash"] } },
+      slots,
+    };
+  }
+
+  it("the contract: slots alone says what is in use, so a saved chain is never used", async () => {
+    // What any router version reads from the file: a slot that is not in `slots` has no
+    // chain, and `kept` changes nothing (the top level is a loose object, so it stays).
+    expect(resolveRoute(WORKER, claudeWorker())).toEqual({ kind: "unknown-slot", slot: WORKER });
+    expect(resolveRoute("claude-sonnet-5-5", claudeWorker())).toEqual({ kind: "anthropic" });
+    const { calls, handle } = router([() => new Response("ok")], { config: claudeWorker() });
+    const sent = JSON.stringify(message("claude-sonnet-5-5"));
+    const res = await handle(clientRequest({ body: sent }));
+    expect(res.status).toBe(200);
+    expect(calls.map((call) => call.url)).toEqual([ANTHROPIC_URL]);
+    // Byte for byte: the body is the one Claude Code sent, the id included.
+    expect(nth(calls, 0).body).toBe(sent);
+    // And the health answer's `slots` names no worker: the saved chain is not in use.
+    const health = await handle(
+      clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }),
+    );
+    const body = (await health.json()) as { slots: Record<string, string[]> };
+    expect(body.slots).not.toHaveProperty(WORKER);
+  });
+
+  it("seenClaude: one write when an id is new, merged into the file another program changed", async () => {
+    const states: string[] = [];
+    // The file at start: the router's own fallback record. Another program (the CLI) then
+    // removes it, a change the seen-id write must keep, not write over.
+    const initial = JSON.stringify({
+      fallbacks: {
+        [WORKER]: {
+          lastAt: 1,
+          model: "claude-sonnet-5-5",
+          resetsAt: null,
+          since: 1,
+          target: "omniroute:glm-5.3-flash",
+        },
+      },
+      limits: {},
+      seenClaude: { "claude-haiku-4-5": 1 },
+      version: 1,
+    });
+    const changedByTheCli = JSON.stringify({
+      fallbacks: {},
+      limits: { "claude-haiku-4-5": { claim: null, resetsAt: null, seenAt: 2 } },
+      seenClaude: { "claude-haiku-4-5": 1 },
+      version: 1,
+    });
+    let reads = 0;
+    const { handle } = router([() => new Response("ok")], {
+      loadState: () => (reads++ === 0 ? initial : changedByTheCli),
+      states,
+    });
+    await handle(clientRequest({ body: JSON.stringify(message("claude-opus-5-5")) }));
+    expect(states).toHaveLength(1);
+    expect(JSON.parse(states[0] ?? "")).toEqual({
+      // The CLI's own change stays; the router changed only `seenClaude`.
+      fallbacks: {},
+      limits: { "claude-haiku-4-5": { claim: null, resetsAt: null, seenAt: 2 } },
+      seenClaude: { "claude-haiku-4-5": 1, "claude-opus-5-5": NOW },
+      version: 1,
+    });
+    // The same id again: nothing new, so no write.
+    await handle(clientRequest({ body: JSON.stringify(message("claude-opus-5-5")) }));
+    expect(states).toHaveLength(1);
+    // A new id: another write, with both ids.
+    await handle(clientRequest({ body: JSON.stringify(message("claude-fable-5-5")) }));
+    expect(states).toHaveLength(2);
+    const second = JSON.parse(states[1] ?? "") as { seenClaude: Record<string, number> };
+    expect(second.seenClaude).toEqual({
+      "claude-fable-5-5": NOW,
+      "claude-haiku-4-5": 1,
+      "claude-opus-5-5": NOW,
+    });
+  });
+
+  it("a name that is not a Claude id is never recorded", async () => {
+    const states: string[] = [];
+    const { handle } = router([() => new Response("ok")], { states });
+    // A slot name, an explicit backend target, and two shapes that are not Claude ids.
+    for (const model of [
+      WORKER,
+      "omniroute:glm-5.3-flash",
+      "claude-",
+      `claude-${"x".repeat(120)}`,
+    ]) {
+      await handle(clientRequest({ body: JSON.stringify(message(model)) }));
+    }
+    expect(states).toEqual([]);
+  });
+
+  it("recent: the last 200 requests, metadata only, oldest first, never a prompt", async () => {
+    const answers = Array.from({ length: 201 }, () => () => new Response("ok"));
+    let now = NOW;
+    const stepped = router(answers, { now: () => now });
+    for (let index = 0; index < 201; index += 1) {
+      // One time per request: the request, its log line and its `recent` entry share it.
+      now = NOW + (index + 1) * 1000;
+      await stepped.handle(
+        clientRequest({
+          body: JSON.stringify({
+            ...message("claude-sonnet-5-5"),
+            messages: [{ content: `a private prompt number ${String(index)}`, role: "user" }],
+          }),
+        }),
+      );
+    }
+    const health = await stepped.handle(
+      clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }),
+    );
+    const text = await health.text();
+    const body = JSON.parse(text) as {
+      recent: {
+        at: number;
+        ms: number;
+        nextTarget: boolean;
+        slot: null | string;
+        status: number;
+        target: string;
+      }[];
+    };
+    expect(body.recent).toHaveLength(200);
+    // The oldest (the first request) is gone; the rest are oldest first, each in its request.
+    expect(body.recent[0]).toEqual({
+      at: NOW + 2 * 1000,
+      ms: 0,
+      nextTarget: false,
+      slot: WORKER,
+      status: 200,
+      target: "claude-sonnet-5-5",
+    });
+    expect(body.recent[199]?.at).toBe(NOW + 201 * 1000);
+    // No prompt, no answer, no key: metadata only.
+    expect(text).not.toContain("private prompt");
+    expect(text).not.toContain(TOKEN);
+    expect(Object.keys(body.recent[0] ?? {}).sort()).toEqual([
+      "at",
+      "ms",
+      "nextTarget",
+      "slot",
+      "status",
+      "target",
+    ]);
   });
 });

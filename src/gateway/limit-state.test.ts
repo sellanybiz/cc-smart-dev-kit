@@ -13,8 +13,10 @@ import {
   emptyLimitState,
   formatLimitState,
   type LimitState,
+  mergeSeenClaude,
   NO_RESET_FRESH_MS,
   parseLimitState,
+  SEEN_CLAUDE_MAX,
 } from "./limit-state";
 
 const NOW = Date.parse("2026-10-22T10:00:00.000Z");
@@ -216,5 +218,47 @@ describe("currentBreakers", () => {
     const before = structuredClone(state);
     currentBreakers(state, NOW);
     expect(state).toStrictEqual(before);
+  });
+});
+
+describe("seenClaude: the Claude ids Claude Code sent", () => {
+  it("is optional: a file without it reads, and one a newer router wrote keeps it", () => {
+    expect(parseLimitState(OLD_FILE)?.seenClaude).toBeUndefined();
+    const withSeen = parseLimitState(
+      JSON.stringify({
+        fallbacks: {},
+        limits: {},
+        seenClaude: { "claude-opus-5-5": NOW },
+        version: 1,
+      }),
+    );
+    expect(withSeen?.seenClaude).toEqual({ "claude-opus-5-5": NOW });
+  });
+
+  it("merges two records: each id keeps its latest time", () => {
+    expect(
+      mergeSeenClaude(
+        { "claude-opus-5-5": NOW, "claude-sonnet-5-5": NOW - MINUTE },
+        { "claude-fable-5-5": NOW, "claude-opus-5-5": NOW - 2 * MINUTE },
+      ),
+    ).toEqual({
+      "claude-fable-5-5": NOW,
+      "claude-opus-5-5": NOW,
+      "claude-sonnet-5-5": NOW - MINUTE,
+    });
+  });
+
+  it("keeps only the 50 ids seen last, whatever order they came in", () => {
+    const a: Record<string, number> = {};
+    const b: Record<string, number> = {};
+    for (let index = 0; index < 60; index += 1) {
+      (index < 30 ? a : b)[`claude-model-${String(index)}`] = NOW + index;
+    }
+    const merged = mergeSeenClaude(a, b);
+    expect(Object.keys(merged)).toHaveLength(SEEN_CLAUDE_MAX);
+    // The 10 oldest are gone; the rest keep their own times.
+    expect(merged["claude-model-9"]).toBeUndefined();
+    expect(merged["claude-model-10"]).toBe(NOW + 10);
+    expect(merged["claude-model-59"]).toBe(NOW + 59);
   });
 });

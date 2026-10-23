@@ -143,9 +143,11 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
     memoryMaxFor: () => "1G",
     launchFacts: () => null,
     slice: {
+      controllers: () => ["cpu", "memory", "pids"],
       controlGroup: () => null,
       readFile: () => null,
       setMemoryMax: () => true,
+      setWeights: () => true,
     },
     run: async (argv) => {
       started = argv;
@@ -158,7 +160,9 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
       kind: "test:run",
       spec: DEFAULT_KINDS["test:run"] ?? null,
       command,
+      cpuWeight: 20,
       gb: 4,
+      ioWeight: 20,
       pid: 1,
       checkout: "/repo",
       slice: "jobs.slice",

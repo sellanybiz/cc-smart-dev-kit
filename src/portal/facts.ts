@@ -8,10 +8,11 @@
  *
  * Some numbers a page would like are not here, and are not invented:
  *
- *   - **Plan usage percentages.** Claude Code computes them from the headers of its own
- *     answers and hands them to the status line on stdin (`src/cli/statusline.ts`); nothing
- *     writes them down. The router records only the limits it saw (which model, which
- *     window, when it resets), and that is what the page shows.
+ *   - **Plan usage percentages, but the 5-hour window's.** Claude Code computes them from the
+ *     headers of its own answers and hands them to the status line on stdin
+ *     (`src/cli/statusline.ts`). The status line writes down the 5-hour window alone
+ *     (`src/cli/usage-window.ts`, `planWindow` here); the 7-day ones are written nowhere.
+ *     The router records the limits it saw (which model, which window, when it resets).
  *   - **Prices and image support.** They are in OmniRoute's own catalog, which the gateway
  *     never reads: `/v1/models` carries an id and a context length, and that is all.
  */
@@ -26,16 +27,25 @@ import {
   browserSetup,
   realBrowserSetupDeps,
 } from "../browser/setup";
-import { VERSION } from "../build-info";
+import { bunTooOld, MIN_BUN, VERSION } from "../build-info";
+import type { Check } from "../cli/check";
+import { type LiveRecord, parseClaudeVersion, readLiveRecord } from "../cli/live-check";
+import { readUsageWindow } from "../cli/usage-window";
 import { listModels } from "../gateway/backends";
+import { judgeDefaultWords } from "../gateway/commands";
 import {
+  breakerOn,
   DEFAULT_PORT,
   fallbackOn,
   type GatewayConfig,
   judgeTargetTested,
+  keptChain,
   loadConfigFile,
   messageOf,
+  type SlotMode,
+  slotMode,
 } from "../gateway/config";
+import { portHolderCheck, type SocketState } from "../gateway/doctor";
 import { routerHealth } from "../gateway/health";
 import {
   currentFallbacks,
@@ -46,16 +56,25 @@ import {
   parseLimitState,
 } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
-import { UNIT_NAME } from "../gateway/service";
+import { routerServiceKind, SOCKET_NAME, UNIT_NAME } from "../gateway/service";
+import { TASK_NAME } from "../gateway/service-windows";
 import { settingsReport, shownBackendUrl } from "../gateway/settings";
-import { FAMILY_SLOTS, JUDGE_SLOT, MODEL_SLOTS, parseTarget } from "../gateway/targets";
+import {
+  FAMILY_SLOTS,
+  isClaudeModelId,
+  JUDGE_SLOT,
+  MODEL_SLOTS,
+  parseTarget,
+} from "../gateway/targets";
 import { companionChecks, companionState, companions } from "../machine/companions";
 import { detectSystem, detectWarpApp, warpCheck } from "../machine/warp";
+import { type McpServerState, mcpServerStatus } from "../mcp/status";
 import { type OmnirouteContext, omnirouteFacts } from "../omniroute/commands";
 import type { GlobalInstall } from "../omniroute/install";
 import { type CcSmartDevKitConfig, CcSmartDevKitRetiredFieldError } from "../project/config";
 import { locateCheckout, resolveProject } from "../project/resolve";
 import { redactUrlsIn } from "../setup/marketplace-access";
+import { commandContext } from "../update/apply";
 // Pure, and about the resolved values alone: no seam of its own (`workflow-adapter.ts`).
 import { type Clash, clashesOf } from "../workflow/clashes";
 import type { PortalContext } from "./context";
@@ -143,14 +162,56 @@ export async function shellFacts(
 
 // ── The router's health page ────────────────────────────────────────────────────
 
+/**
+ * One routed request, as the router's health answer lists it (`recent`): metadata only, never
+ * a prompt, an answer or a header. The live stream's `recent` event carries the same shape.
+ */
+export interface RecentEntry {
+  /** When it came in: milliseconds since the epoch. */
+  at: number;
+  /** How long until its answer started: milliseconds. */
+  ms: number;
+  /** A next target of the slot answered, or tried to: the first one did not. */
+  nextTarget: boolean;
+  /** The slot that answered it; null for a request no slot took. */
+  slot: null | string;
+  status: number;
+  /** Who answered, as the router's log names it. */
+  target: string;
+}
+
+/** One target of a slot whose breaker is open: its last status, and when its rest ends. */
+export interface OpenBreakerTarget {
+  status: null | number;
+  target: string;
+  /** Milliseconds since the epoch. */
+  until: number;
+}
+
+/** A slot whose breaker is open now (the router's `breakers`): every target limited or down. */
+export interface OpenBreaker {
+  /** Requests held since it opened. */
+  held: number;
+  /** Requests held right now. */
+  heldNow: number;
+  /** Milliseconds since the epoch. */
+  since: number;
+  targets: OpenBreakerTarget[];
+}
+
 /** The router's own answer, as the pages read it. */
 export interface RouterFacts {
-  /** Seconds it has been up. */
+  /** The slots whose breaker is open now, by slot key; empty while the router is down. */
+  breakers: Record<string, OpenBreaker>;
+  /** Target → seconds it still rests. */
   cooling: [string, number][];
   fallbacks: number;
   port: number;
+  /** The last routed requests, oldest first (at most the router's `RECENT_MAX`). */
+  recent: RecentEntry[];
   requests: number;
   up: boolean;
+  /** Seconds it has been up. */
   uptimeSec: number;
   /** Why it is down, when it is. */
   why: null | string;
@@ -167,13 +228,55 @@ function entriesOf(value: unknown): [string, number][] {
     .sort(([a], [b]) => (a < b ? -1 : 1));
 }
 
+/** One `recent` entry of the router's answer, or null when it is not one this version reads. */
+export function recentEntryOf(value: unknown): null | RecentEntry {
+  if (!isJsonObject(value)) return null;
+  const { at, ms, nextTarget, slot, status, target } = value;
+  if (typeof at !== "number" || typeof ms !== "number" || typeof status !== "number") return null;
+  if (typeof target !== "string" || (slot !== null && typeof slot !== "string")) return null;
+  return { at, ms, nextTarget: nextTarget === true, slot, status, target };
+}
+
+/** The router's open breakers, defensively read: a malformed entry is left out. */
+function breakersOf(value: unknown): Record<string, OpenBreaker> {
+  if (!isJsonObject(value)) return {};
+  const out: Record<string, OpenBreaker> = {};
+  for (const [slot, raw] of Object.entries(value)) {
+    if (!isJsonObject(raw)) continue;
+    const { held, heldNow, since, targets } = raw;
+    if (typeof held !== "number" || typeof heldNow !== "number" || typeof since !== "number") {
+      continue;
+    }
+    out[slot] = {
+      held,
+      heldNow,
+      since,
+      targets: (Array.isArray(targets) ? targets : []).flatMap((one): OpenBreakerTarget[] => {
+        if (!isJsonObject(one) || typeof one.target !== "string" || typeof one.until !== "number") {
+          return [];
+        }
+        return [
+          {
+            status: typeof one.status === "number" ? one.status : null,
+            target: one.target,
+            until: one.until,
+          },
+        ];
+      }),
+    };
+  }
+  return out;
+}
+
 export async function routerFacts(ctx: PortalContext, port: number): Promise<RouterFacts> {
   const health = await routerHealth(port, ctx.probe.fetch);
   if ("error" in health) {
     return {
+      breakers: {},
       cooling: [],
       fallbacks: 0,
       port,
+      recent: [],
       requests: 0,
       up: false,
       uptimeSec: 0,
@@ -183,9 +286,14 @@ export async function routerFacts(ctx: PortalContext, port: number): Promise<Rou
   const body = isJsonObject(health.body) ? health.body : {};
   const number = (key: string): number => (typeof body[key] === "number" ? body[key] : 0);
   return {
+    breakers: breakersOf(body.breakers),
     cooling: entriesOf(body.cooling),
     fallbacks: number("fallbacks"),
     port: typeof body.port === "number" ? body.port : port,
+    recent: (Array.isArray(body.recent) ? body.recent : []).flatMap((entry) => {
+      const read = recentEntryOf(entry);
+      return read === null ? [] : [read];
+    }),
     requests: number("requests"),
     up: true,
     uptimeSec: number("uptimeSec"),
@@ -305,15 +413,41 @@ export interface SlotTarget {
 }
 
 export interface SlotRow {
+  /** Its breaker switch (`breakerOn`): always false for the judge, which never holds. */
+  breaker: boolean;
   /** Its fallback switch (`fallbackOn`): may the next target answer? */
   fallback: boolean;
   /** The words the page shows instead of the slot key's prefix. */
   info: string;
+  /** The chain saved while the slot answers as Claude (`kept`); null when there is none. */
+  kept: null | { fallback: boolean; targets: SlotTarget[] };
   key: string;
+  /** What the slot is for, `off` while it answers as Claude (the server-rendered pages' word). */
   kind: string;
+  /** `custom`: its chain answers; `claude`: Claude answers, any chain stays saved (`slotMode`). */
+  mode: SlotMode;
   name: string;
   note: string;
+  /** What the slot is for, whatever its mode: `affordable`, `model`, `judge`, `other`. */
+  role: string;
+  /**
+   * The chain as this page read it (`slotStamp`): a save sends it back, and the server refuses
+   * a save made over a chain that changed since (another tab, the command line).
+   */
+  stamp: string;
+  /** The chain in use; empty while the slot answers as Claude. */
   targets: SlotTarget[];
+}
+
+/**
+ * The slot's chain as one short value: the chain in use and the one saved, nothing else. Two
+ * reads that give the same stamp saw the same chain, so a save made from an older page is
+ * refused before it overwrites a newer chain.
+ */
+export function slotStamp(config: Pick<GatewayConfig, "kept" | "slots">, key: string): string {
+  const inUse = Object.hasOwn(config.slots, key) ? (config.slots[key] ?? null) : null;
+  const saved = keptChain(config, key)?.targets ?? null;
+  return createHash("sha256").update(JSON.stringify({ inUse, saved })).digest("hex").slice(0, 16);
 }
 
 /** The words each slot kind gets, the same ones the Slots page shows. */
@@ -355,7 +489,7 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     ...["scout", "worker", JUDGE_SLOT, ...Object.keys(MODEL_SLOTS)].map(
       (name) => `cc-smart-dev-kit-${slotName(name)}`,
     ),
-    ...Object.keys(config.slots).filter(
+    ...[...new Set([...Object.keys(config.slots), ...Object.keys(config.kept ?? {})])].filter(
       (key) => !SLOT_ORDER.some((name) => key === `cc-smart-dev-kit-${slotName(name)}`),
     ),
   ];
@@ -365,42 +499,63 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
     const meta = SLOT_META[name] ?? { info: "A slot of this machine's own.", kind: "other" };
     const targets = config.slots[key];
     const on = targets !== undefined;
+    const targetRow = (target: string): SlotTarget => {
+      const parsed = parseTarget(target);
+      const known = "target" in parsed ? parsed.target : null;
+      return {
+        from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
+        restingFor: resting.get(target) ?? null,
+        target,
+        tested: key === JUDGE_SLOT && judgeTargetTested(config, target),
+      };
+    };
+    const kept = keptChain(config, key);
     rows.push({
+      breaker: breakerOn(config, key),
       fallback: fallbackOn(config, key),
       info: meta.info,
+      kept:
+        kept === null
+          ? null
+          : {
+              // The switch saved with the chain, else the slot's own default.
+              fallback: kept.fallback ?? fallbackOn({}, key),
+              targets: kept.targets.map(targetRow),
+            },
       key,
       kind: on ? meta.kind : "off",
+      mode: slotMode(config, key),
       name,
-      note: slotNote(config, key, on),
-      targets: (targets ?? []).map((target) => {
-        const parsed = parseTarget(target);
-        const known = "target" in parsed ? parsed.target : null;
-        return {
-          from: known === null ? "?" : known.kind === "anthropic" ? "Claude login" : known.backend,
-          restingFor: resting.get(target) ?? null,
-          target,
-          tested: key === JUDGE_SLOT && judgeTargetTested(config, target),
-        };
-      }),
+      note: slotNote(config, key),
+      role: meta.kind,
+      stamp: slotStamp(config, key),
+      targets: (targets ?? []).map(targetRow),
     });
   }
   return rows;
 }
 
 /** The CLI's own note for a slot, in the same words (`printSlots`). */
-function slotNote(config: GatewayConfig, key: string, on: boolean): string {
-  if (!on) {
-    if (key === JUDGE_SLOT) return "off: Claude judges auto mode's safety checks";
+function slotNote(config: GatewayConfig, key: string): string {
+  // A chain saved while the slot answers as Claude: never in use, and never forgotten.
+  const saved = keptChain(config, key);
+  const savedWords =
+    saved === null
+      ? ""
+      : `; saved, not in use: ${saved.targets.join(" → ")} (fallback ${
+          (saved.fallback ?? fallbackOn({}, key)) ? "on" : "off"
+        })`;
+  const targets = config.slots[key];
+  if (targets === undefined) {
+    if (key === JUDGE_SLOT) return `${judgeDefaultWords(config)}${savedWords}`;
     const family = Object.hasOwn(FAMILY_SLOTS, key) ? FAMILY_SLOTS[key] : undefined;
     return family === undefined
-      ? "off"
-      : `off: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
+      ? `Claude: no chain in use${savedWords}`
+      : `Claude: ${family} goes to Anthropic as Claude Code sent it, on your own login${savedWords}`;
   }
   const fallback = fallbackOn(config, key) ? "fallback on" : "fallback off";
   if (key === JUDGE_SLOT) {
-    const untested = (config.slots[key] ?? []).filter(
-      (target) => !judgeTargetTested(config, target),
-    );
+    const untested = targets.filter((target) => !judgeTargetTested(config, target));
     return untested.length > 0
       ? `${fallback}; NOT TESTED, so ignored: ${untested.join(", ")}`
       : `${fallback}; judges every safety check in Claude's place`;
@@ -425,8 +580,13 @@ export function contextText(length: null | number): string {
   return length >= 1000 ? `${Math.round(length / 1000)}K` : String(length);
 }
 
-/** Every `claude-…` name the config mentions: a 0.4.x `modelSlots` key, and every target. */
-export function claudeModels(config: GatewayConfig): string[] {
+/**
+ * Every `claude-…` name the config mentions (a 0.4.x `modelSlots` key, and every target),
+ * then each id the router saw Claude Code send (`seen`, from its state file). The person picks
+ * a target from this list, so an id their own login really answers is there before any chain
+ * names it (D3, the portal's "Claude login" group).
+ */
+export function claudeModels(config: GatewayConfig, seen: readonly string[] = []): string[] {
   const found = new Set<string>(Object.keys(config.modelSlots ?? {}));
   for (const targets of Object.values(config.slots)) {
     for (const target of targets) {
@@ -434,7 +594,29 @@ export function claudeModels(config: GatewayConfig): string[] {
       if ("target" in parsed && parsed.target.kind === "anthropic") found.add(parsed.target.model);
     }
   }
+  for (const id of seen) found.add(id);
   return [...found].sort();
+}
+
+/**
+ * The Claude model ids the router recorded seeing (`seenClaude` in its state file): what
+ * Claude Code itself asked for through it. Only a name shaped like a Claude id is returned,
+ * the same rule the router writes by (`isClaudeModelId`): a hand-edited file cannot put an
+ * arbitrary word in the list a person picks a target from. Empty when there is no state file
+ * or it cannot be read — a machine whose router never ran has none, and a page says nothing
+ * rather than inventing an id.
+ */
+export function seenClaudeModels(ctx: PortalContext): string[] {
+  let text: string;
+  try {
+    text = readFileSync(ctx.paths.gatewayStateFile, "utf8");
+  } catch {
+    return [];
+  }
+  const state = parseLimitState(text);
+  return Object.keys(state?.seenClaude ?? {})
+    .filter((id) => isClaudeModelId(id))
+    .sort();
 }
 
 export interface BackendRow {
@@ -1064,5 +1246,128 @@ export async function omnirouteRow(
           ? "behind"
           : "ok",
     unit: facts.unit?.name ?? null,
+  };
+}
+
+// ── B6d: the versions, the MCP servers, the router's port holder, the 5-hour window ─────
+
+/** How long `claude --version` may take before the Machine page says it could not tell. */
+export const CLAUDE_VERSION_TIMEOUT_MS = 10_000;
+
+/** Claude Code on this machine: the version it says, and the last live proof (`doctor --live`). */
+export interface ClaudeCodeFacts {
+  /** Null when it could not be read; `why` says why. */
+  version: null | string;
+  why: null | string;
+  /** The last `doctor --live` that passed: the Claude Code and kit versions it proved. */
+  liveCheck: LiveRecord | null;
+}
+
+/**
+ * `claude --version`, spawned asynchronously (the server stays live while it runs), in the
+ * home folder and with none of the repository variables from outside (`commandContext`), and
+ * the last live proof from its record. Never a version made up: a missing or silent `claude`
+ * is a reason.
+ */
+export async function claudeCodeFacts(ctx: PortalContext): Promise<ClaudeCodeFacts> {
+  const liveCheck = readLiveRecord(ctx.paths.stateDir);
+  const claude = ctx.which("claude");
+  if (claude === null) return { liveCheck, version: null, why: "claude is not on PATH" };
+  try {
+    const child = Bun.spawn([claude, "--version"], {
+      ...commandContext(ctx.env, ctx.paths.home),
+      // Only the version line is read: a warning on stderr is not kept in a pipe nobody drains.
+      stderr: "ignore",
+      stdin: "ignore",
+      stdout: "pipe",
+      timeout: CLAUDE_VERSION_TIMEOUT_MS,
+    });
+    const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const version = exitCode === 0 ? parseClaudeVersion(output) : null;
+    return version === null
+      ? { liveCheck, version: null, why: `claude --version named no version (exit ${exitCode})` }
+      : { liveCheck, version, why: null };
+  } catch (error) {
+    return { liveCheck, version: null, why: `claude --version did not run: ${messageOf(error)}` };
+  }
+}
+
+/** The Bun the portal runs on, against the kit's minimum (`MIN_BUN`). */
+export interface BunFacts {
+  minimum: string;
+  /** True: at least the minimum. */
+  ok: boolean;
+  version: string;
+}
+
+export function bunFacts(ctx: PortalContext): BunFacts {
+  return {
+    minimum: MIN_BUN,
+    // The kit's own rule, pre-releases included (`bunTooOld`); the path only shapes its words.
+    ok: bunTooOld(ctx.bunVersion, "") === null,
+    version: ctx.bunVersion,
+  };
+}
+
+/** One of the kit's MCP servers, as `mcp status` reads it (`src/mcp/status.ts`). */
+export interface McpServerRow {
+  name: string;
+  /** For a server something else registered: what runs instead (never its env or headers). */
+  runsWhat: null | string;
+  state: McpServerState;
+}
+
+/** Every MCP server setup registers, read from Claude Code's config and the kit's records. */
+export function mcpRows(ctx: PortalContext): McpServerRow[] {
+  return mcpServerStatus(ctx.paths).map((server) => ({
+    name: server.name,
+    runsWhat: server.runsWhat,
+    state: server.state,
+  }));
+}
+
+/**
+ * What holds the router's port across restarts — systemd's socket unit, or the Windows task —
+ * in `doctor`'s own words (`portHolderCheck`).
+ */
+export interface PortHolder {
+  check: Check;
+  kind: "scheduled-task" | "systemd";
+  /** The unit or the task it names. */
+  name: string;
+  /** `open`: it holds the port now; `start-limit`: systemd closed it after failed starts. */
+  state: SocketState;
+}
+
+/** The port holder for the config's port; null where this machine runs no service for it. */
+export function portHolder(ctx: PortalContext, port: number): null | PortHolder {
+  const kind = routerServiceKind(ctx.machine.platform, ctx.which);
+  if (kind === "none") return null;
+  const { check, state } = portHolderCheck(
+    { paths: ctx.paths, runner: ctx.runner, service: kind },
+    port,
+  );
+  return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };
+}
+
+/** One window of the plan's usage, as the status line last recorded it. */
+export interface PlanWindow {
+  /** The share used, 0 to 100. */
+  percent: number;
+  /** When it resets (ISO 8601); null when Claude Code named no time. */
+  resetsAt: null | string;
+}
+
+/**
+ * The plan's 5-hour window, from the one file the status line records it in
+ * (`src/cli/usage-window.ts`); null with no reading, or one from a window that is over. The
+ * 7-day window is recorded nowhere, so no page has a number for it.
+ */
+export function planWindow(ctx: PortalContext): null | PlanWindow {
+  const window = readUsageWindow(ctx.paths, ctx.now());
+  if (window === null) return null;
+  return {
+    percent: window.percent,
+    resetsAt: window.resetsAt === null ? null : new Date(window.resetsAt * 1000).toISOString(),
   };
 }

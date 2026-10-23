@@ -21,6 +21,7 @@ import {
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
+import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import {
   commitConfig,
   hookEnv,
@@ -32,7 +33,13 @@ import {
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { GUARD_BUDGET_ENV } from "./budget";
-import { CREW_PR_REFUSAL } from "./merge-guard";
+import {
+  CREW_MERGE_REFUSAL,
+  CREW_PR_REFUSAL,
+  mergeGuard,
+  OPENING_DEFAULT_UNREAD,
+  opensElsewhere,
+} from "./merge-guard";
 import { mergeGuardHook } from "./specs";
 
 /** The commit the fake gh reports as the pull request's head. */
@@ -408,7 +415,7 @@ describe("D31: the allow, and only the exact merge", () => {
     ).toEqual({});
   });
 
-  test("a crew session never gets allow: the same passing merge is silent", async () => {
+  test("a crew session never gets allow: the same passing merge is refused (D24, CC8)", async () => {
     const { env, repo } = ready();
     recordReviewHere(env, repo, HEAD);
     expect(
@@ -416,7 +423,15 @@ describe("D31: the allow, and only the exact merge", () => {
         ...env,
         [CREW_ENV]: "B2-api-aaaaaa",
       }),
-    ).toEqual({});
+    ).toEqual({
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: CREW_MERGE_REFUSAL,
+        },
+      }),
+    });
   });
 
   test("an armed merge (--auto) stays silent: it lands later, and a new commit would be unread", async () => {
@@ -1791,13 +1806,13 @@ describe("D16: openPr is enforced", () => {
   test("D16: draft is silent for a pull request that opens as a draft, in every spelling", async () => {
     const { env, repo } = ready(opening("draft"));
     for (const command of [
-      "gh pr create --draft --title x",
-      "gh pr create -d --fill",
-      "gh pr create -fd",
-      "gh pr create --draft=true",
-      "gh pr new --draft",
-      "gh pr create --title x --draft --body y",
-      "bash -c 'gh pr create --draft'",
+      "gh pr create --base dev --draft --title x",
+      "gh pr create --base dev -d --fill",
+      "gh pr create --base dev -fd",
+      "gh pr create --base dev --draft=true",
+      "gh pr new --base dev --draft",
+      "gh pr create --base dev --title x --draft --body y",
+      "bash -c 'gh pr create --base dev --draft'",
     ]) {
       expect([command, await decide(env, repo, command)]).toEqual([command, null]);
     }
@@ -1826,7 +1841,11 @@ describe("D16: openPr is enforced", () => {
 
   test("D16: ready is silent, and gh pr ready --undo (back to a draft) opens nothing", async () => {
     const { env, gh, repo } = ready(opening("ready"));
-    for (const command of ["gh pr create --fill", "gh pr ready 5", "gh pr new"]) {
+    for (const command of [
+      "gh pr create --base dev --fill",
+      "gh pr ready 5",
+      "gh pr new --base dev",
+    ]) {
       expect([command, await decide(env, repo, command)]).toEqual([command, null]);
     }
     const off = ready(CONFIG);
@@ -1871,12 +1890,12 @@ describe("D16: openPr is enforced", () => {
   test("D16: -R, an alias, a runner and an unknown flag are read like a merge's", async () => {
     const { env, repo } = ready(
       opening("ready"),
-      { "alias list": "np: pr create --fill\n" },
+      { "alias list": "np: pr create --base dev --fill\n" },
       false,
       true,
     );
     // The project's own repository named with -R: the policy covers it.
-    expect(await decide(env, repo, "gh pr create -R example-org/app --fill")).toBeNull();
+    expect(await decide(env, repo, "gh pr create -R example-org/app --base dev --fill")).toBeNull();
     // Another repository: asks, whatever openPr says.
     const foreign = await decide(env, repo, "gh pr create -R other-org/tool --fill");
     expect(foreign?.reason).toContain("the command names the repository other-org/tool");
@@ -1912,7 +1931,7 @@ describe("D16: openPr is enforced", () => {
     );
     // The person's own file is the other source of the value.
     writePersonalWorkflow(env, { openPr: "ready" });
-    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+    expect(await decide(env, repo, "gh pr create --base dev --fill")).toBeNull();
   });
 
   test("D16: a project with no integration base reads the default and the person's own file", async () => {
@@ -1921,7 +1940,7 @@ describe("D16: openPr is enforced", () => {
       "committed to the integration base (worktrees.base) and pushed",
     );
     writePersonalWorkflow(env, { openPr: "draft" });
-    expect(await decide(env, repo, "gh pr create --draft")).toBeNull();
+    expect(await decide(env, repo, "gh pr create --base dev --draft")).toBeNull();
   });
 
   test("D16: the base's committed file lists merge-guard in ownHooks: the project's copy answers", async () => {
@@ -1933,12 +1952,12 @@ describe("D16: openPr is enforced", () => {
     // `autoMerge` is off here and `openPr` is ready: opening a pull request has nothing to do
     // with merging, so the question is never about a merge.
     const { env, repo } = ready({ ...CONFIG, workflow: { openPr: "ready" } });
-    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+    expect(await decide(env, repo, "gh pr create --base dev --fill")).toBeNull();
     expect((await decide(env, repo, "gh pr merge 7"))?.reason).toContain("autoMerge is off");
     // Both on one line: the merge is asked about first.
-    expect((await decide(env, repo, "gh pr create --fill && gh pr merge 7"))?.reason).toContain(
-      "autoMerge is off",
-    );
+    expect(
+      (await decide(env, repo, "gh pr create --base dev --fill && gh pr merge 7"))?.reason,
+    ).toContain("autoMerge is off");
   });
 });
 
@@ -1962,8 +1981,8 @@ describe("D24: a crew session opens no pull request", () => {
       expect([command, answer]).toEqual([command, { decision: "deny", reason: CREW_PR_REFUSAL }]);
     }
     expect(ghCalls(gh)).toEqual([]);
-    // The lead (no crew variable) is let through by openPr, as before.
-    expect(await decide(env, repo, "gh pr create --draft --fill")).toBeNull();
+    // The lead (no crew variable) is let through by openPr, as before (on its own base).
+    expect(await decide(env, repo, "gh pr create --base dev --draft --fill")).toBeNull();
   });
 
   test("D24: an alias that expands to gh pr create is denied too", async () => {
@@ -1974,12 +1993,330 @@ describe("D24: a crew session opens no pull request", () => {
     });
   });
 
-  test("D24: a merge or a pull request view is none of the opening rule", async () => {
+  test("D24: a merge or a pull request view is none of the opening rule, and a merge is refused", async () => {
     const { env, repo } = ready(opening("ready"));
     const crew = { ...env, ...CREW };
     expect(await decide(crew, repo, "gh pr view 5")).toBeNull();
     expect(await decide(crew, repo, "gh pr checks 5")).toBeNull();
-    // A merge keeps its own policy (here autoMerge is off: asks, not denies).
-    expect((await decide(crew, repo, "gh pr merge 7"))?.decision).toBe("ask");
+    // A merge is refused whole (CC8): a crew session never merges, and nobody is there to ask.
+    expect(await decide(crew, repo, "gh pr merge 7")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    // The person's session keeps the policy's own question (here autoMerge is off: asks).
+    expect((await decide(env, repo, "gh pr merge 7"))?.decision).toBe("ask");
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CC8: a crew session is never asked before a merge. Every question the guard puts to a
+// person — a policy off, --admin, another repository, a check not green, no covering
+// review, a policy or a form it cannot read, its own budget — is the same refusal (D24):
+// it commits on its branch, and the lead merges. The person's own session keeps each ask.
+// ---------------------------------------------------------------------------------------
+
+describe("CC8: a crew session is never asked before a merge", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  /** The crew session's answer, the person's own answer, and the refusal is the step. */
+  async function refusedForCrew(
+    prepared: { env: Record<string, string>; repo: string },
+    command: string,
+    personSays: string,
+  ): Promise<void> {
+    expect(await decide({ ...prepared.env, ...CREW }, prepared.repo, command)).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    // The person's own session keeps the question, and its words.
+    const person = await decide(prepared.env, prepared.repo, command);
+    expect(person?.decision).toBe("ask");
+    expect(person?.reason).toContain(personSays);
+  }
+
+  test("the policy is off (project): refused, where the person is asked", async () => {
+    await refusedForCrew(
+      ready({ ...CONFIG, workflow: { autoMerge: false } }),
+      "gh pr merge 7",
+      "autoMerge is off",
+    );
+  });
+
+  test("the policy is off (the default): refused too", async () => {
+    await refusedForCrew(
+      ready({ requires: ">=0.4", worktrees: { base: "dev" } }),
+      "gh pr merge 7",
+      "autoMerge is off",
+    );
+  });
+
+  test("an --admin merge: refused, where the person decides each one", async () => {
+    await refusedForCrew(ready(), "gh pr merge 7 --admin", "administrator rights");
+  });
+
+  test("another repository: refused, where the person is asked", async () => {
+    await refusedForCrew(
+      ready(CONFIG, undefined, false, true),
+      "gh pr merge 7 --repo example-org/elsewhere",
+      "only this project's own repository",
+    );
+  });
+
+  test("a required check that is not green: refused, where the person is asked", async () => {
+    await refusedForCrew(
+      ready(CONFIG, { checks: JSON.stringify([{ bucket: "fail", name: "build" }]) }),
+      "gh pr merge 7",
+      "check",
+    );
+  });
+
+  test("no review covering the head: refused, where the person is asked", async () => {
+    await refusedForCrew(ready(), "gh pr merge 7", "no review is recorded");
+  });
+
+  test("a policy it cannot read: refused, where the person is asked", async () => {
+    // The project's policy is in its file, but never committed to `origin/dev`: the guard
+    // cannot read what it would judge with.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const gh = fakeGh(answers());
+    await refusedForCrew({ env: envWithGh(gh), repo }, "gh pr merge 7", "cannot be read");
+  });
+
+  test("a form it cannot judge (an unknown flag): refused, where the person is asked", async () => {
+    await refusedForCrew(ready(), "gh pr merge 7 -Z", "flag this guard does not know");
+  });
+
+  test("its own budget ask: refused, where the person is asked", async () => {
+    // No time for the first read (the policy committed on the base): the person's session is
+    // asked in time. A crew session never reaches the budget: the crew part refuses first.
+    const prepared = ready();
+    recordReviewHere(prepared.env, prepared.repo, HEAD);
+    const crew = { ...prepared.env, ...CREW, [GUARD_BUDGET_ENV]: "1000" };
+    expect(await decide(crew, prepared.repo, "gh pr merge 7")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    const person = await decide(
+      { ...prepared.env, [GUARD_BUDGET_ENV]: "1000" },
+      prepared.repo,
+      "gh pr merge 7",
+    );
+    expect(person?.decision).toBe("ask");
+    expect(person?.reason).toContain("in time");
+  });
+
+  test("a passing merge the policy allows: refused, never allowed (D24)", async () => {
+    const prepared = ready();
+    recordReviewHere(prepared.env, prepared.repo, HEAD);
+    expect(await decide({ ...prepared.env, ...CREW }, prepared.repo, "gh pr merge 7")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    // The person's own session still gets the allow (D31).
+    expect(
+      JSON.parse(
+        (await runHook(mergeGuardHook, input(prepared.repo, "gh pr merge 7"), prepared.env))
+          .stdout ?? "{}",
+      ).hookSpecificOutput.permissionDecision,
+    ).toBe("allow");
+  });
+
+  test("--disable-auto lands nothing: it stays silent for a crew session too", async () => {
+    // It takes an armed merge back rather than merging: no step is needed.
+    const prepared = ready();
+    expect(
+      await decide({ ...prepared.env, ...CREW }, prepared.repo, "gh pr merge 7 --disable-auto"),
+    ).toBeNull();
+  });
+
+  test("an alias that expands to gh pr merge is refused too", async () => {
+    const prepared = ready({ requires: ">=0.4", worktrees: { base: "dev" } });
+    const env = envWithGh(fakeGh(answers({ "alias list": "mg: pr merge 7\n" })));
+    expect(await decide({ ...env, ...CREW }, prepared.repo, "gh mg")).toEqual({
+      decision: "deny",
+      reason: CREW_MERGE_REFUSAL,
+    });
+    expect((await decide(env, prepared.repo, "gh mg"))?.decision).toBe("ask");
+  });
+
+  test("a broken or too new file: a person is asked, a crew session gets silence, never a question", async () => {
+    // The belt behind the crew part: the crew part has already refused every merge it can
+    // read, so a line left over (one that lands nothing) must not fall into the fail-closed
+    // ask — nobody is at the machine to answer it.
+    const { env, repo } = ready();
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const context = { env, nowMs: 0, paths: cliPaths(env) };
+    const call = input(repo, "gh pr merge 7");
+    const reason = "the project's file needs a newer plugin";
+    const asked = await mergeGuardHook.onConfigProblem?.(
+      reason,
+      call,
+      "PreToolUse",
+      checkout,
+      context,
+    );
+    expect(JSON.parse(asked?.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    expect(
+      await mergeGuardHook.onConfigProblem?.(reason, call, "PreToolUse", checkout, {
+        ...context,
+        env: { ...env, ...CREW },
+      }),
+    ).toEqual({});
+  });
+
+  test("the run's own crew belt: a question it would put is a denial too", async () => {
+    // The frame runs the crew part first, so this path is unreachable through the hook; it is
+    // the belt for a spelling the crew part missed, and it must not ask a person either. Call
+    // the run directly, the way the frame would after the crew part stayed silent.
+    const { env, repo } = ready();
+    const checkout = locateCheckout(repo);
+    if (checkout === null) throw new Error("this test needs a checkout");
+    const answer = await mergeGuard({
+      input: input(repo, "gh pr merge 7 --admin"),
+      event: "PreToolUse",
+      cwd: repo,
+      project: loadProjectConfig(checkout),
+      env: { ...env, ...CREW },
+      paths: cliPaths(env),
+      nowMs: 0,
+    });
+    expect(JSON.parse(answer.stdout ?? "{}").hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: CREW_MERGE_REFUSAL,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// WA1: a pull request opened outside the base its head branch belongs to asks, naming both
+// branches. It never denies: the person may mean it.
+// ---------------------------------------------------------------------------------------
+
+describe("WA1: an opening outside the base asks", () => {
+  /** The question an opening outside the base gives. */
+  const outside = (into: string, head: string, expected: string) =>
+    ask(
+      `cc-smart-dev-kit asks before this opens a pull request: ${opensElsewhere(into, head, expected)}. Approve it yourself if you meant it.`,
+    );
+
+  test("an explicit --base outside the project's base asks, naming both branches and the head", async () => {
+    const { env, gh, repo } = ready(opening("ready"));
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr create --base release --fill"), env),
+    ).toEqual({ stdout: outside("release", "main", "dev") });
+    // An explicit base is compared as it is: no default branch is read.
+    expect(ghCalls(gh)).toEqual([]);
+  });
+
+  test("an explicit --base on the project's base passes, in both spellings", async () => {
+    const { env, repo } = ready(opening("ready"));
+    expect(await decide(env, repo, "gh pr create --base dev --fill")).toBeNull();
+    expect(await decide(env, repo, "gh pr create -B dev --fill")).toBeNull();
+  });
+
+  test("no --base: the default branch on the base passes, outside it asks", async () => {
+    const onBase = ready({
+      requires: ">=0.4",
+      worktrees: { base: "main" },
+      workflow: { openPr: "ready" },
+    });
+    expect(await decide(onBase.env, onBase.repo, "gh pr create --fill")).toBeNull();
+    expect(ghCalls(onBase.gh)).toEqual(["repo view --json defaultBranchRef"]);
+
+    const other = ready(opening("ready"));
+    expect(
+      await runHook(mergeGuardHook, input(other.repo, "gh pr create --fill"), other.env),
+    ).toEqual({ stdout: outside("main", "main", "dev") });
+  });
+
+  test("a worktrees.bases prefix names the base: the longest prefix wins", async () => {
+    const { env, repo } = ready({
+      ...CONFIG,
+      worktrees: { base: "dev", bases: { "release/": "main", "release/hot/": "dev" } },
+      workflow: { openPr: "ready" },
+    });
+    // `release/1.2` matches `release/` → main.
+    expect(
+      await decide(env, repo, "gh pr create --head release/1.2 --base main --fill"),
+    ).toBeNull();
+    // `release/hot/1` matches both: the longer `release/hot/` wins → dev.
+    expect(
+      await decide(env, repo, "gh pr create --head release/hot/1 --base dev --fill"),
+    ).toBeNull();
+    // The other way round asks, naming the base the prefix maps to.
+    expect(
+      await runHook(
+        mergeGuardHook,
+        input(repo, "gh pr create --head release/1.2 --base dev --fill"),
+        env,
+      ),
+    ).toEqual({ stdout: outside("dev", "release/1.2", "main") });
+    // A fork's `owner:branch` names the same branch.
+    expect(
+      await decide(env, repo, "gh pr create --head example-org:release/1.2 --base main --fill"),
+    ).toBeNull();
+  });
+
+  test("with no --head, the branch this folder is on is the head", async () => {
+    const { env, repo } = ready({
+      ...CONFIG,
+      worktrees: { base: "dev", bases: { "release/": "main" } },
+      workflow: { openPr: "ready" },
+    });
+    git(repo, "checkout", "-q", "-b", "release/1.2");
+    // No --head: the branch here is `release/1.2`, whose base is main.
+    expect(await decide(env, repo, "gh pr create --base main --fill")).toBeNull();
+    expect(
+      await runHook(mergeGuardHook, input(repo, "gh pr create --base dev --fill"), env),
+    ).toEqual({ stdout: outside("dev", "release/1.2", "main") });
+  });
+
+  test("an alias that expands to a create outside the base asks", async () => {
+    const { env, repo } = ready(opening("ready"), {
+      "alias list": "np: pr create --base release --fill\n",
+    });
+    expect(await runHook(mergeGuardHook, input(repo, "gh np"), env)).toEqual({
+      stdout: outside("release", "main", "dev"),
+    });
+  });
+
+  test("git's origin/HEAD answers when gh cannot read the default branch", async () => {
+    const { env, repo } = ready(opening("ready"), { repo: "" });
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev");
+    expect(await decide(env, repo, "gh pr create --fill")).toBeNull();
+  });
+
+  test("readable neither way: asks instead of guessing", async () => {
+    const { env, repo } = ready(opening("ready"), { repo: "" });
+    expect(await runHook(mergeGuardHook, input(repo, "gh pr create --fill"), env)).toEqual({
+      stdout: ask(
+        `cc-smart-dev-kit asks before this opens a pull request: ${OPENING_DEFAULT_UNREAD}. Approve it yourself if you meant it.`,
+      ),
+    });
+  });
+
+  test("a crew session's refusal stays first: an opening outside the base is still denied", async () => {
+    const { env, repo } = ready(opening("ready"));
+    expect(
+      await decide(
+        { ...env, [CREW_ENV]: "B2-api-aaaaaa" },
+        repo,
+        "gh pr create --base release --fill",
+      ),
+    ).toEqual({ decision: "deny", reason: CREW_PR_REFUSAL });
+  });
+
+  test("a gh api opening names its base in its own fields: this check does not read it", async () => {
+    const { env, repo } = ready(opening("ready"), {}, false, true);
+    expect(
+      await decide(
+        env,
+        repo,
+        "gh api repos/example-org/app/pulls -f title=x -f head=a -f base=release",
+      ),
+    ).toBeNull();
   });
 });

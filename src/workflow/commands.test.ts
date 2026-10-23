@@ -79,10 +79,14 @@ describe("workflow show", () => {
       "alerts.sound = false (default)",
       "alerts.usagePercent = 85 (default)",
       "crew.enabled = false (default)",
+      "crew.keep = (nothing) (default)",
       "crew.idleStopMinutes = 10 (default)",
-      "crew.max = 6 (default)",
-      "crew.maxOpus = 2 (default)",
+      "crew.max = 24 (default)",
+      "crew.maxOpus = (no machine-wide opus count) (default)",
       "crew.memoryGb = 2 (default)",
+      "crew.perLead = 4 (default)",
+      "crew.perLeadOpus = 2 (default)",
+      "crew.usagePercent = 85 (default)",
       "crew.quietMinutes = 20 (default)",
       "crew.handoffPercent = 70 (default)",
       "crew.softHours = 2 (default)",
@@ -259,6 +263,31 @@ describe("workflow set and unset", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  test("--project with a key a newer plugin brought raises the file's requires, and only then", async () => {
+    // `crew.perLead` came with 1.1.0: a 1.0.x plugin would refuse the file as an unknown field,
+    // so every guard of a teammate still on it would ask on every call instead of saying "update".
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    writeFileSync(
+      file,
+      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" }, workflow: { crew: { enabled: true } } }, null, 2)}\n`,
+    );
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "crew.perLead", "2", "--project"], run.context)).toBe(0);
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    expect(written.requires).toBe(">=1.1");
+    expect(written.workflow.crew).toEqual({ enabled: true, perLead: 2 });
+    // A key the old floor already covers leaves `requires` as it was.
+    const plain = context(repo, env);
+    writeFileSync(
+      file,
+      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" } }, null, 2)}\n`,
+    );
+    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], plain.context)).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.0");
   });
 
   test("D20: --project on a file that still holds a retired engine field: refused, naming it, nothing written", async () => {

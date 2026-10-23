@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { kindsSchema } from "../jobs/kinds";
+import { parseUserJson, readUserJson } from "../setup/user-json";
 import { workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
 
@@ -21,6 +22,8 @@ export const PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "verify-gate",
+  "agent-usage",
   "worktree-leftovers",
   "session-name",
   "crew-role",
@@ -78,6 +81,26 @@ export const WORKFLOW_CREW_SINCE = "1.0.0";
 export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 
 /**
+ * The release that brought `checks` (MD-3): a project names the fast check a session runs
+ * before it stops. A project file that sets it needs that plugin version or newer, for the
+ * same reason as `WORKFLOW_CREW_SINCE`.
+ */
+export const CHECKS_SINCE = "1.1.0";
+
+/**
+ * The `workflow.crew` keys that came after `workflow.crew` itself, with the release that
+ * brought them: the caps per lead and the opus usage guard (D54), and `keep` (the lean crew
+ * start). A project file that sets one needs that plugin version or newer, for the same reason
+ * as `WORKFLOW_CREW_SINCE`.
+ */
+export const WORKFLOW_CREW_KEYS_SINCE: Readonly<Record<string, string>> = {
+  perLead: "1.1.0",
+  perLeadOpus: "1.1.0",
+  usagePercent: "1.1.0",
+  keep: "1.1.0",
+};
+
+/**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
  * Strict on purpose: a typo like `"worktree"` fails loudly instead of being ignored.
  */
@@ -110,8 +133,8 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
       /**
        * A branch-name prefix (ending in "/") to the base that branch family's pull requests
        * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go
-       * into `base`. The longest prefix that matches wins. Auto-merge and the after-merge
-       * note read it.
+       * into `base`. The longest prefix that matches wins (`baseForBranch`). The merge guard's
+       * opening check, auto-merge and the after-merge note read it.
        */
       bases: z
         .record(z.string(), z.string().min(1))
@@ -135,6 +158,15 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    * (["main", "release"]). When left out: ["main"].
    */
   protectedBranches: z.array(z.string().min(1)).min(1).optional(),
+  /**
+   * The project's check commands. `fast` is the one a session runs before it stops: the
+   * `verify-gate` hook blocks a stop **once** when this session changed files and no Bash call
+   * ran `fast` after the last change. Write it as you would type it
+   * (`"bun run typecheck && bun test src/changed"`); `project init` offers one read from
+   * `package.json`'s scripts. Optional, and inside it `fast` is required: `{}` is refused.
+   * A field of 1.1.0: a project that sets it raises `requires` to `>=1.1`.
+   */
+  checks: z.strictObject({ fast: z.string().trim().min(1) }).optional(),
   /** Each session names itself after its task: a note at its start, the title at the next prompt. */
   sessionNames: z.boolean().optional(),
   /** Turn on the opt-in instructions for this project. */
@@ -166,6 +198,25 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
 });
 
 export type CcSmartDevKitConfig = z.infer<typeof ccSmartDevKitConfigSchema>;
+
+/**
+ * The base a branch's pull request goes into: `worktrees.base`, or the longest
+ * `worktrees.bases` prefix that matches the branch's name. The one home of that rule (the
+ * schema's comment, `.claude/rules/cc-smart-dev-kit-json.md`): the merge guard's opening check
+ * and the after-merge note name the same base.
+ */
+export function baseForBranch(
+  worktrees: NonNullable<CcSmartDevKitConfig["worktrees"]>,
+  branch: string,
+): string {
+  let match: string | null = null;
+  for (const prefix of Object.keys(worktrees.bases ?? {})) {
+    if (branch.startsWith(prefix) && (match === null || prefix.length > match.length)) {
+      match = prefix;
+    }
+  }
+  return match === null ? worktrees.base : (worktrees.bases?.[match] ?? worktrees.base);
+}
 
 /** A cc-smart-dev-kit.json that exists but cannot be used. The message names the file and the field. */
 export class CcSmartDevKitConfigError extends Error {
@@ -247,7 +298,9 @@ function checkRetiredFields(where: string, raw: unknown): void {
 export function readOwnHooks(file: string): string[] | null {
   if (!existsSync(file)) return null;
   try {
-    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+    // The one reader of a person-edited JSON file: an editor's byte order mark is skipped,
+    // so a file Claude Code reads without trouble is not refused here (F5-2).
+    const raw: unknown = readUserJson(file);
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
     const listed = (raw as { ownHooks?: unknown }).ownHooks;
     return Array.isArray(listed)
@@ -284,7 +337,10 @@ export function parseCcSmartDevKitConfig(
 ): CcSmartDevKitConfig {
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    // The one reader of a person-edited JSON file (F5-2): a leading byte order mark, which
+    // `JSON.parse` refuses, is skipped. The text may come from a file or from git
+    // (`readCommittedConfig`), and either may carry the mark.
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);

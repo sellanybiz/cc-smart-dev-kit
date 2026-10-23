@@ -31,13 +31,16 @@ import { join } from "node:path";
 import { z } from "zod";
 import { describeHandler, retiredEngineHookOf } from "../hooks/settings-hooks";
 import { detectIndent, isObject } from "../setup/managed-json";
+import { parseUserJson } from "../setup/user-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import { clashNote, workflowClashes } from "../workflow/clashes";
 import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
+  CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
+  WORKFLOW_CREW_KEYS_SINCE,
   WORKFLOW_CREW_SINCE,
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
@@ -52,6 +55,12 @@ export interface ProjectInitAnswers {
   bases: Record<string, string>;
   /** The branches the git guard asks about before a push. */
   protectedBranches: string[];
+  /**
+   * The project's fast check, as `checks.fast` (`{ "fast": "bun run typecheck" }`); `null` for
+   * none; left out (`undefined`) to leave the file's own value exactly as it is — the portal's
+   * form does not show the field yet.
+   */
+  checks?: { fast: string } | null;
   guards: {
     /** Refuse an edit in the main checkout itself. */
     guardMainFolder: boolean;
@@ -125,6 +134,7 @@ const FILE_ORDER = [
   "requires",
   "worktrees",
   "protectedBranches",
+  "checks",
   "sessionNames",
   "instructions",
   "autoMode",
@@ -156,7 +166,9 @@ function parseObject(text: string | null, file: string): Record<string, unknown>
   if (text === null || text.trim() === "") return {};
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    // The one reader of a person-edited JSON file: an editor's byte order mark is skipped, so
+    // a project file saved that way is read here as every guard reads it (F5-2).
+    raw = parseUserJson(text);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
@@ -178,24 +190,47 @@ export function requiresFor(version: string): string {
  */
 export function raisedRequires(existing: unknown, floor: string, floorVersion: string): string {
   if (typeof existing === "string") {
-    const floorMatch = /^>=\s*(\d+)\.(\d+)(?:\.(\d+))?/.exec(existing);
-    if (floorMatch !== null) {
-      const existingFloor = `${floorMatch[1]}.${floorMatch[2]}.${floorMatch[3] ?? "0"}`;
-      if (Bun.semver.order(existingFloor, floorVersion) >= 0) return existing;
-    }
+    const lowest = lowestAllowed(existing);
+    if (lowest !== null && Bun.semver.order(lowest, floorVersion) >= 0) return existing;
   }
   return floor;
+}
+
+/** One alternative of a range: its first comparator and version (`>=1.1`, `^1.1`, `~1.1.0`, `1.1`). */
+const RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+
+/**
+ * The lowest plugin version a `requires` range lets in, or null when the range's form is not
+ * one read here (the floor then replaces it). Each `||` alternative is read by its first
+ * comparator: `>=`, `>`, `^`, `~`, `=` or a bare version start at the version written; one that
+ * starts with `<` lets in 0.0.0. So `~1.1.0`, `^1.1` and `>=1.1 <2` all start at 1.1.0, and a
+ * write that needs 1.0 keeps them as they are.
+ */
+function lowestAllowed(range: string): null | string {
+  let lowest: null | string = null;
+  for (const part of range.split("||")) {
+    const match = RANGE_START.exec(part);
+    if (match === null) return null;
+    const version = match[1]?.startsWith("<")
+      ? "0.0.0"
+      : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
+    if (lowest === null || Bun.semver.order(version, lowest) < 0) lowest = version;
+  }
+  return lowest;
 }
 
 /**
  * The oldest plugin that reads every field the file holds: the range and the version it
  * names, for `raisedRequires`.
  *
- * A file without `worktrees.prefix` needs the plugin that made that field optional
- * (0.5.2): every older plugin refuses the whole file. A file with `workflow.crew` or
- * `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the release that brought
- * them: an older plugin reads the file strictly, does not know that field, and refuses the
- * file — so every guard in that project fails closed until the plugin is updated.
+ * A file that sets several fields needs the newest among them. A file with `checks`, or with a
+ * `workflow.crew` key that came later than `workflow.crew` itself (`WORKFLOW_CREW_KEYS_SINCE`:
+ * the caps per lead, the usage guard, `keep`), needs the plugin that brought it (1.1.0). A file
+ * with `workflow.crew` or `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the
+ * release that brought them (1.0.0). Every other file needs the plugin that made
+ * `worktrees.prefix` optional (0.5.2). An older plugin reads the file strictly, does not know
+ * the field, and refuses the file — so every guard in that project fails closed until the
+ * plugin is updated; the floor makes it say "update" instead.
  */
 export function requiresFloor(file: Record<string, unknown>): {
   floor: string;
@@ -203,16 +238,24 @@ export function requiresFloor(file: Record<string, unknown>): {
 } {
   const workflow = isObject(file.workflow) ? file.workflow : {};
   const worktrees = isObject(file.worktrees) ? file.worktrees : {};
+  const crew = isObject(workflow.crew) ? workflow.crew : {};
+  const needs: string[] = [];
+  if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
+  for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
+    if (Object.hasOwn(crew, key)) needs.push(since);
+  }
   if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
-    return { floor: requiresFor(WORKFLOW_CREW_SINCE), version: WORKFLOW_CREW_SINCE };
+    needs.push(WORKFLOW_CREW_SINCE);
   }
-  if (Object.hasOwn(worktrees, "autoClean")) {
-    return { floor: requiresFor(WORKTREE_AUTO_CLEAN_SINCE), version: WORKTREE_AUTO_CLEAN_SINCE };
+  if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
+  if (needs.length === 0) {
+    return {
+      floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+      version: WORKTREE_PREFIX_OPTIONAL_SINCE,
+    };
   }
-  return {
-    floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
-    version: WORKTREE_PREFIX_OPTIONAL_SINCE,
-  };
+  const version = needs.reduce((newest, one) => (Bun.semver.order(one, newest) > 0 ? one : newest));
+  return { floor: requiresFor(version), version };
 }
 
 /** Every leaf of a JSON object, by its dotted path: what the diff compares. */
@@ -363,6 +406,12 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
   if (answers.protectedBranches.length > 0) next.protectedBranches = answers.protectedBranches;
   else delete next.protectedBranches;
+  // `undefined` is a caller that does not know the field (the portal's form): the file's own
+  // `checks` stays exactly as it is. `null` is the `none` answer: the field goes.
+  if (answers.checks !== undefined) {
+    if (answers.checks === null) delete next.checks;
+    else next.checks = { fast: answers.checks.fast };
+  }
   if (answers.guards.sessionNames) next.sessionNames = true;
   else delete next.sessionNames;
   const jobs: Record<string, unknown> = { ...beforeJobs };

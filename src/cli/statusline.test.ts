@@ -3,8 +3,13 @@
  * state file. Every expected line is written by hand; times are shown in UTC.
  */
 import { describe, expect, it } from "bun:test";
+import { mkdirSync } from "node:fs";
+import { claudeWindowSaid } from "../crew/context-window";
 import type { LimitState } from "../gateway/limit-state";
-import { statuslineText } from "./statusline";
+import { tempDir } from "../testing/temp";
+import { cliPaths } from "./paths";
+import { runStatusline, statuslineText } from "./statusline";
+import { readUsageWindow } from "./usage-window";
 
 /** 2026-10-15 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
@@ -137,5 +142,54 @@ describe("statusline", () => {
       "Opus 5.5 · ⚠ 5h 70% (resets 13:00) · 7d 41%",
     );
     expect(statuslineText(input(85, 90), EMPTY, NOW, "UTC", 95)).toBe("Opus 5.5 · 5h 85% · 7d 90%");
+  });
+
+  it("D54: records the 5-hour window it read, so the opus guard can read it back", async () => {
+    const paths = cliPaths({ HOME: tempDir("home") });
+    mkdirSync(paths.stateDir, { recursive: true });
+    const printed: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => {
+      printed.push(parts.map(String).join(" "));
+    };
+    try {
+      await runStatusline(paths, async () => JSON.stringify(input(87, 41)), NOW);
+      expect(readUsageWindow(paths, NOW)).toEqual({ percent: 87, resetsAt: AT_13 });
+      // An input with no rate_limits (an API key, or a refused request) records nothing.
+      await runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW + 1000);
+      expect(readUsageWindow(paths, NOW + 1000)).toEqual({ percent: 87, resetsAt: AT_13 });
+    } finally {
+      console.log = original;
+    }
+    expect(printed).toEqual(["Opus 5.5 · ⚠ 5h 87% (resets 13:00) · 7d 41%", "Opus 5.5"]);
+  });
+
+  it("CC4: records the context window Claude Code reports, for the model it reports it for", async () => {
+    const paths = cliPaths({ HOME: tempDir("home") });
+    mkdirSync(paths.stateDir, { recursive: true });
+    const printed: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => {
+      printed.push(parts.map(String).join(" "));
+    };
+    try {
+      await runStatusline(
+        paths,
+        async () =>
+          JSON.stringify({ ...input(87, 41), context_window: { context_window_size: 1_000_000 } }),
+        NOW,
+      );
+      expect(claudeWindowSaid(paths, "claude-opus-5-5")).toBe(1_000_000);
+      // An input without `context_window` records nothing: the reading stays as it was.
+      await runStatusline(paths, async () => JSON.stringify(input(88, 41)), NOW + 1000);
+      expect(claudeWindowSaid(paths, "claude-opus-5-5")).toBe(1_000_000);
+    } finally {
+      console.log = original;
+    }
+    // The window is not shown in the line: it is recorded for `crew self-watch`.
+    expect(printed).toEqual([
+      "Opus 5.5 · ⚠ 5h 87% (resets 13:00) · 7d 41%",
+      "Opus 5.5 · ⚠ 5h 88% (resets 13:00) · 7d 41%",
+    ]);
   });
 });

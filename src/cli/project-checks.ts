@@ -16,9 +16,9 @@
  *   (information); a listed one with no project hook on its event left to answer is a
  *   warning. A project hook on the same event and tool as a plugin hook the list does NOT
  *   name is a warning too: both run, so both may answer. The machine-wide hooks
- *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, and `agent-guard`,
- *   `fable-session`, `session-escape-guard`, `crew-role` and `lead-notes`, which run with or
- *   without the project's file) are never warned about: they
+ *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, playwright-output, and
+ *   `agent-guard`, `fable-session`, `session-escape-guard`, `crew-role`, `lead-notes` and
+ *   `agent-usage`, which run with or without the project's file) are never warned about: they
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
  *   nothing, and can be taken out.
@@ -31,7 +31,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { COMMAND } from "../build-info/names";
+import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
 import { runGit } from "../hooks/git";
 import {
   allWiredHandlers,
@@ -50,19 +50,17 @@ import {
 } from "../project/config";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
+import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunner } from "./project-init";
 
-export interface ProjectLine {
-  ok: boolean;
-  /** Information only, never a failure. */
-  info?: boolean;
-  /** Worth a look, but not a failure (`ok` stays true). */
-  warn?: boolean;
-  text: string;
-}
+/** One project line of doctor's report: a check like any other (`check.ts`). */
+export type ProjectLine = Check;
 
 type Env = Record<string, string | undefined>;
+
+/** What fixes a git that cannot read this folder's checkout. */
+const GIT_FIX = `check that git works in this folder (git status), then run: ${COMMAND} doctor`;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -153,7 +151,8 @@ function engineLines(sources: string[], projectDir: string, home: string): Proje
     const hooks = names.map((name) => `${COMMAND} hook ${name}`).join(", ");
     lines.push({
       ok: false,
-      text: `project: ${shown(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time: run ${COMMAND} project init, which takes ${names.length === 1 ? "the line" : "those lines"} out (Claude Code's own worktrees need no hook)`,
+      text: `project: ${shown(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook)`,
+      fix: `${COMMAND} project init (it takes ${names.length === 1 ? "the line" : "those lines"} out)`,
     });
   }
   return lines;
@@ -261,6 +260,15 @@ function onEvent(event: string, subjects: Array<string | null>): string {
 }
 
 /**
+ * A plugin hook that only answers when the project sets one of its fields: while that field
+ * is unset the hook is silent, so a project hook on its event is no second copy of it.
+ * `verify-gate` answers only with `checks.fast`.
+ */
+const OPT_IN_HOOKS: Record<string, (config: CcSmartDevKitConfig) => boolean> = {
+  "verify-gate": (config) => config.checks !== undefined,
+};
+
+/**
  * The project's own copies of plugin hooks: one · line for each hook `ownHooks` lists, a
  * warning for a listed hook nothing in the project's settings replaces, and a warning for
  * each project hook that runs next to an unlisted plugin hook on the same event and tool.
@@ -277,7 +285,11 @@ function ownCopyLines(
     pluginHooks = readPluginHooks(pluginHooksFile);
   } catch (error) {
     return [
-      { ok: false, text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}` },
+      {
+        ok: false,
+        text: `cannot read the plugin's hooks (${pluginHooksFile}): ${message(error)}`,
+        fix: PLUGIN_UPDATE_COMMAND,
+      },
     ];
   }
   const own: string[] = config.ownHooks ?? [];
@@ -337,6 +349,10 @@ function ownCopyLines(
     // answers about the machine, not this project: a project hook on its event is the person's
     // own business, not a second copy of a plugin piece, so nothing warns about it.
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
+    // A project that did not set the hook's own field gets no advice about a copy: the plugin
+    // hook stays silent there, so nothing runs twice (D48's `worktrees`, `checks.fast` here).
+    const optIn = OPT_IN_HOOKS[hook.name];
+    if (optIn !== undefined && !optIn(config)) continue;
     for (const subject of hook.subjects) {
       for (const handler of sources.flatMap((file) => wiredHandlers(file, hook.event, subject))) {
         // A retired engine line (`cc-smart-dev-kit hook subagent-stop`) is never a copy of this
@@ -377,7 +393,7 @@ export function projectChecks(
   try {
     checkout = existsSync(cwd) ? locateCheckout(cwd, { env }) : null;
   } catch (error) {
-    return [{ ok: false, text: `project: ${message(error)}` }];
+    return [{ ok: false, text: `project: ${message(error)}`, fix: GIT_FIX }];
   }
   if (checkout === null) return [];
   // Where Claude Code reads the project's settings: the folder the session started in.
@@ -394,7 +410,14 @@ export function projectChecks(
     config = loadProjectConfig(checkout).config;
   } catch (error) {
     if (!(error instanceof CcSmartDevKitConfigError)) throw error;
-    return [{ ok: false, text: `project: ${error.message}` }, ...engine];
+    return [
+      {
+        ok: false,
+        text: `project: ${error.message}`,
+        fix: `correct the file as this line says, or run: ${COMMAND} project init`,
+      },
+      ...engine,
+    ];
   }
   const lines = [
     ...oldNameLines(projectDir, sources, paths.home),

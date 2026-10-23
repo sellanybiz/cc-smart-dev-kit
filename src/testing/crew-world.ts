@@ -11,6 +11,8 @@
  *                 `broken` (not JSON); unset: the row names the `-w` worktree.
  *   FAKE_AGENTS_JSON  the exact JSON `agents --json` prints (the watch's own view).
  *   FAKE_STOP     `fail` (`claude stop` exits 1); unset: it stops.
+ *   FAKE_PLUGINS  the exact JSON `plugin list --json` prints (the lean start's plugin list);
+ *                 unset: no output, which a lean start reads as "no list", and turns nothing off.
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
@@ -34,10 +36,11 @@ export const SHORT_ID = "a1b2c3d4";
 export const SESSION_PID = 300;
 export const COMMAND_PID = 500;
 
-/** The fake `claude`: logs its argv (one argument per line, `----` after each call). */
+/** The fake `claude`: logs its argv (one argument per line, `----` after each call) and its folder. */
 const FAKE_CLAUDE = `#!/bin/sh
 for a in "$@"; do printf '%s\\n' "$a" >> "$FAKE_CLAUDE_LOG"; done
 printf -- '----\\n' >> "$FAKE_CLAUDE_LOG"
+printf '%s\\n' "$(pwd -P)" >> "$FAKE_CLAUDE_CWD_LOG"
 case "$1" in
   --bg)
     case "$FAKE_BG" in
@@ -65,6 +68,10 @@ case "$1" in
     esac
     printf '[{"id":"${SHORT_ID}","sessionId":"${SHORT_ID}-0000-1111-2222-333333333333","cwd":"%s","kind":"background","state":"working","pid":4242}]\\n' "$cwd"
     ;;
+  plugin)
+    if [ -n "$FAKE_PLUGINS" ]; then printf '%s\\n' "$FAKE_PLUGINS"; fi
+    exit 0
+    ;;
   stop)
     if [ "$FAKE_STOP" = fail ]; then echo "no such session" >&2; exit 1; fi
     exit 0
@@ -81,6 +88,8 @@ export interface CrewWorld {
   bin: string;
   /** Every call the fake `claude` got, each as its argv. */
   claudeCalls: () => string[][];
+  /** The folder each call ran in, in order: a resume runs in the crew session's worktree. */
+  cwdCalls: () => string[];
   /** What the commands printed, and wrote to stderr. */
   out: string[];
   err: string[];
@@ -125,6 +134,8 @@ export function crewWorld(): CrewWorld {
   chmodSync(join(bin, "claude"), 0o755);
   const log = join(bin, "calls.log");
   writeFileSync(log, "");
+  const cwdLog = join(bin, "cwd.log");
+  writeFileSync(cwdLog, "");
   const gitDir = dirname(Bun.which("git") ?? "/usr/bin/git");
   const out: string[] = [];
   const err: string[] = [];
@@ -140,11 +151,15 @@ export function crewWorld(): CrewWorld {
   const ctx = (change: Partial<CrewContext> = {}, env: Record<string, string> = {}) => {
     const fullEnv = {
       ...cleanGitEnv(),
+      FAKE_CLAUDE_CWD_LOG: cwdLog,
       FAKE_CLAUDE_LOG: log,
       FAKE_CLAUDE_STATE: join(bin, "state"),
       HOME: home,
       // The platform's own separator: `:` splits a PATH on macOS and Linux, `;` on Windows.
       PATH: `${bin}${delimiter}${gitDir}`,
+      // The host's key never reaches a test's launch: an empty value is "no key" to
+      // `readTavilyKey`, so the world's crew sessions keep no Tavily server unless a test says so.
+      TAVILY_API_KEY: "",
       ...env,
     };
     return {
@@ -175,5 +190,9 @@ export function crewWorld(): CrewWorld {
       .split("----\n")
       .filter((call) => call !== "")
       .map((call) => call.replace(/\n$/, "").split("\n"));
-  return { bin, claudeCalls, ctx, err, home, out, paths, repo, writeConfig };
+  const cwdCalls = (): string[] =>
+    readFileSync(cwdLog, "utf8")
+      .split("\n")
+      .filter((line) => line !== "");
+  return { bin, claudeCalls, ctx, cwdCalls, err, home, out, paths, repo, writeConfig };
 }

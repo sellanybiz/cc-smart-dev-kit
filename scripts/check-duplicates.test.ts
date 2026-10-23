@@ -8,6 +8,7 @@ import {
   readAllowList,
   readSourceFiles,
   report,
+  scriptStrings,
   sentences,
 } from "./check-duplicates";
 
@@ -164,6 +165,37 @@ describe("findDuplicates", () => {
     write(root, "docs/design.md", `${RULE}\n`);
     write(root, "plugin/skills/review/notes.txt", `${RULE}\n`);
     expect(findDuplicates(readSourceFiles(root), []).duplicates).toEqual([]);
+  });
+
+  test("a workflow script's prompts are read as rules: a sentence said in one and in a skill fails", () => {
+    const root = cleanTree();
+    write(
+      root,
+      "plugin/workflows/audit-run.js",
+      [
+        "export const meta = { name: 'audit-run', description: 'x' }",
+        `const note = '${RULE}'`,
+        "// a comment is not read: Never start a second reviewer to check the fixes after the first one returned.",
+      ].join("\n"),
+    );
+    const result = findDuplicates(readSourceFiles(root), []);
+    expect(result.duplicates).toEqual([
+      {
+        sentence: normalize(RULE),
+        files: ["plugin/instructions/core.md", "plugin/workflows/audit-run.js"],
+      },
+    ]);
+  });
+
+  test("scriptStrings reads the literals, escapes and all, and skips comments", () => {
+    // `${dollar}` keeps the fixture free of a literal `${`: the text under test has one, and
+    // Biome refuses that inside a string.
+    const dollar = "$";
+    expect(
+      scriptStrings(
+        `const a = 'one'; // 'two'\nconst b = \`three ${dollar}{x} four\`\n/* 'five' */`,
+      ),
+    ).toBe(`one\n\nthree ${dollar}{x} four`);
   });
 });
 

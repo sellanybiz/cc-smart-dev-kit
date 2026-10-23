@@ -45,6 +45,19 @@ export const RESOLVE_GIT_TIMEOUT_MS = 5_000;
 export const GIT_NOT_FOUND =
   "git was not found, so this project's own values cannot be read. Install git, then try again.";
 
+/** A git runner that does not block the caller: `gitInAsync`. */
+type GitAsync = (args: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+
+/** What a failed spawn says when there is no git at all, in words a page can act on. */
+function gitNotFound(error: unknown): unknown {
+  const why = error instanceof Error ? error.message : String(error);
+  // No git on this machine's PATH at all — on Windows without Git for Windows, or in a
+  // container. The spawner's own words for it (`Executable not found in $PATH: "git"`)
+  // reach a portal page, where they read as a crash rather than as a fact to act on. A
+  // folder that is gone, or anything else that throws here, is re-thrown as it is.
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
+
 function gitIn(
   cwd: string,
   env: Record<string, string>,
@@ -68,19 +81,47 @@ function gitIn(
         stderr: result.stderr.toString(),
       };
     } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      // No git on this machine's PATH at all — on Windows without Git for Windows, or in a
-      // container. The spawner's own words for it (`Executable not found in $PATH: "git"`)
-      // reach a portal page, where they read as a crash rather than as a fact to act on. A
-      // folder that is gone, or anything else that throws here, is re-thrown as it is.
-      throw /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+      throw gitNotFound(error);
     }
   };
 }
 
-/** Throws when git is older than MIN_GIT_VERSION. An unreadable version passes. */
-function requireGitVersion(git: Git): void {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(git(["--version"]).stdout);
+/**
+ * `gitIn` without blocking: the portal lists the person's projects inside its own process,
+ * and a blocking spawn there freezes every page and the live stream
+ * (`.claude/rules/portal.md`).
+ */
+function gitInAsync(
+  cwd: string,
+  env: Record<string, string>,
+  timeoutMs: number = RESOLVE_GIT_TIMEOUT_MS,
+): GitAsync {
+  return async (args) => {
+    try {
+      const child = Bun.spawn(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: timeoutMs,
+        windowsHide: true,
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      return { ok: code === 0, stdout, stderr };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+
+/** Throws when the git `--version` output names one older than MIN_GIT_VERSION. */
+function requireGitVersionText(out: string): void {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
   if (!match) return;
   const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
   if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
@@ -88,9 +129,23 @@ function requireGitVersion(git: Git): void {
   }
 }
 
-/** The first `worktree` entry of `git worktree list --porcelain` is the main checkout. */
-function findMainCheckout(git: Git, cwd: string): string | null {
-  const list = git(["worktree", "list", "--porcelain"]);
+/** Throws when git is older than MIN_GIT_VERSION. An unreadable version passes. */
+function requireGitVersion(git: Git): void {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+
+async function requireGitVersionAsync(git: GitAsync): Promise<void> {
+  requireGitVersionText((await git(["--version"])).stdout);
+}
+
+/**
+ * The first `worktree` entry of `git worktree list --porcelain` is the main checkout: the
+ * one parse both readers of the list use.
+ */
+function mainCheckoutFrom(
+  list: { ok: boolean; stdout: string; stderr: string },
+  cwd: string,
+): string | null {
   if (!list.ok) throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
   const [firstEntry = ""] = list.stdout.split("\n\n");
   const lines = firstEntry.split("\n");
@@ -105,6 +160,44 @@ function findMainCheckout(git: Git, cwd: string): string | null {
     );
   }
   return realpathSync(path);
+}
+
+function findMainCheckout(git: Git, cwd: string): string | null {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+
+async function findMainCheckoutAsync(git: GitAsync, cwd: string): Promise<string | null> {
+  return mainCheckoutFrom(await git(["worktree", "list", "--porcelain"]), cwd);
+}
+
+/** The three paths `rev-parse` printed, or why the answer is no checkout. */
+type RevParseParts = { common: string; gitDir: string; top: string };
+
+/**
+ * `git rev-parse --show-toplevel --absolute-git-dir --git-common-dir`'s answer, read the same
+ * way for the blocking and the awaited runner.
+ */
+function revParseParts(revParse: {
+  ok: boolean;
+  stdout: string;
+}): RevParseParts | "not-understood" | "outside" {
+  const [top, gitDir, common] = revParse.stdout.trim().split("\n");
+  // git before 2.31 does not know --path-format: it fails, or prints the option back.
+  if (!revParse.ok || top?.startsWith("--")) return "not-understood";
+  // A bare repo has no top level: there is no checkout to work in.
+  if (!top || !gitDir || !common) return "outside";
+  return { common, gitDir, top };
+}
+
+/** The checkout's real paths, and whether it is a linked worktree. */
+function checkoutRoots(parts: RevParseParts): {
+  commonDir: string;
+  isWorktree: boolean;
+  root: string;
+} {
+  const root = realpathSync(parts.top);
+  const commonDir = realpathSync(parts.common);
+  return { commonDir, isWorktree: realpathSync(parts.gitDir) !== commonDir, root };
 }
 
 /** Where a checkout is, without its cc-smart-dev-kit.json: what a hook needs before it reads the file. */
@@ -128,9 +221,8 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
     "--absolute-git-dir",
     "--git-common-dir",
   ]);
-  const [top, gitDir, common] = revParse.stdout.trim().split("\n");
-  // git before 2.31 does not know --path-format: it fails, or prints the option back.
-  if (!revParse.ok || top?.startsWith("--")) {
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
     requireGitVersion(git);
     if (revParse.ok) {
       throw new Error(
@@ -139,14 +231,52 @@ export function locateCheckout(cwd: string, options: ResolveOptions = {}): Check
     }
     return null; // outside git
   }
-  // A bare repo has no top level: there is no checkout to work in.
-  if (!top || !gitDir || !common) return null;
+  if (parts === "outside") return null;
 
-  const root = realpathSync(top);
-  const commonDir = realpathSync(common);
-  const isWorktree = realpathSync(gitDir) !== commonDir;
-  const mainCheckout = isWorktree ? findMainCheckout(git, cwd) : root;
-  return { root, commonDir, isWorktree, mainCheckout };
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root,
+  };
+}
+
+/**
+ * `locateCheckout`, without blocking: the same answers, read with `Bun.spawn`. The portal's
+ * project list and its merge verdicts run inside the server's own process, where a blocking
+ * spawn freezes every page and the live stream (`.claude/rules/portal.md`).
+ */
+export async function locateCheckoutAsync(
+  cwd: string,
+  options: ResolveOptions = {},
+): Promise<Checkout | null> {
+  if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env));
+  const revParse = await git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir",
+  ]);
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    await requireGitVersionAsync(git);
+    if (revParse.ok) {
+      throw new Error(
+        "git did not understand rev-parse --path-format: git 2.31 or newer is needed.",
+      );
+    }
+    return null; // outside git
+  }
+  if (parts === "outside") return null;
+
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? await findMainCheckoutAsync(git, cwd) : roots.root,
+  };
 }
 
 /**
@@ -197,6 +327,38 @@ export interface CommittedOptions {
   pluginVersion?: string;
 }
 
+/** The answer when `origin/<branch>` is not in this repository. */
+function refNotKnown(where: string, ref: string): CommittedConfig {
+  return {
+    found: false,
+    where,
+    why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`,
+  };
+}
+
+/** The answer when the ref's commit has no project file. */
+function noCommittedFile(where: string, ref: string): CommittedConfig {
+  return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
+}
+
+/** The answer when git could not read the file it found. */
+function unreadableCommitted(where: string): CommittedConfig {
+  return { found: false, where, why: `git could not read ${where}` };
+}
+
+/** The file's own text, parsed with the branch's `where` in every error. */
+function committedOf(
+  text: { stdout: string },
+  where: string,
+  options: CommittedOptions,
+): CommittedConfig {
+  return {
+    found: true,
+    where,
+    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion),
+  };
+}
+
 /**
  * The project's cc-smart-dev-kit.json **as committed on `origin/<branch>`**: read with git alone
  * (`rev-parse`, then `cat-file`), never the working copy of any checkout, so a session cannot
@@ -217,22 +379,39 @@ export function readCommittedConfig(
   const where = `${ref}:${CONFIG_PATH}`;
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
   const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok) {
-    return {
-      found: false,
-      where,
-      why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`,
-    };
-  }
+  if (!commit.ok) return refNotKnown(where, ref);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
-  if (!blob.ok) return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
+  if (!blob.ok) return noCommittedFile(where, ref);
   const text = git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok) return { found: false, where, why: `git could not read ${where}` };
-  return {
-    found: true,
-    where,
-    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion),
-  };
+  if (!text.ok) return unreadableCommitted(where);
+  return committedOf(text, where, options);
+}
+
+/**
+ * `readCommittedConfig`, without blocking: the same three reads with `Bun.spawn`, for the
+ * portal's merge verdicts (`.claude/rules/portal.md`). One answer each, built by the same
+ * helpers, so the awaited and the blocking read can never refuse differently.
+ */
+export async function readCommittedConfigAsync(
+  checkout: Checkout,
+  branch: string,
+  options: CommittedOptions = {},
+): Promise<CommittedConfig> {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs);
+  const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok) return refNotKnown(where, ref);
+  const blob = await git([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `${commit.stdout.trim()}:${CONFIG_PATH}`,
+  ]);
+  if (!blob.ok) return noCommittedFile(where, ref);
+  const text = await git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok) return unreadableCommitted(where);
+  return committedOf(text, where, options);
 }
 
 /**

@@ -96,6 +96,10 @@ import {
 } from "../setup/write";
 import { runningSessions, type SessionRecord, updateFiles } from "../update/state";
 import { type CliPaths, tildify } from "./paths";
+import { dryRunEnding } from "./ui/out";
+
+/** The last line of `migrate --dry-run`: it can also stop the router. */
+const MIGRATE_DRY_RUN = dryRunEnding(["written", "run", "stopped"]);
 
 /**
  * The old names, in one place. This file, its test, and the README's "Moving from
@@ -1157,7 +1161,7 @@ export async function runMigrate(paths: CliPaths, options: MigrateOptions): Prom
   if (steps.length === 0) {
     console.log(`${COMMAND} migrate already finished on this machine; nothing is left to do.`);
     if (options.dryRun) {
-      console.log("\nDry run: nothing was written, run or stopped.");
+      console.log(`\n${MIGRATE_DRY_RUN}`);
       return 0;
     }
     rmSync(progressFile(paths.stateDir), { force: true });
@@ -1442,7 +1446,7 @@ export async function runMigrate(paths: CliPaths, options: MigrateOptions): Prom
     );
   }
   if (options.dryRun) {
-    console.log("\nDry run: nothing was written, run or stopped.");
+    console.log(`\n${MIGRATE_DRY_RUN}`);
     return 0;
   }
   rmSync(progressFile(paths.stateDir), { force: true });

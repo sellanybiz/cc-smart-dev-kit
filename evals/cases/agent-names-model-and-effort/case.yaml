@@ -4,7 +4,7 @@ description: >-
   Real past failure: an Agent call with no model or no effort, which then runs on the session's
   own model and effort. Every launch must name both. Finding: IN-2, IN-9 (the guard's words).
 tags: [gate, delegation]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 expected_outcome: >-
   One or more subagent launches, each with model and effort set; the TODO list.
 execution:

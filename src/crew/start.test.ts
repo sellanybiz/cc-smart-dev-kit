@@ -5,7 +5,10 @@
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
+import { recordUsageWindow } from "../cli/usage-window";
+import { MCP_VERSIONS, TAVILY_MCP_URL } from "../mcp/versions";
 import {
   crewWorld,
   LEAD_SESSION,
@@ -13,8 +16,10 @@ import {
   SHORT_ID,
   writeSessionRecord,
 } from "../testing/crew-world";
+import { defaultResolved } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
+import { filesOverlap, startQueued } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -27,6 +32,18 @@ import {
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
+
+/** The one note line an opus start says with no window to read (D54), written by hand. */
+const UNREAD =
+  "note: the 5-hour usage window cannot be read, so the opus usage guard does not hold: cc-smart-dev-kit setup --statusline records it, and no current reading is stored";
+
+/** A gateway config whose opus slot has a chain in use with its fallback on. */
+const OPUS_CHAIN = {
+  backends: { omniroute: { apiKey: "test-key", baseUrl: "http://127.0.0.1:20199" } },
+  fallback: { "cc-smart-dev-kit-opus": true },
+  slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-5.3-flash"] },
+  version: 1,
+};
 
 /** A world whose session is a registered lead (`crew lead` already ran). */
 async function ledWorld() {
@@ -60,13 +77,14 @@ function onlyCrew(stateDir: string, repo: string): CrewRecord {
   return records[0] as CrewRecord;
 }
 
-/** A recorded crew session of another repository, in `state`. */
+/** A recorded crew session of another repository, in `state`, for `lead` (another lead by default). */
 async function otherCrew(
   stateDir: string,
   n: number,
   state: string,
   phase = `P${n}`,
   tier: null | string = null,
+  lead = "other-lead",
 ) {
   await createCrew(
     stateDir,
@@ -80,7 +98,7 @@ async function otherCrew(
       kind: "build",
       lastLine: null,
       leadName: "LEAD other plan",
-      leadSessionId: "other-lead",
+      leadSessionId: lead,
       memoryMb: null,
       model: { named: tier ?? "sonnet", resolved: tier ?? "sonnet", slot: null, tier },
       name: `C other ${phase} x`,
@@ -103,6 +121,61 @@ async function otherCrew(
 }
 
 describe("D25: crew start returns at once", () => {
+  test("a failed launch that started nothing is nothing to warn about", async () => {
+    const world = await ledWorld();
+    await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/B6b-lost",
+        effort: "high",
+        files: [],
+        id: "B6b-lost-aaaaaa",
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app master-plan",
+        leadSessionId: LEAD_SESSION,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: "C my-app B6b lost",
+        permissionMode: "auto",
+        phase: "B6b",
+        plan: "master-plan",
+        pr: null,
+        questions: [],
+        repo: world.repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: "lost",
+        state: "failed",
+        waitsFor: [],
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-lost"),
+      },
+      T0,
+    );
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith("started C my-app B6b portal-live");
+  });
+
+  test("a phase that already has a live crew session gets one line naming it, to remove it first", async () => {
+    const world = await ledWorld();
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    world.out.length = 0;
+    // Another slug of the same phase: inUse sees no branch, so only this line warns the lead —
+    // the bug of 2026-10-23 was two crew sessions started for one phase.
+    const code = await runCrew(
+      ["start", "B6b", "--slug", "again", "--kind", "build", "--brief", world.brief],
+      world.ctx(),
+    );
+    expect(code).toBe(0);
+    expect(world.out.slice(1)).toEqual([
+      `note: C my-app B6b portal-live is already on phase B6b (starting) — remove it first: ${COMMAND} crew rm "C my-app B6b portal-live"`,
+    ]);
+  });
+
   test("D25: started — one line, the exact launch, the record, its events and its files", async () => {
     const world = await ledWorld();
     const head = git(world.repo, "rev-parse", "HEAD").trim();
@@ -118,7 +191,11 @@ describe("D25: crew start returns at once", () => {
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
     const briefFile = crewBriefFile(world.paths.stateDir, world.repo, ID);
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(world.claudeCalls()).toEqual([
+      // The plugins this machine runs, read before anything is recorded: a lean launch knows
+      // what to turn off. A fake with no answer is no list, and nothing is turned off.
+      ["plugin", "list", "--json"],
       [
         "--bg",
         "-w",
@@ -133,6 +210,9 @@ describe("D25: crew start returns at once", () => {
         "auto",
         "--autocompact",
         "auto",
+        "--strict-mcp-config",
+        "--mcp-config",
+        mcpFile,
         "--settings",
         settingsFile,
         `You are the crew session C my-app B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:crew. Read ${briefFile} first: it is your task, and it says how you report.`,
@@ -187,13 +267,16 @@ describe("D25: crew start returns at once", () => {
     // The worktree is the launcher's own, on its branch, at the lead's HEAD.
     expect(git(worktree, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("crew/B6b-portal-live");
     expect(git(worktree, "rev-parse", "HEAD").trim()).toBe(head);
-    // The settings file names the crew session to its own session, and turns Claude Code's retry
-    // watchdog on with no wait limit (D42): exactly these three keys, and nothing else; both
-    // files are the kit's, 0600.
+    // The settings file names the crew session to its own session, turns Claude Code's retry
+    // watchdog on with no wait limit (D42), and drops the claude.ai connectors; with no plugin
+    // list read, it turns no plugin off. The `--mcp-config` file passes no server, because this
+    // world has no Tavily key. All three files are the kit's, 0600.
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  }\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
     );
     expect(statSync(settingsFile).mode & 0o777).toBe(0o600);
+    expect(readFileSync(mcpFile, "utf8")).toBe(`{\n  "mcpServers": {}\n}\n`);
+    expect(statSync(mcpFile).mode & 0o777).toBe(0o600);
     const brief = readFileSync(briefFile, "utf8");
     expect(brief).toStartWith("# B6b\n\nBuild the live stream.\n\n---\n\n## Your frame");
     expect(brief).toContain(
@@ -216,7 +299,7 @@ describe("D25: crew start returns at once", () => {
     ];
     expect(await runCrew(args, world.ctx())).toBe(0);
     expect(world.out[0]).toContain("· opus xhigh ·");
-    expect(world.claudeCalls()[0]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "xhigh"]);
+    expect(world.claudeCalls()[1]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "xhigh"]);
   });
 
   test("the brief from stdin", async () => {
@@ -274,7 +357,8 @@ describe("D25: crew start returns at once", () => {
       "Fix: name a branch or a commit with --base",
     ]);
     expect(listCrew(world.paths.stateDir, world.repo).records).toEqual([]);
-    expect(world.claudeCalls()).toEqual([]);
+    // The plugin list is read before the base is checked; nothing else runs.
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
   });
 
   test("the .worktreeinclude files are copied into the new worktree", async () => {
@@ -286,6 +370,217 @@ describe("D25: crew start returns at once", () => {
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
     expect(readFileSync(join(worktree, ".env.local"), "utf8")).toBe("KEY=1\n");
+  });
+});
+
+describe("a lean start: the plugins and servers the phase uses, and no others", () => {
+  /** What `claude plugin list --json` prints here: this machine's plugins, one already off. */
+  const PLUGINS = JSON.stringify([
+    { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit", scope: "user", version: "1.0.1" },
+    { enabled: true, id: "claude-mem@thedotmack", scope: "user", version: "13.40.0" },
+    { enabled: true, id: "stripe@claude-plugins-official", scope: "user", version: "0.11.17" },
+    { enabled: false, id: "frontend-design@claude-plugins-official", scope: "user", version: "1" },
+  ]);
+
+  test("the other plugins go off, Tavily is kept and passed, and the launch names both files", async () => {
+    const world = await ledWorld();
+    const code = await runCrew(
+      startArgs(world.brief),
+      world.ctx({}, { FAKE_PLUGINS: PLUGINS, TAVILY_API_KEY: "tvly-test-key" }),
+    );
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    expect(readFileSync(settingsFile, "utf8")).toBe(
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "claude-mem@thedotmack": false,\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
+    );
+    // The registration is the kit's own, with Claude Code's placeholder, never a key.
+    expect(readFileSync(mcpFile, "utf8")).toBe(
+      `{\n  "mcpServers": {\n    "tavily-websearch": {\n      "headers": {\n        "Authorization": "Bearer \${TAVILY_API_KEY}"\n      },\n      "timeout": 300000,\n      "type": "http",\n      "url": "${TAVILY_MCP_URL}"\n    }\n  }\n}\n`,
+    );
+    const launched = world.claudeCalls()[1] ?? [];
+    expect(launched.slice(0, 2)).toEqual(["--bg", "-w"]);
+    expect(launched.slice(-5, -1)).toEqual(["--mcp-config", mcpFile, "--settings", settingsFile]);
+    expect(launched).toContain("--strict-mcp-config");
+  });
+
+  test("a ui session keeps the browser too; a build session does not", async () => {
+    const world = await ledWorld();
+    const args = (kind: string) => [
+      "start",
+      "W1a",
+      "--slug",
+      "portal-look",
+      "--kind",
+      kind,
+      "--brief",
+      world.brief,
+    ];
+    expect(
+      await runCrew(args("ui"), world.ctx({}, { FAKE_PLUGINS: PLUGINS, TAVILY_API_KEY: "tvly-k" })),
+    ).toBe(0);
+    const record = onlyCrew(world.paths.stateDir, world.repo);
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, record.id);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    const servers = Object.keys(
+      (JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers,
+    );
+    expect(servers).toEqual(["playwright", "tavily-websearch"]);
+  });
+
+  test("workflow.crew.keep keeps a plugin on and adds a server every kind lacks", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ keep: ["plugin:acme-tools@acme", "server:sequential-thinking"] });
+    const plugins = JSON.stringify([
+      { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
+      { enabled: true, id: "acme-tools@acme" },
+      { enabled: true, id: "claude-mem@thedotmack" },
+    ]);
+    expect(
+      await runCrew(
+        startArgs(world.brief),
+        world.ctx({}, { FAKE_PLUGINS: plugins, TAVILY_API_KEY: "tvly-test-key" }),
+      ),
+    ).toBe(0);
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    expect(readFileSync(settingsFile, "utf8")).toContain(
+      `"enabledPlugins": {\n    "claude-mem@thedotmack": false\n  }`,
+    );
+    const mcp = JSON.parse(readFileSync(mcpFile, "utf8")) as {
+      mcpServers: Record<string, { args?: string[]; command?: string }>;
+    };
+    expect(Object.keys(mcp.mcpServers)).toEqual(["sequential-thinking", "tavily-websearch"]);
+    expect(mcp.mcpServers["sequential-thinking"]).toEqual({
+      args: [
+        "-y",
+        `@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}`,
+      ],
+      command: "bunx",
+    });
+  });
+
+  test("a kept plugin this machine does not run is refused, and nothing is recorded", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ keep: ["plugin:acme-tools@acme"] });
+    const code = await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_PLUGINS: PLUGINS }));
+    expect(code).toBe(1);
+    expect(world.out).toEqual([]);
+    expect(world.err).toEqual([
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme", which is not enabled in this Claude Code',
+      "Fix: set workflow.crew.keep in .claude/cc-smart-dev-kit.json",
+    ]);
+    expect(listCrew(world.paths.stateDir, world.repo).records).toEqual([]);
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
+  });
+
+  test("a keep entry in the person's own defaults names their file in the fix line", async () => {
+    const world = await ledWorld();
+    const file = world.paths.workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ crew: { keep: ["plugin:acme-tools@acme"] } })}\n`);
+    expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_PLUGINS: PLUGINS }))).toBe(1);
+    expect(world.err).toEqual([
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme", which is not enabled in this Claude Code',
+      "Fix: set workflow.crew.keep in ~/.config/cc-smart-dev-kit/workflow.json",
+    ]);
+  });
+
+  test("a settings file that cannot be written fails before any worktree is made", async () => {
+    const world = await ledWorld();
+    // A folder where `mcp.json` goes: `settings.json` is written, the second write fails.
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    mkdirSync(join(dirname(settingsFile), "mcp.json"), { recursive: true });
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(1);
+    expect(world.out[0]).toContain(
+      "failed C my-app B6b portal-live: its settings could not be written",
+    );
+    // Written before anything is made, so nothing is left to take back or to free the name.
+    expect(existsSync(join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"))).toBe(
+      false,
+    );
+    expect(world.claudeCalls().map((call) => call[0])).toEqual(["plugin"]);
+  });
+});
+
+describe("a lean start: a queued crew session is lean when it starts", () => {
+  /** What the machine runs at the time the queued crew session starts. */
+  const PLUGINS = JSON.stringify([
+    { enabled: true, id: "cc-smart-dev-kit@cc-smart-dev-kit" },
+    { enabled: true, id: "claude-mem@thedotmack" },
+  ]);
+
+  /** A queued crew session of B6b, as `crew start` records one when no place is free. */
+  async function queuedHere(world: Awaited<ReturnType<typeof ledWorld>>): Promise<CrewRecord> {
+    return await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: "crew/B6b-portal-live",
+        continues: null,
+        effort: "high",
+        files: [],
+        id: ID,
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app master-plan",
+        leadSessionId: LEAD_SESSION,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: "C my-app B6b portal-live",
+        permissionMode: "auto",
+        phase: "B6b",
+        plan: "master-plan",
+        pr: null,
+        questions: [],
+        repo: world.repo,
+        reportPath: null,
+        sessionId: null,
+        shortId: null,
+        slug: "portal-live",
+        state: "queued",
+        waitsFor: [],
+        worktree: join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live"),
+      },
+      T0,
+    );
+  }
+
+  test("the plugins it turns off are read when it starts, and both files are written", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    await startQueued(
+      record,
+      world.ctx({}, { FAKE_PLUGINS: PLUGINS, TAVILY_API_KEY: "tvly-test-key" }),
+      defaultResolved(),
+    );
+    const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
+    const mcpFile = join(dirname(settingsFile), "mcp.json");
+    expect(readFileSync(settingsFile, "utf8")).toContain(
+      `"enabledPlugins": {\n    "claude-mem@thedotmack": false\n  }`,
+    );
+    expect(
+      Object.keys((JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers),
+    ).toEqual(["tavily-websearch"]);
+    expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
+  });
+
+  test("a keep entry this machine does not run fails it, and it makes no worktree", async () => {
+    const world = await ledWorld();
+    const record = await queuedHere(world);
+    const resolved = defaultResolved();
+    resolved.crew.keep = { source: "project", value: ["plugin:acme-tools@acme"] };
+    await startQueued(record, world.ctx({}, { FAKE_PLUGINS: PLUGINS }), resolved);
+    const [after] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(after?.state).toBe("failed");
+    const events = readCrewEvents(world.paths.stateDir, world.repo).events;
+    expect(events[events.length - 1]?.text).toContain(
+      'crew start: workflow.crew.keep names plugin "acme-tools@acme"',
+    );
+    expect(existsSync(record.worktree)).toBe(false);
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
   });
 });
 
@@ -454,7 +749,7 @@ describe("the refusals before anything is recorded", () => {
     argv[argv.indexOf("build")] = "ui";
     expect(await runCrew(argv, world.ctx())).toBe(0);
     expect(world.out[0]).toContain("· opus high ·");
-    expect(world.claudeCalls()[0]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "high"]);
+    expect(world.claudeCalls()[1]?.slice(5, 9)).toEqual(["--model", "opus", "--effort", "high"]);
   });
 
   test.each([
@@ -487,29 +782,44 @@ describe("the refusals before anything is recorded", () => {
 });
 
 describe("D25: the queue — still one line, at once", () => {
-  test("D25: the cap reached across repositories: queued, no worktree, no session", async () => {
+  test("D54: the machine's ceiling reached across repositories: queued, no worktree, no session", async () => {
     const world = await ledWorld();
+    world.writeConfig({ max: 6 });
     for (const n of [1, 2, 3, 4, 5, 6]) await otherCrew(world.paths.stateDir, n, "working");
     await otherCrew(world.paths.stateDir, 7, "done");
     await otherCrew(world.paths.stateDir, 8, "queued");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: 6 of 6 running; it starts when one finishes",
+      "queued C my-app B6b portal-live: 6 of 6 crew sessions running on this machine; it starts when one finishes",
     ]);
     const record = onlyCrew(world.paths.stateDir, world.repo);
     expect(record).toMatchObject({ base: null, baseRef: "main", state: "queued" });
     expect(existsSync(record.worktree)).toBe(false);
-    expect(world.claudeCalls()).toEqual([]);
+    // The plugin list is read before the queue decision (a lean launch needs it); nothing is launched.
+    expect(world.claudeCalls()).toEqual([["plugin", "list", "--json"]]);
     // Its brief is written now: the watch starts it later from the record and these files.
     expect(existsSync(crewBriefFile(world.paths.stateDir, world.repo, ID))).toBe(true);
   });
 
-  test("D37: an opus crew session is queued at 2 opus crew sessions running while the total is under 6", async () => {
+  test("D54: a lead's cap holds its next crew session; another lead's do not count", async () => {
     const world = await ledWorld();
-    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus");
-    await otherCrew(world.paths.stateDir, 2, "blocked", "P2", "opus");
-    await otherCrew(world.paths.stateDir, 3, "done", "P3", "opus");
+    world.writeConfig({ perLead: 2 });
+    await otherCrew(world.paths.stateDir, 1, "working", "P1", null, LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 2, "blocked", "P2", null, LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 3, "working");
     await otherCrew(world.paths.stateDir, 4, "working");
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app B6b portal-live: its lead has 2 of 2 crew sessions running; it starts when one of them finishes",
+    ]);
+  });
+
+  test("D54: a lead's opus cap holds its next opus crew session while its sonnet one starts", async () => {
+    const world = await ledWorld();
+    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 2, "blocked", "P2", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 3, "done", "P3", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 4, "working", "P4", null, LEAD_SESSION);
     const opusArgs = [
       "start",
       "W1a",
@@ -522,30 +832,177 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out).toEqual([
-      "queued C my-app W1a launcher: 2 of 2 opus crew sessions running; it starts when one of them finishes",
+      "queued C my-app W1a launcher: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     ]);
     // An override onto opus counts too.
     const onto = startArgs(world.brief, "--model", "opus", "--effort", "high");
     expect(await runCrew(onto, world.ctx({ randomSuffix: () => "000001" }))).toBe(0);
     expect(world.out[1]).toBe(
-      "queued C my-app B6b portal-live: 2 of 2 opus crew sessions running; it starts when one of them finishes",
+      "queued C my-app B6b portal-live: its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     );
   });
 
   test("D37: a sonnet crew session still starts then, and its record names no tier", async () => {
     const world = await ledWorld();
-    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus");
-    await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus");
+    await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus", LEAD_SESSION);
+    await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus", LEAD_SESSION);
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out[0]).toStartWith("started C my-app B6b portal-live (");
     expect(onlyCrew(world.paths.stateDir, world.repo).model.tier).toBeNull();
   });
 
-  test("D37: workflow.crew.maxOpus of the project sets the opus cap; an opus crew records its tier", async () => {
+  test("D54: workflow.crew.maxOpus, when a person sets it, caps the opus tier across leads", async () => {
     const world = await ledWorld();
-    world.writeConfig({ maxOpus: 3 });
+    world.writeConfig({ maxOpus: 2 });
     await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus");
     await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus");
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app W1a launcher: 2 of 2 opus crew sessions running on this machine; it starts when one of them finishes",
+    ]);
+    // With no machine-wide count set, the same two crew sessions hold nothing back.
+    world.writeConfig({});
+    const second = [
+      "start",
+      "W1b",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(second, world.ctx({ randomSuffix: () => "000002" }))).toBe(0);
+    expect(world.out[1]).toStartWith("started C my-app W1b launcher (");
+    const started = listCrew(world.paths.stateDir, world.repo).records.find(
+      (one) => one.phase === "W1b",
+    );
+    expect(started?.model).toEqual({ named: "opus", resolved: "opus", slot: null, tier: "opus" });
+  });
+
+  test("workflow.crew.max of the project sets the ceiling", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ max: 1 });
+    await otherCrew(world.paths.stateDir, 1, "blocked");
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app B6b portal-live: 1 of 1 crew sessions running on this machine; it starts when one finishes",
+    ]);
+  });
+
+  test("D54: past 85% of the 5-hour window, a new opus crew session is queued with that reason", async () => {
+    const world = await ledWorld();
+    world.writeConfig({ usagePercent: 85 });
+    recordUsageWindow(
+      world.paths,
+      { rate_limits: { five_hour: { resets_at: T0 / 1000 + 3600, used_percentage: 90 } } },
+      T0,
+    );
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "queued C my-app W1a launcher: the 5-hour usage window is at 90%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
+    ]);
+    // A sonnet crew session is not held by the window.
+    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
+    expect(world.out[1]).toStartWith("started C my-app B6b portal-live (");
+  });
+
+  test("D54: the gateway's opus slot with its fallback chain on lifts the guard; the window still holds without it", async () => {
+    const world = await ledWorld();
+    recordUsageWindow(
+      world.paths,
+      { rate_limits: { five_hour: { resets_at: T0 / 1000 + 3600, used_percentage: 90 } } },
+      T0,
+    );
+    // A chain saved but the gateway off: no fallback answers, so the window still holds.
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(OPUS_CHAIN)}\n`, {
+      mode: 0o600,
+    });
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    expect(world.out[0]).toStartWith(
+      "queued C my-app W1a launcher: the 5-hour usage window is at 90%",
+    );
+    // The gateway on, the chain in use with its fallback on: the guard does not hold.
+    mkdirSync(dirname(world.paths.settingsFile), { recursive: true });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
+    );
+    const lifted = [
+      "start",
+      "W1b",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(lifted, world.ctx())).toBe(0);
+    expect(world.out[1]).toStartWith("started C my-app W1b launcher (");
+    // The guard never watches while the chain answers past the window: no note line.
+    expect(world.out).toHaveLength(2);
+  });
+
+  test("D54: with no reading, the note is silent when the opus slot's chain lifts the guard", async () => {
+    const world = await ledWorld();
+    mkdirSync(dirname(world.paths.gatewayConfigFile), { mode: 0o700, recursive: true });
+    writeFileSync(world.paths.gatewayConfigFile, `${JSON.stringify(OPUS_CHAIN)}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(
+      world.paths.settingsFile,
+      JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20199" } }),
+    );
+    const opusArgs = [
+      "start",
+      "W1a",
+      "--slug",
+      "launcher",
+      "--kind",
+      "architecture",
+      "--brief",
+      world.brief,
+    ];
+    expect(await runCrew(opusArgs, world.ctx())).toBe(0);
+    // The guard never watches while the chain answers past the window: no note line.
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith("started C my-app W1a launcher (");
+  });
+
+  test("D54: a window that cannot be read never holds, and the start says so once", async () => {
+    const world = await ledWorld();
     const opusArgs = [
       "start",
       "W1a",
@@ -558,22 +1015,12 @@ describe("D25: the queue — still one line, at once", () => {
     ];
     expect(await runCrew(opusArgs, world.ctx())).toBe(0);
     expect(world.out[0]).toStartWith("started C my-app W1a launcher (");
-    expect(onlyCrew(world.paths.stateDir, world.repo).model).toEqual({
-      named: "opus",
-      resolved: "opus",
-      slot: null,
-      tier: "opus",
-    });
-  });
-
-  test("workflow.crew.max of the project sets the cap", async () => {
-    const world = await ledWorld();
-    world.writeConfig({ max: 1 });
-    await otherCrew(world.paths.stateDir, 1, "blocked");
-    expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
-    expect(world.out).toEqual([
-      "queued C my-app B6b portal-live: 1 of 1 running; it starts when one finishes",
-    ]);
+    expect(world.out[1]).toBe(UNREAD);
+    // A sonnet crew session has nothing to say about the window.
+    expect(await runCrew(startArgs(world.brief), world.ctx({ randomSuffix: () => "000004" }))).toBe(
+      0,
+    );
+    expect(world.out).toHaveLength(3);
   });
 
   test("less free memory than workflow.crew.memoryGb: queued", async () => {
@@ -720,7 +1167,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
     expect(world.out).toEqual([
       "failed C my-app B6b portal-live: claude --bg printed no line backgrounded · <id> · <name>: a session may have started; see claude agents",
     ]);
-    expect(world.claudeCalls()).toHaveLength(1);
+    expect(world.claudeCalls()).toHaveLength(2);
     expect(existsSync(onlyCrew(world.paths.stateDir, world.repo).worktree)).toBe(true);
   });
 
@@ -756,7 +1203,7 @@ describe("a launch that fails: the crew session is failed, with the reason", () 
       const world = await ledWorld();
       expect(await runCrew(startArgs(world.brief), world.ctx({}, { FAKE_AGENTS: mode }))).toBe(1);
       expect(world.out).toEqual([`failed C my-app B6b portal-live: ${reason}`]);
-      expect(world.claudeCalls().map((call) => call[0])).toEqual(["--bg", "agents"]);
+      expect(world.claudeCalls().map((call) => call[0])).toEqual(["plugin", "--bg", "agents"]);
     }
   });
 });
@@ -799,5 +1246,220 @@ describe("two leads in one repository", () => {
       ["B6b", LEAD_SESSION, "LEAD my-app master-plan", "master-plan"],
       ["C5b", OTHER_SESSION, "LEAD my-app docs-plan", "docs-plan"],
     ]);
+  });
+});
+
+/**
+ * A crew session in this repository, in `state`, holding `files`: the state the file-clash check
+ * reads (D55).
+ */
+async function otherLeadCrew(
+  world: Awaited<ReturnType<typeof ledWorld>>,
+  change: {
+    files: string[];
+    id: string;
+    name: string;
+    state: string;
+    leadName?: string;
+    leadSessionId?: string;
+  },
+): Promise<CrewRecord> {
+  return await createCrew(
+    world.paths.stateDir,
+    {
+      base: null,
+      baseRef: "main",
+      branch: `crew/${change.id}`,
+      effort: "high",
+      files: change.files,
+      id: change.id,
+      kind: "build",
+      lastLine: null,
+      leadName: change.leadName ?? "LEAD my-app docs-plan",
+      leadSessionId: change.leadSessionId ?? OTHER_SESSION,
+      memoryMb: null,
+      model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+      name: change.name,
+      permissionMode: "auto",
+      phase: "C5b",
+      plan: "docs-plan",
+      pr: null,
+      questions: [],
+      repo: world.repo,
+      reportPath: null,
+      sessionId: null,
+      shortId: null,
+      slug: "trim",
+      state: change.state,
+      waitsFor: [],
+      worktree: join(world.repo, ".claude", "worktrees", "crew-C5b-trim"),
+    },
+    T0,
+  );
+}
+
+/** The file-clash events of the world's repository. */
+function clashEvents(world: ReturnType<typeof crewWorld>) {
+  return readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+    (one) => one.type === "clash",
+  );
+}
+
+/** The line the start of B6b prints after its own line when it clashes over `README.md`. */
+const CLASH_LINE =
+  "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: README.md — not blocked; two leads may mean to share a file";
+
+describe("D55: a file clash between two leads, warned at crew start", () => {
+  test("shared files: one line naming the other lead, its crew session and the files", async () => {
+    const world = await ledWorld();
+    const other = await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    const head = git(world.repo, "rev-parse", "HEAD").trim().slice(0, 7);
+    const code = await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx());
+    expect(world.err).toEqual([]);
+    expect(code).toBe(0);
+    expect(world.out).toEqual([
+      `started C my-app B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head}`,
+      CLASH_LINE,
+    ]);
+    expect(clashEvents(world)).toMatchObject([
+      { crew: other.id, lead: OTHER_SESSION, name: other.name, state: "working", text: CLASH_LINE },
+    ]);
+  });
+
+  test("disjoint files: no line and no event", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", ".gitignore"), world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(clashEvents(world)).toEqual([]);
+  });
+
+  test("a crew session of the same lead is no clash: one lead means one plan", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      leadName: "LEAD my-app master-plan",
+      leadSessionId: LEAD_SESSION,
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(clashEvents(world)).toEqual([]);
+  });
+
+  test("a queued crew session of another lead clashes too", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "queued",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx())).toBe(0);
+    expect(world.out[1]).toBe(CLASH_LINE);
+    expect(clashEvents(world).map((one) => one.state)).toEqual(["queued"]);
+  });
+
+  test("two globs that match no file yet, under one prefix, overlap", async () => {
+    const world = await ledWorld();
+    await otherLeadCrew(world, {
+      files: ["src/crew/**"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "src/crew/new.ts"), world.ctx())).toBe(
+      0,
+    );
+    expect(world.out[1]).toBe(
+      "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: src/crew/new.ts and src/crew/** (no file matches both yet) — not blocked; two leads may mean to share a file",
+    );
+    // The rule on its own: the tracked files decide when they can; a glob against a path that
+    // does not exist yet is exact (the glob says whether it names it); two globs or two paths
+    // are judged by their fixed prefixes; different folders never clash.
+    expect(filesOverlap(["src/crew/**"], ["src/crew/new.ts"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["src/crew/**", "src/crew/new.ts"],
+    });
+    expect(filesOverlap(["src/crew/new.ts"], ["src/crew/*.ts"], [])).toEqual({
+      files: [],
+      patterns: ["src/crew/new.ts", "src/crew/*.ts"],
+    });
+    expect(filesOverlap(["src/crew/*.ts"], ["src/other/new.ts"], [])).toBeNull();
+    // `*` does not cross `/`, so `src/crew/*.ts` can never name the file in `deep/`: the glob
+    // is asked, and it says no.
+    expect(
+      filesOverlap(["src/crew/*.ts"], ["src/crew/deep/new.ts"], ["src/crew/start.ts"]),
+    ).toBeNull();
+    // A pattern that starts with a wildcard names no fixed place: `*.md` is never under a
+    // folder, while `**/*.ts` may reach anywhere.
+    expect(filesOverlap(["*.md"], ["src/brand-new.ts"], ["README.md"])).toBeNull();
+    expect(filesOverlap(["*.md"], ["*.ts"], ["README.md"])).toBeNull();
+    expect(filesOverlap(["**/*.ts"], ["src/brand-new.ts"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["**/*.ts", "src/brand-new.ts"],
+    });
+    // A `./` prefix is the same path as git spells it.
+    expect(filesOverlap(["./README.md"], ["README.md"], ["README.md"])).toEqual({
+      files: ["README.md"],
+      patterns: null,
+    });
+    // A bare folder names everything under it, so a glob whose own fixed prefix is inside that
+    // folder can only name files the folder holds.
+    expect(filesOverlap(["src/crew/*.ts"], ["src/crew"], ["README.md"])).toEqual({
+      files: [],
+      patterns: ["src/crew/*.ts", "src/crew"],
+    });
+    expect(filesOverlap(["src/crew/*.ts"], ["src/crew/deep"], ["README.md"])).toBeNull();
+    // Two globs that both match real files are decided by the files they match.
+    expect(
+      filesOverlap(["src/crew/*.ts"], ["src/crew/**"], ["src/crew/start.ts", "src/crew/diff.ts"]),
+    ).toEqual({ files: ["src/crew/diff.ts", "src/crew/start.ts"], patterns: null });
+  });
+
+  test("the other lead's watch says the clash as one line, once", async () => {
+    const world = await ledWorld();
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app docs-plan",
+        plan: "docs-plan",
+        repo: world.repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    await otherLeadCrew(world, {
+      files: ["README.md"],
+      id: "C5b-trim-4d5e6f",
+      name: "C my-app C5b trim",
+      state: "working",
+    });
+    expect(await runCrew(startArgs(world.brief, "--files", "README.md"), world.ctx())).toBe(0);
+    world.out.length = 0;
+    expect(
+      await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
+    ).toBe(0);
+    expect(world.out).toEqual([CLASH_LINE]);
+    // Once: the next pass says nothing new.
+    world.out.length = 0;
+    expect(
+      await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
+    ).toBe(0);
+    expect(world.out).toEqual([]);
   });
 });

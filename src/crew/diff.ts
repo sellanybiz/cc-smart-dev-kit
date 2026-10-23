@@ -18,8 +18,20 @@ import type { Env } from "./context";
 /** How long one git call may take (a `diff`). */
 const GIT_TIMEOUT_MS = 20_000;
 
+/** One changed file, as git's numstat counts it. */
+export interface DiffFile {
+  /** The lines added; null for a binary file, whose lines cannot be counted. */
+  added: null | number;
+  /** The lines removed; null for a binary file. */
+  deleted: null | number;
+  /** The path, as git names it. */
+  path: string;
+}
+
 /** What a diff against the base found. */
 export interface DiffFacts {
+  /** Every changed file, in git's own order. */
+  byFile: DiffFile[];
   /** The files that changed. */
   files: number;
   /** The lines added. */
@@ -37,22 +49,23 @@ export class DiffError extends Error {
 
 /**
  * One record of `git diff --numstat -z`: the lines added, the lines removed, and the path. A
- * binary file shows `-` for both counts.
+ * binary file shows `-` for both counts, which reads as null: it is a changed file whose lines
+ * cannot be counted, never a file that changed no line.
  */
-function numstatRecord(record: string): { added: number; deleted: number; path: string } | null {
+function numstatRecord(record: string): DiffFile | null {
   const found = /^(-|\d+)\t(-|\d+)\t([\s\S]+)$/.exec(record);
   if (found?.[1] === undefined || found[2] === undefined || found[3] === undefined) return null;
   return {
-    added: found[1] === "-" ? 0 : Number(found[1]),
-    deleted: found[2] === "-" ? 0 : Number(found[2]),
+    added: found[1] === "-" ? null : Number(found[1]),
+    deleted: found[2] === "-" ? null : Number(found[2]),
     path: found[3],
   };
 }
 
 /**
- * What `base`..`HEAD` changed in `folder`: the counts and the paths. Throws `DiffError` when git
- * cannot give the diff (no git, a base that is gone, a folder that is no worktree), or prints a
- * record this reader cannot read.
+ * What `base`..`HEAD` changed in `folder`: the counts, the paths and each file's own counts.
+ * Throws `DiffError` when git cannot give the diff (no git, a base that is gone, a folder that
+ * is no worktree), or prints a record this reader cannot read.
  */
 export function diffAgainstBase(folder: string, baseSha: string, env: Env): DiffFacts {
   const run = runGit(
@@ -68,18 +81,24 @@ export function diffAgainstBase(folder: string, baseSha: string, env: Env): Diff
   }
   let insertions = 0;
   let deletions = 0;
-  const paths: string[] = [];
+  const byFile: DiffFile[] = [];
   for (const record of run.out.split("\0")) {
     if (record === "") continue;
     const one = numstatRecord(record);
     if (one === null) {
       throw new DiffError(`git diff printed a record this reader cannot read: ${record}`);
     }
-    insertions += one.added;
-    deletions += one.deleted;
-    paths.push(one.path);
+    insertions += one.added ?? 0;
+    deletions += one.deleted ?? 0;
+    byFile.push(one);
   }
-  return { deletions, files: paths.length, insertions, paths };
+  return {
+    byFile,
+    deletions,
+    files: byFile.length,
+    insertions,
+    paths: byFile.map((one) => one.path),
+  };
 }
 
 /**
@@ -93,15 +112,23 @@ export function diffAgainstBase(folder: string, baseSha: string, env: Env): Diff
  */
 export function outsideBrief(paths: readonly string[], patterns: readonly string[]): string[] {
   if (patterns.length === 0) return [];
-  const globs = patterns.map((pattern) => new Bun.Glob(pattern));
+  const globs = patterns.map(filePattern);
   return paths.filter(
-    (path) =>
-      !patterns.some((pattern, index) => matchesPattern(path, pattern, globs[index] as Bun.Glob)),
+    (path) => !globs.some((one) => matchesFilePattern(path, one.pattern, one.glob)),
   );
 }
 
-/** True when `path` is the file or is under the folder `pattern` names. */
-function matchesPattern(path: string, pattern: string, glob: Bun.Glob): boolean {
+/**
+ * A `--files` pattern as git spells a path, with its glob: a leading `./` dropped, because git's
+ * own paths never carry one and a person may type it (`./src/x.ts` names `src/x.ts`).
+ */
+export function filePattern(pattern: string): { glob: Bun.Glob; pattern: string } {
+  const named = pattern.startsWith("./") ? pattern.slice(2) : pattern;
+  return { glob: new Bun.Glob(named), pattern: named };
+}
+
+/** True when `path` is the file or is under the folder `pattern` names (a glob included). */
+export function matchesFilePattern(path: string, pattern: string, glob: Bun.Glob): boolean {
   if (path === pattern) return true;
   if (pattern.endsWith("/")) return path.startsWith(pattern);
   if (!/[*?[\]{}]/.test(pattern)) return path.startsWith(`${pattern}/`);

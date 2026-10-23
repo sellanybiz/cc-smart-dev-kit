@@ -3,7 +3,7 @@ name: review-fires-on-done
 description: >-
   "I'm done, does it look right?" is the review skill's trigger. Finding: IN-19.
 tags: [gate, trigger]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 10
   allowed_tools: [Read, Glob, Grep, Skill, Bash]

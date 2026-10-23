@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { tildify } from "../cli/paths";
 import { type ChromeWorld, chromeWorld, writeWorldToken } from "../testing/chrome-world";
@@ -23,7 +24,36 @@ describe("browserChecks", () => {
     writeWorldToken(world);
     const checks = browserChecks(world.paths, world.deps);
     expect(checks.length).toBeGreaterThan(4);
-    expect(checks.every((check) => check.section === "browser")).toBe(true);
+    expect(checks.every((check) => check.group === "browser")).toBe(true);
+  });
+
+  test("Chrome closed — the state a machine restart leaves — is information, not a failure", () => {
+    // Chrome's lock from before a restart names a pid that no longer runs: the launcher will start
+    // Chrome itself, so `doctor` says so and nothing is wrong.
+    const closed = chromeWorld();
+    closed.withProfile({ fileUrls: true });
+    writeWorldToken(closed);
+    const closedLine = browserChecks(closed.paths, {
+      ...closed.deps,
+      isAlive: () => false,
+      readlink: () => `${hostname()}-999999`,
+    }).find((check) => check.text.includes("Google Chrome is not running"));
+    expect(closedLine?.ok).toBe(true);
+    expect(closedLine?.info).toBe(true);
+    expect(closedLine?.text).toContain("is not running: the first browser call starts it");
+    expect(closedLine?.text).toContain('the "claude-code" profile');
+
+    // A lock naming a live pid is a running Chrome, and the line says the call connects to it.
+    const running = chromeWorld();
+    running.withProfile({ fileUrls: true });
+    writeWorldToken(running);
+    const runningLine = browserChecks(running.paths, {
+      ...running.deps,
+      isAlive: (pid) => pid === 4242,
+      readlink: () => `${hostname()}-4242`,
+    }).find((check) => check.text.includes("Google Chrome is running"));
+    expect(runningLine?.ok).toBe(true);
+    expect(runningLine?.text).toBe("Google Chrome is running: the browser connects to it");
   });
 
   test("no Chrome: one failing line, naming where it looked and what to run", () => {
@@ -32,7 +62,7 @@ describe("browserChecks", () => {
     expect(checks).toHaveLength(1);
     expect(checks[0]?.ok).toBe(false);
     expect(checks[0]?.text).toContain("Google Chrome is not installed");
-    expect(checks[0]?.text).toContain("browser setup");
+    expect(checks[0]?.fix).toBe("install Google Chrome, then run: cc-smart-dev-kit browser setup");
   });
 
   test("no profile: a failing line whose fix is the setup command", () => {
@@ -41,7 +71,7 @@ describe("browserChecks", () => {
     expect(checks).toHaveLength(2);
     expect(checks[1]?.ok).toBe(false);
     expect(checks[1]?.text).toContain('the Chrome profile "claude-code" is not in');
-    expect(checks[1]?.text).toContain("browser setup");
+    expect(checks[1]?.fix).toBe("cc-smart-dev-kit browser setup");
   });
 
   test("no extension in the profile: the line names the Web Store page", () => {
@@ -50,7 +80,7 @@ describe("browserChecks", () => {
     const checks = browserChecks(world.paths, world.deps);
     const line = checks.find((check) => check.text.includes("Playwright extension"));
     expect(line?.ok).toBe(false);
-    expect(line?.text).toContain(PLAYWRIGHT_EXTENSION_URL);
+    expect(line?.fix).toContain(PLAYWRIGHT_EXTENSION_URL);
   });
 
   test("another extension in the profile: a warning naming it, and the open upstream bug", () => {
@@ -103,8 +133,8 @@ describe("browserChecks", () => {
       check.text.includes("file://"),
     );
     expect(offLine?.ok).toBe(false);
-    expect(offLine?.text).toContain(PLAYWRIGHT_EXTENSION_SETTINGS_URL);
-    expect(offLine?.text).toContain("Allow access to file URLs");
+    expect(offLine?.fix).toContain(PLAYWRIGHT_EXTENSION_SETTINGS_URL);
+    expect(offLine?.fix).toContain("Allow access to file URLs");
 
     const on = chromeWorld();
     on.withProfile({ fileUrls: true });
@@ -130,8 +160,9 @@ describe("browserChecks", () => {
       check.text.includes("token"),
     );
     expect(missing?.ok).toBe(false);
-    expect(missing?.text).toContain("browser token");
-    expect(missing?.text).toContain("browser setup");
+    expect(missing?.fix).toBe(
+      "cc-smart-dev-kit browser setup, then cc-smart-dev-kit browser token",
+    );
 
     const token = `${"A".repeat(40)}_-b`;
     writeWorldToken(world, token);
@@ -182,7 +213,7 @@ describe("what 0.3.0 left behind", () => {
     const line = checks.find((check) => check.text.includes("0.3.0 shared browser's profile"));
     expect(line?.warn).toBe(true);
     expect(line?.ok).toBe(true); // a warning is never a failure: doctor still exits 0
-    expect(line?.section).toBe("browser");
+    expect(line?.group).toBe("browser");
     expect(line?.text).toContain(
       `is still at ${tildify(profile, world.home)} and may hold sign-ins`,
     );

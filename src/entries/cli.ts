@@ -2,13 +2,14 @@ import { existsSync, statSync } from "node:fs";
 import { uptime } from "node:os";
 import { join, resolve } from "node:path";
 import { browserCheckCommand, runBrowserCheck } from "../browser/check";
+import { desktopEnvironment, realStartChrome, runDesktopLookup } from "../browser/chrome-start";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { runBrowserMcp } from "../browser/launcher";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
 import { oldBunRefusal } from "../cli/bun-check";
-import { runDoctor } from "../cli/doctor";
+import { DOCTOR_FLAGS, runDoctor } from "../cli/doctor";
 import {
   asksForHelp,
   commandWords,
@@ -25,9 +26,13 @@ import { cliPaths } from "../cli/paths";
 import { runProjectInit } from "../cli/project-init";
 import { runReport } from "../cli/report";
 import { runRestore } from "../cli/restore";
-import { canHideInput, cleanSecretLine, readSecretLine } from "../cli/secret-line";
+import { cleanSecretLine } from "../cli/secret-line";
 import { runSetup } from "../cli/setup";
 import { runStatusline } from "../cli/statusline";
+import { runSubagentStatusline } from "../cli/subagent-statusline";
+import { createOut, dryRunEnding } from "../cli/ui/out";
+import { terminalPrompts } from "../cli/ui/prompt";
+import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { runCrew } from "../crew/command";
@@ -55,6 +60,8 @@ import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
 import { runOmniroute } from "../omniroute/commands";
 import { runPortal } from "../portal/command";
+import { probePortal, realPortalProbe, testPortalState } from "../portal/health";
+import { DEFAULT_PORTAL_PORT } from "../ports";
 import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { runSessions } from "../sessions/command";
@@ -134,8 +141,14 @@ const service = routerServiceKind(process.platform, (command) =>
 /** The Windows account a Scheduled Task runs as (`MACHINE\user`); null everywhere else. */
 const account = windowsAccount(process.env);
 
-/** Asks on the terminal; null when stdin is not one (a pipe, a script, a test). */
-const ask = process.stdin.isTTY ? (question: string) => confirm(question) : null;
+/**
+ * The questions every command asks, from their one home (`src/cli/ui/prompt.ts`); null when
+ * stdin is not a terminal (a pipe, a script, a test): then nothing is asked.
+ */
+const prompts = terminalPrompts(currentTerminal(process.env));
+
+/** A yes/no question whose default is no; null when there is no terminal to ask on. */
+const ask = prompts === null ? null : (question: string) => prompts.confirm(question, false);
 
 /**
  * The gateway commands' context. `src/gateway/context.ts` owns it — including the one decision
@@ -317,6 +330,10 @@ async function main(argv: string[]): Promise<number> {
       );
     case "usage":
       return runUsage(paths, rest, Date.now());
+    case "subagent-statusline":
+      // Claude Code runs it from the plugin's settings: its input on stdin, one JSON line
+      // per subagent row on stdout (`src/cli/subagent-statusline.ts`).
+      return runSubagentStatusline();
     case "report":
       // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
       return runReport(paths, rest, Date.now());
@@ -356,30 +373,43 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "doctor": {
-      const unknown = rest.filter((arg) => arg !== "--live");
+      const unknown = rest.filter((arg) => !DOCTOR_FLAGS.includes(arg));
       if (unknown.length > 0) {
         console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "doctor"));
         return 2;
       }
-      return runDoctor(paths, process.env, {
-        browser: realBrowserDoctorDeps(realMachine(process.env, null), paths.home),
-        bun: { path: process.execPath, version: Bun.version },
-        gateway: {
-          bundle: routerBundle(),
-          runner,
-          service,
-          machine: realMachine(process.env, null),
+      const doctorOut = createOut(currentTerminal(process.env));
+      const doctorPrint = { json: rest.includes("--json"), verbose: rest.includes("--verbose") };
+      return runDoctor(
+        paths,
+        process.env,
+        {
+          browser: realBrowserDoctorDeps(realMachine(process.env, null), paths.home),
+          bun: { path: process.execPath, version: Bun.version },
+          gateway: {
+            bundle: routerBundle(),
+            runner,
+            service,
+            machine: realMachine(process.env, null),
+          },
+          local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
+          mcp: realMcpDoctorDeps(),
+          portal: () =>
+            testPortalState(process.env) ?? probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
+          project: {
+            cwd: process.cwd(),
+            pluginHooksFile: join(pluginDir(), "hooks", "hooks.json"),
+          },
+          live: rest.includes("--live")
+            ? {
+                pluginDir: pluginDir(),
+                run: liveRunner,
+              }
+            : null,
         },
-        local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
-        mcp: realMcpDoctorDeps(),
-        project: { cwd: process.cwd(), pluginHooksFile: join(pluginDir(), "hooks", "hooks.json") },
-        live: rest.includes("--live")
-          ? {
-              pluginDir: pluginDir(),
-              run: liveRunner,
-            }
-          : null,
-      });
+        doctorOut,
+        doctorPrint,
+      );
     }
     case "hook": {
       const [name, ...extra] = rest;
@@ -450,14 +480,8 @@ async function main(argv: string[]): Promise<number> {
         env: process.env,
         stateDir: paths.stateDir,
         home: paths.home,
-        terminal:
-          process.stdin.isTTY && process.stdout.isTTY
-            ? {
-                confirm: (question) => confirm(question),
-                text: (question, fallback) => prompt(question, fallback) ?? fallback,
-              }
-            : null,
-        print: (line) => console.log(line),
+        prompts,
+        out: createOut(currentTerminal(process.env)),
         error: (line) => console.error(line),
       });
     }
@@ -571,6 +595,14 @@ async function main(argv: string[]): Promise<number> {
         // Runs until the MCP exits. Nothing here may write to stdout: it IS the MCP stream.
         return await runBrowserMcp(paths, extra, {
           chrome: browserDeps,
+          // This session's environment: the desktop lookup (the user manager's DISPLAY for a
+          // background session) and the environment of a Chrome the launcher starts itself.
+          env: process.env,
+          desktop: () =>
+            desktopEnvironment(process.env, {
+              platform: machine.platform,
+              run: (argv) => runDesktopLookup(argv, process.env),
+            }),
           log: (line) => console.error(`[cc-smart-dev-kit-browser] ${line}`),
           spawn: (argv, options) => {
             // The token goes on top of this process's environment: the MCP must find bun and
@@ -582,6 +614,7 @@ async function main(argv: string[]): Promise<number> {
             });
             return { exited: child.exited, kill: (signal) => child.kill(signal) };
           },
+          startChrome: realStartChrome,
           which: (command) => Bun.which(command),
         });
       }
@@ -593,14 +626,14 @@ async function main(argv: string[]): Promise<number> {
         }
         const apply = !extra.includes("--dry-run");
         const result = browserSetup(paths, browserDeps, { apply });
-        const lines = [
+        const browserOut = createOut(currentTerminal(process.env));
+        browserOut.marked([
           ...(result.changes.length > 0 ? result.changes : ["Nothing to change."]),
           ...result.info,
           ...result.notes,
           ...result.guide,
-        ];
-        console.log(lines.join("\n"));
-        if (!apply) console.log("Dry run: nothing was written or run.");
+        ]);
+        if (!apply) browserOut.say(dryRunEnding(["written", "run"]));
         return result.ok ? 0 : 1;
       }
       if (sub === "token") {
@@ -618,15 +651,17 @@ async function main(argv: string[]): Promise<number> {
           );
           return 0;
         }
-        const hide = canHideInput(process.stdin);
+        // The secret read of the prompts' one home: null where the terminal cannot hide what
+        // is typed, and then a terminal is refused (the token would show), never read with echo.
+        const secret = prompts?.secret ?? null;
         // The four outcomes (0 saved, 130 Ctrl+C, 1 a wrong shape, 1 a read that failed) are
         // decided in one place, `savePastedToken`, so each is tested there.
         return await savePastedToken(
           paths,
           {
-            isTTY: hide,
+            isTTY: process.stdin.isTTY === true,
             readAll: () => Bun.stdin.text(),
-            ...(hide ? { readSecret: () => readSecretLine(process.stdin) } : {}),
+            ...(secret === null ? {} : { readSecret: secret }),
           },
           (line) => console.log(line),
           (line) => console.error(line),
@@ -716,6 +751,7 @@ async function main(argv: string[]): Promise<number> {
       const unknown = rest.filter(
         (arg, index) =>
           arg !== "--clean" &&
+          arg !== "--json" &&
           arg !== "--no-fetch" &&
           arg !== "--remove" &&
           (removeAt === -1 || index !== removeAt + 1),
@@ -724,10 +760,18 @@ async function main(argv: string[]): Promise<number> {
         console.error(usageError(`Unknown option: ${unknown.join(" ")}`, "worktrees"));
         return 2;
       }
+      // `--json` is the answer a page reads: it lists, and changes nothing.
+      if (rest.includes("--json") && (rest.includes("--clean") || removeAt !== -1)) {
+        console.error(
+          usageError("--json prints the list: it takes neither --clean nor --remove", "worktrees"),
+        );
+        return 2;
+      }
       return await runWorktrees(
         paths,
         {
           clean: rest.includes("--clean"),
+          json: rest.includes("--json"),
           noFetch: rest.includes("--no-fetch"),
           remove: removeTarget,
         },
@@ -739,36 +783,18 @@ async function main(argv: string[]): Promise<number> {
     case "omniroute":
       return runOmniroute(rest, omnirouteContext(paths));
     case "portal":
-      return runPortal(
+      return await runPortal(
         {
           bunPath: process.execPath,
           env: process.env,
           error: (line) => console.error(line),
+          kill: (pid) => process.kill(pid, "SIGTERM"),
+          machine: realMachine(process.env, null),
           paths,
-          // The child runs from a copy, where none of the plugin's other files are: it is told
-          // this folder (`--plugin-dir`), and resolves each file from the installed version.
+          // The portal's bundle is copied from this command's own plugin folder, which is the
+          // version Claude Code installed (the launcher runs this CLI from it).
           pluginDir: pluginDir(),
-          runChild: (argv, options) => {
-            // The child owns the terminal while it runs: the link is printed where the person
-            // is looking, and Ctrl+C reaches both through the same process group. Its exit
-            // code is this command's — 130 when Ctrl+C ended it.
-            try {
-              return (
-                Bun.spawnSync(argv, {
-                  cwd: options.cwd,
-                  env: options.env,
-                  stderr: "inherit",
-                  stdin: "inherit",
-                  stdout: "inherit",
-                }).exitCode ?? 1
-              );
-            } catch (error) {
-              console.error(
-                `cc-smart-dev-kit portal: ${error instanceof Error ? error.message : String(error)}`,
-              );
-              return 1;
-            }
-          },
+          print: (line) => console.log(line),
         },
         rest,
       );

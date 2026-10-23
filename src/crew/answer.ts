@@ -16,20 +16,39 @@
  *   on disk, so the crew session picks up where it stopped. Because of that copy, agent view is read
  *   first: a stopped record whose session still has a process is sent the message instead.
  *
+ * **A resume runs in the crew session's own worktree, never in the main checkout** where the lead
+ * happens to be: a session brought back in the main checkout is marked failed by its own
+ * `crew-role` start check (the bug of 2026-10-23). A crew session with no worktree any more is
+ * refused with one line. `resumePlace` is the one home for that rule (`crew answer`, the watch's
+ * resumes and `crew resume` read it).
+ *
  * **A crew session the store does not know is never answered.** The store is what says a session is a
  * crew session (D35); a name alone is not enough.
  */
 import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
+import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
-import { callClaude, findClaude } from "./claude";
+import { callClaude, findClaude, sessionFlags } from "./claude";
 import type { CrewContext } from "./context";
-import { answerCrewQuestion, type CrewRecord, listCrew, readReport } from "./store";
+import {
+  answerCrewQuestion,
+  type CrewRecord,
+  crewMcpFile,
+  crewSettingsFile,
+  listCrew,
+  readReport,
+} from "./store";
 
 /** What `crew answer` was asked, already checked to be well formed. */
 export interface AnswerArgs {
   /** The crew session's name (or its id). */
   crew: string;
+  /**
+   * The person acted through the portal (D52): no Claude Code session runs this command. The
+   * portal's child passes `--as-person` (`parseAnswerArgs`).
+   */
+  asPerson?: boolean;
   /** The answer. */
   text: string;
 }
@@ -44,14 +63,6 @@ const REACHABLE_STATES = ["starting", "working", "blocked", "paused", "quiet"] a
 /** True when `state` is one a crew session can still take an answer in. */
 function isReachable(state: string): boolean {
   return (REACHABLE_STATES as readonly string[]).includes(state);
-}
-
-/**
- * The crew session `name` names, of `records`: by its name, or by its id. Null when no crew session has
- * that name; the caller then says which names there are.
- */
-export function findCrew(records: readonly CrewRecord[], name: string): null | CrewRecord {
-  return records.find((one) => one.name === name) ?? records.find((one) => one.id === name) ?? null;
 }
 
 /**
@@ -91,7 +102,11 @@ function endedItsPhase(record: CrewRecord): boolean {
 
 /** `crew answer`; the exit code. */
 export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise<number> {
-  const read = readCaller("answer", ctx);
+  const read = readCaller(
+    "answer",
+    ctx,
+    args.asPerson === true ? { asPerson: true, session: "optional" } : { session: "required" },
+  );
   if (!read.ok) {
     for (const line of read.lines) ctx.error(line);
     return 1;
@@ -104,15 +119,12 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     ctx.error(`crew answer: the store could not be read: ${reasonOf(error)}`);
     return 1;
   }
-  const record = findCrew(records, args.crew);
-  if (record === null) {
-    ctx.error(
-      `crew answer: no crew session named "${args.crew}" is recorded in this repository${
-        records.length === 0 ? "" : ` (the crew here: ${records.map((one) => one.name).join(", ")})`
-      }`,
-    );
+  const found = findCrew(records, args.crew, "answer");
+  if ("refusal" in found) {
+    for (const line of found.refusal.lines) ctx.error(line);
     return 1;
   }
+  const { record } = found;
   const index = openQuestionIndex(record);
   if (index === null) {
     ctx.error(
@@ -134,9 +146,14 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
       return 1;
     }
     // The store says stopped; agent view says whether a process is there. `claude --bg --resume`
-    // on a session that runs starts a copy beside it, so a live one is sent the message instead.
-    const rows = agentRows(ctx);
-    if (!isLiveRow(rows === null ? null : rowOf(rows, record))) way = "resume";
+    // on a session that runs starts a copy beside it, so a live one is sent the message instead —
+    // and a view that cannot be read refuses rather than guessing (it could be either).
+    const liveness = sessionLiveness(ctx, record);
+    if (liveness === "unknown") {
+      ctx.error(`crew answer: ${record.name}: ${UNREADABLE_VIEW_WHY}`);
+      return 1;
+    }
+    if (liveness === "dead") way = "resume";
   } else if (!isReachable(record.state)) {
     ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
     return 1;
@@ -176,22 +193,109 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
 /** What a resume of a stopped crew session gave back. */
 export type ResumeResult = { ok: true } | { ok: false; why: string };
 
+/** Where a crew session comes back: its own worktree; or why it cannot be brought back. */
+export type ResumePlace = { folder: string; ok: true } | { ok: false; why: string };
+
 /**
- * Resumes the stopped crew session `record` with `text` as its next prompt:
- * `claude --bg --resume <session id> "<text>"`. The command runs in the crew session's own worktree,
- * so the session goes on where it stopped (it keeps its name, its worktree and its conversation).
- * A crew session with no session id cannot be resumed, and a `claude` that refuses is reported with
- * its own words. `crew answer` and the lead's watch (`watch.ts`) both resume this way: one home
- * for the transport (D42).
+ * The folder a crew session's session is brought back in: **its own worktree**. `claude respawn`
+ * does not re-apply `-w` (its restart flags leave it out, read from the 2.1.309 binary), so a
+ * respawned `--bg -w` session comes back in the folder it was launched from — the main checkout —
+ * and its own start hook marks it failed (the bug of 2026-10-23). A resume never falls back to
+ * the caller's folder, and a worktree that is not there any more is a refusal: there is nowhere
+ * to resume in.
+ */
+export function resumePlace(record: CrewRecord): ResumePlace {
+  if (!existsSync(record.worktree)) {
+    return { ok: false, why: `${record.name} has no worktree at ${record.worktree} any more` };
+  }
+  return { folder: record.worktree, ok: true };
+}
+
+/** What agent view says about a crew session's process: it runs, it does not, or the view cannot say. */
+export type Liveness = "dead" | "live" | "unknown";
+
+/**
+ * Whether a crew session's session still has a process. Agent view is the one witness: a live one
+ * must never be resumed (`--bg --resume` starts a copy beside it), and **a view that cannot be
+ * read must not be read as dead** — that would start the very copy the guard exists to prevent.
+ * A missing `claude` is the resume's own refusal (`resumeSession`), not this one, so it counts as
+ * dead and the refusal that names it is the one said.
+ */
+export function sessionLiveness(ctx: CrewContext, record: CrewRecord): Liveness {
+  const rows = agentRows(ctx);
+  if (rows === null) {
+    const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
+    return claude === null ? "dead" : "unknown";
+  }
+  return isLiveRow(rowOf(rows, record)) ? "live" : "dead";
+}
+
+/**
+ * Why a command refuses to resume when agent view could not be read: it could be either, and a
+ * copy is worse than a second try. One home for the sentence (`crew answer`, `crew resume`, the
+ * watch's `resumeOne`).
+ */
+export const UNREADABLE_VIEW_WHY =
+  "agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again";
+
+/**
+ * The arguments that bring a crew session back: `claude --bg --resume <session id>` with what
+ * `crew start` gave it — **the record's own files** (`--strict-mcp-config --mcp-config <mcp.json>`
+ * and `--settings <settings.json>`) and the model, effort, permission mode and autocompact it was
+ * launched with (`sessionFlags`, the same home the launch reads them from) — and then the text,
+ * when there is one. Without the files a resumed session is a plain session: no `CREW_ENV` (so no
+ * longer a crew session), every plugin and connector back, every MCP server loaded, the lean start
+ * undone (`crew start`). The files are read from the store, never rebuilt. **`--mcp-config` comes
+ * before `--settings`**: it takes any number of files, so a prompt after it would be read as one
+ * more config file (proved live on 2.1.309, `launchArgs`), and `--settings` takes one value and
+ * ends the flag list.
+ */
+export function resumeArgs(
+  launch: { effort: string; model: string; permissionMode: string; sessionId: string },
+  files: { mcpFile: null | string; settingsFile: string },
+  text: null | string,
+): string[] {
+  const args = [
+    "--bg",
+    "--resume",
+    launch.sessionId,
+    ...sessionFlags(launch.model, launch.effort, launch.permissionMode),
+  ];
+  if (files.mcpFile !== null) args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
+  args.push("--settings", files.settingsFile);
+  if (text !== null) args.push(text);
+  return args;
+}
+
+/**
+ * Resumes the crew session `record` in its own worktree (`resumePlace`), with `text` as its next
+ * prompt when there is one, so the session goes on where it stopped (it keeps its name, its
+ * worktree, its conversation and its lean start). `--bg --resume` starts in the folder the
+ * command runs in, which is why the folder is the worktree; on a session that still has a
+ * process it starts a copy and says so, so a caller reads agent view first. A crew session with
+ * no session id, whose settings file is gone, or a `claude` that refuses is reported with the
+ * reason. `crew answer`, `crew resume`, `crew resume --paused` and the lead's watch (`watch.ts`)
+ * all resume this way: one home for the transport (D42).
  */
 export async function resumeSession(
   ctx: CrewContext,
   record: CrewRecord,
-  text: string,
+  text: null | string,
 ): Promise<ResumeResult> {
   if (record.sessionId === null) {
     return { ok: false, why: `${record.name} has no session to resume` };
   }
+  const place = resumePlace(record);
+  if (!place.ok) return { ok: false, why: place.why };
+  // Its own settings: without them the session comes back as a plain one, not as this crew session.
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
+  if (!existsSync(settingsFile)) {
+    return {
+      ok: false,
+      why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`,
+    };
+  }
+  const mcpFile = crewMcpFile(ctx.paths.stateDir, record.repo, record.id);
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) {
     return {
@@ -200,8 +304,21 @@ export async function resumeSession(
     };
   }
   const deps = claudeDeps(ctx);
-  const folder = existsSync(record.worktree) ? record.worktree : ctx.cwd;
-  const called = callClaude(deps, claude, ["--bg", "--resume", record.sessionId, text], folder);
+  const called = callClaude(
+    deps,
+    claude,
+    resumeArgs(
+      {
+        effort: record.effort,
+        model: record.model.named,
+        permissionMode: record.permissionMode,
+        sessionId: record.sessionId,
+      },
+      { mcpFile: existsSync(mcpFile) ? mcpFile : null, settingsFile },
+      text,
+    ),
+    place.folder,
+  );
   if (!called.ok) return { ok: false, why: called.why };
   if (called.run.exitCode !== 0) {
     const last = `${called.run.stdout}\n${called.run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";

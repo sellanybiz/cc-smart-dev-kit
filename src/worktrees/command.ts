@@ -35,6 +35,7 @@ import type { CliPaths } from "../cli/paths";
 import { runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { autoCleanFiles, readRepoRecord } from "./auto-state";
 import { canGo, cleanFinished, forgottenLine, holdCleanLock } from "./clean";
 import {
   deleteMergedBranch,
@@ -51,6 +52,11 @@ export const DEFAULT_BASE = "main";
 export interface WorktreesOptions {
   /** `--clean`: remove every finished worktree, with its branch. */
   clean: boolean;
+  /**
+   * `--json`: print the answer the portal's `/api/worktrees` shows (`worktreesAnswerOf`) and
+   * change nothing. The command line refuses it with `--clean` or `--remove`.
+   */
+  json: boolean;
   /** `--remove <path>`: remove that one now, without the one-hour wait. */
   remove: null | string;
   /** `--no-fetch`: judge against `origin/<base>` as it is. */
@@ -80,14 +86,179 @@ function describe(worktree: ScannedWorktree): string {
   return state.finished ? "FINISHED" : `kept: ${state.why}`;
 }
 
-function show(scanned: ScannedWorktree[]): void {
+/**
+ * Where a command's lines go: the terminal in use, a collector in the portal. One home for the
+ * rule every command the portal shows follows (`.claude/rules/portal.md`).
+ */
+export interface WorktreesSinks {
+  error: (line: string) => void;
+  print: (line: string) => void;
+}
+
+const CONSOLE_SINKS: WorktreesSinks = {
+  error: (line) => console.error(line),
+  print: (line) => console.log(line),
+};
+
+function show(scanned: ScannedWorktree[], print: (line: string) => void): void {
   for (const worktree of scanned) {
     const { branch, head, path } = worktree.listed;
     const name = basename(path).padEnd(30);
     const on = (branch ?? `detached at ${head.slice(0, 9)}`).padEnd(42);
-    console.log(`  ${name} ${on} ${describe(worktree)}`);
+    print(`  ${name} ${on} ${describe(worktree)}`);
   }
-  console.log();
+  print("");
+}
+
+/** One worktree, as `--json` and the portal's `/api/worktrees` show it. */
+export interface WorktreeItem {
+  branch: null | string;
+  /** `main`, a folder that is gone, finished, or kept with its reason. */
+  kind: "finished" | "gone" | "kept" | "main";
+  /** The commit it is on. */
+  head: string;
+  /** Minutes since git last wrote to it; null for the main checkout and a folder that is gone. */
+  idleMinutes: null | number;
+  path: string;
+  /** Why it is kept; null when it is finished or the main checkout. */
+  why: null | string;
+}
+
+/**
+ * The background clean's record of a repository (`src/worktrees/auto-state.ts`): when it last
+ * ran, and the removals no session start has reported to the person yet (the record keeps them
+ * until then, so they are not necessarily from that last run).
+ */
+export interface WorktreeAutoClean {
+  /** The base those removals were judged against. */
+  base: string;
+  /** When auto-clean last ran (ISO 8601), whatever that run did. */
+  lastRunAt: string;
+  /** The latest removals auto-clean has not reported yet, and why each counted as finished. */
+  removed: { branch: null | string; name: string; path: string; why: string }[];
+}
+
+/**
+ * `worktrees --json`'s answer, and `/api/worktrees`'s: every worktree's verdict against
+ * `base`, with no fetch (origin as it is). One builder (`worktreesAnswerOf`) so the command and
+ * the page can never disagree.
+ */
+export interface WorktreesAnswer {
+  /** The last background clean of this repository; null when it never ran. */
+  autoClean: null | WorktreeAutoClean;
+  base: string;
+  /** Where the base came from: the project's file, the remote's default, or the fallback. */
+  from: "config" | "default" | "origin";
+  /** A line about this folder or the machine's own facts when they could not be read. */
+  note: null | string;
+  worktrees: WorktreeItem[];
+}
+
+/** One scanned worktree in the answer's shape. */
+function worktreeItemOf(worktree: ScannedWorktree): WorktreeItem {
+  const { branch, head, path } = worktree.listed;
+  // The main checkout is never one to clear, and a folder that is gone has no git files to
+  // read: neither has an idle time.
+  if (worktree.state === "main") {
+    return { branch, head, idleMinutes: null, kind: "main", path, why: null };
+  }
+  if (worktree.state === "gone") {
+    return {
+      branch,
+      head,
+      idleMinutes: null,
+      kind: "gone",
+      path,
+      why: "its folder no longer exists",
+    };
+  }
+  return worktree.state.finished
+    ? { branch, head, idleMinutes: worktree.idleMinutes, kind: "finished", path, why: null }
+    : {
+        branch,
+        head,
+        idleMinutes: worktree.idleMinutes,
+        kind: "kept",
+        path,
+        why: worktree.state.why,
+      };
+}
+
+/** What the last background clean of `repo` did, or null when it never ran. */
+function autoCleanOf(paths: CliPaths, repo: string): null | WorktreeAutoClean {
+  const record = readRepoRecord(autoCleanFiles(paths.stateDir, repo));
+  if (record === null) return null;
+  return {
+    base: record.base,
+    lastRunAt: new Date(record.lastRunAt).toISOString(),
+    removed: record.removed,
+  };
+}
+
+/**
+ * The worktrees answer for the folder `cwd`: what `--json` prints. Read-only and with no fetch:
+ * a read never changes the repository, and the portal's page (which runs this in a child,
+ * `src/portal/worktrees-read.ts`) never waits on the network. A folder that is no git project
+ * says so — the portal's normal start is the home folder.
+ */
+export function worktreesAnswerOf(
+  paths: CliPaths,
+  env: Env,
+  cwd: string,
+  now: number,
+): WorktreesAnswer {
+  const none = (note: string): WorktreesAnswer => ({
+    autoClean: null,
+    base: "",
+    from: "default",
+    note,
+    worktrees: [],
+  });
+  let checkout: Checkout | null;
+  try {
+    checkout = locateCheckout(cwd, { env });
+  } catch (error) {
+    return none(error instanceof Error ? error.message : String(error));
+  }
+  if (checkout === null) {
+    return none("this folder is not in a git project, so there is no work to show");
+  }
+  const repo = checkout.mainCheckout ?? checkout.root;
+  try {
+    // A project file the plugin cannot read (`baseBranch` loads it) is a note, never a crash:
+    // this answer is printed by `--json`, and a stack trace is no answer.
+    const chosen = baseBranch(checkout, env, repo);
+    const judged = {
+      base: chosen.base,
+      claudeConfigDir: paths.claudeConfigDir,
+      env,
+      now,
+    };
+    let note: null | string = null;
+    let scanned: ScannedWorktree[];
+    try {
+      scanned = scanWorktrees(repo, judged);
+    } catch (error) {
+      // A repository with no `origin/<base>` (a local-only repo) is judged against its own
+      // base branch: the same comparison, said plainly.
+      const why = error instanceof Error ? error.message : String(error);
+      if (!why.includes("is not known here")) return none(why);
+      scanned = scanWorktrees(repo, {
+        ...judged,
+        against: { label: chosen.base, ref: `refs/heads/${chosen.base}` },
+      });
+      note = `origin/${chosen.base} is not known here, so this judges against the local ${chosen.base}`;
+    }
+    return {
+      autoClean: autoCleanOf(paths, repo),
+      base: chosen.base,
+      from: chosen.from,
+      note,
+      worktrees: scanned.map(worktreeItemOf),
+    };
+  } catch (error) {
+    return none(error instanceof Error ? error.message : String(error));
+  }
 }
 
 export async function runWorktrees(
@@ -95,41 +266,44 @@ export async function runWorktrees(
   options: WorktreesOptions,
   env: Env,
   cwd: string = process.cwd(),
+  sinks: WorktreesSinks = CONSOLE_SINKS,
 ): Promise<number> {
+  const { error, print } = sinks;
+
+  if (options.remove !== null && options.remove === "") {
+    error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
+    return 1;
+  }
+  if (options.json) {
+    // The answer a page reads: one line on stdout and nothing else, and nothing changed.
+    print(JSON.stringify(worktreesAnswerOf(paths, env, cwd, Date.now())));
+    return 0;
+  }
   const checkout = locateCheckout(cwd, { env });
   const repo = checkout?.mainCheckout ?? resolve(cwd);
   const { base, from } = baseBranch(checkout, env, repo);
   if (from !== "config") {
-    console.log(
-      `No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.\n`,
-    );
-  }
-
-  if (options.remove !== null && options.remove === "") {
-    console.error("Say which worktree: cc-smart-dev-kit worktrees --remove <path>");
-    return 1;
+    print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.\n`);
   }
 
   let lock: null | Server = null;
   if (options.clean || options.remove !== null) {
     if (!samePath(cwd, repo)) {
-      console.error(
+      error(
         `Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`,
       );
       return 1;
     }
     lock = await holdCleanLock();
     if (lock === null) {
-      console.log(
-        "Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.",
-      );
+      print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
       return 0;
     }
   }
 
   try {
     if (!options.noFetch && !fetchBase(repo, base, env)) {
-      console.log(`Could not fetch origin/${base}; judging against the copy of it here.\n`);
+      print(`Could not fetch origin/${base}; judging against the copy of it here.\n`);
     }
 
     if (options.remove !== null) {
@@ -147,39 +321,39 @@ export async function runWorktrees(
         (worktree) => worktree.state !== "main" && samePath(worktree.listed.path, target),
       );
       if (found === undefined) {
-        console.error(
+        error(
           `${target} is not a worktree of this repo. \`cc-smart-dev-kit worktrees\` lists them.`,
         );
         return 1;
       }
       if (found.state === "gone") {
         pruneWorktrees(repo, env);
-        console.log(forgottenLine(found.listed.path));
+        print(forgottenLine(found.listed.path));
         if (found.listed.branch !== null) {
-          console.log(deleteMergedBranch(repo, base, found.listed.branch, env));
+          print(deleteMergedBranch(repo, base, found.listed.branch, env));
         }
         return 0;
       }
       if (typeof found.state === "object" && found.state.finished) {
-        console.log(`removing ${found.listed.path} …`);
+        print(`removing ${found.listed.path} …`);
         const removal = removeWorktree(repo, found.listed, judged);
-        for (const said of removal.said) console.log(said);
+        for (const said of removal.said) print(said);
         // Exit 1 unless it really went: "held" (something uses it), "kept" (something in it
         // is changed) and "failed" (git could not finish) all leave it a worktree still.
         return removal.status === "removed" ? 0 : 1;
       }
-      console.log(`Kept ${found.listed.path}: ${describe(found).replace(/^kept: /, "")}.`);
+      print(`Kept ${found.listed.path}: ${describe(found).replace(/^kept: /, "")}.`);
       return 1;
     }
 
     const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
     const scanned = scanWorktrees(repo, judged);
-    console.log(`Worktrees of ${repo}\n`);
-    show(scanned);
+    print(`Worktrees of ${repo}\n`);
+    show(scanned, print);
 
     const going = scanned.filter(canGo);
     if (!options.clean) {
-      console.log(
+      print(
         going.length === 0
           ? "Nothing finished to clear."
           : `${String(going.length)} can go. \`cc-smart-dev-kit worktrees --clean\` in the main checkout removes them.`,
@@ -187,8 +361,8 @@ export async function runWorktrees(
       return 0;
     }
 
-    cleanFinished(repo, scanned, judged, (line) => console.log(line));
-    if (going.length === 0) console.log("Nothing finished to clear.");
+    cleanFinished(repo, scanned, judged, (line) => print(line));
+    if (going.length === 0) print("Nothing finished to clear.");
     return 0;
   } finally {
     lock?.close();

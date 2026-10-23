@@ -26,8 +26,14 @@ type Env = Record<string, string | undefined>;
 /** The longest one `claude plugin …` command may take (a clone can take a while). */
 export const CLAUDE_TIMEOUT_MS = 180_000;
 
-/** Runs a command; `output` is what it printed (empty when it printed to the terminal). */
-export type CommandRunner = (argv: string[]) => { exitCode: number; output: string };
+/**
+ * Runs a command; `output` is what it printed (empty when it printed to the terminal). It may
+ * be async: the portal's runner spawns the child without blocking its server (B6b), and the
+ * command line's own runner stays synchronous.
+ */
+export type CommandRunner = (
+  argv: string[],
+) => { exitCode: number; output: string } | Promise<{ exitCode: number; output: string }>;
 
 export interface ApplyResult {
   ok: boolean;
@@ -74,20 +80,20 @@ export const BUSY_DETAIL =
  * credentials. Output that names git's `index.lock` means Claude Code's own marketplace
  * refresh ran at the same moment: `busy`, not a failure.
  */
-export function applyUpdate(
+export async function applyUpdate(
   paths: CliPaths,
   claude: null | string,
   run: CommandRunner,
   say: (line: string) => void,
   onMajor: (step: MajorStep) => boolean,
-): ApplyResult {
+): Promise<ApplyResult> {
   const before = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   const fail = (detail: string): ApplyResult => ({ after: before, before, detail, ok: false });
   if (claude === null) return fail("the claude command is not on PATH");
 
-  const step = (args: string[]): ApplyResult | null => {
+  const step = async (args: string[]): Promise<ApplyResult | null> => {
     say(`claude ${args.join(" ")}`);
-    const result = run([claude, ...args]);
+    const result = await run([claude, ...args]);
     if (result.exitCode === 0) return null;
     if (result.output.includes("index.lock")) {
       return { after: before, before, busy: true, detail: BUSY_DETAIL, ok: false };
@@ -98,7 +104,7 @@ export function applyUpdate(
     );
   };
 
-  const refreshed = step(MARKETPLACE_REFRESH);
+  const refreshed = await step(MARKETPLACE_REFRESH);
   if (refreshed !== null) return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
   const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
@@ -111,7 +117,7 @@ export function applyUpdate(
       };
       if (!onMajor(major)) return { after: before, before, detail: "", held: major, ok: true };
     }
-    const updated = step(PLUGIN_UPDATE);
+    const updated = await step(PLUGIN_UPDATE);
     if (updated !== null) return updated;
   }
   const after = findUserInstall(paths.installedPluginsFile)?.version ?? null;

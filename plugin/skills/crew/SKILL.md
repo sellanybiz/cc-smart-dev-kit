@@ -29,7 +29,8 @@ branch, how you report and ask).
 Each step's procedure is its skill; the brief's done-check decides when the phase is ready.
 
 1. **Read and research:** the code you change, the patterns the brief names, and every library
-   or API it needs (`/cc-smart-dev-kit:research-first`).
+   or API it needs (`/cc-smart-dev-kit:research-first`). Reading beyond the few files the phase
+   edits goes to a scout subagent in the background; you keep its conclusion (`core.md` § Lead the work).
 2. **A failing test first** for each behaviour or bug, failing for the right reason. Step
    `tests-red`.
 3. **The code**, until the targeted tests pass. Step `tests-green`. Commit.
@@ -81,7 +82,9 @@ hook blocks it once with the report line — report, then end the turn.
 **Never ask the person:** no `AskUserQuestion`, no `ExitPlanMode`. The `crew-role` hook refuses
 both with the `crew report --question` line below, so it is not a suggestion. The brief, the plan
 and the code settle most questions, and a technical detail inside your phase is yours to decide —
-decide it, and say so in the report.
+decide it, and say so in the report. **A message the person types into this session is theirs to
+give:** it wins over the brief, and if it changes the phase's scope or files, your report says
+what changed.
 
 A decision you cannot make goes to the lead:
 

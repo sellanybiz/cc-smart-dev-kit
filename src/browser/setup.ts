@@ -161,9 +161,9 @@ export interface BrowserGuide {
 }
 
 /**
- * The five steps, in the words a person follows — one home: `browser setup` prints them,
- * `cc-smart-dev-kit setup` prints them, and the portal's Browser card draws them. A step that is
- * already satisfied says so.
+ * The five steps, in the words a person follows — one home: `browser setup` prints them, and
+ * the portal's Browser card draws them (`cc-smart-dev-kit setup` names the open ones, and sends
+ * the person here). A step that is already satisfied says so.
  */
 export function browserGuide(state: BrowserSetupState): BrowserGuide {
   return {
@@ -528,13 +528,14 @@ export function missingBrowserSteps(state: BrowserSetupState): number[] {
 }
 
 /**
- * The browser's part of `cc-smart-dev-kit setup`: the state, the guide while something is still
- * missing, and what 0.3.0 left (`legacy.ts`). Read-only for the state (`browserState`): setup
- * never starts a browser, never waits on a person, never fails over it, and never deletes a
- * person's browser data. The ONE fact that comes from this machine rather than from a file under
- * the home folder is 0.3.0's own leftover — its profile folder, and the Chrome it may still have
- * running — so that fact is printed as information, with the command that removes the folder for
- * whoever wants it gone.
+ * The browser's part of `cc-smart-dev-kit setup`: one line while a step is still open, the next
+ * step that finishes it (`browser setup`, which prints the guide and opens the Chrome window:
+ * the guide belongs where the person follows it, UX-8), and what 0.3.0 left (`legacy.ts`).
+ * Read-only for the state (`browserState`): setup never starts a browser, never waits on a
+ * person, never fails over it, and never deletes a person's browser data. The ONE fact that
+ * comes from this machine rather than from a file under the home folder is 0.3.0's own leftover
+ * — its profile folder, and the Chrome it may still have running — so that fact is printed as
+ * information, with the command that removes the folder for whoever wants it gone.
  */
 export function browserSetupReport(
   paths: CliPaths,
@@ -542,6 +543,8 @@ export function browserSetupReport(
 ): {
   info: string[];
   notes: string[];
+  /** The step setup lists under "Next steps" (its words and its command), or null when ready. */
+  next: { text: string; command: string } | null;
 } {
   const legacy = legacyBrowserInfo(paths, deps);
   const state = browserState(paths, deps);
@@ -549,15 +552,18 @@ export function browserSetupReport(
   // Ready: nothing to say but what 0.3.0 left. Setup names what is missing, never what is fine —
   // and it must never report the browser ready while the token is not saved, so the only other
   // line here is the one below.
-  if (missing.length === 0) return { info: legacy, notes: [] };
+  if (missing.length === 0) return { info: legacy, notes: [], next: null };
+  const open = missing.join(", ");
   return {
     info: [
       ...legacy,
-      `  the browser is NOT ready: steps ${missing.join(", ")} of the guide below are still open`,
-      ...browserGuideLines(browserGuide(state)),
-      `  run \`${COMMAND} browser setup\`: it opens the Chrome window in the "${state.profileDirName}" profile and checks Chrome, the extension and the token`,
+      `  the browser is NOT ready: steps ${open} of ${COMMAND} browser setup are open`,
     ],
     notes: [],
+    next: {
+      text: `Finish the browser: this opens Chrome in the "${state.profileDirName}" profile and walks you through steps ${open}:`,
+      command: `${COMMAND} browser setup`,
+    },
   };
 }
 

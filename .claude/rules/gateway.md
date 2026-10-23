@@ -27,7 +27,7 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   `claude-…` model, change `model`, and only the fields that model refuses, through
   `requestForClaudeFallback` (its table names each FAMILY's rules, from Anthropic's
   migration guides). Never `system`, a message or a tool.
-  **The one named exception (the owner's D6, 2026-10-17):** every request to a Claude
+  **The one named exception (the owner's D6):** every request to a Claude
   target loses the thinking blocks whose signature carries the router's own mark, and
   nothing else (`forClaude` → `withoutRouterThinking`; § Answers another target gives for a
   Claude model). Its tests: `gateway.test.ts` › "prompts stay as Claude Code wrote them" ›
@@ -51,6 +51,13 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   2 KB), through `maskSecrets` with the keys the router knows. **The log never delays an
   answer or stalls the router:** the line is written in the background, and every pattern
   in `maskSecrets` has bounded quantifiers (a test feeds it 64 KB of adversarial text).
+- **The request history is metadata only (D51).** A row holds exactly `history.ts`'s
+  `HistoryRow` fields: time, the session id header, model, slot, target, status, latency,
+  the next target on a fallback, the breaker's answer, the four token counts and the
+  estimate. Never a prompt, a system text, a tool, an answer, any other header value or a
+  key. `record` never writes on an answer's path, and a write error is one log line: a
+  history that cannot be written never fails a request. Its reader opens the database
+  read-only (`history-read.ts`), and the portal's routes never write it.
 
 ## The login only ever reaches Anthropic
 
@@ -61,16 +68,24 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
 - A redirect from an affordable backend becomes a 502.
 - A `claude-…` name is never an alias, and never routed anywhere but Anthropic.
 
-## Every slot the same way; no model chosen for anyone (owner, 2026-10-17)
+## Every slot the same way; no model chosen for anyone (owner)
 
-Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `-fable`,
-`-judge` (auto mode's safety checks). One rule set for all of them:
+Five slots — scout (Haiku's), worker (Sonnet's), opus, fable, and judge (auto mode's
+safety checks), their ids in § Names. One rule set for all of them:
 
 - **A request reaches a slot by its model's FAMILY** (`familySlotFor`), read from the id
   Claude Code sends: never by an exact id, so a newer version needs no change. Or by the
   slot's own name. Never the safety check (it has the judge), never a name an alias changed.
-- **No chain = off = plain Claude**: the request goes to Anthropic byte for byte, the id it
-  carried included. A slot-named request for an off slot gets a 400 that says what to do;
+- **Every slot has two modes, Claude or Custom, and `slots[key]` alone says which**: in
+  `slots` is Custom, its chain in use; absent is Claude, and its family's requests go to
+  Anthropic as sent (the judge: Claude first, the worker's tested targets while Claude
+  cannot). A chain a slot is not using lives in `kept[key]` — saved, never used — and the top
+  level stays a loose object, so a 0.5.x router or CLI reads a new config right and writes
+  `kept` back untouched. `slot <slot> claude` (or the old `off`) moves the chain and its
+  fallback switch to `kept`; `custom` moves both back; `clear` deletes them. A rollback can
+  never turn a switched-off model back on.
+- **No chain = Claude = plain Claude**: the request goes to Anthropic byte for byte, the id it
+  carried included. A slot-named request for a Claude slot gets a 400 that says what to do;
   the router never picks a Claude model for it.
 - **A chain is the person's**: any targets, any order, any one first. The router never adds
   a target, Claude included: not at the end of a chain, not when every target fails, not
@@ -91,8 +106,10 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   is set the same way, and is on by default for every slot but the judge (below). How long a
   hold may last is `timeouts.breakerHoldMs`, which a person can only shorten (0: none): never
   above `BREAKER_HOLD_CEILING_MS`, because Claude Code gives up on a request held too long.
-  A slot's switch goes when the slot is turned off (`slot <slot> off`), the judge's excepted
-  (below), and stays when its chain is only changed. The contract, with the state file's `breakers`: `docs/gateway.md` § The
+  A slot's **breaker** switch goes when the slot moves to Claude (`slot <slot> claude`), the
+  judge's excepted (below), and stays when its chain is only changed; its **fallback** switch
+  travels with the saved chain (`kept`) and comes back with `custom`, while the breaker comes
+  back at its default. The contract, with the state file's `breakers`: `docs/gateway.md` § The
   breaker switch and its hold.
 - **The breaker's rules** (`docs/gateway.md` § The breaker):
   - **Never fake Anthropic's quota headers.** Its 429 carries `x-should-retry: true` and a
@@ -119,7 +136,8 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
   that hangs would hold every action): its miss is a 504 `timeout_error`, never a wait.
   Read from the config the router holds: no disk read per request.
 - **No model id in the code as a default, a target or a fallback.** `gateway setup` writes
-  no chain; the person picks from the live list (`gateway models`, the portal). A rule that
+  no chain the person did not pick; the person picks from the live list (setup's questions,
+  `gateway models`, the portal). A rule that
   must name a model is keyed by family and the first version it holds for
   (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
   id: a newer version gets its family's newest row, and a version below every row, or an id
@@ -128,6 +146,13 @@ Five slots: `cc-smart-dev-kit-scout` (Haiku's), `-worker` (Sonnet's), `-opus`, `
 - `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a
   `/v1/messages` answer starts or ends a target's rest, or notes or ends a plan limit
   (`observeClaude`).
+- **The health answer is metadata only**: the counts, the targets resting, the chain in use
+  per slot, the last `RECENT_MAX` routed requests (`RecentRequest`: time, slot, target,
+  status, milliseconds, whether the next target answered) and the Claude ids Claude Code sent
+  (`seenClaude`, in the state file too, written only when an id is new and merged into the
+  file's own `seenClaude`, never a whole-state overwrite). Never a prompt, an answer, a key or
+  a header value; `recent` is in memory, so a restart forgets it. A new field there is
+  metadata too, or it does not go in.
 
 ## The judge: Claude first, a tested stand-in, never an untested one (D44)
 
@@ -182,7 +207,7 @@ Claude judges auto mode's safety checks first.
 
 ## Answers another target gives for a Claude model
 
-**Thinking stays visible (the owner's D6, 2026-10-17; before it, from 2026-10-15, such
+**Thinking stays visible (the owner's D6; before it, such
 answers lost their thinking).** Every slot is reached by a Claude model's family, so a
 backend's answer lands in that model's conversation, and a Claude model refuses a thinking
 block whose signature it did not issue. So, in `fallback-answer.ts`:
@@ -234,7 +259,7 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   through a proxy from the environment (`src/gateway/proxy.test.ts`). Requests to
   Anthropic keep the environment's proxy settings. It is `{ proxy: false }` alone, which
   needs Bun ≥ `MIN_BUN` (`src/build-info/bun.ts`): never add a workaround for an older
-  Bun (owner, 2026-10-15). A new command that sends a key must not be on the CLI's
+  Bun (owner). A new command that sends a key must not be on the CLI's
   any-Bun list (`src/cli/bun-check.ts`).
 - Text from outside (an upstream's answer, a fetch error) is printed or logged
   only through `src/gateway/plain-text.ts` (`oneLine`, `plainText`;
@@ -243,17 +268,16 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   cheap authenticated request (`GET /v1/models`, `KEY_CHECK_TIMEOUT_MS`) with the key. 401/403
   refuses it — nothing written, the key in the file kept, the message naming the key that
   backend wants. Anything else (unreachable, a 5xx) is not a silent save either: only with
-  `--save-unchecked`, with a WARN line. A key that really changes is backed up first
-  (`backupFile`, the state folder's `backups/`). Live, 2026-10-17: a pasted provider key
-  overwrote the router's working key, OmniRoute answered 401 to everything, and every affordable
-  subagent fell back to Claude.
+  `--save-unchecked`, with a warning line (`!`). A key that really changes is backed up first
+  (`backupFile`, the state folder's `backups/`). Why: a pasted provider key saved unchecked
+  once broke every affordable slot at once.
 - **OmniRoute's dashboard password makes a key, and is never stored** (`createOmnirouteKey`,
   `src/gateway/omniroute-key.ts`, `--omniroute-password[-stdin]`): `POST /api/auth/login` with
   **no `Origin` header** (OmniRoute skips its CSRF check without one; with one it must be its own
   origin or the CSRF token), then `POST /api/keys` with the `auth_token` cookie, named
   `cc-smart-dev-kit-router-<hostname>`, `noLog: true`. The key it answers with goes through the
-  same test-and-save as one given by hand. The facts are the installed OmniRoute 3.8.51's own
-  source (read 2026-10-17) — the module's header says which files.
+  same test-and-save as one given by hand. The facts are OmniRoute's own source, read once;
+  the module's header names the files.
 - **`gateway check`** is read-only and answers with an exit code (0 works, 1 no key yet and
   OmniRoute answers, 3 could not be judged, 4 the key is refused). It asks the BACKEND only,
   never the router's port: a machine's sessions may be using the router, and a test's default
@@ -305,7 +329,8 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
   So `restore` stops it only once no gateway env key that still holds cc-smart-dev-kit's value is
   left (its stage 2; a key the person changed since is theirs, and does not hold it back),
   and asks first; `--now` does it at once, after saying every session fails until it
-  restarts.
+  restarts. `restore`'s own two stages are `setup-and-managed-files.md` § `--dry-run` and
+  `restore`; `stopRouter` below is the one stop.
 - **Never `disable --now` or a blocking `stop`.** systemd then waits for the router's
   drain (up to `TimeoutStopSec`, 120 s) while its port is already closed. `stopRouter`
   asks `is-active`, runs `disable` of both units, then one `stop --no-block` of the

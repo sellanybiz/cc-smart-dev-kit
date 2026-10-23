@@ -359,7 +359,8 @@ export function retiredChecks(paths: CliPaths): McpCheck[] {
   return [
     {
       ok: false,
-      text: `Serena is retired in ${SERENA_RETIRED_IN}, and setup has not taken back ${owed.join(", ")} yet. Run: ${COMMAND} setup`,
+      text: `Serena is retired in ${SERENA_RETIRED_IN}, and setup has not taken back ${owed.join(", ")} yet`,
+      fix: `${COMMAND} setup`,
     },
     ...others,
   ];

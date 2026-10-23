@@ -13,10 +13,10 @@ import {
   askedAnswers,
   defaultAnswers,
   defaultBranchOf,
+  defaultFastCheck,
   detectFacts,
   type ProjectInitContext,
   type ProjectInitRunner,
-  type ProjectInitTerminal,
   parseFlags,
   protectedFromGithub,
   realRunner,
@@ -25,6 +25,33 @@ import {
   shownWorkflow,
   workflowFromFlags,
 } from "./project-init";
+import { createOut, type Sink } from "./ui/out";
+import { createPrompts, type Prompts } from "./ui/prompt";
+import { detectTerminal, type Terminal } from "./ui/terminal";
+
+const PLAIN: Terminal = detectTerminal({ env: {}, isTTY: false, platform: "linux" });
+const RICH: Terminal = detectTerminal({ columns: 100, env: {}, isTTY: true, platform: "linux" });
+
+/** A sink that keeps each printed line, as a person reads it. */
+function lineSink(lines: string[]): Sink {
+  return { line: (text) => lines.push(text), raw: (text) => lines.push(text) };
+}
+
+/**
+ * Prompts on a scripted terminal: each question takes the next typed answer (null: Enter, or
+ * the end of the input), and everything it shows is kept, in order.
+ */
+function scripted(answers: (string | null)[]): { prompts: Prompts; shown: string[] } {
+  const shown: string[] = [];
+  const prompts = createPrompts(PLAIN, {
+    write: (text) => shown.push(text),
+    readLine: (question) => {
+      shown.push(`${question} `);
+      return answers.shift() ?? null;
+    },
+  });
+  return { prompts, shown };
+}
 
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
@@ -45,8 +72,8 @@ function context(
       env: hookEnv(),
       stateDir: tempDir("project-init-state"),
       home: tempDir("project-init-home"),
-      terminal: null,
-      print: (line) => lines.push(line),
+      prompts: null,
+      out: createOut(PLAIN, lineSink(lines)),
       error: (line) => errors.push(line),
       ...overrides,
     },
@@ -81,6 +108,8 @@ describe("the flags", () => {
       "hotfix/=main,release/=main",
       "--protected",
       "main,dev",
+      "--check",
+      "bun run typecheck",
       "--guard-main-folder",
       "--session-names",
       "--job-route",
@@ -94,12 +123,23 @@ describe("the flags", () => {
         base: "dev",
         bases: { "hotfix/": "main", "release/": "main" },
         protectedBranches: ["main", "dev"],
+        check: "bun run typecheck",
         guardMainFolder: true,
         sessionNames: true,
         jobRoute: true,
         workflow: ["openPr=draft", "autoCommit=true"],
       },
     });
+  });
+
+  test("the fast check has both answers: a command, and --no-check (the last one wins)", () => {
+    expect(parseFlags(["--no-check"])).toEqual({
+      flags: { dryRun: false, yes: false, check: "" },
+    });
+    expect(parseFlags(["--check", "bun run check", "--no-check"])).toEqual({
+      flags: { dryRun: false, yes: false, check: "" },
+    });
+    expect(parseFlags(["--check"])).toEqual({ error: "--check needs a value" });
   });
 
   test.each(["--prefix", "--setup", "--no-setup", "--engine"])(
@@ -235,8 +275,62 @@ describe("the defaults from the repo", () => {
     ).toEqual([]);
   });
 
+  test("the fast check comes from package.json's scripts, with the lockfile's package manager", () => {
+    const root = tempDir("project-init");
+    expect(defaultFastCheck(root)).toBe(null);
+    writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: { build: "tsc" } })}\n`);
+    // A script that does not check anything is no default.
+    expect(defaultFastCheck(root)).toBe(null);
+    writeFileSync(
+      join(root, "package.json"),
+      `${JSON.stringify({ scripts: { test: "bun test", typecheck: "tsc --noEmit" } })}\n`,
+    );
+    // No lockfile: npm is the one that is there with any Node.
+    expect(defaultFastCheck(root)).toBe("npm run typecheck");
+    writeFileSync(join(root, "bun.lock"), "");
+    expect(defaultFastCheck(root)).toBe("bun run typecheck");
+    writeFileSync(
+      join(root, "package.json"),
+      `${JSON.stringify({ scripts: { check: "bun run typecheck && bun test" } })}\n`,
+    );
+    // A script named `check` is the project's own word for it: it wins over the others.
+    expect(defaultFastCheck(root)).toBe("bun run check");
+  });
+
+  test("a broken package.json, or a scripts list that is not one: no default", () => {
+    const root = tempDir("project-init");
+    writeFileSync(join(root, "package.json"), "{ not json");
+    expect(defaultFastCheck(root)).toBe(null);
+    writeFileSync(join(root, "package.json"), `${JSON.stringify({ scripts: ["check"] })}\n`);
+    expect(defaultFastCheck(root)).toBe(null);
+  });
+
+  test("the fast check: the flag wins, then the project's file, then the repo", () => {
+    const facts = {
+      defaultBranch: "main",
+      protectedFromGithub: [],
+      fastCheck: "bun run typecheck",
+    };
+    const flags = { dryRun: false, yes: false };
+    expect(defaultAnswers(null, facts, flags).checks).toEqual({ fast: "bun run typecheck" });
+    // The file's own answer wins over what the repo suggests.
+    expect(defaultAnswers({ checks: { fast: "bun run check" } }, facts, flags).checks).toEqual({
+      fast: "bun run check",
+    });
+    // A flag wins over both, and --no-check is a real answer: none, even over the file.
+    expect(
+      defaultAnswers({ checks: { fast: "bun run check" } }, facts, { ...flags, check: "bun test" })
+        .checks,
+    ).toEqual({ fast: "bun test" });
+    expect(
+      defaultAnswers({ checks: { fast: "bun run check" } }, facts, { ...flags, check: "" }).checks,
+    ).toBe(null);
+    // The repo suggests nothing: no check, unless the file says one.
+    expect(defaultAnswers(null, { ...facts, fastCheck: null }, flags).checks).toBe(null);
+  });
+
   test("a flag wins, then the project's own file, then the repo", () => {
-    const facts = { defaultBranch: "main", protectedFromGithub: ["release"] };
+    const facts = { defaultBranch: "main", protectedFromGithub: ["release"], fastCheck: null };
     const flags = { dryRun: false, yes: false };
     const fromRepo = defaultAnswers(null, facts, flags);
     expect(fromRepo.base).toBe("main");
@@ -285,73 +379,121 @@ describe("the defaults from the repo", () => {
       sessionNames: true,
       jobRoute: false,
     });
-    expect(withFlags.workflow).toEqual({ openPr: "ready" });
+    // A --workflow word changes only what it names: the file's own setting stays (F5-3).
+    expect(withFlags.workflow).toEqual({ autoCommit: true, openPr: "ready" });
+  });
+
+  test("--workflow merges into the file's policy: a key changes only its own field (F5-3)", () => {
+    const facts = { defaultBranch: "main", protectedFromGithub: [], fastCheck: null };
+    const existing = {
+      worktrees: { base: "main" },
+      workflow: {
+        crew: { enabled: true, max: 4 },
+        fixesAfterReview: { lines: 120, percent: 30 },
+      },
+    };
+    // One flat key: the two groups the line does not name survive whole.
+    expect(
+      defaultAnswers(existing, facts, { dryRun: false, yes: true, workflow: ["autoPush=true"] })
+        .workflow,
+    ).toEqual({
+      crew: { enabled: true, max: 4 },
+      fixesAfterReview: { lines: 120, percent: 30 },
+      autoPush: true,
+    });
+    // One dotted key: only that field changes, its group's other fields stay.
+    expect(
+      defaultAnswers(existing, facts, {
+        dryRun: false,
+        yes: true,
+        workflow: ["crew.enabled=false"],
+      }).workflow,
+    ).toEqual({
+      crew: { enabled: false, max: 4 },
+      fixesAfterReview: { lines: 120, percent: 30 },
+    });
   });
 });
 
 describe("the questions on a terminal", () => {
-  test("pressing enter on every question keeps every default", () => {
-    const asked: string[] = [];
-    const terminal: ProjectInitTerminal = {
-      confirm: (question) => {
-        asked.push(question);
-        return true;
-      },
-      text: (question, fallback) => {
-        asked.push(question);
-        return fallback;
-      },
-    };
-    const before = defaultAnswers(
-      null,
-      { defaultBranch: "main", protectedFromGithub: [] },
-      { dryRun: false, yes: false },
-    );
-    expect(askedAnswers(terminal, before)).toEqual(before);
-    expect(asked).toContain("The branch a new worktree starts from");
-    expect(asked).toContain(
-      "Refuse edits in the main checkout itself, so every change goes in a worktree? (yes/no)",
-    );
-    // The deprecated engine's three questions are gone.
-    expect(asked.some((question) => question.includes("worktree engine"))).toBe(false);
-    expect(asked.some((question) => question.includes("folder-name prefix"))).toBe(false);
-    expect(asked.some((question) => question.includes("run inside a new worktree"))).toBe(false);
+  const DEFAULTS = defaultAnswers(
+    null,
+    { defaultBranch: "main", protectedFromGithub: [], fastCheck: null },
+    { dryRun: false, yes: false },
+  );
+
+  test("UX-12: Enter on every question keeps every default; each question is counted, with its default", () => {
+    const { prompts, shown } = scripted([]);
+    expect(askedAnswers(prompts, DEFAULTS)).toEqual(DEFAULTS);
+    expect(shown).toEqual([
+      "[1/8] Base branch: the branch a new worktree starts from [main] ",
+      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '[3/8] Protected branches: the git guard asks before a push to these, comma separated ("none" for none) [main] ',
+      '[4/8] The fast check a session runs before it stops: one command ("none" for none) [none] ',
+      '[5/8] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.events=finished failed ("none" for none) ',
+      "[6/8] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
+      "[7/8] Name each session after its task? [Y/n] ",
+      "[8/8] Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns? [y/N] ",
+    ]);
   });
 
-  test("the answers replace the defaults, and an empty one means none", () => {
-    const answers: Record<string, string> = {
-      "The branch a new worktree starts from": "dev",
-      "Bases for other branch prefixes, as prefix=base,prefix=base (empty: none)": "release/=main",
-      "The branches the git guard asks about before a push (comma separated)": "",
-      "Name each session after its task? (yes/no)": "no",
-      "Send heavy commands (type checks, test runs, builds) through the machine's job queue? (yes/no)":
-        "yes",
-    };
-    const terminal: ProjectInitTerminal = {
-      confirm: () => true,
-      text: (question, fallback) => answers[question] ?? fallback,
-    };
-    const before = defaultAnswers(
+  test('the answers replace the defaults, and "none" empties a list', () => {
+    const { prompts } = scripted([
+      "dev",
+      "release/=main",
+      "none",
+      "bun test src/changed",
       null,
-      { defaultBranch: "main", protectedFromGithub: [] },
-      { dryRun: false, yes: false },
-    );
-    const after = askedAnswers(terminal, before);
+      null,
+      "no",
+      "yes",
+    ]);
+    const after = askedAnswers(prompts, DEFAULTS);
     expect(after.base).toBe("dev");
     expect(after.bases).toEqual({ "release/": "main" });
     expect(after.protectedBranches).toEqual([]);
-    expect(after.guards.sessionNames).toBe(false);
-    expect(after.guards.jobRoute).toBe(true);
+    expect(after.checks).toEqual({ fast: "bun test src/changed" });
+    expect(after.guards).toEqual({ guardMainFolder: true, sessionNames: false, jobRoute: true });
+    expect(after.workflow).toEqual({});
+  });
+
+  test('"none" on the fast check writes none: the field goes', () => {
+    const { prompts } = scripted(["main", null, null, "none"]);
+    expect(askedAnswers(prompts, { ...DEFAULTS, checks: { fast: "bun run check" } }).checks).toBe(
+      null,
+    );
+  });
+
+  test("an answer that is not understood is asked again once, with the reason", () => {
+    const { prompts, shown } = scripted([null, "release=dev", "release/=dev"]);
+    expect(askedAnswers(prompts, DEFAULTS).bases).toEqual({ "release/": "dev" });
+    expect(shown.slice(1, 4)).toEqual([
+      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '! Not understood: "release=dev" is not prefix=base (the prefix ends with "/").\n',
+      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+    ]);
   });
 });
 
 describe("the run", () => {
-  test("no terminal and no --yes: the plan, and nothing written", () => {
+  test("no terminal and no --yes: the plan, and nothing written, with the flag that answers", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(runProjectInit([], run.context, runner({}))).toBe(0);
-    expect(run.lines[0]).toBe(`${join(repo, ".claude", "cc-smart-dev-kit.json")} will hold:`);
-    expect(run.lines).toContain("Nothing was written: run this on a terminal, or add --yes.");
+    expect(run.lines).toEqual([
+      `cc-smart-dev-kit project init: ${repo}`,
+      "",
+      "· .claude/cc-smart-dev-kit.json  7 to change",
+      '  + protectedBranches: ["main"]',
+      `  + requires: ">=0.5.2"`,
+      "  + sessionNames: true",
+      '  + worktrees.base: "main"',
+      '  + worktrees.bases.hotfix/: "main"',
+      '  + worktrees.bases.release/: "main"',
+      "  + worktrees.guardMainFolder: true",
+      "",
+      "· Nothing was written: run this on a terminal, or add --yes.",
+    ]);
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
     expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(false);
   });
@@ -381,10 +523,61 @@ describe("the run", () => {
     expect(JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8"))).toEqual({
       worktree: { baseRef: "head" },
     });
-    expect(run.lines).toContain("Commit both files with the project.");
-    expect(run.lines.at(-1)).toBe(
-      `The file asks for cc-smart-dev-kit ${written.requires}: every teammate needs that plugin version or newer.`,
-    );
+    // The plan, then each file written, the verdict, and the next steps: commit, and the version.
+    expect(run.lines).toEqual([
+      `cc-smart-dev-kit project init: ${repo}`,
+      "",
+      "! .claude/cc-smart-dev-kit.json  6 to change, 1 warning",
+      '  + protectedBranches: ["main","dev"]',
+      `  + requires: "${written.requires}"`,
+      "  + sessionNames: true",
+      '  + worktrees.base: "dev"',
+      '  + worktrees.bases.hotfix/: "main"',
+      "  + worktrees.guardMainFolder: true",
+      `  ! base dev is not the repo's default branch main: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`,
+      "· .claude/settings.json          1 to change, merged with what it has",
+      '  + worktree.baseRef: "head"',
+      "",
+      "+ .claude/cc-smart-dev-kit.json: created",
+      "+ .claude/settings.json: created",
+      "",
+      "✓ Done: 2 files written.",
+      "",
+      "Next steps:",
+      "  1. Commit the files with the project:",
+      "       git add .claude/cc-smart-dev-kit.json .claude/settings.json && git commit",
+      `  2. Tell your teammates: the file asks for cc-smart-dev-kit ${written.requires}, so each of them needs that plugin version or newer.`,
+    ]);
+  });
+
+  test("the same run in rich mode: the same words, with colour on the marks and the verdict", () => {
+    const repo = makeRepo();
+    const lines: string[] = [];
+    const run = context(repo, { out: createOut(RICH, lineSink(lines)) });
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(lines).toEqual([
+      `\x1b[1mcc-smart-dev-kit project init: ${repo}\x1b[0m`,
+      "",
+      "\x1b[2m·\x1b[0m .claude/cc-smart-dev-kit.json  7 to change",
+      '  \x1b[32m+\x1b[0m protectedBranches: ["main"]',
+      `  \x1b[32m+\x1b[0m requires: ">=0.5.2"`,
+      "  \x1b[32m+\x1b[0m sessionNames: true",
+      '  \x1b[32m+\x1b[0m worktrees.base: "main"',
+      '  \x1b[32m+\x1b[0m worktrees.bases.hotfix/: "main"',
+      '  \x1b[32m+\x1b[0m worktrees.bases.release/: "main"',
+      "  \x1b[32m+\x1b[0m worktrees.guardMainFolder: true",
+      "",
+      "\x1b[32m+\x1b[0m .claude/cc-smart-dev-kit.json: created",
+      "",
+      "\x1b[32m✓ Done: 1 file written.\x1b[0m",
+      "",
+      "Next steps:",
+      // Wrapped at the terminal's 100 columns, under the step's own text.
+      "  1. Commit the file with the project:",
+      "       git add .claude/cc-smart-dev-kit.json && git commit",
+      "  2. Tell your teammates: the file asks for cc-smart-dev-kit >=0.5.2, so each of them needs that",
+      "     plugin version or newer.",
+    ]);
   });
 
   test("D16: a policy whose settings cannot work together is named before anything is written", () => {
@@ -398,10 +591,10 @@ describe("the run", () => {
       ),
     ).toBe(0);
     expect(run.lines).toContain(
-      `! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`,
+      `  ! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`,
     );
     expect(run.lines).toContain(
-      `! openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens. Fix: set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`).`,
+      `  ! openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens. Fix: set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`).`,
     );
     // The plan ran and wrote nothing: the warning is part of the plan, not of a later step.
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
@@ -482,12 +675,83 @@ describe("the run", () => {
     expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(false);
   });
 
-  test("--dry-run prints the plan and writes nothing, also with --yes", () => {
+  test("--dry-run prints the plan and writes nothing, also with --yes, and asks nothing on a terminal", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
-    expect(run.lines).toContain("A dry run: nothing was written.");
+    expect(run.lines.slice(-3)).toEqual([
+      "",
+      "· A real run writes 1 file.",
+      "Dry run: nothing was written.",
+    ]);
+    // UX-12: a terminal is not asked either; the plan is the flags' and the defaults'.
+    const { prompts, shown } = scripted(["dev"]);
+    const asked = context(repo, { prompts });
+    expect(runProjectInit(["--dry-run"], asked.context, runner({}))).toBe(0);
+    expect(shown).toEqual([]);
+    expect(asked.lines[0]).toBe(`cc-smart-dev-kit project init: ${repo} (dry run)`);
+    expect(asked.lines).toContain('  + worktrees.base: "main"');
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("a project file saved with a byte order mark is read, not refused (F5-2)", () => {
+    const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(dirname(file), { recursive: true });
+    // Notepad and an older PowerShell save UTF-8 with the mark; JSON.parse refuses it, so
+    // every guard fails closed on the file. The command must read it the same way they do now.
+    writeFileSync(
+      file,
+      `\uFEFF${JSON.stringify(
+        { requires: ">=1.0", worktrees: { base: "dev" }, autoMode: ["one rule"] },
+        null,
+        2,
+      )}\n`,
+    );
+    const run = context(repo);
+    expect(runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(run.errors).toEqual([]);
+    // The file's own answers were read: its base stays (not the repo's default), and a field
+    // the flags do not set stays too.
+    const written = JSON.parse(readFileSync(file, "utf8")) as {
+      autoMode?: unknown;
+      worktrees: { base: string };
+    };
+    expect(written.worktrees.base).toBe("dev");
+    expect(written.autoMode).toEqual(["one rule"]);
+    expect(() => parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).not.toThrow();
+  });
+
+  test("--yes with --workflow keeps the file's other workflow settings (F5-3)", () => {
+    const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          requires: ">=1.0",
+          worktrees: { base: "main" },
+          workflow: { crew: { enabled: true }, fixesAfterReview: { lines: 120 } },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const run = context(repo);
+    expect(runProjectInit(["--yes", "--workflow", "autoPush=true"], run.context, runner({}))).toBe(
+      0,
+    );
+    const written = JSON.parse(readFileSync(file, "utf8")) as {
+      workflow: Record<string, unknown>;
+    };
+    expect(written.workflow).toEqual({
+      crew: { enabled: true },
+      fixesAfterReview: { lines: 120 },
+      autoPush: true,
+    });
+    // The merged file is one the plugin's own readers accept before it is written.
+    expect(() => parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).not.toThrow();
   });
 
   test("an existing file: --yes keeps every field the flags do not set", () => {
@@ -509,20 +773,21 @@ describe("the run", () => {
 
   test("the questions, answered on a terminal, are what gets written", () => {
     const repo = makeRepo();
-    const asked: string[] = [];
-    const run = context(repo, {
-      terminal: {
-        confirm: (question) => {
-          asked.push(question);
-          return true;
-        },
-        text: (question, fallback) => {
-          asked.push(question);
-          return question === "The branch a new worktree starts from" ? "integration" : fallback;
-        },
-      },
-    });
+    // The base, Enter on the seven others, then a yes to the write.
+    const { prompts, shown } = scripted([
+      "integration",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "y",
+    ]);
+    const run = context(repo, { prompts });
     expect(runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(run.lines[2]).toBe("8 questions. Enter keeps the answer in [brackets].");
     expect(
       (
         JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")) as {
@@ -530,16 +795,16 @@ describe("the run", () => {
         }
       ).worktrees.base,
     ).toBe("integration");
-    expect(asked).toContain("Write these files?");
+    expect(shown.at(-1)).toBe("Write these 2 files? [y/N] ");
   });
 
-  test("a no to the last question leaves both files alone", () => {
+  test("a no to the last question leaves both files alone; Enter is that no", () => {
     const repo = makeRepo();
-    const run = context(repo, {
-      terminal: { confirm: () => false, text: (_question, fallback) => fallback },
-    });
+    const { prompts, shown } = scripted([]);
+    const run = context(repo, { prompts });
     expect(runProjectInit([], run.context, runner({}))).toBe(0);
-    expect(run.lines.at(-1)).toBe("Left alone.");
+    expect(shown.at(-1)).toBe("Write this file? [y/N] ");
+    expect(run.lines.at(-1)).toBe("· Left alone: nothing was written.");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
@@ -571,7 +836,9 @@ describe("the run", () => {
     const run = context(repo);
     expect(runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
     expect(run.lines).toEqual([
-      `${file} will hold:`,
+      `cc-smart-dev-kit project init: ${repo} (dry run)`,
+      "",
+      "! .claude/cc-smart-dev-kit.json  8 to change, 1 warning",
       '  + protectedBranches: ["main"]',
       '  + requires: ">=0.5.2"',
       "  + sessionNames: true",
@@ -580,14 +847,47 @@ describe("the run", () => {
       "  + worktrees.guardMainFolder: true",
       '  - worktrees.prefix: "app-wt-"',
       '  - worktrees.setup: ["bun","install"]',
-      `${settings} also changes, merged with what it has:`,
+      "  ! the plugin's worktree engine was retired in 1.0.0: worktrees.prefix, worktrees.setup and its hook lines go, because Claude Code's own worktrees need none",
+      "· .claude/settings.json          1 to change, merged with what it has",
       '  - hooks.WorktreeCreate: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create',
-      `${local} also changes, merged with what it has:`,
+      "· .claude/settings.local.json    1 to change, merged with what it has",
       "  - hooks.SubagentStop: cc-smart-dev-kit  hook  subagent-stop",
-      "! the plugin's worktree engine was retired in 1.0.0: worktrees.prefix, worktrees.setup and its hook lines go, because Claude Code's own worktrees need none",
-      "A dry run: nothing was written.",
+      "",
+      "· A real run writes 3 files.",
+      "Dry run: nothing was written.",
     ]);
     expect([file, settings, local].map((one) => readFileSync(one, "utf8"))).toEqual(before);
+  });
+
+  test("D20: the same dry run on a terminal: the marks coloured, the - lines red, the verdict dim", () => {
+    const { repo } = engineLeftovers();
+    const lines: string[] = [];
+    const run = context(repo, { out: createOut(RICH, lineSink(lines)) });
+    expect(runProjectInit(["--dry-run"], run.context, runner({}))).toBe(0);
+    const add = (text: string) => `  \x1b[32m+\x1b[0m ${text}`;
+    const cut = (text: string) => `  \x1b[31m-\x1b[0m ${text}`;
+    expect(lines).toEqual([
+      `\x1b[1mcc-smart-dev-kit project init: ${repo} (dry run)\x1b[0m`,
+      "",
+      "\x1b[33m!\x1b[0m .claude/cc-smart-dev-kit.json  8 to change, 1 warning",
+      add('protectedBranches: ["main"]'),
+      add('requires: ">=0.5.2"'),
+      add("sessionNames: true"),
+      add('worktrees.bases.hotfix/: "main"'),
+      add('worktrees.bases.release/: "main"'),
+      add("worktrees.guardMainFolder: true"),
+      cut('worktrees.prefix: "app-wt-"'),
+      cut('worktrees.setup: ["bun","install"]'),
+      "  \x1b[33m!\x1b[0m the plugin's worktree engine was retired in 1.0.0: worktrees.prefix, worktrees.setup and its",
+      "    hook lines go, because Claude Code's own worktrees need none",
+      "\x1b[2m·\x1b[0m .claude/settings.json          1 to change, merged with what it has",
+      cut('hooks.WorktreeCreate: "$HOME/.local/bin/cc-smart-dev-kit" hook worktree-create'),
+      "\x1b[2m·\x1b[0m .claude/settings.local.json    1 to change, merged with what it has",
+      cut("hooks.SubagentStop: cc-smart-dev-kit  hook  subagent-stop"),
+      "",
+      "\x1b[2m· A real run writes 3 files.\x1b[0m",
+      "Dry run: nothing was written.",
+    ]);
   });
 
   test("D20: --yes on the retired engine's leftovers writes a file that loads, and clean settings", () => {
@@ -609,9 +909,20 @@ describe("the run", () => {
       hooks: { Stop: [{ hooks: [{ type: "command", command: "./stop.sh" }] }] },
     });
     expect(readFileSync(local, "utf8")).toBe("{}\n");
-    expect(run.lines).toContain(`~ ${file}`);
-    expect(run.lines).toContain(`~ ${settings}`);
-    expect(run.lines).toContain(`~ ${local}`);
+    // Each file, changed; and settings.local.json, each person's own, is not one to commit.
+    expect(run.lines.slice(-11)).toEqual([
+      "",
+      "~ .claude/cc-smart-dev-kit.json: changed",
+      "~ .claude/settings.json: changed",
+      "~ .claude/settings.local.json: changed",
+      "",
+      "✓ Done: 3 files written.",
+      "",
+      "Next steps:",
+      "  1. Commit the files with the project:",
+      "       git add .claude/cc-smart-dev-kit.json .claude/settings.json && git commit",
+      "  2. Tell your teammates: the file asks for cc-smart-dev-kit >=0.5.2, so each of them needs that plugin version or newer.",
+    ]);
   });
 
   test("a flag cc-smart-dev-kit does not know: exit 2, nothing written", () => {
@@ -626,7 +937,7 @@ describe("the run", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(runProjectInit(["--help"], run.context, runner({}))).toBe(0);
-    expect(run.lines[0]).toContain("Usage: cc-smart-dev-kit project init");
+    expect(run.lines[0]).toStartWith("Usage: cc-smart-dev-kit project init");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 });
@@ -648,7 +959,7 @@ describe("what the file asks for", () => {
       ">=0.5.2",
     );
     expect(run.lines.at(-1)).toBe(
-      "The file asks for cc-smart-dev-kit >=0.5.2: every teammate needs that plugin version or newer.",
+      "  2. Tell your teammates: the file asks for cc-smart-dev-kit >=0.5.2, so each of them needs that plugin version or newer.",
     );
   });
 
@@ -749,7 +1060,9 @@ describe("the command itself, as Claude Code runs it", () => {
       },
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain("Commit both files with the project.");
+    expect(result.stdout.toString()).toContain(
+      "  1. Commit the files with the project:\n       git add .claude/cc-smart-dev-kit.json .claude/settings.json && git commit\n",
+    );
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(true);
     expect(existsSync(join(repo, ".claude", "settings.json"))).toBe(true);
     // The backups went to this HOME's state folder, never the real one.

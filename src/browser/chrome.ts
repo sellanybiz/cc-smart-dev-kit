@@ -35,6 +35,7 @@
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, posix, win32 } from "node:path";
+import { COMMAND } from "../build-info";
 
 /** The Playwright extension's Chrome Web Store id (also its manifest `key`). */
 export const PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
@@ -245,6 +246,52 @@ export function claudeCodeProfileOn(
 ): ChromeProfile | null {
   const userDataDir = chromeUserDataDir(deps.platform, deps.home);
   return userDataDir === null ? null : findClaudeCodeProfile(userDataDir, deps);
+}
+
+/** What the MCP's connect step needs from the machine's files, once each is found. */
+export interface ConnectPrerequisites {
+  /** The Google Chrome executable the MCP will drive. */
+  chrome: string;
+  /** The folder every profile of this user lives in (`--user-data-dir`). */
+  userDataDir: string;
+  profile: ChromeProfile;
+}
+
+/**
+ * Everything the connect step needs from the FILES before anything is started: Chrome installed,
+ * the profile there, and the Playwright extension in it. Without one of them the MCP would wait its
+ * own 30-second deadline and end in a message about the extension and the token, which names
+ * neither what is really missing nor the one command that fixes it — so this answers first, with
+ * one plain line (`browser check` and `browser mcp` both ask this, so the two can never disagree).
+ */
+export function connectPrerequisites(
+  deps: ChromeDeps & { home: string; platform: NodeJS.Platform },
+): ({ ok: true } & ConnectPrerequisites) | { ok: false; why: string } {
+  const chrome = findChrome(deps);
+  if (chrome === null) {
+    return { ok: false, why: `Google Chrome is not installed; run: ${COMMAND} browser setup` };
+  }
+  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
+  if (userDataDir === null) {
+    return {
+      ok: false,
+      why: `this system's Chrome profile folder is not one cc-smart-dev-kit knows (${deps.platform})`,
+    };
+  }
+  const profile = findClaudeCodeProfile(userDataDir, deps);
+  if (profile === null) {
+    return {
+      ok: false,
+      why: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is not there yet; run: ${COMMAND} browser setup`,
+    };
+  }
+  if (!isExtensionInstalledInProfile(profile.dir, deps)) {
+    return {
+      ok: false,
+      why: `the Playwright extension is not installed in the "${profile.dirName}" profile; run: ${COMMAND} browser setup`,
+    };
+  }
+  return { ok: true, chrome, userDataDir, profile };
 }
 
 /**

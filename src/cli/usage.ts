@@ -21,6 +21,12 @@
  * word): an Opus or Fable agent spends the person's own plan usage, and the reason the guard
  * accepted is the one thing the transcripts cannot say.
  *
+ * And each subagent's own record (`src/hooks/agent-usage.ts`, `agent-usage.jsonl`): at every
+ * subagent's stop the hook writes the agent's type, the models that answered it, the four
+ * token sums and an estimated cost. The transcripts already give the models; the record adds
+ * the agent type, the tokens and the cost, and survives the transcripts' cleanup. `--json`
+ * prints the same facts as one object a portal or another reader can take.
+ *
  * It also shows the auto-mode safety checks the router counted (`../gateway/safety-checks.ts`),
  * by day: those requests are not in the transcripts, since they belong to no session's
  * conversation. The file is the router's own state; with no gateway set up there is none,
@@ -30,7 +36,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
-  type CheckCount,
+  type CheckTokens,
   localDay,
   parseSafetyCheckState,
   recentCheckDays,
@@ -43,6 +49,12 @@ import {
   formatAgentLaunches,
   readAgentLaunches,
 } from "../hooks/agent-launches";
+import {
+  type AgentModelUsage,
+  type AgentUsage,
+  agentUsageFile,
+  readAgentUsage,
+} from "../hooks/agent-usage";
 import { type CliPaths, tildify } from "./paths";
 
 export interface UsageOptions {
@@ -250,8 +262,178 @@ function plural(n: number, word: string): string {
 }
 
 /** What one side's answers reported, as the report shows it. */
-function tokens(count: CheckCount): string {
+function tokens(count: CheckTokens): string {
   return `${count.input} in, ${count.output} out, ${count.cacheRead} cache read, ${count.cacheWrite} cache write`;
+}
+
+/** A USD amount as a person reads it: at least cents, and the micro-dollars one reply costs. */
+export function usdText(usd: number): string {
+  const fixed = usd.toFixed(6).replace(/0+$/, "");
+  const [whole = "0", part = ""] = fixed.split(".");
+  return `$${whole}.${part.padEnd(2, "0")}`;
+}
+
+/** An agent whose type was not recorded (`agent_type` absent). */
+const NO_TYPE = "(no type)";
+
+/** What some agent records add up to: types and models by count, tokens, the share on Opus. */
+export interface AgentRecordTotals {
+  byModel: Record<string, number>;
+  byType: Record<string, number>;
+  opus: number;
+  replies: number;
+  tokens: CheckTokens;
+  unpriced: number;
+  usd: number | null;
+}
+
+/** The sums of a set of agent records (one session's, or every one in the window). */
+export function agentRecordTotals(agents: readonly AgentUsage[]): AgentRecordTotals {
+  const totals: AgentRecordTotals = {
+    byModel: {},
+    byType: {},
+    opus: 0,
+    replies: 0,
+    tokens: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+    unpriced: 0,
+    usd: null,
+  };
+  let priced = 0;
+  let cost = 0;
+  for (const agent of agents) {
+    const type = agent.agentType ?? NO_TYPE;
+    totals.byType[type] = (totals.byType[type] ?? 0) + 1;
+    totals.unpriced += agent.unpriced;
+    if (agent.usd !== null) {
+      priced += 1;
+      cost += agent.usd;
+    }
+    for (const model of agent.models) {
+      totals.byModel[model.model] = (totals.byModel[model.model] ?? 0) + model.replies;
+      totals.replies += model.replies;
+      totals.tokens.input += model.input;
+      totals.tokens.output += model.output;
+      totals.tokens.cacheRead += model.cacheRead;
+      totals.tokens.cacheWrite += model.cacheWrite;
+      if (isOpus(model.model)) totals.opus += model.replies;
+    }
+  }
+  totals.usd = priced === 0 ? null : Math.round(cost * 1_000_000) / 1_000_000;
+  return totals;
+}
+
+/** A cost as the report says it, with what it cannot price. */
+export function costText(usd: number | null, unpriced: number): string {
+  const known = usd === null ? "no price known" : `${usdText(usd)} estimated`;
+  if (unpriced === 0) return known;
+  return `${known} (${unpriced === 1 ? "1 reply has no price" : `${unpriced} replies have no price`})`;
+}
+
+/** The report's one line for a set of agent records; nothing when there are none. */
+export function formatAgentRecord(agents: readonly AgentUsage[]): string[] {
+  if (agents.length === 0) return [];
+  const totals = agentRecordTotals(agents);
+  const sessions = new Set(agents.map((agent) => agent.session)).size;
+  return [
+    "",
+    `Agents on record: ${plural(agents.length, "agent")} in ${plural(sessions, "session")}; by type: ${counts(totals.byType)}; replies by model: ${counts(totals.byModel)}; on Opus: ${totals.opus} of ${totals.replies} replies (${percent(totals.opus, totals.replies)}); cost ${costText(totals.usd, totals.unpriced)}`,
+  ];
+}
+
+/** The agent records by session id, for the per-session part of the report. */
+export function agentsBySession(agents: readonly AgentUsage[]): Map<string, AgentUsage[]> {
+  const bySession = new Map<string, AgentUsage[]>();
+  for (const agent of agents) {
+    const list = bySession.get(agent.session) ?? [];
+    list.push(agent);
+    bySession.set(agent.session, list);
+  }
+  return bySession;
+}
+
+/** One agent record as the JSON report carries it: the line's fields and its reply count. */
+export interface AgentUsageJson extends CheckTokens {
+  agent: string;
+  agentType: string | null;
+  at: number;
+  models: AgentModelUsage[];
+  replies: number;
+  session: string;
+  unpriced: number;
+  usd: number | null;
+}
+
+/** What `usage --json` prints. `format` goes up when a field changes meaning. */
+export interface UsageJson {
+  agents: AgentUsageJson[];
+  format: number;
+  hours: number;
+  sessions: SessionUsage[];
+  totals: {
+    agentReplies: number;
+    agents: number;
+    agentTokens: CheckTokens;
+    agentUnpriced: number;
+    agentUsd: number | null;
+    main: Record<string, number>;
+    replies: Record<string, number>;
+    sessions: number;
+    subagents: number;
+  };
+}
+
+/**
+ * The same facts as the text report, as one object: the sessions the transcripts gave, the
+ * subagent records (`agent-usage.jsonl`), and the totals. The text is built from these same
+ * readers, so the two can never disagree. No message text, ever.
+ */
+export function usageJson(
+  sessions: readonly SessionUsage[],
+  agents: readonly AgentUsage[],
+  hours: number,
+): UsageJson {
+  const main: Record<string, number> = {};
+  const replies: Record<string, number> = {};
+  for (const session of sessions) {
+    add(main, session.main);
+    add(replies, session.replies);
+  }
+  const recorded = agentRecordTotals(agents);
+  return {
+    agents: agents.map((agent) => ({
+      agent: agent.agent,
+      agentType: agent.agentType,
+      at: agent.at,
+      models: agent.models,
+      replies: agent.models.reduce((sum, model) => sum + model.replies, 0),
+      session: agent.session,
+      unpriced: agent.unpriced,
+      usd: agent.usd,
+      ...agent.models.reduce(
+        (tokens, model) => ({
+          cacheRead: tokens.cacheRead + model.cacheRead,
+          cacheWrite: tokens.cacheWrite + model.cacheWrite,
+          input: tokens.input + model.input,
+          output: tokens.output + model.output,
+        }),
+        { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+      ),
+    })),
+    format: 1,
+    hours,
+    sessions: sessions.map((session) => ({ ...session })),
+    totals: {
+      agentReplies: recorded.replies,
+      agents: agents.length,
+      agentTokens: recorded.tokens,
+      agentUnpriced: recorded.unpriced,
+      agentUsd: recorded.usd,
+      main,
+      replies,
+      sessions: sessions.length,
+      subagents: sessions.reduce((sum, session) => sum + session.subagents, 0),
+    },
+  };
 }
 
 /**
@@ -305,22 +487,28 @@ function readSafetyChecks(file: string): null | SafetyCheckState {
   }
 }
 
-/** The report's lines. */
+/**
+ * The report's lines. `agents` is each subagent's record (`agent-usage.jsonl`), shown under
+ * its session; a session whose agents have no record (an older plugin, a cleaned-up
+ * transcript) keeps the transcript's own lines alone.
+ */
 export function formatUsage(
   sessions: SessionUsage[],
   hours: number,
   projectsDir: string,
   home: string,
   launches: AgentLaunch[] = [],
+  agents: AgentUsage[] = [],
 ): string {
   const lines = [
     `Claude Code replies in the last ${hours} h, main sessions and subagents apart, from ${tildify(projectsDir, home)} (read only; no message text)`,
   ];
   if (sessions.length === 0) {
     lines.push("", "No session answered in that time.");
-    lines.push(...formatAgentLaunches(launches));
+    lines.push(...formatAgentLaunches(launches), ...formatAgentRecord(agents));
     return lines.join("\n");
   }
+  const recorded = agentsBySession(agents);
   const main: Record<string, number> = {};
   const replies: Record<string, number> = {};
   let mainSessions = 0;
@@ -341,6 +529,15 @@ export function formatUsage(
       lines.push(`  subagents on Opus: ${opus} of ${total} replies (${percent(opus, total)})`);
       withSubagents += 1;
     }
+    const own = recorded.get(session.session) ?? [];
+    if (own.length > 0) {
+      const totals = agentRecordTotals(own);
+      lines.push(
+        `  agents on record: ${own.length} — by type: ${counts(totals.byType)}`,
+        `  agents' replies by model: ${counts(totals.byModel)}; on Opus: ${totals.opus} of ${totals.replies} (${percent(totals.opus, totals.replies)})`,
+        `  agents' tokens: ${tokens(totals.tokens)}; cost ${costText(totals.usd, totals.unpriced)}`,
+      );
+    }
     if (Object.keys(session.main).length > 0) mainSessions += 1;
     subagents += session.subagents;
     add(main, session.main);
@@ -351,6 +548,7 @@ export function formatUsage(
     "",
     `Main sessions: ${plural(mainSessions, "session")}; replies by model: ${counts(main) || "none"}`,
     `Subagents: ${subagents} in ${plural(withSubagents, "session")}; replies by model: ${counts(replies) || "none"}; on Opus: ${opus} of ${total} replies (${percent(opus, total)})`,
+    ...formatAgentRecord(agents),
     ...formatAgentLaunches(launches),
   );
   return lines.join("\n");
@@ -359,8 +557,9 @@ export function formatUsage(
 /** Parses `usage`'s options; an error in words on a wrong one. */
 export function usageOptions(
   args: string[],
-): { error: string } | { hours: number; project: null | string } {
+): { error: string } | { hours: number; json: boolean; project: null | string } {
   let hours = 6;
+  let json = false;
   let project: null | string = null;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -374,11 +573,13 @@ export function usageOptions(
     } else if (arg === "--project" && value !== undefined) {
       project = value;
       index += 1;
+    } else if (arg === "--json") {
+      json = true;
     } else {
       return { error: `Unknown option: ${arg ?? ""}` };
     }
   }
-  return { hours, project };
+  return { hours, json, project };
 }
 
 /** Runs `cc-smart-dev-kit usage`. */
@@ -386,13 +587,25 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
   const options = usageOptions(args);
   if ("error" in options) {
     console.error(
-      `${options.error}\n\nUsage: cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>]`,
+      `${options.error}\n\nUsage: cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>] [--json]`,
     );
     return 2;
   }
   const projectsDir = paths.projectsDir;
   const sinceMs = nowMs - options.hours * 3_600_000;
   const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
+  const recorded = readAgentUsage(agentUsageFile(paths.stateDir), sinceMs);
+  // `--project` filters the sessions the transcripts give. The record holds a session id and
+  // no folder, so under a project filter it counts only the sessions that survived: an agent
+  // whose transcript was cleaned up cannot be placed in a project.
+  const agents =
+    options.project === null
+      ? recorded
+      : recorded.filter((agent) => sessions.some((session) => session.session === agent.session));
+  if (options.json) {
+    console.log(JSON.stringify(usageJson(sessions, agents, options.hours), null, 2));
+    return 0;
+  }
   console.log(
     [
       formatUsage(
@@ -401,6 +614,7 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
         projectsDir,
         paths.home,
         readAgentLaunches(agentLaunchesFile(paths.stateDir), sinceMs),
+        agents,
       ),
       ...formatSafetyChecks(readSafetyChecks(paths.safetyChecksFile), nowMs),
     ].join("\n"),

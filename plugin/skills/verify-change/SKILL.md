@@ -1,6 +1,6 @@
 ---
 name: verify-change
-description: Use after editing code - the cheap loop after every batch of edits. Read your own diff, run the tests it touches, check the blast radius of anything shared, run the checks the push will run before you hand back, and at the plan's end test with the person what only they can judge. The deeper pass before a commit is the review skill. Trigger phrases - "I'm done", "implementation complete", "looks good", or any time files were edited.
+description: Use after a batch of code edits, while you are still building - the cheap loop. Read your own diff, run the tests it touches, check the blast radius of anything shared, run the checks the push will run before you hand back, and at the plan's end test with the person what only they can judge. Not for a turn that edited no code; the deeper pass before a commit is the review skill. Trigger phrases - "run the tests", "check my changes", "does it still work", "implementation complete".
 ---
 
 # Verify A Change — The Cheap Loop
@@ -28,8 +28,11 @@ Read it as a reviewer would. Look for:
 The tests for the files you changed, not the whole suite after every edit. A green suite
 proves only what it covers: know where the project has no tests, and say so.
 
-A test that fails: fix the cause (the core instructions' root-cause list). A new test must be
-able to fail: break the code once on purpose and watch it go red. Never lower a coverage floor
+A bug: write the test that reproduces it first and watch it fail, then fix the code. A test
+that fails: fix the cause (the core instructions' root-cause list). A new test must be able to
+fail: break the code once on purpose and watch it go red, keeping a copy first (`cp path
+path.bak`), copying it back after (`cp path.bak path`) and deleting the copy (`rm path.bak`) —
+never `git checkout -- path`, which a crew session's guard denies. Never lower a coverage floor
 to go green.
 
 ## 3. Blast radius — only when you changed shared code
@@ -71,8 +74,8 @@ at a shared remote service.
 
 Once, when the plan's work is finished and its pull requests are open — not after every edit
 batch. First run every check you can yourself: the tests, the app in a browser (yourself or
-the `cc-smart-dev-kit:ui-verifier`), the script with real input. Then list what you cannot judge
-alone:
+the `cc-smart-dev-kit:ui-verifier`), the app itself through the bundled `/run` skill (it launches
+and drives it), the script with real input. Then list what you cannot judge alone:
 
 - a page behind their own login, or with their real data;
 - a real click, upload or download on their screen;

@@ -22,6 +22,8 @@
  * fake file system and the Windows rules are still exercised.
  */
 import { win32 } from "node:path";
+import { COMMAND } from "../build-info/names";
+import type { Check } from "./check";
 
 /** Claude Code's own override for where Git Bash is. Read, never written, by this plugin. */
 export const GIT_BASH_VAR = "CLAUDE_CODE_GIT_BASH_PATH";
@@ -81,12 +83,8 @@ export function findGitBash(
 }
 
 /** What doctor prints for one check: the shape `Check` in `doctor.ts` (`info`/`warn` optional). */
-export interface GitBashCheck {
-  ok: boolean;
-  info?: boolean;
-  text: string;
-  warn?: boolean;
-}
+/** doctor's Git Bash line: a check like any other (`check.ts`). */
+export type GitBashCheck = Check;
 
 /**
  * doctor's Git Bash line: nothing at all off Windows, `✓` where it is found, `!` where the
@@ -109,14 +107,14 @@ export function checkGitBash(
       : {
           ok: true,
           warn: true,
-          text: `Git Bash is at ${path}, which the hooks and the Bash tool run through — but ${ignored}. Remove it or point it at bash.exe.`,
+          text: `Git Bash is at ${path}, which the hooks and the Bash tool run through — but ${ignored}`,
+          fix: `remove ${GIT_BASH_VAR}, or point it at bash.exe`,
         };
   }
   const found = ignored === null ? "" : ` (${ignored})`;
   return {
     ok: false,
-    text:
-      `Git Bash was not found${found}, and on Windows the plugin's hooks run through it: without it Claude Code uses PowerShell and a hook that needs bash errors instead of running. ` +
-      "Install Git for Windows (https://git-scm.com/download/win), or set CLAUDE_CODE_GIT_BASH_PATH to bash.exe, then run: cc-smart-dev-kit doctor",
+    text: `Git Bash was not found${found}, and on Windows the plugin's hooks run through it: without it Claude Code uses PowerShell and a hook that needs bash errors instead of running`,
+    fix: `install Git for Windows (https://git-scm.com/download/win), or set ${GIT_BASH_VAR} to bash.exe, then run: ${COMMAND} doctor`,
   };
 }

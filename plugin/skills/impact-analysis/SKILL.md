@@ -16,14 +16,19 @@ exists in three.
 
 - **Symbols** (a function, type, class, hook, component): `Grep` for the name as a whole word
   (`\bname\b`), its import lines included, then `Read` around each hit to see the function it
-  sits in. More than three files to read: hand the sweep to `Explore` with the exact names,
-  and ask for every hit. When the question is a file's shape — its functions and exports —
-  claude-mem's `smart_outline` (one file) and `smart_search` (the repo) answer it without
-  reading whole files; when they are not there or do not answer, fall back to `Grep` and
-  `Read`. Search **your** checkout: in a worktree, a search of the main
-  checkout misses every caller your branch added.
+  sits in. Where a language server runs for the file, `LSP` finds the references and the
+  definition without the comments and look-alike names a text search returns; with none, it
+  answers with an error. More than three files to read: hand the sweep to `Explore` with the
+  exact names, and ask for every hit. When the question is a file's shape — its functions and
+  exports — claude-mem's `smart_outline` (one file), `smart_unfold` (one symbol's body) and
+  `smart_search` (the repo) answer it without reading whole files; when they are not there or
+  do not answer, fall back to `Grep` and `Read`. Search **your** checkout: in a worktree, a
+  search of the main checkout misses every caller your branch added.
 - **Text** (a route string, a cache or query key, an event name, a column name, an
   environment variable, a permission key): `Grep`.
+- **No `Grep` or `Glob` tool?** On macOS, Linux and WSL, Claude Code leaves both out of the
+  session, and out of any agent that also lists `Bash`. Then `grep -rnw` and `find` through
+  `Bash` are the same searches: Claude Code's shell runs fast built-in versions of both.
 - **Never cut a caller list short** — no `| head`, no `-m`. This pass is about completeness,
   and a cut list looks exactly like a finished one. Count the hits, then read them; a long
   list is itself the finding.
@@ -48,8 +53,9 @@ patching each site.
 
 ## Edge cases hide in the blast radius
 
-Walk the edge-case axes of `/cc-smart-dev-kit:review` against **each consumer**, not only the file
-you edited. The three it catches most often:
+Walk the edge-case axes against **each consumer**, not only the file you edited. They are in
+the review skill's `references/axes.md` (`../review/references/axes.md` from this skill's
+folder). The three this catches most often:
 
 - a consumer that passes `null` or an empty list where the new code assumes a value;
 - a second caller whose cache key or realtime channel lacks the tenant id;

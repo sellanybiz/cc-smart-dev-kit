@@ -23,7 +23,8 @@ already does the job: by name, by the words a caller would use, and in the depen
 ## 2. Then the maintained solutions
 
 No fit in the project? Find the maintained library or the standard approach for exactly this
-job. Judge each candidate:
+job — a UI library's input or chat component, a form or validation library, a queue, an SDK.
+Judge each candidate:
 
 - **Maintained** — recent releases, open issues answered, not deprecated.
 - **Fits** — the project's language version, framework version, runtime and bundle budget.
@@ -54,12 +55,14 @@ tool failed.
 1. Search as widely as the question needs.
 2. Check the versions the project uses — APIs change between major versions.
 3. Read the installed types, not memory.
-4. Cross-check **at least two** authoritative sources. If they disagree, say so.
+4. For a recommendation, a new dependency, an architecture choice or a version change,
+   cross-check **at least two** authoritative sources, and say which tool found them. If they
+   disagree, say so.
 5. Nothing found? Change the query, search the library's own source or issues, read the
    types, or ask. Never fill the gap with a guess.
-6. Write the findings where the next session finds them: for a plan, its research file
-   (`/cc-smart-dev-kit:plan-task` § 1 says where, and when it moves); else one plain line in
-   your reply.
+6. Write the findings where the next session finds them: for a plan, its Research section
+   (`/cc-smart-dev-kit:plan-task` § 1 says where, and when it moves) — a plan whose Research
+   section is empty is built on guesses; else one plain line in your reply.
 
 ## Query hygiene
 
@@ -69,11 +72,13 @@ queries to versions, not years ("Next.js 16 server actions auth", not "best prac
 
 ## When research is required
 
-- every external library call, even a familiar one;
+- every external library call you have not checked this session, a familiar one too — for a
+  library the project already uses, its installed types and docs are the check;
 - architecture: data model, caching, auth, queues, state;
 - a pattern the codebase has never used;
 - hand-writing a solved problem (validation, formatting, parsing, dates and time zones,
-  money, crypto, sanitization, translation) or a rich UI component;
+  money, crypto, sanitization, translation) or a rich UI component — a maintained library
+  usually does it better;
 - performance- or security-sensitive code; browser and platform behaviour;
 - AI and LLM integrations — their SDKs change fast;
 - a migration, upgrade or deprecation — read the full changelog and upgrade guide;
@@ -88,7 +93,7 @@ Compare two or three approaches you found, pick what fits this codebase best, an
 the recommended option in `AskUserQuestion`, with the alternatives. Never recommend from
 stale memory: if you did not research it this session, research it now.
 
-**Banned:** "I know this API"; implementing from training-data recall; copying the
+**Banned:** implementing from training-data recall; copying the
 project's own wrapper around a library without checking the library's current API; research
 after the implementation; one forum answer as proof; guessing at the project's own code when
 reading the file would settle it.

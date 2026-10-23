@@ -7,7 +7,7 @@ description: >-
   reporting fails. In the eval sandbox the report command cannot record anything (no lead, no
   crew store), so the case grades the attempt.
 tags: [watch, workflow, needs-shell]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 15
   allowed_tools: [Read, Glob, Grep, Skill, Bash, SendMessage]

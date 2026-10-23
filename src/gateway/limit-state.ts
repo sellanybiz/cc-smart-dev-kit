@@ -13,6 +13,9 @@
  *     their requests (`breaker` in the config decides whether it may), with each target's
  *     rest and how many requests are held. Optional: a reader that does not know it ignores
  *     it, and a file without it reads as no breaker open.
+ *   - `seenClaude`: the Claude model ids Claude Code sent (the portal's "Claude login" list).
+ *     The router writes it only when an id is new, and then reads the file first and changes
+ *     only this field, so a change another program made to the rest stays.
  *
  * Why a file: when a request is refused for the limit, Claude Code's status line gets no new
  * usage numbers (a refused request's headers are not read), and the StopFailure hook's input
@@ -84,8 +87,34 @@ const stateSchema = z.object({
   breakers: z.record(z.string(), breakerSchema).optional(),
   fallbacks: z.record(z.string(), fallbackSchema),
   limits: z.record(z.string(), limitSchema),
+  /**
+   * The Claude model ids Claude Code sent through the router, each with the last time
+   * (milliseconds) the file was written for it: the "Claude login" group of the portal's
+   * model list. Ids only, never a word of a request. Optional, so a file of 0.5.x reads.
+   */
+  seenClaude: z.record(z.string(), z.number()).optional(),
   version: z.literal(1),
 });
+
+/** The most Claude ids `seenClaude` keeps: the ones seen last. */
+export const SEEN_CLAUDE_MAX = 50;
+
+/**
+ * Two `seenClaude` records as one: each id with its latest time, and only the
+ * `SEEN_CLAUDE_MAX` ids seen last (a client that sends a new id each time cannot grow it).
+ */
+export function mergeSeenClaude(
+  a: Readonly<Record<string, number>>,
+  b: Readonly<Record<string, number>>,
+): Record<string, number> {
+  const merged = new Map<string, number>(Object.entries(a));
+  for (const [id, at] of Object.entries(b)) merged.set(id, Math.max(merged.get(id) ?? at, at));
+  return Object.fromEntries(
+    [...merged]
+      .sort(([idA, atA], [idB, atB]) => atB - atA || (idA < idB ? -1 : 1))
+      .slice(0, SEEN_CLAUDE_MAX),
+  );
+}
 
 export type LimitRecord = z.output<typeof limitSchema>;
 export type FallbackRecord = z.output<typeof fallbackSchema>;

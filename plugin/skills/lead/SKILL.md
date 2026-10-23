@@ -21,8 +21,11 @@ belongs — inline, a subagent or a crew session — is in the core instructions
   Off: this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
   Turning crew sessions on is the person's choice, never yours.
 - **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug>`. It
-  names the session `LEAD <tag> <plan>` and prints a `/rename` line: give it to the person, who
-  types it once so agent view shows the name. `crew start` refuses until this session is a
+  names the session `LEAD <tag> <plan>`; the session takes that name at its next prompt by
+  itself (no setting; it replaces the name the session had, and a name the person gives it
+  with `/rename` after that stays), so there is nothing for the person to type. Only a session
+  id no name record can be made for, or a project running its own `lead-notes` hook, gets a
+  `/rename` line, which the person types once. `crew start` refuses until this session is a
   lead.
 
 ## 2. Split the plan into phases
@@ -52,10 +55,16 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> --brief <file> \
   wave, each later one with `--waits-for` the phases it builds on. You never keep a list of what
   is ready: the queue and the watch start each phase when what it waits for is merged and a
   place is free. Each call returns at once with one line: `started`, `queued` or `failed`, with
-  the reason. Your reply names each crew session with the model and effort its line shows (the
-  core instructions' "say it when you launch").
-- **`queued` is not an error.** A cap, the free memory or `--waits-for` holds it, and it starts
-  by itself when its place frees. Never start it a second time.
+  the reason (an opus start with no usage-window reading adds one note line). Your reply names
+  each crew session with the model and effort its line shows (the core instructions' "say it
+  when you launch").
+- **`queued` is not an error.** A cap, the free memory, the 5-hour usage window or `--waits-for`
+  holds it, and it starts by itself when its place frees. Never start it a second time.
+- **A `clash:` line after the start is a warning, not a failure.** Another lead's crew session in
+  this repository lists some of the same files: the line names that lead, its crew session and the
+  files they share, and both starts go on. Two leads may mean to share a file. If they must not,
+  tell the other lead: `cc-smart-dev-kit crew lead tell "<that lead>" --kind contract "<what the
+  phase changes there>"`.
 - **`--waits-for <phase,...>`** holds a phase until each of those is merged. The
   watch marks a merged branch and starts the waiting session by itself, cut from your branch
   with the merge in it. A phase the plan adds later is started the moment it is written.
@@ -85,8 +94,9 @@ How to brief well, and how to brief an affordable model: `/cc-smart-dev-kit:suba
 
 Running this skill starts the `crew-events` monitor. It prints one line per change of your
 crew sessions — a start, a step, a question, a permission wait, a quiet crew session, a report, a crash, a
-queued crew session that started, a note one crew session told another — and each line reaches you as a notification, also when you are
-idle. So after the starts, **go on**.
+queued crew session that started, a note one crew session told another, the person writing to one — and each line reaches you as a notification, also when you are
+idle. A lead of another plan in this repository reaches you the same way: a note it tells you, a
+merge it made into the base, and a file clash of its phase with yours. So after the starts, **go on**.
 
 **On each line, act in that turn:**
 
@@ -97,6 +107,11 @@ idle. So after the starts, **go on**.
 | `question`, one that is the person's | `AskUserQuestion` (§ 5) |
 | `needs you` (a permission wait) | give the person `claude attach <name>` |
 | `told` (one crew session told another a contract change or question) | nothing, unless it changes the plan or the two cannot settle it: then `crew answer` both |
+| the person wrote to a crew session | read its next report against the brief before you merge it. Their word wins over the brief, so the phase it hands back may no longer be the phase it started (§ 6) |
+| `contract from another lead` (a note from another lead of this repository) | read it; a contract note needs no reply. If it changes your plan, act in this turn |
+| `question from another lead` | answer it: `cc-smart-dev-kit crew lead tell "<that lead>" --kind contract "<your answer>"` |
+| `merged #<n> … into <base>` (another lead merged into the base) | at your next stop, merge `origin/<base>` into the branch your folder is on, and run your install if a lock file changed. A crew session's branch never takes the base in: its lead's branch already has it |
+| `clash: …` (a crew session of yours and another lead's phase may change the same files) | nothing: both starts go on. If the two phases must not share, tell that lead with `crew lead tell` (§ 3) |
 | `failed`, `blocked`, `quiet`, a turn ended with no report | § 6 |
 | `paused` (a model limit) | nothing: the watch resumes it once the gateway answers again, one first and the others 30 s apart; after `/login` on another account, `cc-smart-dev-kit crew resume --paused` |
 
@@ -170,10 +185,17 @@ Once you merged its branch, the watch marks it `merged` and ends its session;
 
 ## 7. Caps and the queue
 
-`workflow show` prints the caps: `crew.max` (every crew session on the machine, across leads) and
-`crew.maxOpus` (those on the opus tier). Routine phases on the worker slot run wide; the opus
-phases — the kinds that run on opus — queue, so put those that unblock the most first. Your own
-Opus subagents share the same usage window: at most 3 at once.
+`workflow show` prints the caps. **Yours:** `crew.perLead` crew sessions at once (4 by default)
+and `crew.perLeadOpus` of them on the opus tier (2), counted in every repository of this machine.
+**The machine's guards:** `crew.max` is a safety ceiling (24) no lead reaches alone, `crew.maxOpus`
+an optional machine-wide opus count (unset by default), and a new **opus-tier** phase waits while
+the plan's 5-hour usage window is past `crew.usagePercent` (85) — unless the gateway's opus slot
+has a fallback chain on, which answers past it. The window comes from Claude Code's status line,
+and with no reading the guard does not hold (`crew start` and `crew list` say so once).
+
+Routine phases on the worker slot run wide; the opus phases — the kinds that run on opus — queue,
+so put those that unblock the most first. A queued crew session says what holds it on `crew list`.
+Your own Opus subagents share the same usage window: at most 3 at once.
 
 ## 8. Hand-offs
 

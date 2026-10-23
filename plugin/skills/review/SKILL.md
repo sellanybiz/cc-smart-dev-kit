@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review your own finished change before you commit it, then get one second opinion per change set. Walks the review dimensions and the edge-case axes that apply to this diff, proves each finding, and fixes it. Trigger phrases - "ready to commit", "review this", "audit this", "I'm done", "does this look right".
+description: Review your own finished change before you commit it, then get one second opinion per change set. Walks the review dimensions and the edge-case axes that apply to this diff, proves each finding, and fixes it. Trigger phrases - "ready to commit", "review this", "I'm done", "does this look right".
 ---
 
 # Review — You Are The Reviewer
@@ -17,7 +17,9 @@ name on it.
   change when there are no phases — when your next action is the commit. The test: "if this
   comes back clean, do I commit right now?" No: you are still building; come back later.
 - **The second opinion:** once per change set (§ Second opinion).
-- **On request:** "review this", "audit that feature".
+- **On request:** "review this".
+- **A sweep of an area, not a diff:** `/cc-smart-dev-kit:audit` — one class of defect across
+  code nobody is changing, with its own Workflow.
 
 **The project's workflow says how strictly this holds.** `cc-smart-dev-kit workflow show` prints
 `reviewBeforePush`, and with it on — the default — the second opinion is due before the first
@@ -31,66 +33,14 @@ exemption in one line.
 
 ## How
 
-Read the real diff in full — `git diff` and `git diff --cached`, not a summary. Then work
-through the two lists below, but **only the entries this diff touches.** Walking an axis that
-does not apply is theatre; name the ones you skipped, one line each.
+Read the real diff in full — `git diff` and `git diff --cached`, not a summary. Then walk
+the review dimensions and the edge-case axes in `references/axes.md` (beside this file), but
+only the entries this diff touches. Walking an axis that does not apply is theatre; name the
+ones you skipped, one line each. The same file holds the severity scale.
 
 The bug usually lives between what you changed and what you did not. For every exported
 symbol you touched, find its callers (`Grep` for the name as a whole word, `\bname\b`) and
 read them.
-
-## Review dimensions
-
-1. **Architecture** — the right shape, or the shape the diff fell into? Push for a
-   config-driven design where the domain is truly open and change is already coming, and
-   guard the opposite just as hard (the core instructions' "best by default"): an interface
-   with one implementation is a finding too.
-2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. Deep
-   detail: `/cc-smart-dev-kit:performance-budget`.
-3. **Pattern consistency** — does it match its sibling files? A new pattern needs a reason.
-   If the old pattern is the wrong one, fix it across the plan's files (beyond them: the core
-   instructions' one-plan rule).
-4. **Boundaries** — the project's layering and import rules. A violation is Critical.
-5. **Shortcuts** — each item on the core instructions' root-cause list, plus magic numbers.
-   Each needs the real fix.
-6. **Reuse over reinvent** — hand-written code for a job the project or a maintained library
-   already does (the core instructions give the order to look in). Name the exact replacement
-   when you flag one, and confirm it exists — in the project or in the installed package.
-7. **Craft** — would a senior engineer be embarrassed to approve this? Dead code, debug
-   output left in, names that lie (`data2`), one function doing five things, nesting that
-   should be early returns, clever one-liners, user-facing errors that say "Something went
-   wrong".
-8. **Security** — authentication and authorization checked inside the function, not only at
-   the route; input validated at the boundary; no secrets in logs, client bundles or props
-   sent to the browser.
-9. **Observability** — the project's logger, not stray console output. Errors carry the ids
-   needed to trace them (request, user, tenant). Operations that may be retried are
-   idempotent (safe to run twice).
-10. **Fix the class, inside the plan** — for every finding, search the files the plan changes
-    for the same pattern and fix every instance there (`/cc-smart-dev-kit:impact-analysis` § Fix the
-    pattern).
-
-## Edge-case axes
-
-The one home for this list; other skills point here. Attack only what applies.
-
-- **Data and input** — empty, zero, one, many; null vs undefined vs a missing key; untrusted
-  shapes from webhooks, URL parameters or local storage (validated with a schema, or cast?);
-  long strings, emoji, right-to-left text, newlines; money rounding, cents vs units, `NaN`;
-  dates across time zones and daylight saving; internal id vs public id.
-- **State and timing — the richest vein** — double-click submit; a webhook delivered twice;
-  two tabs; read-modify-write with no lock; events out of order; the same job run twice
-  (a real idempotency key, or hope?); partial failure after steps 1–2 were written; an answer
-  landing on a component that is gone; a cache key missing the tenant id; queue retries;
-  realtime reconnect gaps; a stream cut mid-answer.
-- **Access and money — highest severity** — can tenant A read tenant B's row? Is the tenant
-  id in the query, the cache key and the realtime channel? A viewer doing an owner's action;
-  a private field in a public response; a double charge, a charge without delivery, a replayed
-  webhook.
-- **Environment** — a provider down, or answering 200 with an error body; rate limits; a
-  phone-sized screen; dark mode; keyboard only; **deploy skew** — new code reading a column
-  production does not have yet. Check the migration is merged and backfilled before the code
-  ships.
 
 ## The evidence bar
 
@@ -106,17 +56,6 @@ A finding counts only when you can fill all four:
 Cannot fill all four? It is a hunch: say so separately, or drop it. **Refute before you
 report:** look for the guard that already stops it (a validator upstream, a database
 constraint, a type that makes it impossible). Never invent a line number.
-
-## Severity
-
-- **Critical** — money lost, data destroyed, one customer sees another's data, missing
-  authorization, a boundary violation, a silent failure nobody can recover from. Stop: fix it
-  before the commit.
-- **Warning** — real users hit it on a normal path. Fix it, or get the person's explicit yes
-  to ship it knowingly.
-- **Suggestion** — a narrow trigger, cosmetic, recovers by itself. Fix it if cheap.
-
-Bias upward when unsure. If everything is a Suggestion, say so plainly.
 
 ## Second opinion
 
@@ -156,6 +95,33 @@ person asks, with the line `Fable reason: review - <why>`; `agent-guard` then as
 - **Never record it yourself.** `cc-smart-dev-kit workflow review-done` refuses inside Claude Code:
   a record a session writes is the session's own word, which is what the hook above exists to
   replace. The command is for the person's own terminal, to record one by hand.
+
+### A big change set: split it instead
+
+One reviewer's focused pass cannot cover a diff that spans many layers — a whole release's
+integration, a change across most of the tree. There the second opinion may be the `review-split`
+Workflow: one read-only reviewer per track you name, a second reviewer to refute every finding,
+and one ranked report back. It is the same second opinion, so never run it beside the single
+reviewer, and a small fix or an ordinary change set stays with the single reviewer, whose read
+is cheaper.
+
+```
+Workflow({ name: "cc-smart-dev-kit:review-split",
+  args: { base: "main", head: "HEAD", intent: "what this change does",
+          tracks: ["state and timing", "access and money"], risky: false } })
+```
+
+- `base` and `head` name the change (`git merge-base <base branch> HEAD`, then the branch
+  head), and `intent` says what it is meant to do — the reviewers hold no context of their own.
+- `tracks` are two to four review dimensions or edge-case axes from `references/axes.md` that
+  this diff touches.
+- `risky: true` only for a change set the core instructions' Review calls risky; the run holds
+  their model rule for it, on every launch. The reviewers are the type the review-record hook
+  knows, so the run records the review as the single reviewer does: commit first, and commit
+  nothing while it runs.
+- Claude Code starts a Workflow only on the person's request, or from a skill that says to call
+  one. A split you decided on yourself asks once first, naming the tracks and what the run
+  spends — as the audit skill does for a sweep it starts.
 
 ## Then
 

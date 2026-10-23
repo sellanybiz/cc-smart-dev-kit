@@ -7,8 +7,18 @@ import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SafetyCheckState } from "../gateway/safety-checks";
 import { type AgentLaunch, parseAgentLaunch } from "../hooks/agent-launches";
+import { type AgentUsage, agentUsageFile, parseAgentUsage } from "../hooks/agent-usage";
 import { tempDir } from "../testing/temp";
-import { collectUsage, formatSafetyChecks, formatUsage, usageOptions } from "./usage";
+import { cliPaths } from "./paths";
+import {
+  collectUsage,
+  formatSafetyChecks,
+  formatUsage,
+  runUsage,
+  usageJson,
+  usageOptions,
+  usdText,
+} from "./usage";
 
 /** A record line as an older guard wrote it — `reason` only — read the way `usage` reads it. */
 function oldLine(
@@ -229,15 +239,210 @@ describe("usage", () => {
     expect(collectUsage(join(tempDir("usage"), "none"), { project: null, sinceMs: SINCE })).toEqual(
       [],
     );
-    expect(usageOptions([])).toEqual({ hours: 6, project: null });
+    expect(usageOptions([])).toEqual({ hours: 6, json: false, project: null });
     expect(usageOptions(["--hours", "1.5", "--project", "my-app"])).toEqual({
       hours: 1.5,
+      json: false,
       project: "my-app",
     });
+    expect(usageOptions(["--json"])).toEqual({ hours: 6, json: true, project: null });
     expect(usageOptions(["--hours", "0"])).toEqual({
       error: '--hours wants a number above 0, not "0"',
     });
     expect(usageOptions(["--days", "2"])).toEqual({ error: "Unknown option: --days" });
+  });
+});
+
+describe("MD-7: the subagents' own records", () => {
+  const SESSION_ID = "11111111-aaaa-bbbb-cccc-000000000001";
+
+  /** One record line, written by hand in the shape `src/hooks/agent-usage.ts` writes. */
+  function record(line: Record<string, unknown>): AgentUsage {
+    const one = parseAgentUsage(JSON.stringify(line));
+    if (one === null) throw new Error(`the record did not read: ${JSON.stringify(line)}`);
+    return one;
+  }
+
+  // Two agents of the fixture's session: an Opus reply written twice and an unpriced backend
+  // reply (0.0149 USD by hand), and an Explore agent whose one reply cost nothing.
+  const GENERAL = record({
+    agent: "a1",
+    agentType: "general-purpose",
+    at: NOW - 1_800_000,
+    models: [
+      {
+        cacheRead: 2000,
+        cacheWrite: 100,
+        input: 1000,
+        model: "claude-opus-5-5",
+        output: 500,
+        replies: 2,
+        usd: 0.0149,
+      },
+      {
+        cacheRead: 0,
+        cacheWrite: 0,
+        input: 300,
+        model: "glm-5.3-flash",
+        output: 100,
+        replies: 1,
+        usd: null,
+      },
+    ],
+    session: SESSION_ID,
+    unpriced: 1,
+    usd: 0.0149,
+  });
+  const EXPLORE = record({
+    agent: "a2",
+    agentType: "Explore",
+    at: NOW - 900_000,
+    models: [
+      {
+        cacheRead: 0,
+        cacheWrite: 0,
+        input: 0,
+        model: "claude-opus-5-5",
+        output: 0,
+        replies: 1,
+        usd: 0,
+      },
+    ],
+    session: SESSION_ID,
+    unpriced: 0,
+    usd: 0,
+  });
+
+  it("shows each session's agents by type and model, their tokens and their cost", () => {
+    const root = projects();
+    const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
+    const lines = formatUsage(sessions, 6, root, "/home/user", [], [GENERAL, EXPLORE]).split("\n");
+    expect(lines.slice(7, 10)).toEqual([
+      "  agents on record: 2 — by type: Explore 1, general-purpose 1",
+      "  agents' replies by model: claude-opus-5-5 3, glm-5.3-flash 1; on Opus: 3 of 4 (75%)",
+      "  agents' tokens: 1300 in, 600 out, 2000 cache read, 100 cache write; cost $0.0149 estimated (1 reply has no price)",
+    ]);
+    expect(lines.slice(-2)).toEqual([
+      "",
+      "Agents on record: 2 agents in 1 session; by type: Explore 1, general-purpose 1; replies by model: claude-opus-5-5 3, glm-5.3-flash 1; on Opus: 3 of 4 replies (75%); cost $0.0149 estimated (1 reply has no price)",
+    ]);
+  });
+
+  it("a record whose session answered nothing yet is still counted in the totals", () => {
+    const root = projects();
+    const text = formatUsage([], 6, root, "/home/user", [], [GENERAL]);
+    expect(text.split("\n").slice(-2)).toEqual([
+      "",
+      "Agents on record: 1 agent in 1 session; by type: general-purpose 1; replies by model: claude-opus-5-5 2, glm-5.3-flash 1; on Opus: 2 of 3 replies (67%); cost $0.0149 estimated (1 reply has no price)",
+    ]);
+  });
+
+  it("--json is the same facts as one object a portal can read", () => {
+    const root = projects();
+    const sessions = collectUsage(root, { project: null, sinceMs: SINCE });
+    expect(usageJson(sessions, [GENERAL, EXPLORE], 6)).toEqual({
+      agents: [
+        {
+          agent: "a1",
+          agentType: "general-purpose",
+          at: NOW - 1_800_000,
+          cacheRead: 2000,
+          cacheWrite: 100,
+          input: 1300,
+          models: GENERAL.models,
+          output: 600,
+          replies: 3,
+          session: SESSION_ID,
+          unpriced: 1,
+          usd: 0.0149,
+        },
+        {
+          agent: "a2",
+          agentType: "Explore",
+          at: NOW - 900_000,
+          cacheRead: 0,
+          cacheWrite: 0,
+          input: 0,
+          models: EXPLORE.models,
+          output: 0,
+          replies: 1,
+          session: SESSION_ID,
+          unpriced: 0,
+          usd: 0,
+        },
+      ],
+      format: 1,
+      hours: 6,
+      sessions,
+      totals: {
+        agentReplies: 4,
+        agents: 2,
+        agentTokens: { cacheRead: 2000, cacheWrite: 100, input: 1300, output: 600 },
+        agentUnpriced: 1,
+        agentUsd: 0.0149,
+        main: { "claude-opus-5-5": 1, "glm-5.3-flash": 1 },
+        replies: { "claude-opus-5-5": 3, "glm-5.3-flash": 1 },
+        sessions: 1,
+        subagents: 3,
+      },
+    });
+  });
+
+  it("--project counts only the record lines whose session it shows", () => {
+    const home = tempDir("usage-run");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const project = join(paths.projectsDir, "-home-user-my-app");
+    mkdirSync(project, { recursive: true });
+    writeFileSync(
+      join(project, "s1.jsonl"),
+      `${reply("m1", "claude-opus-5-5", NOW - 60_000).join("\n")}\n`,
+    );
+    mkdirSync(paths.stateDir, { recursive: true });
+    // The fixture's session, and one in another project whose transcript is not here.
+    writeFileSync(
+      agentUsageFile(paths.stateDir),
+      `${[
+        JSON.stringify({
+          agent: "a1",
+          agentType: "general-purpose",
+          at: NOW - 120_000,
+          models: GENERAL.models,
+          session: "s1",
+          unpriced: 1,
+          usd: 0.0149,
+        }),
+        JSON.stringify({
+          agent: "b1",
+          agentType: "Explore",
+          at: NOW - 90_000,
+          models: EXPLORE.models,
+          session: "s2",
+          unpriced: 0,
+          usd: 0,
+        }),
+      ].join("\n")}\n`,
+    );
+    const logged: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => logged.push(String(args[0]));
+    try {
+      expect(runUsage(paths, ["--project", "my-app"], NOW)).toBe(0);
+      expect(logged[0]).toContain(
+        "Agents on record: 1 agent in 1 session; by type: general-purpose 1",
+      );
+      logged.length = 0;
+      expect(runUsage(paths, ["--project", "other"], NOW)).toBe(0);
+      expect(logged[0]).not.toContain("Agents on record");
+    } finally {
+      console.log = original;
+    }
+  });
+
+  it("a cost reads at least as cents, and the micro-dollars a reply costs", () => {
+    expect(usdText(0.0149)).toBe("$0.0149");
+    expect(usdText(0)).toBe("$0.00");
+    expect(usdText(0.5)).toBe("$0.50");
+    expect(usdText(0.000001)).toBe("$0.000001");
   });
 });
 

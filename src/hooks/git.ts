@@ -62,6 +62,49 @@ export function runGit(
 }
 
 /**
+ * `runGit`, without blocking the caller: the same arguments, environment, timeout and result,
+ * spawned with `Bun.spawn`. The portal runs the merge check inside its own process, and a
+ * blocking spawn there freezes every page and the live stream (`.claude/rules/portal.md`);
+ * a hook or a command with a process of its own keeps `runGit`.
+ */
+export async function runGitAsync(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs = 15_000,
+  own: Record<string, string> = {},
+): Promise<GitRun> {
+  try {
+    const child = Bun.spawn(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      // A child with no console of its own on Windows: without this, git opens one.
+      windowsHide: true,
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    // `exited` gives the code the process ended with; the signal is known once it has.
+    const signaled = child.signalCode !== null && child.signalCode !== undefined;
+    return {
+      ok: code === 0,
+      out: stdout.trim(),
+      err: signaled ? "timed out" : stderr.trim(),
+      code: signaled ? null : code,
+    };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
+  }
+}
+
+/**
  * `path` with every link on the way to it resolved: the real path of its deepest folder that
  * exists, then the part that does not exist yet (the file an edit is about may not exist).
  * Two paths are the same place only as real paths: macOS puts the temp folder behind a link,

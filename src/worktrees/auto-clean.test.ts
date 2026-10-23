@@ -6,7 +6,15 @@
  * line is checked here end to end, through the session-start hook.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
@@ -378,6 +386,42 @@ describe("the background clean removes what is finished, and keeps the rest", ()
     const files = autoCleanFiles(cliPaths(env).stateDir, repo);
     expect(existsSync(files.result)).toBe(false);
     expect(existsSync(files.log)).toBe(false);
+  });
+
+  test("a git lock in the repo (a project's own after-merge step): backs off, and the next trigger runs", async () => {
+    const { add, env, repo, squash } = project();
+    const done = add("done");
+    squash(done);
+
+    // git is writing in the main checkout: `index.lock` is held, as a fast-forward or an
+    // install's own git holds it. The clean must not run git beside it.
+    writeFileSync(join(repo, ".git", "index.lock"), "");
+    expect(await runAutoClean(repo, "session", deps(env))).toBe("git-busy");
+
+    expect(existsSync(done)).toBe(true);
+    const lines = logLines(env);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("(session): git is writing here (index.lock); skipped this round");
+    // No hour was used up: the next trigger is free to run.
+    const files = autoCleanFiles(cliPaths(env).stateDir, repo);
+    expect(existsSync(files.result)).toBe(false);
+
+    rmSync(join(repo, ".git", "index.lock"));
+    expect(await runAutoClean(repo, "session", deps(env))).toBe("cleaned");
+    expect(existsSync(done)).toBe(false);
+  });
+
+  test("a ref lock holds the clean back too", async () => {
+    const { add, env, repo, squash } = project();
+    const done = add("done");
+    squash(done);
+
+    mkdirSync(join(repo, ".git", "refs", "heads"), { recursive: true });
+    writeFileSync(join(repo, ".git", "refs", "heads", "main.lock"), "");
+
+    expect(await runAutoClean(repo, "merge", deps(env))).toBe("git-busy");
+    expect(existsSync(done)).toBe(true);
+    expect(logLines(env)[0]).toContain("git is writing here (main.lock); skipped this round");
   });
 
   test("`worktrees.autoClean: false` stops it: nothing is removed, and the log says why", async () => {

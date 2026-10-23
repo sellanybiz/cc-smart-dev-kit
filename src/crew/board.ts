@@ -3,15 +3,18 @@
  *
  * `list` shows the crew of this repository (of every repository with `--all`), newest first:
  * one block each — what it is, where it is, and the last thing it said. A queued crew session says
- * what holds it: the phases it waits for, a cap, the memory, or only its lead's watch. `--json`
- * prints the records themselves, newest first, for a script or a page.
+ * what holds it: the phases it waits for, its lead's caps, the machine's ceiling, the memory,
+ * the 5-hour window, or only its lead's watch (D54). With a queued opus crew session that only
+ * its lead's watch waits for, and no window to read, one line says the opus guard does not hold.
+ * `--json` prints the records themselves, newest first, for a script or a page.
  *
  * `status` shows one crew session in full: the record, the brief it reads and the report it wrote, the
  * question it waits on (D36), and its last few events.
  *
  * A crew session is named by its name (also the ` [ref]` form ListAgents prints), its id, its session's
- * short id or its full session id. A name that matches two crew sessions is refused and both are named:
- * the store, never a guess, decides which session is meant (D35).
+ * short id or its full session id. A name that matches two **live** crew sessions is refused and both are
+ * named; a name whose other matches are `removed` means the live one: the store, never a guess,
+ * decides which session is meant (D35).
  *
  * **When its state began** is its newest `state` (or `created`) event, not `updatedAt`: a line or
  * a memory reading changes the record without changing what it is doing.
@@ -27,7 +30,7 @@ import { resolveWorkflow } from "../workflow/resolve";
 import type { CrewContext } from "./context";
 import { agoText, memoryText, modelText } from "./display";
 import { withoutListRef } from "./names";
-import { placeFor, runningCrew, unmetWaits } from "./places";
+import { OPUS_TIER, PLACE_FREE, placeFor, runningCrew, runningForLead, unmetWaits } from "./places";
 import {
   type CrewEvent,
   type CrewRecord,
@@ -37,6 +40,7 @@ import {
   listCrew,
   readCrewEvents,
 } from "./store";
+import { usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** How many events `crew status` shows. */
 export const STATUS_EVENTS = 6;
@@ -106,46 +110,94 @@ function outsideProject(command: string, why: string): Refusal {
   return { code: 1, lines: [`crew ${command}: ${why}`, `Fix: ${fix}`] };
 }
 
+/** A record a command finds by name or id, as the finder needs it. */
+export interface Named {
+  /** Its name: the address the lead and the person know it by. */
+  name: string;
+  /** When it was recorded: the candidates read as a history, oldest first. */
+  createdAt: string;
+}
+
+/** What a finder needs from a record beyond `Named`: the ids it answers to, and whether it is live. */
+export interface NamedLook<T extends Named> {
+  /** Every id a reference may be: the record's own id, its session's id, its short id. */
+  ids: (record: T) => readonly (null | string)[];
+  /** False for a record no command acts on by name any more: a removed crew session. Default: true. */
+  live?: (record: T) => boolean;
+}
+
+/** What a finder answered. */
+export type Found<T> =
+  | { kind: "many"; records: T[] }
+  | { kind: "none" }
+  | { kind: "one"; record: T };
+
+/**
+ * The record `ref` names, by its name or any of its ids (` [ref]`, as ListAgents prints it, is
+ * read past). **A name that matches one live record and only removed ones means the live one**:
+ * a lead that reused a name after a removal acts on the record it has, never on its history
+ * (the bug of 2026-10-23: `crew rm` stopped at "name one by its id" and the old queued record
+ * stayed). Two live records of one name — or only removed ones — still ask for an id: the store,
+ * never a guess, decides which session is meant.
+ *
+ * One finder for every record a crew command names (`findCrew`, `findLead`): the crew sessions
+ * and the leads of a repository.
+ */
+export function findNamed<T extends Named>(
+  records: readonly T[],
+  ref: string,
+  look: NamedLook<T>,
+): Found<T> {
+  const plain = withoutListRef(ref);
+  const matches = records
+    .filter((one) => one.name === plain || look.ids(one).some((id) => id !== null && id === plain))
+    // Oldest first: the candidates read as a history, and the list does not shuffle.
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  if (matches.length === 0) return { kind: "none" };
+  if (matches.length === 1) return { kind: "one", record: matches[0] as T };
+  const live = matches.filter((one) => (look.live ?? (() => true))(one));
+  if (live.length === 1) return { kind: "one", record: live[0] as T };
+  return { kind: "many", records: matches };
+}
+
+/** How a crew record answers to a reference: its own id, its session's id and its short id. */
+const CREW_LOOK: NamedLook<CrewRecord> = {
+  ids: (one) => [one.id, one.shortId, one.sessionId],
+  live: (one) => one.state !== "removed",
+};
+
 /** The crew session `ref` names; or the refusal that names every candidate. */
 export function findCrew(
   records: readonly CrewRecord[],
   ref: string,
   command: string,
 ): { record: CrewRecord } | { refusal: Refusal } {
-  const plain = withoutListRef(ref);
-  const matches = records
-    .filter(
-      (one) =>
-        one.name === plain ||
-        one.id === plain ||
-        (one.shortId !== null && one.shortId === plain) ||
-        (one.sessionId !== null && one.sessionId === plain),
-    )
-    // Oldest first: the candidates read as a history, and the list does not shuffle.
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const [only] = matches;
-  if (only !== undefined && matches.length === 1) return { record: only };
-  if (only === undefined) {
-    return {
-      refusal: {
-        code: 1,
-        lines: [
-          `crew ${command}: no crew session of this repository is "${ref}"`,
-          `Fix: ${COMMAND} crew list shows them, and --all those of every repository`,
-        ],
-      },
-    };
+  const found = findNamed(records, ref, CREW_LOOK);
+  switch (found.kind) {
+    case "one":
+      return { record: found.record };
+    case "none":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: no crew session of this repository is "${ref}"`,
+            `Fix: ${COMMAND} crew list shows them, and --all those of every repository`,
+          ],
+        },
+      };
+    case "many":
+      return {
+        refusal: {
+          code: 1,
+          lines: [
+            `crew ${command}: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} crew sessions`,
+            ...found.records.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
+            "Fix: name one by its id",
+          ],
+        },
+      };
   }
-  return {
-    refusal: {
-      code: 1,
-      lines: [
-        `crew ${command}: "${ref}" is ${matches.length === 2 ? "two" : String(matches.length)} crew sessions`,
-        ...matches.map((one) => `  ${one.id}  ${one.name}  ${one.state}`),
-        "Fix: name one by its id",
-      ],
-    },
-  };
 }
 
 /**
@@ -175,10 +227,22 @@ export function stateSince(record: CrewRecord, events: readonly CrewEvent[]): st
   return stateEvent?.at ?? record.updatedAt;
 }
 
+/**
+ * The events that are another session's news about a crew session, written where it happened:
+ * a `clash` names the crew session whose files are wanted, but the line is the starting lead's;
+ * a `lead-tell` and a `merge` carry another lead's words; a `person` event holds what the person
+ * typed into it. None of them is the crew session's own last line.
+ */
+const OTHER_WORDS: ReadonlySet<string> = new Set(["clash", "lead-tell", "merge", "person"]);
+
 /** The last thing a crew session said: its newest event with a line, else the line of its last turn. */
 export function lastSaid(record: CrewRecord, events: readonly CrewEvent[]): null | string {
   const said = events.find(
-    (one) => one.type !== "created" && one.text !== null && one.text.trim() !== "",
+    (one) =>
+      one.type !== "created" &&
+      !OTHER_WORDS.has(one.type) &&
+      one.text !== null &&
+      one.text.trim() !== "",
   );
   return said?.text ?? record.lastLine;
 }
@@ -193,8 +257,14 @@ export function modelLine(record: CrewRecord): string {
 export interface Caps {
   freeGb: null | number;
   max: number;
-  maxOpus: number;
+  maxOpus: null | number;
   needGb: number;
+  opusFallback: boolean;
+  perLead: number;
+  perLeadOpus: number;
+  usageHoldPercent: number;
+  /** The 5-hour window now, in percent; null when it cannot be read (D54). */
+  usagePercent: null | number;
 }
 
 /** The caps of this project: `workflow.crew`, over the person's own and the defaults. */
@@ -202,11 +272,17 @@ export async function capsOf(ctx: CrewContext, checkout: Checkout | null): Promi
   try {
     const config = checkout === null ? null : loadProjectConfig(checkout).config;
     const crew = resolveWorkflow(ctx.paths, config).crew;
+    const usage = usageFacts(ctx.paths, ctx.now());
     return {
       freeGb: await ctx.freeMemoryGb(),
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
+      opusFallback: usage.opusFallback,
+      perLead: crew.perLead.value,
+      perLeadOpus: crew.perLeadOpus.value,
+      usageHoldPercent: crew.usagePercent.value,
+      usagePercent: usage.percent,
     };
   } catch {
     // A project file or a workflow.json that cannot be read: `crew start` says so. The board
@@ -227,20 +303,28 @@ export function heldBy(
     machine.filter((one) => one.repo === record.repo),
   );
   const running = runningCrew(machine);
+  const mine = runningForLead(machine, record.leadSessionId);
   const input = {
     freeGb: null,
+    leadRunning: mine.length,
+    leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,
     max: caps.max,
     maxOpus: caps.maxOpus,
     needGb: caps.needGb,
-    opus: record.model.tier === "opus",
+    opus: record.model.tier === OPUS_TIER,
+    opusFallback: caps.opusFallback,
+    perLead: caps.perLead,
+    perLeadOpus: caps.perLeadOpus,
     running: running.length,
-    runningOpus: running.filter((one) => one.model.tier === "opus").length,
+    runningOpus: running.filter((one) => one.model.tier === OPUS_TIER).length,
     unmet,
+    usageHoldPercent: caps.usageHoldPercent,
+    usagePercent: caps.usagePercent,
   };
   const first = placeFor(input);
   if (!first.start) return first.why;
   const withMemory = placeFor({ ...input, freeGb: caps.freeGb });
-  return withMemory.start ? "a place is free; its lead's watch starts it" : withMemory.why;
+  return withMemory.start ? PLACE_FREE : withMemory.why;
 }
 
 /**
@@ -350,9 +434,15 @@ export async function runCrewList(
     ? await capsOf(ctx, read.checkout)
     : null;
   const eventsAbout = eventsOf(ctx, read.records);
+  const held = new Map(
+    read.records.map((record) => [
+      record.id,
+      caps === null ? null : heldBy(record, read.machine(), caps),
+    ]),
+  );
   const blocks = read.records.map((record) =>
     boardLines(record, eventsAbout(record), {
-      held: caps === null ? null : heldBy(record, read.machine(), caps),
+      held: held.get(record.id) ?? null,
       home: ctx.paths.home,
       now: ctx.now(),
       showRepo: args.all,
@@ -362,6 +452,18 @@ export async function runCrewList(
     if (index > 0) ctx.print("");
     for (const line of block) ctx.print(line);
   }
+  // D54: an opus crew session waiting only for its lead's watch, with no window to read: the
+  // guard is not watching, and the board says so once. Never on a crew session another reason
+  // holds: there the window changes nothing.
+  const unguarded =
+    caps !== null &&
+    caps.usagePercent === null &&
+    !caps.opusFallback &&
+    read.records.some(
+      (one) =>
+        one.state === "queued" && one.model.tier === OPUS_TIER && held.get(one.id) === PLACE_FREE,
+    );
+  if (unguarded) ctx.print(usageUnreadLine());
   return 0;
 }
 

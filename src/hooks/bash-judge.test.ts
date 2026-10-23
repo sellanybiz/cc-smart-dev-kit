@@ -13,6 +13,8 @@
  *   heavy job gets both in one rewrite.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { leadFile, writeStoreFile } from "../crew/store";
 import { locateCheckout } from "../project/resolve";
@@ -253,6 +255,73 @@ describe("a crew session starting crew sessions", () => {
   });
 });
 
+describe("a crew session running a lead's command", () => {
+  // The hook's environment is the session's own, so a command line that unsets the variable
+  // (`env -u CC_SMART_DEV_KIT_CREW …`) is still read as the crew session's, and the launcher's
+  // own refusal (`readCaller`) is what the judge says here first.
+  const denied: [string, string][] = [
+    ["cc-smart-dev-kit crew answer C-x 'yes'", "answers its lead's questions"],
+    [
+      "env -u CC_SMART_DEV_KIT_CREW cc-smart-dev-kit crew answer C-x 'yes'",
+      "answers its lead's questions",
+    ],
+    // A program the line works out when it runs is read from its own words, as a launch is.
+    ["$BIN crew answer C-x 'yes'", "answers its lead's questions"],
+    ["cc-smart-dev-kit crew watch", "watches its lead's crew sessions"],
+    ["cc-smart-dev-kit crew stop C-x", "stops, removes or resumes crew sessions"],
+    ["cc-smart-dev-kit crew rm C-x", "stops, removes or resumes crew sessions"],
+    ["cc-smart-dev-kit crew resume C-x", "stops, removes or resumes crew sessions"],
+    ["cc-smart-dev-kit crew lead --plan plan", "leads"],
+    ["cc-smart-dev-kit crew lead tell LEAD-y --kind contract 'a note'", "tells another lead"],
+  ];
+  for (const [command, phrase] of denied) {
+    test(`denied: ${command}`, async () => {
+      const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect(answer.decision).toBe("deny");
+      expect(answer.reason).toContain(`a crew session never ${phrase}`);
+      expect(answer.reason).toContain("cc-smart-dev-kit crew report --question");
+    });
+  }
+
+  test("a crew session's own commands pass: its steps, reports, notes and the board", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    for (const command of [
+      "cc-smart-dev-kit crew step tests-green",
+      "cc-smart-dev-kit crew report --status done",
+      "cc-smart-dev-kit crew tell C-y --kind contract 'a note'",
+      "cc-smart-dev-kit crew list",
+      "cc-smart-dev-kit crew status C-x",
+      // A lead command's help only prints help: reading it is no act of leading.
+      "cc-smart-dev-kit crew answer --help",
+      "cc-smart-dev-kit crew lead --help",
+    ]) {
+      const answer = await judge(repo, command, { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID });
+      expect({ command, decision: answer.decision }).toEqual({ command, decision: undefined });
+    }
+  });
+
+  test("the same commands in a plain session are the launcher's to judge: silent", async () => {
+    const { env, repo } = project({});
+    expect(
+      (await judge(repo, "cc-smart-dev-kit crew answer C-x 'yes'", env)).decision,
+    ).toBeUndefined();
+    expect((await judge(repo, "cc-smart-dev-kit crew watch", env)).decision).toBeUndefined();
+  });
+
+  test("a crew session's lead command in PowerShell is denied too", async () => {
+    const { env, repo } = project({ workflow: { crew: { enabled: true } } });
+    const answer = await judge(
+      repo,
+      "cc-smart-dev-kit crew answer C-x 'yes'",
+      { ...env, CC_SMART_DEV_KIT_CREW: CREW_ID },
+      "PowerShell",
+    );
+    expect(answer.decision).toBe("deny");
+    expect(answer.reason).toContain("answers its lead's questions");
+  });
+});
+
 describe("polling for crew news", () => {
   const denied = [
     "while true; do cc-smart-dev-kit crew list; sleep 10; done",
@@ -407,6 +476,45 @@ describe("the judge reads the PowerShell tool too (native Windows)", () => {
     expect(
       output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit", "PowerShell"), env)),
     ).toEqual({});
+  });
+});
+
+describe("J1: a package script is a script, not the tool of the same name", () => {
+  test("`bun run tsc` in a project whose tsc script wraps the job is left as it is", async () => {
+    const { env, repo } = project({ jobs: { route: true } });
+    // The project's tsc script already goes through the queue: wrapping it again would nest
+    // two queues, and take them in the opposite order from a plain run.
+    writeFileSync(
+      join(repo, "package.json"),
+      `${JSON.stringify({ scripts: { tsc: "bun scripts/heavy-job.ts --kind=tsc -- tsgo" } })}\n`,
+    );
+    for (const command of ["bun run tsc --noEmit", "bun tsc", "bun tsc --noEmit"]) {
+      expect([command, output(await runHook(jobRouteHook, call(repo, command), env))]).toEqual([
+        command,
+        {},
+      ]);
+    }
+    // A real tool behind a package runner is no script, and is still routed.
+    expect(
+      output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit"), env)).updatedInput,
+    ).toEqual({ command: `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit` });
+  });
+
+  test("the folder after a cd decides: a script there is no tool, a tool there still is", async () => {
+    const { env, repo } = project({ jobs: { route: true } });
+    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: "tsgo" } })}\n`);
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "package.json"), `${JSON.stringify({ scripts: {} })}\n`);
+    // The root defines tsc as a script: no rewrite there.
+    expect(output(await runHook(jobRouteHook, call(repo, "bun run tsc --noEmit"), env))).toEqual(
+      {},
+    );
+    // `sub` defines no tsc, so there it is the package's tool, and the line is routed as before.
+    const routed = output(
+      await runHook(jobRouteHook, call(repo, "cd sub && bun run tsc --noEmit"), env),
+    ).updatedInput as { command: string };
+    expect(routed.command).toContain("job run --kind tsc");
+    expect(routed.command).toContain("cd sub && bun run tsc --noEmit");
   });
 });
 

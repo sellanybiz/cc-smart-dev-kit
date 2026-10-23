@@ -15,6 +15,9 @@ import {
   ownCgroup,
   realMemoryFacts,
   sliceBytes,
+  sliceChain,
+  userManagerCgroup,
+  userManagerControllers,
   userSliceCgroup,
 } from "./memory";
 
@@ -240,5 +243,30 @@ describe("userSliceCgroup and sliceBytes", () => {
       4096,
     );
     expect(sliceBytes(facts({}).read, 7, "cc-smart-dev-kit-heavy.slice")).toBeNull();
+  });
+
+  // The weights go on every slice of this chain: systemd shares CPU and I/O between
+  // slices that are siblings, so only the outermost one competes with the desktop.
+  test("the slice chain, outermost first, and the user manager's cgroup", () => {
+    expect(sliceChain("cc-smart-dev-kit-heavy.slice")).toEqual([
+      "cc.slice",
+      "cc-smart.slice",
+      "cc-smart-dev.slice",
+      "cc-smart-dev-kit.slice",
+      "cc-smart-dev-kit-heavy.slice",
+    ]);
+    expect(sliceChain("solo.slice")).toEqual(["solo.slice"]);
+    expect(userManagerCgroup(1000)).toBe("/user.slice/user-1000.slice/user@1000.service");
+  });
+
+  test("the user manager's delegated controllers, or null when it cannot be read", () => {
+    const path = `/sys/fs/cgroup${userManagerCgroup(7)}/cgroup.controllers`;
+    expect(userManagerControllers(facts({ [path]: "cpu memory pids\n" }).read, 7)).toEqual([
+      "cpu",
+      "memory",
+      "pids",
+    ]);
+    expect(userManagerControllers(facts({ [path]: "\n" }).read, 7)).toEqual([]);
+    expect(userManagerControllers(facts({}).read, 7)).toBeNull();
   });
 });

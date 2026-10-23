@@ -5,18 +5,23 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
+import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import { listModels } from "./backends";
 import { JUDGE_WARNING, judgeDefaultWords, NEEDS_SYSTEMD, routerService } from "./commands";
 import {
   emptyConfig,
   fallbackOn,
+  historyRetentionDays,
   judgeTargetUsable,
+  keptChain,
   loadConfigFile,
   messageOf,
   workerJudgeTargets,
 } from "./config";
 import { type HealthFetch, routerHealth } from "./health";
+import { historyDbBytes, historyDbExists } from "./history";
+import { historyWords } from "./history-read";
 import {
   type RouterService,
   type RouterServiceKind,
@@ -29,14 +34,8 @@ import { TASK_LABEL, taskFacts, taskRunsCopy } from "./service-windows";
 import { shownValue } from "./settings";
 import { FAMILY_SLOTS, isModelSlot, JUDGE_SLOT, parseTarget } from "./targets";
 
-export interface DoctorCheck {
-  ok: boolean;
-  /** Information only: printed with `·`, never a failure. */
-  info?: boolean;
-  /** Worth a look, but not a failure: printed with `!`. */
-  warn?: boolean;
-  text: string;
-}
+/** One gateway line of doctor's report: a check like any other (`check.ts`). */
+export type DoctorCheck = Check;
 
 /** True for a Claude model that spends the person's own plan usage: Opus or Fable. */
 function isCostly(model: string): boolean {
@@ -44,7 +43,8 @@ function isCostly(model: string): boolean {
   return name.includes("-opus-") || name.includes("-fable-");
 }
 
-const SETUP = `Run: ${COMMAND} gateway setup`;
+/** The fix most gateway checks name: setup puts the router and its service back. */
+const SETUP = `${COMMAND} gateway setup`;
 
 /** Every gateway check, in order. */
 export async function gatewayChecks(options: {
@@ -74,7 +74,8 @@ export async function gatewayChecks(options: {
   if (existsSync(restartPendingFile(paths.stateDir))) {
     checks.push({
       ok: false,
-      text: `a gateway setup did not finish; run: ${COMMAND} gateway setup`,
+      text: "a gateway setup did not finish",
+      fix: SETUP,
     });
   }
 
@@ -105,26 +106,28 @@ export async function gatewayChecks(options: {
   if (options.service === "none") {
     checks.push({
       ok: false,
-      text: `gateway: ${NEEDS_SYSTEMD}`,
+      text: `gateway: ${NEEDS_SYSTEMD.replace(/\.$/, "")}`,
+      fix: `run the router in a terminal of its own (${COMMAND} gateway serve), or turn the gateway off: ${COMMAND} gateway off`,
     });
   } else {
     const state = service.state(options.runner);
     checks.push(
       service.running(options.runner)
         ? { ok: true, text: `the router service (${service.name}) is active` }
-        : { ok: false, text: `the router service (${service.name}) is ${state}. ${SETUP}` },
+        : { ok: false, text: `the router service (${service.name}) is ${state}`, fix: SETUP },
     );
   }
 
   if (!existsSync(paths.routerCopy)) {
-    checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}. ${SETUP}` });
+    checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
   } else if (
     existsSync(options.bundle) &&
     readFileSync(paths.routerCopy, "utf8") !== readFileSync(options.bundle, "utf8")
   ) {
     checks.push({
       ok: false,
-      text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router. ${SETUP}`,
+      text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router`,
+      fix: SETUP,
     });
   } else {
     checks.push({ ok: true, text: `the router copy ${short(paths.routerCopy)} is up to date` });
@@ -144,7 +147,11 @@ export async function gatewayChecks(options: {
     try {
       config = loadConfigFile(paths.gatewayConfigFile);
     } catch (error) {
-      checks.push({ ok: false, text: `gateway config: ${messageOf(error)}` });
+      checks.push({
+        ok: false,
+        text: `gateway config: ${messageOf(error)}`,
+        fix: `correct ${short(paths.gatewayConfigFile)}, or run: ${SETUP}`,
+      });
       return checks;
     }
   }
@@ -155,12 +162,21 @@ export async function gatewayChecks(options: {
   const health = await routerHealth(config.port, options.fetch);
   checks.push(
     "error" in health
-      ? {
-          ok: false,
-          text: notAnswering(options, service, config.port, health.error, holder.state),
-        }
+      ? { ok: false, ...notAnswering(options, service, config.port, health.error, holder.state) }
       : { ok: true, text: `the router answers on 127.0.0.1:${config.port}` },
   );
+
+  // The request history (D51): its size and how long it keeps rows. Information, never a
+  // failure: a log that is off, or has not logged yet, is a person's choice or a new install.
+  checks.push({
+    ok: true,
+    info: true,
+    text: `history: ${historyWords({
+      bytes: historyDbBytes(paths.historyDbFile),
+      exists: historyDbExists(paths.historyDbFile),
+      retentionDays: historyRetentionDays(config),
+    })} in ${short(paths.historyDbFile)}`,
+  });
 
   for (const [name, backend] of Object.entries(config.backends)) {
     // A base URL may carry a user and password: never printed.
@@ -168,12 +184,17 @@ export async function gatewayChecks(options: {
     const listed = await listModels(backend.baseUrl, backend.apiKey, 5_000);
     checks.push(
       "error" in listed
-        ? { ok: false, text: `backend ${name} (${url}) is unreachable: ${listed.error}` }
+        ? {
+            ok: false,
+            text: `backend ${name} (${url}) is unreachable: ${listed.error}`,
+            fix: `start ${name}, or check its address in ${short(paths.gatewayConfigFile)}`,
+          }
         : listed.status === 200
           ? { ok: true, text: `backend ${name} (${url}) answers` }
           : {
               ok: false,
-              text: `backend ${name} (${url}) answered HTTP ${listed.status}; check its key`,
+              text: `backend ${name} (${url}) answered HTTP ${listed.status}`,
+              fix: `check its key: ${COMMAND} gateway setup --backend-key-stdin`,
             },
     );
   }
@@ -187,16 +208,26 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: first target ${first} (${fallback})`,
+      text: `slot ${slot}: Custom, first target ${first} (${fallback})`,
     });
   }
+  /** A chain saved for a slot that answers as Claude, in words; empty when there is none. */
+  const saved = (slot: string): string => {
+    const kept = keptChain(config, slot);
+    return kept === null ? "" : `; saved, not in use: ${kept.targets.join(" → ")}`;
+  };
   for (const slot of Object.keys(FAMILY_SLOTS)) {
     if (Object.hasOwn(config.slots, slot)) continue;
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${slot}: off, ${FAMILY_SLOTS[slot]} goes to Anthropic as Claude Code sent it`,
+      text: `slot ${slot}: Claude (${FAMILY_SLOTS[slot]} goes to Anthropic as Claude Code sent it)${saved(slot)}`,
     });
+  }
+  for (const slot of Object.keys(config.kept ?? {}).sort()) {
+    if (Object.hasOwn(config.slots, slot) || Object.hasOwn(FAMILY_SLOTS, slot)) continue;
+    if (slot === JUDGE_SLOT) continue;
+    checks.push({ ok: true, info: true, text: `slot ${slot}: Claude${saved(slot)}` });
   }
   // A scout or worker chain that names Claude Opus or Fable spends the person's own plan usage
   // on routine work without saying so (the Agent guard asks the person about every launch on
@@ -224,7 +255,7 @@ export async function gatewayChecks(options: {
     checks.push({
       ok: true,
       info: true,
-      text: `slot ${JUDGE_SLOT}: ${judgeDefaultWords(config)}`,
+      text: `slot ${JUDGE_SLOT}: ${judgeDefaultWords(config)}${saved(JUDGE_SLOT)}`,
     });
     if (fallbackOn(config, JUDGE_SLOT) && workerJudgeTargets(config).length > 0) {
       checks.push({ ok: true, warn: true, text: `slot ${JUDGE_SLOT}: ${JUDGE_WARNING}` });
@@ -239,7 +270,8 @@ export async function gatewayChecks(options: {
     if (judgeTargetUsable(config, target)) continue;
     checks.push({
       ok: false,
-      text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it. Run: ${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`,
+      text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it`,
+      fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`,
     });
   }
   return checks;
@@ -252,7 +284,7 @@ export async function gatewayChecks(options: {
  *   - `start-limit`: systemd closed the socket because the router failed to start too often;
  *   - `other`: anything else, or not asked.
  */
-type SocketState = "open" | "start-limit" | "other";
+export type SocketState = "open" | "start-limit" | "other";
 
 /** The ✗ text of a router that does not answer, from what the service's listener says. */
 function notAnswering(
@@ -261,19 +293,30 @@ function notAnswering(
   port: number,
   error: string,
   holder: SocketState,
-): string {
+): { text: string; fix: string } {
+  const fix = `see why: ${service.logHint}. Then: ${SETUP}`;
   if (options.service === "scheduled-task") {
-    return holder === "open"
-      ? `${TASK_LABEL} runs, but the router does not answer on 127.0.0.1:${port} (${error}): every request is refused. See why: ${service.logHint}. Then: ${COMMAND} gateway setup`
-      : `the router does not answer on 127.0.0.1:${port} (${error}). See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
+    return {
+      text:
+        holder === "open"
+          ? `${TASK_LABEL} runs, but the router does not answer on 127.0.0.1:${port} (${error}): every request is refused`
+          : `the router does not answer on 127.0.0.1:${port} (${error})`,
+      fix,
+    };
   }
   switch (holder) {
     case "open":
-      return `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer. See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
+      return {
+        text: `the socket holds 127.0.0.1:${port}, but the router does not answer (${error}): every request waits in the socket and gets no answer`,
+        fix,
+      };
     case "start-limit":
-      return `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error}). See why: ${service.logHint}. Then: ${COMMAND} gateway setup`;
+      return {
+        text: `the router failed to start again and again, so systemd closed its socket: every request to 127.0.0.1:${port} is refused (${error})`,
+        fix,
+      };
     case "other":
-      return `the router does not answer on 127.0.0.1:${port} (${error})`;
+      return { text: `the router does not answer on 127.0.0.1:${port} (${error})`, fix };
   }
 }
 
@@ -282,7 +325,7 @@ function notAnswering(
  * port across restarts), or the Windows task (which holds the port itself while its
  * router runs).
  */
-function portHolderCheck(
+export function portHolderCheck(
   options: { paths: CliPaths; runner: Runner; service: RouterServiceKind },
   port: number,
 ): { check: DoctorCheck; state: SocketState } {
@@ -304,7 +347,7 @@ function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
   const where = tildify(paths.routerTaskFile, paths.home);
   if (!existsSync(paths.routerTaskFile)) {
     return {
-      check: { ok: false, text: `no task definition at ${where}. ${SETUP}` },
+      check: { ok: false, text: `no task definition at ${where}`, fix: SETUP },
       state: "other",
     };
   }
@@ -313,7 +356,8 @@ function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
     return {
       check: {
         ok: false,
-        text: `the task definition ${where} is not registered as ${TASK_LABEL}. ${SETUP}`,
+        text: `the task definition ${where} is not registered as ${TASK_LABEL}`,
+        fix: SETUP,
       },
       state: "other",
     };
@@ -322,7 +366,8 @@ function taskDefinitionCheck(options: { paths: CliPaths; runner: Runner }): {
     return {
       check: {
         ok: false,
-        text: `${TASK_LABEL} does not run ${tildify(paths.routerCopy, paths.home)}. ${SETUP}`,
+        text: `${TASK_LABEL} does not run ${tildify(paths.routerCopy, paths.home)}`,
+        fix: SETUP,
       },
       state: "other",
     };
@@ -348,7 +393,8 @@ function socketCheck(
     return {
       check: {
         ok: false,
-        text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains. ${SETUP}`,
+        text: `no socket unit at ${where}: a router restart makes new requests fail while the old router drains`,
+        fix: SETUP,
       },
       state: "other",
     };
@@ -357,7 +403,8 @@ function socketCheck(
     return {
       check: {
         ok: false,
-        text: `the socket unit ${where} is not the one setup writes for port ${port}. ${SETUP}`,
+        text: `the socket unit ${where} is not the one setup writes for port ${port}`,
+        fix: SETUP,
       },
       state: "other",
     };
@@ -384,7 +431,7 @@ function socketCheck(
   ]);
   const limit = result.exitCode === 0 && result.output.trim() === "service-start-limit-hit";
   return {
-    check: { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}. ${SETUP}` },
+    check: { ok: false, text: `the router's socket (${SOCKET_NAME}) is ${word}`, fix: SETUP },
     state: limit ? "start-limit" : "other",
   };
 }

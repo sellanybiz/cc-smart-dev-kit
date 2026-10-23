@@ -24,7 +24,7 @@ import {
   retiredEngineHookOf,
 } from "../hooks/settings-hooks";
 import { retiredFieldsOf, WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
-import { locateCheckout } from "../project/resolve";
+import { type Checkout, locateCheckout, locateCheckoutAsync } from "../project/resolve";
 import { sessionWorkFolders } from "../sessions/command";
 import { shellWord } from "../setup/launcher";
 import { parseUserJson } from "../setup/user-json";
@@ -53,17 +53,41 @@ function messageOf(error: unknown): string {
 }
 
 /**
+ * The main checkout and the root of a located checkout; null outside git. The one mapping
+ * both readers below use (a worktree is folded into the main checkout it belongs to).
+ */
+export function checkoutFold(checkout: Checkout | null): null | { main: string; root: string } {
+  if (checkout === null) return null;
+  return { main: checkout.mainCheckout ?? checkout.root, root: checkout.root };
+}
+
+/**
  * The checkout a folder is in, with the main checkout of its repo; null when it is gone, not
  * a folder, or not in git.
  */
-function checkoutOf(folder: string, env: Env): null | { main: string; root: string } {
+export function checkoutOf(folder: string, env: Env): null | { main: string; root: string } {
   if (!existsSync(folder)) return null;
   try {
-    const checkout = locateCheckout(folder, { env });
-    if (checkout === null) return null;
-    return { main: checkout.mainCheckout ?? checkout.root, root: checkout.root };
+    return checkoutFold(locateCheckout(folder, { env }));
   } catch {
     // Not a folder, a main checkout git cannot find, git too old: nothing to read there.
+    return null;
+  }
+}
+
+/**
+ * `checkoutOf`, without blocking: the same answer through `Bun.spawn`. The portal's Projects
+ * page folds every worktree into its main checkout inside the server's own process, where a
+ * blocking spawn freezes every page and the live stream (`.claude/rules/portal.md`).
+ */
+export async function checkoutOfAsync(
+  folder: string,
+  env: Env,
+): Promise<null | { main: string; root: string }> {
+  if (!existsSync(folder)) return null;
+  try {
+    return checkoutFold(await locateCheckoutAsync(folder, { env }));
+  } catch {
     return null;
   }
 }

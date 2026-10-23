@@ -4,7 +4,9 @@
  *   - the session's own model (the StopFailure usage-limit alert, the Agent guard);
  *   - the session's name (the notifier names the session in its alert);
  *   - the turn's last answer (the notifier's "finished" message);
- *   - who started the turn (the notifier stays quiet for a turn another session started).
+ *   - who started the turn (the notifier stays quiet for a turn another session started);
+ *   - the session's own file changes and its runs of the project's fast check (the
+ *     verification gate, `verify-gate.ts`).
  *
  * Claude Code writes a session's conversation to
  * `<config>/projects/<project folder>/<session id>.jsonl`. Only the file's tail is read: a
@@ -21,17 +23,21 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The transcript's last `TRANSCRIPT_TAIL_BYTES` bytes, one line per entry. The first line
- * may be cut by the tail and the last one may be half written; the readers skip those.
- * Null when the file cannot be read.
+ * The transcript's last `bytes` bytes (default `TRANSCRIPT_TAIL_BYTES`), one line per entry.
+ * The first line may be cut by the tail and the last one may be half written; the readers
+ * skip those. `bytes` is for a reader that needs more of the session than a model or a title
+ * does (`verify-gate`: one turn's edits and its check runs). Null when the file cannot be read.
  */
-function tailLines(transcriptPath: string): null | string[] {
+export function tailLines(
+  transcriptPath: string,
+  bytes: number = TRANSCRIPT_TAIL_BYTES,
+): null | string[] {
   let text: string;
   try {
     const fd = openSync(transcriptPath, "r");
     try {
       const size = fstatSync(fd).size;
-      const length = Math.min(size, TRANSCRIPT_TAIL_BYTES);
+      const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
       readSync(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");

@@ -24,7 +24,7 @@
  * quietly says nothing when it fails.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
@@ -37,6 +37,7 @@ import {
   requiresFor,
 } from "../project/init";
 import { isObject } from "../setup/managed-json";
+import { parseUserJson } from "../setup/user-json";
 import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   isSwitchKey,
@@ -46,16 +47,10 @@ import {
   type WorkflowKey,
 } from "../workflow/schema";
 import { cliPaths, tildify } from "./paths";
+import { dryRunEnding, leadingMark, type Mark, type Out, plural } from "./ui/out";
+import type { Prompts } from "./ui/prompt";
 
 type Env = Record<string, string | undefined>;
-
-/** The terminal, when there is one. Both questions carry their default. */
-export interface ProjectInitTerminal {
-  /** A yes/no question. */
-  confirm: (question: string) => boolean;
-  /** A question with a default: the answer, or the default when the person just presses enter. */
-  text: (question: string, fallback: string) => string;
-}
 
 export interface ProjectInitContext {
   /** The repo root to write into: `<root>/.claude/`. */
@@ -63,8 +58,10 @@ export interface ProjectInitContext {
   env: Env;
   stateDir: string;
   home: string;
-  terminal: ProjectInitTerminal | null;
-  print: (line: string) => void;
+  /** The terminal's questions (`src/cli/ui/prompt.ts`); null when there is no terminal. */
+  prompts: Prompts | null;
+  /** Where the plan, the result and the next steps print. */
+  out: Out;
   error: (line: string) => void;
 }
 
@@ -200,6 +197,47 @@ export interface DetectedFacts {
   defaultBranch: string;
   /** The branches GitHub protects; empty when unknown. */
   protectedFromGithub: string[];
+  /** The fast check `package.json`'s scripts suggest; null when none is obvious. */
+  fastCheck: string | null;
+}
+
+/**
+ * The script names that make an obvious fast check: the quick checks first, the project's own
+ * full `check` after them, its tests last (a suite is the slowest way to check one change).
+ */
+const FAST_CHECK_SCRIPTS = ["typecheck", "lint", "check", "test"] as const;
+
+/**
+ * The prefix a `package.json` script runs with, read from the lockfile beside it. `yarn run`
+ * on purpose: `yarn check` is Yarn 1's own built-in, not the project's script.
+ */
+function runnerOf(root: string): string {
+  if (existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb"))) return "bun run";
+  if (existsSync(join(root, "pnpm-lock.yaml"))) return "pnpm run";
+  if (existsSync(join(root, "yarn.lock"))) return "yarn run";
+  return "npm run";
+}
+
+/**
+ * The fast check `project init` offers, read from the repo: a `package.json` script that says
+ * the project checks itself (`typecheck`, `lint`, `check`, `test` — in that order), run with
+ * the package manager the lockfile names. Null when the repo has no `package.json`, no such
+ * script, or one this cannot read: then the question's default is `none`.
+ */
+export function defaultFastCheck(root: string): string | null {
+  const file = join(root, "package.json");
+  if (!existsSync(file)) return null;
+  let scripts: unknown;
+  try {
+    // The one reader of a person-edited JSON file, so a byte order mark is no failure here.
+    const parsed: unknown = parseUserJson(readFileSync(file, "utf8"));
+    scripts = isObject(parsed) ? parsed.scripts : undefined;
+  } catch {
+    return null;
+  }
+  if (!isObject(scripts)) return null;
+  const name = FAST_CHECK_SCRIPTS.find((script) => typeof scripts[script] === "string");
+  return name === undefined ? null : `${runnerOf(root)} ${name}`;
 }
 
 /** Reads the repo's own facts. A failed git call answers as an empty repo does. */
@@ -207,6 +245,7 @@ export function detectFacts(runner: ProjectInitRunner, root: string): DetectedFa
   return {
     defaultBranch: defaultBranchOf(runner, root),
     protectedFromGithub: protectedFromGithub(runner, root),
+    fastCheck: defaultFastCheck(root),
   };
 }
 
@@ -217,6 +256,8 @@ export interface ProjectInitFlags {
   base?: string;
   bases?: Record<string, string>;
   protectedBranches?: string[];
+  /** The fast check, as one command; "" is `--no-check`. */
+  check?: string;
   guardMainFolder?: boolean;
   sessionNames?: boolean;
   jobRoute?: boolean;
@@ -272,6 +313,14 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
             .split(",")
             .filter((word) => word !== "");
           index += 1;
+          break;
+        // The fast check has both answers too: a command, and "none" (or --no-check).
+        case "--check":
+          flags.check = words(arg, argv[index + 1]);
+          index += 1;
+          break;
+        case "--no-check":
+          flags.check = "";
           break;
         // Each yes/no question has both flags, so a run with no terminal can answer either way.
         case "--guard-main-folder":
@@ -342,6 +391,25 @@ function setLeaf(data: Record<string, unknown>, path: string[], value: unknown):
 }
 
 /**
+ * `base` with every setting `overrides` gives changed and every other one kept: one
+ * `--workflow` word changes only its own field, so `crew.*`, `fixesAfterReview.*` and every
+ * other setting the file already holds survive a line that names one of them (F5-3). A group
+ * (`crew`, `alerts`, `fixesAfterReview`) merges field by field; an array or a leaf replaces
+ * the value before it.
+ */
+export function mergeWorkflow(base: Workflow, overrides: Workflow): Workflow {
+  const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(overrides as Record<string, unknown>)) {
+    const before = merged[key];
+    merged[key] =
+      isObject(before) && isObject(value)
+        ? mergeWorkflow(before as Workflow, value as Workflow)
+        : value;
+  }
+  return merged as Workflow;
+}
+
+/**
  * Every answer, without a person: the flags first, then what the project's file already
  * says, then what the repo says. This is what a `--yes` run writes, and the defaults the
  * questions offer. A retired engine field in an existing file is no answer: the plan takes it
@@ -354,6 +422,8 @@ export function defaultAnswers(
 ): ProjectInitAnswers {
   const worktrees = existing !== null && isObject(existing.worktrees) ? existing.worktrees : {};
   const jobs = existing !== null && isObject(existing.jobs) ? existing.jobs : {};
+  const existingWorkflow =
+    existing !== null && isObject(existing.workflow) ? (existing.workflow as Workflow) : {};
   const base =
     flags.base ?? (typeof worktrees.base === "string" ? worktrees.base : facts.defaultBranch);
   const bases =
@@ -367,10 +437,19 @@ export function defaultAnswers(
       : [...new Set([facts.defaultBranch, base, ...facts.protectedFromGithub])].filter(
           (name) => name !== "",
         ));
+  // A file that is already there wins over the detected default, as every answer does.
+  const existingChecks =
+    existing !== null && isObject(existing.checks) && typeof existing.checks.fast === "string"
+      ? { fast: existing.checks.fast }
+      : null;
   return {
     base,
     bases,
     protectedBranches,
+    checks:
+      flags.check !== undefined
+        ? checkAnswer(listAnswer(flags.check))
+        : (existingChecks ?? (facts.fastCheck === null ? null : { fast: facts.fastCheck })),
     guards: {
       guardMainFolder:
         flags.guardMainFolder ??
@@ -380,12 +459,13 @@ export function defaultAnswers(
         (typeof existing?.sessionNames === "boolean" ? existing.sessionNames : true),
       jobRoute: flags.jobRoute ?? (typeof jobs.route === "boolean" ? jobs.route : false),
     },
+    // A `--workflow` word changes only the settings it names, in the file's own policy: the
+    // rest (`crew.*`, `fixesAfterReview.*`, …) stays (F5-3). With no word, the file's policy
+    // is the answer as it stands.
     workflow:
       flags.workflow !== undefined
-        ? workflowFromFlags(flags.workflow)
-        : existing !== null && isObject(existing.workflow)
-          ? (existing.workflow as Workflow)
-          : {},
+        ? mergeWorkflow(existingWorkflow, workflowFromFlags(flags.workflow))
+        : existingWorkflow,
   };
 }
 
@@ -409,53 +489,109 @@ function listOf(text: string): string[] {
     .filter((word) => word !== "");
 }
 
-/** A yes/no question with its default: the answer, or the default when they press enter. */
-function confirmOr(terminal: ProjectInitTerminal, question: string, fallback: boolean): boolean {
-  const answer = terminal.text(`${question} (yes/no)`, fallback ? "yes" : "no");
-  return answer.trim().toLowerCase().startsWith("y");
+/** A workflow policy as the question shows it, for an example. */
+const POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
+
+/** The word that answers a list question with an empty list: Enter keeps the default instead. */
+export const NONE = "none";
+
+/** A list answer as typed: `none` is the empty list. */
+function listAnswer(text: string): string {
+  return text.trim().toLowerCase() === NONE ? "" : text;
 }
 
-/** The answers a person gives on a terminal: every question offered with its default. */
-export function askedAnswers(
-  terminal: ProjectInitTerminal,
-  answers: ProjectInitAnswers,
-): ProjectInitAnswers {
-  const base = terminal.text("The branch a new worktree starts from", answers.base);
-  const basesText = terminal.text(
-    "Bases for other branch prefixes, as prefix=base,prefix=base (empty: none)",
-    shownBases(answers.bases),
+/** A single-command answer: the `none` answer (empty) is no check; anything else is the command. */
+function checkAnswer(text: string): { fast: string } | null {
+  const command = text.trim();
+  return command === "" ? null : { fast: command };
+}
+
+/** Why `check` refused an answer: its error's words, or null when it took it. */
+function refusal(check: () => unknown): string | null {
+  try {
+    check();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * The questions, in the order they are asked, each with why it is asked in its own words. The
+ * counter (`[2/7]`) is read from this list, so a new question counts itself.
+ */
+const QUESTIONS = [
+  ["base", "Base branch: the branch a new worktree starts from"],
+  ["bases", `Bases for other branch prefixes, as prefix=base,prefix=base ("${NONE}" for none)`],
+  [
+    "protectedBranches",
+    `Protected branches: the git guard asks before a push to these, comma separated ("${NONE}" for none)`,
+  ],
+  ["checks", `The fast check a session runs before it stops: one command ("${NONE}" for none)`],
+  [
+    "workflow",
+    `Workflow policy: what happens by itself after a step, as ${POLICY_EXAMPLE} ("${NONE}" for none)`,
+  ],
+  [
+    "guardMainFolder",
+    "Refuse edits in the main checkout itself, so every change goes in a worktree?",
+  ],
+  ["sessionNames", "Name each session after its task?"],
+  [
+    "jobRoute",
+    "Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns?",
+  ],
+] as const;
+
+type QuestionKey = (typeof QUESTIONS)[number][0];
+
+/** A question with its counter: `[2/7] Bases for …`. */
+function numbered(key: QuestionKey): string {
+  const index = QUESTIONS.findIndex(([name]) => name === key);
+  return `[${index + 1}/${QUESTIONS.length}] ${QUESTIONS[index]?.[1] ?? key}`;
+}
+
+/** The line before the questions: how many, and what Enter does. */
+export const QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
+
+/**
+ * The answers a person gives on a terminal: every question offered with its default, counted.
+ * A list answer that is not understood is asked again (`Prompts.ask`), with the reason.
+ */
+export function askedAnswers(prompts: Prompts, answers: ProjectInitAnswers): ProjectInitAnswers {
+  const base = prompts.ask(numbered("base"), { default: answers.base });
+  const basesText = listAnswer(
+    prompts.ask(numbered("bases"), {
+      default: shownBases(answers.bases),
+      check: (answer) => refusal(() => parseBases(listAnswer(answer))),
+    }),
   );
-  const protectedText = terminal.text(
-    "The branches the git guard asks about before a push (comma separated)",
-    answers.protectedBranches.join(", "),
+  const protectedText = listAnswer(
+    prompts.ask(numbered("protectedBranches"), {
+      default: answers.protectedBranches.join(", "),
+    }),
   );
-  const workflowText = terminal.text(
-    `The workflow policy, as ${POLICY_EXAMPLE} (empty: none)`,
-    shownWorkflow(answers.workflow),
+  const checksText = listAnswer(
+    prompts.ask(numbered("checks"), { default: answers.checks?.fast ?? NONE }),
+  );
+  const workflowText = listAnswer(
+    prompts.ask(numbered("workflow"), {
+      default: shownWorkflow(answers.workflow),
+      check: (answer) => refusal(() => workflowFromFlags(listOf(listAnswer(answer)))),
+    }),
   );
   const guards = {
-    guardMainFolder: confirmOr(
-      terminal,
-      "Refuse edits in the main checkout itself, so every change goes in a worktree?",
-      answers.guards.guardMainFolder,
-    ),
-    sessionNames: confirmOr(
-      terminal,
-      "Name each session after its task?",
-      answers.guards.sessionNames,
-    ),
-    jobRoute: confirmOr(
-      terminal,
-      "Send heavy commands (type checks, test runs, builds) through the machine's job queue?",
-      answers.guards.jobRoute,
-    ),
+    guardMainFolder: prompts.confirm(numbered("guardMainFolder"), answers.guards.guardMainFolder),
+    sessionNames: prompts.confirm(numbered("sessionNames"), answers.guards.sessionNames),
+    jobRoute: prompts.confirm(numbered("jobRoute"), answers.guards.jobRoute),
   };
   return {
-    base: base.trim() === "" ? answers.base : base.trim(),
+    base: base === "" ? answers.base : base,
     bases: parseBases(basesText),
-    protectedBranches: protectedText.trim() === "" ? [] : listOf(protectedText),
+    protectedBranches: listOf(protectedText),
+    checks: checkAnswer(checksText),
     guards,
-    workflow: workflowText.trim() === "" ? {} : workflowFromFlags(listOf(workflowText)),
+    workflow: workflowFromFlags(listOf(workflowText)),
   };
 }
 
@@ -498,20 +634,48 @@ export function shownWorkflow(workflow: Workflow): string {
   return words.join(",");
 }
 
-const POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
+/** A plan's line (`+ key: value`, `- hooks.…`) as a mark and its words. */
+function planLine(line: string): { mark: Mark; text: string } {
+  return leadingMark(line) ?? { mark: "info", text: line };
+}
 
-/** The plan, on screen: the file, the changes, each settings file's lines, and what to know. */
-function printPlan(plan: ProjectInitPlan, context: ProjectInitContext): void {
-  context.print(`${plan.file} will hold:`);
-  if (plan.diff.length === 0) context.print("  (no change)");
-  for (const line of plan.diff) context.print(`  ${line}`);
+/**
+ * The plan, on screen: one group per file, named from the project's root — the project's own
+ * file always (its changes, or "no change"), and a settings file only when it changes — each
+ * change one line with its mark, and what to know (`plan.notes`) as `!` lines under the
+ * project's file, whose policy they are about. Returns how many files the plan writes.
+ */
+function printPlan(plan: ProjectInitPlan, context: ProjectInitContext): number {
+  const shown = (file: string) => relative(context.root, file);
   const settings = [plan.settings, plan.localSettings].filter((one) => one.changed);
+  const titleWidth = Math.max(
+    ...[plan.file, ...settings.map((one) => one.file)].map((file) => shown(file).length),
+  );
+  const notes = plan.notes.map((note) => ({ mark: "warn" as const, text: note }));
+  context.out.group(
+    {
+      mark: notes.length > 0 ? "warn" : "info",
+      summary: [
+        plan.diff.length > 0 ? `${plan.diff.length} to change` : "no change",
+        ...(notes.length > 0 ? [plural(notes.length, "warning", "warnings")] : []),
+      ].join(", "),
+      title: shown(plan.file),
+      titleWidth,
+    },
+    [...plan.diff.map(planLine), ...notes],
+  );
   for (const one of settings) {
-    context.print(`${one.file} also changes, merged with what it has:`);
-    for (const line of one.lines) context.print(`  ${line}`);
+    context.out.group(
+      {
+        mark: "info",
+        summary: `${one.lines.length} to change, merged with what it has`,
+        title: shown(one.file),
+        titleWidth,
+      },
+      one.lines.map(planLine),
+    );
   }
-  if (!plan.changed && settings.length === 0) context.print("Nothing to change.");
-  for (const note of plan.notes) context.print(`! ${note}`);
+  return (plan.changed ? 1 : 0) + settings.length;
 }
 
 /** The files' text, or null when a file is not there. */
@@ -528,7 +692,9 @@ export function readExisting(file: string): Record<string, unknown> | null {
   const text = readText(file);
   if (text === null) return null;
   try {
-    const parsed: unknown = JSON.parse(text);
+    // The one reader of a person-edited JSON file: a byte order mark an editor saved is
+    // skipped, so the file's own answers are read, not lost (F5-2).
+    const parsed: unknown = parseUserJson(text);
     return isObject(parsed) ? parsed : null;
   } catch {
     return null;
@@ -560,24 +726,35 @@ the project.
   --bases <p=b,p=b>      bases for other branch prefixes (default: hotfix/, release/)
   --protected <a,b>      the branches the git guard asks about (default: the default
                          branch, the base, and GitHub's protected branches)
+  --check <command>      the fast check a session runs before it stops (default: a script in
+                         package.json — typecheck, lint, check or test — with its package
+                         manager; "none" for no check)
+  --no-check             no fast check
   --[no-]guard-main-folder
                          refuse edits in the main checkout itself (or not)
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
-  --dry-run              print the plan and write nothing
+  --dry-run              print the plan of the flags and the defaults (no questions), and
+                         write nothing
   --yes                  no questions: write the flags and the defaults
 
 The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
 
-/** `cc-smart-dev-kit project init …`; the exit code. */
+/**
+ * `cc-smart-dev-kit project init …`; the exit code. What it prints, in order: a heading, the
+ * questions (on a terminal, without `--yes` or `--dry-run`), the plan of the files, then one
+ * verdict line, and after a write the next steps: commit the files, and the version every
+ * teammate needs.
+ */
 export function runProjectInit(
   argv: string[],
   context: ProjectInitContext,
   runner: ProjectInitRunner = realRunner(context.env),
 ): number {
+  const out = context.out;
   if (argv.includes("--help") || argv.includes("-h")) {
-    context.print(PROJECT_INIT_USAGE);
+    out.say(PROJECT_INIT_USAGE);
     return 0;
   }
   const parsed = parseFlags(argv);
@@ -589,12 +766,20 @@ export function runProjectInit(
   const file = join(context.root, ".claude", "cc-smart-dev-kit.json");
   const existing = readText(file);
   const facts = detectFacts(runner, context.root);
+  // A dry run asks nothing: it shows what the flags and the defaults would write (UX-12).
+  const prompts = flags.yes || flags.dryRun ? null : context.prompts;
+  out.heading(
+    `${COMMAND} project init: ${tildify(context.root, context.home)}${flags.dryRun ? " (dry run)" : ""}`,
+  );
+  out.blank();
   let answers: ProjectInitAnswers;
   let plan: ProjectInitPlan;
   try {
     answers = defaultAnswers(readExisting(file), facts, flags);
-    if (context.terminal !== null && !flags.yes) {
-      answers = askedAnswers(context.terminal, answers);
+    if (prompts !== null) {
+      out.say(QUESTIONS_INTRO);
+      answers = askedAnswers(prompts, answers);
+      out.blank();
     }
     plan = planProjectInit({
       root: context.root,
@@ -612,18 +797,27 @@ export function runProjectInit(
     context.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  printPlan(plan, context);
-  if (flags.dryRun) {
-    context.print("A dry run: nothing was written.");
+  const files = printPlan(plan, context);
+  out.blank();
+  if (files === 0) {
+    out.verdict("ok", "Nothing to change.");
+    if (flags.dryRun) out.say(dryRunEnding(["written"]));
     return 0;
   }
-  if (context.terminal !== null && !flags.yes) {
-    if (!context.terminal.confirm("Write these files?")) {
-      context.print("Left alone.");
+  const these = files === 1 ? "this file" : `these ${files} files`;
+  if (flags.dryRun) {
+    out.verdict("info", `A real run writes ${plural(files, "file", "files")}.`);
+    out.say(dryRunEnding(["written"]));
+    return 0;
+  }
+  if (prompts !== null) {
+    if (!prompts.confirm(`Write ${these}?`, false)) {
+      out.verdict("info", "Left alone: nothing was written.");
       return 0;
     }
   } else if (!flags.yes) {
-    context.print(`Nothing was written: run this on a terminal, or add --yes.`);
+    // No terminal to ask on: nothing is written without the flag that answers for it.
+    out.verdict("info", "Nothing was written: run this on a terminal, or add --yes.");
     return 0;
   }
   let writes: ReturnType<typeof applyProjectInit>;
@@ -634,14 +828,34 @@ export function runProjectInit(
     return 1;
   }
   for (const write of writes) {
-    const shown = tildify(write.file, context.home);
-    context.print(`${write.created ? "+" : "~"} ${shown}`);
+    const shown = relative(context.root, write.file);
+    out.line(
+      write.created ? "created" : "changed",
+      `${shown}: ${write.created ? "created" : "changed"}`,
+    );
   }
-  context.print("Commit both files with the project.");
+  out.blank();
+  out.verdict("ok", `Done: ${plural(writes.length, "file", "files")} written.`);
+  // The plan's text is JSON this command wrote; the one user-JSON reader keeps the read
+  // here the same one every reader of the file uses.
   const requires =
-    (JSON.parse(plan.text) as { requires?: string }).requires ?? requiresFor(VERSION);
-  context.print(
-    `The file asks for ${COMMAND} ${requires}: every teammate needs that plugin version or newer.`,
-  );
+    (parseUserJson(plan.text) as { requires?: string }).requires ?? requiresFor(VERSION);
+  // `.claude/settings.local.json` is each person's own (Claude Code keeps it out of git): it is
+  // never one of the files to commit.
+  const shared = writes
+    .map((write) => relative(context.root, write.file))
+    .filter((shown) => shown !== relative(context.root, plan.localSettings.file));
+  out.blank();
+  out.next([
+    ...(shared.length === 0
+      ? []
+      : [
+          {
+            text: `Commit ${shared.length === 1 ? "the file" : "the files"} with the project:`,
+            command: `git add ${shared.join(" ")} && git commit`,
+          },
+        ]),
+    `Tell your teammates: the file asks for ${COMMAND} ${requires}, so each of them needs that plugin version or newer.`,
+  ]);
   return 0;
 }

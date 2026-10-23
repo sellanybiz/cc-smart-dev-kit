@@ -47,7 +47,7 @@
  * Neither event takes context from this hook: success prints nothing at all. A record that
  * cannot be written, and a stop that records nothing for a reason the person can act on, is
  * one line on stderr, exit 0 — a subagent must always start and finish
- * (`.claude/rules/hooks.md` § Fail closed).
+ * (`.claude/rules/hooks-guards.md` § Fail closed).
  */
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";

@@ -3,7 +3,7 @@
  * `resume` themselves (D35).
  *
  * **The store is the truth about who is a crew session.** Only a session the store records is ever
- * stopped, removed or respawned here — never a person's own session. Each command finds the
+ * stopped, removed or brought back here — never a person's own session. Each command finds the
  * crew session by its name, its id, its short id or its session id, in this repository's store only,
  * and a crew session's own session never runs them: a crew session never stops, removes or resumes crew sessions.
  *
@@ -13,17 +13,23 @@
  *   phase that waits for it reads, and stopping its process changes none of it. A stop that fails
  *   leaves the crew session as it was — unless Claude Code does not know the session any more, which
  *   counts as stopped: the goal is met, and the line says so.
- * - **resume** runs `claude respawn <short id>` for that ONE session — never `--all`, which would
- *   restart every background session on the machine — and the store says `working` again.
- *   `crew resume --paused` does the same for every paused crew session of a lead at once, the
- *   person's way out after `/login` on another account (D42).
+ * - **resume** brings that ONE session back with `claude --bg --resume <session id>` **in the
+ *   crew session's own worktree**, with its own settings and MCP files (`resumeSession`,
+ *   `answer.ts`) — never `--all`, which would restart every background session on the machine,
+ *   and never `claude respawn`, which does not re-apply `-w` and brings a `--bg -w` session back
+ *   in the main checkout, where its own start check marks it failed (the bug of 2026-10-23). A
+ *   session that still has a process is not resumed: `--bg --resume` would start a copy beside
+ *   it. `crew resume --paused` does the same for every paused crew session of a lead at once,
+ *   the person's way out after `/login` on another account (D42), through the watch's own
+ *   `resumeOne`. A record whose worktree or settings file is gone is refused with one line.
  */
 import { existsSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { isInside, runGit } from "../hooks/git";
-import { claudeDeps } from "./agents";
+import { agentRows, claudeDeps } from "./agents";
+import { resumePlace, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
 import { findCrew, isRefusal, type Records, type Refusal, readRecords } from "./board";
-import { REPORT_COMMAND } from "./brief";
+import { CREW_NEVER_RUNS, REPORT_COMMAND } from "./brief";
 import { agentRow, callClaude, findClaude, parseAgents } from "./claude";
 import type { CrewContext } from "./context";
 import { lastLine } from "./display";
@@ -31,9 +37,9 @@ import { RUNNING_STATES } from "./places";
 import { callingSession, crewIdOf } from "./session";
 import { type CrewRecord, type LeadRecord, listLeads, readLead, updateCrew } from "./store";
 import { pauseStartedAt } from "./wait";
-import { leadOf } from "./watch";
+import { leadOf, resumeOne } from "./watch";
 
-/** How long `claude stop`, `claude rm` and `claude respawn` may take: each returns at once. */
+/** How long `claude stop` and `claude rm` may take: each returns at once. */
 export const CLAUDE_END_TIMEOUT_MS = 30_000;
 
 /** How long one git call of a removal may take: a `git status` in the worktree is the slow part. */
@@ -67,11 +73,11 @@ export function relative(repo: string, path: string): string {
 }
 
 /** The refusal of a session that is a crew session's own: it never ends a crew session. */
-function crewSessionRefusal(command: string, ctx: CrewContext): null | Refusal {
+function crewSessionRefusal(command: "resume" | "rm" | "stop", ctx: CrewContext): null | Refusal {
   const crew = crewIdOf(ctx.env);
   if (crew === null) return null;
   return failure(
-    `crew ${command}: this session is the crew session ${crew}, and a crew session never stops, removes or resumes crew sessions`,
+    `crew ${command}: this session is the crew session ${crew}, and a crew session never ${CREW_NEVER_RUNS[command]}`,
     `Fix: hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`,
   );
 }
@@ -79,7 +85,7 @@ function crewSessionRefusal(command: string, ctx: CrewContext): null | Refusal {
 /** The crew session `ref` names in this repository, for a command that acts on it; or the refusal. */
 export function actOn(
   ref: string,
-  command: string,
+  command: "resume" | "rm" | "stop",
   ctx: CrewContext,
 ): { read: Records; record: CrewRecord } | Refusal {
   const own = crewSessionRefusal(command, ctx);
@@ -225,13 +231,35 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
     );
   }
   const id = record.shortId;
-  // That ONE session: `--all` would restart every background session on the machine.
-  const respawn = claudeFailure(ctx, record.repo, ["respawn", id]);
-  if (respawn !== null) {
+  // First the folder: a record with no worktree is refused before anything runs.
+  const place = resumePlace(record);
+  if (!place.ok) {
+    return refuse(
+      failure(`crew resume: ${place.why}; remove it (${COMMAND} crew rm "${record.name}")`),
+      ctx,
+    );
+  }
+  // A session that still has a process is not resumed: `--bg --resume` would start a copy
+  // beside it (`claude --help`, proved live on 2.1.309). `crew resume` is for one that is gone —
+  // after a stop, or after the machine restarted. A view that cannot be read refuses: it could be
+  // either, and a copy is worse than a second try.
+  const liveness = sessionLiveness(ctx, record);
+  if (liveness === "live") {
+    ctx.print(`${record.name} is running already (${id}); there is nothing to resume`);
+    return 0;
+  }
+  if (liveness === "unknown") {
+    return refuse(failure(`crew resume: ${record.name}: ${UNREADABLE_VIEW_WHY}`), ctx);
+  }
+  // That ONE session, in its own worktree, with its own settings and MCP files — never `--all`,
+  // which would restart every background session on the machine, and never in the main checkout,
+  // where `claude respawn` brings a `--bg -w` session back (the bug of 2026-10-23).
+  const resumed = await resumeSession(ctx, record, null);
+  if (!resumed.ok) {
     return refuse(
       failure(
-        `crew resume: ${respawn}`,
-        `Fix: claude respawn ${id} by hand, or ${COMMAND} crew list to see it`,
+        `crew resume: ${resumed.why}`,
+        `Fix: ${COMMAND} crew status "${record.name}" shows its files; if it cannot come back, merge its branch and start the phase again`,
       ),
       ctx,
     );
@@ -246,10 +274,11 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
 
 /**
  * `crew resume --paused` (D42): every paused crew session of this lead at once. The person
- * switched accounts with `/login` and does not wait for the watch; `claude respawn` gives each
- * session a fresh process, which is what reads the new login. Each record goes `working` with
- * its wait cleared. One that cannot be respawned is named and the others still go; the exit
- * code is 1 when one failed.
+ * switched accounts with `/login` and does not wait for the watch. Each goes back **the way the
+ * watch brings one back** (`resumeOne`, one home): a message line for one whose session still has
+ * a process — never a copy — and `--bg --resume` in its worktree, with its own settings and MCP
+ * files, for one that has none. Each record goes `working` with its wait cleared. One that cannot
+ * be resumed is named and the others still go; the exit code is 1 when one failed.
  */
 export async function runCrewResumePaused(named: null | string, ctx: CrewContext): Promise<number> {
   const own = crewSessionRefusal("resume", ctx);
@@ -299,35 +328,27 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
     ctx.print("no paused crew session of this lead");
     return 0;
   }
+  const agents = agentRows(ctx);
   let code = 0;
   for (const record of paused) {
-    const id = record.shortId;
-    if (id === null) {
-      ctx.error(`crew resume: ${record.name} has no session to respawn`);
+    if (record.shortId === null) {
+      ctx.error(`crew resume: ${record.name} has no session to resume`);
       code = 1;
       continue;
     }
-    const respawn = claudeFailure(ctx, record.repo, ["respawn", id]);
-    if (respawn !== null) {
-      ctx.error(`crew resume: ${record.name}: ${respawn}`);
+    // The watch's own way: a message for one whose session still has a process, a resume in its
+    // worktree for one that has none (`resumeOne`). It prints the message line or why it could
+    // not; a resume the store could not record is its line too, and the exit code says so.
+    const one = await resumeOne(record, ctx, ctx.now(), agents, (line) => ctx.print(line));
+    if (!one.ok || !one.stored) {
       code = 1;
       continue;
     }
-    try {
-      await updateCrew(
-        ctx.paths.stateDir,
-        record.repo,
-        record.id,
-        { state: "working", waitingFor: undefined },
-        ctx.now(),
-        "resumed by the lead after a limit",
-      );
-    } catch (error) {
-      ctx.error(`crew resume: the store could not record ${record.name}: ${reasonOf(error)}`);
-      code = 1;
-      continue;
-    }
-    ctx.print(`resumed ${record.name} (${id})`);
+    ctx.print(
+      one.way === "message"
+        ? `${record.name} is running (${record.shortId}): send the message above`
+        : `resumed ${record.name} (${record.shortId})`,
+    );
   }
   return code;
 }

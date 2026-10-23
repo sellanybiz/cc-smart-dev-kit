@@ -25,6 +25,10 @@ the pull request which version a project should require for the new part.
 ## 2. Bump and build
 
 1. Change `version` in `plugin/.claude-plugin/plugin.json`. Change nothing else there.
+   Then the installers' own copy: `INSTALLER_VERSION` in `install.sh` and `$InstallerVersion`
+   in `install.ps1`. Each installer is fetched alone from `main` and refuses an installed CLI
+   older than its number, so it cannot read `plugin.json`; `scripts/install.test.ts` fails
+   until the three match.
 2. `bun run build`. The version is baked into `plugin/dist/cli.js`, so the bundle
    changes even when no code did.
 

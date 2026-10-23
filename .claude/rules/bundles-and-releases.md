@@ -17,15 +17,21 @@ Claude Code copies only `plugin/` into
 - **Nothing in `plugin/` imports from outside it.** Every script in it is a bundle that
   carries all its code (`zod` included), or a small shell script.
 - **`plugin/` holds:** `.claude-plugin/plugin.json` (the manifest), `dist/` (bundles),
-  `bin/` (on the Bash tool's PATH in Claude Code), `hooks/hooks.json`,
+  `portal-ui/` (the portal's Next.js export: static files, built by
+  `scripts/portal-export.ts`, no `node_modules`), `bin/` (on the Bash tool's PATH in Claude Code), `hooks/hooks.json`,
   `monitors/monitors.json` (the plugin's monitors: commands Claude Code starts when a skill is
   used and ends with the session. They are session-scoped, so they run from the version folder
   and need no copy in `~/.local/share/`. `claude plugin validate` does not read the default-path
   file, so `src/crew/monitors.test.ts` guards its shape), `instructions/`
-  (plain Markdown that `setup` copies), `skills/`, `agents/`, `output-styles/`, and
+  (plain Markdown that `setup` copies), `skills/`, `agents/`, `workflows/` (the scripts Claude
+  Code loads as `<plugin>:<meta.name>`; a script body has a top-level `return`, which Biome's
+  parser refuses, so `biome.json` skips the folder), `output-styles/`,
+  `settings.json` (the plugin's default settings — only `subagentStatusLine`, the agent
+  panel's per-subagent row; its command names the launcher, never `${CLAUDE_PLUGIN_ROOT}`,
+  which a plugin's settings file does not expand, `docs/claude-code-contract.md`), and
   `bunfig.toml` (**empty, and it stays empty**: every bun the plugin starts in a person's
   folder gets `--config=` pointing at it, so a project's own `bunfig.toml` — its `preload` —
-  never runs inside the plugin; `docs/design.md` § The two flags on every bun run inside a
+  never runs inside the plugin; `docs/design/parts.md` § The two flags on every bun run inside a
   person's folder).
 - **The router bundle never changes by accident.** Code that `src/entries/router.ts`
   imports (`src/gateway/`, its paths in `src/gateway/paths.ts`) changes
@@ -38,8 +44,11 @@ Claude Code copies only `plugin/` into
   one after an update: 14 days later, the docs say (not proved yet:
   `docs/claude-code-contract.md`). A long-running part runs from a copy in
   `~/.local/share/cc-smart-dev-kit/`: the router (`src/entries/router.ts` → `dist/router.js`,
-  copied by `gateway setup`) and the portal (`src/entries/portal.ts` → `dist/portal.js`,
-  copied by `portal` through `writeManagedFile`, so `restore` removes it).
+  copied by `gateway setup`) and the portal (`src/entries/portal.ts` → `dist/portal.js`
+  beside `plugin/portal-ui/`, its export; the session-start part's starter and `portal` copy
+  both through `writeManagedFile` and `writeManagedFolder`, so `restore` removes them). The
+  portal stays up from session start to session start (D10), so
+  this is not a rule about a short run: its process outlives many version folders.
 
 ## Bundles are committed
 
@@ -55,6 +64,14 @@ the others, `router.js` included.
 - **Never edit `plugin/dist/*.js` by hand.** It is excluded from Biome and the
   neutrality check because it is built from `src/`.
 - **A new bundle is a new file in `src/entries/`.** A test file there is skipped.
+- **The portal's export is build output too, and committed.** `bun run build:portal`
+  (`scripts/portal-export.ts`) builds `portal/` and copies `portal/out` into
+  `plugin/portal-ui/`; `bun run check:portal` rebuilds and compares byte for byte, and CI
+  runs it in its own step after installing `portal/`'s own dependencies. It is **not part
+  of `bun run build`**: that step must not need React's `node_modules`, and it must not
+  pay the Next build's time. The export is reproducible — `generateBuildId` in
+  `portal/next.config.ts` fixes the id Next makes at random, so a second build is byte for
+  byte the same (`diff -r` is empty) — which is why a plain compare is the check.
 - `plugin/bin/cc-smart-dev-kit` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
 - `plugin/bin/cc-smart-dev-kit-bun.sh` is written by hand too (the `.sh` is what makes Claude

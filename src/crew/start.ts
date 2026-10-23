@@ -1,8 +1,9 @@
 /**
  * `cc-smart-dev-kit crew start <phase> --slug <s> --kind <kind> --brief <file|-> …`: starts one
  * crew session, a background Claude Code session in its own worktree, and **returns at once** (D25):
- * one line, `started …`, `queued …` or `failed …`. Nothing here waits on the crew session, polls, or
- * retries.
+ * one line, `started …`, `queued …` or `failed …`, and — for an opus-tier session that starts
+ * while no 5-hour window reading is stored — one note line after it (D54). Nothing here waits on
+ * the crew session, polls, or retries.
  *
  * In order:
  *   1. the shared checks (`readCaller`: not a crew session, crew sessions on, a Claude session, no bypass),
@@ -14,16 +15,18 @@
  *      session themselves;
  *   3. `claude` found, the base a commit, the branch name valid;
  *   4. under the machine-wide places lock: the name not in use (the store, the branch, the
- *      folder), then start now or queued (`placeFor`: its phases, the cap, the memory), and the
- *      record (`starting` or `queued`, one `created` event);
- *   5. its files: the brief with its frame (`brief.md`) and the settings file that names the
- *      crew session to its own session and turns Claude Code's retry watchdog on, with no wait
- *      limit (`settings.json`, `{"env":{"CC_SMART_DEV_KIT_CREW":<id>,
- *      "CLAUDE_CODE_RETRY_WATCHDOG":"1","CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS":"300000"}}`,
- *      D42);
+ *      folder), then start now or queued (`placeFor`: its phases, its lead's caps, the
+ *      machine's ceiling and the 5-hour window, the memory), and the record (`starting` or
+ *      `queued`, one `created` event);
+ *   5. its files: the brief with its frame (`brief.md`), the settings file that names the
+ *      crew session to its own session, turns Claude Code's retry watchdog on with no wait
+ *      limit (`settings.json`, D42) and turns the other plugins off, and the `--mcp-config`
+ *      file `mcp.json` beside it with the servers its kind keeps (`src/crew/claude.ts` ›
+ *      `leanLaunch`). **Before anything is made**, so a write that fails leaves no worktree;
  *   6. a queued crew session ends here. Otherwise: `git worktree add -b crew/<phase>-<slug>
  *      .claude/worktrees/crew-<phase>-<slug> <base>` in the main checkout (fast; anything slow is
- *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …`
+ *      the crew session's own first step), the `.worktreeinclude` files copied, then `claude --bg -w …
+ *      --strict-mcp-config --mcp-config <mcp.json> --settings <settings.json> "<first line>"`
  *      from the main checkout, the short id read from its `backgrounded` line, and ONE read of
  *      `claude agents --json --all` to record the session id and see that agent view lists it.
  *      **The folder is not judged here**: `claude agents --json` reports the launch folder until a
@@ -36,9 +39,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { tildify } from "../cli/paths";
+import { type CliPaths, tildify } from "../cli/paths";
 import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
 import { runGit } from "../hooks/git";
+import type { McpContext } from "../mcp/servers";
+import { readTavilyKey } from "../mcp/tavily";
 import {
   AFFORDABLE_EFFORT,
   answeringSlot,
@@ -53,13 +58,20 @@ import {
   uiRuleText,
   uiTierAllowed,
 } from "../models/launch-policy";
+import { CONFIG_PATH } from "../project/resolve";
+import { launcherArgv } from "../setup/launcher-cmd";
 import {
   RETRY_WATCHDOG_ENV,
   RETRY_WATCHDOG_RECHECK_ENV,
   RETRY_WATCHDOG_RECHECK_MS,
   RETRY_WATCHDOG_VALUE,
 } from "../setup/retry-watchdog";
-import type { ResolvedWorkflow } from "../workflow/resolve";
+import {
+  personalWorkflowFile,
+  type ResolvedValue,
+  type ResolvedWorkflow,
+  type WorkflowSource,
+} from "../workflow/resolve";
 import { copyWorktreeInclude } from "../worktrees/include";
 import { claudeDeps } from "./agents";
 import { BRIEF_FRAME_MARK, briefText, firstPrompt, REPORT_COMMAND } from "./brief";
@@ -69,21 +81,37 @@ import {
   CREW_PERMISSION_MODE,
   callClaude,
   findClaude,
+  type LeanLaunch,
   launchArgs,
+  leanLaunch,
+  mcpConfigText,
   parseAgents,
   parseBackgrounded,
+  parsePluginList,
   refusedUntrusted,
 } from "./claude";
 import type { CrewContext, Env } from "./context";
+import { filePattern, matchesFilePattern } from "./diff";
 import { lastLine, modelText } from "./display";
 import { CREW_REF, crewName } from "./names";
-import { OPUS_TIER, onOpusTier, placeFor, runningCrew, unmetWaits, withPlacesLock } from "./places";
+import {
+  OPUS_TIER,
+  onOpusTier,
+  placeFor,
+  RUNNING_STATES,
+  runningCrew,
+  runningForLead,
+  unmetWaits,
+  withPlacesLock,
+} from "./places";
 import { CREW_ENV } from "./session";
 import {
+  appendCrewEvent,
   type CrewChange,
   type CrewRecord,
   createCrew,
   crewBriefFile,
+  crewMcpFile,
   crewReportFile,
   crewSettingsFile,
   type HandBackReport,
@@ -96,6 +124,7 @@ import {
   updateCrew,
   writeStoreFile,
 } from "./store";
+import { usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** What `crew start` was asked, already checked to be well formed (`command.ts`). */
 export interface StartArgs {
@@ -274,6 +303,8 @@ interface Plan {
   claude: string;
   baseRef: string;
   baseSha: string;
+  /** The lean start: the plugins this session turns off, and the servers it keeps. */
+  lean: LeanLaunch;
   name: string;
   branch: string;
   worktree: string;
@@ -311,10 +342,53 @@ export interface LaunchSpec {
   resolved: string;
   /** The effort the launch runs at. */
   effort: string;
+  /** The lean start: the plugins this session turns off, and the servers it keeps. */
+  lean: LeanLaunch;
   /** The lead's name, in the session's first line. */
   leadName: string;
   /** The `claude` to run. */
   claude: string;
+}
+
+/**
+ * The file a `workflow.crew.keep` value came from: the project's file, or the person's own
+ * defaults. The fix line names the file the person edits.
+ */
+function keepFileOf(source: WorkflowSource, paths: CliPaths): string {
+  return source === "personal" ? tildify(personalWorkflowFile(paths), paths.home) : CONFIG_PATH;
+}
+
+/**
+ * The lean start for a session of `kind`: the machine's plugin list (one `claude plugin list
+ * --json` call), and what the project keeps of it (`workflow.crew.keep`). A list that cannot be
+ * read leaves every plugin as it is — a lean start never fails a start over it — while a keep
+ * entry that names nothing here is refused before anything is recorded.
+ */
+function leanOf(
+  kind: null | CrewKind,
+  keep: ResolvedValue<string[]>,
+  ctx: CrewContext,
+  claude: string,
+  repo: string,
+): LeanLaunch {
+  const listed = callClaude(claudeDeps(ctx), claude, ["plugin", "list", "--json"], repo);
+  const enabled =
+    listed.ok && listed.run.exitCode === 0 ? parsePluginList(listed.run.stdout) : null;
+  const context: McpContext = {
+    bunx: ctx.which("bunx") ?? "bunx",
+    launcher: launcherArgv(ctx.paths.binDir, ctx.platform),
+    // Only whether a key exists matters here: the registration carries the placeholder, and
+    // Claude Code fills it from the settings' own `env` (`src/mcp/tavily.ts`).
+    tavily:
+      readTavilyKey(ctx.paths, ctx.env, ctx.platform).source === "none"
+        ? { key: false, reason: "no Tavily key" }
+        : { key: true },
+  };
+  const lean = leanLaunch({ context, enabled, keep: keep.value, kind });
+  if (!lean.ok) {
+    throw refusal(lean.why, `set workflow.crew.keep in ${keepFileOf(keep.source, ctx.paths)}`);
+  }
+  return lean.lean;
 }
 
 /** Steps 1–3: every check that needs no lock. Throws a `Refusal`. */
@@ -349,6 +423,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
   const briefGiven = await readBrief(args, ctx);
   const chosen = chooseLaunch(args.kind, args, ctx);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
+  const lean = leanOf(args.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const root = caller.checkout.root;
   const baseRef = args.base ?? currentRef(root, ctx.env);
   const baseSha = baseRef === null ? null : commitOf(root, baseRef, ctx.env);
@@ -383,6 +458,7 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
     files: args.files,
     kind: args.kind,
     lead,
+    lean,
     name,
     phase: args.phase,
     slug: args.slug,
@@ -442,6 +518,8 @@ async function planContinuation(
   }
   const chosen = chooseLaunch(old.kind, { effort: old.effort, model: old.model.named }, ctx);
   if ("refusal" in chosen) throw refusal(chosen.refusal, undefined, 2);
+  // The next crew session is lean like any other, on the old crew session's kind.
+  const lean = leanOf(old.kind, caller.resolved.crew.keep, ctx, claude, caller.repo);
   const number =
     records.filter((one) => one.phase === old.phase && one.slug === old.slug).length + 1;
   let name: string;
@@ -473,6 +551,7 @@ async function planContinuation(
     files: old.files,
     kind: old.kind,
     lead,
+    lean,
     name,
     phase: old.phase,
     slug: old.slug,
@@ -603,9 +682,46 @@ async function failed(
   return 1;
 }
 
+/**
+ * The settings file a crew session's launch passes: who it is, Claude Code's retry watchdog
+ * (D42), the claude.ai connectors off, and the plugins this session turns off — the lean start.
+ * The watchdog keys and their values are CC1's (`src/setup/retry-watchdog.ts`), and there is no
+ * wait limit on purpose: the owner chose "keep waiting", so no `…_MAX_WAIT_MS` and no
+ * `…_MAX_USAGE_LIMIT_WAIT_MS`. `disableClaudeAiConnectors` is a documented settings key any file
+ * may set, so this session fetches no connector; `--strict-mcp-config` already leaves their
+ * servers out (`docs/claude-code-contract.md`).
+ */
+function crewSettingsText(id: string, off: readonly string[]): string {
+  const settings: Record<string, unknown> = {
+    env: {
+      [CREW_ENV]: id,
+      [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
+      [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS),
+    },
+  };
+  if (off.length > 0) {
+    settings.enabledPlugins = Object.fromEntries(off.map((one) => [one, false]));
+  }
+  settings.disableClaudeAiConnectors = true;
+  return `${JSON.stringify(settings, null, 2)}\n`;
+}
+
 /** Step 6: the worktree, the session, and the session id it records. */
 async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): Promise<number> {
   const { worktree } = spec;
+  // The session's own settings and the MCP servers it loads: the two files that make it lean.
+  // Both are written here, by the one function both the start and the queued start run, so a
+  // crew session that waited in the queue gets the machine's plugins as they are when it starts.
+  // **Before anything is made**: a write that fails leaves no worktree and no branch behind.
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id);
+  // Its neighbour, from the one home both the start and a resume read it from (`crewMcpFile`).
+  const mcpFile = crewMcpFile(ctx.paths.stateDir, spec.repo, record.id);
+  try {
+    writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
+    writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
+  } catch (error) {
+    return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx);
+  }
   const added = runGit(
     spec.repo,
     ["worktree", "add", "-b", spec.branch, worktree, spec.baseSha],
@@ -623,10 +739,11 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
   const briefFile = crewBriefFile(ctx.paths.stateDir, spec.repo, record.id);
   const args = launchArgs({
     effort: spec.effort,
+    mcpFile,
     model: spec.model,
     name: record.name,
     prompt: firstPrompt(record.name, spec.leadName, briefFile),
-    settingsFile: crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id),
+    settingsFile,
     // The folder's own name: a hand-off's next crew session has a number in it (`crew-B6b-x-2`), and a
     // queued crew session is launched later from its record, so the record's path is the one source.
     worktreeName: basename(worktree),
@@ -750,30 +867,263 @@ async function stopContinued(planned: Plan, args: StartArgs, ctx: CrewContext): 
   ctx.print(`${old.name}: session stopped — it handed off; its branch and its record stay`);
 }
 
+/**
+ * The states in which a crew session holds the files its `--files` list names: its session is
+ * running, or it waits in the queue for a place (D55).
+ */
+const CLASH_STATES: readonly string[] = [...RUNNING_STATES, "queued"];
+
+/** How many shared files a clash line names before it says how many more there are. */
+const CLASH_FILES_SHOWN = 3;
+
+/** What two `--files` lists share (D55). */
+export interface FileOverlap {
+  /** The tracked files both lists name, sorted; empty when no existing file decided it. */
+  files: string[];
+  /**
+   * The two patterns that may name the same file that does not exist yet; null when the
+   * tracked files decided it.
+   */
+  patterns: [string, string] | null;
+}
+
+/** The fixed part of a pattern, before its first wildcard. */
+function fixedPrefix(pattern: string): string {
+  const wildcard = pattern.search(/[*?[\]{}]/);
+  return wildcard === -1 ? pattern : pattern.slice(0, wildcard);
+}
+
+/** True when the pattern has a wildcard: a glob, not a path. */
+function isGlobPattern(pattern: string): boolean {
+  return /[*?[\]{}]/.test(pattern);
+}
+
+/**
+ * True when one fixed prefix holds the other: two patterns under one folder may name the same
+ * file that does not exist yet. Two patterns that start with a wildcard name no fixed place at
+ * all, so neither is ever under the other.
+ */
+function prefixesMeet(one: string, two: string): boolean {
+  if (one === "" || two === "") return false;
+  return one === two || one.startsWith(two) || two.startsWith(one);
+}
+
+/** One `--files` pattern expanded: its path and glob, and the tracked files it names. */
+interface Expanded {
+  glob: Bun.Glob;
+  matches: string[];
+  pattern: string;
+}
+
+/** True when the glob's fixed prefix lies inside the folder the literal pattern names. */
+function prefixInFolder(folder: string, prefix: string): boolean {
+  if (prefix === "") return false;
+  const under = folder.endsWith("/") ? folder : `${folder}/`;
+  return prefix === folder || prefix.startsWith(under);
+}
+
+/**
+ * Two patterns that name no shared tracked file: may they name the same file that does not exist
+ * yet? A glob against a path is exact — the glob says whether it would name that path, and a bare
+ * folder names everything under it — and two globs or two paths are judged by their fixed
+ * prefixes, which is only a guess.
+ */
+function patternsMeet(one: Expanded, two: Expanded): boolean {
+  const oneGlob = isGlobPattern(one.pattern);
+  const twoGlob = isGlobPattern(two.pattern);
+  if (oneGlob && !twoGlob) {
+    return one.glob.match(two.pattern) || prefixInFolder(two.pattern, fixedPrefix(one.pattern));
+  }
+  if (!oneGlob && twoGlob) {
+    return two.glob.match(one.pattern) || prefixInFolder(one.pattern, fixedPrefix(two.pattern));
+  }
+  return prefixesMeet(fixedPrefix(one.pattern), fixedPrefix(two.pattern));
+}
+
+/**
+ * What two `--files` lists share, or null when they share nothing: the tracked files both
+ * name — and, for a pattern that names no tracked file yet, a glob asked about the other side's
+ * path, or two fixed prefixes that hold each other, because two patterns under one folder are
+ * meant to reach the same new files. It is only a warning: two leads may mean to share a file.
+ */
+export function filesOverlap(
+  ours: readonly string[],
+  theirs: readonly string[],
+  tracked: readonly string[],
+): FileOverlap | null {
+  const expand = (patterns: readonly string[]): Expanded[] =>
+    patterns.map((pattern) => {
+      const one = filePattern(pattern);
+      return {
+        ...one,
+        matches: tracked.filter((path) => matchesFilePattern(path, one.pattern, one.glob)),
+      };
+    });
+  const mine = expand(ours);
+  const other = expand(theirs);
+  const mineFiles = new Set(mine.flatMap((one) => one.matches));
+  const shared = [...new Set(other.flatMap((one) => one.matches))]
+    .filter((path) => mineFiles.has(path))
+    .sort();
+  if (shared.length > 0) return { files: shared, patterns: null };
+  for (const one of mine) {
+    for (const two of other) {
+      // Two patterns that both name tracked files are judged by those files alone.
+      if (one.matches.length > 0 && two.matches.length > 0) continue;
+      if (patternsMeet(one, two)) return { files: [], patterns: [one.pattern, two.pattern] };
+    }
+  }
+  return null;
+}
+
+/** The files git tracks in `repo`, as git names them; empty when git cannot say. */
+function trackedFiles(repo: string, env: Env): string[] {
+  const run = runGit(repo, ["ls-files", "-z"], env, GIT_TIMEOUT_MS);
+  return run.ok ? run.out.split("\0").filter((path) => path !== "") : [];
+}
+
+/** The line one start prints, and records for the other lead (D55). */
+function clashLine(other: CrewRecord, shared: FileOverlap): string {
+  const what =
+    shared.files.length === 0
+      ? `${shared.patterns?.[0] ?? ""} and ${shared.patterns?.[1] ?? ""} (no file matches both yet)`
+      : shared.files.length <= CLASH_FILES_SHOWN
+        ? shared.files.join(", ")
+        : `${shared.files.slice(0, CLASH_FILES_SHOWN).join(", ")} and ${shared.files.length - CLASH_FILES_SHOWN} more`;
+  return `clash: ${other.name} (${other.leadName}) may change the same files: ${what} — not blocked; two leads may mean to share a file`;
+}
+
+/**
+ * The crew sessions of **other** leads in this repository, running or queued, whose `--files`
+ * list shares a file with the new phase's list (D55). Nothing here stops a start.
+ */
+export function fileClashSessions(
+  repo: string,
+  env: Env,
+  leadSessionId: string,
+  files: readonly string[],
+  records: readonly CrewRecord[],
+): Array<{ other: CrewRecord; shared: FileOverlap }> {
+  if (files.length === 0) return [];
+  // git is asked only once some other lead's crew session is holding files at all.
+  let tracked: string[] | null = null;
+  const clashes: Array<{ other: CrewRecord; shared: FileOverlap }> = [];
+  for (const other of records) {
+    if (other.repo !== repo || other.leadSessionId === leadSessionId) continue;
+    if (!CLASH_STATES.includes(other.state) || other.files.length === 0) continue;
+    tracked ??= trackedFiles(repo, env);
+    const shared = filesOverlap(files, other.files, tracked);
+    if (shared !== null) clashes.push({ other, shared });
+  }
+  return clashes;
+}
+
+/**
+ * Says a new crew session's file clashes, and records each as an event for the other lead's
+ * watch (D55). A store that cannot be read, or an event that cannot be written, costs one line
+ * at most: the start goes on.
+ */
+async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[]> {
+  let records: CrewRecord[];
+  try {
+    records = listCrew(ctx.paths.stateDir, record.repo).records;
+  } catch {
+    // No store, no warning: a clash is never worth failing a start.
+    return [];
+  }
+  const lines: string[] = [];
+  for (const { other, shared } of fileClashSessions(
+    record.repo,
+    ctx.env,
+    record.leadSessionId,
+    record.files,
+    records,
+  )) {
+    const line = clashLine(other, shared);
+    lines.push(line);
+    try {
+      await appendCrewEvent(
+        ctx.paths.stateDir,
+        record.repo,
+        {
+          crew: other.id,
+          lead: other.leadSessionId,
+          name: other.name,
+          state: other.state,
+          text: line,
+          type: "clash",
+        },
+        ctx.now(),
+      );
+    } catch (error) {
+      ctx.error(`crew start: the file clash could not be recorded: ${reasonOf(error)}`);
+    }
+  }
+  return lines;
+}
+
+/**
+ * The lead's own live crew session already on `planned`'s phase, under another slug. A start says
+ * one line naming it, so the lead removes it first: two crew sessions on one phase is a mistake
+ * (2026-10-23: a queued record left behind started beside its replacement). The record this start
+ * continues is not one of them — a hand-off is the same phase on purpose.
+ */
+function liveOnPhase(planned: Plan, records: readonly CrewRecord[]): null | CrewRecord {
+  return (
+    records.find(
+      (one) =>
+        one.repo === planned.caller.repo &&
+        one.leadSessionId === planned.lead.sessionId &&
+        one.phase === planned.phase &&
+        one.state !== "removed" &&
+        // A failed launch that never got a session and left no worktree is nothing to remove.
+        holdsName(one) &&
+        one.id !== planned.continues,
+    ) ?? null
+  );
+}
+
+/** The one line a start says when its phase has a live crew session already. */
+export function phaseLine(record: CrewRecord): string {
+  return `note: ${record.name} is already on phase ${record.phase} (${record.state}) — remove it first: ${COMMAND} crew rm "${record.name}"`;
+}
+
 /** The start itself: the decision, the record, the files, and the launch. */
 async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
   const { caller, chosen, lead } = planned;
   const crew = caller.resolved.crew;
-  let decided: { record: CrewRecord; why: null | string };
+  // The 5-hour window and the opus slot's fallback: read outside the lock, as they change
+  // nothing about who takes which place.
+  const usage = usageFacts(ctx.paths, ctx.now());
+  let decided: { already: null | CrewRecord; record: CrewRecord; why: null | string };
   try {
     decided = await withPlacesLock(ctx.paths.stateDir, async () => {
       const all = listAllCrew(ctx.paths.stateDir).records;
       const taken = inUse(planned, all, ctx);
       if (taken !== null) throw taken;
+      const already = liveOnPhase(planned, all);
       const unmet = unmetWaits(
         planned.waitsFor,
         all.filter((one) => one.repo === caller.repo),
       );
       const running = runningCrew(all);
+      const mine = runningForLead(all, lead.sessionId);
       const input = {
         freeGb: null,
+        leadRunning: mine.length,
+        leadRunningOpus: onOpusTier(mine).length,
         max: crew.max.value,
         maxOpus: crew.maxOpus.value,
         needGb: crew.memoryGb.value,
         opus: chosen.real.tier === OPUS_TIER,
+        opusFallback: usage.opusFallback,
+        perLead: crew.perLead.value,
+        perLeadOpus: crew.perLeadOpus.value,
         running: running.length,
         runningOpus: onOpusTier(running).length,
         unmet,
+        usageHoldPercent: crew.usagePercent.value,
+        usagePercent: usage.percent,
       };
       // The memory is read only when nothing else holds the crew session back.
       const first = placeFor(input);
@@ -816,7 +1166,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         },
         ctx.now(),
       );
-      return { record, why: place.start ? null : place.why };
+      return { already, record, why: place.start ? null : place.why };
     });
   } catch (error) {
     if (error instanceof Refusal) {
@@ -826,7 +1176,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
     ctx.error(`crew start: ${reasonOf(error)}`);
     return 1;
   }
-  const { record, why } = decided;
+  const { already, record, why } = decided;
   try {
     writeStoreFile(
       crewBriefFile(ctx.paths.stateDir, caller.repo, record.id),
@@ -839,32 +1189,35 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         worktree: planned.worktree,
       }),
     );
-    // The crew session's own settings: who it is, and Claude Code's retry watchdog (D42), so
-    // a turn waits out a limit instead of ending. The keys and their values are CC1's
-    // (`src/setup/retry-watchdog.ts`), and there is no wait limit on purpose: the owner chose
-    // "keep waiting", so no `…_MAX_WAIT_MS` and no `…_MAX_USAGE_LIMIT_WAIT_MS`.
-    writeStoreFile(
-      crewSettingsFile(ctx.paths.stateDir, caller.repo, record.id),
-      `${JSON.stringify(
-        {
-          env: {
-            [CREW_ENV]: record.id,
-            [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
-            [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS),
-          },
-        },
-        null,
-        2,
-      )}\n`,
-    );
   } catch (error) {
     return await failed(record, `its brief could not be written: ${reasonOf(error)}`, ctx);
   }
   if (why !== null) {
     ctx.print(`queued ${record.name}: ${why}`);
+    if (already !== null) ctx.print(phaseLine(already));
+    // A queued phase holds its files all the same, so the clash is said now (D55).
+    for (const line of await sayClashes(record, ctx)) ctx.print(line);
     return 0;
   }
-  return await launch(specOf(planned), record, ctx);
+  const code = await launch(specOf(planned), record, ctx);
+  // D54: an opus crew session started with no window to read; one line, once, and no
+  // invented number. A session that starts anyway must know the guard was not watching — and
+  // says nothing when the opus slot's fallback chain is on, because then it never watches.
+  if (
+    code === 0 &&
+    chosen.real.tier === OPUS_TIER &&
+    usage.percent === null &&
+    !usage.opusFallback
+  ) {
+    ctx.print(usageUnreadLine());
+  }
+  // The files this phase holds are the other lead's too (D55): one line each, and the other
+  // lead's watch says it without a message. Never a refusal: two leads may mean to share.
+  if (code === 0) {
+    if (already !== null) ctx.print(phaseLine(already));
+    for (const line of await sayClashes(record, ctx)) ctx.print(line);
+  }
+  return code;
 }
 
 /** The launch's own facts, out of the plan. */
@@ -875,6 +1228,7 @@ function specOf(planned: Plan): LaunchSpec {
     claude: planned.claude,
     effort: planned.chosen.effort,
     leadName: planned.lead.name,
+    lean: planned.lean,
     model: planned.chosen.model,
     repo: planned.caller.repo,
     resolved: modelText(planned.chosen.model, planned.chosen.real.model),
@@ -901,19 +1255,28 @@ export async function startQueued(
 ): Promise<void> {
   const quiet: CrewContext = { ...ctx, print: () => undefined };
   const crew = resolved.crew;
+  const usage = usageFacts(ctx.paths, ctx.now());
   const sha = await withPlacesLock(ctx.paths.stateDir, async (): Promise<null | string> => {
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
     const running = runningCrew(all);
+    const mine = runningForLead(all, record.leadSessionId);
     const input = {
       freeGb: null,
+      leadRunning: mine.length,
+      leadRunningOpus: onOpusTier(mine).length,
       max: crew.max.value,
       maxOpus: crew.maxOpus.value,
       needGb: crew.memoryGb.value,
       opus: record.model.tier === OPUS_TIER,
+      opusFallback: usage.opusFallback,
+      perLead: crew.perLead.value,
+      perLeadOpus: crew.perLeadOpus.value,
       running: running.length,
       runningOpus: onOpusTier(running).length,
       unmet: unmetWaits(record.waitsFor, here),
+      usageHoldPercent: crew.usagePercent.value,
+      usagePercent: usage.percent,
     };
     const first = placeFor(input);
     const place = first.start ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb() }) : first;
@@ -939,6 +1302,25 @@ export async function startQueued(
     await failed(record, "claude is not on PATH, nor in ~/.local/bin", quiet);
     return;
   }
+  let lean: LeanLaunch;
+  try {
+    // The machine's plugins as they are now, not when the crew session was queued: a plugin
+    // installed or removed while it waited changes what it gets.
+    lean = leanOf(
+      isCrewKind(record.kind) ? record.kind : null,
+      resolved.crew.keep,
+      ctx,
+      claude,
+      record.repo,
+    );
+  } catch (error) {
+    await failed(
+      record,
+      error instanceof Refusal ? error.lines.join("; ") : reasonOf(error),
+      quiet,
+    );
+    return;
+  }
   await launch(
     {
       baseSha: sha,
@@ -946,6 +1328,7 @@ export async function startQueued(
       claude,
       effort: record.effort,
       leadName: record.leadName,
+      lean,
       model: record.model.named,
       repo: record.repo,
       resolved: modelText(record.model.named, record.model.resolved),

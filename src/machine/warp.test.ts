@@ -63,15 +63,16 @@ describe("setup --warp", () => {
     // The staged files are gone again.
     expect(existsSync(stage)).toBe(false);
     // The commands were shown before the question.
-    expect(printed.slice(0, 5)).toEqual([
+    // After the heading and its blank line.
+    expect(printed.slice(2, 7)).toEqual([
       "To install Warp from its signed source, cc-smart-dev-kit runs these commands (sudo asks for your password):",
       `  $ ${install(`${stage}/warpdotdev.gpg`, APT_KEY)}`,
       `  $ ${install(`${stage}/warpdotdev.sources`, APT_SOURCE)}`,
       "  $ sudo apt-get update",
       "  $ sudo apt-get install -y warp-terminal",
     ]);
-    expect(printed).toContain("+ marketplace claude-code-warp (warpdotdev/claude-code-warp)");
-    expect(printed).toContain("+ plugin warp@claude-code-warp");
+    expect(printed).toContain("  + marketplace claude-code-warp (warpdotdev/claude-code-warp)");
+    expect(printed).toContain("  + plugin warp@claude-code-warp");
   });
 
   test("the apt source is byte for byte what Warp's own package writes (its postinst), per architecture", () => {
@@ -140,7 +141,7 @@ describe("setup --warp", () => {
     expect(w.calls()).not.toContain("sudo");
     expect(w.calls()).not.toContain("claude plugin");
     expect(printed.join("\n")).toContain(
-      `! Warp's signing key changed: https://releases.warp.dev/linux/keys/warp.asc now holds the key ${other}, and cc-smart-dev-kit expects ${WARP_FPR}. Nothing was installed.`,
+      `  ✗ Warp's signing key changed: https://releases.warp.dev/linux/keys/warp.asc now holds the key ${other}, and cc-smart-dev-kit expects ${WARP_FPR}. Nothing was installed.`,
     );
     expect(existsSync(STAGE(w.home))).toBe(false);
     // The launcher and auto-update do not depend on Warp.
@@ -162,8 +163,8 @@ describe("setup --warp", () => {
     const w = world({ answer: null });
     expect(await w.setup({ warp: true })).toBe(1);
     expect(w.calls()).toBe("");
-    expect(printed).toContain(
-      "! Warp: no terminal, so these commands were not run. Run `cc-smart-dev-kit setup --warp` in a terminal to run them.",
+    expect(printed.join("\n")).toContain(
+      "  ✗ Warp: no terminal, so these commands were not run.\n    Fix: run `cc-smart-dev-kit setup --warp` in a terminal\n",
     );
     expect(printed).toContain("  $ sudo apt-get install -y warp-terminal");
     expect(existsSync(join(w.home, ".local", "bin", "cc-smart-dev-kit"))).toBe(true);
@@ -173,7 +174,7 @@ describe("setup --warp", () => {
     const w = world({ answer: false });
     expect(await w.setup({ warp: true })).toBe(1);
     expect(w.calls()).toBe("");
-    expect(printed).toContain("! Warp: these commands were not run (you said no).");
+    expect(printed).toContain("  ! Warp: these commands were not run (you said no).");
   });
 
   test("a Warp source already there is kept: no second source file", async () => {
@@ -191,12 +192,12 @@ describe("setup --warp", () => {
     const stage = STAGE(w.home);
     expect(printed.join("\n")).toContain(
       [
-        "! sudo apt-get install -y warp-terminal failed (exit 100). Nothing after it ran.",
-        "  These ran before it:",
-        `    $ ${install(`${stage}/warpdotdev.gpg`, APT_KEY)}`,
-        `    $ ${install(`${stage}/warpdotdev.sources`, APT_SOURCE)}`,
-        "    $ sudo apt-get update",
-        "  To undo them: cc-smart-dev-kit setup --remove-warp",
+        "  ✗ sudo apt-get install -y warp-terminal failed (exit 100). Nothing after it ran.",
+        "    These ran before it:",
+        `      $ ${install(`${stage}/warpdotdev.gpg`, APT_KEY)}`,
+        `      $ ${install(`${stage}/warpdotdev.sources`, APT_SOURCE)}`,
+        "      $ sudo apt-get update",
+        "    To undo them: cc-smart-dev-kit setup --remove-warp",
       ].join("\n"),
     );
     expect(w.calls()).not.toContain("claude plugin");
@@ -272,7 +273,7 @@ describe("setup --warp", () => {
       ].join("\n"),
     );
     expect(w.questions).toEqual([]);
-    expect(printed).toContain("  Warp 0.2026.10.01 is installed already");
+    expect(printed).toContain("  · Warp 0.2026.10.01 is installed already");
   });
 
   test("--dry-run: the commands are listed; nothing runs, nothing is asked", async () => {
@@ -280,8 +281,8 @@ describe("setup --warp", () => {
     expect(await w.setup({ warp: true, dryRun: true })).toBe(0);
     expect(w.calls()).toBe("");
     expect(w.questions).toEqual([]);
-    expect(printed).toContain("$ sudo apt-get install -y warp-terminal");
-    expect(printed).toContain("+ plugin warp@claude-code-warp");
+    expect(printed).toContain("  $ sudo apt-get install -y warp-terminal");
+    expect(printed).toContain("  + plugin warp@claude-code-warp");
   });
 });
 
@@ -322,7 +323,7 @@ describe("setup --remove-warp", () => {
       ].join("\n"),
     );
     expect(existsSync(shortcut)).toBe(false);
-    expect(printed).toContain("- ~/Desktop/dev.warp.Warp.desktop: Warp shortcut removed");
+    expect(printed).toContain("  - ~/Desktop/dev.warp.Warp.desktop: Warp shortcut removed");
     expect(w.questions).toEqual(["Run these commands now?"]);
   });
 
@@ -350,8 +351,8 @@ describe("setup --remove-warp", () => {
     expect(await w.setup({ removeWarp: true })).toBe(1);
     expect(w.calls()).toBe("");
     expect(existsSync(shortcut)).toBe(true);
-    expect(printed).toContain(
-      "! Warp: no terminal, so these commands were not run. Run `cc-smart-dev-kit setup --remove-warp` in a terminal to run them.",
+    expect(printed.join("\n")).toContain(
+      "  ✗ Warp: no terminal, so these commands were not run.\n    Fix: run `cc-smart-dev-kit setup --remove-warp` in a terminal\n",
     );
   });
 
@@ -436,7 +437,8 @@ describe("doctor's Warp line", () => {
     const pluginOnly = world({ plugins: ["warp@claude-code-warp"] });
     expect(warpCheck(pluginOnly.machine, pluginOnly.paths)).toEqual({
       ok: false,
-      text: "the Warp Claude plugin warp@claude-code-warp is installed, but the Warp app is not. Run: cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp)",
+      text: "the Warp Claude plugin warp@claude-code-warp is installed, but the Warp app is not",
+      fix: "cc-smart-dev-kit setup --remove-warp (or cc-smart-dev-kit setup --warp to install the app)",
     });
   });
 });

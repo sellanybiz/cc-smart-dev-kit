@@ -6,15 +6,17 @@
  * the record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
+import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import type { GatewayConfig } from "../gateway/config";
 import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
 import { tempDir } from "../testing/temp";
 import {
   agentGuard,
+  crewAgentAnswer,
   type GuardContext,
   guardFacts,
   judgeLaunch,
@@ -1341,7 +1343,7 @@ describe("the hook's answer, and the record", () => {
       prompt: "Fable reason: hard - it is",
       subagent_type: "Plan",
     });
-    const facts = guardFacts(input, { env: NO_ENV, paths: where });
+    const facts = guardFacts(input, { env: NO_ENV, nowMs: 0, paths: where });
     expect(facts).toEqual({
       decision: "ask",
       effort: "max",
@@ -1357,6 +1359,7 @@ describe("the hook's answer, and the record", () => {
     // backend answers it is still the opus tier, allowed at `high` (D11).
     const overridden = guardFacts(agentCall({ effort: "high", model: "opus", prompt: "do it" }), {
       env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" },
+      nowMs: 0,
       paths: where,
     });
     expect(overridden).toEqual({
@@ -1646,7 +1649,7 @@ describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", (
       subagent_type: "Explore",
     });
     expect(unsaid.reason).toContain(
-      "Use a read-only agent type (Plan, Reviewer, Explore) and put a line in the prompt saying why:",
+      "Use a read-only agent type (Plan, Reviewer, Explore, auditor) and put a line in the prompt saying why:",
     );
     // The same line on a read-only type still asks the person.
     expect(verdict({ ...launch, subagent_type: "Explore" }).decision).toBe("ask");
@@ -1814,7 +1817,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
   it("HK hunch 3: guardFacts logs no verdict for a PostToolUse run", () => {
     const where = paths();
     const call = agentCall({ effort: "max", model: "opus", prompt: "Opus reason: ui - x" });
-    expect(guardFacts(at("PostToolUse", call), { env: NO_ENV, paths: where })).toEqual({
+    expect(guardFacts(at("PostToolUse", call), { env: NO_ENV, nowMs: 0, paths: where })).toEqual({
       event: "PostToolUse",
     });
   });
@@ -2170,7 +2173,7 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
       CLAUDE_CODE_EFFORT_LEVEL: "high",
       CLAUDE_CODE_SUBAGENT_MODEL: "opus",
     };
-    expect(guardFacts(LIVE_FORCED_INPUT(), { env, paths: paths() })).toEqual({
+    expect(guardFacts(LIVE_FORCED_INPUT(), { env, nowMs: 0, paths: paths() })).toEqual({
       decision: "allow",
       effort: null,
       effort_override: "CLAUDE_CODE_EFFORT_LEVEL",
@@ -2515,10 +2518,16 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     const { repo, where } = world();
     put(join(repo, ".claude", "workflows", "probe.js"), script("probe", OPUS_HIGH));
     expect(
-      guardFacts({ ...call({ name: "probe" }), cwd: repo }, { env: NO_ENV, paths: where }),
+      guardFacts(
+        { ...call({ name: "probe" }), cwd: repo },
+        { env: NO_ENV, nowMs: 0, paths: where },
+      ),
     ).toEqual({ decision: "allow", launches: 1, tool: "Workflow" });
     expect(
-      guardFacts({ ...call({ name: "deep-research" }), cwd: repo }, { env: NO_ENV, paths: where }),
+      guardFacts(
+        { ...call({ name: "deep-research" }), cwd: repo },
+        { env: NO_ENV, nowMs: 0, paths: where },
+      ),
     ).toEqual({ decision: "ask", launches: 0, tool: "Workflow", why: "unreadable" });
   });
 });
@@ -2606,5 +2615,108 @@ describe("D50: UI/UX work runs only on opus or fable, at high or above", () => {
     });
     expect(result.decision).toBe("deny");
     expect(result.reason).toContain("for UI/UX work (D50)");
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// CC8: a crew session is a `--bg` session nobody watches. Every launch the guard would ask
+// the person about is refused, with the step that puts the question to its lead (D36); a
+// launch the guard allows stays allowed, and nothing about it is recorded twice.
+// ---------------------------------------------------------------------------------------
+
+describe("CC8: a crew session is judged as a session nobody watches", () => {
+  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
+
+  it("the opus tier at max: denied, with the fix it can take and the step that reaches the lead", () => {
+    // The person's own session asks (D11); a crew session is refused instead, and reads both
+    // the effort it can run at without an answer and the step that reaches its lead.
+    expect(verdict({ effort: "max", model: "opus", prompt: "build it" }).decision).toBe("ask");
+    const result = verdict({ effort: "max", model: "opus", prompt: "build it" }, CTX, CREW);
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toBe(
+      [
+        "A launch on Claude Opus at effort `max` is approved by the person, one by one, and this session has nobody to answer.",
+        "Run it at `medium`, `high` or `xhigh`.",
+        CREW_QUESTION_STEP,
+      ].join("\n"),
+    );
+  });
+
+  it("a name it cannot read as Opus: denied, with the fix it can take and the step", () => {
+    expect(verdict({ effort: "high", model: "inherit", prompt: "build it" }).decision).toBe("ask");
+    const result = verdict({ effort: "high", model: "inherit", prompt: "build it" }, CTX, CREW);
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toBe(
+      [
+        "This launch names `inherit`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer.",
+        "Name `opus` (or a Claude Opus id) as its model.",
+        CREW_QUESTION_STEP,
+      ].join("\n"),
+    );
+  });
+
+  it("a Fable launch with its reason line: denied, where the person would be asked", () => {
+    const launch = {
+      effort: "high",
+      model: "fable",
+      prompt: "Find the callers.\nFable reason: review - a second look",
+      subagent_type: "Reviewer",
+    };
+    expect(verdict(launch).decision).toBe("ask");
+    const result = verdict(launch, CTX, CREW);
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toBe(
+      [
+        "A Fable launch is approved by the person, one by one, and this session has nobody to answer.",
+        CREW_QUESTION_STEP,
+      ].join("\n"),
+    );
+  });
+
+  it("a Workflow it cannot read: denied by the crew part, with the step, and nothing recorded", () => {
+    const input: HookInput = {
+      hook_event_name: "PreToolUse",
+      tool_input: { scriptPath: join(tempDir("crew-workflow"), "missing.js") },
+      tool_name: "Workflow",
+    };
+    const paths = WORKFLOW_PATHS;
+    // The person's session asks; the crew part refuses with the step.
+    const asked = agentGuard(input, NO_ENV, paths, "/");
+    expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+    const refused = crewAgentAnswer(input, CREW, paths, "/");
+    const output = JSON.parse(refused.stdout ?? "{}").hookSpecificOutput;
+    expect(output.permissionDecision).toBe("deny");
+    expect(output.permissionDecisionReason).toContain("does not exist");
+    expect(output.permissionDecisionReason).toContain("pass the script inline");
+    expect(output.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
+    // A refusal judges only: no launch record is written for a call that never runs.
+    expect(existsSync(agentLaunchesFile(paths.stateDir))).toBe(false);
+  });
+
+  it("the crew part is silent outside a crew session, and on a call it allows", () => {
+    const paths = WORKFLOW_PATHS;
+    const unreadable: HookInput = {
+      hook_event_name: "PreToolUse",
+      tool_input: { scriptPath: join(tempDir("crew-workflow"), "missing.js") },
+      tool_name: "Workflow",
+    };
+    expect(crewAgentAnswer(unreadable, NO_ENV, paths, "/")).toEqual({});
+    // A launch the guard allows is silent: a crew session pays nothing for the rule.
+    const allowed: HookInput = agentCall({ effort: "high", model: "opus", prompt: "build it" });
+    expect(crewAgentAnswer(allowed, CREW, paths, "/")).toEqual({});
+    // The opus tier below max stays allowed in a crew session too.
+    expect(verdict({ effort: "high", model: "opus", prompt: "build it" }, CTX, CREW).decision).toBe(
+      "allow",
+    );
+    // An ordinary deny is the guard's project policy, not a former question: a project whose
+    // `ownHooks` lists `agent-guard` runs its own copy and this part must not answer for it.
+    const lowEffort = agentCall({ effort: "low", model: "sonnet", prompt: "find it" });
+    expect(crewAgentAnswer(lowEffort, CREW, paths, "/")).toEqual({});
+    // The guard's own run still denies it, with its own words: the part was narrowed, the
+    // guard was not.
+    const guard = agentGuard(lowEffort, CREW, paths, "/");
+    const refused = JSON.parse(guard.stdout ?? "{}").hookSpecificOutput;
+    expect(refused.permissionDecision).toBe("deny");
+    expect(refused.permissionDecisionReason).not.toContain(CREW_QUESTION_STEP);
   });
 });

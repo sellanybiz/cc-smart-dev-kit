@@ -30,13 +30,24 @@ const SESSION_VARIABLES: readonly string[] = [
   "DISPLAY",
   "WAYLAND_DISPLAY",
 ];
-const SESSION_PREFIXES: readonly string[] = ["ANTHROPIC_", "CLAUDE_", "SSH_", "WARP_"];
+const SESSION_PREFIXES: readonly string[] = [
+  "ANTHROPIC_",
+  // A crew session runs its phase's suite from inside itself (`src/crew/start.ts` writes
+  // `CC_SMART_DEV_KIT_CREW` into its settings): without this prefix the suite's whole crew
+  // world would think it is a crew session. A test that wants one of these sets it itself.
+  "CC_SMART_DEV_KIT_",
+  "CLAUDE_",
+  "SSH_",
+  "WARP_",
+];
 
 /**
  * The environment without any GIT_* variable, so git in a test never reaches a real repo; and
- * without the Claude session's own variables (`SESSION_VARIABLES`, `SESSION_PREFIXES`), so a
- * test run from a session sees the same clean machine as CI. `CLAUDE_PROJECT_DIR` goes with
- * them: a test run from a session must not read that session's project.
+ * without the Claude session's own variables (`SESSION_VARIABLES`, `SESSION_PREFIXES`), the
+ * kit's own included, so a test run from a session — a crew session, whose id is
+ * `CC_SMART_DEV_KIT_CREW`, too — sees the same clean machine as CI. `CLAUDE_PROJECT_DIR` goes
+ * with them: a test run from a session must not read that session's project. A test that wants
+ * one of the kit's variables sets it on its own environment.
  */
 export function cleanGitEnv(): Record<string, string> {
   const env: Record<string, string> = {};

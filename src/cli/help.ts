@@ -21,7 +21,7 @@
  */
 import { COMMAND, VERSION } from "../build-info";
 import { CREW_USAGE } from "../crew/command";
-import { BOARD_COMMANDS, TELL_USAGE } from "../crew/usage";
+import { BOARD_COMMANDS, LEAD_TELL_USAGE, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
@@ -95,7 +95,8 @@ by a block in ~/.claude/CLAUDE.md), adds the companion plugins' marketplaces, po
 at the scout slot's affordable model (when its chain starts with one), and copies the
 project's auto-mode entries into your settings. The entries are trust rules: they are shown
 and asked on a terminal (--yes: shown, not asked); with no terminal they are left out, also
-with --yes.
+with --yes. --yes offers neither the status line nor the retry watchdog. It prints a section
+per part, one verdict line, and the next steps to run, in order.
 
   --project <dir>      the project to read .claude/cc-smart-dev-kit.json from
                        (default: this folder)
@@ -115,14 +116,18 @@ with --yes.
   ${NO_RETRY_WATCHDOG_FLAG}  take it out again, and do not ask again
   --dry-run            print what would change, and write, run and check nothing`;
 
-const DOCTOR_HELP = `Usage: ${COMMAND} doctor [--live]
+const DOCTOR_HELP = `Usage: ${COMMAND} doctor [--verbose] [--json] [--live]
 
-Checks the install, the cc-smart-dev-kit files the current project's CLAUDE.md imports, and
-the project of the current folder. Exit code 1 when a check fails.
+Checks the install, the ${COMMAND} files the current project's CLAUDE.md imports, and
+the project of the current folder, in groups. A group that passed shows one line; a failure
+shows a Fix: line under it; the last line says what the run found. Exit code 1 when a check
+fails.
 
-  --live    also run two throwaway Claude Code sessions in temp repos, to prove the hooks and
-            the worktree engine on this Claude Code (uses your login; a few cents). Records
-            the version it passed on.`;
+  --verbose  show every line, the ones that passed too
+  --json     print the whole report as JSON, for a program (the installers read it)
+  --live     also run two throwaway Claude Code sessions in temp repos, to prove the hooks and
+             the worktree engine on this Claude Code (uses your login; a few cents). Records
+             the version it passed on.`;
 
 const BROWSER_HELP = `Usage: ${COMMAND} browser <mcp|setup|token|check> [options]
 
@@ -196,7 +201,7 @@ command that resumes each. --open reopens every session that was open when the m
 down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what
 it would open and opens nothing.`;
 
-const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch]
+const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
 
 Every worktree of this repo: who works in it, and which are finished (every commit on
 origin/<base>, nothing uncommitted, no local files, no running session, no program or Docker
@@ -205,19 +210,30 @@ container using it).
   --clean              remove the finished ones, with their branches
   --remove <path>      remove one now, without the one-hour wait
   --no-fetch           judge against origin/<base> as it is, without fetching it first
+  --json               print the same facts as one object, and change nothing (no fetch;
+                       with neither --clean nor --remove)
 
 --clean and --remove run in the main checkout only, one at a time.`;
 
-const USAGE_HELP = `Usage: ${COMMAND} usage [--hours <n>] [--project <folder or name>]
+const USAGE_HELP = `Usage: ${COMMAND} usage [--hours <n>] [--project <folder or name>] [--json]
 
 Which models answered on this machine, per session: the main session's replies and its
-subagents' apart (how each subagent was launched, and the share on Opus), from Claude Code's
-transcripts (default: the last 6 hours). Read only; no message text.`;
+subagents' apart (how each subagent was launched, the agents' types and models, their tokens,
+the share on Opus and their estimated cost), from Claude Code's transcripts and each
+subagent's own record (default: the last 6 hours). Read only; no message text.
+--json prints the same facts as one object.`;
 
 const SESSION_NAME_HELP = `Usage: ${COMMAND} session-name <session id> <name>
 
 Names a Claude session after its task. The session-name hook runs it; a project turns that on
 with "sessionNames" in its .claude/cc-smart-dev-kit.json.`;
+
+const SUBAGENT_STATUSLINE_HELP = `Usage: ${COMMAND} subagent-statusline
+
+One row body per subagent for Claude Code's agent panel: the slot, the model and the effort
+(slot → model → effort). The plugin's own settings.json names it as Claude Code's
+subagentStatusLine, so it runs by itself; its input comes on stdin, and it prints one JSON
+line per row. Not a command to run by hand.`;
 
 const STATUSLINE_HELP = `Usage: ${COMMAND} statusline
 
@@ -299,7 +315,11 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   ...BOARD_COMMANDS.map((one) => ({ name: `crew ${one.name}`, help: one.help })),
   // A crew session's note to another: its help sits beside the board's, so both read one text.
   { name: "crew tell", help: TELL_USAGE },
+  { name: "crew lead tell", help: LEAD_TELL_USAGE },
   { name: "session-name", help: SESSION_NAME_HELP },
+  // Claude Code runs it from the plugin's settings.json: a status line's row body, not a
+  // command for a person.
+  { name: "subagent-statusline", help: SUBAGENT_STATUSLINE_HELP },
   { name: ALERT_WORKER_COMMAND, help: ALERT_WORKER_HELP },
   // `help` prints the top-level help, which is built from this table (see `helpTextFor`).
   { name: HELP_COMMAND },

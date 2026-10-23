@@ -3,8 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { statuslineSetting } from "../cli/setup";
 import { ccSmartDevKitConfigSchema } from "../project/config";
+import { statuslineSetting } from "../setup/statusline";
 import { hookEnv } from "../testing/hooks";
 import { hold, updateFiles } from "../update/state";
 import { autoMergeAllowed } from "./auto-merge";
@@ -65,12 +65,13 @@ describe("the workflow schema", () => {
     );
   });
 
-  test("D34: workflow.crew takes the switch, the limits and a tag, and nothing else", () => {
+  test("D34: workflow.crew takes the switch, the limits, the tag and what to keep, and nothing else", () => {
     const every = {
       crew: {
         enabled: true,
         handoffPercent: 70,
         idleStopMinutes: 10,
+        keep: ["plugin:acme-tools@acme", "server:sequential-thinking"],
         max: 4,
         maxOpus: 2,
         maxHours: 4,
@@ -84,6 +85,21 @@ describe("the workflow schema", () => {
     const refused = (crew: Record<string, unknown>) => workflowSchema.safeParse({ crew }).success;
     expect(refused({ count: 3 })).toBe(false);
     expect(refused({ enabled: "yes" })).toBe(false);
+    // A keep entry is `plugin:<id>` or `server:<name>`, and nothing else: an unknown shape is
+    // refused where the file is read, not at the next `crew start`.
+    expect(refused({ keep: "plugin:acme-tools@acme" })).toBe(false);
+    for (const bad of [
+      ["widget"],
+      ["plugin:"],
+      ["plugin:acme-tools"],
+      ["plugin:@acme"],
+      ["server:"],
+      ["server:Sequential-Thinking"],
+      ["server:two words"],
+      ["PLUGIN:acme-tools@acme"],
+    ]) {
+      expect(`${bad.join(",")}: ${refused({ keep: bad })}`).toBe(`${bad.join(",")}: false`);
+    }
     for (const [field, bad] of [
       ["max", 0],
       ["max", 1.5],
@@ -184,6 +200,17 @@ describe("one value, as a person types it", () => {
       ok: false,
       why: "crew.maxOpus is a whole number, 1 or more",
     });
+    expect(parseWorkflowValue("crew.perLead", "4")).toEqual({ ok: true, value: 4 });
+    expect(parseWorkflowValue("crew.perLead", "0")).toEqual({
+      ok: false,
+      why: "crew.perLead is a whole number, 1 or more",
+    });
+    expect(parseWorkflowValue("crew.perLeadOpus", "2")).toEqual({ ok: true, value: 2 });
+    expect(parseWorkflowValue("crew.usagePercent", "85")).toEqual({ ok: true, value: 85 });
+    expect(parseWorkflowValue("crew.usagePercent", "101")).toEqual({
+      ok: false,
+      why: "crew.usagePercent is a whole number 1-100",
+    });
     expect(parseWorkflowValue("crew.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
     expect(parseWorkflowValue("crew.handoffPercent", "101")).toEqual({
       ok: false,
@@ -205,6 +232,24 @@ describe("one value, as a person types it", () => {
     expect(parseWorkflowValue("crew.tag", "My App")).toEqual({
       ok: false,
       why: 'crew.tag is 1-12 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
+    });
+  });
+
+  test("crew.keep is a comma list of plugin:<id> and server:<name>, without doubles", () => {
+    expect(
+      parseWorkflowValue("crew.keep", "plugin:acme-tools@acme, server:sequential-thinking"),
+    ).toEqual({ ok: true, value: ["plugin:acme-tools@acme", "server:sequential-thinking"] });
+    expect(parseWorkflowValue("crew.keep", "server:playwright server:playwright")).toEqual({
+      ok: true,
+      value: ["server:playwright"],
+    });
+    expect(parseWorkflowValue("crew.keep", "widget")).toEqual({
+      ok: false,
+      why: 'crew.keep: unknown widget (an entry is "plugin:<id>" or "server:<name>")',
+    });
+    expect(parseWorkflowValue("crew.keep", "")).toEqual({
+      ok: false,
+      why: 'crew.keep is a list of "plugin:<id>" or "server:<name>"',
     });
   });
 
@@ -302,13 +347,17 @@ describe("resolveWorkflow: the order", () => {
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
-      max: { value: 6, source: "default" },
-      maxOpus: { value: 2, source: "default" },
+      keep: { value: [], source: "default" },
+      max: { value: 24, source: "default" },
+      maxOpus: { value: null, source: "default" },
       maxHours: { value: 4, source: "default" },
       memoryGb: { value: 2, source: "default" },
+      perLead: { value: 4, source: "default" },
+      perLeadOpus: { value: 2, source: "default" },
       quietMinutes: { value: 20, source: "default" },
       softHours: { value: 2, source: "default" },
       tag: { value: null, source: "default" },
+      usagePercent: { value: 85, source: "default" },
     });
     expect(resolved.fixesAfterReview).toEqual({
       files: { value: 10, source: "default" },
@@ -321,14 +370,22 @@ describe("resolveWorkflow: the order", () => {
     const env = hookEnv();
     writePersonal(env, {
       fixesAfterReview: { lines: 50 },
-      crew: { enabled: true, max: 2, tag: "mine" },
+      crew: { enabled: true, keep: ["server:sequential-thinking"], max: 2, tag: "mine" },
     });
     const config = ccSmartDevKitConfigSchema.parse({
-      workflow: { fixesAfterReview: { files: 0 }, crew: { max: 3 } },
+      workflow: {
+        fixesAfterReview: { files: 0 },
+        crew: { keep: ["plugin:acme-tools@acme"], max: 3 },
+      },
     });
     const resolved = resolveWorkflow(pathsFor(env), config);
     expect(resolved.crew.enabled).toEqual({ value: true, source: "personal" });
     expect(resolved.crew.max).toEqual({ value: 3, source: "project" });
+    // A list is one value: the project's list wins whole, never merged entry by entry.
+    expect(resolved.crew.keep).toEqual({
+      value: ["plugin:acme-tools@acme"],
+      source: "project",
+    });
     expect(resolved.crew.tag).toEqual({ value: "mine", source: "personal" });
     expect(resolved.crew.quietMinutes).toEqual({ value: 20, source: "default" });
     expect(resolved.fixesAfterReview).toEqual({

@@ -9,29 +9,21 @@
  * How it works and why: docs/jobs.md.
  */
 
-import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { availableParallelism, hostname } from "node:os";
 import { COMMAND } from "../build-info";
-import { type CliPaths, tildify } from "../cli/paths";
 import { resolveProject } from "../project/resolve";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
 import { toolCallOfArgv } from "./classify";
 import {
-  DEFAULT_RESERVE_GB,
+  cpuWeightOf,
   DEFAULT_SLICE,
-  JobsConfigError,
+  ioWeightOf,
   type JobsMachineConfig,
   jobsPaths,
   loadJobsConfig,
 } from "./config";
-import {
-  DEFAULT_KINDS,
-  type Kinds,
-  largestJobGb,
-  mergeKinds,
-  reservedGb,
-  workerCount,
-} from "./kinds";
+import { type Kinds, mergeKinds, reservedGb, workerCount } from "./kinds";
 import {
   exitCodeOf,
   realLaunchFacts,
@@ -40,21 +32,11 @@ import {
   sliceMemoryMax,
   spawnAndWait,
 } from "./launch";
-import { GIB, type MemoryFacts, machineBudgetGb, machineMemory, sliceBytes } from "./memory";
-import {
-  acquireFrom,
-  formatSince,
-  type HolderRecord,
-  holderLines,
-  type LiveReading,
-  oneDecimal,
-  parseHolder,
-  pidsHolding,
-  shownHolder,
-  WaitStoppedError,
-} from "./queue";
+import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
 import { runJob } from "./run";
-import { type LeaseStore, leaseStore, openSharedStore } from "./store";
+import { type JobContext, type OpenedStores, openStores, readJobs, statusLines } from "./status";
+
+export type { JobContext } from "./status";
 
 export const USAGE = `Usage: ${COMMAND} job <command>
 
@@ -64,92 +46,13 @@ Commands:
                  Its output, exit code and signals pass through. --exclusive: at
                  most one job with that name at a time, in order. --kind, or
                  --exclusive, or both.
-  status         Who holds memory, who waits, and how much is free.
+  status         Who holds memory, who waits, how much is free, and the CPU
+                 and disk I/O weights of the heavy slices (or why one is not set).
   kinds          The kinds of heavy job, and what each reserves.
 
 How it works: docs/jobs.md in the plugin's repo.`;
 
-/** What the commands need from the outside; a test passes its own. */
-export interface JobContext {
-  paths: CliPaths;
-  cwd: string;
-  /** The bun options this process started with: `--no-env-file` must be there. */
-  execArgv: readonly string[];
-  memory: MemoryFacts;
-  /** Lines for the person: waiting lines, notes. */
-  say: (line: string) => void;
-  /** `job status` and `job kinds` print here. */
-  print: (line: string) => void;
-  now?: () => number;
-}
-
 const PREFIX = "[cc-smart-dev-kit job]";
-
-/** The stores this machine uses: its own, then each shared folder, in that order. */
-interface OpenedStores {
-  machine: LeaseStore;
-  shared: LeaseStore[];
-  notes: string[];
-  budget: { gb: number; why: string };
-}
-
-function machineBudget(
-  config: JobsMachineConfig,
-  memory: MemoryFacts,
-): { gb: number; why: string } {
-  if (config.budgetGb !== undefined) return { gb: config.budgetGb, why: "set in jobs.json" };
-  const reserve = config.reserveGb ?? DEFAULT_RESERVE_GB;
-  const total = machineMemory(memory).totalBytes;
-  const gb = machineBudgetGb(total, reserve, largestJobGb(DEFAULT_KINDS));
-  return {
-    gb,
-    why: `${Math.floor(total / GIB)} GB of memory less ${reserve} GB kept for everything else`,
-  };
-}
-
-function openStores(
-  ctx: JobContext,
-  config: JobsMachineConfig,
-  onNote: (line: string) => void,
-): OpenedStores {
-  const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
-  try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code ?? String(error);
-    throw new JobsConfigError(`The state folder ${dir} cannot be made (${code}).`);
-  }
-  const budget = machineBudget(config, ctx.memory);
-  const uid = process.getuid?.();
-  const slice = config.slice ?? DEFAULT_SLICE;
-  const live = (): LiveReading | null => {
-    const memory = machineMemory(ctx.memory);
-    if (memory.availableBytes === null) return null;
-    const used =
-      uid === undefined || config.launch === "plain"
-        ? null
-        : sliceBytes(ctx.memory.read, uid, slice);
-    return { availableBytes: memory.availableBytes, sliceBytes: used };
-  };
-  const machine = leaseStore({
-    dir,
-    label: "this machine",
-    shared: false,
-    capacityGb: () => machineBudget(config, ctx.memory).gb,
-    live,
-    onNote,
-  });
-  const shared: LeaseStore[] = [];
-  const notes: string[] = [];
-  // One order for every user: two users who list the same folders in another order could
-  // otherwise each hold one and wait for the other's.
-  for (const sharedDir of [...new Set(config.sharedDirs ?? [])].sort()) {
-    const opened = openSharedStore(sharedDir, { onNote });
-    if ("store" in opened) shared.push(opened.store);
-    else notes.push(opened.note);
-  }
-  return { machine, shared, notes, budget };
-}
 
 /** Bun reads these from the working folder into the environment by itself. */
 function envFilesIn(dir: string): string[] {
@@ -299,6 +202,8 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         pid: process.pid,
         checkout: ctx.cwd,
         slice,
+        cpuWeight: cpuWeightOf(config),
+        ioWeight: ioWeightOf(config),
         startedAt: now(),
       },
       {
@@ -343,73 +248,10 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
   }
 }
 
-/** The lines of one store for `job status`. A store it cannot read is one line saying so. */
-async function storeLines(store: LeaseStore, title: string, now: number): Promise<string[]> {
-  const lines: string[] = [];
-  let capacity: number;
-  let held: { gb: number; holder: HolderRecord | null }[];
-  let waiting: (HolderRecord | null)[];
-  try {
-    capacity = await store.capacityGb();
-    held = (await store.held()).map((unit) => ({ gb: unit.gb, holder: parseHolder(unit.text) }));
-    waiting = (await store.waiting())
-      .map((unit) => parseHolder(unit.text))
-      .sort(
-        (a, b) => (a?.since ?? Number.POSITIVE_INFINITY) - (b?.since ?? Number.POSITIVE_INFINITY),
-      );
-  } catch (error) {
-    return [`${title}: cannot be read (${error instanceof Error ? error.message : String(error)})`];
-  }
-  const heldGb = held.reduce((sum, unit) => sum + unit.gb, 0);
-  lines.push(`${title}: ${Math.max(0, capacity - heldGb)} of ${capacity} GB free`);
-  lines.push(...holderLines(held, store.label, now));
-  for (const record of waiting) {
-    lines.push(
-      record === null
-        ? `  ${store.label}: an unknown job waits`
-        : `  ${store.label}: waits for ${record.gb} GB: ${shownHolder(record)}, since ${formatSince(record.since, now)} (pid ${record.pid})`,
-    );
-  }
-  if (held.length === 0 && waiting.length === 0) lines.push("  nothing held, nobody waits");
-  return lines;
-}
-
-/**
- * What `job status` says where no memory group can be made (Windows): a job there runs
- * as a plain child, and the queue is the only thing keeping heavy jobs apart.
- */
-const WINDOWS_NO_CEILING =
-  "No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.";
-
-/** `job status`. */
+/** `job status`: the queue's own lines, from the one reader (`status.ts`). */
 async function jobStatus(ctx: JobContext): Promise<number> {
-  const config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
-  const opened = openStores(ctx, config, ctx.print);
   const now = (ctx.now ?? Date.now)();
-  const home = ctx.paths.home;
-  const memory = machineMemory(ctx.memory);
-  const free =
-    memory.availableBytes === null
-      ? "free memory cannot be read on this system (no live check)"
-      : `${oneDecimal(memory.availableBytes / GIB)} GB free now`;
-  const limit =
-    memory.limit === null
-      ? ""
-      : ` (a memory limit of its group: ${tildify(memory.limit.dir, home)})`;
-  ctx.print(`Memory: ${oneDecimal(memory.totalBytes / GIB)} GB${limit}, ${free}.`);
-  ctx.print(`Budget for heavy jobs here: ${opened.budget.gb} GB (${opened.budget.why}).`);
-  if (ctx.memory.platform === "win32") ctx.print(WINDOWS_NO_CEILING);
-  for (const line of await storeLines(
-    opened.machine,
-    `This machine (${tildify(opened.machine.dir, home)})`,
-    now,
-  )) {
-    ctx.print(line);
-  }
-  for (const store of opened.shared) {
-    for (const line of await storeLines(store, `Shared folder ${store.dir}`, now)) ctx.print(line);
-  }
-  for (const note of opened.notes) ctx.print(note);
+  for (const line of statusLines(await readJobs(ctx), ctx.paths.home, now)) ctx.print(line);
   return 0;
 }
 

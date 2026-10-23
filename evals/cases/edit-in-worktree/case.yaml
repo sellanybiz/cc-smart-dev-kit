@@ -6,7 +6,7 @@ description: >-
   make a worktree before its first edit, so the guard never has to refuse. EnterWorktree is
   never available in an eval run, so the way in is git worktree.
 tags: [watch, workflow, needs-shell]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 15
   allowed_tools: [Read, Glob, Grep, Skill, Edit, Bash]

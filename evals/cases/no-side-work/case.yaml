@@ -4,7 +4,7 @@ description: >-
   One plan, no side work: the fix touches the file with the bug, and the smell in another file
   is at most mentioned. Finding: IN-10.
 tags: [gate, workflow]
-plugins: ["../../.under-test/plugin", "../../harness"]
+plugins: ["../../under-test/plugin", "../../harness"]
 execution:
   max_turns: 12
   allowed_tools: [Read, Glob, Grep, Skill, Edit, Bash]

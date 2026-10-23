@@ -4,15 +4,17 @@
  * a model limit, and silence everywhere else.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV } from "../crew/session";
 import {
+  answerCrewQuestion,
   appendCrewEvent,
   type CrewRecord,
   createCrew,
   crewBriefFile,
+  crewEventsFile,
   crewFile,
   type NewCrew,
   readCrew,
@@ -20,12 +22,14 @@ import {
   readStopState,
   writeStopState,
 } from "../crew/store";
+import { resumeText } from "../crew/wait";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import {
   crewRoleAnswer,
   questionStep,
+  reportStep,
   roleCard,
   wrongFolderCard,
   wrongFolderReason,
@@ -808,5 +812,232 @@ describe("D42: a model limit pauses the crew session", () => {
     expect(result.exitCode ?? 0).toBe(0);
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toStartWith(`cc-smart-dev-kit crew-role: Invalid `);
+  });
+});
+
+describe("D55: the person's own prompt is recorded, and a delivery that is not theirs is not", () => {
+  /** A UserPromptSubmit input for the crew session. */
+  function promptInput(repo: string, prompt: string) {
+    return { hook_event_name: "UserPromptSubmit", session_id: "s", cwd: repo, prompt };
+  }
+
+  /** The `person` events the hook's run left for this crew session. */
+  function personEvents(stateDir: string, repo: string) {
+    return readCrewEvents(stateDir, repo).events.filter(
+      (event) => event.crew === CREW_ID && event.type === "person",
+    );
+  }
+
+  /** A record with one question the lead has answered `agoMs` ago. */
+  async function answered(agoMs: number, answer: string) {
+    const world = await crewWorld({
+      questions: [
+        {
+          answer: null,
+          answeredAt: null,
+          askedAt: new Date(Date.now() - agoMs - 60_000).toISOString(),
+          options: ["keep the guard", "drop the guard"],
+          question: "keep the guard or drop it?",
+          recommended: 1,
+        },
+      ],
+    });
+    await answerCrewQuestion(
+      world.stateDir,
+      world.repo,
+      CREW_ID,
+      0,
+      answer,
+      Date.now() - agoMs,
+      "working",
+    );
+    return world;
+  }
+
+  test("the person's prompt: one event with its first line, and the exact line of context", async () => {
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      promptInput(
+        world.repo,
+        "Stop after the guard: I only need the config change.\nThen hand back as usual.",
+      ),
+      world.env,
+    );
+    expect(result).toEqual(
+      addContext(
+        "UserPromptSubmit",
+        "The person wrote to you directly: their word wins over your brief. If it changes this phase's scope or files, say so in your report; if it says to stop, still hand back a report (`blocked` or `handoff`) before you end.",
+      ),
+    );
+    const events = personEvents(world.stateDir, world.repo);
+    expect(events.length).toBe(1);
+    expect(events[0]).toEqual({
+      at: expect.any(String),
+      crew: CREW_ID,
+      lead: "c00f9bb5-1111-2222-3333-444444444444",
+      name: "C app W2 hooks",
+      state: "working",
+      text: "Stop after the guard: I only need the config change.",
+      type: "person",
+      version: 1,
+    });
+  });
+
+  test("a message another session sent (SendMessage): silent, nothing recorded", async () => {
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      promptInput(
+        world.repo,
+        '<cross-session-message from="uds:/run/user/1001/cc-socks/1.sock" from-name="LEAD app plan" from-mode="prompting">\nthe port is 3210\n</cross-session-message>',
+      ),
+      world.env,
+    );
+    expect(result).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("a monitor's line (task-notification): silent, nothing recorded", async () => {
+    const world = await crewWorld();
+    const result = await runHook(
+      crewRoleHook,
+      promptInput(
+        world.repo,
+        '<task-notification>\n<task-id>b2jnaw94d</task-id>\n<summary>Monitor event: "the crew session\'s own line"</summary>\n<event>context at 79%: hand off now</event>\n</task-notification>',
+      ),
+      world.env,
+    );
+    expect(result).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("a plain session's prompt: silent", async () => {
+    const repo = makeClone().repo;
+    expect(await runHook(crewRoleHook, promptInput(repo, "hello"), plainEnv())).toEqual({});
+  });
+
+  test("a secret in the first line is masked", async () => {
+    const world = await crewWorld();
+    await runHook(
+      crewRoleHook,
+      promptInput(world.repo, "my key is sk-ant-api03-SECRETVALUE123456, keep it out of the log"),
+      world.env,
+    );
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toBe(
+      "my key is sk-****3456, keep it out of the log",
+    );
+  });
+
+  test("a prompt whose first lines are blank: the first line that holds anything is recorded", async () => {
+    const world = await crewWorld();
+    await runHook(crewRoleHook, promptInput(world.repo, "\n  \nonly these words"), world.env);
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toBe("only these words");
+  });
+
+  test("a prompt of blank lines only: silent, and nothing recorded", async () => {
+    const world = await crewWorld();
+    expect(await runHook(crewRoleHook, promptInput(world.repo, "  \n\t\n"), world.env)).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("a store that cannot be read: one stderr line, never a block", async () => {
+    const world = await crewWorld();
+    writeFileSync(crewFile(world.stateDir, world.repo, CREW_ID), "{ not json");
+    const result = await runHook(crewRoleHook, promptInput(world.repo, "a word"), world.env);
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toStartWith("cc-smart-dev-kit crew-role: Invalid ");
+  });
+
+  test("a store that cannot be written: one stderr line, never a block, and the prompt goes on", async () => {
+    const world = await crewWorld();
+    // The record reads; the events log cannot be appended to (a folder where its file goes).
+    const log = crewEventsFile(world.stateDir, world.repo);
+    rmSync(log);
+    mkdirSync(log);
+    const result = await runHook(crewRoleHook, promptInput(world.repo, "a word"), world.env);
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toStartWith("cc-smart-dev-kit crew-role: ");
+  });
+
+  test("crew answer's resume of a stopped session: silent, before and after the answer is recorded", async () => {
+    // Before: the resume runs before the answer is written, so the record is still `stopped` —
+    // and a question with no answer is what says the answer is on its way.
+    const waiting = await crewWorld({
+      questions: [
+        {
+          answer: null,
+          answeredAt: null,
+          askedAt: new Date(Date.now() - 60_000).toISOString(),
+          options: ["keep the guard", "drop the guard"],
+          question: "keep the guard or drop it?",
+          recommended: 1,
+        },
+      ],
+      state: "stopped",
+    });
+    expect(await runHook(crewRoleHook, promptInput(waiting.repo, "yes"), waiting.env)).toEqual({});
+    // After: the answer is on the record, and the prompt is the very words it carries.
+    const world = await answered(5_000, "yes");
+    expect(await runHook(crewRoleHook, promptInput(world.repo, "yes"), world.env)).toEqual({});
+    // The same answer with a line end around it is still the lead's, never the person's.
+    expect(await runHook(crewRoleHook, promptInput(world.repo, "yes\n"), world.env)).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+    // The person's own words around the same answer, typed in the same minute, are theirs: one
+    // event, holding its first line as the recorder keeps it (trimmed).
+    await runHook(crewRoleHook, promptInput(world.repo, " yes "), world.env);
+    expect(personEvents(world.stateDir, world.repo).map((one) => one.text)).toEqual(["yes"]);
+  });
+
+  test("a stopped session with no open question: the person attached and typed, so it is recorded", async () => {
+    // `crew stop` keeps the conversation and `claude attach` reopens it; `crew answer` refuses a
+    // crew session with no question waiting, so this prompt can only be the person's.
+    const world = await crewWorld({ state: "stopped" });
+    const result = await runHook(crewRoleHook, promptInput(world.repo, "stop here"), world.env);
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toBe("stop here");
+  });
+
+  test("the kit's own Stop block, should a transport turn it into a prompt: silent", async () => {
+    const world = await crewWorld();
+    expect(await runHook(crewRoleHook, promptInput(world.repo, reportStep()), world.env)).toEqual(
+      {},
+    );
+    // What Claude Code's own continuation carries in the transcript, label and all.
+    expect(
+      await runHook(
+        crewRoleHook,
+        promptInput(world.repo, `Stop hook feedback:\n${reportStep()}`),
+        world.env,
+      ),
+    ).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("the watch's resume of a paused session (resumeText's own words): silent", async () => {
+    const world = await crewWorld();
+    const text = resumeText(
+      world.record,
+      { kind: "unknown", since: "2026-10-21T10:00:00.000Z" },
+      Date.parse("2026-10-21T10:05:00.000Z"),
+    );
+    expect(text).toBe(
+      "The wait is over: a model answers again. Go on with phase W2, then hand it back as usual.",
+    );
+    expect(await runHook(crewRoleHook, promptInput(world.repo, text), world.env)).toEqual({});
+    expect(personEvents(world.stateDir, world.repo)).toEqual([]);
+  });
+
+  test("an answer from long ago does not silence the person: the same words now are recorded", async () => {
+    const world = await answered(3_600_000, "yes");
+    const result = await runHook(crewRoleHook, promptInput(world.repo, "yes"), world.env);
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
+      "The person wrote to you directly:",
+    );
+    expect(personEvents(world.stateDir, world.repo)[0]?.text).toBe("yes");
   });
 });

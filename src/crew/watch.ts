@@ -43,7 +43,7 @@ import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
-import { resumeSession, sendMessageLine } from "./answer";
+import { resumeSession, sendMessageLine, UNREADABLE_VIEW_WHY } from "./answer";
 import { readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
@@ -186,6 +186,10 @@ export function eventLine(
     }
     case "question":
       return `${name}: question · ${clip(event.text ?? "")} · answer it: crew answer "${name}" "<text>"`;
+    case "person":
+      // The person typed into the crew session (D55): their word wins over the brief, so the
+      // phase it hands back may no longer be the phase it started — read it against the brief.
+      return `${name}: the person wrote · ${clip(event.text ?? "")} · read its next report against the brief before the merge`;
     case "tell": {
       // A crew session told another a contract change or asked it a contract question (D47):
       // the lead sees it, because it is the one that answers what the two cannot settle.
@@ -193,6 +197,18 @@ export function eventLine(
       const kind = event.tell?.kind ?? "note";
       return `${name}: told ${told.join(", ")} · ${kind} · ${clip(event.text ?? "")}`;
     }
+    case "lead-tell": {
+      // Another lead of this repository told this one a note (D55). The event's name is the
+      // sending lead, and its text is the note's first line without the tag — the line already
+      // names the lead, so the tag would say it twice.
+      const kind = event.tell?.kind ?? "note";
+      return `${name}: ${kind} from another lead · ${clip(event.text ?? "")}`;
+    }
+    case "clash":
+    case "merge":
+      // Both carry their whole line, written where it happened: the start's file clash (D55)
+      // and a pull request merged into the base, for the other leads (D55).
+      return event.text === null || event.text === "" ? null : event.text;
     default:
       return null;
   }
@@ -437,48 +453,74 @@ async function resumePaused(
     if (!routerAnsweredSince(facts, state.routerRequests ?? null)) return null;
   }
   // A resume that failed is no resume: the next pass tries again, and the others wait for it.
-  if (!(await resumeOne(next, ctx, now, agents, say))) return null;
+  if (!(await resumeOne(next, ctx, now, agents, say)).ok) return null;
   return { resumedAt: now, routerRequests: facts.requests };
+}
+
+/** What a resume of a paused crew session came to: whether it happened, whether the store has it, and how. */
+export interface OneResume {
+  ok: boolean;
+  /** False when the store could not write the state: the record stays `paused`. */
+  stored: boolean;
+  /** A message to a session that still has a process, or a resume of one that has none. */
+  way: "message" | "resume";
 }
 
 /**
  * Takes one paused crew session out of its wait, the way `crew answer` reaches a crew session:
  * a message for one whose session still has a process (the CLI prints the `SendMessage` line;
- * only a session holds that tool), `claude --bg --resume <id> "<text>"` for one whose session
- * has none. The record is `working` again in the same act, so the watch never resumes it twice
- * and it holds its place. A resume that fails is one line, and the record stays `paused`.
+ * only a session holds that tool), `claude --bg --resume <id> "<text>"` in its worktree, with its
+ * own settings and MCP files, for one whose session has none. **One home for bringing a paused
+ * crew session back**: the watch and `crew resume --paused` (`end.ts`) both use it. The record is
+ * `working` again in the same act, so nothing resumes it twice and it holds its place. A resume
+ * that fails is one line, and the record stays `paused`; so is an agent view that cannot be read —
+ * it could be either, and a copy is worse than a second try.
  */
-async function resumeOne(
+export async function resumeOne(
   record: CrewRecord,
   ctx: CrewContext,
   now: number,
   agents: null | AgentRow[],
   say: (line: string) => void,
-): Promise<boolean> {
+): Promise<OneResume> {
   const text = resumeText(record, record.waitingFor, now);
-  const live = isLiveRow(agents === null ? null : rowOf(agents, record));
-  if (live) {
+  if (agents === null) {
+    const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
+    const why =
+      claude === null
+        ? "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
+        : UNREADABLE_VIEW_WHY;
+    say(`${record.name}: not resumed — ${why}`);
+    return { ok: false, stored: false, way: "resume" };
+  }
+  if (isLiveRow(rowOf(agents, record))) {
     say(sendMessageLine(record.name, text));
-    await sayResumed(record, "the wait is over; the message to it wakes it", ctx, now, say);
-    return true;
+    const stored = await sayResumed(
+      record,
+      "the wait is over; the message to it wakes it",
+      ctx,
+      now,
+      say,
+    );
+    return { ok: true, stored, way: "message" };
   }
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
     say(`${record.name}: not resumed — ${resumed.why}`);
-    return false;
+    return { ok: false, stored: false, way: "resume" };
   }
-  await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
-  return true;
+  const stored = await sayResumed(record, "the wait is over; it was resumed", ctx, now, say);
+  return { ok: true, stored, way: "resume" };
 }
 
-/** Records a resumed crew session `working` with its wait cleared; one line when the store cannot. */
+/** Records a resumed crew session `working` with its wait cleared; false (and one line) when the store cannot. */
 async function sayResumed(
   record: CrewRecord,
   text: string,
   ctx: CrewContext,
   now: number,
   say: (line: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await updateCrew(
       ctx.paths.stateDir,
@@ -488,8 +530,10 @@ async function sayResumed(
       now,
       text,
     );
+    return true;
   } catch (error) {
     say(`${record.name}: resumed, but the store could not record it: ${reasonOf(error)}`);
+    return false;
   }
 }
 

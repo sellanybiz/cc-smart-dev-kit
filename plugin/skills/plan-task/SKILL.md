@@ -1,6 +1,6 @@
 ---
 name: plan-task
-description: Use before any non-trivial change - more than two files, a design that is not settled, an architecture decision, or an ambiguous request. Research and explore, ask, write the plan to a file, get approval, split it into phases with owners, then build and keep the plan live. Trigger phrases - "implement X", "build Y", "refactor Z", "what's the best way to", "should I", "how should we approach".
+description: Use before building a change whose design is not settled or that spans several parts of the code - a new feature, a refactor, an architecture decision, an ambiguous request. Plans in plan mode - research, ask, write the plan file, get the person's approval - then splits it into phases with owners and keeps it live. Not for a question about a library or an API (research-first), nor a settled fix of a file or two. Trigger phrases - "implement X", "build Y", "refactor Z", "plan this", "how should we approach".
 ---
 
 # Plan The Task
@@ -19,6 +19,15 @@ Where it lives: the add-on file says; else `.claude/plans/<YYYY-MM-DD>-<slug>.md
 fewer whose design is settled — the task is the plan. Its separable pieces still go to
 subagents.
 
+**Plan in plan mode** — steps 1 to 4 — when a person is there to approve: call
+`EnterPlanMode` (the person can also press Shift+Tab, or type `/plan`). Plan mode lets you
+read, search and explore, and blocks every edit but its own plan file, so nothing is built
+before the yes. It keeps that file where the `plansDirectory` setting points: unset, that is
+`~/.claude/plans`, outside the repo; a project that keeps its plans in git sets it to its
+plans folder in `.claude/settings.json`. No plan mode — no `EnterPlanMode` among your tools,
+a session nobody watches, a crew session (`/cc-smart-dev-kit:crew`): write the plan file
+yourself, and ask for approval with `AskUserQuestion` (§ 4).
+
 ## 1. Research and explore first
 
 A plan built on memory is worse than no plan. Gather the facts, then plan from them:
@@ -29,10 +38,10 @@ A plan built on memory is worse than no plan. Gather the facts, then plan from t
 - **The code** — the files that change and the patterns to match.
 - **Impact** — every consumer of shared code you will touch (`/cc-smart-dev-kit:impact-analysis`).
 
-**Save the research before you write the plan**, in its own file:
-`.claude/research/<YYYY-MM-DD>-<slug>.md`, or the place the add-on file names. The plan's
-**Research** section condenses it and links it; **Code exploration** holds what you read in the
-code. On approval the research file moves into the archive (§ 4).
+**Write the research down as you go**, in the plan's **Research** section (in plan mode the
+plan file is the only file you may write); **Code exploration** holds what you read in the
+code. On approval the full research moves to its own file in the archive (§ 4), and the plan
+keeps a condensed version and the link.
 
 ## 2. Ask with `AskUserQuestion`
 
@@ -56,20 +65,26 @@ option. Label a workaround as one and name its debt.
 
 ## 3. Write the plan, before the first code edit
 
-Answer seven questions; they are the plan's sections:
+Answer eight questions; they are the plan's sections:
 
 1. **Goal** — the real outcome, not the literal request.
 2. **Files to change.**
 3. **Patterns to follow** — from step 1.
-4. **Edge cases** — walk the axes in `/cc-smart-dev-kit:review` and write down every one this change
-   can hit: what triggers it and what the plan does about it. An axis that cannot apply gets
-   one line. Findings that reshape the design go into the approach, not a footnote.
+4. **Edge cases** — walk the axes in the review skill's `references/axes.md`
+   (`../review/references/axes.md` from this skill's folder) and write down every one this
+   change can hit: what triggers it and what the plan does about it. An axis that cannot
+   apply gets one line. Findings that reshape the design go into the approach, not a footnote.
 5. **What could break** — the consumers of every shared symbol.
 6. **A simpler approach?** — the best code is no code.
 7. **Rollback** — how to undo it cleanly.
+8. **How we prove it** — the checks that show it works: the tests (for a bug, the test that
+   fails first), the checks the push and CI run, and what only the person can judge
+   (`/cc-smart-dev-kit:verify-change` § 6). Each phase's done-check (§ 5) comes from here.
 
 Put a three-line **Summary** at the top, and a **Status** line: `In review` until approved.
-The built-in `Plan` agent is read-only: it returns the text, and you write the file.
+Write it so a fresh session can build from the file alone: the approval screen may offer to
+clear the context and start from the plan (the person's `showClearContextOnPlanAccept`
+setting). The built-in `Plan` agent is read-only: it returns the text, and you write the file.
 
 ## 4. Self-check, then approval
 
@@ -78,10 +93,13 @@ away? For a big or risky plan, ask a second read from `cc-smart-dev-kit:reviewer
 plan, not of a change set). When the plan adds UI or a new architecture, show it — a diagram
 or a mockup — rather than only describing it.
 
-Then ask for approval with `AskUserQuestion` ("Start building this plan?"). Approved: Status
-`Approved`, move the research file into `archive/` in its own folder
-(`.claude/research/archive/` by default) and update the plan's link to it, then build. Changes wanted: revise, ask again. Never go from `In review` to code
-without an explicit yes.
+Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
+approves it there or keeps planning — never a second "Start building?" with
+`AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. Approved: Status
+`Approved`; a plan file plan mode kept outside the plan's home (above) moves there; the full
+research goes to `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the place the add-on
+names), linked from the plan; then build. Changes wanted: revise, ask again. Never go from
+`In review` to code without an explicit yes.
 
 ## 5. Phases and owners — you lead, subagents and crew sessions build
 
@@ -104,7 +122,11 @@ the work).
 - **The last wave is a heavy cleanup**, run only once everything is verified live: the
   fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches,
   worktrees and crew sessions, docs that still name what was removed, and the plan's archive (§ 8).
-- **Each phase has a done-check** — the targeted tests that prove it.
+- **Each phase has a done-check** — the targeted tests that prove it (§ 3, How we prove it).
+- **A large mechanical change** — the same edit across many files that splits into many
+  independent units: the bundled `/batch` skill plans it and runs each unit in its own
+  worktree, and each unit publishes its own change. Check that against the project's
+  workflow (`cc-smart-dev-kit workflow show`) before you use it.
 - **Shared files stay with you, the integrator:** the plan file, the lockfile and new
   dependencies, the project's version number, shared index files (a docs index, a barrel, a
   changelog), environment variables, a schema migration, starting the dev server, full
@@ -147,9 +169,9 @@ and a squash merge never shows its branch as merged.
 
 A finished plan does not stay with the live ones. In the same turn: Status `Done` (or
 `Parked` with why and what would restart it, or `Superseded` naming the plan that replaced
-it), the commits that shipped it, then move it to the archive folder and commit that. Never
-leave it for the person or the next session. A status that is never updated becomes a claim
-that reads as current and is false.
+it), the commits that shipped it, then move it to the archive folder, and commit the move as
+`/cc-smart-dev-kit:commit` allows. Never leave it for the person or the next session. A status
+that is never updated becomes a claim that reads as current and is false.
 
 | Status | Meaning | Archive? |
 |---|---|---|

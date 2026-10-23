@@ -31,9 +31,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { VERSION } from "../build-info";
+import { COMMAND, VERSION } from "../build-info";
 import { HOOK_LOG_ENV } from "../hooks/run";
 import { atomicWrite } from "../setup/write";
+import type { Check } from "./check";
 import type { CliPaths } from "./paths";
 
 /** The worktree name the live sessions ask for. */
@@ -51,10 +52,14 @@ export interface LiveRecord {
   passedAt: string;
 }
 
-export interface LiveCheckLine {
-  ok: boolean;
-  text: string;
-}
+/** One line of the live check: a check like any other (`check.ts`). */
+export type LiveCheckLine = Check;
+
+/**
+ * What fixes a live line that failed: it proves Claude Code's own behaviour, so the plugin may
+ * not work on this Claude Code. Run it again first (a session can fail for its own reasons).
+ */
+const LIVE_FIX = `run ${COMMAND} doctor --live again; when it fails again, this Claude Code changed what the plugin relies on: report it with these lines`;
 
 export type LiveRunner = (
   argv: string[],
@@ -182,7 +187,7 @@ function proveIn(
   lines.push(
     missing.length === 0
       ? { ok: true, text: `${label}: the hooks fired (${events.join(", ")})` }
-      : { ok: false, text: `${label}: no ${missing.join(", ")} hook ran. ${said}` },
+      : { ok: false, text: `${label}: no ${missing.join(", ")} hook ran. ${said}`, fix: LIVE_FIX },
   );
 
   const where = guarded.length === 0 ? "no Bash call" : guarded.map((run) => run.cwd).join(", ");
@@ -195,6 +200,7 @@ function proveIn(
       : {
           ok: false,
           text: `${label}: the git guard ${guarded.length === 0 ? "never ran" : `ran in ${where} without parsing a command`}: its log names no git program. ${said}`,
+          fix: LIVE_FIX,
         },
   );
   lines.push(
@@ -206,6 +212,7 @@ function proveIn(
       : {
           ok: false,
           text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`,
+          fix: LIVE_FIX,
         },
   );
 
@@ -221,6 +228,7 @@ function proveIn(
       : {
           ok: false,
           text: `${label}: after ExitWorktree${guardedThere ? "" : " (the session never worked in it)"} ${existsSync(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
+          fix: LIVE_FIX,
         },
   );
   return lines;
@@ -240,7 +248,11 @@ export function runLiveCheck(
   );
   if (version === null) {
     return [
-      { ok: false, text: "live: `claude --version` gave no version: is Claude Code installed?" },
+      {
+        ok: false,
+        text: "live: `claude --version` gave no version",
+        fix: "install Claude Code, or put its `claude` command on PATH",
+      },
     ];
   }
   // The real path: a hook prints real paths (macOS puts the temp folder behind a link).

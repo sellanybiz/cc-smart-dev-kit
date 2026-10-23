@@ -16,7 +16,8 @@
  *          never take the memory kept for everything else, and past it the kernel kills
  *          inside the slice only. `OOMPolicy=kill` ends the whole job when one of its
  *          processes is killed. Inside, `choom -n 900` marks the job to die first if the
- *          whole machine runs out.
+ *          whole machine runs out. The slices also carry a low CPU and disk I/O weight
+ *          (`weightsArgv`), so under load the desktop and the sessions go first.
  *   choom  Linux with no user manager (cron, a container, CI, ssh after logout): the mark.
  *   plain  No `choom`, macOS, or `launch: plain`: the command as it is. The queue still
  *          applies.
@@ -53,7 +54,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { constants } from "node:os";
-import { type ReadText, userSliceCgroup } from "./memory";
+import { type ReadText, userManagerControllers, userSliceCgroup } from "./memory";
 import { endJobTree, processIsGone, realWindowsFacts, type WindowsFacts } from "./windows";
 
 /**
@@ -93,20 +94,20 @@ export function chooseLaunch(facts: LaunchFacts): Launch {
   if (!facts.hasSystemdRun) {
     return {
       mode: "choom",
-      note: "no `systemd-run` here: the job runs with its kill mark only, no memory group",
+      note: "no `systemd-run` here: the job runs with its kill mark only, no memory group or CPU and I/O priority",
     };
   }
   if (!facts.hasUserRuntimeDir) {
     return {
       mode: "choom",
-      note: "no systemd user manager here: the job runs with its kill mark only, no memory group",
+      note: "no systemd user manager here: the job runs with its kill mark only, no memory group or CPU and I/O priority",
     };
   }
   if (facts.probeScope(true)) return { mode: "scope", oomPolicy: true };
   if (facts.probeScope(false)) return { mode: "scope", oomPolicy: false };
   return {
     mode: "choom",
-    note: "systemd could not start a scope here (no user session bus?): the job runs with its kill mark only, no memory group",
+    note: "systemd could not start a scope here (no user session bus?): the job runs with its kill mark only, no memory group or CPU and I/O priority",
   };
 }
 
@@ -229,15 +230,34 @@ export function sliceMemoryMax(budgetGb: number, jobGb: number): string {
  * through the swap instead of dying, and leave none for the desktop.
  */
 export function ceilingArgv(slice: string, memoryMax: string): [string, ...string[]] {
-  return [
-    "systemctl",
-    "--user",
-    "set-property",
-    "--runtime",
-    slice,
-    `MemoryMax=${memoryMax}`,
-    "MemorySwapMax=0",
+  return setPropertyArgv(slice, `MemoryMax=${memoryMax}`, "MemorySwapMax=0");
+}
+
+/** The one form every runtime slice property takes, for the ceiling and the weights. */
+function setPropertyArgv(slice: string, ...properties: string[]): [string, ...string[]] {
+  return ["systemctl", "--user", "set-property", "--runtime", slice, ...properties];
+}
+
+/**
+ * The weights one slice carries. A weight that is absent is left at systemd's default
+ * (100): a controller this machine's user manager was not given cannot carry one.
+ */
+export interface SliceWeights {
+  cpu?: number;
+  io?: number;
+}
+
+/**
+ * `systemctl --user set-property --runtime <slice> CPUWeight=… IOWeight=…`, or null when
+ * there is no weight to set. The same call and the same moment as the ceiling
+ * (`ceilingArgv`), and weights, never quotas: an idle machine still gives a job every core.
+ */
+export function weightsArgv(slice: string, weights: SliceWeights): [string, ...string[]] | null {
+  const properties = [
+    ...(weights.cpu === undefined ? [] : [`CPUWeight=${String(weights.cpu)}`]),
+    ...(weights.io === undefined ? [] : [`IOWeight=${String(weights.io)}`]),
   ];
+  return properties.length === 0 ? null : setPropertyArgv(slice, ...properties);
 }
 
 const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
@@ -372,6 +392,13 @@ export function spawnAndWait(
 export interface SliceControl {
   /** `ceilingArgv`: the slice's `MemoryMax`, and `MemorySwapMax=0`; true on success. */
   setMemoryMax: (slice: string, value: string) => boolean;
+  /** `weightsArgv`: one slice's CPU and I/O weights; true on success, and for none. */
+  setWeights: (slice: string, weights: SliceWeights) => boolean;
+  /**
+   * The controllers this machine's user manager was given (`userManagerControllers`), or
+   * null when it cannot be read: no user manager, or not Linux.
+   */
+  controllers: () => string[] | null;
   /** The slice's cgroup path under `/sys/fs/cgroup`, or null. */
   controlGroup: (slice: string) => string | null;
   readFile: (path: string) => string | null;
@@ -404,6 +431,14 @@ export function realLaunchFacts(slice: string, timeoutMs = SYSTEMD_TIMEOUT_MS): 
 export function realSliceControl(read: ReadText, timeoutMs = SYSTEMD_TIMEOUT_MS): SliceControl {
   return {
     setMemoryMax: (slice, value) => exitsZero(ceilingArgv(slice, value), timeoutMs),
+    setWeights: (slice, weights) => {
+      const argv = weightsArgv(slice, weights);
+      return argv === null || exitsZero(argv, timeoutMs);
+    },
+    controllers: () => {
+      const uid = process.getuid?.();
+      return uid === undefined ? null : userManagerControllers(read, uid);
+    },
     controlGroup: (slice) => {
       const uid = process.getuid?.();
       return uid === undefined ? null : userSliceCgroup(uid, slice);

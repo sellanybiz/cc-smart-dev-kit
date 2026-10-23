@@ -23,6 +23,7 @@ import { z } from "zod";
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
+import { HISTORY_MAX_RETENTION_DAYS, HISTORY_RETENTION_DAYS } from "./history";
 import {
   claudeFamily,
   FALLBACK_OFF_BY_DEFAULT,
@@ -75,6 +76,19 @@ const backendSchema = z.looseObject({
   baseUrl,
 });
 
+/**
+ * A chain saved for a slot that answers as Claude now: `gateway slot <slot> claude` moves the
+ * chain here from `slots`, with the slot's fallback switch when the person had set one;
+ * `gateway slot <slot> custom` moves both back. Loose, so a field a newer version adds stays.
+ * Only the shape is checked here: a saved chain is not in use, so a target that no longer
+ * works (a backend taken out) must not stop the router from loading the file. `custom` checks
+ * every target before the chain is used again.
+ */
+const keptChainSchema = z.looseObject({
+  fallback: z.boolean().optional(),
+  targets: z.array(z.string().min(1)).min(1),
+});
+
 export const gatewayConfigSchema = z
   .looseObject({
     /**
@@ -96,6 +110,19 @@ export const gatewayConfigSchema = z
      */
     judgeTested: z.record(z.string(), z.string()).optional(),
     /**
+     * The chains saved, not in use, by slot: each slot here answers as Claude
+     * (`keptChainSchema`). `slots` alone says what is in use, so a router or a CLI of 0.5.x,
+     * which does not know this field, reads the file right and writes it back untouched (the
+     * top level is a loose object). A switch to Claude never forgets a chain: only
+     * `gateway slot <slot> clear` deletes it.
+     */
+    kept: z
+      .record(
+        z.string().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"),
+        keptChainSchema,
+      )
+      .optional(),
+    /**
      * Each slot's fallback switch, where the person set it: `{"<slot>": true | false}`. On,
      * the next target answers when the one before it fails or rests; off, only the first
      * target ever answers, and the rest stay saved. Absent: the slot's default
@@ -109,6 +136,23 @@ export const gatewayConfigSchema = z
      * on|off` writes it.
      */
     breaker: z.record(z.string(), z.boolean()).optional(),
+    /**
+     * The request history (`history.ts`, D51). Absent: 90 days, kept in
+     * `~/.local/state/cc-smart-dev-kit/history.db`. `retentionDays: 0` turns the log off:
+     * the router writes no row, and an existing database stays as it is.
+     */
+    history: z
+      .looseObject({
+        retentionDays: z
+          .int()
+          .min(0, "0 turns the request history off, which is the smallest value")
+          .max(
+            HISTORY_MAX_RETENTION_DAYS,
+            `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`,
+          )
+          .optional(),
+      })
+      .optional(),
     /**
      * 0.4.x only, read and never written again: the Claude ids whose requests a model slot
      * took (`{"claude-opus-5-5": "cc-smart-dev-kit-opus"}`). A request reaches its slot by
@@ -266,6 +310,14 @@ export function breakerHoldMs(config: Pick<GatewayConfig, "timeouts">): number {
 }
 
 /**
+ * How long the request history keeps a row, in days: the config's
+ * `history.retentionDays`, else `HISTORY_RETENTION_DAYS`. 0 turns the log off.
+ */
+export function historyRetentionDays(config: Pick<GatewayConfig, "history">): number {
+  return config.history?.retentionDays ?? HISTORY_RETENTION_DAYS;
+}
+
+/**
  * What a slot's breaker switch means, in the words the command line and the portal both
  * show: `breaker on` or `breaker off`. Null for the judge, which has no switch
  * (`JUDGE_NEVER_HOLDS`).
@@ -311,6 +363,27 @@ function aliasError(
 }
 
 export type GatewayConfig = z.output<typeof gatewayConfigSchema>;
+
+/** A chain saved, not in use, and the slot's fallback switch with it (`kept`). */
+export type KeptChain = z.output<typeof keptChainSchema>;
+
+/**
+ * What answers for a slot: `custom`, its chain in `slots`; `claude`, no chain in use (its
+ * family's requests go to Anthropic as Claude Code sent them; for the judge, Claude judges).
+ * Every slot has the same two modes, and every version reads them the same way.
+ */
+export type SlotMode = "claude" | "custom";
+
+export function slotMode(config: Pick<GatewayConfig, "slots">, slot: string): SlotMode {
+  return Object.hasOwn(config.slots, slot) ? "custom" : "claude";
+}
+
+/** The chain saved for a slot, not in use; null when there is none. */
+export function keptChain(config: Pick<GatewayConfig, "kept">, slot: string): KeptChain | null {
+  const kept = config.kept;
+  if (kept === undefined || !Object.hasOwn(kept, slot)) return null;
+  return kept[slot] ?? null;
+}
 
 /**
  * The judge test's version, and what its proof lets a target do. Raise it when the test
