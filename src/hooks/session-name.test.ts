@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { cliPaths } from "../cli/paths";
+import { writeLead } from "../crew/store";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { isSessionId, namesDir, namingNote, recordSessionName } from "./session-name";
 import { sessionNameHook } from "./specs";
@@ -74,5 +76,24 @@ describe("the hook", () => {
     const { repo, env } = setup(false);
     expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
     expect(await runHook(sessionNameHook, start(makeRepo("plain")), env)).toEqual({});
+  });
+
+  test("a recorded lead: silence, because the lead's name is lead-notes' (LD1)", async () => {
+    const { repo, env } = setup();
+    await writeLead(
+      cliPaths(env).stateDir,
+      {
+        cwd: repo,
+        name: "LEAD app plan",
+        plan: "plan",
+        repo,
+        sessionId: SESSION,
+        tag: "app",
+      },
+      Date.now(),
+    );
+    recordSessionName(SESSION, "Fix login", env);
+    expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
+    expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual({});
   });
 });

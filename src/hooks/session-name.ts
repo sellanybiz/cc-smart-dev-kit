@@ -17,13 +17,24 @@
  * Why the title is set at a prompt: a title set at SessionStart reached the transcript and
  * /resume, but not the name ListAgents shows (seen on an older Claude Code; the contract
  * keeps the prompt route). Any failure ends quietly: a name is never worth a prompt.
+ *
+ * Two things write this record, and one owns a session's title:
+ *
+ * - a session that names itself after its task (the command above), through `titleToSet`;
+ * - a registered lead's name (`LEAD <tag> <plan>`, D26), which `lead-notes` sets with no
+ *   setting at the lead's next prompt (`LD1`) — the same `titleToSet`, the same record.
+ *
+ * So a session that is a recorded lead is left to `lead-notes` here: one title, one owner.
+ * A task name never competes with a lead's role name (the name its crew sessions and the
+ * message guard address it by).
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cleanSessionName } from "../crew/names";
-import { type HookResult, SILENT } from "./io";
+import { readLead } from "../crew/store";
+import { type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
 
 /** Claude Code's session ids are UUIDs. Anything else never becomes part of a path. */
@@ -49,6 +60,50 @@ function writeAtomic(file: string, text: string): void {
   const partial = `${file}.${process.pid}.tmp`;
   writeFileSync(partial, text);
   renameSync(partial, file);
+}
+
+/** The file recording the name the kit last set for a session. */
+function appliedFile(env: Env, sessionId: string): string {
+  return join(namesDir(env), sessionId);
+}
+
+/** The name the kit last set for this session, or null. */
+export function readAppliedName(env: Env, sessionId: string): string | null {
+  return readName(appliedFile(env, sessionId));
+}
+
+/**
+ * The title a prompt should set, or null: `wanted` only when the session is not called that
+ * already and the kit did not already set it. So a person's own `/rename` stays, and a name
+ * the kit set is never set twice — even when its record was lost, the session's own title says
+ * it. Records the title it returns as the one the kit last set. The one rule behind both
+ * writers: a session's own task name here, a lead's role name in `lead-notes`.
+ */
+export function titleToSet(
+  env: Env,
+  sessionId: string,
+  wanted: string,
+  current: null | string,
+): null | string {
+  if (wanted === current) return null;
+  if (wanted === readAppliedName(env, sessionId)) return null;
+  mkdirSync(namesDir(env), { recursive: true });
+  writeAtomic(appliedFile(env, sessionId), wanted);
+  return wanted;
+}
+
+/**
+ * True when this session is a lead recorded in the project's repository. A store that cannot
+ * be read is no lead: this hook's name is never worth a failed prompt, and `lead-notes` says
+ * its own line about a store it cannot read.
+ */
+function recordedLead(context: HookContext, sessionId: string): boolean {
+  try {
+    const repo = context.project.mainCheckout ?? context.project.root;
+    return readLead(context.paths.stateDir, repo, sessionId) !== null;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -77,8 +132,9 @@ export function sessionName(context: HookContext): HookResult {
   if (project.config?.sessionNames !== true) return SILENT;
   const sessionId = input.session_id;
   if (!isSessionId(sessionId)) return SILENT;
-  const dir = namesDir(env);
-  const wanted = readName(join(dir, `${sessionId}.name`));
+  // One title, one owner: a recorded lead's name is `lead-notes'` (no setting, LD1).
+  if (recordedLead(context, sessionId)) return SILENT;
+  const wanted = readName(join(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
   if (event === "SessionStart") {
     return {
@@ -87,11 +143,9 @@ export function sessionName(context: HookContext): HookResult {
       }),
     };
   }
-  const appliedFile = join(dir, sessionId);
-  const title = wanted !== null && wanted !== readName(appliedFile) ? wanted : null;
+  const title =
+    wanted === null ? null : titleToSet(env, sessionId, wanted, stringField(input.session_title));
   if (title !== null) {
-    mkdirSync(dir, { recursive: true });
-    writeAtomic(appliedFile, title);
     return {
       stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: event, sessionTitle: title } }),
     };

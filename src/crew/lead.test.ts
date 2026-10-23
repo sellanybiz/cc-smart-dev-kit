@@ -2,20 +2,19 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
+import { crewWorld, LEAD_SESSION, SESSION_PID, writeSessionRecord } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { runCrew } from "./command";
 import { CREW_STEPS } from "./step";
 import { listLeads, readLead } from "./store";
 
 describe("D26: crew lead", () => {
-  test("D26: the session's record, its LEAD <tag> <plan> name, and the /rename line", async () => {
+  test("D26: the session's record, its LEAD <tag> <plan> name, and the next prompt's name", async () => {
     const world = crewWorld();
     expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx())).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.out).toEqual([
-      `lead LEAD my-app master-plan (c00f9bb5): the crew this session starts in ${world.repo} report to it; to show the name now, type the next line in this session`,
-      "/rename LEAD my-app master-plan",
+      `lead LEAD my-app master-plan (c00f9bb5): the crew this session starts in ${world.repo} report to it; this session takes that name at its next prompt`,
     ]);
     expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)).toEqual({
       createdAt: "2026-10-21T10:00:00.000Z",
@@ -28,6 +27,19 @@ describe("D26: crew lead", () => {
       updatedAt: "2026-10-21T10:00:00.000Z",
       version: 1,
     });
+  });
+
+  test("LD1: a session id no name record can be made for: the /rename line is the fallback", async () => {
+    const world = crewWorld();
+    writeSessionRecord(world.paths, SESSION_PID, "plain-session-id", world.repo);
+    expect(await runCrew(["lead", "--plan", "master-plan"], world.ctx())).toBe(0);
+    expect(readLead(world.paths.stateDir, world.repo, "plain-session-id")?.name).toBe(
+      "LEAD my-app master-plan",
+    );
+    expect(world.out).toEqual([
+      `lead LEAD my-app master-plan (plain-se): the crew this session starts in ${world.repo} report to it; this session's id cannot carry a session name, so type the next line in this session`,
+      "/rename LEAD my-app master-plan",
+    ]);
   });
 
   test("D26: --tag, else workflow.crew.tag, else the main checkout's folder name", async () => {

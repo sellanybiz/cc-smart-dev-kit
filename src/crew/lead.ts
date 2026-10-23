@@ -5,8 +5,9 @@
  * start` refuses a session that never ran it.
  *
  * The lead's name, `LEAD <tag> <plan>` (D26), is written as data, in the lead record: the
- * session-name hook applies it later (W2). This command never renames the session itself; it
- * prints the `/rename` line a person can type meanwhile.
+ * lead-notes hook sets it at the lead's next prompt, with no setting and never over a name the
+ * person gave (LD1). This command never renames the session itself; only a session id no naming
+ * record can be made for gets the `/rename` line to type.
  *
  * - `--tag` names the repository in every name this lead and its crew carry; without it,
  *   `workflow.crew.tag`, else the main checkout's folder name (`crewTag`).
@@ -18,6 +19,7 @@
  */
 import { tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
+import { isSessionId } from "../hooks/session-name";
 import { readCaller, reasonOf, requireSession } from "./caller";
 import type { CrewContext } from "./context";
 import { crewTag, leadName } from "./names";
@@ -103,9 +105,14 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
       // The watch reads the log from its start then: the same lines, one more time.
     }
   }
-  ctx.print(
-    `lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; to show the name now, type the next line in this session`,
-  );
-  ctx.print(`/rename ${name}`);
+  const head = `lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; `;
+  if (isSessionId(session.sessionId)) {
+    ctx.print(`${head}this session takes that name at its next prompt`);
+  } else {
+    ctx.print(
+      `${head}this session's id cannot carry a session name, so type the next line in this session`,
+    );
+    ctx.print(`/rename ${name}`);
+  }
   return 0;
 }

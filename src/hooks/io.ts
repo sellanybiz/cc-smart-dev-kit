@@ -44,6 +44,12 @@ export interface HookInput {
   tool_use_id?: unknown;
   /** UserPromptSubmit. */
   prompt?: unknown;
+  /**
+   * UserPromptSubmit: the title the session carries as the prompt arrives — the one Claude Code
+   * applied from an earlier answer (`sessionTitle`), or a `/rename` (`docs/claude-code-contract.md`).
+   * `titleToSet` (`session-name.ts`) reads it so a name the session already has is not set again.
+   */
+  session_title?: unknown;
   /** Stop: true when a Stop hook made this turn go on, so the next stop must not block again. */
   stop_hook_active?: unknown;
   /** Stop: the last assistant message before stopping, when Claude Code names it. */
@@ -139,6 +145,24 @@ export function addContext(event: string, text: string): HookResult {
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: { hookEventName: event, additionalContext: text },
+    }),
+  };
+}
+
+/**
+ * Text for Claude's context and a new session title in one answer. `UserPromptSubmit`'s own
+ * output schema has both fields optional side by side (Claude Code 2.1.309's schema, read from
+ * the shipped binary: `docs/claude-code-contract.md`), so one answer carries a note and a
+ * rename. `text` null: the title alone.
+ */
+export function addContextAndTitle(event: string, text: null | string, title: string): HookResult {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: event,
+        ...(text === null ? {} : { additionalContext: text }),
+        sessionTitle: title,
+      },
     }),
   };
 }

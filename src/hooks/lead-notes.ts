@@ -9,6 +9,12 @@
  *
  * - **Only a registered lead** (`readLead` by the input's `session_id`) hears anything: any other
  *   session, and a folder outside git, is silence.
+ * - **Its name comes back with the first note** (LD1): a registered lead's `LEAD <tag> <plan>`
+ *   goes out as `sessionTitle` in the same `UserPromptSubmit` answer, with no setting, so the
+ *   person never types `/rename` (`crew lead` records it as data). The rule is `session-name.ts`'s
+ *   `titleToSet`, on that hook's own record, so a name the person gave with `/rename` stays and
+ *   the same name is never set twice. A prompt only: SessionStart's title was seen reach the
+ *   transcript but not the name ListAgents shows (`session-name.ts`, the whole story).
  * - **Never twice**: the cursor moves past every event read, whether or not a line came of it, and
  *   it is seeded at the log's end the first time (the lines before it are history the lead already
  *   saw — it started those crew sessions itself). A restart reads the same cursor file, so a lead
@@ -34,8 +40,16 @@ import {
 import { eventLine, phasesWaitingFor } from "../crew/watch";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
-import { addContext, type HookInput, type HookResult, SILENT } from "./io";
-import { isSessionId } from "./session-name";
+import {
+  addContext,
+  addContextAndTitle,
+  type HookInput,
+  type HookResult,
+  SILENT,
+  stringField,
+} from "./io";
+import type { Env } from "./run";
+import { isSessionId, titleToSet } from "./session-name";
 
 /** The one note: the newest line, and how many older ones this turn did not print. */
 export function notesLine(lines: readonly string[]): string | null {
@@ -43,6 +57,28 @@ export function notesLine(lines: readonly string[]): string | null {
   if (newest === undefined) return null;
   const more = lines.length - 1;
   return more === 0 ? newest : `${newest} (and ${more} more…)`;
+}
+
+/**
+ * The lead's name to set at this turn, or null: a prompt only, and only through `titleToSet`
+ * (`session-name.ts`), so a person's own `/rename` stays and the same name is never set twice.
+ */
+function leadTitle(
+  input: HookInput,
+  event: string,
+  env: Env,
+  sessionId: string,
+  name: string,
+): null | string {
+  return event === "UserPromptSubmit"
+    ? titleToSet(env, sessionId, name, stringField(input.session_title))
+    : null;
+}
+
+/** The answer for this turn: the note, the lead's name, both, or silence. */
+function answered(event: string, note: null | string, title: null | string): HookResult {
+  if (title === null) return note === null ? SILENT : addContext(event, note);
+  return addContextAndTitle(event, note, title);
 }
 
 /**
@@ -54,6 +90,7 @@ export function leadNotesAnswer(
   event: string,
   paths: CliPaths,
   repo: null | string,
+  env: Env,
 ): HookResult {
   const sessionId = input.session_id;
   if (repo === null || !isSessionId(sessionId)) return SILENT;
@@ -65,7 +102,7 @@ export function leadNotesAnswer(
     writeNotesState(paths.stateDir, repo, sessionId, {
       offset: eventsEndOffset(paths.stateDir, repo),
     });
-    return SILENT;
+    return answered(event, null, leadTitle(input, event, env, sessionId, lead.name));
   }
   const read = readCrewEvents(paths.stateDir, repo, cursor.offset);
   const mine = listCrew(paths.stateDir, repo).records.filter(
@@ -90,6 +127,7 @@ export function leadNotesAnswer(
   }
   // Past every event read, spoken or not: the next turn says only what is newer.
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
-  const note = notesLine(lines);
-  return note === null ? SILENT : addContext(event, note);
+  // The title last: its record is written as it is set, and a store that throws above leaves
+  // that record alone, so the next prompt tries the name again.
+  return answered(event, notesLine(lines), leadTitle(input, event, env, sessionId, lead.name));
 }

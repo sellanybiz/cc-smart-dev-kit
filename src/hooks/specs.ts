@@ -443,10 +443,16 @@ export const leadNotesHook: HookSpec = {
   name: "lead-notes",
   events: ["SessionStart", "UserPromptSubmit"],
   onConfigProblem: (_message, input, event, checkout, context) =>
-    leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root),
+    leadNotesAnswer(
+      input,
+      event,
+      context.paths,
+      checkout.mainCheckout ?? checkout.root,
+      context.env,
+    ),
   outsideGit: () => SILENT,
-  run: ({ input, event, project, paths }) =>
-    leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root),
+  run: ({ input, event, project, paths, env }) =>
+    leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root, env),
 };
 
 /**
