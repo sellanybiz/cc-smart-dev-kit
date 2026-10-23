@@ -33090,6 +33090,7 @@ function describeSession(tail, file) {
   let title = null;
   let folder = null;
   let branch = null;
+  let model = null;
   const lastTypes = [];
   for (const line of tail.split(`
 `)) {
@@ -33104,6 +33105,8 @@ function describeSession(tail, file) {
     lastTypes.push(entry.type);
     if (typeof entry.cwd === "string")
       folder = entry.cwd;
+    if (entry.type === "assistant")
+      model = replyModel(entry.message) ?? model;
     if (entry.type === "agent-name" && typeof entry.agentName === "string") {
       givenName = entry.agentName;
     }
@@ -33131,8 +33134,15 @@ function describeSession(tail, file) {
     folder,
     id: file.id,
     lastWrite: file.lastWrite,
+    model,
     name: givenName ?? title
   };
+}
+function replyModel(message) {
+  if (typeof message !== "object" || message === null)
+    return null;
+  const model = message.model;
+  return typeof model === "string" && model !== "" && model !== "<synthetic>" ? model : null;
 }
 function lastPart(path) {
   return path.split(/[\\/]/).findLast((part) => part !== "") ?? path;
@@ -42953,6 +42963,26 @@ function bucketsIn(session, context) {
   }
   return out;
 }
+function hoursOf(sessions, context) {
+  const first = Math.floor(context.sinceMs / HOUR_MS);
+  const last = Math.ceil(context.untilMs / HOUR_MS);
+  const hours = [];
+  for (let hour = first;hour < last; hour += 1) {
+    hours.push({ launches: 0, promptMs: 0, prompts: 0, replies: 0, t: hour * HOUR_MS });
+  }
+  for (const session of sessions) {
+    for (const [key, bucket] of Object.entries(session.hours)) {
+      const into = hours[Number(key) - first];
+      if (into === undefined)
+        continue;
+      into.launches += bucket.launches;
+      into.promptMs += bucket.promptMs;
+      into.prompts += bucket.prompts;
+      into.replies += bucket.replies;
+    }
+  }
+  return hours;
+}
 function maxOverlap(spans) {
   const edges = [];
   for (const span of spans) {
@@ -43288,6 +43318,7 @@ function readFlow(paths, options) {
   sessions.sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0) || a.session.localeCompare(b.session));
   open.sort((a, b) => b.at - a.at || a.session.localeCompare(b.session));
   return {
+    hours: hoursOf(seenSessions, context),
     missing: missingMeasures(seenSessions),
     open,
     sessions,
