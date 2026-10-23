@@ -224,35 +224,41 @@ export function worktreesAnswerOf(
     return none("this folder is not in a git project, so there is no work to show");
   }
   const repo = checkout.mainCheckout ?? checkout.root;
-  const chosen = baseBranch(checkout, env, repo);
-  const judged = {
-    base: chosen.base,
-    claudeConfigDir: paths.claudeConfigDir,
-    env,
-    now,
-  };
-  let note: null | string = null;
-  let scanned: ScannedWorktree[];
   try {
-    scanned = scanWorktrees(repo, judged);
+    // A project file the plugin cannot read (`baseBranch` loads it) is a note, never a crash:
+    // this answer is printed by `--json`, and a stack trace is no answer.
+    const chosen = baseBranch(checkout, env, repo);
+    const judged = {
+      base: chosen.base,
+      claudeConfigDir: paths.claudeConfigDir,
+      env,
+      now,
+    };
+    let note: null | string = null;
+    let scanned: ScannedWorktree[];
+    try {
+      scanned = scanWorktrees(repo, judged);
+    } catch (error) {
+      // A repository with no `origin/<base>` (a local-only repo) is judged against its own
+      // base branch: the same comparison, said plainly.
+      const why = error instanceof Error ? error.message : String(error);
+      if (!why.includes("is not known here")) return none(why);
+      scanned = scanWorktrees(repo, {
+        ...judged,
+        against: { label: chosen.base, ref: `refs/heads/${chosen.base}` },
+      });
+      note = `origin/${chosen.base} is not known here, so this judges against the local ${chosen.base}`;
+    }
+    return {
+      autoClean: autoCleanOf(paths, repo),
+      base: chosen.base,
+      from: chosen.from,
+      note,
+      worktrees: scanned.map(worktreeItemOf),
+    };
   } catch (error) {
-    // A repository with no `origin/<base>` (a local-only repo) is judged against its own
-    // base branch: the same comparison, said plainly.
-    const why = error instanceof Error ? error.message : String(error);
-    if (!why.includes("is not known here")) return none(why);
-    scanned = scanWorktrees(repo, {
-      ...judged,
-      against: { label: chosen.base, ref: `refs/heads/${chosen.base}` },
-    });
-    note = `origin/${chosen.base} is not known here, so this judges against the local ${chosen.base}`;
+    return none(error instanceof Error ? error.message : String(error));
   }
-  return {
-    autoClean: autoCleanOf(paths, repo),
-    base: chosen.base,
-    from: chosen.from,
-    note,
-    worktrees: scanned.map(worktreeItemOf),
-  };
 }
 
 export async function runWorktrees(

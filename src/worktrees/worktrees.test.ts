@@ -918,6 +918,34 @@ describe("the worktrees command", () => {
     expect(existsSync(worktree)).toBe(true);
   });
 
+  test("`--json` answers with the reason when the project's file cannot be read", async () => {
+    const { main } = repo();
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude", "cc-smart-dev-kit.json"), "{ not json\n");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
+    const out: string[] = [];
+    const logged = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      out.push(args.join(" "));
+    });
+    try {
+      expect(
+        await runWorktrees(
+          paths,
+          { clean: false, json: true, noFetch: true, remove: null },
+          cleanGitEnv(),
+          main,
+        ),
+      ).toBe(0);
+    } finally {
+      logged.mockRestore();
+    }
+    // A note, never a stack trace: the page shows the reason it could not read the project.
+    expect(out).toHaveLength(1);
+    const answer = JSON.parse(out[0] ?? "") as { note: null | string; worktrees: unknown[] };
+    expect(answer.note).toContain("cc-smart-dev-kit.json");
+    expect(answer.worktrees).toEqual([]);
+  });
+
   test("`--remove <path>` removes one now, without the one-hour wait", async () => {
     const { main, worktree } = repo();
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
