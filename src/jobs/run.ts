@@ -73,13 +73,13 @@ export function describeCommand(command: readonly string[]): string {
 }
 
 /** The line `job run` says when a job that waited gets its place. */
-export function startedLine(what: string, gb: number, waitedMs: number): string {
+function startedLine(what: string, gb: number, waitedMs: number): string {
   const size = gb > 0 ? ` (${String(gb)} GB)` : "";
   return `Heavy job starts after ${durationText(waitedMs)}: ${what}${size}`;
 }
 
 /** The line `job run` says after a job that waited ended, however it ended. */
-export function endedLine(what: string, end: JobEnd, ranMs: number): string {
+function endedLine(what: string, end: JobEnd, ranMs: number): string {
   // The signal, when one ended it, and the one the wrapper sent on named as the sender:
   // the person's Ctrl+C at `job run`, or a stop that came from elsewhere (a `kill`, the
   // kernel's OOM killer) and belongs to nobody here.

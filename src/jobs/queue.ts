@@ -484,7 +484,7 @@ const WAITING_LINE_EVERY_MS = 60_000;
  * status shows up. Once per job, never again on the minute lines after it — and never for
  * a job that does not wait: those print nothing at all.
  */
-export const PIPE_HINT =
+const PIPE_HINT =
   'A pipe (| tail) hides this job\'s exit status: the "Heavy job ended" line carries it.';
 
 /** Thrown when `signal` stops a wait; everything taken so far is given back first. */

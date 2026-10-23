@@ -74,8 +74,9 @@ A job that waited says three things, around its own output:
 [cc-smart-dev-kit job] Heavy job waits for memory: bunx tsc --noEmit needs 8 GB. this machine: 2 of 32 GB free. Why: only 2 GB of this machine's budget is free.
 [cc-smart-dev-kit job] A pipe (| tail) hides this job's exit status: the "Heavy job ended" line carries it.
 [cc-smart-dev-kit job]   this machine: 28 GB held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
-… the job's output, while it runs …
+   … 18 minutes of waiting, a line a minute …
 [cc-smart-dev-kit job] Heavy job starts after 18 min: bunx tsc --noEmit (8 GB)
+   … the job's own output, on stdout and stderr, while it runs …
 [cc-smart-dev-kit job] Heavy job ended: bunx tsc --noEmit, exit 0 after 3 min
 ```
 
@@ -88,11 +89,13 @@ A job that waited says three things, around its own output:
   (its name alone, `--exclusive`) leaves the GB out.
 - **The end line** says how the job ended, and how long it ran. It is said last: after
   "killed for memory" (§ The launch) when the kernel stopped the job.
-  - `exit 0` is the job's own exit code — the one a pipe hides. `128 + n` means a signal.
-  - `stopped by SIGTERM` says which signal ended the job. When that signal is one `job run`
-    caught and sent on (a Ctrl+C at `job run`, or a `kill` at it), the line says who: `sent
-    on by job run`. A signal from somewhere else — the kernel's OOM killer, another
-    process's `kill` — is named without a sender.
+  - `exit 0` is the job's own exit code — the one a pipe hides. A job a signal ended says
+    `stopped by SIGTERM` instead, and `job run` itself exits with 128 + that signal's
+    number, as a shell would (step 4 above).
+  - `stopped by SIGTERM (sent on by job run)`: the signal `job run` caught (a Ctrl+C at it,
+    or a `kill` at it) is also the one that ended the job, so the line names the sender. A
+    signal from somewhere else — the kernel's OOM killer, another process's `kill` — is
+    named without a sender.
   - `(its leftover processes were stopped)` says the job's memory was freed by force: the
     job's own process was gone, but the processes it left behind had to be stopped
     (§ The launch).
