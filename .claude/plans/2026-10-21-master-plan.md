@@ -477,9 +477,11 @@ Every open item of the work-state lists `audit-2026-10-17`, `parallel-work-later
 
 - 2026-10-23: **Owner ask: a lead names itself, on by default.** `crew lead` printed `/rename LEAD <tag> <plan>` for the person to type; a `UserPromptSubmit` answer's `sessionTitle` renames a session (proved, the `session-name` hook uses it behind `sessionNames`). **LD1** (inside 1.1.0; brief `briefs/ld1.md`): a registered lead takes its name at its next prompt through `lead-notes`, with no setting, and never undoes the person's own `/rename`. The eval baseline the owner saved is committed (`be50982`: 31 cases, every gate case passes). C5b now waits for LD1 too.
 
+- 2026-10-23: **Owner, before a 4-hour absence:** (1) C1 merges into `release-1.1.0` once its checks pass and the eval subset a nested run can do (`--without-needs-shell`) shows no case worse, so C5b can start; the owner reads core.md and runs the full `bun run evals fast` before the PR merges into `main`, and a dislike is one revert commit. (2) When C5b is merged and the full check is green, the lead pushes `release-1.1.0` and opens the PR into `main`; the merge waits for the owner's yes.
+
 ### For the owner in the morning
 
-1. Read **Decided overnight** below.
+1. Read **Decided overnight** below. Then C1's new `plugin/instructions/core.md` (its report lists every rule it moved or shortened) and run `bun run evals fast` in a normal terminal on `release-1.1.0` (no `--save-baseline`): no case may score below today's baseline.
 2. The 1.1.0 pull request: read it and its CI result; the merge is yours.
 3. Live proofs the crew sessions could not run: BR1 — close Chrome, then run `cc-smart-dev-kit browser check` from a terminal (it should start Chrome in the `claude-code` profile and connect); CR1's probe (its report names the exact `!` commands) for how a `--bg -w` session comes back in its worktree.
 4. After 1.1.0 is installed: remove `crew.max` 12 / `crew.maxOpus` 4 from this machine's own workflow file (now the machine-wide ceiling); turn the status line on (`cc-smart-dev-kit setup --statusline`) so the opus usage guard holds.
