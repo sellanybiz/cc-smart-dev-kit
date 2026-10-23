@@ -6082,7 +6082,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.1.0",
+  version: "1.1.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
