@@ -15,8 +15,8 @@ import {
   claudeCodeFacts,
   configExists,
   type FallbackRow,
-  fiveHourWindow,
   mcpRows,
+  planWindow,
   portHolder,
   type RouterFacts,
   type SwitchFacts,
@@ -108,7 +108,7 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
       backends: [],
       dashboardUrl: null,
       fallbacks: [],
-      fiveHour: fiveHourWindow(deps.action.portal),
+      fiveHour: planWindow(deps.action.portal),
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
@@ -122,7 +122,7 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
     ...(await overviewData(deps, deps.found.config)),
     configured: true,
     error: null,
-    fiveHour: fiveHourWindow(deps.action.portal),
+    fiveHour: planWindow(deps.action.portal),
     jobs: await jobsAtAGlance(deps),
   };
 }

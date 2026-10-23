@@ -17,7 +17,7 @@ import { makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PortalContext } from "../context";
-import { bunFacts, claudeCodeFacts, fiveHourWindow, mcpRows, portHolder } from "../facts";
+import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import { overviewAnswer, settingsAnswer } from "./data";
 import { testPortalContext } from "./test-context";
@@ -172,12 +172,12 @@ describe("the plan's 5-hour window", () => {
         readAt: "2026-10-23T11:50:00.000Z",
       }),
     );
-    expect(fiveHourWindow(ctx)).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
+    expect(planWindow(ctx)).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
   });
 
   test("a window that is over, or no reading at all: no number", () => {
     const { ctx, paths } = world();
-    expect(fiveHourWindow(ctx)).toBe(null);
+    expect(planWindow(ctx)).toBe(null);
     const past = Date.UTC(2026, 9, 23, 11, 0, 0) / 1000;
     writeAt(
       file(paths),
@@ -186,7 +186,7 @@ describe("the plan's 5-hour window", () => {
         readAt: "2026-10-23T10:00:00.000Z",
       }),
     );
-    expect(fiveHourWindow(ctx)).toBe(null);
+    expect(planWindow(ctx)).toBe(null);
   });
 
   test("the Overview carries it, also on a machine whose gateway is not set up", async () => {
@@ -270,9 +270,24 @@ describe("a crew session on Work", () => {
       "started in its worktree",
       310,
     );
+    // Another crew session of the same log, with newer events: none of them is this one's.
+    await createCrew(
+      paths.stateDir,
+      { ...crew, branch: "crew/L-other", id: "crew-L-other", name: "C my-app L other", phase: "L" },
+      NOW - 240_000,
+    );
+    await updateCrew(
+      paths.stateDir,
+      repo,
+      "crew-L-other",
+      { state: "working" },
+      NOW - 60_000,
+      "the other one's line",
+      900,
+    );
     const deps = depsOf(ctx);
     const answer = workAnswer({ ...deps, action: { ...deps.action, cwd: repo } });
-    const summary = answer.crew[0];
+    const summary = answer.crew.find((one) => one.id === crew.id);
     expect(summary?.files).toEqual(["src/portal/api/**"]);
     expect(summary?.waitsFor).toEqual(["B8"]);
     expect(summary?.lastEvent).toEqual({

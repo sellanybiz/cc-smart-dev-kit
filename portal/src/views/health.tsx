@@ -157,7 +157,10 @@ function RouterDown({ data }: { data: HealthData }) {
             icon={<RotateCwIcon data-icon="inline-start" aria-hidden="true" />}
             confirm={{
               title: "Restart the router?",
-              body: "A restart lets the answers in flight finish first (up to 120 s). New requests wait in its socket meanwhile; none fails.",
+              body:
+                socket !== null && socket.kind === "systemd" && socket.state === "open"
+                  ? "A restart lets the answers in flight finish first (up to 120 s). New requests wait in its socket meanwhile; none fails."
+                  : "Nothing holds the router's port while it restarts, so a request fails until it answers again.",
               yes: "Restart it",
             }}
           >

@@ -78,7 +78,14 @@ function liveWords(claude: ClaudeCodeFacts): { tone: Tone; pill: string; line: s
       tone: "info",
     };
   }
-  if (claude.version !== null && live.claudeCode !== claude.version) {
+  if (claude.version === null) {
+    return {
+      line: `doctor --live last passed on ${live.claudeCode}`,
+      pill: "last proof",
+      tone: "info",
+    };
+  }
+  if (live.claudeCode !== claude.version) {
     return {
       line: `doctor --live last passed on ${live.claudeCode}, not this one`,
       pill: "proved on another",

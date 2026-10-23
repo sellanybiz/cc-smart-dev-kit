@@ -136,8 +136,10 @@ function Weights({ weights }: { weights: JobsData["weights"] }) {
               </>
             ) : (
               <>
-                {label} weight <span className="tabular-nums">{weight.value}</span>: under load a
-                job gives way to the rest of the machine, which runs at 100.
+                {label} weight <span className="tabular-nums">{weight.value}</span>
+                {weight.value < 100
+                  ? ": under load a job gives way to the rest of the machine, which runs at 100."
+                  : ", the same as or above the rest of the machine (100)."}
               </>
             )}
           </StatusMark>

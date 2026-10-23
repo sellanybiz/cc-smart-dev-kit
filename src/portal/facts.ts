@@ -11,7 +11,7 @@
  *   - **Plan usage percentages, but the 5-hour window's.** Claude Code computes them from the
  *     headers of its own answers and hands them to the status line on stdin
  *     (`src/cli/statusline.ts`). The status line writes down the 5-hour window alone
- *     (`src/cli/usage-window.ts`, `fiveHourWindow` here); the 7-day ones are written nowhere.
+ *     (`src/cli/usage-window.ts`, `planWindow` here); the 7-day ones are written nowhere.
  *     The router records the limits it saw (which model, which window, when it resets).
  *   - **Prices and image support.** They are in OmniRoute's own catalog, which the gateway
  *     never reads: `/v1/models` carries an id and a context length, and that is all.
@@ -27,7 +27,7 @@ import {
   browserSetup,
   realBrowserSetupDeps,
 } from "../browser/setup";
-import { MIN_BUN, VERSION } from "../build-info";
+import { bunTooOld, MIN_BUN, VERSION } from "../build-info";
 import type { Check } from "../cli/check";
 import { type LiveRecord, parseClaudeVersion, readLiveRecord } from "../cli/live-check";
 import { readUsageWindow } from "../cli/usage-window";
@@ -1303,7 +1303,8 @@ export interface BunFacts {
 export function bunFacts(ctx: PortalContext): BunFacts {
   return {
     minimum: MIN_BUN,
-    ok: Bun.semver.order(ctx.bunVersion, MIN_BUN) >= 0,
+    // The kit's own rule, pre-releases included (`bunTooOld`); the path only shapes its words.
+    ok: bunTooOld(ctx.bunVersion, "") === null,
     version: ctx.bunVersion,
   };
 }
@@ -1362,7 +1363,7 @@ export interface PlanWindow {
  * (`src/cli/usage-window.ts`); null with no reading, or one from a window that is over. The
  * 7-day window is recorded nowhere, so no page has a number for it.
  */
-export function fiveHourWindow(ctx: PortalContext): null | PlanWindow {
+export function planWindow(ctx: PortalContext): null | PlanWindow {
   const window = readUsageWindow(ctx.paths, ctx.now());
   if (window === null) return null;
   return {
