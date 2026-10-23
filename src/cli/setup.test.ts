@@ -249,24 +249,35 @@ describe("every question comes first", () => {
 });
 
 describe("UX-11: --yes asks nothing it may skip", () => {
-  test("on a terminal, --yes offers neither the status line nor the retry watchdog, and remembers no no", async () => {
-    const w = world({ statuslineAnswered: false, retryWatchdogAnswered: false });
+  const WATCHDOG = "CLAUDE_CODE_RETRY_WATCHDOG";
+  const RECHECK = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+  const ON_NOTE =
+    '  · retry watchdog: on, so every Claude session on this machine waits and retries at a limit instead of failing ("Retrying in …"; Esc cancels), with no time limit; a `claude -p` script can wait until a model answers; to turn it off: cc-smart-dev-kit setup --no-retry-watchdog';
+
+  test("on a terminal, --yes offers neither the status line nor a watchdog question, and turns the watchdog on", async () => {
+    const w = world({ statuslineAnswered: false, retryWatchdogDeclined: false });
     expect(await w.setup({ yes: true })).toBe(0);
     expect(w.questions).toEqual([]);
     expect(readJson(w.paths.settingsFile).statusLine).toBeUndefined();
-    // Not a "no": a later plain setup on a terminal still offers both.
+    expect(readJson(w.paths.settingsFile).env).toMatchObject({
+      [WATCHDOG]: "1",
+      [RECHECK]: "300000",
+    });
+    // Not a "no": a later plain setup on a terminal still asks the status-line question, and
+    // finds the watchdog already on.
     expect(existsSync(statuslineDeclinedFile(w.paths.stateDir))).toBe(false);
     expect(existsSync(retryWatchdogDeclinedFile(w.paths.stateDir))).toBe(false);
     expect(await w.setup()).toBe(0);
-    expect(w.questions).toHaveLength(2);
+    expect(w.questions).toHaveLength(1);
   });
 
-  test("a dry run with --yes says the watchdog is not offered", async () => {
-    const w = world({ retryWatchdogAnswered: false });
+  test("a dry run with --yes names the watchdog it would turn on, and writes nothing", async () => {
+    const w = world({ retryWatchdogDeclined: false });
+    const before = readFileSync(w.paths.settingsFile, "utf8");
     expect(await w.setup({ dryRun: true, yes: true })).toBe(0);
-    expect(printed).toContain(
-      "  · retry watchdog: not offered with --yes (nothing changes); --retry-watchdog turns it on",
-    );
+    expect(printed).toContain(ON_NOTE);
+    expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(before);
+    expect(existsSync(retryWatchdogDeclinedFile(w.paths.stateDir))).toBe(false);
   });
 });
 

@@ -1,15 +1,17 @@
 /**
- * Claude Code's retry watchdog, offered for the person's own sessions (D42).
+ * Claude Code's retry watchdog, on by default for the person's own sessions (D56).
  *
  * With `CLAUDE_CODE_RETRY_WATCHDOG=1`, a session that meets a limited or failing model waits
  * and retries ("Retrying in …"; Esc cancels) instead of failing. Proved on Claude Code 2.1.306:
  * Claude Code reads the variable from a settings file's `env`, it retries past 11 requests,
  * and with `…_USAGE_LIMIT_RECHECK_MS` it checks again whether a usage limit was lifted.
  *
- * It is the only way the lead's own subagents survive a limit, so `setup` offers it once
- * (default no). The trade-offs are said in the question (`RETRY_WATCHDOG_QUESTION`):
+ * D56 (the owner, 2026-10-23): setup turns it on without a question, with or without a
+ * terminal and with `--yes`, unless the person said no before (`retryWatchdogDeclinedFile`)
+ * or set a value of their own. What that means is said in one line setup prints
+ * (`RETRY_WATCHDOG_ON_NOTE`), not in a question:
  *   - every Claude session on the machine waits instead of failing;
- *   - a `claude -p` script can hang until a model answers;
+ *   - a `claude -p` script can wait until a model answers;
  *   - there is no time limit: this module writes no `…_MAX_WAIT_MS` and no
  *     `…_MAX_USAGE_LIMIT_WAIT_MS` (the owner chose "keep waiting", D42).
  *
@@ -18,6 +20,7 @@
  * (`ForeignKeyError`), and `restore` removes ours.
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import { getKey, type KeyPath, ownedRecords, ownership, readJsonObject } from "./managed-json";
@@ -40,20 +43,32 @@ export const RETRY_WATCHDOG_SETTINGS: ReadonlyArray<readonly [KeyPath, string]> 
   [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
 ];
 
-/** The flags of `setup`: on without the question, and off again (remembered as a "no"). */
+/** The flags of `setup`: on (and forget an earlier "no"), and off again (remembered as a "no"). */
 export const RETRY_WATCHDOG_FLAG = "--retry-watchdog";
 export const NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
 
-/** Says the person answered "no" (or ran `--no-retry-watchdog`): setup does not ask again. */
+/** Says the person answered "no" (or ran `--no-retry-watchdog`): setup does not turn it on. */
 export function retryWatchdogDeclinedFile(stateDir: string): string {
   return join(stateDir, "retry-watchdog-declined");
 }
 
-/** The question setup asks, in a terminal only. */
-export const RETRY_WATCHDOG_QUESTION =
-  "Make Claude Code wait and retry, instead of failing, when a model is limited or down? " +
-  'Every Claude session on this machine then waits ("Retrying in …"; Esc cancels) with no time limit, ' +
-  "a `claude -p` script can hang until a model answers, and the lead's own subagents survive a limit only this way.";
+/** True when that "no" is on file: setup leaves the watchdog off. */
+export function retryWatchdogDeclined(stateDir: string): boolean {
+  return existsSync(retryWatchdogDeclinedFile(stateDir));
+}
+
+/**
+ * What setup says when it turns the watchdog on (D56): one `·` line, so a person knows what
+ * every session on the machine now does, and how to undo it.
+ */
+export const RETRY_WATCHDOG_ON_NOTE =
+  `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` +
+  'instead of failing ("Retrying in …"; Esc cancels), with no time limit; a `claude -p` script ' +
+  `can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
+
+/** What setup says when a "no" on file holds it off, and how to change that. */
+export const RETRY_WATCHDOG_DECLINED_NOTE =
+  `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
 
 /**
  * Where it stands in the settings' `env`:
@@ -83,7 +98,7 @@ export function retryWatchdogState(paths: RetryWatchdogPaths): RetryWatchdogStat
   return turnsOn(current.value) ? "yours" : "disabled";
 }
 
-/** True when either key is in the settings' `env` at all (the person has made a choice: do not ask). */
+/** True when either key is in the settings' `env` at all (the person has made a choice: leave it alone). */
 export function retryWatchdogKeysPresent(settingsFile: string): boolean {
   const data = readJsonObject(settingsFile).data;
   return RETRY_WATCHDOG_SETTINGS.some(([path]) => getKey(data, path).found);
