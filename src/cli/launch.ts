@@ -34,6 +34,7 @@ import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../
 import { profileUrlOf, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl } from "../gateway/settings";
 import { isProfileName } from "../gateway/targets";
+import { tildify } from "./paths";
 
 type Env = Record<string, string | undefined>;
 
@@ -201,7 +202,16 @@ function launchTarget(mode: LaunchMode, ctx: LaunchContext): LaunchTarget | { li
     };
   }
   const { config, problem } = readGatewayConfig(ctx.configPath);
-  if (problem !== null) return { lines: [`launch: ${problem}`] };
+  if (problem !== null) {
+    // The reader's answer may be a schema tree on several lines; the person gets its first
+    // line and a fix, as every other refusal of this command does.
+    return {
+      lines: [
+        `launch: the gateway's config cannot be read: ${problem.split("\n")[0] ?? problem}`,
+        `Fix: fix ${tildify(ctx.configPath, ctx.home)} by hand, then run ${COMMAND} gateway status to check it.`,
+      ],
+    };
+  }
   if (config === null) {
     const asked = mode.kind === "gateway" ? "--gateway" : `--profile "${mode.name}"`;
     return {
@@ -257,8 +267,15 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
     );
     return 1;
   }
-  // No URL, no file: a launch with no mode passes no `--settings` at all.
+  // No URL, no file: a launch with no mode passes no `--settings` at all. A URL with no file
+  // would start a session on another path than the line just printed: refused, never run.
   const settingsFile = target.url === null ? null : launchSettingsFile(ctx.stateDir, parsed.mode);
+  if (target.url !== null && settingsFile === null) {
+    ctx.error(
+      "launch: it cannot work out a settings file for this profile name, so it runs nothing rather than start a session on another path than the one it printed.",
+    );
+    return 1;
+  }
   const claudeArgs: string[] = [];
   if (settingsFile !== null) claudeArgs.push("--settings", settingsFile);
   claudeArgs.push(...parsed.claudeArgs);

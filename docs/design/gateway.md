@@ -21,6 +21,10 @@ An optional local router between Claude Code and the model providers
   (GP4 adds the doctor lines and the portal's card on the same reader); a file it cannot read is
   `unknown`, never a guess.
   `docs/gateway.md` § Per project, and the rules in `.claude/rules/gateway.md`.
+- **One session can take another path** (GP3): `cc-smart-dev-kit launch` writes a `--settings`
+  file holding only `env.ANTHROPIC_BASE_URL` and starts `claude` with it, attached to the
+  terminal — plain Claude, the machine's gateway, or one profile — for that session alone,
+  whatever the project and the machine say. `docs/gateway.md` § One session.
 - **No prompt text is ever changed.** An affordable backend gets two named, tested format
   translations and nothing else. A slot's Claude target that is not the model asked for gets one,
   `requestForClaudeFallback`: only the fields that Claude model refuses (Claude Code built

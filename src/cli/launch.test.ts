@@ -285,6 +285,19 @@ describe("launch", () => {
     expect(runLog(home)).toEqual([]);
   });
 
+  test("a config it cannot read is one line and a fix, never the reader's schema tree", async () => {
+    const home = world();
+    mkdirSync(join(home.home, ".config", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(home.configPath, `{"port": "not a port", "version": 1}\n`, { mode: 0o600 });
+    const ctx = context(home);
+    expect(await runLaunch(["--gateway"], ctx)).toBe(1);
+    expect(ctx.errors).toEqual([
+      `launch: the gateway's config cannot be read: ${home.configPath} is not a valid gateway config:`,
+      "Fix: fix ~/.config/cc-smart-dev-kit/gateway.json by hand, then run cc-smart-dev-kit gateway status to check it.",
+    ]);
+    expect(runLog(home)).toEqual([]);
+  });
+
   test("a profile the config does not have is refused with the ones it has", async () => {
     const home = world();
     gatewayConfig(home, ["fast", "slow"]);

@@ -44178,8 +44178,15 @@ function launchTarget(mode, ctx) {
     };
   }
   const { config, problem } = readGatewayConfig(ctx.configPath);
-  if (problem !== null)
-    return { lines: [`launch: ${problem}`] };
+  if (problem !== null) {
+    return {
+      lines: [
+        `launch: the gateway's config cannot be read: ${problem.split(`
+`)[0] ?? problem}`,
+        `Fix: fix ${tildify(ctx.configPath, ctx.home)} by hand, then run ${COMMAND} gateway status to check it.`
+      ]
+    };
+  }
   if (config === null) {
     const asked = mode.kind === "gateway" ? "--gateway" : `--profile "${mode.name}"`;
     return {
@@ -44231,6 +44238,10 @@ See: ${COMMAND} launch --help`);
     return 1;
   }
   const settingsFile = target.url === null ? null : launchSettingsFile(ctx.stateDir, parsed.mode);
+  if (target.url !== null && settingsFile === null) {
+    ctx.error("launch: it cannot work out a settings file for this profile name, so it runs nothing rather than start a session on another path than the one it printed.");
+    return 1;
+  }
   const claudeArgs = [];
   if (settingsFile !== null)
     claudeArgs.push("--settings", settingsFile);

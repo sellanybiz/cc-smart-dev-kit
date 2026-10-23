@@ -305,5 +305,7 @@ blocks 1.0.0 on Windows: Chrome through the Playwright extension (`browser setup
 check`; `README.md` § The browser), `worktrees --clean` with a program still using a folder
 (`windows-jobs.md` § Live checks has the process scan), `sessions --open` in Windows Terminal,
 the file-mode readers on a real profile (`gateway status`, `browser mcp`, the Tavily key),
-Git Bash deliberately absent (`doctor` `✗`, a hook errors visibly), and the browser's MCP server
-through `cmd.exe /c` (`claude mcp get playwright`).
+Git Bash deliberately absent (`doctor` `✗`, a hook errors visibly), the browser's MCP server
+through `cmd.exe /c` (`claude mcp get playwright`), and one `launch --no-gateway` from cmd and
+from PowerShell: the CLI writes the settings file, then `cmd.exe` carries its path to a
+`claude.cmd` (`docs/gateway.md` § One session — the argv is tested, the live session is not).
