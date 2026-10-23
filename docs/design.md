@@ -3103,7 +3103,11 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
    ignore. Each clash is one line after the `started`/`queued` line, naming
    the other lead, its crew session and the files they share, and one `clash` event on that crew
    session, so the other lead's watch says the same line. Two leads may mean to share a file, so
-   nothing is refused, delayed or queued.
+   nothing is refused, delayed or queued. **A phase that already has a live crew session of the
+   same lead**, under another slug, adds one line too (`phaseLine`): it names that crew session and
+   says to remove it first — two crew sessions on one phase is a mistake (the bug of 2026-10-23).
+   The record this start continues (`--continue`) is not named: a hand-off is the same phase on
+   purpose.
 4. **Its files** (`files/<id>/`): `brief.md` — the brief as given, then a fixed frame (`brief.ts`):
    who it is and for whom, its worktree and branch, the files it owns, the git rule (D24: commit on
    its branch, never push, never open a pull request, never merge), how it hands back
@@ -3169,15 +3173,21 @@ polls or retries. An opus-tier start with no 5-hour window reading adds one note
 `end.ts`, `remove.ts`; their help is one table, `usage.ts`, which the help table's rows
 (`src/cli/help.ts`) and `crew --help` read too). All of them look a crew session up **in this
 repository's store only**, by its name (also the ` [ref]` form ListAgents prints), its id, its
-session's short id or its session id. A name that matches two crew sessions is refused and both are
-named, so the store, never a guess, decides which session is meant (D35). A crew session's own
+session's short id or its session id. A name that matches two **live** crew sessions is refused and
+both are named; a name whose other matches are `removed` means the live one — a lead that reused a
+name after a removal acts on the session it has, never on its history, so the store, never a guess,
+decides which session is meant (D35; the bug of 2026-10-23: `crew rm <name>` stopped at "name one by
+its id" and the old queued record stayed, so two crew sessions started for one phase). One finder,
+`findNamed` (`board.ts`), answers for crew sessions and for leads (`crew lead tell`). A crew session's own
 session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
 
 - **`list`** shows the repository's crew sessions (`--all`: every repository), newest first, one block
   each. The state's age is the newest `state` or `created` event about the crew session, not
   `updatedAt`: the watch writes a line or a memory reading every few seconds, and that changes
   the record without changing what the crew session does. Its last step or line is its newest event
-  with a line, else `lastLine`. **The files its brief gives it** (`--files`) are one line of the
+  with a line, else `lastLine` — **never an event another session wrote about it**: a `clash` names
+  the crew session whose files are wanted, but the words are the starting lead's, and a `lead-tell`
+  or a `merge` is another lead's news too. **The files its brief gives it** (`--files`) are one line of the
   block when it names any, so the board is the ownership map too: two crew sessions that list one
   file collide. A queued crew session says what holds it, recomputed from the store the
   way `crew start` decides (`placeFor`: the phases it waits for, then the cap of all crew sessions,
@@ -3190,10 +3200,16 @@ session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
   and stopping its process changes nothing about that. A stop Claude Code refuses for a session
   that agent view does not list counts as stopped (the goal is met); one it refuses for a listed
   session is an error and changes nothing.
-- **`resume`** runs `claude respawn <short id>` for that one session — never `--all`, which
-  restarts every background session on the machine — and the crew session is `working` again. It is
-  refused for a crew session that is `removed` or `merged`, or has no session yet. It does not check
-  the caps: the person or the lead asked for exactly this session.
+- **`resume`** brings that one session back with `claude --bg --resume <session id>` **in the crew
+  session's own worktree**, with its own `--settings` and `--strict-mcp-config --mcp-config` files
+  (`resumeSession`, `answer.ts`): never `claude respawn`, which does not re-apply `-w` (read from
+  the 2.1.309 binary) and brings a `--bg -w` session back in the folder it was launched from — the
+  main checkout — where its own start check marks it failed (the bug of 2026-10-23); and never
+  `--all`, which restarts every background session on the machine. A session that still has a
+  process is not resumed — `--bg --resume` would start a copy beside it — and the line says it runs
+  already. The crew session is `working` again. It is refused for one that is `removed` or
+  `merged`, has no session yet, or has no worktree or settings file any more (one line each). It
+  does not check the caps: the person or the lead asked for exactly this session.
 - **`rm`** ends a finished crew session, and refuses at the first step that would lose something. A
   crew session commits on its branch and never pushes (D24), so **only the lead's branch decides**
   whether its work is kept: `workOnRef` (`src/worktrees/scan.ts`, the one answer `crew rm` and
@@ -3372,12 +3388,15 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   its hold-off, with no breaker or limit that would explain it now. One crew session goes first
   (the canary); the next no sooner than 30 s after it, and only once the router answered a
   request since — its health page's count grew, and the state file's closed breaker or dropped
-  limit is that answer when the page is not there. The transport is `crew answer`'s: a message
-  for a session whose process lives (the watch prints the `SendMessage` line, because only a
-  session holds that tool), `claude --bg --resume <id> "<text>"` for one whose session has no
-  process; the text names what changed and the phase. The record is `working` with its wait
-  cleared, in the same act. `crew resume --paused` is the person's way at once — after `/login`
-  on another account — for every paused crew session of a lead.
+  limit is that answer when the page is not there. The transport is `crew answer`'s, one home for
+  every resume (`resumeSession`): a message for a session whose process lives (the watch prints the
+  `SendMessage` line, because only a session holds that tool), `claude --bg --resume <id> "<text>"`
+  **in its worktree, with the record's own `--settings` and `--strict-mcp-config --mcp-config`
+  files** for one whose session has no process; the text names what changed and the phase. The
+  record is `working` with its wait cleared, in the same act. `crew resume --paused` is the
+  person's way at once — after `/login` on another account — for every paused crew session of a
+  lead: the same `resumeOne`, so a session whose process lives is woken with a message and one
+  that has none is resumed, never copied.
 
 **The hand-off** — `crew start <phase> --continue <old crew session>` — starts the next crew session of a
 phase that ran out of room: the same phase and slug, cut from the **old crew session's head** (not

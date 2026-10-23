@@ -10,7 +10,6 @@
  *   FAKE_RM           `fail` (exit 1, "could not delete").
  *   FAKE_WORKTREE     a folder: `claude rm` refuses while it exists, in Claude Code's own words
  *                     (proved live, L1a.1: it refuses a worktree that is still there).
- *   FAKE_RESPAWN      `fail` (exit 1, "could not respawn").
  *   FAKE_BG           `fail` (exit 4, "something broke"): a resume claude refuses.
  */
 import { chmodSync, writeFileSync } from "node:fs";
@@ -60,8 +59,6 @@ case "$1" in
       echo "exit that session, or run 'git worktree unlock' on the worktree, then run 'claude rm' again" >&2
       exit 1
     fi ;;
-  respawn)
-    if [ "$FAKE_RESPAWN" = fail ]; then echo "could not respawn" >&2; exit 1; fi ;;
 esac
 exit 0
 `;

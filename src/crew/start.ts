@@ -37,7 +37,7 @@
  *      trusted`), the worktree and its branch are taken back, so a second try finds the name free.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { gatewayFactsOf, judgeLaunch } from "../hooks/agent-guard";
@@ -111,6 +111,7 @@ import {
   type CrewRecord,
   createCrew,
   crewBriefFile,
+  crewMcpFile,
   crewReportFile,
   crewSettingsFile,
   type HandBackReport,
@@ -713,7 +714,8 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
   // crew session that waited in the queue gets the machine's plugins as they are when it starts.
   // **Before anything is made**: a write that fails leaves no worktree and no branch behind.
   const settingsFile = crewSettingsFile(ctx.paths.stateDir, spec.repo, record.id);
-  const mcpFile = join(dirname(settingsFile), "mcp.json");
+  // Its neighbour, from the one home both the start and a resume read it from (`crewMcpFile`).
+  const mcpFile = crewMcpFile(ctx.paths.stateDir, spec.repo, record.id);
   try {
     writeStoreFile(settingsFile, crewSettingsText(record.id, spec.lean.off));
     writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));

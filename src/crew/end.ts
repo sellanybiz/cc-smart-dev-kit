@@ -3,7 +3,7 @@
  * `resume` themselves (D35).
  *
  * **The store is the truth about who is a crew session.** Only a session the store records is ever
- * stopped, removed or respawned here — never a person's own session. Each command finds the
+ * stopped, removed or brought back here — never a person's own session. Each command finds the
  * crew session by its name, its id, its short id or its session id, in this repository's store only,
  * and a crew session's own session never runs them: a crew session never stops, removes or resumes crew sessions.
  *
@@ -39,7 +39,7 @@ import { type CrewRecord, type LeadRecord, listLeads, readLead, updateCrew } fro
 import { pauseStartedAt } from "./wait";
 import { leadOf, resumeOne } from "./watch";
 
-/** How long `claude stop`, `claude rm` and `claude respawn` may take: each returns at once. */
+/** How long `claude stop` and `claude rm` may take: each returns at once. */
 export const CLAUDE_END_TIMEOUT_MS = 30_000;
 
 /** How long one git call of a removal may take: a `git status` in the worktree is the slow part. */
@@ -330,7 +330,7 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
   let code = 0;
   for (const record of paused) {
     if (record.shortId === null) {
-      ctx.error(`crew resume: ${record.name} has no session to respawn`);
+      ctx.error(`crew resume: ${record.name} has no session to resume`);
       code = 1;
       continue;
     }
