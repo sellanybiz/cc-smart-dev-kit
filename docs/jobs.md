@@ -62,6 +62,41 @@ flowchart TD
    launch). The lease is given back however the job ends, once no process of the job is
    left.
 
+## What a job prints
+
+The job's output is the job's: stdout and stderr are passed through untouched, so anything
+`job run` itself has to say goes to stderr, each line prefixed `[cc-smart-dev-kit job]`. A
+job that never waits says nothing at all: a free machine gets no noise.
+
+A job that waited says three things, around its own output:
+
+```text
+[cc-smart-dev-kit job] Heavy job waits for memory: bunx tsc --noEmit needs 8 GB. this machine: 2 of 32 GB free. Why: only 2 GB of this machine's budget is free.
+[cc-smart-dev-kit job] A pipe (| tail) hides this job's exit status: the "Heavy job ended" line carries it.
+[cc-smart-dev-kit job]   this machine: 28 GB held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
+… the job's output, while it runs …
+[cc-smart-dev-kit job] Heavy job starts after 18 min: bunx tsc --noEmit (8 GB)
+[cc-smart-dev-kit job] Heavy job ended: bunx tsc --noEmit, exit 0 after 3 min
+```
+
+- **The waiting line**, once when the wait starts and then every minute (§ Waiting).
+  **The first one carries the pipe hint**, once per job: a job whose output goes down a
+  pipe (`| tail`) reports the pipe's own status, so the hint points at the end line, which
+  holds the job's own. A job that never waited gets no hint and no end line.
+- **The start line** says the wait is over, and what waited: `Heavy job starts after 18
+  min:` what the job is, then `(8 GB)`, what it reserved. A job with no memory to reserve
+  (its name alone, `--exclusive`) leaves the GB out.
+- **The end line** says how the job ended, and how long it ran. It is said last: after
+  "killed for memory" (§ The launch) when the kernel stopped the job.
+  - `exit 0` is the job's own exit code — the one a pipe hides. `128 + n` means a signal.
+  - `stopped by SIGTERM` says which signal ended the job. When that signal is one `job run`
+    caught and sent on (a Ctrl+C at `job run`, or a `kill` at it), the line says who: `sent
+    on by job run`. A signal from somewhere else — the kernel's OOM killer, another
+    process's `kill` — is named without a sender.
+  - `(its leftover processes were stopped)` says the job's memory was freed by force: the
+    job's own process was gone, but the processes it left behind had to be stopped
+    (§ The launch).
+
 ## Kinds
 
 | Kind | Finds | Reserves |
