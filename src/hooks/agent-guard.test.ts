@@ -8,12 +8,16 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
+import { createCrew, type NewCrew, writeLead } from "../crew/store";
 import type { GatewayConfig } from "../gateway/config";
 import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
-import { tempDir } from "../testing/temp";
+import { locateCheckout } from "../project/resolve";
+import { type CrewWorld, crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
+import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   agentGuard,
   crewAgentAnswer,
@@ -954,7 +958,7 @@ describe("a Workflow script", () => {
     expect(workflowRefusal(script)).toBeNull();
   });
 
-  it("judges every launch of the call: a denied one denies the whole Workflow call", () => {
+  it("judges every launch of the call: a denied one denies the whole Workflow call", async () => {
     const script = [
       'await agent("build it", { model: "sonnet", effort: "high" });',
       'await agent("plan it", { model: "opus", effort: "xhigh" });',
@@ -963,31 +967,31 @@ describe("a Workflow script", () => {
     const results = judgeWorkflow(script, CTX, NO_ENV);
     expect(results.map((one) => one.verdict.decision)).toEqual(["allow", "allow", "deny"]);
     const answer = JSON.parse(
-      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
     expect(answer.permissionDecisionReason).toContain('In this workflow, the launch "do it"');
     expect(answer.permissionDecisionReason).toContain("Fable advises");
   });
 
-  it("a Fable launch with a reason line asks; the ask names the launch", () => {
+  it("a Fable launch with a reason line asks; the ask names the launch", async () => {
     const script =
       'await agent("Plan the rewrite.\\nFable reason: rewrite - the editor", { label: "plan", model: "fable", effort: "max", agentType: "Plan" });';
     const answer = JSON.parse(
-      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("ask");
     expect(answer.permissionDecisionReason).toContain('the launch "plan"');
     expect(answer.permissionDecisionReason).toContain("Fable advises");
   });
 
-  it("an ask names every launch of the script that asks, not only the first", () => {
+  it("an ask names every launch of the script that asks, not only the first", async () => {
     const script = [
       'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
       'await agent("Fable reason: build - write it", { label: "builder", model: "fable", effort: "max", agentType: "general-purpose" });',
     ].join("\n");
     const answer = JSON.parse(
-      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("ask");
     expect(answer.permissionDecisionReason).toContain('the launch "advice"');
@@ -1057,7 +1061,7 @@ describe("a Workflow script", () => {
     expect(prompt[0]?.verdict.reason).toContain("prompt is built at run time");
   });
 
-  it("`agent` handed around refuses the whole Workflow: nothing it launches can be read", () => {
+  it("`agent` handed around refuses the whole Workflow: nothing it launches can be read", async () => {
     const script = [
       'const run = agent;\nawait run("x", { model: "opus", effort: "high" });',
       'await agent?.("x", { model: "haiku", effort: "low" });',
@@ -1071,14 +1075,14 @@ describe("a Workflow script", () => {
     // The first one is named by its line, so the script can be fixed.
     expect(refusal).toContain("(line 1)");
     const answer = JSON.parse(
-      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
     expect(answer.permissionDecisionReason).toContain("never reaches a hook");
     expect(answer.permissionDecisionReason).toContain('agent("<prompt>"');
   });
 
-  it("options built at run time refuse the whole Workflow: the literal read can be replaced", () => {
+  it("options built at run time refuse the whole Workflow: the literal read can be replaced", async () => {
     const scripts = [
       'await agent("x", { model: "haiku", effort: "low", ["model"]: "opus" });',
       'await agent("x", { model: "haiku", effort: "low", ...overrides });',
@@ -1088,7 +1092,7 @@ describe("a Workflow script", () => {
     for (const script of scripts) {
       expect(workflowRefusal(script)).toContain("cannot be read");
       const answer = JSON.parse(
-        agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+        (await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).stdout ?? "{}",
       ).hookSpecificOutput;
       expect(answer.permissionDecision).toBe("deny");
       expect(answer.permissionDecisionReason).toContain("not what they seem");
@@ -1127,7 +1131,7 @@ describe("a Workflow script", () => {
     ]);
   });
 
-  it("a Workflow agent() at `low` is refused, on every model; `medium` runs on Claude", () => {
+  it("a Workflow agent() at `low` is refused, on every model; `medium` runs on Claude", async () => {
     const script = [
       'await agent("search it", { label: "scout", model: "haiku", effort: "medium" });',
       'await agent("build it", { label: "worker", model: "cc-smart-dev-kit-worker", effort: "low" });',
@@ -1137,21 +1141,23 @@ describe("a Workflow script", () => {
     expect(results.map((one) => one.verdict.decision)).toEqual(["allow", "deny", "allow"]);
     expect(results[1]?.verdict.reason).toContain("asks for effort `low`");
     const answer = JSON.parse(
-      agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
     expect(answer.permissionDecisionReason).toContain('the launch "worker"');
     expect(answer.permissionDecisionReason).toContain("asks for effort `low`");
   });
 
-  it("a script with no agent(…) call: nothing to say", () => {
+  it("a script with no agent(…) call: nothing to say", async () => {
     expect(judgeWorkflow("export const meta = {};", CTX, NO_ENV)).toEqual([]);
-    expect(agentGuard(workflowCall("return 1;"), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).toEqual({});
+    expect(await agentGuard(workflowCall("return 1;"), NO_ENV, WORKFLOW_PATHS, "/tmp/app")).toEqual(
+      {},
+    );
   });
 
-  it("G2: a call with no script at all is no longer let through: it asks", () => {
+  it("G2: a call with no script at all is no longer let through: it asks", async () => {
     // Before G2 this was silent, and so was every run by `name` or `scriptPath`.
-    const answer = agentGuard(
+    const answer = await agentGuard(
       { hook_event_name: "PreToolUse", tool_input: {}, tool_name: "Workflow" },
       NO_ENV,
       WORKFLOW_PATHS,
@@ -1167,9 +1173,9 @@ describe("the hook's answer, and the record", () => {
     return cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   }
 
-  it("denied: a PreToolUse deny on stdout, and nothing recorded", () => {
+  it("denied: a PreToolUse deny on stdout, and nothing recorded", async () => {
     const where = paths();
-    const result = agentGuard(
+    const result = await agentGuard(
       agentCall({ effort: "low", model: "opus", prompt: "x" }),
       NO_ENV,
       where,
@@ -1180,10 +1186,10 @@ describe("the hook's answer, and the record", () => {
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
   });
 
-  it("allowed: silent, and the Opus launch is recorded with its reason", () => {
+  it("allowed: silent, and the Opus launch is recorded with its reason", async () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
-    const result = agentGuard(
+    const result = await agentGuard(
       agentCall({
         effort: "xhigh",
         model: "opus",
@@ -1202,7 +1208,7 @@ describe("the hook's answer, and the record", () => {
     expect(launch?.subagentType).toBe("Reviewer");
   });
 
-  it("an asked Opus launch is recorded once it ran, and once only for one call", () => {
+  it("an asked Opus launch is recorded once it ran, and once only for one call", async () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const input = {
@@ -1214,25 +1220,25 @@ describe("the hook's answer, and the record", () => {
       session_id: "11111111-2222-3333-4444-555555555555",
       tool_use_id: "toolu_1",
     };
-    const asked = agentGuard(input, NO_ENV, where, "/tmp/app");
+    const asked = await agentGuard(input, NO_ENV, where, "/tmp/app");
     expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
     // Asked, not yet answered: nothing is recorded, also when PreToolUse runs again.
-    agentGuard(input, NO_ENV, where, "/tmp/app");
+    await agentGuard(input, NO_ENV, where, "/tmp/app");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
     // It ran (PostToolUse), so the person said yes: one record, and a second run adds none.
     const ran = { ...input, hook_event_name: "PostToolUse" };
-    agentGuard(ran, NO_ENV, where, "/tmp/app");
-    agentGuard(ran, NO_ENV, where, "/tmp/app");
+    await agentGuard(ran, NO_ENV, where, "/tmp/app");
+    await agentGuard(ran, NO_ENV, where, "/tmp/app");
     const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.reason).toBe("opus:max:debugging");
     expect(launches[0]?.toolUseId).toBe("toolu_1");
     // Another tool call in the same session is a second launch.
-    agentGuard({ ...ran, tool_use_id: "toolu_2" }, NO_ENV, where, "/tmp/app");
+    await agentGuard({ ...ran, tool_use_id: "toolu_2" }, NO_ENV, where, "/tmp/app");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(2);
   });
 
-  it("a Workflow denied as a whole records none of its launches; an ask records them once it ran", () => {
+  it("a Workflow denied as a whole records none of its launches; an ask records them once it ran", async () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const denied = [
@@ -1240,7 +1246,7 @@ describe("the hook's answer, and the record", () => {
       'await agent("build it", { label: "worker", model: "haiku", effort: "low" });',
     ].join("\n");
     const answer = JSON.parse(
-      agentGuard(workflowCall(denied), NO_ENV, where, "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(denied), NO_ENV, where, "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
     // The whole call was refused, so nothing in it ran: no launch of it is recorded.
@@ -1248,11 +1254,11 @@ describe("the hook's answer, and the record", () => {
     const asked =
       'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });';
     const second = JSON.parse(
-      agentGuard(workflowCall(asked), NO_ENV, where, "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(asked), NO_ENV, where, "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(second.permissionDecision).toBe("ask");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
-    agentGuard(
+    await agentGuard(
       { ...workflowCall(asked), hook_event_name: "PostToolUse" },
       NO_ENV,
       where,
@@ -1263,7 +1269,7 @@ describe("the hook's answer, and the record", () => {
     expect(launches[0]?.reason).toBe("fable:plan");
   });
 
-  it("a Fable build launch is recorded once with its reason, `fable:build`", () => {
+  it("a Fable build launch is recorded once with its reason, `fable:build`", async () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const input = {
@@ -1276,25 +1282,25 @@ describe("the hook's answer, and the record", () => {
       session_id: "11111111-2222-3333-4444-555555555555",
       tool_use_id: "toolu_build",
     };
-    const asked = agentGuard(input, NO_ENV, where, "/tmp/app");
+    const asked = await agentGuard(input, NO_ENV, where, "/tmp/app");
     expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
     const ran = { ...input, hook_event_name: "PostToolUse" };
-    agentGuard(ran, NO_ENV, where, "/tmp/app");
+    await agentGuard(ran, NO_ENV, where, "/tmp/app");
     const launches = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.family).toBe("fable");
     expect(launches[0]?.reason).toBe("fable:build");
     expect(launches[0]?.subagentType).toBe("general-purpose");
     // The hook runs twice for one call (proved live): one record, not two.
-    agentGuard(ran, NO_ENV, where, "/tmp/app");
+    await agentGuard(ran, NO_ENV, where, "/tmp/app");
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toHaveLength(1);
   });
 
-  it("an opus launch at effort max is recorded as `opus:max`, so `usage` lists it", () => {
+  it("an opus launch at effort max is recorded as `opus:max`, so `usage` lists it", async () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
-    const result = agentGuard(
+    const result = await agentGuard(
       agentCall({ effort: "max", model: "opus", prompt: "review it", subagent_type: "Reviewer" }),
       NO_ENV,
       where,
@@ -1302,7 +1308,7 @@ describe("the hook's answer, and the record", () => {
     );
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
     // Recorded once the call ran (the person said yes).
-    agentGuard(
+    await agentGuard(
       {
         ...agentCall({
           effort: "max",
@@ -1322,10 +1328,10 @@ describe("the hook's answer, and the record", () => {
     expect(launch?.subagentType).toBe("Reviewer");
   });
 
-  it("a Sonnet launch is not recorded, and a record of another shape is skipped", () => {
+  it("a Sonnet launch is not recorded, and a record of another shape is skipped", async () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
-    agentGuard(
+    await agentGuard(
       agentCall({ effort: "high", model: "sonnet", prompt: "x" }),
       NO_ENV,
       where,
@@ -1375,7 +1381,7 @@ describe("the hook's answer, and the record", () => {
     });
   });
 
-  it("a record of another day is not in the window", () => {
+  it("a record of another day is not in the window", async () => {
     expect(
       parseAgentLaunch(JSON.stringify({ at: 1, family: "opus", model: "m", reason: "review" })),
     ).toEqual({
@@ -1430,8 +1436,8 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
   }
 
   /** The hook's PreToolUse answer for one Agent call; null when it stays silent (allowed). */
-  function answer(where: CliPaths, fields: Record<string, unknown>) {
-    const result = agentGuard(agentCall(fields), NO_ENV, where, "/tmp/app");
+  async function answer(where: CliPaths, fields: Record<string, unknown>) {
+    const result = await agentGuard(agentCall(fields), NO_ENV, where, "/tmp/app");
     if (result.stdout === undefined || result.stdout === "") return null;
     const output = JSON.parse(result.stdout).hookSpecificOutput;
     return {
@@ -1442,43 +1448,46 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
 
   const WORKER_ON_BACKEND = { "cc-smart-dev-kit-worker": ["omniroute:glm-x"] };
 
-  it("a sonnet launch on a worker chain that starts with a backend is affordable: effort max", () => {
+  it("a sonnet launch on a worker chain that starts with a backend is affordable: effort max", async () => {
     const where = machine(WORKER_ON_BACKEND, true);
-    expect(answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toEqual({
+    expect(await answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toEqual({
       decision: "deny",
       reason: [
         "This launch runs on omniroute:glm-x, an affordable gateway slot.",
         'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
       ].join("\n"),
     });
-    expect(answer(where, { effort: "max", model: "sonnet", prompt: "build it" })).toBeNull();
+    expect(await answer(where, { effort: "max", model: "sonnet", prompt: "build it" })).toBeNull();
     // The full id goes to the same slot: the router reads the family, not the exact id.
     expect(
-      answer(where, { effort: "xhigh", model: "claude-sonnet-9-9", prompt: "build it" })?.decision,
+      (await answer(where, { effort: "xhigh", model: "claude-sonnet-9-9", prompt: "build it" }))
+        ?.decision,
     ).toBe("deny");
     // Haiku's slot is the scout: with no scout chain, a haiku launch is Claude Haiku.
-    expect(answer(where, { effort: "high", model: "haiku", prompt: "search" })).toBeNull();
+    expect(await answer(where, { effort: "high", model: "haiku", prompt: "search" })).toBeNull();
   });
 
-  it("no worker chain, a chain that starts with Claude, or the gateway off: Claude Sonnet", () => {
+  it("no worker chain, a chain that starts with Claude, or the gateway off: Claude Sonnet", async () => {
     for (const where of [
       machine({ "cc-smart-dev-kit-scout": ["omniroute:glm-x"] }, true),
       machine({ "cc-smart-dev-kit-worker": ["claude-sonnet-5-5", "omniroute:glm-x"] }, true),
       machine(WORKER_ON_BACKEND, false),
     ]) {
-      expect(answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
+      expect(
+        await answer(where, { effort: "high", model: "sonnet", prompt: "build it" }),
+      ).toBeNull();
     }
     // With the gateway off nothing reaches the router: an opus chain there answers nothing, and
     // the launch is named for the Claude model that runs it. Below `max` that is a silent allow;
     // at `max` the ask names Claude Opus.
     const off = machine({ "cc-smart-dev-kit-opus": ["omniroute:glm-x"] }, false);
-    expect(answer(off, { effort: "high", model: "opus", prompt: "do it" })).toBeNull();
-    expect(answer(off, { effort: "max", model: "opus", prompt: "do it" })?.reason).toContain(
-      "Claude Opus launch at effort `max`",
-    );
+    expect(await answer(off, { effort: "high", model: "opus", prompt: "do it" })).toBeNull();
+    expect(
+      (await answer(off, { effort: "max", model: "opus", prompt: "do it" }))?.reason,
+    ).toContain("Claude Opus launch at effort `max`");
   });
 
-  it("opus and fable keep their gates by name when their slot starts with a backend", () => {
+  it("opus and fable keep their gates by name when their slot starts with a backend", async () => {
     const where = machine(
       {
         "cc-smart-dev-kit-fable": ["omniroute:glm-x"],
@@ -1487,18 +1496,23 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
       true,
     );
     // Never affordable, never forced to `max`: the opus tier at `max` asks, naming what answers it.
-    const bare = answer(where, { effort: "max", model: "opus", prompt: "do it" });
+    const bare = await answer(where, { effort: "max", model: "opus", prompt: "do it" });
     expect(bare?.decision).toBe("ask");
     expect(bare?.reason).toContain("`opus` (answered by omniroute:glm-x) launch at effort `max`");
     expect(bare?.reason).not.toContain("affordable");
     // Below `max` the tier runs with no question, review or not (D11).
-    expect(answer(where, { effort: "high", model: "opus", prompt: "do it" })).toBeNull();
+    expect(await answer(where, { effort: "high", model: "opus", prompt: "do it" })).toBeNull();
     expect(
-      answer(where, { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }),
+      await answer(where, {
+        effort: "xhigh",
+        model: "opus",
+        prompt: "r",
+        subagent_type: "Reviewer",
+      }),
     ).toBeNull();
     // Fable: a read-only agent with its reason asks, naming what answers it; a builder without
     // the word `build` is refused.
-    const advice = answer(where, {
+    const advice = await answer(where, {
       effort: "high",
       model: "fable",
       prompt: "Fable reason: plan - yes",
@@ -1507,7 +1521,7 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
     expect(advice?.decision).toBe("ask");
     expect(advice?.reason).toContain("`fable` (answered by omniroute:glm-x) launch: a read-only");
     expect(
-      answer(where, { effort: "max", model: "fable", prompt: "do it", subagent_type: "x" })
+      (await answer(where, { effort: "max", model: "fable", prompt: "do it", subagent_type: "x" }))
         ?.decision,
     ).toBe("deny");
     // The record names the tier and the model that answered it.
@@ -1747,38 +1761,38 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
     );
   });
 
-  it("HK hunch 3: an asked launch is recorded only once it ran (PostToolUse), never on the ask", () => {
+  it("HK hunch 3: an asked launch is recorded only once it ran (PostToolUse), never on the ask", async () => {
     const where = paths();
     const call = agentCall({
       effort: "max",
       model: "opus",
       prompt: "Opus reason: debugging - the router hangs",
     });
-    const asked = agentGuard(at("PreToolUse", call), NO_ENV, where, "/tmp/app");
+    const asked = await agentGuard(at("PreToolUse", call), NO_ENV, where, "/tmp/app");
     expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
     // The person has not answered yet: nothing is recorded.
     expect(records(where)).toEqual([]);
     // The call ran, so the person said yes: one record, and the hook says nothing.
-    expect(agentGuard(at("PostToolUse", call), NO_ENV, where, "/tmp/app")).toEqual({});
+    expect(await agentGuard(at("PostToolUse", call), NO_ENV, where, "/tmp/app")).toEqual({});
     const launches = records(where);
     expect(launches).toHaveLength(1);
     expect(launches[0]?.reason).toBe("opus:max:debugging");
     expect(launches[0]?.toolUseId).toBe("toolu_c3");
   });
 
-  it("HK hunch 3: an allowed launch is recorded on PreToolUse, and its PostToolUse adds nothing", () => {
+  it("HK hunch 3: an allowed launch is recorded on PreToolUse, and its PostToolUse adds nothing", async () => {
     const where = paths();
     const build = agentCall({ effort: "high", model: "opus", prompt: "build it" });
-    expect(agentGuard(at("PreToolUse", build), NO_ENV, where, "/tmp/app")).toEqual({});
+    expect(await agentGuard(at("PreToolUse", build), NO_ENV, where, "/tmp/app")).toEqual({});
     expect(records(where).map((one) => one.reason)).toEqual(["opus:high"]);
-    expect(agentGuard(at("PostToolUse", build), NO_ENV, where, "/tmp/app")).toEqual({});
+    expect(await agentGuard(at("PostToolUse", build), NO_ENV, where, "/tmp/app")).toEqual({});
     expect(records(where)).toHaveLength(1);
     // A launch the guard denies records nothing, even on a PostToolUse run.
     const bare = agentCall({ model: "opus", prompt: "do it" });
-    agentGuard(at("PostToolUse", bare), NO_ENV, where, "/tmp/app");
+    await agentGuard(at("PostToolUse", bare), NO_ENV, where, "/tmp/app");
     expect(records(where)).toHaveLength(1);
     // A Sonnet launch is never recorded.
-    agentGuard(
+    await agentGuard(
       at("PostToolUse", agentCall({ effort: "high", model: "sonnet", prompt: "x" })),
       NO_ENV,
       where,
@@ -1787,30 +1801,35 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
     expect(records(where)).toHaveLength(1);
   });
 
-  it("HK hunch 3: a Workflow that asks records its launches only once it ran", () => {
+  it("HK hunch 3: a Workflow that asks records its launches only once it ran", async () => {
     const where = paths();
     const script = [
       'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
       'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });',
     ].join("\n");
-    const asked = agentGuard(at("PreToolUse", workflowCall(script)), NO_ENV, where, "/tmp/app");
+    const asked = await agentGuard(
+      at("PreToolUse", workflowCall(script)),
+      NO_ENV,
+      where,
+      "/tmp/app",
+    );
     expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
     // The person may still say no to the whole call: none of its launches is recorded yet,
     // not even the one that needed no question.
     expect(records(where)).toEqual([]);
-    expect(agentGuard(at("PostToolUse", workflowCall(script)), NO_ENV, where, "/tmp/app")).toEqual(
-      {},
-    );
+    expect(
+      await agentGuard(at("PostToolUse", workflowCall(script)), NO_ENV, where, "/tmp/app"),
+    ).toEqual({});
     expect(records(where).map((one) => one.reason)).toContain("fable:plan");
     // A Workflow the guard allows outright is recorded on PreToolUse, and not again after it.
     const quiet = paths();
     const opusOnly =
       'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });';
-    expect(agentGuard(at("PreToolUse", workflowCall(opusOnly)), NO_ENV, quiet, "/tmp/app")).toEqual(
-      {},
-    );
+    expect(
+      await agentGuard(at("PreToolUse", workflowCall(opusOnly)), NO_ENV, quiet, "/tmp/app"),
+    ).toEqual({});
     expect(records(quiet).map((one) => one.reason)).toEqual(["opus:high"]);
-    agentGuard(at("PostToolUse", workflowCall(opusOnly)), NO_ENV, quiet, "/tmp/app");
+    await agentGuard(at("PostToolUse", workflowCall(opusOnly)), NO_ENV, quiet, "/tmp/app");
     expect(records(quiet)).toHaveLength(1);
   });
 
@@ -1907,14 +1926,14 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
       }),
     );
 
-  it("G1: the live bug — the input FORCE and EFFORT_LEVEL leave is allowed, not refused", () => {
+  it("G1: the live bug — the input FORCE and EFFORT_LEVEL leave is allowed, not refused", async () => {
     const env = {
       ...FORCE,
       CLAUDE_CODE_EFFORT_LEVEL: "high",
       CLAUDE_CODE_SUBAGENT_MODEL: "haiku",
     };
     const where = paths();
-    expect(agentGuard(LIVE_FORCED_INPUT(), env, where, "/tmp/app")).toEqual({});
+    expect(await agentGuard(LIVE_FORCED_INPUT(), env, where, "/tmp/app")).toEqual({});
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
     // The same call with no override still names nothing: refused, as before.
     const plain = readLaunch(LIVE_FORCED_INPUT());
@@ -1930,23 +1949,28 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
     expect(nulls.real?.model).toBe("haiku");
   });
 
-  it("G1: FORCE with CLAUDE_CODE_SUBAGENT_MODEL=haiku and a call naming opus: judged as haiku, recorded nowhere", () => {
+  it("G1: FORCE with CLAUDE_CODE_SUBAGENT_MODEL=haiku and a call naming opus: judged as haiku, recorded nowhere", async () => {
     const env = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
     const where = paths();
     const call = agentCall({ effort: "max", model: "opus", prompt: "x" });
-    expect(agentGuard(call, env, where, "/tmp/app")).toEqual({});
-    expect(agentGuard({ ...call, hook_event_name: "PostToolUse" }, env, where, "/tmp/app")).toEqual(
-      {},
-    );
+    expect(await agentGuard(call, env, where, "/tmp/app")).toEqual({});
+    expect(
+      await agentGuard({ ...call, hook_event_name: "PostToolUse" }, env, where, "/tmp/app"),
+    ).toEqual({});
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)).toEqual([]);
   });
 
-  it("G1: FORCE with CLAUDE_CODE_SUBAGENT_MODEL=opus and a call naming sonnet: the opus tier, recorded as opus", () => {
+  it("G1: FORCE with CLAUDE_CODE_SUBAGENT_MODEL=opus and a call naming sonnet: the opus tier, recorded as opus", async () => {
     const env = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "opus" };
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     expect(
-      agentGuard(agentCall({ effort: "high", model: "sonnet", prompt: "x" }), env, where, "/a"),
+      await agentGuard(
+        agentCall({ effort: "high", model: "sonnet", prompt: "x" }),
+        env,
+        where,
+        "/a",
+      ),
     ).toEqual({});
     const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launch?.family).toBe("opus");
@@ -2009,7 +2033,7 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
     expect(fork.ran.modelFrom).toBe("fork");
   });
 
-  it("G1: CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: no effect on an Agent call; a Workflow agent runs on it", () => {
+  it("G1: CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: no effect on an Agent call; a Workflow agent runs on it", async () => {
     const env = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "opus" };
     const agent = verdict({ effort: "high", model: "sonnet", prompt: "x" }, CTX, env);
     expect(agent.decision).toBe("allow");
@@ -2032,7 +2056,7 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
     expect(judgeWorkflow(script, CTX, forced)[0]?.verdict.decision).toBe("allow");
     // The hook: the ask reaches the person.
     const answer = JSON.parse(
-      agentGuard(workflowCall(script), env, paths(), "/tmp/app").stdout ?? "{}",
+      (await agentGuard(workflowCall(script), env, paths(), "/tmp/app")).stdout ?? "{}",
     ).hookSpecificOutput;
     expect(answer.permissionDecision).toBe("ask");
   });
@@ -2065,14 +2089,16 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
     }
   });
 
-  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on the opus tier: allowed with no ask, recorded as opus:auto", () => {
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on the opus tier: allowed with no ask, recorded as opus:auto", async () => {
     const env = { CLAUDE_CODE_EFFORT_LEVEL: "auto" };
     const free = verdict({ model: "opus", prompt: "x" }, CTX, env);
     expect(free.decision).toBe("allow");
     expect(free.why).toBe("opus:auto");
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
-    expect(agentGuard(agentCall({ model: "opus", prompt: "x" }), env, where, "/a")).toEqual({});
+    expect(await agentGuard(agentCall({ model: "opus", prompt: "x" }), env, where, "/a")).toEqual(
+      {},
+    );
     expect(readAgentLaunches(agentLaunchesFile(where.stateDir), 0)[0]?.reason).toBe("opus:auto");
     // Unattended too: `auto` is never `max`, so nothing waits for a person.
     expect(
@@ -2241,10 +2267,10 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
   const UNREADABLE_ASK =
     "The guard cannot see the model and effort its launches run on: approve only if you know what this workflow runs.";
 
-  it("G2: a saved workflow by name: its launches are judged and the ask names the workflow", () => {
+  it("G2: a saved workflow by name: its launches are judged and the ask names the workflow", async () => {
     const { repo, where } = world();
     put(join(repo, ".claude", "workflows", "probe.js"), script("probe", OPUS_MAX));
-    expect(answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo))).toEqual({
+    expect(answer(await agentGuard(call({ name: "probe" }), NO_ENV, where, repo))).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "ask",
       permissionDecisionReason: [
@@ -2255,22 +2281,22 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     // A denied launch in it denies the whole call.
     put(join(repo, ".claude", "workflows", "probe.js"), script("probe", HAIKU_LOW));
     expect(
-      answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
+      answer(await agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
     ).toBe("deny");
   });
 
-  it("G2: by scriptPath: the file is read and judged", () => {
+  it("G2: by scriptPath: the file is read and judged", async () => {
     const { repo, where } = world();
     const file = join(repo, "flows", "x.js");
     put(file, script("x", HAIKU_LOW));
-    const result = answer(agentGuard(call({ scriptPath: file }), NO_ENV, where, repo));
+    const result = answer(await agentGuard(call({ scriptPath: file }), NO_ENV, where, repo));
     expect(result.permissionDecision).toBe("deny");
     expect(result.permissionDecisionReason).toStartWith(
       `In the workflow \`${file}\`, the launch "cheap": `,
     );
   });
 
-  it("G2: a plugin's `<plugin>:<name>`: from its installed folder", () => {
+  it("G2: a plugin's `<plugin>:<name>`: from its installed folder", async () => {
     const { home, repo, where } = world();
     const root = join(home, "plugins", "probe-kit");
     put(join(root, "workflows", "audit-run.js"), script("audit-run", OPUS_MAX));
@@ -2281,34 +2307,36 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
         version: 2,
       }),
     );
-    const result = answer(agentGuard(call({ name: "probe-kit:audit-run" }), NO_ENV, where, repo));
+    const result = answer(
+      await agentGuard(call({ name: "probe-kit:audit-run" }), NO_ENV, where, repo),
+    );
     expect(result.permissionDecision).toBe("ask");
     expect(result.permissionDecisionReason).toStartWith(
       'In the workflow `probe-kit:audit-run`, the launch "deep": ',
     );
   });
 
-  it("G2: a bare name found in the user folder only", () => {
+  it("G2: a bare name found in the user folder only", async () => {
     const { repo, where } = world();
     put(join(where.claudeConfigDir, "workflows", "probe.js"), script("probe", HAIKU_LOW));
     expect(
-      answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
+      answer(await agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
     ).toBe("deny");
   });
 
-  it("G2: two files claim one name: asked, naming both (refused in claude -p)", () => {
+  it("G2: two files claim one name: asked, naming both (refused in claude -p)", async () => {
     const { repo, where } = world();
     const a = join(repo, ".claude", "workflows", "a.js");
     const b = join(repo, ".claude", "workflows", "b.js");
     put(a, script("probe", OPUS_HIGH));
     put(b, script("probe", OPUS_MAX));
     const claim = `Two files claim the workflow name \`probe\`: \`${a}\` and \`${b}\`. Claude Code runs one of them, and which one depends on the order the folder lists them, so the guard cannot tell. Give each workflow its own \`meta.name\`.`;
-    expect(answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo))).toEqual({
+    expect(answer(await agentGuard(call({ name: "probe" }), NO_ENV, where, repo))).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "ask",
       permissionDecisionReason: [claim, UNREADABLE_ASK].join("\n"),
     });
-    expect(answer(agentGuard(call({ name: "probe" }), UNATTENDED, where, repo))).toEqual({
+    expect(answer(await agentGuard(call({ name: "probe" }), UNATTENDED, where, repo))).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
       permissionDecisionReason: [
@@ -2318,11 +2346,11 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     });
   });
 
-  it("G2: a built-in name, a missing file, a resume: each asks, saying why", () => {
+  it("G2: a built-in name, a missing file, a resume: each asks, saying why", async () => {
     const { repo, where } = world();
-    const ask = (fields: Record<string, unknown>) =>
-      answer(agentGuard(call(fields), NO_ENV, where, repo));
-    expect(ask({ name: "deep-research" })).toEqual({
+    const ask = async (fields: Record<string, unknown>) =>
+      answer(await agentGuard(call(fields), NO_ENV, where, repo));
+    expect(await ask({ name: "deep-research" })).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "ask",
       permissionDecisionReason: [
@@ -2331,12 +2359,12 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
       ].join("\n"),
     });
     const missing = join(repo, "gone.js");
-    expect(ask({ scriptPath: missing }).permissionDecisionReason).toBe(
+    expect((await ask({ scriptPath: missing })).permissionDecisionReason).toBe(
       [`The workflow script \`${missing}\` does not exist.`, UNREADABLE_ASK].join("\n"),
     );
     // A resume runs on from a script the guard does not see — even with one beside it.
     put(join(repo, "x.js"), script("x", OPUS_HIGH));
-    expect(ask({ resumeFromRunId: "run_1", scriptPath: join(repo, "x.js") })).toEqual({
+    expect(await ask({ resumeFromRunId: "run_1", scriptPath: join(repo, "x.js") })).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "ask",
       permissionDecisionReason: [
@@ -2344,30 +2372,35 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
         UNREADABLE_ASK,
       ].join("\n"),
     });
-    expect(ask({}).permissionDecisionReason).toBe(
+    expect((await ask({})).permissionDecisionReason).toBe(
       ["This Workflow call names no `script`, `name` or `scriptPath`.", UNREADABLE_ASK].join("\n"),
     );
     // Where nobody can answer, each is refused.
     for (const fields of [{ name: "deep-research" }, { resumeFromRunId: "run_1" }]) {
-      expect(answer(agentGuard(call(fields), UNATTENDED, where, repo)).permissionDecision).toBe(
-        "deny",
-      );
+      expect(
+        answer(await agentGuard(call(fields), UNATTENDED, where, repo)).permissionDecision,
+      ).toBe("deny");
     }
   });
 
-  it("G2: an inline script still wins over a name, as Claude Code runs it", () => {
+  it("G2: an inline script still wins over a name, as Claude Code runs it", async () => {
     const { repo, where } = world();
     put(join(repo, ".claude", "workflows", "probe.js"), script("probe", HAIKU_LOW));
     expect(
-      agentGuard(call({ name: "probe", script: script("probe", OPUS_HIGH) }), NO_ENV, where, repo),
+      await agentGuard(
+        call({ name: "probe", script: script("probe", OPUS_HIGH) }),
+        NO_ENV,
+        where,
+        repo,
+      ),
     ).toEqual({});
   });
 
-  it("G2: a nested literal `workflow('x')` is resolved and judged, one level deep", () => {
+  it("G2: a nested literal `workflow('x')` is resolved and judged, one level deep", async () => {
     const { repo, where } = world();
     put(join(repo, ".claude", "workflows", "child.js"), script("child", HAIKU_LOW));
     const top = script("top", OPUS_HIGH, 'const out = await workflow("child", { n: 1 });');
-    const result = answer(agentGuard(call({ script: top }), NO_ENV, where, repo));
+    const result = answer(await agentGuard(call({ script: top }), NO_ENV, where, repo));
     expect(result.permissionDecision).toBe("deny");
     expect(result.permissionDecisionReason).toStartWith(
       'In the workflow `child`, the launch "cheap": ',
@@ -2375,7 +2408,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     // `{ scriptPath: '…' }` too, relative to the cwd.
     put(join(repo, "flows", "c.js"), script("c", OPUS_MAX));
     const byPath = script("top", "await workflow({ scriptPath: 'flows/c.js' });");
-    const asked = answer(agentGuard(call({ script: byPath }), NO_ENV, where, repo));
+    const asked = answer(await agentGuard(call({ script: byPath }), NO_ENV, where, repo));
     expect(asked.permissionDecision).toBe("ask");
     expect(asked.permissionDecisionReason).toStartWith(
       `In the workflow \`${join(repo, "flows", "c.js")}\`, the launch "deep": `,
@@ -2383,14 +2416,15 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     // A nested name with no file asks, like a run by that name.
     const builtIn = script("top", "await workflow('deep-research');");
     expect(
-      answer(agentGuard(call({ script: builtIn }), NO_ENV, where, repo)).permissionDecision,
+      answer(await agentGuard(call({ script: builtIn }), NO_ENV, where, repo)).permissionDecision,
     ).toBe("ask");
   });
 
-  it("G2: a nested computed name, `workflow` handed around, or a second level: refused whole", () => {
+  it("G2: a nested computed name, `workflow` handed around, or a second level: refused whole", async () => {
     const { repo, where } = world();
-    const refused = (top: string) => answer(agentGuard(call({ script: top }), NO_ENV, where, repo));
-    expect(refused(script("top", "const name = args.n;", "await workflow(name);"))).toEqual({
+    const refused = async (top: string) =>
+      answer(await agentGuard(call({ script: top }), NO_ENV, where, repo));
+    expect(await refused(script("top", "const name = args.n;", "await workflow(name);"))).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
       permissionDecisionReason: [
@@ -2398,11 +2432,13 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
         'Write it as `workflow("<name>")` or `workflow({ scriptPath: "<path>" })`, with a string literal, so the guard can read what it runs.',
       ].join("\n"),
     });
-    expect(refused(script("top", "await workflow('a' + args.n);")).permissionDecision).toBe("deny");
+    expect((await refused(script("top", "await workflow('a' + args.n);"))).permissionDecision).toBe(
+      "deny",
+    );
     expect(
-      refused(script("top", "await workflow({ scriptPath: args.p });")).permissionDecision,
+      (await refused(script("top", "await workflow({ scriptPath: args.p });"))).permissionDecision,
     ).toBe("deny");
-    expect(refused(script("top", "const run = workflow;", "await run('x');"))).toEqual({
+    expect(await refused(script("top", "const run = workflow;", "await run('x');"))).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
       permissionDecisionReason: [
@@ -2415,7 +2451,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
       join(repo, ".claude", "workflows", "child.js"),
       script("child", "await workflow('grand');"),
     );
-    expect(refused(script("top", "await workflow('child');"))).toEqual({
+    expect(await refused(script("top", "await workflow('child');"))).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
       permissionDecisionReason:
@@ -2423,24 +2459,24 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     });
   });
 
-  it('G2: a literal followed by an operator is not the value: `effort: "high" && "max"`', () => {
+  it('G2: a literal followed by an operator is not the value: `effort: "high" && "max"`', async () => {
     const { repo, where } = world();
     const top = script(
       "top",
       'await agent("look", { label: "deep", model: "opus", effort: "high" && "max" });',
     );
-    expect(answer(agentGuard(call({ script: top }), NO_ENV, where, repo)).permissionDecision).toBe(
-      "deny",
-    );
+    expect(
+      answer(await agentGuard(call({ script: top }), NO_ENV, where, repo)).permissionDecision,
+    ).toBe("deny");
     // A comment after the literal is no operator.
     const fine = script(
       "top",
       'await agent("look", { label: "check", model: "opus" /* the tier */, effort: "high" });',
     );
-    expect(agentGuard(call({ script: fine }), NO_ENV, where, repo)).toEqual({});
+    expect(await agentGuard(call({ script: fine }), NO_ENV, where, repo)).toEqual({});
   });
 
-  it("G2: a run with three premium launches is recorded three times, once each", () => {
+  it("G2: a run with three premium launches is recorded three times, once each", async () => {
     const { repo, where } = world();
     put(
       join(repo, ".claude", "workflows", "probe.js"),
@@ -2454,10 +2490,10 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
       ),
     );
     put(join(repo, ".claude", "workflows", "child.js"), script("child", OPUS_HIGH));
-    expect(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).toEqual({});
+    expect(await agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).toEqual({});
     // PreToolUse again, then PostToolUse: nothing new.
-    agentGuard(call({ name: "probe" }), NO_ENV, where, repo);
-    agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
+    await agentGuard(call({ name: "probe" }), NO_ENV, where, repo);
+    await agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
     expect(
       records(where).map((one) => [
         one.launchIndex,
@@ -2473,24 +2509,24 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     ]);
   });
 
-  it("G2: an asked named run records its launches once it ran", () => {
+  it("G2: an asked named run records its launches once it ran", async () => {
     const { repo, where } = world();
     put(join(repo, ".claude", "workflows", "probe.js"), script("probe", OPUS_MAX, OPUS_HIGH));
     expect(
-      answer(agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
+      answer(await agentGuard(call({ name: "probe" }), NO_ENV, where, repo)).permissionDecision,
     ).toBe("ask");
     expect(records(where)).toEqual([]);
-    agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
-    agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
+    await agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
+    await agentGuard(call({ name: "probe" }, "PostToolUse"), NO_ENV, where, repo);
     expect(records(where).map((one) => [one.launchIndex, one.effort])).toEqual([
       [0, "max"],
       [1, "high"],
     ]);
   });
 
-  it("G2: an Agent launch's line carries its effort and word as fields", () => {
+  it("G2: an Agent launch's line carries its effort and word as fields", async () => {
     const { repo, where } = world();
-    agentGuard(
+    await agentGuard(
       {
         ...agentCall({
           effort: "xhigh",
@@ -2673,7 +2709,7 @@ describe("CC8: a crew session is judged as a session nobody watches", () => {
     );
   });
 
-  it("a Workflow it cannot read: denied by the crew part, with the step, and nothing recorded", () => {
+  it("a Workflow it cannot read: denied by the crew part, with the step, and nothing recorded", async () => {
     const input: HookInput = {
       hook_event_name: "PreToolUse",
       tool_input: { scriptPath: join(tempDir("crew-workflow"), "missing.js") },
@@ -2681,7 +2717,7 @@ describe("CC8: a crew session is judged as a session nobody watches", () => {
     };
     const paths = WORKFLOW_PATHS;
     // The person's session asks; the crew part refuses with the step.
-    const asked = agentGuard(input, NO_ENV, paths, "/");
+    const asked = await agentGuard(input, NO_ENV, paths, "/");
     expect(JSON.parse(asked.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
     const refused = crewAgentAnswer(input, CREW, paths, "/");
     const output = JSON.parse(refused.stdout ?? "{}").hookSpecificOutput;
@@ -2693,7 +2729,7 @@ describe("CC8: a crew session is judged as a session nobody watches", () => {
     expect(existsSync(agentLaunchesFile(paths.stateDir))).toBe(false);
   });
 
-  it("the crew part is silent outside a crew session, and on a call it allows", () => {
+  it("the crew part is silent outside a crew session, and on a call it allows", async () => {
     const paths = WORKFLOW_PATHS;
     const unreadable: HookInput = {
       hook_event_name: "PreToolUse",
@@ -2714,9 +2750,265 @@ describe("CC8: a crew session is judged as a session nobody watches", () => {
     expect(crewAgentAnswer(lowEffort, CREW, paths, "/")).toEqual({});
     // The guard's own run still denies it, with its own words: the part was narrowed, the
     // guard was not.
-    const guard = agentGuard(lowEffort, CREW, paths, "/");
+    const guard = await agentGuard(lowEffort, CREW, paths, "/");
     const refused = JSON.parse(guard.stdout ?? "{}").hookSpecificOutput;
     expect(refused.permissionDecision).toBe("deny");
     expect(refused.permissionDecisionReason).not.toContain(CREW_QUESTION_STEP);
+  });
+});
+
+describe("D59: a recorded lead never routes a building phase around the crew queue", () => {
+  const NOW = Date.parse("2026-10-21T10:00:00.000Z");
+
+  /** A real project with a recorded lead, its crew caps as the test's file sets them. */
+  async function leadWorld(crew: Record<string, unknown> = {}) {
+    const world = crewWorld();
+    world.writeConfig({ memoryGb: 1, ...crew });
+    const checkout = locateCheckout(world.repo, { env: cleanGitEnv() });
+    if (checkout === null) throw new Error("the test repository has no checkout");
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app plan",
+        plan: "plan",
+        repo: world.repo,
+        sessionId: LEAD_SESSION,
+        tag: "my-app",
+      },
+      NOW,
+    );
+    return { checkout, env: world.ctx().env, world };
+  }
+
+  /** A crew session of `lead` in the store, in `state`; `change` overrides any field. */
+  async function stored(
+    world: CrewWorld,
+    phase: string,
+    state: string,
+    lead = LEAD_SESSION,
+    change: Partial<NewCrew> = {},
+  ): Promise<void> {
+    await createCrew(
+      world.paths.stateDir,
+      {
+        base: null,
+        baseRef: "main",
+        branch: `crew/${phase}-x`,
+        effort: "high",
+        files: [],
+        id: `${phase}-x-1`,
+        kind: "build",
+        lastLine: null,
+        leadName: "LEAD my-app plan",
+        leadSessionId: lead,
+        memoryMb: null,
+        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
+        name: `C my-app ${phase} x`,
+        permissionMode: "auto",
+        phase,
+        plan: "plan",
+        pr: null,
+        questions: [],
+        reportPath: null,
+        repo: world.repo,
+        sessionId: null,
+        shortId: null,
+        slug: "x",
+        state,
+        waitsFor: [],
+        worktree: `${world.repo}/.claude/worktrees/crew-${phase}-x`,
+        ...change,
+      },
+      NOW,
+    );
+  }
+
+  /** An Agent call by `session`, in the world's project. */
+  function call(
+    world: CrewWorld,
+    fields: Record<string, unknown>,
+    session = LEAD_SESSION,
+  ): HookInput {
+    return {
+      cwd: world.repo,
+      hook_event_name: "PreToolUse",
+      session_id: session,
+      tool_input: { prompt: "build it", ...fields },
+      tool_name: "Agent",
+    };
+  }
+
+  /** An Agent launch the model and effort rules allow: only D59 can refuse it. */
+  const SONNET: Record<string, unknown> = { effort: "high", model: "sonnet" };
+
+  /** The guard's answer for `input`, with the frame's own checkout. */
+  async function answer(input: HookInput, made: Awaited<ReturnType<typeof leadWorld>>) {
+    return await agentGuard(input, made.env, made.world.paths, made.world.repo, NOW, made.checkout);
+  }
+
+  /** The denial's words, or null when the guard did not deny. */
+  function denial(result: { stdout?: string }): null | string {
+    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    return output?.permissionDecision === "deny" ? output.permissionDecisionReason : null;
+  }
+
+  /** The refusal a lead gets for a building launch, in the guard's own words. */
+  function queued(what: string, why: string): string {
+    return [
+      `A lead never routes a building phase around its crew queue: ${what} can change files, and a \`crew start\` from this lead would queue now — ${why}.`,
+      `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
+      "A read-only subagent (a search, a review, an audit, a UI check) is never held.",
+    ].join("\n");
+  }
+
+  it("every type that can change files is refused while this lead's perLead is full", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    const why = "its lead has 1 of 1 crew sessions running; it starts when one of them finishes";
+    for (const type of [
+      "cc-smart-dev-kit:builder",
+      "cc-smart-dev-kit:rules-maintainer",
+      "general-purpose",
+      "claude",
+      "some-custom-agent",
+    ]) {
+      expect(denial(await answer(call(made.world, { ...SONNET, subagent_type: type }), made))).toBe(
+        queued(`this launch (\`${type}\`)`, why),
+      );
+    }
+    // A fork runs on the session's model and effort, and it can change files too.
+    expect(denial(await answer(call(made.world, { subagent_type: "fork" }), made))).toBe(
+      queued("this launch (`fork`)", why),
+    );
+    // A read-only type with a worktree of its own is still a launch Claude Code sets aside to build.
+    expect(
+      denial(
+        await answer(
+          call(made.world, { ...SONNET, isolation: "worktree", subagent_type: "Explore" }),
+          made,
+        ),
+      ),
+    ).toBe(queued("this launch (`Explore`)", why));
+  });
+
+  it("refused while the machine's max is full, by any lead's crew sessions", async () => {
+    const made = await leadWorld({ max: 1 });
+    await stored(made.world, "B1", "working", OTHER_SESSION);
+    expect(
+      denial(await answer(call(made.world, { ...SONNET, subagent_type: "general-purpose" }), made)),
+    ).toBe(
+      queued(
+        "this launch (`general-purpose`)",
+        "1 of 1 crew sessions running on this machine; it starts when one finishes",
+      ),
+    );
+  });
+
+  it("an opus launch waits when only the opus place is short; a sonnet one goes", async () => {
+    const made = await leadWorld({ perLead: 4, perLeadOpus: 1 });
+    await stored(made.world, "B1", "working", LEAD_SESSION, {
+      model: { named: "opus", resolved: "opus", slot: null, tier: "opus" },
+    });
+    const why =
+      "its lead has 1 of 1 opus crew sessions running; it starts when one of them finishes";
+    expect(
+      denial(
+        await answer(
+          call(made.world, { effort: "high", model: "opus", subagent_type: "general-purpose" }),
+          made,
+        ),
+      ),
+    ).toBe(queued("this launch (`general-purpose`)", why));
+    expect(
+      await answer(call(made.world, { ...SONNET, subagent_type: "general-purpose" }), made),
+    ).toEqual({});
+  });
+
+  it("a building launch goes when a place is free", async () => {
+    const made = await leadWorld({ perLead: 4 });
+    await stored(made.world, "B1", "working");
+    for (const type of ["cc-smart-dev-kit:builder", "general-purpose", "fork"]) {
+      expect(await answer(call(made.world, { ...SONNET, subagent_type: type }), made)).toEqual({});
+    }
+  });
+
+  it("read-only agent types are never held, while a cap holds", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    for (const type of [
+      "Explore",
+      "Plan",
+      "claude-code-guide",
+      "statusline-setup",
+      "cc-smart-dev-kit:reviewer",
+      "cc-smart-dev-kit:auditor",
+      "cc-smart-dev-kit:ui-verifier",
+    ]) {
+      expect(await answer(call(made.world, { ...SONNET, subagent_type: type }), made)).toEqual({});
+    }
+  });
+
+  it("a Workflow that can build is held; the kit's own read-only ones are not", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    const workflows = join(made.world.repo, ".claude", "workflows");
+    mkdirSync(workflows, { recursive: true });
+    for (const name of ["audit-run", "review-split"]) {
+      writeFileSync(
+        join(workflows, `${name}.js`),
+        `export const meta = { name: '${name}', description: 'reads' }\nreturn 1\n`,
+      );
+    }
+    for (const name of ["audit-run", "review-split"]) {
+      const named: HookInput = {
+        cwd: made.world.repo,
+        hook_event_name: "PreToolUse",
+        session_id: LEAD_SESSION,
+        tool_input: { name },
+        tool_name: "Workflow",
+      };
+      expect(await answer(named, made)).toEqual({});
+    }
+    // An inline script is no read-only workflow of the kit's: it may build.
+    const script =
+      'const done = await agent("build it", { agentType: "general-purpose", model: "sonnet", effort: "high" });\nreturn done;';
+    const inline: HookInput = {
+      cwd: made.world.repo,
+      hook_event_name: "PreToolUse",
+      session_id: LEAD_SESSION,
+      tool_input: { script },
+      tool_name: "Workflow",
+    };
+    expect(denial(await answer(inline, made))).toBe(
+      queued(
+        "this Workflow",
+        "its lead has 1 of 1 crew sessions running; it starts when one of them finishes",
+      ),
+    );
+  });
+
+  it("an ordinary session, and a crew session, are unchanged", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    const building = call(made.world, { ...SONNET, subagent_type: "general-purpose" });
+    // Another session in the same project is no lead: nothing holds it.
+    expect(await answer({ ...building, session_id: OTHER_SESSION }, made)).toEqual({});
+    // A crew session has its own rules; the queue rule is a lead's, and never answers for it.
+    const crewEnv = { ...made.env, [CREW_ENV]: "B1-api-abcd" };
+    expect(
+      await agentGuard(building, crewEnv, made.world.paths, made.world.repo, NOW, made.checkout),
+    ).toEqual({});
+    expect(crewAgentAnswer(building, crewEnv, made.world.paths, made.world.repo)).toEqual({});
+  });
+
+  it("caps it cannot read let the launch through", async () => {
+    const made = await leadWorld({ perLead: 1 });
+    await stored(made.world, "B1", "working");
+    // A project file the reader cannot parse: what a start would do is unknown, never guessed.
+    writeFileSync(join(made.world.repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
+    expect(
+      await answer(call(made.world, { ...SONNET, subagent_type: "general-purpose" }), made),
+    ).toEqual({});
   });
 });

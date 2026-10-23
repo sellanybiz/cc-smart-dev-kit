@@ -112,12 +112,33 @@
  * `tool_use_id`, so each is recorded under its own index, once. Anything the guard cannot work
  * out lets the call through, except a Workflow whose launches it cannot read
  * (`workflowRefusal`, `judgeWorkflowCall`).
+ *
+ * **A lead's building launch waits for the crew queue** (the owner's decision D59). The queue
+ * exists for the machine (the caps `crew.max` and `crew.perLead`, the free memory, the 5-hour
+ * usage window) and for each lead's fair share of it; a builder subagent runs outside every one
+ * of those counts, and it has none of a crew phase's worktree, review, report gate or to-do list.
+ * So in a **recorded lead's** session (`readLead`, by the input's `session_id` in the project's
+ * repository), a launch that can change files (`buildsFiles`) is refused while a `crew start`
+ * from that lead would queue now (`placeForLeadStart`, the same decision `crew start` makes) —
+ * with one line naming the cap that holds and the `crew start` step. The model/effort rules
+ * answer first: a launch they deny keeps their own words. Read-only subagents (a search, a
+ * review, an audit, a UI check) are never held, and neither is a small fix a lead may hand to a
+ * subagent while a place is free. It is a denial, not a question: the step needs no person.
+ *
+ * The rule is a lead's, so it never answers for a crew session (`crewAgentAnswer` is unchanged),
+ * for an ordinary session, or for a call the guard cannot judge: a lead record it cannot read, a
+ * checkout it was not given (a broken project file, a folder outside git), a store or a caps file
+ * that throws — each lets the launch through and nothing is recorded.
  */
 
+import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { OPUS_TIER, type Place, placeForLeadStart } from "../crew/places";
 import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
+import { readLead } from "../crew/store";
 import { type GatewayConfig, loadConfigFile } from "../gateway/config";
 import { settingsReport } from "../gateway/settings";
+import { realMemoryFacts } from "../jobs/memory";
 import {
   AFFORDABLE_EFFORT,
   ALLOWED_EFFORTS,
@@ -142,6 +163,7 @@ import {
   uiTierAllowed,
   WORKFLOW_SUBAGENT_MODEL_ENV,
 } from "../models/launch-policy";
+import type { Checkout } from "../project/resolve";
 import {
   scriptAtPath,
   scriptByName,
@@ -167,6 +189,7 @@ import {
   toolInput,
 } from "./io";
 import type { Env, HookEnvContext } from "./run";
+import { isSessionId } from "./session-name";
 import { lastClaudeModel } from "./transcript";
 
 /** The tools this guard reads: the Agent tool, the older name, and Workflow. */
@@ -198,6 +221,51 @@ export function agentKey(type: string): string {
     .replace(/[\s_-]+/g, "-");
 }
 
+/**
+ * The subagent types that only read and report (D59): a lead may launch them whatever the crew
+ * queue holds, because they change no file. Every other type — a `fork`, an unknown one, a
+ * custom one — can change files, and so can a launch that asks for `isolation: "worktree"`,
+ * whatever its type. A type is compared through `agentKey`, so `cc-smart-dev-kit:reviewer` and
+ * `probe-kit:reviewer` both read `reviewer`.
+ *
+ * This is **not** `READ_ONLY_AGENTS`: that list is what Claude Fable may advise from (the
+ * owner's), and the two answer different questions, so a type may sit in one and not the other.
+ */
+export const READ_ONLY_LAUNCHES = [
+  "Explore",
+  "Plan",
+  "claude-code-guide",
+  "statusline-setup",
+  "reviewer",
+  "auditor",
+  "ui-verifier",
+] as const;
+
+/** `READ_ONLY_LAUNCHES` as `agentKey` compares them, read once. */
+const READ_ONLY_LAUNCH_KEYS: ReadonlySet<string> = new Set(READ_ONLY_LAUNCHES.map(agentKey));
+
+/**
+ * The kit's own Workflows that only read (`plugin/workflows/`): a lead may run them while its
+ * crew queue is full. Every other Workflow — an inline script, a saved one, one named by a
+ * path — may build, and a workflow's launches fire no hook of their own.
+ */
+export const READ_ONLY_WORKFLOWS = ["audit-run", "review-split"] as const;
+
+/** `READ_ONLY_WORKFLOWS` as `agentKey` compares them, read once. */
+const READ_ONLY_WORKFLOW_KEYS: ReadonlySet<string> = new Set(READ_ONLY_WORKFLOWS.map(agentKey));
+
+/** True when an Agent launch can change files: any type but the read-only ones, or any worktree. */
+export function buildsFiles(launch: Launch): boolean {
+  if (launch.isolation?.toLowerCase() === "worktree") return true;
+  return !READ_ONLY_LAUNCH_KEYS.has(agentKey(launch.subagentType ?? ""));
+}
+
+/** True when a Workflow call is not one of the kit's own read-only ones. */
+export function buildsWorkflow(fields: Record<string, unknown>): boolean {
+  const name = stringField(fields.name);
+  return name === null || !READ_ONLY_WORKFLOW_KEYS.has(agentKey(name));
+}
+
 function agentList(from: readonly string[], env: Env, name: string): Set<string> {
   const listed = (env[name] ?? "")
     .split(",")
@@ -211,6 +279,8 @@ export interface Launch {
   effort: null | string;
   /** True for `subagent_type: "fork"`: it runs on the session's model and effort. */
   fork: boolean;
+  /** `isolation` as the call names it: `"worktree"` gives the agent a checkout of its own. */
+  isolation: null | string;
   /** The model as the call names it; null when it names none. */
   model: null | string;
   prompt: string;
@@ -227,6 +297,7 @@ export function readLaunch(input: HookInput): Launch | null {
   return {
     effort: stringField(fields.effort),
     fork: subagentType?.toLowerCase() === FORK,
+    isolation: stringField(fields.isolation),
     model: stringField(fields.model),
     prompt: typeof fields.prompt === "string" ? fields.prompt : "",
     subagentType,
@@ -655,6 +726,9 @@ function asLaunch(one: WorkflowLaunch): Launch {
   return {
     effort: one.effort,
     fork: false,
+    // A script's `agent(…)` options carry no `isolation` the guard reads: D59 judges a Workflow
+    // by the workflow's own name, not by what one of its launches asks for.
+    isolation: null,
     model: one.model,
     prompt: one.prompt ?? "",
     subagentType: one.agentType,
@@ -1562,9 +1636,92 @@ function judgeCall(input: HookInput, env: Env, paths: CliPaths, cwd: string): Ju
   return { kind: "launch", launch, verdict: judgeLaunch(launch, context, env) };
 }
 
+/** How a refusal names the call it holds: `this launch (\`general-purpose\`)`, `this Workflow`. */
+function queueSubject(judged: Judgement, input: HookInput): string {
+  if (judged.kind === "launch") {
+    return `this launch (\`${judged.launch.subagentType ?? "general-purpose"}\`)`;
+  }
+  const name = stringField(toolInput(input).name);
+  return name === null ? "this Workflow" : `this Workflow (\`${name}\`)`;
+}
+
+/**
+ * The refusal a lead gets for a building launch while its crew queue is full (D59): the cap
+ * that holds, in `placeFor`'s own words, and the `crew start` step that queues and starts by
+ * itself. The last line names what the rule never holds, so the lead does not stop using
+ * read-only subagents.
+ */
+function queueRefusal(what: string, why: string): string {
+  return [
+    `A lead never routes a building phase around its crew queue: ${what} can change files, and a \`crew start\` from this lead would queue now — ${why}.`,
+    `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
+    "A read-only subagent (a search, a review, an audit, a UI check) is never held.",
+  ].join("\n");
+}
+
+/**
+ * D59's refusal for one call, or null when it may go on as judged. It is the lead's rule only:
+ * a crew session (`crewAgentAnswer`'s), an ordinary session, and a launch that only reads are
+ * each null. A Workflow is building unless it names one of the kit's own read-only ones, and it
+ * counts as opus-tier when any of its launches does.
+ *
+ * It reads the lead record, then asks `placeForLeadStart` — the decision `crew start` makes.
+ * Everything it cannot work out is null: no checkout (the frame had none), a session id that
+ * cannot own a lead record, a record, store or project file that throws. A guard that cannot
+ * work out the queue lets the call through; the launch it is judging is never blocked for it.
+ */
+async function queuedLaunch(
+  judged: Judgement,
+  input: HookInput,
+  env: Env,
+  paths: CliPaths,
+  checkout: null | Checkout,
+  nowMs: number,
+): Promise<null | string> {
+  // A crew session has its own refusals (`crewAgentAnswer`), and it never leads.
+  if (inCrew(env)) return null;
+  if (checkout === null) return null;
+  const sessionId = input.session_id;
+  if (!isSessionId(sessionId)) return null;
+  let lead: ReturnType<typeof readLead>;
+  try {
+    lead = readLead(paths.stateDir, checkout.mainCheckout ?? checkout.root, sessionId);
+  } catch {
+    return null;
+  }
+  if (lead === null) return null;
+  const building =
+    judged.kind === "workflow" ? buildsWorkflow(toolInput(input)) : buildsFiles(judged.launch);
+  if (!building) return null;
+  const opus =
+    judged.kind === "workflow"
+      ? judged.call.results.some((one) => one.verdict.real?.tier === OPUS_TIER)
+      : judged.verdict.real?.tier === OPUS_TIER;
+  let place: null | Place;
+  try {
+    place = await placeForLeadStart({
+      checkout,
+      leadSessionId: sessionId,
+      memory: realMemoryFacts(),
+      nowMs,
+      opus,
+      paths,
+    });
+  } catch {
+    return null;
+  }
+  if (place === null || place.start) return null;
+  return queueRefusal(queueSubject(judged, input), place.why);
+}
+
 /**
  * The hook's answer: judge the launch (or every launch a Workflow script makes), record an
  * Opus or Fable one once it is known to run, and answer with the PreToolUse decision.
+ *
+ * **A recorded lead's building launch waits for the crew queue** (D59): after the model and
+ * effort rules — which keep their own words when they deny — a launch that can change files is
+ * refused while a `crew start` from this lead would queue, with the cap and the step
+ * (`queuedLaunch`). A refused launch never runs, so nothing is recorded for it.
  *
  * The record: on PreToolUse, a call the guard allows outright (it runs with no question); on
  * PostToolUse (`RAN_EVENT`), a call the guard asked about (it ran, so the person said yes). So
@@ -1576,17 +1733,27 @@ function judgeCall(input: HookInput, env: Env, paths: CliPaths, cwd: string): Ju
  * plugin's `name` — with the workflows it nests (`judgeWorkflowCall`). One the guard cannot read
  * (a built-in, a missing file, a resume) asks, and is refused in `claude -p` (and in a crew
  * session). Anything else it cannot work out lets the call through.
+ *
+ * `checkout` is the project the frame found for the call's `cwd` (`HookContext.project`); the
+ * queue rule needs it to find this repository's lead record. The paths the frame calls without
+ * one (a broken project file, a folder outside git) judge the model and effort alone, and let
+ * the launch through: a guard that cannot work out the queue never blocks.
  */
-export function agentGuard(
+export async function agentGuard(
   input: HookInput,
   env: Env,
   paths: CliPaths,
   cwd: string,
   nowMs: number = Date.now(),
-): HookResult {
+  checkout: null | Checkout = null,
+): Promise<HookResult> {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null) return SILENT;
   const ran = afterTheCall(input);
+  if (!ran) {
+    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs);
+    if (queued !== null) return toolDecision("deny", queued);
+  }
   const file = agentLaunchesFile(paths.stateDir);
   const record = (lines: ReadonlyArray<{ launch: Launch; verdict: Verdict }>) => {
     const records = lines

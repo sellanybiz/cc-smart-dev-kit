@@ -500,7 +500,10 @@ export const agentGuardHook: HookSpec = {
     ([...AGENT_TOOLS, ...WORKFLOW_TOOLS] as readonly string[]).includes(toolOf(input)),
   ),
   logFacts: guardFacts,
-  run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd),
+  // The frame's own checkout finds the repository's lead record, so a recorded lead's building
+  // launch can be held by the crew queue (D59); the paths without one judge model and effort.
+  run: ({ input, env, paths, cwd, nowMs, project }) =>
+    agentGuard(input, env, paths, cwd, nowMs, project),
 };
 
 /**
