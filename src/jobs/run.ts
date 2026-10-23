@@ -8,6 +8,7 @@ import { invocationOf, nestedCommand } from "../shell/command";
 import { type KindSpec, withWorkers } from "./kinds";
 import {
   chooseLaunch,
+  type JobEnd,
   killedForMemoryLine,
   type Launch,
   type LaunchFacts,
@@ -18,7 +19,7 @@ import {
   unitName,
 } from "./launch";
 import { sliceChain } from "./memory";
-import type { QueuedJob, Reservation } from "./queue";
+import { durationText, type QueuedJob, type Reservation } from "./queue";
 
 export interface JobRequest {
   /** The kind, or "" for a job with a name only (`--exclusive` without `--kind`). */
@@ -56,8 +57,10 @@ export interface JobDeps {
   /** How this machine can start a job; null when the config says `launch: plain`. */
   launchFacts: () => LaunchFacts | null;
   slice: SliceControl;
+  /** How this machine's clock reads: the two lines that say how long something took. */
+  now: () => number;
   /** Starts `argv` and waits for it; `scopeUnit` names its systemd scope, if it has one. */
-  run: (argv: readonly [string, ...string[]], scopeUnit: string | null) => Promise<number>;
+  run: (argv: readonly [string, ...string[]], scopeUnit: string | null) => Promise<JobEnd>;
   say: (line: string) => void;
   /** True once a signal asked `job run` to stop: nothing new starts after it. */
   stopped?: () => boolean;
@@ -69,12 +72,77 @@ export function describeCommand(command: readonly string[]): string {
   return what.length > 80 ? `${what.slice(0, 77)}...` : what;
 }
 
+/** The line `job run` says when a job that waited gets its place. */
+export function startedLine(what: string, gb: number, waitedMs: number): string {
+  const size = gb > 0 ? ` (${String(gb)} GB)` : "";
+  return `Heavy job starts after ${durationText(waitedMs)}: ${what}${size}`;
+}
+
+/** The line `job run` says after a job that waited ended, however it ended. */
+export function endedLine(what: string, end: JobEnd, ranMs: number): string {
+  // The signal, when one ended it, and the one the wrapper sent on named as the sender:
+  // the person's Ctrl+C at `job run`, or a stop that came from elsewhere (a `kill`, the
+  // kernel's OOM killer) and belongs to nobody here.
+  const how =
+    end.signal === null
+      ? `exit ${String(end.code)}`
+      : `stopped by ${end.signal}${end.stoppedBy === "sent-on" ? " (sent on by job run)" : ""}`;
+  const leftovers = end.stoppedBy === "leftovers" ? " (its leftover processes were stopped)" : "";
+  return `Heavy job ended: ${what}, ${how} after ${durationText(ranMs)}${leftovers}`;
+}
+
 /** A shell line (`sh -c "…"`) takes no extra option at its end: it would land in `$0`. */
 function takesOptions(command: readonly [string, ...string[]]): boolean {
   const invocation = invocationOf([...command]);
   return (
     invocation === undefined || nestedCommand(invocation.program, invocation.args) === undefined
   );
+}
+
+/** What the two lines about a job's run need: which job, and what it reserved. */
+interface Running {
+  /** The argv `job run` starts. */
+  argv: readonly [string, ...string[]];
+  /** What the job reserved: named in the start line when it is above 0. */
+  gb: number;
+  /** The systemd scope the job runs in, or null. */
+  scopeUnit: string | null;
+  /** When the job's first waiting line was printed, or null when it never waited. */
+  waitedSince: number | null;
+  /** What the lines call the job (`describeCommand`). */
+  what: string;
+}
+
+/** A job ran: how it ended, and how long it ran. */
+interface Ran {
+  end: JobEnd;
+  ranMs: number;
+}
+
+/**
+ * Starts the command for a job that waited, saying when it starts. It returns how the job
+ * ended for the end line, which the caller says last: it comes after anything else the run
+ * left to report (the killed-for-memory line). A job that never waited says neither line:
+ * no noise on a free machine.
+ */
+async function runTimed(running: Running, deps: JobDeps): Promise<Ran> {
+  const { waitedSince } = running;
+  if (waitedSince !== null) {
+    deps.say(startedLine(running.what, running.gb, deps.now() - waitedSince));
+  }
+  const beganAt = deps.now();
+  const end = await deps.run(running.argv, running.scopeUnit);
+  return { end, ranMs: deps.now() - beganAt };
+}
+
+/**
+ * The end line, for a job that waited: how it ended, and how long it ran. A piped run's
+ * status is the pipe's own, so this is the line that carries the job's own (the first
+ * waiting line says so once: `PIPE_HINT`).
+ */
+function sayEnded(running: Running, ran: Ran, deps: JobDeps): void {
+  if (running.waitedSince === null) return;
+  deps.say(endedLine(running.what, ran.end, ran.ranMs));
 }
 
 /**
@@ -84,8 +152,9 @@ function takesOptions(command: readonly [string, ...string[]]): boolean {
  */
 async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
   const { exclusive } = request;
+  const what = describeCommand(request.command);
   if (exclusive === undefined || (await deps.ancestorHoldsName(exclusive))) {
-    return deps.run(request.command, null);
+    return (await deps.run(request.command, null)).code;
   }
   const reservation = await deps.acquire(
     {
@@ -95,13 +164,22 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
       kind: request.kind,
       nested: true,
       pid: request.pid,
-      what: describeCommand(request.command),
+      what,
     },
     deps.say,
   );
   try {
     if (deps.stopped?.() === true) return 1;
-    return await deps.run(request.command, null);
+    const running: Running = {
+      argv: request.command,
+      gb: reservation.gb,
+      scopeUnit: null,
+      waitedSince: reservation.waitedSince,
+      what,
+    };
+    const ran = await runTimed(running, deps);
+    sayEnded(running, ran, deps);
+    return ran.end.code;
   } finally {
     reservation.release();
   }
@@ -189,16 +267,28 @@ export async function runJob(request: JobRequest, deps: JobDeps): Promise<number
     }
     const before = eventsPath === null ? null : deps.slice.readFile(eventsPath);
 
-    const code = await deps.run(
-      launchArgv(launch, sized, { kind, pid, slice: request.slice, startedAt: request.startedAt }),
+    const running: Running = {
+      argv: launchArgv(launch, sized, {
+        kind,
+        pid,
+        slice: request.slice,
+        startedAt: request.startedAt,
+      }),
+      gb: reservation.gb,
       scopeUnit,
-    );
+      waitedSince: reservation.waitedSince,
+      what: describeCommand(command),
+    };
+    const ran = await runTimed(running, deps);
+    const code = ran.end.code;
 
     const after = eventsPath === null ? null : deps.slice.readFile(eventsPath);
     // The count is the whole slice's: another job's kill raises it too, so a job that
     // ended well (exit 0) was not the one killed.
     const killer = code === 0 ? null : oomKiller(before, after);
     if (killer !== null) deps.say(killedForMemoryLine(killer, request.slice, code));
+    // Last, after the memory line: the job's own status, for whoever read a pipe's instead.
+    sayEnded(running, ran, deps);
     return code;
   } finally {
     reservation.release();

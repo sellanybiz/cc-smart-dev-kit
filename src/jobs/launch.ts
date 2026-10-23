@@ -177,6 +177,26 @@ export function exitCodeOf(code: number | null, signal: NodeJS.Signals | null): 
   return 128 + (number ?? 0);
 }
 
+/**
+ * How one run of a job ended, as `job run` reports it: what it must say when the job's
+ * output went down a pipe, where the shell's status is the pipe's own, not the job's.
+ */
+export interface JobEnd {
+  /** The exit code, as a shell reports it: the code, 128 + n for a signal death, 127 when it cannot start. */
+  code: number;
+  /**
+   * The signal that ended the job's own process, or null when it exited by itself. Another
+   * process may have sent it: the kernel's OOM killer sends SIGKILL (`killedForMemoryLine`).
+   */
+  signal: NodeJS.Signals | null;
+  /**
+   * This wrapper's own stop, when it made one. `sent-on`: it sent on a signal it caught
+   * while the job still ran, and that signal is the one that ended the job. `leftovers`:
+   * it had to stop processes the job left behind, after the job's own process was gone.
+   */
+  stoppedBy: "sent-on" | "leftovers" | null;
+}
+
 /** One count in a cgroup's `memory.events`, or null when it is not there. */
 function memoryEvent(memoryEvents: string | null, key: string): number | null {
   if (memoryEvents === null) return null;
@@ -319,16 +339,18 @@ function groupIsEmpty(pgid: number): boolean {
  * Starts `argv` with this process's stdin, stdout, stderr and environment, in a process
  * group of its own. SIGINT, SIGTERM and SIGHUP are sent on to the whole group (and the
  * scope); on Windows the job's tree is ended with `taskkill` instead, and only the job's
- * first process is watched. It resolves with the exit code of the first process (a signal
- * death: 128 + n; a command that cannot start: 127, as a shell says), and only once the
- * group and the scope are empty: leftovers are stopped (THE JOB'S OWN PROCESS GROUP above).
+ * first process is watched. It resolves with how the job ended (`JobEnd`): the exit code
+ * of the first process (a signal death: 128 + n; a command that cannot start: 127, as a
+ * shell says), the signal when one ended it, and this wrapper's own stop when it made one
+ * — and only once the group and the scope are empty: leftovers are stopped (THE JOB'S OWN
+ * PROCESS GROUP above).
  */
 export function spawnAndWait(
   argv: readonly [string, ...string[]],
   signals: SignalSource = process,
   say: (line: string) => void = () => undefined,
   options: SpawnOptions = {},
-): Promise<number> {
+): Promise<JobEnd> {
   const [program, ...args] = argv;
   const scope = options.scope ?? null;
   const pollMs = options.pollMs ?? GROUP_POLL_MS;
@@ -338,6 +360,8 @@ export function spawnAndWait(
   return new Promise((resolve) => {
     const child = spawn(program, args, { stdio: "inherit", detached: true });
     const pgid = child.pid;
+    /** The signals this wrapper sent on while the job still ran: its own stops. */
+    const sentOn = new Set<NodeJS.Signals>();
     const sendAll = (signal: NodeJS.Signals) => {
       if (pgid !== undefined) {
         if (windows) endJobTree(pgid, windowsFacts);
@@ -357,15 +381,28 @@ export function spawnAndWait(
         await Bun.sleep(pollMs);
       }
     };
-    const listeners = FORWARDED.map((signal) => [signal, () => sendAll(signal)] as const);
-    for (const [signal, listener] of listeners) signals.on(signal, listener);
     let finished = false;
-    const done = async (code: number) => {
+    const listeners = FORWARDED.map(
+      (signal) =>
+        [
+          signal,
+          () => {
+            // The job was still running: this stop is the wrapper's own. A signal that
+            // arrives while the leftovers end is not — the job itself is over already.
+            if (!finished) sentOn.add(signal);
+            sendAll(signal);
+          },
+        ] as const,
+    );
+    for (const [signal, listener] of listeners) signals.on(signal, listener);
+    const done = async (end: JobEnd) => {
       if (finished) return;
       finished = true;
+      let leftovers = false;
       // Signals still go on while the leftovers end.
       if (!(await emptyWithin(options.leftoverGraceMs ?? LEFTOVER_GRACE_MS))) {
         const killWaitMs = options.killWaitMs ?? KILL_WAIT_MS;
+        leftovers = true;
         say("the job left processes running: stopping them, so its memory is free");
         sendAll("SIGTERM");
         if (!(await emptyWithin(killWaitMs))) {
@@ -376,14 +413,18 @@ export function spawnAndWait(
         }
       }
       for (const [signal, listener] of listeners) signals.off(signal, listener);
-      resolve(code);
+      // A signal the wrapper sent on counts as its own stop only when the job died of
+      // that same one: a job that shrugged it off and ended by itself ended by itself.
+      const stoppedBy: JobEnd["stoppedBy"] =
+        end.signal !== null && sentOn.has(end.signal) ? "sent-on" : leftovers ? "leftovers" : null;
+      resolve({ ...end, stoppedBy });
     };
     child.once("error", (error: NodeJS.ErrnoException) => {
       say(`could not start ${program}: ${error.code ?? error.message}`);
-      void done(127);
+      void done({ code: 127, signal: null, stoppedBy: null });
     });
     child.once("exit", (code, signal) => {
-      void done(exitCodeOf(code, signal));
+      void done({ code: exitCodeOf(code, signal), signal, stoppedBy: null });
     });
   });
 }

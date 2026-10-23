@@ -213,7 +213,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
           for (const note of opened.notes) say(note);
           // Nothing to reserve and no name to hold: no queue at all.
           if (job.gb <= 0 && job.exclusive === undefined) {
-            return { gb: 0, release: () => undefined };
+            return { gb: 0, release: () => undefined, waitedSince: null };
           }
           const reservation = await acquireFrom(stores, job, {
             onWaiting,
@@ -227,6 +227,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         workersFor: (size, gbEach) => workerCount(size, gbEach, availableParallelism()),
         memoryMaxFor: (size) => sliceMemoryMax(opened.budget.gb, size),
         launchFacts: () => (config.launch === "plain" ? null : realLaunchFacts(slice)),
+        now,
         slice: realSliceControl(ctx.memory.read),
         run: (argv, scopeUnit) => {
           started = true;

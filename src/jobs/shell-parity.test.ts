@@ -138,10 +138,11 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
   const deps: JobDeps = {
     isNested: async () => false,
     ancestorHoldsName: async () => false,
-    acquire: async () => ({ gb: 4, release: () => {} }),
+    acquire: async () => ({ gb: 4, release: () => {}, waitedSince: null }),
     workersFor: () => 3,
     memoryMaxFor: () => "1G",
     launchFacts: () => null,
+    now: Date.now,
     slice: {
       controllers: () => ["cpu", "memory", "pids"],
       controlGroup: () => null,
@@ -151,7 +152,7 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
     },
     run: async (argv) => {
       started = argv;
-      return 0;
+      return { code: 0, signal: null, stoppedBy: null };
     },
     say: () => {},
   };
