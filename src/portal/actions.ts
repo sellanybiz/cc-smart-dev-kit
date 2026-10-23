@@ -36,7 +36,12 @@ import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/
 import { runUpdate } from "../cli/update";
 import { type CrewRecord, listAllCrew } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
-import { chainProblem, type GatewayContext, runGateway } from "../gateway/commands";
+import {
+  chainProblem,
+  type GatewayContext,
+  runGateway,
+  setOmnirouteKey,
+} from "../gateway/commands";
 import {
   type GatewayConfig,
   keptChain,
@@ -191,16 +196,12 @@ function collector(onLine?: (line: string) => void): {
 function gatewayContext(
   action: ActionContext,
   print: (line: string) => void,
-  stdin = "",
 ): { ctx: GatewayContext } | { error: string } {
   const { portal } = action;
   const folder = portal.pluginFolder();
   if ("error" in folder) return folder;
   return {
     ctx: {
-      // The portal's own network: the key check and OmniRoute's dashboard reach a backend
-      // through it, as every other request of the portal does.
-      apiFetch: healthFetch(portal),
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
       bundle: join(folder.folder, "dist", "router.js"),
@@ -209,9 +210,7 @@ function gatewayContext(
       paths: portal.paths,
       print,
       probe: portal.probe,
-      // A secret the page sent (the key actions): handed over in memory, as a terminal's stdin
-      // would hand it, never on an argument list or in the environment.
-      readStdin: () => Promise.resolve(stdin),
+      readStdin: () => Promise.resolve(""),
       runner: portal.runner,
       // The portal's own service kind: systemd's units, or a Windows Scheduled Task.
       service: portal.systemd ? "systemd" : "none",
@@ -224,24 +223,14 @@ function gatewayContext(
 /**
  * Runs a gateway command with the person's yes already given. The plugin's folder is resolved
  * here, at the moment of the action: `gateway setup` reads the router bundle from it, and a
- * folder that is gone is the whole answer, in words. A refusal the command throws (setup's
- * "nothing was saved") is its last line, after the lines it printed before it.
+ * folder that is gone is the whole answer, in words.
  */
-async function gateway(
-  action: ActionContext,
-  args: string[],
-  stdin?: string,
-): Promise<ActionResult> {
+async function gateway(action: ActionContext, args: string[]): Promise<ActionResult> {
   const { lines, print } = collector();
-  const context = gatewayContext(action, print, stdin);
+  const context = gatewayContext(action, print);
   if ("error" in context) return { lines: [context.error], ok: false };
-  try {
-    const code = await runGateway(args, context.ctx);
-    return { lines, ok: code === 0 };
-  } catch (error) {
-    print(messageOf(error));
-    return { lines, ok: false };
-  }
+  const code = await runGateway(args, context.ctx);
+  return { lines, ok: code === 0 };
 }
 
 // ── Slots ───────────────────────────────────────────────────────────────────────
@@ -1358,23 +1347,21 @@ async function claudeMemFollow(
 
 // ── The gateway's OmniRoute key (PK1) ──────────────────────────────────────────
 
+/** How to try again from the portal, in a refusal of setup's key path. */
+const KEY_AGAIN = "paste it on the Machine page's OmniRoute card again";
+const KEY_GIVE_INSTEAD = "paste it on the Machine page's OmniRoute card";
+
 /**
  * `gateway.key.save` (a key the person pasted) and `gateway.key.make` (a key made with
- * OmniRoute's dashboard password, `createOmnirouteKey`): `gateway setup` itself, with the secret
- * as its stdin (`--backend-key-stdin omniroute`, `--omniroute-password-stdin`) and
- * `--save-unchecked` when the person ticked that choice. So setup's key path is the one home:
- * the key is tested first (`checkBackendKey`), a 401/403 refuses it in setup's own words and
- * keeps the key in the file, an unanswered check saves only with the choice and its `!` line, a
- * key that changes is backed up first, a key made and not saved is deleted again in OmniRoute,
- * and the password is never stored.
+ * OmniRoute's dashboard password): `setOmnirouteKey`, setup's own key steps, so a page can never
+ * save a key the command line would refuse. The key is tested first, a 401/403 refuses it and
+ * keeps the key in the file, a check OmniRoute does not answer saves only with `saveUnchecked`
+ * (the page's tick, `--save-unchecked`) and its `!` line, a key that changes is backed up first,
+ * a key made and not saved is deleted again in OmniRoute, and the password is never stored.
  *
- * It runs in the portal's process, as the router restart runs setup: the secret stays in this
- * process's memory (`gatewayContext`'s stdin) and never reaches an argument list, the
- * environment or a child. Setup prints the key masked (`maskKey`), and every refusal it throws
- * names no key and no password, so the lines are safe to answer and to send on the stream.
- *
- * A machine with no gateway yet is sent to the terminal: there setup also installs the router's
- * service and asks about its port, which is a first setup, not a key change.
+ * It runs in the portal's process: the secret stays in this process's memory, and never reaches
+ * an argument list, the environment or a child. Every line and refusal names neither the key
+ * (masked, `maskKey`) nor the password, so they are safe to answer and to send on the stream.
  */
 async function gatewayKeyAction(
   action: ActionContext,
@@ -1394,21 +1381,19 @@ async function gatewayKeyAction(
     };
   }
   if (body.confirm !== true) return notConfirmed("saved");
-  if (!existsSync(action.portal.paths.gatewayConfigFile)) {
-    return {
-      lines: [
-        `The gateway is not set up on this machine yet, so there is no key to change: run ${COMMAND} gateway setup in a terminal first.`,
-      ],
-      ok: false,
-    };
+  const { portal } = action;
+  const { lines, print } = collector();
+  try {
+    await setOmnirouteKey(
+      { apiFetch: healthFetch(portal), paths: portal.paths, print },
+      from === "key" ? { key: secret } : { password: secret },
+      { again: KEY_AGAIN, giveKey: KEY_GIVE_INSTEAD, saveUnchecked: body.saveUnchecked === true },
+    );
+    return { lines, ok: true };
+  } catch (error) {
+    // The refusal first: it is what the page shows, the lines before it are its details.
+    return { lines: [...messageOf(error).split("\n"), ...lines], ok: false };
   }
-  const args = [
-    "setup",
-    "--yes",
-    ...(from === "key" ? ["--backend-key-stdin", "omniroute"] : ["--omniroute-password-stdin"]),
-    ...(body.saveUnchecked === true ? ["--save-unchecked"] : []),
-  ];
-  return gateway(action, args, secret);
 }
 
 // ── The crew, and the worktrees (D52) ───────────────────────────────────────────

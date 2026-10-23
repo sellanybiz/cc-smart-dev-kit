@@ -3925,6 +3925,7 @@ describe("the JSON API", () => {
         "claudeMem",
         "companions",
         "doctor",
+        "gatewayKey",
         "jobs",
         "mcp",
         "omniroute",
@@ -3932,6 +3933,8 @@ describe("the JSON API", () => {
         "updates",
         "warp",
       ]);
+      // No gateway: the OmniRoute card's key field says so, in a word (PK1).
+      expect(machine.gatewayKey).toBe("not-set-up");
       // claude-mem's card (PM1) without a gateway or claude-mem: what is missing, and the fix.
       expect(machine.claudeMem).toEqual({
         backends: null,

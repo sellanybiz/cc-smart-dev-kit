@@ -1,17 +1,17 @@
 /**
  * The gateway's OmniRoute key from the portal (PK1): `gateway.key.save` (a key the person
  * pastes) and `gateway.key.make` (a key made with OmniRoute's dashboard password). Both run
- * `gateway setup` itself, in the portal's process, with the secret handed over as its stdin —
- * so every rule of setup's key path holds here too: the key is tested before it is saved, a
- * refused key changes nothing, an unanswered check saves only with the person's choice, a key
- * that changes is backed up first, and the password is never stored.
+ * setup's own key steps (`setOmnirouteKey`), so every rule of setup's key path holds here too:
+ * the key is tested before it is saved, a refused key changes nothing, an unanswered check saves
+ * only with the person's choice, a key that changes is backed up first, a key made and not saved
+ * is deleted again, and the password is never stored. And nothing else of setup runs: no router
+ * copy, no unit, no restart (the router reads a changed config by itself).
  *
- * A fake OmniRoute on a free port of this test answers the key check and the dashboard; a fake
- * `systemctl` (the runner) and a fake health probe stand in for the router's service, so no test
- * reaches a real router, OmniRoute or systemd.
+ * A fake OmniRoute on a free port of this test answers the key check and the dashboard; the
+ * runner records every command, so a test sees that nothing reached `systemctl`.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { saveConfig } from "../gateway/config";
@@ -34,9 +34,9 @@ const MADE_KEY = "omni_MADE_by_dashboard_1r0q";
 /**
  * A fake OmniRoute: `/v1/models` accepts GOOD_KEY, MADE_KEY and OLD_KEY and answers 401 to any
  * other; the dashboard's login takes PASSWORD and sets the session cookie; `/api/keys` makes
- * MADE_KEY, and its DELETE is recorded.
+ * MADE_KEY (which `/v1/models` refuses with `refuseMade`), and its DELETE is recorded.
  */
-function fakeOmniroute(): {
+function fakeOmniroute(options: { refuseMade?: boolean } = {}): {
   deleted: string[];
   port: number;
   requests: string[];
@@ -44,7 +44,8 @@ function fakeOmniroute(): {
 } {
   const deleted: string[] = [];
   const requests: string[] = [];
-  const accepted = new Set([GOOD_KEY, MADE_KEY, OLD_KEY].map((key) => `Bearer ${key}`));
+  const keys = options.refuseMade === true ? [GOOD_KEY, OLD_KEY] : [GOOD_KEY, MADE_KEY, OLD_KEY];
+  const accepted = new Set(keys.map((key) => `Bearer ${key}`));
   const server = Bun.serve({
     fetch: async (request) => {
       const url = new URL(request.url);
@@ -85,19 +86,14 @@ function closedPort(): number {
   return port;
 }
 
-/** The router's port in every config here: the fake probe answers for it, nothing else does. */
-const ROUTER_PORT = 20_197;
-
 /**
- * A portal's action context with a gateway config whose OmniRoute is at `backendPort`, a plugin
- * folder with a router bundle, a fake `systemctl` and a router health page that answers.
+ * A portal's action context with a gateway config whose OmniRoute is at `backendPort`. The runner
+ * and the router's health page record what reached them: a key change reaches neither.
  */
 function world(options: { backendPort: number; withConfig?: boolean }) {
   const home = tempDir("portal-key-home");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
-  const plugin = tempDir("portal-key-plugin");
-  mkdirSync(join(plugin, "dist"), { recursive: true });
-  writeFileSync(join(plugin, "dist", "router.js"), "// the router bundle\n");
+  const ran: string[] = [];
   if (options.withConfig !== false) {
     saveConfig(paths.gatewayConfigFile, {
       aliases: {},
@@ -105,7 +101,7 @@ function world(options: { backendPort: number; withConfig?: boolean }) {
       backends: {
         omniroute: { apiKey: OLD_KEY, baseUrl: `http://127.0.0.1:${options.backendPort}` },
       },
-      port: ROUTER_PORT,
+      port: 20_197,
       slots: {},
       timeouts: { firstByteMs: 60_000 },
       version: 1,
@@ -114,19 +110,18 @@ function world(options: { backendPort: number; withConfig?: boolean }) {
   const ctx = testPortalContext(paths, { HOME: home }, () => Date.now(), {
     // The real network, for the fake OmniRoute on this test's own port.
     fetch: (url, init) => fetch(url, init),
-    pluginFolder: () => ({ folder: plugin }),
     probe: {
       fetch: async (url) => {
-        if (String(url).includes(`:${ROUTER_PORT}/__cc-smart-dev-kit/health`)) {
-          return Response.json({ fallbacks: 0, ok: true, port: ROUTER_PORT, requests: 0 });
-        }
+        ran.push(`probe ${String(url)}`);
         throw new Error("ConnectionRefused");
       },
       now: () => Date.now(),
       sleep: async () => undefined,
     },
-    runner: (cmd) =>
-      cmd[0] === "systemctl" ? { exitCode: 0, output: "" } : { exitCode: 1, output: "" },
+    runner: (cmd) => {
+      ran.push(cmd.join(" "));
+      return { exitCode: 0, output: "" };
+    },
     systemd: true,
   });
   const action: ActionContext = {
@@ -141,7 +136,7 @@ function world(options: { backendPort: number; withConfig?: boolean }) {
     const dir = backupDir(paths.stateDir, paths.gatewayConfigFile);
     return existsSync(dir) ? readdirSync(dir) : [];
   };
-  return { action, backups, configText, home, paths };
+  return { action, backups, configText, home, paths, ran };
 }
 
 /** Every file under `dir`, read as text: where a stored password would show. */
@@ -186,6 +181,10 @@ describe("gateway.key.save: a key the person pastes", () => {
       // The key itself is in no line.
       expect(text).not.toContain(GOOD_KEY);
       expect(text).not.toContain(OLD_KEY);
+      // The key and nothing else: no router copy, no unit, no command, no question to the router.
+      expect(w.ran).toEqual([]);
+      expect(existsSync(w.paths.routerCopy)).toBe(false);
+      expect(existsSync(w.paths.routerUnitFile)).toBe(false);
     } finally {
       omniroute.stop();
     }
@@ -206,6 +205,8 @@ describe("gateway.key.save: a key the person pastes", () => {
       expect(text).toContain("omniroute answered HTTP 401 for this key");
       expect(text).toContain("Nothing was saved, and the key in");
       expect(text).toContain('"omniroute" wants an OmniRoute API key');
+      expect(text).toContain("then run again: paste it on the Machine page's OmniRoute card again");
+      expect(text).not.toContain("--backend-key-stdin");
       expect(text).not.toContain(WRONG_KEY);
       expect(w.configText()).toBe(before);
       expect(w.backups()).toEqual([]);
@@ -229,9 +230,8 @@ describe("gateway.key.save: a key the person pastes", () => {
       w.action,
     );
     expect(saved.ok).toBe(true);
-    expect(saved.lines.join("\n")).toContain(
-      "! the key was saved WITHOUT its backend accepting it",
-    );
+    // The warning is the first line: the one the page shows.
+    expect(saved.lines[0]).toStartWith("! the key was saved WITHOUT its backend accepting it (");
     expect(saved.lines.join("\n")).not.toContain(GOOD_KEY);
     expect(
       (JSON.parse(w.configText()) as { backends: { omniroute: { apiKey: string } } }).backends
@@ -314,6 +314,27 @@ describe("gateway.key.make: a key made with OmniRoute's dashboard password", () 
     }
   });
 
+  test("a key made but refused by the check is deleted again in OmniRoute, and nothing is saved", async () => {
+    const omniroute = fakeOmniroute({ refuseMade: true });
+    const w = world({ backendPort: omniroute.port });
+    try {
+      const before = w.configText();
+      const result = await runAction(
+        "gateway.key.make",
+        { confirm: true, password: PASSWORD },
+        w.action,
+      );
+      expect(result.ok).toBe(false);
+      expect(result.lines[0]).toStartWith("omniroute answered HTTP 401 for this key");
+      expect(omniroute.deleted).toEqual(["key-1"]);
+      expect(w.configText()).toBe(before);
+      expect(w.backups()).toEqual([]);
+      expect(result.lines.join("\n")).not.toContain(MADE_KEY);
+    } finally {
+      omniroute.stop();
+    }
+  });
+
   test("a wrong password changes nothing and says what to do", async () => {
     const omniroute = fakeOmniroute();
     const w = world({ backendPort: omniroute.port });
@@ -328,6 +349,9 @@ describe("gateway.key.make: a key made with OmniRoute's dashboard password", () 
       const text = result.lines.join("\n");
       expect(text).toContain("OmniRoute rejected that dashboard password");
       expect(text).toContain("Nothing was saved");
+      expect(text).toContain(
+        "If you already have that key, give it instead: paste it on the Machine page's OmniRoute card",
+      );
       expect(w.configText()).toBe(before);
       expect(omniroute.requests).toEqual(["POST /api/auth/login"]);
     } finally {

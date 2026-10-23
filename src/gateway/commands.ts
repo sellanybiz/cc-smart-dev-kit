@@ -428,6 +428,197 @@ export function keyUncheckedMessage(options: {
   ].join("\n");
 }
 
+/** A key made in OmniRoute and not saved yet: deleted again (`discardMadeKey`) unless it is. */
+interface MadeKey {
+  discard: () => Promise<{ detail: string; ok: boolean }>;
+  id: null | string;
+  name: string;
+}
+
+/** What a key's save needs from a command's context: the paths, the backend's fetch, the lines. */
+export type KeyContext = Pick<GatewayContext, "apiFetch" | "paths" | "print">;
+
+/** How to give a key by hand, in a refusal of the dashboard password, on a terminal. */
+const GIVE_KEY_INSTEAD = `${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`;
+
+/**
+ * Makes a key in OmniRoute with its dashboard password (`createOmnirouteKey`), for setup's
+ * `--omniroute-password` and the portal's "make a key". Throws setup's words when OmniRoute does
+ * not answer, refuses the password, or makes no key; nothing is saved here. The key it returns is
+ * TESTED next (`checkKeyToSave`), and deleted again (`discardMadeKey`) when it is not saved.
+ * `giveKey`: how to give a key by hand instead, in the caller's own words.
+ */
+async function keyFromPassword(
+  ctx: KeyContext,
+  configPath: string,
+  password: string,
+  giveKey = GIVE_KEY_INSTEAD,
+): Promise<{ key: SetupKey; made: MadeKey }> {
+  const baseUrl = backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute ?? "";
+  const made = await createOmnirouteKey({
+    baseUrl,
+    ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
+    password,
+  });
+  if (made.kind === "no-answer") {
+    throw new Error(
+      `OmniRoute does not answer at ${shownValue(baseUrl)} (${made.detail}). The gateway needs OmniRoute first: install and start it there, then run this again.`,
+    );
+  }
+  if (made.kind === "refused") {
+    throw new Error(
+      [
+        `${made.detail}. Nothing was saved, and the key in ${configPath} is kept as it was.`,
+        `${wantedKeyWords("omniroute")}. If you already have that key, give it instead: ${giveKey}`,
+      ].join("\n"),
+    );
+  }
+  if (made.kind === "failed") {
+    throw new Error(
+      `${made.detail}. OmniRoute's dashboard password is the one you log in with; setup does not store it.`,
+    );
+  }
+  ctx.print(`made the key "${made.name}" in OmniRoute (${maskKey(made.key)})`);
+  // A key made and NOT saved (a backend that refuses it, an unchecked save without
+  // `--save-unchecked`, any later failure) is deleted again in OmniRoute: a run that saved
+  // nothing must not leave an unused key in the person's dashboard (premium review, 2026-10-17).
+  return {
+    key: { backend: "omniroute", value: made.key },
+    made: { discard: made.discard, id: made.id, name: made.name },
+  };
+}
+
+/**
+ * Tests a key before it is saved (`checkBackendKey`): a 401/403 throws `keyRefusedMessage`, a
+ * check that could not be made throws `keyUncheckedMessage` unless `saveUnchecked`. Returns why
+ * the key is saved unchecked, or "" when its backend accepted it (or has no address to ask).
+ */
+async function checkKeyToSave(
+  ctx: KeyContext,
+  configPath: string,
+  key: SetupKey,
+  options: { again?: string; saveUnchecked: boolean },
+): Promise<string> {
+  const baseUrl =
+    key.baseUrl ?? backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
+  if (baseUrl === undefined) return "";
+  const check = await checkBackendKey(baseUrl, key.value, {
+    ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
+  });
+  const again = options.again === undefined ? {} : { again: options.again };
+  if (check.kind === "refused") {
+    throw new Error(
+      keyRefusedMessage({
+        backend: key.backend,
+        baseUrl,
+        configPath,
+        detail: check.detail,
+        status: check.status,
+        ...again,
+      }),
+    );
+  }
+  if (check.kind === "unchecked") {
+    if (!options.saveUnchecked) {
+      throw new Error(
+        keyUncheckedMessage({
+          backend: key.backend,
+          baseUrl,
+          configPath,
+          detail: check.detail,
+          ...again,
+        }),
+      );
+    }
+    return check.detail;
+  }
+  return "";
+}
+
+/**
+ * The end of a run that made a key and does not save it: the key is deleted again in OmniRoute,
+ * then `error` is thrown. A delete that fails names the key — its name and its OmniRoute id — so
+ * the person can remove it by hand. With no key made, `error` is thrown as it is.
+ */
+async function discardMadeKey(made: MadeKey | null, error: unknown): Promise<never> {
+  if (made === null) throw error;
+  const gone = await made.discard();
+  if (gone.ok) throw error;
+  throw new Error(
+    `${messageOf(error)}\n  ! the key this run made in OmniRoute could not be removed (${made.name}, id ${made.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`,
+  );
+}
+
+/** How many backups of one file there are: a save that made one says where it is. */
+function backupCount(backups: string): number {
+  return existsSync(backups) ? readdirSync(backups).length : 0;
+}
+
+/** The line after a key's save replaced the one that was there: where the old file is. */
+function keyBackupLine(backups: string, home: string): string {
+  return `  the file as it was before the change is in ${tildify(backups, home)}: copy it back to put the key that was there in place`;
+}
+
+/** The warning after a key was saved without its backend accepting it (`--save-unchecked`). */
+function uncheckedKeyLine(detail: string): string {
+  return `  ! the key was saved WITHOUT its backend accepting it (${detail}). Check it when the backend answers: ${COMMAND} gateway check`;
+}
+
+/** The refusal when a key is set on a machine with no gateway config: a first setup is setup's. */
+export const NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet, so there is no key to change: run ${COMMAND} gateway setup in a terminal first.`;
+
+/**
+ * Sets the OmniRoute key of a gateway that is set up, and nothing else: the portal's two key
+ * actions (PK1). The same steps as `gateway setup --backend-key-stdin omniroute` and
+ * `--omniroute-password`, in the same functions — a key made with the dashboard password
+ * (`keyFromPassword`), tested before it is saved (`checkKeyToSave`), written under setup's lock
+ * with a backup when it really changes (`ensureConfig`), and deleted again in OmniRoute when it
+ * was made and is not saved (`discardMadeKey`). None of setup's other work: the router reads a
+ * changed config by itself (`watchConfig`), so nothing is installed or restarted.
+ *
+ * Throws the refusal in setup's words, with `again` / `giveKey` saying how to try again where the
+ * key came from. No line it prints and no refusal names the key or the password.
+ */
+export async function setOmnirouteKey(
+  ctx: KeyContext,
+  given: { key: string } | { password: string },
+  options: { again: string; giveKey: string; saveUnchecked: boolean },
+): Promise<void> {
+  const { paths } = ctx;
+  const configPath = paths.gatewayConfigFile;
+  if (!existsSync(configPath)) throw new Error(NOT_SET_UP_FOR_KEY);
+  // The config is read before OmniRoute is asked anything: one that cannot be used stops here.
+  loadConfigFile(configPath);
+  let made: MadeKey | null = null;
+  let key: SetupKey = { backend: "omniroute", value: "key" in given ? given.key : "" };
+  if ("password" in given) {
+    const fromPassword = await keyFromPassword(ctx, configPath, given.password, options.giveKey);
+    key = fromPassword.key;
+    made = fromPassword.made;
+  }
+  try {
+    const unchecked = await checkKeyToSave(ctx, configPath, key, {
+      again: options.again,
+      saveUnchecked: options.saveUnchecked,
+    });
+    await withLock(
+      paths.stateDir,
+      async () => {
+        const backups = backupDir(paths.stateDir, configPath);
+        const backupsBefore = backupCount(backups);
+        const said = ensureConfig(configPath, key, { stateDir: paths.stateDir });
+        // The warning first: a page shows a result's first line, and this one must be seen.
+        if (unchecked !== "") ctx.print(uncheckedKeyLine(unchecked).trim());
+        ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
+        if (backupCount(backups) > backupsBefore) ctx.print(keyBackupLine(backups, paths.home));
+      },
+      { waitMs: 10_000 },
+    );
+  } catch (error) {
+    await discardMadeKey(made, error);
+  }
+}
+
 /** The config with `modelSlots` (0.4.x only) left without any entry for `slot`. */
 function withoutModelSlot(config: GatewayConfig, slot: string): GatewayConfig {
   const { modelSlots, ...rest } = config;
@@ -1840,11 +2031,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   /** The answers to the questions on a terminal; null when nothing was asked. */
   let answers: null | SetupAnswers = null;
   /** A key this run made in OmniRoute: deleted again unless the run saves it. */
-  let discard: null | {
-    discard: () => Promise<{ detail: string; ok: boolean }>;
-    id: null | string;
-    name: string;
-  } = null;
+  let discard: MadeKey | null = null;
   if (options.keyBackend !== null) {
     const value = (await ctx.readStdin()).trim();
     if (value === "") throw new Error("no key on stdin");
@@ -1925,92 +2112,21 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   // A key the person gave, or one setup makes in OmniRoute with the dashboard password. Either
   // way it is TESTED before it is saved: a wrong key must never replace a working one.
   if (password !== null) {
-    const baseUrl = backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute ?? "";
-    const made = await createOmnirouteKey({
-      baseUrl,
-      ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
-      password,
-    });
-    if (made.kind === "no-answer") {
-      throw new Error(
-        `OmniRoute does not answer at ${shownValue(baseUrl)} (${made.detail}). The gateway needs OmniRoute first: install and start it there, then run this again.`,
-      );
-    }
-    if (made.kind === "refused") {
-      throw new Error(
-        [
-          `${made.detail}. Nothing was saved, and the key in ${configPath} is kept as it was.`,
-          `${wantedKeyWords("omniroute")}. If you already have that key, give it instead: ${COMMAND} gateway setup --backend-key-stdin omniroute < key-file`,
-        ].join("\n"),
-      );
-    }
-    if (made.kind === "failed") {
-      throw new Error(
-        `${made.detail}. OmniRoute's dashboard password is the one you log in with; setup does not store it.`,
-      );
-    }
-    key = { backend: "omniroute", value: made.key };
-    // A key setup made and does NOT save (a backend that refuses it, an unchecked save without
-    // `--save-unchecked`, any later failure) is deleted again in OmniRoute: a run that saved
-    // nothing must not leave an unused key in the person's dashboard (premium review,
-    // 2026-10-17).
-    discard = { discard: made.discard, id: made.id, name: made.name };
-    ctx.print(`made the key "${made.name}" in OmniRoute (${maskKey(made.key)})`);
+    const made = await keyFromPassword(ctx, configPath, password);
+    key = made.key;
+    discard = made.made;
   }
 
-  /**
-   * Everything from the key check on runs inside this: a failure (a key the backend refuses, an
-   * unchecked save without `--save-unchecked`, anything later) deletes the key this run made in
-   * OmniRoute, and a delete that fails names it — its name and its OmniRoute id — so the person
-   * can remove it by hand.
-   */
-  const discardKey = async (error: unknown): Promise<never> => {
-    if (discard === null) throw error;
-    const gone = await discard.discard();
-    if (gone.ok) throw error;
-    throw new Error(
-      `${messageOf(error)}\n  ! the key this run made in OmniRoute could not be removed (${discard.name}, id ${discard.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`,
-    );
-  };
   let code: number;
   try {
     /** Why a key was saved without its backend accepting it, for the closing line. Empty: checked. */
-    let unchecked = "";
-    if (key !== null) {
-      const baseUrl =
-        key.baseUrl ?? backendBaseUrl(configPath, key.backend) ?? KNOWN_BACKENDS[key.backend];
-      if (baseUrl !== undefined) {
-        const check = await checkBackendKey(baseUrl, key.value, {
-          ...(ctx.apiFetch === undefined ? {} : { fetch: ctx.apiFetch }),
-        });
-        if (check.kind === "refused") {
-          throw new Error(
-            keyRefusedMessage({
-              backend: key.backend,
-              baseUrl,
-              configPath,
-              detail: check.detail,
-              status: check.status,
-              ...(answers === null ? {} : { again: SETUP_AGAIN }),
-            }),
-          );
-        }
-        if (check.kind === "unchecked") {
-          if (!options.saveUnchecked) {
-            throw new Error(
-              keyUncheckedMessage({
-                backend: key.backend,
-                baseUrl,
-                configPath,
-                detail: check.detail,
-                ...(answers === null ? {} : { again: SETUP_AGAIN }),
-              }),
-            );
-          }
-          unchecked = check.detail;
-        }
-      }
-    }
+    const unchecked =
+      key === null
+        ? ""
+        : await checkKeyToSave(ctx, configPath, key, {
+            saveUnchecked: options.saveUnchecked,
+            ...(answers === null ? {} : { again: SETUP_AGAIN }),
+          });
 
     code = await withLock(
       paths.stateDir,
@@ -2018,14 +2134,13 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
         // How many backups the config already has, so the line below is said only when THIS run
         // made one — `ensureConfig` backs the file up only when the key really changes.
         const backups = backupDir(paths.stateDir, configPath);
-        const backupsBefore = existsSync(backups) ? readdirSync(backups).length : 0;
+        const backupsBefore = backupCount(backups);
         const said = ensureConfig(configPath, key, {
           allowNone: options.noKey,
           stateDir: paths.stateDir,
         });
         ctx.print(said.replaceAll(configPath, tildify(configPath, paths.home)));
-        const keyBackedUp =
-          key !== null && existsSync(backups) && readdirSync(backups).length > backupsBefore;
+        const keyBackedUp = key !== null && backupCount(backups) > backupsBefore;
         // Under the lock, with the backup: the chains the old portal remembered move into the
         // config here, together with the router copy that reads them (a second run moves none).
         const upgraded = upgradeConfig(configPath, {
@@ -2048,16 +2163,8 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
               : `Every slot is off, so every Claude model stays plain Claude. Pick the models yourself: ${COMMAND} gateway models, then ${COMMAND} gateway slot <slot> <targets> (or the portal's Slots page).`,
           );
         }
-        if (keyBackedUp) {
-          ctx.print(
-            `  the file as it was before the change is in ${tildify(backups, paths.home)}: copy it back to put the key that was there in place`,
-          );
-        }
-        if (unchecked !== "") {
-          ctx.print(
-            `  ! the key was saved WITHOUT its backend accepting it (${unchecked}). Check it when the backend answers: ${COMMAND} gateway check`,
-          );
-        }
+        if (keyBackedUp) ctx.print(keyBackupLine(backups, paths.home));
+        if (unchecked !== "") ctx.print(uncheckedKeyLine(unchecked));
         // The question was answered above: the warning is not repeated, and nothing asks again.
         await installRouter(
           install({
@@ -2091,7 +2198,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
     );
   } catch (error) {
     // The key this run made is not saved: it must not stay in OmniRoute unused.
-    return await discardKey(error);
+    return await discardMadeKey(discard, error);
   }
   // After the try, never inside it: the key is saved by now, and a failure here must not
   // delete it again. This step catches its own.
