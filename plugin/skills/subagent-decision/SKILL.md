@@ -13,7 +13,7 @@ A subagent runs in its own context window; only its final report comes back. Eve
 reads, every search and every dead end stays out of yours. Delegate a job whose reading would
 flood your context and that a self-contained brief can carry; a job a handful of tool calls
 finish is yours. What stays with you is in the core instructions (§ Lead the work); which model
-and effort each agent gets is their model table, and § Model and effort below.
+and effort each agent gets: their model table, and § Model and effort below.
 
 ## Which agent
 

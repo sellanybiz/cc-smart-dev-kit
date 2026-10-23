@@ -37,7 +37,7 @@ export interface Budget {
 export const ALWAYS_ON: Budget = { max: 3_300, target: 2_000 };
 
 /**
- * core.md tokens, estimated. About 3,300 at 0.5.0 (189 lines); about 2,220 at 1.1.0, after
+ * core.md tokens, estimated. About 3,300 at 0.5.0 (189 lines); about 2,230 at 1.1.0, after
  * its trim to 125 lines. The target is still roughly 1,900 tokens.
  */
 export const CORE: Budget = { max: 2_300, target: 1_900 };
